@@ -749,8 +749,7 @@ class TestReadTools:
         assert "def add_flag" not in repr(rendered)
 
     def test_get_pipeline_missing_source_is_structured_error(self, project_root: Path):
-        """A syntax-broken file still parses via the regex fallback (product
-        behaviour); a missing file is the genuine unavailable path."""
+        """Assistant read tools stay strict; a missing file is unavailable."""
 
         from haute.assistant._tools import get_pipeline
 

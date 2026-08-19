@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
-import math
 import shutil
 import tempfile
 import threading
@@ -19,61 +18,35 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from fastapi import HTTPException, WebSocket
-from pydantic import BaseModel, Field, model_validator
 
 from haute._file_ops import atomic_write_text
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._sidecar import (
+    SidecarModel,
+    SidecarReadResult,
+    SidecarReadState,
+    _normalise_sidecar_positions,
+    _normalise_sidecar_sources,
+    _read_sidecar_json,
+    read_sidecar_state,
+)
 from haute._submodel_paths import resolve_submodel_reference
 from haute.errors import ConfigError
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 
+# The sidecar read schema lives in the core ``haute._sidecar`` module so editor
+# recovery never imports the web layer; routes keep importing it from here.
+__all__ = [
+    "SidecarModel",
+    "SidecarReadResult",
+    "SidecarReadState",
+    "load_pipeline_editor_document",
+    "read_sidecar_state",
+]
+
 logger = get_logger(component="server")
-
-
-# ---------------------------------------------------------------------------
-# Sidecar schema (.haute.json on-disk format)
-# ---------------------------------------------------------------------------
-
-
-class SidecarModel(BaseModel):
-    """On-disk schema for the ``.haute.json`` sidecar file.
-
-    The sidecar carries editor-state that doesn't belong in the pipeline
-    ``.py`` source-of-truth:
-
-    * ``positions`` — canvas (x, y) co-ordinates per sanitised node id,
-      so the layout survives label renames.
-    * ``sources`` — ordered list of available data sources for this
-      pipeline (``"live"`` is always first).
-    * ``active_source`` — which source is currently selected in the UI.
-
-    Every optional field has a sensible default so sparse sidecars still
-    parse.  That current-shape defaulting contract is pinned by
-    ``tests/test_routes_hygiene.py::TestSidecarDefaults``.
-
-    Write path: ``save_sidecar`` constructs a ``SidecarModel`` and
-    serialises via :meth:`model_dump_json`, excluding defaults so a
-    freshly-saved pipeline with ``sources=["live"]`` does not bloat the
-    file with redundant state (see
-    ``tests/test_route_helpers.py::test_default_source_not_saved``).
-    Read path: ``load_sidecar``/``parse_pipeline_to_graph`` still parses
-    as plain JSON today, but consumers may upgrade to
-    :meth:`model_validate_json` for typed access.
-    """
-
-    positions: dict[str, dict[str, float]] = Field(default_factory=dict)
-    sources: list[str] = Field(default_factory=lambda: ["live"])
-    active_source: str = "live"
-    managed_parent: str | None = None
-
-    @model_validator(mode="after")
-    def _active_source_must_be_in_sources(self) -> SidecarModel:
-        if self.active_source not in self.sources:
-            raise ValueError(
-                f"active_source={self.active_source!r} is not in sources={self.sources!r}"
-            )
-        return self
 
 
 # ---------------------------------------------------------------------------
@@ -746,13 +719,8 @@ def load_sidecar(py_path: Path) -> dict[str, Any]:
     Returns a dict with ``positions``, ``sources``, and ``active_source``
     keys (all optional — callers should use ``.get()``).
     """
-    sidecar = py_path.with_suffix(".haute.json")
-    if sidecar.exists():
-        try:
-            return dict(_json.loads(read_user_text(sidecar)))
-        except (_json.JSONDecodeError, OSError, TypeError, ValueError) as e:
-            logger.warning("corrupt_sidecar", file=sidecar.name, error=str(e))
-    return {}
+    _state, payload, _error_type = _read_sidecar_json(py_path.with_suffix(".haute.json"))
+    return dict(payload) if payload is not None else {}
 
 
 def load_sidecar_positions(py_path: Path) -> dict[str, Any]:
@@ -999,51 +967,3 @@ def commit_pipeline_graph(sha: str) -> PipelineGraph:
                     logger.warning("commit_temp_cleanup_failed", path=str(root), error=str(exc))
                 else:
                     time.sleep(0.02 * (attempt + 1))
-
-
-def _normalise_sidecar_sources(raw_sources: Any) -> list[str] | None:
-    if not isinstance(raw_sources, list):
-        return None
-
-    seen: set[str] = set()
-    cleaned: list[str] = []
-    saw_live = False
-    for value in raw_sources:
-        if not isinstance(value, str):
-            continue
-        source = value.strip()
-        if not source:
-            continue
-        if source == "live":
-            saw_live = True
-            continue
-        if source in seen:
-            continue
-        seen.add(source)
-        cleaned.append(source)
-
-    if not cleaned and not saw_live:
-        return None
-    return ["live", *cleaned]
-
-
-def _normalise_sidecar_positions(raw_positions: Any) -> dict[str, dict[str, float]]:
-    if not isinstance(raw_positions, dict):
-        return {}
-
-    positions: dict[str, dict[str, float]] = {}
-    for node_id, position in raw_positions.items():
-        if not isinstance(node_id, str) or not isinstance(position, dict):
-            continue
-        x = position.get("x")
-        y = position.get("y")
-        if not isinstance(x, (int, float)) or isinstance(x, bool):
-            continue
-        if not isinstance(y, (int, float)) or isinstance(y, bool):
-            continue
-        xf = float(x)
-        yf = float(y)
-        if not math.isfinite(xf) or not math.isfinite(yf):
-            continue
-        positions[node_id] = {"x": xf, "y": yf}
-    return positions

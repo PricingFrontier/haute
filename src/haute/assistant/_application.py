@@ -38,7 +38,9 @@ from haute.routes._save_pipeline import SavePipelineService
 _MAX_SCHEMA_TARGETS = 100
 
 MutationReadiness = Callable[[Path], tuple[bool, str | None]]
-GraphPublisher = Callable[[str, PipelineGraph], str]
+# Publishes the current on-disk editor document for *source_file* to live
+# sync clients and returns the published document fingerprint.
+DocumentUpdatePublisher = Callable[[str], str]
 GraphParser = Callable[[Path], PipelineGraph]
 ProjectSources = Callable[[str], Sequence[Path | ProjectSourceEvidence]]
 
@@ -307,7 +309,7 @@ class PipelineApplicationService:
         project_root: Path,
         pipeline_root: Path,
         mutations_readiness: MutationReadiness,
-        publish_graph_update: GraphPublisher,
+        publish_document_update: DocumentUpdatePublisher,
         plan_store: PlanStore | None = None,
         parse_graph: GraphParser = parse_pipeline_to_graph,
         project_sources: ProjectSources | None = None,
@@ -317,7 +319,7 @@ class PipelineApplicationService:
         if not self._pipeline_root.is_relative_to(self._project_root):
             raise ValueError("pipeline_root must resolve inside project_root")
         self._mutations_readiness = mutations_readiness
-        self._publish_graph_update = publish_graph_update
+        self._publish_document_update = publish_document_update
         self._parse_graph = parse_graph
         self._project_sources = project_sources or (lambda _source_file: ())
         self.plan_store = plan_store if plan_store is not None else PlanStore()
@@ -574,7 +576,7 @@ class PipelineApplicationService:
                     before,
                     recomputed,
                 )
-                fingerprint = self._publish_graph_update(source_file, reparsed)
+                fingerprint = self._publish_document_update(source_file)
                 result = ApplicationResult(
                     plan_hash=plan.plan_hash,
                     capability_hash=plan.capability_hash,
@@ -594,13 +596,13 @@ class PipelineApplicationService:
             except BaseException as exc:
                 # The transaction returned successfully: this plan is used
                 # even when reparse, structural proof, or publication fails.
-                # Publish the validated target graph when possible so the
+                # Publish the committed on-disk document when possible so the
                 # canvas does not remain stale, and return a truthful
                 # committed-but-unverified result to the tool boundary.
                 fallback_fingerprint: str | None = None
                 publish_error: str | None = None
                 try:
-                    fallback_fingerprint = self._publish_graph_update(source_file, after)
+                    fallback_fingerprint = self._publish_document_update(source_file)
                 except Exception as publish_exc:  # noqa: BLE001 - preserve committed state
                     publish_error = type(publish_exc).__name__
                 failure = {

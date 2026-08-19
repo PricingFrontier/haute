@@ -23,7 +23,49 @@ test.describe("data input/output nodes", () => {
       const headers: Record<string, string> = { "Content-Type": "application/json" }
       const graphRes = await fetch("/api/pipeline", { headers })
       if (!graphRes.ok) throw new Error(`GET /api/pipeline ${graphRes.status}`)
-      const graph = await graphRes.json()
+      const document = await graphRes.json()
+      const graph = {
+        nodes: document.nodes.map(
+          (node: {
+            recovery_id: string
+            label: string
+            decorator_name: string
+            node_type: string | null
+            description: string
+            display_position: { x: number; y: number }
+            config: Record<string, unknown> | null
+          }) => ({
+            id: node.recovery_id,
+            type: node.node_type ?? node.decorator_name,
+            position: node.display_position,
+            data: {
+              label: node.label,
+              description: node.description,
+              nodeType: node.node_type ?? node.decorator_name,
+              ...(node.config === null ? {} : { config: node.config }),
+            },
+          }),
+        ),
+        edges: document.edges.map(
+          (edge: {
+            recovery_id: string
+            source_recovery_id: string
+            target_recovery_id: string
+            source_handle: string | null
+            target_handle: string | null
+            source_port: string | null
+            target_port: string | null
+          }) => ({
+            id: edge.recovery_id,
+            source: edge.source_recovery_id,
+            target: edge.target_recovery_id,
+            sourceHandle: edge.source_handle,
+            targetHandle: edge.target_handle,
+            ...(edge.source_port === null ? {} : { sourcePort: edge.source_port }),
+            ...(edge.target_port === null ? {} : { targetPort: edge.target_port }),
+          }),
+        ),
+      }
       graph.nodes.push(
         {
           id: "wide_in",
@@ -63,8 +105,13 @@ test.describe("data input/output nodes", () => {
         method: "POST",
         headers,
         body: JSON.stringify({
-          name: graph.pipeline_name ?? "main",
-          source_file: graph.source_file,
+          name: document.pipeline_name ?? "main",
+          description: document.pipeline_description ?? "",
+          source_file: document.source_file,
+          preamble: document.preamble ?? "",
+          preserved_blocks: document.preserved_blocks,
+          sources: document.sources,
+          active_source: document.active_source ?? "live",
           graph: { nodes: graph.nodes, edges: graph.edges },
         }),
       })

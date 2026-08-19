@@ -8,6 +8,8 @@ import type { ExploreCacheReport } from "../../api/types"
 import useUIStore from "../../stores/useUIStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 
 const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
@@ -234,6 +236,7 @@ describe("NodePanel", () => {
       modellingPanes: {},
     })
     useNodeResultsStore.setState({ trainJobs: {}, exploreResults: {} })
+    useDocumentStatusStore.getState().reset()
     transformEditorProps.length = 0
     edgeJoinEditorProps.length = 0
     exploreCodeEditorProps.length = 0
@@ -258,6 +261,115 @@ describe("NodePanel", () => {
   it("renders node label in the header", () => {
     renderPanel()
     expect(screen.getByDisplayValue("My Node")).toBeInTheDocument()
+  })
+
+  it("shows attributed recovery diagnostics instead of the normal editor", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      diagnostics: [{
+        diagnostic_id: "node-config-invalid",
+        code: "node_config_invalid",
+        severity: "error",
+        scope: "node",
+        message: "Explore pivot value_order is required.",
+        element_id: "explore@L12",
+        source_file: "rating/main.py",
+        source_span: { start_line: 12, start_column: 0, end_line: 20, end_column: 0 },
+        remediation: "Add value_order to the authored pivot configuration.",
+        incident_id: null,
+      }],
+    }))
+    renderPanel({
+      node: makeNode({
+        id: "explore@L12",
+        data: {
+          label: "Explore",
+          description: "",
+          nodeType: "explore",
+          _loadAvailability: "unavailable",
+          _loadDiagnosticIds: ["node-config-invalid"],
+          _sourceFile: "rating/main.py",
+          _sourceSpan: { start_line: 12, start_column: 0, end_line: 20, end_column: 0 },
+          _configReference: "config/explore/explore.json",
+        },
+      }),
+    })
+
+    expect(screen.getByTestId("node-recovery-diagnostics")).toHaveTextContent(
+      "Explore pivot value_order is required.",
+    )
+    expect(screen.getByTestId("node-recovery-diagnostics")).toHaveTextContent("rating/main.py:12")
+    expect(screen.getByTestId("node-recovery-diagnostics")).toHaveTextContent(
+      "config/explore/explore.json",
+    )
+    expect(screen.getByTestId("node-panel-readonly")).toBeInTheDocument()
+    expect(screen.queryByTestId("TransformEditor")).not.toBeInTheDocument()
+  })
+
+  it("offers remove only for an unavailable recoverable node", () => {
+    const onRemoveUnavailableNode = vi.fn()
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      capabilities: { can_repair: true },
+    }))
+    renderPanel({
+      onRemoveUnavailableNode,
+      node: makeNode({ data: {
+        label: "Broken", description: "", nodeType: "explore", _loadAvailability: "unavailable",
+        _sourceFile: "main.py", _recoveryId: "broken@10",
+      } }),
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Remove unavailable node" }))
+    expect(onRemoveUnavailableNode).toHaveBeenCalledWith({ sourceFile: "main.py", recoveryId: "broken@10" })
+  })
+
+  it("does not offer remove for an unavailable node without repair capability", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      capabilities: { can_repair: false },
+    }))
+    renderPanel({ node: makeNode({ data: {
+      label: "Unavailable", description: "", nodeType: "explore", _loadAvailability: "unavailable",
+      _sourceFile: "main.py", _recoveryId: "unavailable@10",
+    } }) })
+    expect(screen.queryByRole("button", { name: "Remove unavailable node" })).not.toBeInTheDocument()
+  })
+
+  it("does not offer remove for a blocked node even with repair capability", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      capabilities: { can_repair: true },
+    }))
+    renderPanel({ node: makeNode({ data: {
+      label: "Blocked", description: "", nodeType: "explore", _loadAvailability: "blocked",
+      _sourceFile: "main.py", _recoveryId: "blocked@10",
+    } }) })
+    expect(screen.queryByRole("button", { name: "Remove unavailable node" })).not.toBeInTheDocument()
+  })
+
+  it("inspects a ready degraded sibling without mounting its normal editor", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+    }))
+    renderPanel({
+      readOnly: true,
+      documentReadOnly: true,
+      node: makeNode({
+        id: "input_1",
+        data: {
+          label: "Claims input",
+          description: "",
+          nodeType: "dataInput",
+          config: { format: "parquet", path: "data/claims.parquet" },
+          _loadAvailability: "ready",
+        },
+      }),
+    })
+
+    expect(screen.getByTestId("node-document-readonly-inspector")).toHaveTextContent(
+      "data/claims.parquet",
+    )
+    expect(screen.queryByTestId("DataInputEditor")).not.toBeInTheDocument()
   })
 
   it("close button calls onClose", () => {

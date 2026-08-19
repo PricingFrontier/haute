@@ -40,6 +40,7 @@ export interface SubmodelNavReturn {
   viewStack: ViewLevel[]
   handleDrillIntoSubmodel: (nodeId: string) => Promise<void>
   handleBreadcrumbNavigate: (depth: number) => void
+  resetToAuthoritativeRoot: (sourceFile: string, pipelineName: string) => void
   handleCreateSubmodel: (name: string, nodeIds: string[]) => Promise<void>
   handleDissolveSubmodel: (instanceId: string) => Promise<void>
 }
@@ -311,6 +312,19 @@ export default function useSubmodelNavigation({
     setViewStack(prev.slice(0, depth + 1))
   }, [parentGraphRef, setActiveSubmodelIdentity, submodelsRef, sourceFileRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData, fitView])
 
+  const resetToAuthoritativeRoot = useCallback((sourceFile: string, pipelineName: string) => {
+    transformRequestSerialRef.current += 1
+    parentGraphRef.current = null
+    setActiveSubmodelIdentity(null)
+    const rootView: ViewLevel[] = [{
+      type: "pipeline",
+      name: pipelineName || "main",
+      file: sourceFile,
+    }]
+    viewStackRef.current = rootView
+    setViewStack(rootView)
+  }, [parentGraphRef, setActiveSubmodelIdentity])
+
   const handleDissolveSubmodel = useCallback(async (instanceId: string) => {
     if (parentGraphRef.current) {
       addToast("error", "Return to the main pipeline before dissolving a submodel.")
@@ -366,6 +380,7 @@ export default function useSubmodelNavigation({
     viewStack,
     handleDrillIntoSubmodel,
     handleBreadcrumbNavigate,
+    resetToAuthoritativeRoot,
     handleCreateSubmodel,
     handleDissolveSubmodel,
   }

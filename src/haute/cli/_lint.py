@@ -62,11 +62,6 @@ def handle_lint(config: LintConfig) -> None:
         if edge.target not in node_ids:
             errors.append(f"Edge references missing target node: {edge.target}")
 
-    # Check for nodes with parse errors
-    for node in nodes:
-        if node.data.config.get("parseError"):
-            errors.append(f"Node '{node.id}' has parse error: {node.data.config['parseError']}")
-
     # Check for orphan nodes (no edges at all, in a multi-node graph)
     if len(nodes) > 1:
         connected = set()

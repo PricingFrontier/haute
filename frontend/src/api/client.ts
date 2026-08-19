@@ -167,6 +167,14 @@ import {
   parseUtilityReadResponse,
   parseUtilityWriteResponse,
 } from "../types/guards"
+import {
+  parseRemoveUnavailableNodeApplyResponse,
+  parseRemoveUnavailableNodeDryRunResponse,
+  type ApplyRemoveUnavailableNodeRequest,
+  type RemoveUnavailableNodeDryRunResponse,
+  type RemoveUnavailableNodeApplyResponse,
+  type RemoveUnavailableNodeRequest,
+} from "../types/pipelineRepair"
 
 export class ApiError extends Error {
   status: number
@@ -602,9 +610,35 @@ export function checkHauteSession(options: ApiClientOptions = {}): Promise<{ ok:
 // Pipeline endpoints
 // ---------------------------------------------------------------------------
 
-export function loadPipeline(options?: ApiClientOptions): Promise<PipelineGraph> {
+export function loadPipeline(options?: ApiClientOptions): Promise<unknown> {
   return request<unknown>("/api/pipeline", options)
-    .then(parsePipelineResponse)
+}
+
+export function dryRunRemoveUnavailableNode(
+  args: RemoveUnavailableNodeRequest,
+  options?: MutationOptions,
+): Promise<RemoveUnavailableNodeDryRunResponse> {
+  return post<unknown>("/api/pipeline/repair/remove/dry-run", {
+    source_file: args.sourceFile,
+    source_revision: args.sourceRevision,
+    target_source_file: args.targetSourceFile,
+    target_recovery_id: args.targetRecoveryId,
+    delete_config: args.deleteConfig,
+  }, options).then(parseRemoveUnavailableNodeDryRunResponse)
+}
+
+export function applyRemoveUnavailableNode(
+  args: ApplyRemoveUnavailableNodeRequest,
+  options?: MutationOptions,
+): Promise<RemoveUnavailableNodeApplyResponse> {
+  return post<unknown>("/api/pipeline/repair/remove/apply", {
+    source_file: args.sourceFile,
+    source_revision: args.sourceRevision,
+    target_source_file: args.targetSourceFile,
+    target_recovery_id: args.targetRecoveryId,
+    delete_config: args.deleteConfig,
+    plan_hash: args.planHash,
+  }, options).then(parseRemoveUnavailableNodeApplyResponse)
 }
 
 export interface PreviewNodeArgs {
@@ -639,6 +673,50 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
     {
       graph,
       node_id: nodeId,
+      row_limit: rowLimit,
+      source: source ?? "live",
+      ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
+      ...(portLabel !== undefined ? { port_label: portLabel } : {}),
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+    },
+    { signal, timeout },
+  ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)
+}
+
+export interface RecoveryPreviewNodeArgs {
+  sourceFile: string
+  sourceRevision: string
+  targetRecoveryId: string
+  rowLimit: number
+  source?: string
+  requestedPreviewColumns?: string[]
+  portLabel?: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function previewRecoveryNode(
+  args: RecoveryPreviewNodeArgs,
+): Promise<PreviewNodeResponse> {
+  const {
+    sourceFile,
+    sourceRevision,
+    targetRecoveryId,
+    rowLimit,
+    source,
+    requestedPreviewColumns,
+    portLabel,
+    streamingChunkSize,
+    signal,
+    timeout = 120_000,
+  } = args
+  return post<unknown>(
+    "/api/pipeline/recovery-preview",
+    {
+      source_file: sourceFile,
+      source_revision: sourceRevision,
+      target_recovery_id: targetRecoveryId,
       row_limit: rowLimit,
       source: source ?? "live",
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),

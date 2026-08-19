@@ -117,13 +117,16 @@ An inbound `x-request-id` is retained only when it is a 1–64 character ASCII t
 Rejected values are logged only by bounded reason and numeric length, never by their bytes.
 
 **Live sync.** A pricing analyst can edit a pipeline's `.py` file directly in an IDE while
-the canvas is open. A background watcher (debounced 300ms) detects the change, re-parses
-only the affected pipeline(s), and publishes a `graph.update` (or `parse.error`) event on an
-in-process event bus; a subscriber wired at import time turns that into a WebSocket frame
-broadcast to every connected canvas. The canvas can also request a targeted resync over the
-same socket by sending `{"type": "resync", "source_file": ..., "graph_fingerprint": ...}`;
-the server replies only to that client, and skips the reply entirely if the client's
-fingerprint already matches (no redundant payload). Edits the server itself makes (via
+the canvas is open. A background watcher (debounced 300ms) detects the change, recovers
+only the affected pipeline(s) into editor documents, and publishes a
+`pipeline.document.update` (or, for a document that cannot be loaded at all, a
+`parse.error`) event on an in-process event bus; a subscriber wired at import time turns
+that into a WebSocket frame broadcast to every connected canvas. The canvas can also
+request a targeted resync over the same socket by sending
+`{"type": "resync", "source_file": ..., "document_schema_version": 1,
+"document_fingerprint": ...}`; the server replies only to that client, and skips the
+reply entirely if the client's document fingerprint already matches (no redundant
+payload). Edits the server itself makes (via
 `/api/pipeline/save`) are tagged as self-writes so they never round-trip back through the watcher
 as a phantom external edit. A change to a `modules/*.py` file re-parses only the pipelines
 that import it; a change to a `config/*.json` file re-parses every discovered pipeline (a
@@ -139,12 +142,22 @@ the still-failing entries instead of poisoning future batches or creating an unb
 chain.
 
 **Pipeline CRUD, preview, trace, and output publication.** `GET /api/pipelines` lists every
-discovered pipeline with parse status; `GET /api/pipeline` returns an empty graph only when
-no pipeline file exists, and returns 422 with the first parse diagnostic when files exist but
-none can be parsed. `GET /api/pipeline/{name}` returns the named graph.
+discovered pipeline with `ready`, `degraded`, or `source_only` load status. The editor-facing
+`GET /api/pipeline` and `GET /api/pipeline/{name}` routes return a versioned editor document,
+not the canonical runtime graph: readable authored failures are HTTP 200 responses carrying
+structured diagnostics, element availability, explicit capabilities, and a raw-artifact
+revision. The unnamed route selects the first discovered document with authored content
+without skipping a broken document in favour of a later healthy one. It returns an empty
+ready document only when the project genuinely has no authored pipeline content. Discovery,
+permission, transport, and unreadable-source failures remain ordinary HTTP failures.
+Recovery nodes deliberately do not have the canonical `GraphNode` wire shape, and recovery
+documents are rejected by graph-consuming request models.
 `POST /api/pipeline/save` is the single write path for a pipeline's `.py` source, its
 per-node config JSON sidecars, and its `.haute.json` position sidecar — described in detail
-below. `POST /api/pipeline/preview` runs the graph up to one node and returns its schema,
+below. Before changing an existing named document, Save and submodel create/dissolve reread
+its current on-disk editor state under the shared save lock and reject a non-ready document
+before staging bytes, regardless of the client-posted graph. `POST /api/pipeline/preview`
+runs the graph up to one node and returns its schema,
 sample rows, and per-node timing/memory; `POST /api/pipeline/trace` follows one row's values
 through every node it passed through and returns typed correlation omissions plus generation
 provenance; `POST /api/pipeline/write-output` explicitly materialises a
@@ -168,12 +181,13 @@ here. A timeout that carries a still-running background task takes precedence ov
 supersession generation, so it remains a 504 and retains both the key and execution context
 until the worker exits.
 
-Live pipeline graph responses carry `source_revision`, a deterministic digest
-of the parsed document plus the parent and referenced child source/sidecar
-states. Explicit Save returns the newly committed revision. Submodel create and
-dissolve use the current revision as an optimistic precondition, return it
-unchanged, and perform no persistence, so a stale transform cannot be applied
-over a newer document.
+Editor documents carry `source_revision`, a deterministic digest over raw parent/child
+source bytes, every referenced node-config file, and every participating `.haute.json`
+sidecar, including role-qualified missing-file sentinels. The digest therefore remains
+available when canonical parsing or JSON decoding fails. Explicit Save returns the newly
+committed revision. Submodel create and dissolve use the current revision as an optimistic
+precondition, return it unchanged, and perform no persistence, so a stale transform cannot
+be applied over a newer document.
 
 **File browsing and schema inspection.** `GET /api/files` lists a directory for the file
 picker; when its `extensions` query is omitted, the effective readable extensions come from
@@ -284,7 +298,7 @@ become diagnostic-unavailable rather than a fabricated success.
 The server exposes the assistant application service inside the running
 process; it adds no headless or serverless mutation API. GUI saves and
 assistant applies share the same process-wide save lock, transactional
-`SavePipelineService`, self-write marking, graph-update broadcast and Git
+`SavePipelineService`, self-write marking, document-update broadcast and Git
 ledger capture.
 
 `SavePipelineService.validate_graph(...)` is the public, no-write validation
@@ -338,8 +352,8 @@ describes. Stale, changed or already-applied plans fail before
 - **[assistant](../assistant/high-level.md)** — owns `routes/assistant.py`, included into the same
   app; its `Assistant*` request/response/SSE-event models live in `schemas.py`; its mutation
   tools run `SavePipelineService` under the shared `save_lock`, mark self-writes, and publish
-  `graph.update` on the shared event bus so assistant edits broadcast over `/ws/sync` exactly
-  like external edits.
+  `pipeline.document.update` on the shared event bus so assistant edits broadcast over
+  `/ws/sync` exactly like external edits.
 - **[codegen](../codegen/high-level.md)** — `SavePipelineService._write_code` calls
   `graph_to_code` / `graph_to_code_multi` and therefore depends on the shared registry
   between codegen and the executor.
@@ -418,3 +432,56 @@ treats a missing `[project].pipeline` key in `haute.toml` as a soft omission
 configuration raises `ConfigError`. The asymmetry is deliberate: a missing key
 can be a fresh-project state, whereas swallowing a decode failure could
 silently misroute subsequent saves and loads.
+
+## Pipeline recovery, preview, and live-sync contract
+
+Editor loads are conservation-oriented. Every top-level authored node decorator is discovered before
+support is checked; unknown types and duplicate identities remain editor-only recovery elements.
+Connection declarations that do not resolve to one unique pair remain typed unresolved structures,
+and invalid submodel definitions make only their occurrences unavailable. Diagnostics and downstream
+blocking paths are deterministic and bounded. Strict parser, execution, deploy, save, trace, and job
+boundaries continue to accept canonical graphs only.
+
+An eligible node in a degraded document is previewed through a server-owned recovery-preview request.
+The client supplies source identity, raw-artifact revision, target recovery id, source selection, and
+preview limits—not a graph. The server rereads the document, rejects revision drift, proves the full
+ancestor closure ready, rebuilds and validates a canonical closure, then delegates to the ordinary
+preview execution service. Other execution and persistence capabilities remain fenced.
+
+WebSocket sync publishes versioned `pipeline_document_update` frames for ready, degraded, and
+source-only states. Status, capabilities, diagnostics, source identity, and revision are authoritative
+even when a dirty client retains its local graph. Sidecar changes are dependency events. A source-only
+update may leave a prior canvas visible only as an explicitly stale read-only reference; it is never
+treated as the current graph or accepted by save/execution routes. If the editor document itself cannot
+be read or built, the server logs the underlying exception and sends a sanitized
+`parse_error`; that frame carries only document transport failure — authored errors always
+arrive as degraded or source-only documents.
+
+## Approved change contract — minimal transactional pipeline repair
+
+The only structured repair action is `Remove unavailable node`. It is not a
+recovery-graph Save and does not accept source bytes, source spans, replacement
+graphs, or migration instructions from the client. Dry-run identifies the
+current document by source file and raw-artifact revision, resolves the target
+recovery node on the server, and returns a deterministic plan hash, bounded
+human-readable patches, the exact touched-artifact manifest, retained config
+artifacts, warnings, and predicted recovery state without writing.
+
+Apply takes the same identities, revision, explicit config-deletion choice,
+and confirmed plan hash. Under the shared save lock it reloads recovery state,
+recomputes the plan, rejects revision or plan drift, then uses the existing
+atomic staged-write/rollback machinery. It removes only the selected
+decorator/function block, standalone explicit connection declarations that
+reference it, and its position entry. A referenced config JSON file is
+retained unless it is separately enumerated and explicitly approved. A
+shared config, config path overlapping a pipeline source/position artifact,
+duplicate authored identity, ambiguous span, mixed connection chain, authored
+content sharing a connection's removal line, or downstream function parameter
+naming the node rejects the repair without a write. Post-write
+recovery/conservation verification must succeed;
+strict parsing transitions the document to ready when no independent problem
+remains, while an unrelated diagnosed failure may leave it degraded.
+
+No migration registry, `Upgrade node` action, automatic load-time rewrite, or
+guessed legacy version exists in this scope. Problems without a safe
+remove-only plan continue through raw source/config inspection.

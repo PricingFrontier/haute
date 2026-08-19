@@ -8,9 +8,11 @@
 import PipelineNode from "../nodes/PipelineNode"
 import SubmodelNode from "../nodes/SubmodelNode"
 import SubmodelPortNode from "../nodes/SubmodelPortNode"
+import UnavailablePipelineNode from "../nodes/UnavailablePipelineNode"
 import { NODE_TYPES } from "./nodeTypes"
 
 export const nodeTypes = {
+  unavailablePipelineNode: UnavailablePipelineNode,
   [NODE_TYPES.API_INPUT]: PipelineNode,
   [NODE_TYPES.DATA_INPUT]: PipelineNode,
   [NODE_TYPES.DATA_OUTPUT]: PipelineNode,

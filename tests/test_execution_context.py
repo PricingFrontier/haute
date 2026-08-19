@@ -3,6 +3,7 @@ import ctypes
 import json
 import threading
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import polars as pl
@@ -2495,7 +2496,7 @@ async def test_write_output_route_rejects_unconfigured_data_output(
 
 
 @pytest.mark.asyncio
-async def test_get_pipeline_falls_back_after_indexed_and_scanned_parse_failures(
+async def test_get_pipeline_falls_back_after_indexed_and_scanned_load_failures(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -2504,42 +2505,83 @@ async def test_get_pipeline_falls_back_after_indexed_and_scanned_parse_failures(
     indexed = tmp_path / "indexed.py"
     scanned_bad = tmp_path / "scanned_bad.py"
     scanned_match = tmp_path / "scanned_match.py"
-    graph = make_graph(
-        {
-            "nodes": [
-                {
-                    "id": "source",
-                    "data": {
-                        "label": "source",
-                        "nodeType": NodeType.DATA_INPUT.value,
-                        "config": {},
-                    },
-                },
-            ],
-            "edges": [],
+    from haute._pipeline_recovery import empty_pipeline_editor_document
+
+    document = empty_pipeline_editor_document().model_copy(
+        update={
             "pipeline_name": "rating",
+            "source_file": "scanned_match.py",
+            "source_revision": "revision-rating",
+            "has_authored_content": True,
         }
     )
-    parsed_paths: list[str] = []
+    loaded_paths: list[str] = []
 
-    def parse(path):
-        parsed_paths.append(path.name)
+    def load(path, *, project_root):
+        assert project_root == Path.cwd()
+        loaded_paths.append(path.name)
         if path in {indexed, scanned_bad}:
             raise RuntimeError(f"{path.name} is temporarily unparseable")
-        return graph
+        return document
 
     monkeypatch.setattr(pipeline_route, "lookup_pipeline_by_name", lambda _name: indexed)
     monkeypatch.setattr(pipeline_route, "discover_pipelines", lambda: [scanned_bad, scanned_match])
-    monkeypatch.setattr(pipeline_route, "parse_pipeline_to_graph", parse)
+    monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
 
     result = await pipeline_route.get_pipeline("rating")
 
-    assert result is graph
-    assert parsed_paths == ["indexed.py", "scanned_bad.py", "scanned_match.py"]
+    assert result is document
+    assert loaded_paths == ["indexed.py", "scanned_bad.py", "scanned_match.py"]
 
 
 @pytest.mark.asyncio
-async def test_get_first_pipeline_keeps_first_empty_graph_when_later_files_fail(
+async def test_get_pipeline_reraises_indexed_load_error_after_all_candidates_fail(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from haute.routes import pipeline as pipeline_route
+
+    indexed = tmp_path / "indexed.py"
+    scanned_bad = tmp_path / "scanned_bad.py"
+
+    monkeypatch.chdir(tmp_path)
+
+    def load(path, *, project_root):
+        assert project_root == tmp_path
+        raise RuntimeError(f"{path.name} failed")
+
+    monkeypatch.setattr(pipeline_route, "lookup_pipeline_by_name", lambda _name: indexed)
+    monkeypatch.setattr(pipeline_route, "discover_pipelines", lambda: [indexed, scanned_bad])
+    monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
+
+    with pytest.raises(RuntimeError, match="indexed.py failed"):
+        await pipeline_route.get_pipeline("rating")
+
+
+@pytest.mark.asyncio
+async def test_get_first_pipeline_reraises_first_candidate_load_error(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from haute.routes import pipeline as pipeline_route
+
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    monkeypatch.chdir(tmp_path)
+
+    def load(path, *, project_root):
+        assert project_root == tmp_path
+        raise RuntimeError(f"{path.name} failed")
+
+    monkeypatch.setattr(pipeline_route, "discover_pipelines", lambda: [first, second])
+    monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
+
+    with pytest.raises(RuntimeError, match="first.py failed"):
+        await pipeline_route.get_first_pipeline()
+
+
+@pytest.mark.asyncio
+async def test_get_first_pipeline_keeps_first_authored_empty_document(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -2549,14 +2591,31 @@ async def test_get_first_pipeline_keeps_first_empty_graph_when_later_files_fail(
     empty_first = tmp_path / "empty_first.py"
     empty_second = tmp_path / "empty_second.py"
     broken = tmp_path / "broken.py"
-    first_graph = make_graph({"nodes": [], "edges": [], "pipeline_name": "empty_first"})
-    second_graph = make_graph({"nodes": [], "edges": [], "pipeline_name": "empty_second"})
+    from haute._pipeline_recovery import empty_pipeline_editor_document
 
-    def parse(path):
+    first_document = empty_pipeline_editor_document().model_copy(
+        update={
+            "pipeline_name": "empty_first",
+            "source_file": "empty_first.py",
+            "source_revision": "revision-first",
+            "has_authored_content": True,
+        }
+    )
+    second_document = empty_pipeline_editor_document().model_copy(
+        update={
+            "pipeline_name": "empty_second",
+            "source_file": "empty_second.py",
+            "source_revision": "revision-second",
+            "has_authored_content": True,
+        }
+    )
+
+    def load(path, *, project_root):
+        assert project_root == tmp_path
         if path == empty_first:
-            return first_graph
+            return first_document
         if path == empty_second:
-            return second_graph
+            return second_document
         raise RuntimeError("broken pipeline")
 
     monkeypatch.setattr(
@@ -2564,11 +2623,11 @@ async def test_get_first_pipeline_keeps_first_empty_graph_when_later_files_fail(
         "discover_pipelines",
         lambda: [empty_first, empty_second, broken],
     )
-    monkeypatch.setattr(pipeline_route, "parse_pipeline_to_graph", parse)
+    monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
 
     result = await pipeline_route.get_first_pipeline()
 
-    assert result is first_graph
+    assert result is first_document
     assert result.source_file == "empty_first.py"
 
 

@@ -248,7 +248,7 @@ through the transactional save
 service. The service reparses, compares the actual and expected visible diff
 and complete-diff digest, evaluates postconditions, re-proves the bound schema
 evidence, reports the combined evidence and result revision, and publishes the ordinary
-`graph.update` event. Errors before
+`pipeline.document.update` event. Errors before
 save write nothing; a failed pre-commit application marks that plan attempt
 aborted, so it cannot be applied directly again. A fresh identical dry-run may
 revalidate and reissue the same deterministic hash. A failure discovered after
@@ -325,8 +325,8 @@ terminate the stream.
   inherited rather than re-implemented — and the git ledger is the undo story for
   direct-apply.
 - **Deterministic broadcast, not watcher reliance.** Assistant saves mark self-writes (so the
-  debounced watcher stays quiet) and then explicitly re-parse and publish `graph.update` on
-  the event bus. Relying on the watcher to notice the write would couple canvas liveness to
+  debounced watcher stays quiet) and then explicitly recover and publish
+  `pipeline.document.update` on the event bus. Relying on the watcher to notice the write would couple canvas liveness to
   watcher availability (it can be paused by git operations, or absent entirely when
   `watchfiles` isn't installed) and add debounce latency; publishing explicitly is
   deterministic and reuses the exact event/broadcast wiring external edits already exercise.
@@ -716,8 +716,8 @@ leaves it unqualified rather than silently skipping the gate.
   same FastAPI app (session middleware, sanitized-error conventions apply); request/response
   models live in the shared `schemas.py` contract module; mutations run under the shared
   `save_lock` through the transactional save service; broadcasts publish the existing
-  `graph.update` event on the shared event bus; self-write marking prevents watcher
-  feedback.
+  `pipeline.document.update` event on the shared event bus; self-write marking prevents
+  watcher feedback.
 - **[pipeline-config](../pipeline-config/high-level.md)** — the graph model the ops mutate
   and the config-key validity rules the save path enforces; the node-type catalog is derived
   from the same config `TypedDict`s.
@@ -738,8 +738,8 @@ leaves it unqualified rather than silently skipping the gate.
 - **[frontend-assistant-ui](../frontend-assistant-ui/high-level.md)** — the sole consumer of the
   assistant HTTP surface; owns the clean-canvas send gate.
 - **[frontend-graph-canvas](../frontend-graph-canvas/high-level.md)** — receives assistant
-  mutations as ordinary `graph.update` frames over `/ws/sync`; its dirty-state banner and
-  apply/rollback behaviour are unchanged.
+  mutations as ordinary `pipeline_document_update` frames over `/ws/sync`; its dirty-state
+  banner and apply/rollback behaviour are unchanged.
 
 ## Failure model
 

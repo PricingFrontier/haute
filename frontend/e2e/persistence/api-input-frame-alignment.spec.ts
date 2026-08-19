@@ -36,8 +36,16 @@ type GraphEdge = {
   sourceHandle?: string | null
 }
 
+type RecoveryEdge = {
+  recovery_id: string
+  source_recovery_id: string
+  target_recovery_id: string
+  source_handle: string | null
+}
+
 type GraphEnvelope = {
-  edges?: GraphEdge[]
+  document_kind?: string
+  edges?: GraphEdge[] | RecoveryEdge[]
   graph?: { edges?: GraphEdge[] }
 }
 
@@ -226,7 +234,15 @@ async function installTraceRoute(page: Page): Promise<void> {
 }
 
 function frameEdges(envelope: GraphEnvelope): GraphEdge[] {
-  const edges = envelope.graph?.edges ?? envelope.edges ?? []
+  const rawEdges = envelope.graph?.edges ?? envelope.edges ?? []
+  const edges = envelope.document_kind === "haute.pipeline_editor_document"
+    ? (rawEdges as RecoveryEdge[]).map((edge) => ({
+        id: edge.recovery_id,
+        source: edge.source_recovery_id,
+        target: edge.target_recovery_id,
+        sourceHandle: edge.source_handle,
+      }))
+    : rawEdges as GraphEdge[]
   return edges.filter(
     (edge) => edge.source === API_NODE_ID && edge.target === DOWNSTREAM_NODE_ID,
   )
@@ -284,16 +300,14 @@ function renameFrameHandle(
   oldHandle: string,
   newHandle: string,
 ): GraphEnvelope {
-  const renamedEdges = (envelope.graph?.edges ?? envelope.edges ?? []).map((edge) =>
+  const renamedEdges = frameEdges(envelope).map((edge) =>
     edge.source === API_NODE_ID &&
     edge.target === DOWNSTREAM_NODE_ID &&
     edge.sourceHandle === oldHandle
       ? { ...edge, sourceHandle: newHandle }
       : edge,
   )
-  return envelope.graph === undefined
-    ? { ...envelope, edges: renamedEdges }
-    : { ...envelope, graph: { ...envelope.graph, edges: renamedEdges } }
+  return { graph: { edges: renamedEdges } }
 }
 
 async function extendStarterGraphWithFrameEdges(
@@ -307,7 +321,49 @@ async function extendStarterGraphWithFrameEdges(
       if (!graphResponse.ok) {
         throw new Error(`GET /api/pipeline ${graphResponse.status}`)
       }
-      const graph = await graphResponse.json()
+      const document = await graphResponse.json()
+      const graph = {
+        nodes: document.nodes.map(
+          (node: {
+            recovery_id: string
+            label: string
+            decorator_name: string
+            node_type: string | null
+            description: string
+            display_position: { x: number; y: number }
+            config: Record<string, unknown> | null
+          }) => ({
+            id: node.recovery_id,
+            type: node.node_type ?? node.decorator_name,
+            position: node.display_position,
+            data: {
+              label: node.label,
+              description: node.description,
+              nodeType: node.node_type ?? node.decorator_name,
+              ...(node.config === null ? {} : { config: node.config }),
+            },
+          }),
+        ),
+        edges: document.edges.map(
+          (edge: {
+            recovery_id: string
+            source_recovery_id: string
+            target_recovery_id: string
+            source_handle: string | null
+            target_handle: string | null
+            source_port: string | null
+            target_port: string | null
+          }) => ({
+            id: edge.recovery_id,
+            source: edge.source_recovery_id,
+            target: edge.target_recovery_id,
+            sourceHandle: edge.source_handle,
+            targetHandle: edge.target_handle,
+            ...(edge.source_port === null ? {} : { sourcePort: edge.source_port }),
+            ...(edge.target_port === null ? {} : { targetPort: edge.target_port }),
+          }),
+        ),
+      }
       graph.edges = graph.edges.filter(
         (edge: { source?: string; target?: string }) =>
           edge.source !== source || edge.target !== target,
@@ -326,10 +382,13 @@ async function extendStarterGraphWithFrameEdges(
         method: "POST",
         headers,
         body: JSON.stringify({
-          name: graph.pipeline_name ?? "main",
-          description: graph.pipeline_description ?? "",
-          source_file: graph.source_file,
-          preamble: graph.preamble ?? "",
+          name: document.pipeline_name ?? "main",
+          description: document.pipeline_description ?? "",
+          source_file: document.source_file,
+          preamble: document.preamble ?? "",
+          preserved_blocks: document.preserved_blocks,
+          sources: document.sources,
+          active_source: document.active_source ?? "live",
           graph: { nodes: graph.nodes, edges: graph.edges },
         }),
       })

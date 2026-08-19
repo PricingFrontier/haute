@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, type CSSProperties } from "react"
 import { Handle, Position, useStore, useUpdateNodeInternals, type InternalNode, type NodeProps, type ReactFlowState } from "@xyflow/react"
-import { Radio, Link2 } from "lucide-react"
+import { AlertTriangle, Link2, Radio } from "lucide-react"
 import PolarsIcon from "../components/PolarsIcon"
 import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TYPES, nodeTypeIcons, nodeTypeColors, nodeTypeLabels, type NodeTypeValue } from "../utils/nodeTypes"
 import { formatValueCompact } from "../utils/formatValue"
@@ -232,6 +232,14 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   const traceValue = nodeData._traceValue
   const traceMotionDisabled = !!nodeData._traceMotionDisabled
   const hasWarnings = (nodeData._schemaWarnings?.length ?? 0) > 0
+  const loadAvailability = nodeData._loadAvailability ?? "ready"
+  const loadUnavailable = loadAvailability === "unavailable"
+  const loadBlocked = loadAvailability === "blocked"
+  const loadAccent = loadUnavailable
+    ? "var(--danger)"
+    : loadBlocked
+      ? "var(--warning-strong)"
+      : accent
   const dimmed = traceDimmed || hoverDimmed
 
   // Comparison-view diff highlight (S11): a ring on the CARD — the same element as
@@ -250,12 +258,13 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // Accessible label: "{Type} node: {label}" + status
   const typeName = NODE_TYPE_META[nodeType as NodeTypeValue]?.name || typeLabel
   const statusText = nodeData._status ? `, status: ${nodeData._status}` : ""
-  const ariaLabel = `${typeName} node: ${nodeData.label}${statusText}${isInstance ? ", instance" : ""}${traceActive ? ", trace active" : ""}`
+  const loadStatusText = loadAvailability === "ready" ? "" : `, load status: ${loadAvailability}`
+  const ariaLabel = `${typeName} node: ${nodeData.label}${loadStatusText}${statusText}${isInstance ? ", instance" : ""}${traceActive ? ", trace active" : ""}`
 
   if (nodeType === NODE_TYPES.EDGE_JOIN) {
     const markerBackground = `${accent}30`
-    const markerBorder = traceActive || selected
-      ? `2px solid ${accent}`
+    const markerBorder = traceActive || selected || loadAvailability !== "ready"
+      ? `2px solid ${loadAccent}`
       : `1px solid ${accent}60`
 
     return (
@@ -296,6 +305,15 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
             data-testid="edge-join-warning-indicator"
           />
         )}
+        {loadAvailability !== "ready" && (
+          <AlertTriangle
+            size={11}
+            role="img"
+            aria-label={`Node is ${loadAvailability}`}
+            className="pointer-events-none absolute left-[5px] top-[5px]"
+            style={{ color: loadAccent }}
+          />
+        )}
         {targetHandles}
         {!isSinkOnly && (
           <Handle
@@ -315,7 +333,9 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // canvas bleeds through (S38): the tinted border and banner are composited as
   // solid colours via color-mix (over the canvas for the border, over the card
   // surface for the banner) rather than drawn as semi-transparent overlays.
-  const border = traceActive || selected
+  const border = loadAvailability !== "ready"
+    ? `3px solid ${loadAccent}`
+    : traceActive || selected
     ? `3px solid ${accent}`
     : isInstance
       ? `3px dashed color-mix(in srgb, ${accent} 38%, var(--bg-canvas))`
@@ -395,9 +415,19 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
           </span>
         )}
         {isLiveSwitch && <LiveSwitchBadge accent={accent} />}
+        {loadAvailability !== "ready" && (
+          <span
+            className="ml-auto inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em]"
+            style={{ color: loadAccent, border: `1px solid ${loadAccent}` }}
+            role="status"
+          >
+            <AlertTriangle size={9} aria-hidden="true" />
+            {loadAvailability}
+          </span>
+        )}
         {nodeData._status && (
           <span
-            className={`${isDeployInput ? "" : "ml-auto "} w-[7px] h-[7px] rounded-full shrink-0 ${nodeData._status === "running" ? "animate-pulse-dot" : ""}`}
+            className={`${isDeployInput || loadAvailability !== "ready" ? "" : "ml-auto "} w-[7px] h-[7px] rounded-full shrink-0 ${nodeData._status === "running" ? "animate-pulse-dot" : ""}`}
             style={{ backgroundColor: statusColors[nodeData._status] }}
             role="status"
             aria-label={`Node ${nodeData._status}`}

@@ -35,6 +35,8 @@
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest"
 import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react"
+import { makePipelineEditorDocument } from "../testSupport/pipelineDocumentFixture"
+import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Mock the network layer — `../api/client`.  Every exported function is
@@ -44,6 +46,7 @@ import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testi
 
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof import("../api/client")>("../api/client")
+  const { makePipelineEditorDocument } = await import("../testSupport/pipelineDocumentFixture")
   return {
     // Preserve real non-network exports so production `instanceof` checks and
     // local-session event wiring keep their normal behaviour. Only network
@@ -58,8 +61,11 @@ vi.mock("../api/client", async () => {
     bootstrapHauteSession: vi.fn(() => Promise.resolve()),
     checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
     // Pipeline endpoints
-    loadPipeline: vi.fn(() => Promise.resolve({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" })),
+    loadPipeline: vi.fn(() => Promise.resolve(makePipelineEditorDocument({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))),
     previewNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
+    previewRecoveryNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
+    dryRunRemoveUnavailableNode: vi.fn(() => Promise.resolve({})),
+    applyRemoveUnavailableNode: vi.fn(() => Promise.resolve({})),
     savePipeline: vi.fn(() => Promise.resolve({ file: "pipeline.py", pipeline_name: "main" })),
     traceCell: vi.fn(() => Promise.resolve({ status: "ok" })),
     executeSink: vi.fn(() => Promise.resolve({ status: "ok" })),
@@ -406,13 +412,17 @@ afterAll(() => {
 })
 
 beforeEach(() => {
+  useDocumentStatusStore.getState().reset()
   resetAllStores()
   MockWebSocket.instances = []
 
   // Reset all api mocks to their default resolution (empty graph, success).
-  vi.mocked(api.loadPipeline).mockReset().mockResolvedValue({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" })
+  vi.mocked(api.loadPipeline).mockReset().mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
   vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main", source_revision: "revision-test" })
   vi.mocked(api.previewNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
+  vi.mocked(api.previewRecoveryNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
+  vi.mocked(api.dryRunRemoveUnavailableNode).mockReset()
+  vi.mocked(api.applyRemoveUnavailableNode).mockReset()
   vi.mocked(api.runExplore).mockReset().mockResolvedValue({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })
   vi.mocked(api.getExploreCacheSnapshot).mockReset().mockResolvedValue({ state: "missing", message: "No cache", result: null })
   vi.mocked(api.getExploreStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "running", result: null })
@@ -447,13 +457,7 @@ afterEach(() => {
 
 describe("App integration — mounts and renders main chrome", () => {
   it("does not open websocket sync while the initial pipeline load is pending", async () => {
-    let resolveLoad!: (value: {
-      nodes: []
-      edges: []
-      preamble: string
-      preserved_blocks: string[]
-      source_revision: string
-    }) => void
+    let resolveLoad!: (value: Awaited<ReturnType<typeof api.loadPipeline>>) => void
     vi.mocked(api.loadPipeline).mockImplementationOnce(
       () => new Promise((resolve) => {
         resolveLoad = resolve
@@ -465,7 +469,7 @@ describe("App integration — mounts and renders main chrome", () => {
     expect(screen.getByText("Loading pipeline...")).toBeInTheDocument()
     expect(MockWebSocket.instances).toHaveLength(0)
 
-    resolveLoad({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" })
+    resolveLoad(makePipelineEditorDocument({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
     await waitForAppReady()
 
     expect(MockWebSocket.instances).toHaveLength(1)
@@ -515,6 +519,113 @@ describe("App integration — mounts and renders main chrome", () => {
       value: originalLocation,
       configurable: true,
     })
+  })
+})
+
+describe("App integration — degraded execution fence", () => {
+  it("uses only the server-planned recovery preview for a ready Explore sibling", async () => {
+    const source = makeNode("source_1", "Claims source")
+    const explore = makeNode("explore_1", "Claims Explore", "explore")
+    const broken = makeNode("broken_1", "Broken sibling")
+    broken.data._loadAvailability = "unavailable"
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+      load_status: "degraded",
+      source_file: "rating/main.py",
+      source_revision: "revision-degraded",
+      nodes: [source, explore, broken],
+      edges: [{
+        id: "source-explore",
+        source: source.id,
+        target: explore.id,
+      }],
+      capabilities: { can_preview: true },
+    }))
+    vi.mocked(api.previewRecoveryNode).mockResolvedValueOnce({
+      node_id: explore.id,
+      status: "ok",
+      columns: [],
+      preview: [],
+      row_count: 0,
+      column_count: 0,
+    })
+
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByText("Claims Explore"))
+
+    await waitFor(() => {
+      expect(vi.mocked(api.previewRecoveryNode)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourceFile: "rating/main.py",
+          sourceRevision: "revision-degraded",
+          targetRecoveryId: explore.id,
+        }),
+      )
+    })
+    expect(vi.mocked(api.previewNode)).not.toHaveBeenCalled()
+    expect(vi.mocked(api.getExploreCacheSnapshot)).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("explore-preview-frame")).not.toBeInTheDocument()
+    expect(screen.getByTestId("node-document-readonly-inspector")).toBeInTheDocument()
+  })
+
+  it("keeps the unavailable node until repair apply adopts the authoritative document", async () => {
+    const broken = makeNode("broken@10", "Broken", "unavailablePipelineNode")
+    broken.data._loadAvailability = "unavailable"
+    broken.data._sourceFile = "rating/main.py"
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+      load_status: "degraded",
+      source_file: "rating/main.py",
+      source_revision: "revision-degraded",
+      nodes: [broken],
+    }))
+    const planHash = "a".repeat(64)
+    vi.mocked(api.dryRunRemoveUnavailableNode).mockResolvedValueOnce({
+      repair_kind: "remove_unavailable_node",
+      source_file: "rating/main.py",
+      source_revision: "revision-degraded",
+      target_source_file: "rating/main.py",
+      target_recovery_id: "broken@10",
+      target_authored_id: "broken",
+      delete_config: false,
+      plan_hash: planHash,
+      changes: [{
+        path: "rating/main.py",
+        operation: "update",
+        description: "Remove broken.",
+        diff: "-@pipeline.removed",
+        diff_truncated: false,
+      }],
+      retained_artifacts: [],
+      warnings: [],
+      predicted_load_status: "ready",
+    })
+    const repaired = makePipelineEditorDocument({
+      source_file: "rating/main.py",
+      source_revision: "revision-repaired",
+      nodes: [makeNode("survivor", "Survivor")],
+    })
+    vi.mocked(api.applyRemoveUnavailableNode).mockResolvedValueOnce({
+      repair_kind: "remove_unavailable_node",
+      plan_hash: planHash,
+      applied_artifacts: ["rating/main.py"],
+      document: repaired,
+    })
+
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByTestId("unavailable-node-Broken"))
+    fireEvent.click(await screen.findByRole("button", { name: "Remove unavailable node" }))
+    await screen.findByText("Remove broken.")
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["broken@10"])
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove node" }))
+
+    await waitFor(() => {
+      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["survivor"])
+    })
+    expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-repaired")
+    expect(screen.queryByTestId("pipeline-repair-dialog")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("node-recovery-diagnostics")).not.toBeInTheDocument()
   })
 })
 
@@ -578,7 +689,7 @@ describe("App integration — load a pipeline with nodes", () => {
   it("renders node labels from a 3-node graph returned by loadPipeline", async () => {
     // Use labels that deliberately do NOT collide with palette names
     // (e.g. "Data Source", "Model Training") so getByText is unambiguous.
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
       nodes: [
         makeNode("ds_0", "CustomerDB Loader", "dataInput"),
         makeNode("polars_1", "Feature Cleanup", "polars"),
@@ -591,7 +702,7 @@ describe("App integration — load a pipeline with nodes", () => {
       preamble: "",
       preserved_blocks: [],
       source_revision: "revision-test",
-    })
+    }))
     render(<App />)
     await waitForAppReady()
 
@@ -610,13 +721,13 @@ describe("App integration — load a pipeline with nodes", () => {
   })
 
   it("enables Centre + Layout once nodes are loaded", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
       nodes: [makeNode("polars_0", "Node A")],
       edges: [],
       preamble: "",
       preserved_blocks: [],
       source_revision: "revision-test",
-    })
+    }))
     render(<App />)
     await waitForAppReady()
     await waitFor(() => {
@@ -641,7 +752,7 @@ describe("App integration — load a pipeline with nodes", () => {
     // Tag the stash with its capture source — untagged stashes are treated
     // as unknown provenance and invalidated on mount (cache-key completeness).
     sourceNode.data._columnsSource = "live"
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
       nodes: [
         sourceNode,
         makeNode("explore_1", "Claims Explore", "explore"),
@@ -650,7 +761,7 @@ describe("App integration — load a pipeline with nodes", () => {
       preamble: "",
       preserved_blocks: [],
       source_revision: "revision-test",
-    })
+    }))
     useSettingsStore.setState({ rowLimit: 2 })
     vi.mocked(api.previewNode).mockResolvedValueOnce({
       node_id: "explore_1",
@@ -669,6 +780,18 @@ describe("App integration — load a pipeline with nodes", () => {
       preview_truncated: true,
       row_count: 3,
       column_count: 2,
+    })
+    vi.mocked(api.previewNode).mockResolvedValueOnce({
+      node_id: "source_0",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "i64" }],
+      preview_columns: ["premium"],
+      preview: [{ premium: 30 }],
+      preview_row_count: 1,
+      preview_row_limit: 2,
+      preview_truncated: false,
+      row_count: 1,
+      column_count: 1,
     })
     vi.mocked(api.previewNode).mockResolvedValueOnce({
       node_id: "explore_1",
@@ -712,7 +835,7 @@ describe("App integration — load a pipeline with nodes", () => {
 
     fireEvent.click(screen.getByTitle("Refresh Explore outputs"))
 
-    await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(3))
     expect(vi.mocked(api.previewNode)).toHaveBeenLastCalledWith(expect.objectContaining({
       nodeId: "explore_1",
       rowLimit: 2,
@@ -728,10 +851,10 @@ describe("App integration — load a pipeline with nodes", () => {
     sourceNode.data._columns = [{ name: "upstream_only", dtype: "i64" }]
     sourceNode.data._columnsSource = "live"
     const exploreNode = makeNode("explore_1", "Claims Explore", "explore")
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
       nodes: [sourceNode, exploreNode], edges: [{ id: "e1", source: "source_0", target: "explore_1" }],
       preamble: "", preserved_blocks: [], source_revision: "revision-test",
-    })
+    }))
     vi.mocked(api.getExploreCacheSnapshot).mockResolvedValueOnce({
       state: "current", message: "Cached", result: {
         status: "ok", node_id: "explore_1", upstream_node_id: "source_0", source: "live",
@@ -809,7 +932,7 @@ describe("App integration — add a node via drag-and-drop from the palette", ()
 
 describe("App integration — save pipeline", () => {
   it("clicking Save calls savePipeline with the current graph serialized", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
       nodes: [makeNode("polars_0", "Transform A")],
       edges: [],
       preamble: "import polars as pl",
@@ -817,7 +940,7 @@ describe("App integration — save pipeline", () => {
       source_revision: "revision-test",
       pipeline_name: "pricing",
       source_file: "pricing.py",
-    })
+    }))
     render(<App />)
     await waitForAppReady()
 
@@ -989,9 +1112,9 @@ describe("App integration — error handling", () => {
     // container.
     await waitForAppReady()
     await waitFor(() => {
-      const alert = screen.getByRole("alert")
-      expect(alert).toHaveTextContent(/failed to load pipeline/i)
-      expect(alert).toHaveTextContent(/backend offline/i)
+      const toast = screen.getByTestId("toast-notification")
+      expect(toast).toHaveTextContent(/failed to load pipeline/i)
+      expect(toast).toHaveTextContent(/backend offline/i)
     })
 
     // And the toolbar still rendered — no crash.
@@ -1292,7 +1415,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   }
 
   it("toggling a bound table's emit off prunes the orphaned edge and warns", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeApiInputGraph()))
     render(<App />)
     await waitForAppReady()
 
@@ -1317,7 +1440,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   })
 
   it("W1.3: renaming a CONNECTED port keeps its edge — rebound to the new handle in ONE undo entry", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeApiInputGraph()))
     // Determinism: the default previewNode mock resolves `columns: []`
     // (truthy), and usePipelineAPI stashes `_columns` via history-aware
     // setNodes whenever a preview lands — an asynchronous undo-stack
@@ -1367,7 +1490,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   })
 
   it("renames a frame, all persisted input identities, and every instance key in one undoable commit", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeRenameMigrationGraph())
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph()))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1424,7 +1547,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   })
 
   it("renames an ordinary source and migrates every downstream input identity atomically", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeRenameMigrationGraph())
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph()))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1463,7 +1586,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   })
 
   it("rejects an ordinary source rename that collides at a downstream target", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeRenameMigrationGraph())
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph()))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1482,7 +1605,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   })
 
   it("rejects a colliding frame rename before any config, edge, mapping, or history mutation", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeRenameMigrationGraph({ collision: true }))
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph({ collision: true })))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1501,7 +1624,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
 
   it("updates parent bindings atomically without mutating shared definition identities", async () => {
     const graph = makeSubmodelRenameGraph()
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(graph)
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(graph))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1580,7 +1703,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
 
   it("keeps another occurrence binding isolated from an upstream frame rename", async () => {
     const graph = makeSubmodelRenameGraph({ collision: true })
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(graph)
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(graph))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1602,7 +1725,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
 
   it("keeps internal child edge names isolated from an upstream frame rename", async () => {
     const graph = makeSubmodelRenameGraph({ internalCollision: true })
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(graph)
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(graph))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1623,7 +1746,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   })
 
   it("W1.4: blanking a port label in the editor never reaches the graph — no synthesized port, edge intact", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeApiInputGraph()))
     // Same determinism guard as the W1.3 test above: keep previews
     // pending so no async `_columns` stash mutates nodes mid-test.
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
@@ -1649,7 +1772,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   })
 
   it("editing a non-port field (column) does NOT prune the still-valid edge", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeApiInputGraph()))
     render(<App />)
     await waitForAppReady()
 
@@ -1731,7 +1854,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       preserved_blocks: [],
       source_revision: "revision-test",
     }
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce(graph)
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(graph))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
@@ -1786,7 +1909,7 @@ describe("App integration — read-only submodel instance", () => {
       format: "parquet",
       path: "data/claims.parquet",
     }
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
       nodes: [owner, copy],
       edges: [],
       preamble: "",
@@ -1802,7 +1925,7 @@ describe("App integration — read-only submodel instance", () => {
           outputPorts: [],
         },
       },
-    })
+    }))
     render(<App />)
     await waitForAppReady()
 
@@ -1896,7 +2019,7 @@ describe("App integration — panel open/close", () => {
   }
 
   it("Submodel and Instance are inert until the selection can support them", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
       nodes: [makeNode("polars_1", "First"), makeNode("polars_2", "Second")],
       edges: [],
       preamble: "",
@@ -1904,7 +2027,7 @@ describe("App integration — panel open/close", () => {
       source_file: "main.py",
       source_revision: "revision-selection",
       submodels: {},
-    })
+    }))
     render(<App />)
     await waitForAppReady()
 
@@ -1929,7 +2052,7 @@ describe("App integration — panel open/close", () => {
   })
 
   it("an unavailable selection action explains itself instead of no-opping", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
       nodes: [makeNode("polars_1", "First"), makeNode("polars_2", "Second")],
       edges: [],
       preamble: "",
@@ -1937,7 +2060,7 @@ describe("App integration — panel open/close", () => {
       source_file: "main.py",
       source_revision: "revision-refusal",
       submodels: {},
-    })
+    }))
     render(<App />)
     await waitForAppReady()
 
@@ -1961,7 +2084,7 @@ describe("App integration — panel open/close", () => {
   })
 
   it("presents Instance as unavailable for a singleton node and explains an attempted click", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
       nodes: [makeNode("api_1", "Quote Input", "apiInput")],
       edges: [],
       preamble: "",
@@ -1969,7 +2092,7 @@ describe("App integration — panel open/close", () => {
       source_file: "main.py",
       source_revision: "revision-singleton-instance",
       submodels: {},
-    })
+    }))
     render(<App />)
     await waitForAppReady()
 
@@ -1985,7 +2108,7 @@ describe("App integration — panel open/close", () => {
   })
 
   it("Submodel opens the naming dialog for the selected nodes", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
       nodes: [makeNode("polars_1", "First"), makeNode("polars_2", "Second")],
       edges: [],
       preamble: "",
@@ -1993,7 +2116,7 @@ describe("App integration — panel open/close", () => {
       source_file: "main.py",
       source_revision: "revision-group",
       submodels: {},
-    })
+    }))
     render(<App />)
     await waitForAppReady()
 
@@ -2007,7 +2130,7 @@ describe("App integration — panel open/close", () => {
   })
 
   it("Instance creates a linked copy of a plain node, not just submodels", async () => {
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
       nodes: [makeNode("polars_1", "First")],
       edges: [],
       preamble: "",
@@ -2015,7 +2138,7 @@ describe("App integration — panel open/close", () => {
       source_file: "main.py",
       source_revision: "revision-instance",
       submodels: {},
-    })
+    }))
     render(<App />)
     await waitForAppReady()
 

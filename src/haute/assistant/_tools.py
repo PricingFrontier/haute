@@ -28,7 +28,7 @@ from haute._column_summary import (
     json_safe_scalar,
 )
 from haute._credential_security import is_credential_name
-from haute._event_bus import GraphUpdatePayload, default_bus
+from haute._event_bus import default_bus
 from haute._graph_utils import edge_input_name
 from haute._logging import get_logger
 from haute._source_cache import SourceCacheError
@@ -69,6 +69,7 @@ from haute.executor import (
 )
 from haute.graph_utils import flatten_graph
 from haute.routes._helpers import (
+    load_pipeline_editor_document,
     parse_pipeline_to_graph,
     pipeline_dir,
     save_lock,
@@ -1005,21 +1006,22 @@ def get_project_knowledge(
         )
 
 
-def _publish_graph_update(source_file: str, graph: PipelineGraph) -> str:
-    """Publish the exact graph-update payload used by the file watcher."""
+def _publish_document_update(source_file: str) -> str:
+    """Publish the exact pipeline-document payload used by the file watcher."""
 
-    from haute.server import _graph_payload_fingerprint, _graph_wire_payload, _wire_source_file
+    from haute.server import _document_payload_fingerprint, _wire_source_file
 
-    graph_payload = _graph_wire_payload(graph)
-    fingerprint = _graph_payload_fingerprint(graph_payload)
-    payload: dict[str, Any] = {
-        "graph": graph_payload,
-        "graph_fingerprint": fingerprint,
-        "source_file": _wire_source_file(Path(source_file)),
-    }
+    document_payload = load_pipeline_editor_document(
+        Path(source_file), project_root=Path.cwd()
+    ).model_dump(mode="json", by_alias=True)
+    fingerprint = _document_payload_fingerprint(document_payload)
     default_bus.publish(
-        "graph.update",
-        cast(GraphUpdatePayload, payload),
+        "pipeline.document.update",
+        {
+            "document": document_payload,
+            "document_fingerprint": fingerprint,
+            "source_file": _wire_source_file(Path(source_file)),
+        },
     )
     return fingerprint
 
@@ -1033,7 +1035,7 @@ def _application_service(
         project_root=project_root,
         pipeline_root=pipeline_dir(),
         mutations_readiness=mutations_readiness,
-        publish_graph_update=_publish_graph_update,
+        publish_document_update=_publish_document_update,
         plan_store=_PLAN_STORE,
         parse_graph=parse_pipeline_to_graph,
         project_sources=lambda _source_file: project_sources,

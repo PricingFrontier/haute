@@ -1053,6 +1053,15 @@ class PipelineGraph(BaseModel):
     source_revision: str | None = None
     submodels: dict[str, SubmodelDefinition] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_editor_recovery_document(cls, value: object) -> object:
+        if isinstance(value, Mapping) and value.get("document_kind") == (
+            "haute.pipeline_editor_document"
+        ):
+            raise ValueError("Editor recovery documents are not canonical pipeline graphs.")
+        return value
+
     @field_validator("submodels", mode="before")
     @classmethod
     def _validate_submodel_definitions(

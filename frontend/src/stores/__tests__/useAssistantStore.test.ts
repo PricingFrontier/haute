@@ -9,7 +9,7 @@
  * turnStatus ("idle" | "streaming"), status (AssistantStatus | "unknown" |
  * "error"), notice (string | null — inline send-failure messaging).
  * Actions: refreshStatus(), sendMessage(text, { isInsideSubmodel,
- * currentSourceFile }), stopTurn(), newChat(), loadSessions(sourceFile),
+ * currentSourceFile, readOnly }), stopTurn(), newChat(), loadSessions(sourceFile),
  * openSession(sessionId, sourceFile), showSessionList(sourceFile), plus the
  * list-screen state view/sessions/sessionsStatus.
  *
@@ -52,7 +52,7 @@ const READY_STATUS = {
   mutations_reason: null,
 }
 
-const SEND_OPTS = { isInsideSubmodel: false, currentSourceFile: "main.py" }
+const SEND_OPTS = { isInsideSubmodel: false, currentSourceFile: "main.py", readOnly: false }
 
 function resetStores() {
   useAssistantStore.setState({
@@ -247,6 +247,7 @@ describe("send gates", () => {
       SEND_OPTS,
     ],
     ["inside a submodel", () => {}, { ...SEND_OPTS, isInsideSubmodel: true }],
+    ["read-only document", () => {}, { ...SEND_OPTS, readOnly: true }],
     ["unknown status", () => useAssistantStore.setState({ status: "unknown" }), SEND_OPTS],
   ])("refuses to send with %s", async (_label, prepare, opts) => {
     prepare()

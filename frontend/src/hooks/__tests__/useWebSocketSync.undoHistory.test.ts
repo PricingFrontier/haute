@@ -1,7 +1,7 @@
 /**
  * Phase 1 Package 1H — Item #8: WebSocket sync must not corrupt undo history.
  *
- * A WebSocket `graph_update` is an external source-of-truth snapshot. It must:
+ * A pipeline_document_update is an external source-of-truth snapshot. It must:
  *
  *   - install nodes, edges, preamble, and submodels atomically;
  *   - bypass local edit history; and
@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, act, cleanup } from "@testing-library/react"
 import { type Mock } from "vitest"
+import type { Node } from "@xyflow/react"
 
 // ── Mock dependencies BEFORE importing the hook ──────────────────
 
@@ -87,6 +88,8 @@ import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
+import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
 
 // ── Mock WebSocket ───────────────────────────────────────────────
 
@@ -112,20 +115,39 @@ function createMockWebSocket() {
   return MockWebSocket
 }
 
-function makeHookParams() {
+const SOURCE_FILE = "rating/main.py"
+
+function makeHookParams(sourceFile = SOURCE_FILE) {
   return {
-    setNodesRaw: vi.fn(),
-    setEdgesRaw: vi.fn(),
-    setSubmodelsRaw: vi.fn(),
-    setPreamble: vi.fn(),
     preambleRef: { current: "" },
     submodelsRef: { current: {} as Record<string, unknown> },
+    sourceFileRef: { current: sourceFile },
     sourceRevisionRef: { current: "revision-test" },
     preservedBlocksRef: { current: [] as string[] },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
   }
+}
+
+function pipelineDocumentFrame(
+  document: ReturnType<typeof makePipelineEditorDocument>,
+  documentFingerprint = "document-fingerprint",
+) {
+  return {
+    type: "pipeline_document_update",
+    schema_version: 1,
+    document,
+    document_fingerprint: documentFingerprint,
+    source_file: document.source_file,
+  }
+}
+
+const baseNode: Node = {
+  id: "disk",
+  type: "polars",
+  position: { x: 100, y: 200 },
+  data: { label: "Disk", nodeType: "polars", config: {} },
 }
 
 describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () => {
@@ -149,6 +171,7 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
     vi.mocked(useToastStore.getState().addToast).mockClear()
     vi.mocked(useToastStore.getState().dismissToast).mockClear()
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
+    useDocumentStatusStore.getState().reset()
   })
 
   afterEach(() => {
@@ -157,65 +180,55 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
     globalThis.WebSocket = originalWebSocket
   })
 
-  it("atomically loads graph_update as a clean snapshot", async () => {
+  it("atomically loads a pipeline_document_update as a clean snapshot", async () => {
     const params = makeHookParams()
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-test",
+      nodes: [{ ...baseNode, id: "n1", position: { x: 5, y: 6 }, data: { label: "A", nodeType: "polars", config: {} } }],
+    })
     renderHook(() => useWebSocketSync(params))
-
     act(() => { latestWS().onopen?.(new Event("open")) })
 
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            source_revision: "revision-test",
-            preserved_blocks: [],
-            nodes: [{ id: "n1", position: { x: 5, y: 6 }, data: { label: "A" } }],
-            edges: [],
-          },
-        }),
+        data: JSON.stringify(pipelineDocumentFrame(document)),
       }))
     })
 
     const graphStore = useGraphStore.getState()
-    expect(graphStore.loadGraphSnapshot).toHaveBeenCalledWith({
+    expect(graphStore.loadGraphSnapshot).toHaveBeenCalledWith(expect.objectContaining({
       nodes: [expect.objectContaining({ id: "n1" })],
       edges: [],
       preamble: "",
       submodels: {},
-    })
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    }))
     expect(graphStore.undoStack).toEqual([])
     expect(graphStore.redoStack).toEqual([])
   })
 
-  it("loads the exact WS node payload without creating local history", async () => {
+  it("loads the document node payload without creating local history", async () => {
     const params = makeHookParams()
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-test",
+      nodes: [{ ...baseNode, id: "transform_1", position: { x: 10, y: 20 }, data: { label: "Incoming", nodeType: "polars", config: {} } }],
+    })
     renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
 
-    const incoming = [
-      { id: "transform_1", position: { x: 10, y: 20 }, data: { label: "Incoming" } },
-    ]
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: { nodes: incoming, edges: [], submodels: {}, source_revision: "revision-test", preserved_blocks: [] },
-        }),
+        data: JSON.stringify(pipelineDocumentFrame(document)),
       }))
     })
 
     expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ nodes: incoming }),
+      expect.objectContaining({ nodes: [expect.objectContaining({ id: "transform_1" })] }),
     )
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
   })
 
-  it("repeated graph_update messages replace the clean baseline without history", async () => {
+  it("repeated document updates replace the clean baseline without history", async () => {
     const params = makeHookParams()
     const graphStore = useGraphStore.getState()
     graphStore.undoStack = [{
@@ -234,27 +247,19 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
     act(() => { latestWS().onopen?.(new Event("open")) })
 
     for (let i = 0; i < 5; i++) {
+      const document = makePipelineEditorDocument({
+        source_file: SOURCE_FILE,
+        source_revision: "revision-test",
+        nodes: [{ ...baseNode, id: `n${i}`, position: { x: i, y: i } }],
+      })
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: `n${i}`, position: { x: i, y: i }, data: {} }],
-              edges: [],
-            },
-          }),
+          data: JSON.stringify(pipelineDocumentFrame(document)),
         }))
       })
     }
 
     expect(graphStore.loadGraphSnapshot).toHaveBeenCalledTimes(5)
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
-    expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
-    expect(params.setPreamble).not.toHaveBeenCalled()
     expect(graphStore.undoStack).toEqual([])
     expect(graphStore.redoStack).toEqual([])
   })

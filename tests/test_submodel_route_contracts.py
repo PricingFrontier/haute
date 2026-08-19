@@ -105,9 +105,13 @@ pipeline.submodel(
 
 
 def _current_graph(parent: Path, root: Path):
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
     graph = parse_pipeline_to_graph(parent, project_root=root)
-    assert isinstance(graph.source_revision, str) and graph.source_revision
-    return graph
+    document = load_pipeline_editor_document(parent, project_root=root)
+    assert document.load_status == "ready"
+    assert isinstance(document.source_revision, str) and document.source_revision
+    return graph.model_copy(update={"source_revision": document.source_revision})
 
 
 def _dissolve_body(graph, *, source_file: str = "main.py") -> dict[str, object]:

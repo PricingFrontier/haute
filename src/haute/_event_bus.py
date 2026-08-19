@@ -1,9 +1,9 @@
 """In-process pub/sub event bus for Haute server events.
 
-The file watcher publishes typed events (``"graph.update"``,
-``"parse.error"``) to the bus; subscribers — most notably the WebSocket
-broadcaster — translate each event into
-whatever wire format their transport needs.  Decoupling the producer
+The file watcher publishes typed events (``"parse.error"``,
+``"pipeline.document.update"``) to the bus;
+subscribers — most notably the WebSocket broadcaster — translate each
+event into whatever wire format their transport needs.  Decoupling the producer
 from the consumer makes the watcher trivial to unit-test and lets new
 subscribers (metrics, audit logs, test harnesses) hang off the same
 event stream without touching the watcher.
@@ -21,7 +21,7 @@ Design choices:
   context, and move on.
 * **Event-type routing.**  Handlers are stored in a dict keyed by
   event type, so a subscriber for ``"file.changed"`` never sees
-  ``"graph.update"`` traffic.
+  ``"pipeline.document.update"`` traffic.
 * **Typed payloads.**  :meth:`EventBus.publish` annotates its payload
   parameter as ``dict[str, Any]`` rather than bare ``Any``.  The point
   of the refactor is to stop smuggling arbitrary shapes across
@@ -37,9 +37,10 @@ Design choices:
 
 Naming convention (keep this consistent across the codebase):
 
-* **Bus event types** use dotted names: ``"graph.update"``,
-  ``"parse.error"``, ``"file.changed"``.  The dotted form reads as a
-  topic hierarchy and pairs cleanly with any future wildcard routing.
+* **Bus event types** use dotted names: ``"parse.error"``,
+  ``"pipeline.document.update"``, ``"file.changed"``.
+  The dotted form reads as a topic hierarchy and pairs cleanly with any
+  future wildcard routing.
 * **structlog event names** (see :mod:`haute._logging`) use
   snake_case: ``"server_bind_non_loopback"``,
   ``"sanitize_name_collision"``, ``"model_cache_hit"``.  These feed
@@ -80,22 +81,22 @@ logger = get_logger(component="event_bus")
 # experimental events that do not yet warrant a TypedDict.
 
 
-class GraphUpdatePayload(TypedDict):
-    """Emitted by the file-watcher when a pipeline file re-parses cleanly."""
-
-    graph: dict[str, Any]
-    graph_fingerprint: str
-    source_file: str
-
-
 class ParseErrorPayload(TypedDict):
-    """Emitted by the file-watcher when a pipeline file fails to parse."""
+    """Emitted when a pipeline document cannot be loaded at all."""
 
     error: str
     source_file: str
 
 
-EventType = Literal["graph.update", "parse.error"]
+class PipelineDocumentUpdatePayload(TypedDict):
+    """Emitted when a readable pipeline editor document changes."""
+
+    document: dict[str, Any]
+    document_fingerprint: str
+    source_file: str
+
+
+EventType = Literal["parse.error", "pipeline.document.update"]
 
 # Wide backstop used at the bus' *implementation* signature and for
 # ad-hoc test events.  Producers that publish a typed event should use
@@ -141,8 +142,8 @@ class EventBus:
     @overload
     def subscribe(
         self,
-        event_type: Literal["graph.update"],
-        handler: Callable[[GraphUpdatePayload], None],
+        event_type: Literal["pipeline.document.update"],
+        handler: Callable[[PipelineDocumentUpdatePayload], None],
     ) -> Callable[[], None]: ...
 
     @overload
@@ -194,10 +195,14 @@ class EventBus:
         return _unsubscribe
 
     @overload
-    def publish(self, event_type: Literal["graph.update"], payload: GraphUpdatePayload) -> None: ...
+    def publish(self, event_type: Literal["parse.error"], payload: ParseErrorPayload) -> None: ...
 
     @overload
-    def publish(self, event_type: Literal["parse.error"], payload: ParseErrorPayload) -> None: ...
+    def publish(
+        self,
+        event_type: Literal["pipeline.document.update"],
+        payload: PipelineDocumentUpdatePayload,
+    ) -> None: ...
 
     @overload
     def publish(self, event_type: str, payload: PayloadType) -> None: ...
@@ -281,9 +286,9 @@ default_bus = EventBus()
 __all__ = [
     "EventBus",
     "EventType",
-    "GraphUpdatePayload",
     "HandlerType",
     "ParseErrorPayload",
+    "PipelineDocumentUpdatePayload",
     "PayloadType",
     "default_bus",
 ]

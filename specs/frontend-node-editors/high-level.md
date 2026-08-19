@@ -248,3 +248,37 @@ it never crashes the panel or aliases the API input's sole emitted table.
 An Edge Join with missing/ambiguous role edges, conflicting stored roles, an unknown join mode,
 or invalid key shape remains visibly invalid and blocks save; the editor never infers a role or
 silently substitutes join keys.
+
+## Approved change contract — recovery diagnostics in node presentation
+
+Editor-load availability is separate from transient execution status. A known recovered node uses
+its normal canvas card with an accessible `unavailable` or `blocked` load indicator; an unknown or
+removed authored decorator uses a dedicated recovery-only card that is not present in the palette
+and cannot serialize as a canonical node. Unavailable cards retain authored identity and decorator
+spelling instead of coercing the node to a supported type.
+
+Selecting an unavailable or blocked node opens a read-only diagnostic inspector rather than its
+normal configuration editor. The inspector shows attributed messages, remediation, source/config
+location, incident id, and blocking path where present. Ready siblings in a degraded document may
+be inspected through a static read-only configuration view. Normal editors are not mounted in
+that state, so editor effects cannot start schema, preview, training, cache, or publication work
+behind disabled controls. Selection, panning, zooming, recovery preview, and diagnostic inspection
+remain available.
+
+## Approved change contract — minimal unavailable-node removal
+
+An unavailable node inspector may offer `Remove node` only when the validated
+document capability allows repair and the node has a server recovery identity.
+The action first opens a dry-run confirmation surface; it never invokes normal
+node deletion, graph Save, codegen, or a client-authored source rewrite. The
+surface lists every file that will change or be deleted, renders the bounded
+server patch, states that the referenced config is retained by default, and
+requires a separate explicit choice before config deletion is added to the
+plan. Changing that choice obtains a new plan and plan hash.
+
+Confirmation applies exactly the displayed plan hash. A revision conflict,
+implicit downstream consumer, ambiguous identity/span, mixed connection
+chain, shared config, or server verification failure stays visible and leaves
+the recovery inspector open. Success adopts the returned editor document and
+closes the removed node's panel. Blocked and ready nodes never expose this
+action. No `Upgrade node` or migration action is rendered.

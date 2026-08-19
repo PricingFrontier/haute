@@ -42,8 +42,10 @@ Out of scope, owned elsewhere:
 - `haute run [pipeline_file]` executes a pipeline end-to-end through the same
   `parse_pipeline_file` → `execute_graph` path the GUI uses, printing a per-node row/column summary
   and a preview of the final node's output.
-- `haute lint [pipeline_file]` parses a pipeline and reports structural problems (edges pointing at
-  missing nodes, per-node parse errors, orphan nodes) without executing anything.
+- `haute lint [pipeline_file]` strictly parses a pipeline and exits non-zero on syntax,
+  configuration, topology, or other parse failures. For a valid canonical graph it reports
+  structural problems (edges pointing at missing nodes and orphan nodes) without executing
+  anything.
 - `haute train <training_script>` runs a training script that must define a module-level `job`
   object with a callable `run(progress=...)` method (normally a `TrainingJob`), streaming a
   live progress bar and printing the returned result's model path, feature counts, and metrics.

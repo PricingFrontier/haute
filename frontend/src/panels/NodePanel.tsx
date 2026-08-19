@@ -41,6 +41,7 @@ import {
 import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useUIStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import { buildExploreCacheIdentity } from "./explore/cacheIdentity"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
@@ -65,6 +66,10 @@ type NodePanelProps = {
   selectedPreviewLoading?: boolean
   /** True while inspecting a created submodel instance's shared definition. */
   readOnly?: boolean
+  /** True when the current pipeline document is not executable/mutable. */
+  documentReadOnly?: boolean
+  /** Opens the document-level remove-only recovery flow. */
+  onRemoveUnavailableNode?: (target: { sourceFile: string; recoveryId: string }) => void
 }
 
 type NodePanelTab = "config" | "polars" | "columns"
@@ -692,6 +697,8 @@ export default function NodePanel({
   previewRows,
   selectedPreviewLoading = false,
   readOnly = false,
+  documentReadOnly = false,
+  onRemoveUnavailableNode,
 }: NodePanelProps) {
   const { allNodes, edges, submodels, preamble } = useGraph()
   const config = useMemo(() => (node?.data.config || {}) as Record<string, unknown>, [node?.data.config])
@@ -705,6 +712,8 @@ export default function NodePanel({
   const cachedExploreResult = useNodeResultsStore((s) => node?.id ? s.exploreResults[node.id] : undefined)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
+  const documentDiagnostics = useDocumentStatusStore((s) => s.diagnostics)
+  const canRepair = useDocumentStatusStore((s) => s.capabilities?.can_repair === true)
 
   // Keep config and node in refs so handleConfigUpdate never captures stale values
   const configRef = useRef(config)
@@ -757,7 +766,12 @@ export default function NodePanel({
 
   const handleConfigUpdate = useCallback<OnUpdateConfig>((keyOrUpdates, value) => {
     if (readOnly) {
-      return { ok: false, error: "This submodel instance is read-only." }
+      return {
+        ok: false,
+        error: documentReadOnly
+          ? documentReadOnlyReason()
+          : "This submodel instance is read-only.",
+      }
     }
     const currentNode = nodeRef.current
     if (!currentNode || !onUpdateNode) {
@@ -780,16 +794,21 @@ export default function NodePanel({
         { preserveAvailableColumns: selectionOnlyUpdate },
       ),
     )
-  }, [onUpdateNode, readOnly])
+  }, [documentReadOnly, onUpdateNode, readOnly])
 
   const handleConfigReplace = useCallback<OnReplaceConfig>((nextConfig) => {
     if (readOnly) {
-      return { ok: false, error: "This submodel instance is read-only." }
+      return {
+        ok: false,
+        error: documentReadOnly
+          ? documentReadOnlyReason()
+          : "This submodel instance is read-only.",
+      }
     }
     const currentNode = nodeRef.current
     if (!currentNode || !onUpdateNode) return { ok: false, error: "Node update handler is unavailable." }
     return onUpdateNode(currentNode.id, clearCachedResultShape({ ...currentNode.data, config: nextConfig }))
-  }, [onUpdateNode, readOnly])
+  }, [documentReadOnly, onUpdateNode, readOnly])
 
   const configWithNodeId = useMemo(
     () => ({ ...config, _nodeId: node?.id ?? "" }),
@@ -830,6 +849,138 @@ export default function NodePanel({
       : upstreamColumns
   }, [cachedExploreResult, exploreConfigHash, upstreamColumns])
   if (!node) return null
+
+  const recoveryData = node.data as HauteNodeData
+  const recoveryAvailability = recoveryData._loadAvailability ?? "ready"
+  if (recoveryAvailability !== "ready") {
+    const diagnosticIds = new Set(recoveryData._loadDiagnosticIds ?? [])
+    const diagnostics = documentDiagnostics.filter((diagnostic) =>
+      diagnosticIds.has(diagnostic.diagnostic_id),
+    )
+    const sourceLocation = recoveryData._sourceFile
+      ? `${recoveryData._sourceFile}${
+        recoveryData._sourceSpan ? `:${recoveryData._sourceSpan.start_line}` : ""
+      }`
+      : null
+    return (
+      <PanelShell testId="node-panel">
+        <div
+          className="flex items-center gap-2 px-3 py-2.5"
+          style={{ borderBottom: "1px solid var(--border)" }}
+        >
+          <AlertTriangle size={15} aria-hidden="true" style={{ color: "var(--danger)" }} />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
+              {node.data.label}
+            </div>
+            <div className="text-[10px] uppercase tracking-[0.08em]" style={{ color: "var(--danger-text)" }}>
+              {recoveryAvailability}
+            </div>
+          </div>
+          <span
+            data-testid="node-panel-readonly"
+            className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <Lock size={11} aria-hidden="true" />Read-only
+          </span>
+          <button
+            data-testid="node-panel-close"
+            onClick={onClose}
+            className="node-close-btn shrink-0 rounded p-1 transition-colors"
+            style={{ color: "var(--text-muted)" }}
+            title="Close"
+          >
+            <X size={14} strokeWidth={2.5} />
+          </button>
+        </div>
+        <div className="flex-1 space-y-4 overflow-y-auto p-4" data-testid="node-recovery-diagnostics">
+          <p className="text-[12px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+            {recoveryAvailability === "unavailable"
+              ? "This authored node could not be validated and cannot be edited or executed."
+              : "This node is valid, but an unavailable upstream dependency prevents it from running."}
+          </p>
+          {(sourceLocation || recoveryData._configReference) && (
+            <dl className="space-y-2 text-[11px]">
+              {sourceLocation && (
+                <div>
+                  <dt style={{ color: "var(--text-muted)" }}>Source</dt>
+                  <dd className="mt-0.5 break-all font-mono" style={{ color: "var(--text-primary)" }}>
+                    {sourceLocation}
+                  </dd>
+                </div>
+              )}
+              {recoveryData._configReference && (
+                <div>
+                  <dt style={{ color: "var(--text-muted)" }}>Configuration</dt>
+                  <dd className="mt-0.5 break-all font-mono" style={{ color: "var(--text-primary)" }}>
+                    {recoveryData._configReference}
+                  </dd>
+                </div>
+              )}
+            </dl>
+          )}
+          {recoveryData._loadBlockingPath && recoveryData._loadBlockingPath.length > 0 && (
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+                Blocking path
+              </div>
+              <div className="mt-1 break-words font-mono text-[11px]" style={{ color: "var(--warning)" }}>
+                {recoveryData._loadBlockingPath.join(" → ")}
+              </div>
+            </div>
+          )}
+          <section aria-label="Node load diagnostics">
+            <h2 className="text-[10px] font-semibold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+              Diagnostics
+            </h2>
+            {diagnostics.length === 0 ? (
+              <p className="mt-2 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                No detailed diagnostic was included for this element.
+              </p>
+            ) : (
+              <ul className="mt-2 space-y-3">
+                {diagnostics.map((diagnostic) => (
+                  <li
+                    key={diagnostic.diagnostic_id}
+                    className="rounded-lg p-3 text-[11px] leading-relaxed"
+                    style={{ background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
+                  >
+                    <div style={{ color: "var(--danger-text)" }}>{diagnostic.message}</div>
+                    {diagnostic.remediation && (
+                      <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
+                        {diagnostic.remediation}
+                      </div>
+                    )}
+                    {diagnostic.incident_id && (
+                      <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>
+                        Incident {diagnostic.incident_id}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+          {recoveryAvailability === "unavailable" && canRepair &&
+            typeof recoveryData._sourceFile === "string" &&
+            typeof recoveryData._recoveryId === "string" && onRemoveUnavailableNode && (
+              <button
+                type="button"
+                onClick={() => onRemoveUnavailableNode({
+                  sourceFile: recoveryData._sourceFile as string,
+                  recoveryId: recoveryData._recoveryId as string,
+                })}
+                className="w-full rounded px-3 py-2 text-[12px] font-semibold"
+                style={{ color: "var(--danger-text)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
+              >
+                Remove unavailable node
+              </button>
+            )}
+        </div>
+      </PanelShell>
+    )
+  }
 
   const isInstance = !!config.instanceOf
   const nodeType = effectiveNodeType(node)
@@ -1257,8 +1408,25 @@ export default function NodePanel({
         inert={readOnly ? true : undefined}
         aria-readonly={readOnly}
       >
-        <LazyEditorBoundary>
-          {activeTab === "polars" && showPolarsTab ? (
+        {documentReadOnly ? (
+          <div
+            className="space-y-3 p-3"
+            data-testid="node-document-readonly-inspector"
+          >
+            <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+              This node is valid and available for inspection. Resolve the pipeline load diagnostics before editing or running it.
+            </p>
+            <pre
+              aria-label="Read-only node configuration"
+              className="overflow-auto whitespace-pre-wrap break-words rounded-md p-2 text-[10px]"
+              style={{ background: "var(--bg-input)", color: "var(--text-secondary)" }}
+            >
+              {JSON.stringify(config, null, 2)}
+            </pre>
+          </div>
+        ) : (
+          <LazyEditorBoundary>
+            {activeTab === "polars" && showPolarsTab ? (
             <PolarsCodePanel
               config={config}
               onUpdate={handleConfigUpdate}
@@ -1275,8 +1443,9 @@ export default function NodePanel({
               availableColumns={availableColumns}
               columns={currentColumns}
             />
-          ) : renderEditor()}
-        </LazyEditorBoundary>
+            ) : renderEditor()}
+          </LazyEditorBoundary>
+        )}
       </div>
     </PanelShell>
   )

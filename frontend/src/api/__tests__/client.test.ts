@@ -9,6 +9,7 @@ import {
   isHauteSessionExpiredError,
   loadPipeline,
   previewNode,
+  previewRecoveryNode,
   savePipeline,
   traceCell,
   resolveOutputDestination,
@@ -61,8 +62,11 @@ import {
   getJsonCacheProgress,
   getJsonCacheStatus,
   deleteJsonCache,
+  dryRunRemoveUnavailableNode,
+  applyRemoveUnavailableNode,
 } from "../client"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
+import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -443,35 +447,18 @@ describe("request() core via loadPipeline", () => {
     expect(result).toEqual(data)
   })
 
-  it.each([
-    {
-      label: "React Flow type",
-      node: {
+  it("returns an unknown-node-shaped payload unchanged for recovery ingestion", async () => {
+    const data = {
+      nodes: [{
         id: "legacy",
         type: "removedNodeType",
         position: { x: 0, y: 0 },
-        data: { label: "Legacy" },
-      },
-      field: "nodes[0].type",
-    },
-    {
-      label: "data nodeType",
-      node: {
-        id: "legacy",
-        position: { x: 0, y: 0 },
         data: { label: "Legacy", nodeType: "removedNodeType" },
-      },
-      field: "nodes[0].data.nodeType",
-    },
-  ])("rejects pipeline nodes whose persisted $label is not supported", async ({ node, field }) => {
-    mockFetch.mockReturnValue(jsonResponse({
-      nodes: [node],
+      }],
       edges: [],
-    }))
-
-    await expect(loadPipeline()).rejects.toThrow(
-      `parsePipelineResponse: expected field \`${field}\` to be one of`,
-    )
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    await expect(loadPipeline()).resolves.toEqual(data)
   })
 
   it("throws ApiError with status and detail on 4xx response", async () => {
@@ -569,6 +556,7 @@ describe("endpoint contracts", () => {
   beforeEach(() => {
     mockFetch.mockImplementation((url: string) => {
       if (url === "/api/pipeline/preview") return jsonResponse(makePreviewResponse())
+      if (url === "/api/pipeline/recovery-preview") return jsonResponse(makePreviewResponse())
       if (url === "/api/pipeline/save") return jsonResponse(makeSavePipelineResponse())
       if (url === "/api/pipeline/write-output") return jsonResponse({ status: "ok", message: "Written", row_count: 3, path: "out.parquet", format: "parquet" })
       if (url === "/api/pipeline/trace") return jsonResponse(makeTraceResponse())
@@ -597,6 +585,47 @@ describe("endpoint contracts", () => {
     expect(body.node_id).toBe("node1")
     expect(body.row_limit).toBe(50)
     expect(body.source).toBe("live")
+  })
+
+  it("previewRecoveryNode sends the recovery fence and optional frame context", async () => {
+    await previewRecoveryNode({
+      sourceFile: "rating/main.py",
+      sourceRevision: "revision-2",
+      targetRecoveryId: "transform@12",
+      rowLimit: 50,
+      source: "staging",
+      requestedPreviewColumns: ["premium"],
+      portLabel: "rated",
+      streamingChunkSize: 25,
+      timeout: 2_000,
+    })
+    await previewRecoveryNode({
+      sourceFile: "rating/main.py",
+      sourceRevision: "revision-2",
+      targetRecoveryId: "transform@12",
+      rowLimit: 50,
+    })
+
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/pipeline/recovery-preview")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({
+      source_file: "rating/main.py",
+      source_revision: "revision-2",
+      target_recovery_id: "transform@12",
+      row_limit: 50,
+      source: "staging",
+      requested_preview_columns: ["premium"],
+      port_label: "rated",
+      streaming_chunk_size: 25,
+    })
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body)).toEqual({
+      source_file: "rating/main.py",
+      source_revision: "revision-2",
+      target_recovery_id: "transform@12",
+      row_limit: 50,
+      source: "live",
+    })
   })
 
   it("savePipeline posts to /api/pipeline/save", async () => {
@@ -1630,5 +1659,27 @@ describe("streaming_chunk_size in request bodies", () => {
     await startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("sends exact remove-repair request bodies and parses authoritative responses", async () => {
+    const planHash = "a".repeat(64)
+    const request = { sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "broken@10", deleteConfig: false }
+    mockFetch.mockReturnValueOnce(jsonResponse({
+      repair_kind: "remove_unavailable_node", source_file: "main.py", source_revision: "rev-1",
+      target_source_file: "main.py", target_recovery_id: "broken@10", target_authored_id: "broken",
+      delete_config: false, plan_hash: planHash,
+      changes: [{ path: "main.py", operation: "update", description: "Remove broken.", diff: "-broken", diff_truncated: false }],
+      retained_artifacts: [], warnings: [], predicted_load_status: "ready",
+    }))
+    await dryRunRemoveUnavailableNode(request)
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/repair/remove/dry-run")
+    expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
+      source_file: "main.py", source_revision: "rev-1", target_source_file: "main.py", target_recovery_id: "broken@10", delete_config: false,
+    })
+    mockFetch.mockReturnValueOnce(jsonResponse({ repair_kind: "remove_unavailable_node", plan_hash: planHash, applied_artifacts: ["main.py"], document: makePipelineEditorDocument() }))
+    await applyRemoveUnavailableNode({ ...request, planHash })
+    expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
+      source_file: "main.py", source_revision: "rev-1", target_source_file: "main.py", target_recovery_id: "broken@10", delete_config: false, plan_hash: planHash,
+    })
   })
 })

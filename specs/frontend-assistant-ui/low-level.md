@@ -4,14 +4,14 @@
 
 | File | Responsibility |
 |---|---|
-| `frontend/src/panels/assistant/AssistantPanel.tsx` | The panel body (default export, loaded lazily by React): `PanelShell` chrome and one of two screens — the chat list, or one conversation's transcript (auto-scrolled while streaming) with the composer. Receives `isInsideSubmodel` and `currentSourceFile` from the app shell, reads transcript/turn/status/list actions from `useAssistantStore`, and uses `useUIStore.setAssistantOpen` for close. The header icon becomes a back control inside a chat; the composer mounts only there. |
+| `frontend/src/panels/assistant/AssistantPanel.tsx` | The panel body (default export, loaded lazily by React): `PanelShell` chrome and one of two screens — the chat list, or one conversation's transcript (auto-scrolled while streaming) with the composer. Receives `isInsideSubmodel`, `currentSourceFile`, and the central document `readOnly` fence from the app shell, reads transcript/turn/status/list actions from `useAssistantStore`, and uses `useUIStore.setAssistantOpen` for close. The header icon becomes a back control inside a chat; the composer mounts only there. |
 | `frontend/src/panels/assistant/SessionList.tsx` | The chat-list screen: one row per saved conversation with its title and relative last-used time, plus distinct loading, empty, and retryable-error states so the opening screen never renders as a blank panel. Rows are disabled while no pipeline is resolved. |
 | `frontend/src/panels/assistant/relativeTime.ts` | Relative-time rendering for list rows, kept out of the component module so the component file exports only components (React Fast Refresh). |
 | `frontend/src/panels/assistant/TranscriptEntryView.tsx` | Memoised renderer for one transcript entry by `kind`: user bubble, assistant markdown segment (streamed text), tool-activity row (running/ok/error states), or turn marker (completed/failed/stopped/interrupted). Owns the markdown rendering (see Control flow); scoped `.assistant-markdown` rules live in `frontend/src/index.css`. |
-| `frontend/src/panels/assistant/Composer.tsx` | Message input, send/stop split behaviour, and disabled-state messaging. Receives `isInsideSubmodel` and `currentSourceFile` from the panel and uses the store-exported send-gate reason helper, so the rendered gate and imperative `sendMessage` guard share one implementation and one set of messages. |
+| `frontend/src/panels/assistant/Composer.tsx` | Message input, send/stop split behaviour, and disabled-state messaging. Receives `isInsideSubmodel`, `currentSourceFile`, and `readOnly` from the panel and uses the store-exported send-gate reason helper, so the rendered gate and imperative `sendMessage` guard share one implementation and one set of messages. |
 | `frontend/src/stores/useAssistantStore.ts` | Zustand store owning session id + source binding, transcript entries, turn status, notice, the `view`/`sessions`/`sessionsStatus` list state, and the `sendMessage`/`stopTurn`/`newChat`/`refreshStatus`/`loadSessions`/`openSession`/`showSessionList` actions. A module-scope `activeController` owns the in-flight abort handle, and the SSE consumption loop runs inside `sendMessage`, so a turn survives panel unmounting. |
 | `frontend/src/api/assistant.ts` | Assistant-owned bundle-split endpoint module: `getAssistantStatus`, abortable `createAssistantSession`, and `streamAssistantMessage`. It requests JSON as `unknown`, validates status/session/history locally, and fully parses each SSE variant before invoking the store callback. The stream reader uses the authenticated raw-stream helper from [frontend-shared](../frontend-shared/low-level.md), cancels the reader before propagating parser/callback/transport failures, and keeps contract errors distinct from frontend-shared's ApiError. |
-| `frontend/src/App.tsx` *(modified)* | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned shell with a right-panel branch: `assistantOpen` renders the lazy `AssistantPanel` inside `<ErrorBoundary name="AssistantPanel">` + `Suspense`; sits ahead of the `NodePanel` default alongside the git/utility/imports branches. Passes `isInsideSubmodel` (derived from its submodel-navigation view stack, which is hook-local state a module-scope store cannot read) into the panel as a prop. |
+| `frontend/src/App.tsx` *(modified)* | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned shell with a right-panel branch: `assistantOpen` renders the lazy `AssistantPanel` inside `<ErrorBoundary name="AssistantPanel">` + `Suspense`; sits ahead of the `NodePanel` default alongside the git/utility/imports branches. Passes `isInsideSubmodel` and the central document-read-only fence into the panel because both are app-owned state unavailable to the module-scope assistant store. |
 | `frontend/src/stores/useUIStore.ts` *(modified)* | [frontend-shared](../frontend-shared/low-level.md)-owned UI state with an `assistantOpen` flag + `setAssistantOpen`, mutually exclusive by construction with `gitOpen`/`utilityOpen`/`importsOpen` (each setter clears the others, matching the existing pattern). |
 | `frontend/src/components/Toolbar.tsx` *(modified)* | [frontend-shared](../frontend-shared/low-level.md)-owned toolbar with an Assistant toggle button next to the existing utility/imports buttons, calling `setAssistantOpen`. |
 
@@ -97,8 +97,9 @@ under another pipeline's canvas.
 **Send.** `Composer` submit → `useAssistantStore.getState().sendMessage(text)`:
 
 1. Guards, in order: `turnStatus === "idle"`; `status.configured` and
-   `status.mutations_enabled`; not inside a submodel — `sendMessage(text,
-   {isInsideSubmodel, currentSourceFile})` receives both flags as arguments because the
+   `status.mutations_enabled`; the current document is synchronized and not read-only; not inside
+   a submodel — `sendMessage(text, {isInsideSubmodel, currentSourceFile, readOnly})` receives these
+   values as arguments because the
    view stack AND the loaded pipeline's source are hook-local state in `App`
    (`usePipelineAPI`) that a module-scope store action cannot read (App → panel →
    composer prop chain); `currentSourceFile` equals `pipelineSource` (mismatch
@@ -168,9 +169,10 @@ settled transcript row.
   revisions, plan hashes, or consent metadata. Staleness, expiry and prior use
   are enforced when the model invokes the exact stored plan.
 - **Canvas dirtied mid-turn** (the analyst edits while the agent works): the send-time gate
-  can't prevent it. Incoming `graph.update` frames then hit the canvas's existing
-  dirty-guard banner (reload/discard) rather than applying — the transcript still records
-  `graph_updated` activity, and resolution happens in the canvas, not this panel. Accepted
+  can't prevent it. Incoming `pipeline_document_update` frames then hit the canvas's
+  existing dirty-guard banner (reload/discard) rather than replacing the graph — the
+  transcript still records `graph_updated` activity, and resolution happens in the canvas,
+  not this panel. Accepted
   v1 behaviour, documented rather than special-cased.
 - **Drilled into a submodel mid-turn**: likewise send-time-gated only. A running turn keeps
   editing the top-level graph; the drilled-in view is rebuilt from the parent graph on
@@ -234,7 +236,8 @@ The following matrix records the full regression contract; where the scenario is
   keep-alive frames ignored; all required fields of every known variant are
   validated; unknown event type throws; stream end without terminal event →
   `interrupted`.
-- **Send gates**: dirty canvas blocks with notice; unconfigured blocks and renders the
+- **Send gates**: dirty canvas blocks with notice; a degraded, source-only, or unsynchronized
+  document blocks with a recovery notice; unconfigured blocks and renders the
   backend reason; mutations-disabled blocks and renders `mutations_reason`; drilled into a
   submodel blocks with notice (depth > 1); streaming locks the composer; pipeline-source
   mismatch resets the session before sending; whitespace no-op.

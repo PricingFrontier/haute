@@ -56,6 +56,7 @@ interface ToolbarProps {
   timings?: NodeTiming[]
   memory?: NodeMemory[]
   editingDisabled?: boolean
+  sourceSelectionTrusted?: boolean
 }
 
 export default function Toolbar({
@@ -71,6 +72,7 @@ export default function Toolbar({
   onSaveCommit,
   wsStatus, timings, memory,
   editingDisabled = false,
+  sourceSelectionTrusted = true,
 }: ToolbarProps) {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
   const setRowLimit = useSettingsStore((s) => s.setRowLimit)
@@ -166,6 +168,7 @@ export default function Toolbar({
           <button
             data-testid="source-selector"
             onClick={() => setSourceOpen((v) => !v)}
+            disabled={editingDisabled || !sourceSelectionTrusted}
             className="flex items-center gap-1.5 px-2 py-1 text-[12px] font-mono rounded-md transition-colors"
             /* Shares the toolbar button surface so the two boxed controls in
                the bar don't sit at different lightnesses. */
@@ -176,14 +179,14 @@ export default function Toolbar({
             }}
             title="Data source"
           >
-            {activeSource === "live" && (
+            {sourceSelectionTrusted && activeSource === "live" && (
               <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
             )}
-            <span>{activeSource}</span>
+            <span>{sourceSelectionTrusted ? activeSource : "Unavailable"}</span>
             <ChevronDown size={11} style={{ color: 'var(--text-muted)', transition: 'transform 150ms', transform: sourceOpen ? 'rotate(180deg)' : undefined }} />
           </button>
         )}
-        {sourceOpen && (
+        {sourceOpen && !editingDisabled && sourceSelectionTrusted && (
           <div
             className="absolute top-full left-0 mt-1 rounded-lg shadow-2xl z-50 min-w-[160px] overflow-hidden"
             style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}
@@ -442,6 +445,7 @@ export default function Toolbar({
         <button
           data-testid="toolbar-save"
           onClick={onSave}
+          disabled={editingDisabled}
           className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--accent-hover)]"
           style={{ background: 'var(--accent)' }}
           title="Save — Ctrl+S"
@@ -451,6 +455,7 @@ export default function Toolbar({
         <button
           data-testid="toolbar-save-commit"
           onClick={onSaveCommit}
+          disabled={editingDisabled}
           className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--success-fill-hover)]"
           style={{ background: 'var(--success-fill)' }}
           title="Commit — record a milestone on your working branch"

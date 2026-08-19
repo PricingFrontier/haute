@@ -10,8 +10,10 @@ import { cleanup, fireEvent, render, screen, waitFor, renderHook, act } from "@t
 import type { Edge, Node } from "@xyflow/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-vi.mock("../../api/client", () => ({
-  loadPipeline: vi.fn(() => Promise.resolve({ nodes: [], edges: [] })),
+vi.mock("../../api/client", async () => {
+  const { makePipelineEditorDocument } = await import("../../testSupport/pipelineDocumentFixture")
+  return {
+  loadPipeline: vi.fn(() => Promise.resolve(makePipelineEditorDocument({ nodes: [], edges: [] }))),
   previewNode: vi.fn(),
   savePipeline: vi.fn(),
   setGitIdentity: vi.fn(() => Promise.resolve({ scope: "local" })),
@@ -20,7 +22,8 @@ vi.mock("../../api/client", () => ({
     status = 0
     detail?: string
   },
-}))
+  }
+})
 
 vi.mock("../../utils/buildGraph", () => ({
   resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),

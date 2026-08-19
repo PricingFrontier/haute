@@ -35,6 +35,7 @@ export type TranscriptEntry =
 export interface SendMessageOptions {
   isInsideSubmodel: boolean
   currentSourceFile: string
+  readOnly: boolean
 }
 
 export interface AssistantStoreState {
@@ -79,6 +80,7 @@ export function assistantSendDisabledReason(
   status: AssistantStatus | "unknown" | "error",
   isInsideSubmodel: boolean,
   dirty: boolean,
+  readOnly: boolean,
 ): string | null {
   if (status === "unknown") return "Assistant status is unavailable. Refresh its status before sending."
   if (status === "error") return "Assistant status could not be loaded. Try again."
@@ -86,6 +88,7 @@ export function assistantSendDisabledReason(
   if (!status.mutations_enabled) return status.mutations_reason ?? "Assistant mutations are disabled."
   if (isInsideSubmodel) return "Assistant edits are available from the top-level pipeline only."
   if (dirty) return "Save or discard the current canvas changes before using Assistant."
+  if (readOnly) return "Resolve the current pipeline recovery issues before using Assistant."
   return null
 }
 
@@ -362,6 +365,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       current.status,
       options.isInsideSubmodel,
       useGraphStore.getState().dirty,
+      options.readOnly,
     )
     if (disabledReason !== null) {
       set({ notice: disabledReason })

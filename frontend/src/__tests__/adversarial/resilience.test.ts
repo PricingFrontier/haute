@@ -4,7 +4,8 @@
  *
  * Covers:
  *   1. API returning unexpected shapes (null, {}, array, extra/missing fields)
- *   2. WebSocket messages with invalid payloads
+ *   2. (removed — invalid WebSocket payloads are exercised end-to-end against
+ *      the hook in useWebSocketSync.test.ts, not re-derived here)
  *   3. Very large graph (500 nodes, 1000 edges)
  *   4. Rapid undo/redo (100 operations)
  *   5. Nodes with missing data.config
@@ -224,75 +225,6 @@ describe("1. API returns unexpected shapes", () => {
     it("getColumns returns null for unknown source node", () => {
       expect(useNodeResultsStore.getState().getColumns("unknown")).toBeNull()
     })
-  })
-})
-
-// ══════════════════════════════════════════════════════════════════
-// 2. WebSocket messages with invalid payloads
-// ══════════════════════════════════════════════════════════════════
-
-describe("2. WebSocket messages with invalid payloads", () => {
-  // We test the message parsing logic that useWebSocketSync uses internally.
-  // Rather than instantiate the full hook (which needs global WS mock),
-  // we test the JSON.parse paths and the normalizeEdges/computeNextNodeId
-  // utilities that the onmessage handler depends on.
-
-  it("empty string message triggers JSON parse error", () => {
-    expect(() => JSON.parse("")).toThrow()
-  })
-
-  it("message with only whitespace triggers JSON parse error", () => {
-    expect(() => JSON.parse("   ")).toThrow()
-  })
-
-  it("message with extra fields beyond type and graph is safe to parse", () => {
-    const msg = JSON.parse(JSON.stringify({
-      type: "graph_update",
-      graph: { nodes: [], edges: [] },
-      _debug: true,
-      server_timestamp: 12345,
-      extra_nested: { a: { b: { c: 1 } } },
-    }))
-    expect(msg.type).toBe("graph_update")
-    expect(msg.graph.nodes).toEqual([])
-    // Extra fields are just ignored by the handler
-    expect(msg._debug).toBe(true)
-  })
-
-  it("message with missing type field parses but handler ignores it", () => {
-    const msg = JSON.parse(JSON.stringify({
-      graph: { nodes: [], edges: [] },
-    }))
-    // The handler checks msg.type === "graph_update" && msg.graph
-    // If type is undefined, neither branch is entered — no crash
-    expect(msg.type).toBeUndefined()
-  })
-
-  it("message with null graph field is safe — handler checks msg.graph truthiness", () => {
-    const msg = JSON.parse(JSON.stringify({
-      type: "graph_update",
-      graph: null,
-    }))
-    // msg.type === "graph_update" && msg.graph evaluates to false when graph is null
-    expect(msg.type).toBe("graph_update")
-    expect(msg.graph).toBeNull()
-    expect(msg.type === "graph_update" && msg.graph).toBeFalsy()
-  })
-
-  it("message with graph.nodes as non-array is handled by normalizeEdges/computeNextNodeId", () => {
-    // If the server sent nodes: null, the handler does `g.nodes || []`
-    const g = { nodes: null, edges: null }
-    const nodes = g.nodes || []
-    const edges = g.edges || []
-    expect(nodes).toEqual([])
-    expect(normalizeEdges(edges)).toEqual([])
-    expect(computeNextNodeId(nodes)).toBe(0)
-  })
-
-  it("binary-like string message triggers JSON parse error", () => {
-    // Simulate a binary message that arrives as string
-    const binaryString = "\x00\x01\x02\x03\xFF\xFE"
-    expect(() => JSON.parse(binaryString)).toThrow()
   })
 })
 

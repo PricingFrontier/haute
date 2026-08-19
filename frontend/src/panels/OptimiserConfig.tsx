@@ -14,6 +14,10 @@ import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
 import type { OptimiserSolveResult } from "../api/types"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import useNodeResultsStore, { type SolveProgress } from "../stores/useNodeResultsStore"
+import {
+  captureDocumentExecutionFence,
+  isDocumentExecutionFenceCurrent,
+} from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore from "../stores/useGraphStore"
 import { formatElapsed } from "../utils/formatValue"
@@ -339,6 +343,8 @@ export default function OptimiserConfig({
   // --- Actions (polling is handled by useBackgroundJobs hook in App.tsx) ---
 
   const handleSolve = useCallback(async () => {
+    const documentFence = captureDocumentExecutionFence()
+    if (!isDocumentExecutionFenceCurrent(documentFence)) return
     setSubmitting(true)
     const nodeLabel = allNodes.find(n => n.id === nodeId)?.data.label || "Optimiser"
     const solveSource = useSettingsStore.getState().activeSource
@@ -349,6 +355,7 @@ export default function OptimiserConfig({
         node_id: nodeId,
         streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
       })
+      if (!isDocumentExecutionFenceCurrent(documentFence)) return
       if (result.status === "started" && result.job_id) {
         // Register job in store — background hook picks up polling
         startSolveJob(nodeId, result.job_id, nodeLabel, constraints, currentConfigHash, solveSource, solveStructuralVersion)
@@ -357,6 +364,7 @@ export default function OptimiserConfig({
         useNodeResultsStore.getState().failSolveJob(nodeId, result.error || "Unknown error")
       }
     } catch (e) {
+      if (!isDocumentExecutionFenceCurrent(documentFence)) return
       const errorMessage = requestErrorDetail(e)
       const terminalStatus = solveFailureStatus(e, errorMessage)
       startSolveJob(nodeId, `startup-failure:${nodeId}`, nodeLabel, constraints, currentConfigHash, solveSource, solveStructuralVersion)
@@ -481,6 +489,8 @@ export default function OptimiserConfig({
   )
 
   const handleAutoRange = useCallback(async () => {
+    const documentFence = captureDocumentExecutionFence()
+    if (!isDocumentExecutionFenceCurrent(documentFence)) return
     const previousJobId = autoRangeJobRef.current
     autoRangeAbortRef.current?.abort()
     autoRangeAbortRef.current = null
@@ -501,6 +511,18 @@ export default function OptimiserConfig({
     setAutoRangeTerminalReason(null)
     setAutoRangeTerminalErrorCode(null)
     let jobId: string | null = null
+    const stopForStaleDocument = (): boolean => {
+      if (isDocumentExecutionFenceCurrent(documentFence)) return false
+      controller.abort()
+      if (jobId) {
+        void cancelOptimiserFrontierAutoRange(jobId).catch((err) => {
+          // Best-effort stale-document cancellation has no user action, so console-only diagnostics are intentional.
+          console.warn("cancel_optimiser_frontier_auto_range_failed", { jobId, err })
+        })
+      }
+      setAutoRangeLoading(false)
+      return true
+    }
     try {
       const start = await startOptimiserFrontierAutoRange({
         graph: buildGraphCb(),
@@ -508,6 +530,7 @@ export default function OptimiserConfig({
         streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
         signal: controller.signal,
       })
+      if (stopForStaleDocument()) return
       if (start.status === "error" || !start.job_id) {
         throw new Error(start.error || "Auto range failed to start")
       }
@@ -518,12 +541,15 @@ export default function OptimiserConfig({
         jobId,
         { signal: controller.signal },
       )
+      if (stopForStaleDocument()) return
       while (status.status === "running") {
         await abortableDelay(AUTO_RANGE_POLL_INTERVAL_MS, controller.signal)
+        if (stopForStaleDocument()) return
         status = await getOptimiserFrontierAutoRangeStatus(
           jobId,
           { signal: controller.signal },
         )
+        if (stopForStaleDocument()) return
       }
       if (status.status === "cancelled" || status.status === "superseded") {
         if (!controller.signal.aborted) {
@@ -568,7 +594,7 @@ export default function OptimiserConfig({
       onUpdate({ frontier_ranges: nextRanges })
       if (response.warning) setAutoRangeError(response.warning)
     } catch (err) {
-      if (!controller.signal.aborted) {
+      if (!controller.signal.aborted && isDocumentExecutionFenceCurrent(documentFence)) {
         const metrics = executionMetricsFromError(err)
         if (metrics) setAutoRangeTerminalMetrics(metrics)
         setAutoRangeTerminalStatus(executionJobStatusFromReason(executionTerminalReasonFromError(err)))

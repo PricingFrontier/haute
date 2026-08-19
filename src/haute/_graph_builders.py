@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from haute._ast_helpers import (
     _get_decorator_kwargs,
     _get_decorator_node_type,
-    _get_docstring,
 )
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import _edge_id, resolve_input_mapping_names
@@ -23,6 +23,9 @@ from haute._types import GraphEdge, GraphNode, NodeData, NodeType
 from haute.errors import ConfigError, ParseError
 
 __all__ = [
+    "PipelineNodeSkeleton",
+    "_extract_decorated_node_skeletons",
+    "_resolve_node_skeleton",
     "_extract_decorated_nodes",
     "_build_edges",
     "_build_rf_nodes",
@@ -30,11 +33,146 @@ __all__ = [
 ]
 
 
+@dataclass(frozen=True, slots=True)
+class PipelineNodeSkeleton:
+    """One authored pipeline node before config or contract resolution."""
+
+    authored_id: str
+    decorator_name: str
+    decorator: ast.expr
+    explicit_node_type: NodeType | None
+    description: str
+    body: str
+    param_names: tuple[str, ...]
+    edge_param_names: tuple[str, ...]
+    start_line: int
+    start_column: int
+    end_line: int
+    end_column: int
+    is_async: bool
+
+
+def _decorator_method(decorator: ast.expr) -> str:
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    if isinstance(target, ast.Attribute):
+        return target.attr
+    return "unknown"
+
+
+def _extract_decorated_node_skeletons(
+    tree: ast.Module,
+    decorator_checker: Callable[[ast.expr], bool],
+    func_bodies: dict[str, str],
+    *,
+    source: str | None = None,
+) -> list[PipelineNodeSkeleton]:
+    """Discover authored nodes without resolving their configuration.
+
+    ``source`` lets duplicate function names retain their own body rather
+    than sharing the last value from the legacy name-keyed body map.
+    """
+    skeletons: list[PipelineNodeSkeleton] = []
+    source_lines = source.splitlines() if source is not None else None
+    for stmt in ast.iter_child_nodes(tree):
+        if not isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        matched_decorator = next(
+            (decorator for decorator in stmt.decorator_list if decorator_checker(decorator)),
+            None,
+        )
+        if matched_decorator is None:
+            continue
+
+        positional_param_names = tuple(arg.arg for arg in (*stmt.args.posonlyargs, *stmt.args.args))
+        param_names = (
+            *positional_param_names,
+            *(arg.arg for arg in stmt.args.kwonlyargs),
+        )
+        body = func_bodies.get(stmt.name, "")
+        if source_lines is not None and stmt.body:
+            body_start = stmt.body[0].lineno - 1
+            body_end = stmt.body[-1].end_lineno or stmt.body[-1].lineno
+            body = "\n".join(source_lines[body_start:body_end])
+        decorator_start = min(
+            getattr(decorator, "lineno", stmt.lineno)
+            for decorator in stmt.decorator_list
+            if decorator_checker(decorator)
+        )
+        decorator_column = min(
+            getattr(decorator, "col_offset", stmt.col_offset)
+            for decorator in stmt.decorator_list
+            if decorator_checker(decorator)
+        )
+        skeletons.append(
+            PipelineNodeSkeleton(
+                authored_id=stmt.name,
+                decorator_name=_decorator_method(matched_decorator),
+                decorator=matched_decorator,
+                explicit_node_type=_get_decorator_node_type(matched_decorator),
+                description=ast.get_docstring(stmt) or "",
+                body=body,
+                param_names=tuple(param_names),
+                edge_param_names=positional_param_names,
+                start_line=decorator_start,
+                start_column=decorator_column,
+                end_line=stmt.end_lineno or stmt.lineno,
+                end_column=stmt.end_col_offset or stmt.col_offset,
+                is_async=isinstance(stmt, ast.AsyncFunctionDef),
+            )
+        )
+    return skeletons
+
+
+def _resolve_node_skeleton(
+    skeleton: PipelineNodeSkeleton,
+    base_dir: Path | None,
+) -> dict[str, Any]:
+    """Resolve one skeleton into the strict builder's raw-node representation."""
+    if skeleton.explicit_node_type is None:
+        target = (
+            skeleton.decorator.func
+            if isinstance(skeleton.decorator, ast.Call)
+            else skeleton.decorator
+        )
+        receiver = (
+            target.value.id
+            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
+            else "pipeline"
+        )
+        raise ParseError(
+            f"unknown @{receiver} node decorator {skeleton.decorator_name!r}; "
+            "this Haute version does not support that node type.",
+            decorator=skeleton.decorator_name,
+            line=skeleton.start_line,
+        )
+    decorator_kwargs = _get_decorator_kwargs(skeleton.decorator)
+    node_type, config = _resolve_node_config(
+        decorator_kwargs,
+        skeleton.body,
+        list(skeleton.param_names),
+        len(skeleton.param_names),
+        base_dir,
+        func_name=skeleton.authored_id,
+        explicit_node_type=skeleton.explicit_node_type,
+        edge_param_names=list(skeleton.edge_param_names),
+    )
+    return {
+        "func_name": skeleton.authored_id,
+        "node_type": node_type,
+        "description": skeleton.description,
+        "config": config,
+        "param_names": list(skeleton.param_names),
+        "edge_param_names": list(skeleton.edge_param_names),
+    }
+
+
 def _extract_decorated_nodes(
     tree: ast.Module,
     decorator_checker: Callable[[ast.expr], bool],
     func_bodies: dict[str, str],
     base_dir: Path | None,
+    *,
+    source: str | None = None,
 ) -> list[dict[str, Any]]:
     """Extract decorated function nodes from an AST tree.
 
@@ -55,33 +193,26 @@ def _extract_decorated_nodes(
         A list of dicts with keys ``func_name``, ``node_type``,
         ``description``, ``config``, and ``param_names``.
     """
+    skeletons = _extract_decorated_node_skeletons(
+        tree,
+        decorator_checker,
+        func_bodies,
+        source=source,
+    )
     raw_nodes: list[dict[str, Any]] = []
     seen_func_names: set[str] = set()
-
-    for stmt in ast.iter_child_nodes(tree):
-        if not isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
-            continue
-
-        matched_decorator = None
-        for dec in stmt.decorator_list:
-            if decorator_checker(dec):
-                matched_decorator = dec
-                break
-
-        if matched_decorator is None:
-            continue
-
+    for skeleton in skeletons:
         # ``async def`` node bodies cannot round-trip through codegen (the
         # save path re-emits synchronous bodies), and silently dropping the
         # node hides an authored pricing body from the graph. Fail loud.
-        if isinstance(stmt, ast.AsyncFunctionDef):
+        if skeleton.is_async:
             raise ParseError(
-                f"@pipeline node {stmt.name!r} is declared `async def`; pipeline "
+                f"@pipeline node {skeleton.authored_id!r} is declared `async def`; pipeline "
                 f"node bodies must be synchronous — remove the `async` keyword.",
-                line=stmt.lineno,
+                line=skeleton.start_line,
             )
 
-        func_name = stmt.name
+        func_name = skeleton.authored_id
         # Two decorated functions with the same name collapse to a single
         # GraphNode id downstream (the executor keys nodes by id), silently
         # discarding the first node's pricing body. Reject the collision at
@@ -91,47 +222,10 @@ def _extract_decorated_nodes(
                 f"duplicate @pipeline node function name {func_name!r}; each "
                 f"decorated node function must have a unique name because the name "
                 f"becomes the graph node id.",
-                line=stmt.lineno,
+                line=skeleton.start_line,
             )
         seen_func_names.add(func_name)
-
-        decorator_kwargs = _get_decorator_kwargs(matched_decorator)
-        # All named buckets feed config/body extraction, while only positional
-        # buckets define implicit frame edges. Keyword-only params are config.
-        positional_param_names = [
-            arg.arg
-            for arg in (
-                *stmt.args.posonlyargs,
-                *stmt.args.args,
-            )
-        ]
-        param_names = [*positional_param_names, *(arg.arg for arg in stmt.args.kwonlyargs)]
-        n_params = len(param_names)
-        description = _get_docstring(stmt)
-        body = func_bodies.get(func_name, "")
-        explicit_node_type = _get_decorator_node_type(matched_decorator)
-
-        node_type, config = _resolve_node_config(
-            decorator_kwargs,
-            body,
-            param_names,
-            n_params,
-            base_dir,
-            func_name=func_name,
-            explicit_node_type=explicit_node_type,
-            edge_param_names=positional_param_names,
-        )
-
-        raw_nodes.append(
-            {
-                "func_name": func_name,
-                "node_type": node_type,
-                "description": description,
-                "config": config,
-                "param_names": param_names,
-                "edge_param_names": positional_param_names,
-            }
-        )
+        raw_nodes.append(_resolve_node_skeleton(skeleton, base_dir))
 
     return raw_nodes
 

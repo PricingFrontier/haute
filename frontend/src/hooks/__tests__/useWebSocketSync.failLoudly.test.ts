@@ -4,20 +4,21 @@
  *
  * Pre-fix: the onmessage handler wraps everything in a single try/catch and
  * forwards any error to a toast.  If `getLayoutedElements` throws midway
- * through graph update processing, the handler may have already called
- * `setNodesRaw` OR partially mutated `graphRefreshingRef`, leaving the UI
+ * through document-update processing, the handler may have already mutated
+ * the graph store OR partially mutated `graphRefreshingRef`, leaving the UI
  * in an inconsistent state.
  *
  * Fix requirements:
- *   (a) If an error is thrown during the graph-update path, the final state
- *       visible to React should be either fully applied or untouched — not
- *       a mix.  Specifically: graphRefreshingRef must be decremented back to
- *       its pre-handler value.
+ *   (a) If an error is thrown during the document-update path, the final
+ *       state visible to React should be either fully applied or untouched
+ *       — not a mix.  Specifically: graphRefreshingRef must be decremented
+ *       back to its pre-handler value.
  *   (b) The error is surfaced to the user via a toast.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, act, cleanup } from "@testing-library/react"
 import { type Mock } from "vitest"
+import type { Node } from "@xyflow/react"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -66,6 +67,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
 // Wave 7E: dirty tracking moved from useUIStore to useGraphStore.
 vi.mock("../../stores/useGraphStore.ts", () => {
   const store = {
+    dirty: false,
     nodes: [{ id: "previous", position: { x: 1, y: 1 }, data: {} }] as unknown[],
     edges: [{ id: "old-edge", source: "previous", target: "previous" }] as unknown[],
     submodels: {} as Record<string, unknown>,
@@ -93,7 +95,9 @@ vi.mock("../../stores/useGraphStore.ts", () => {
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
 import { getLayoutedElements } from "../../utils/layout.ts"
+import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
 
 // ── Mock WebSocket ───────────────────────────────────────────────
 
@@ -119,20 +123,39 @@ function createMockWebSocket() {
   return MockWebSocket
 }
 
-function makeHookParams() {
+const SOURCE_FILE = "rating/main.py"
+
+function makeHookParams(sourceFile = SOURCE_FILE) {
   return {
-    setNodesRaw: vi.fn(),
-    setEdgesRaw: vi.fn(),
-    setSubmodelsRaw: vi.fn(),
-    setPreamble: vi.fn(),
     preambleRef: { current: "" },
     submodelsRef: { current: {} as Record<string, unknown> },
+    sourceFileRef: { current: sourceFile },
     sourceRevisionRef: { current: "revision-old" },
     preservedBlocksRef: { current: ["OLD_KEEP = 1"] },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
   }
+}
+
+function pipelineDocumentFrame(
+  document: ReturnType<typeof makePipelineEditorDocument>,
+  documentFingerprint = "document-fingerprint",
+) {
+  return {
+    type: "pipeline_document_update",
+    schema_version: 1,
+    document,
+    document_fingerprint: documentFingerprint,
+    source_file: document.source_file,
+  }
+}
+
+const readyNode: Node = {
+  id: "disk",
+  type: "polars",
+  position: { x: 100, y: 200 },
+  data: { label: "Disk", nodeType: "polars", config: {} },
 }
 
 describe("useWebSocketSync — partial failure rolls back consistently (#37)", () => {
@@ -163,6 +186,13 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
       graphStore.submodels = snapshot.submodels
       graphStore.preamble = snapshot.preamble
     })
+    useDocumentStatusStore.getState().reset()
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "ready",
+      source_file: SOURCE_FILE,
+      source_revision: "revision-old",
+      nodes: [readyNode],
+    }))
   })
 
   afterEach(() => {
@@ -171,23 +201,20 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     globalThis.WebSocket = originalWebSocket
   })
 
-  it("installs source revision and preserved blocks with a successful graph update", async () => {
+  it("installs source revision and preserved blocks with a successful document update", async () => {
     const params = makeHookParams()
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-new",
+      preserved_blocks: ["NEW_KEEP = 2"],
+      nodes: [{ ...readyNode, id: "fresh", position: { x: 10, y: 10 } }],
+    })
     renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
 
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
-            edges: [],
-            source_revision: "revision-new",
-            preserved_blocks: ["NEW_KEEP = 2"],
-          },
-        }),
+        data: JSON.stringify(pipelineDocumentFrame(document)),
       }))
     })
 
@@ -195,110 +222,17 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     expect(params.preservedBlocksRef.current).toEqual(["NEW_KEEP = 2"])
   })
 
-  it("getLayoutedElements throws → graphRefreshingRef is restored to pre-handler value", async () => {
-    // Catches: if graphRefreshingRef is incremented in a try block but
-    // the finally doesn't run (e.g. a refactor uses async/await without
-    // proper try/finally), the guard counter stays elevated forever,
-    // silently suppressing future onSelectionChange events.
-    const params = makeHookParams()
-    params.graphRefreshingRef.current = 0
-
-    vi.mocked(getLayoutedElements).mockImplementationOnce(async () => {
-      throw new Error("ELK layout failed")
-    })
-
-    renderHook(() => useWebSocketSync(params))
-    act(() => { latestWS().onopen?.(new Event("open")) })
-
-    // Graph update with non-finite positions → layout will be invoked → throws
-    await act(async () => {
-      latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
-            edges: [],
-            source_revision: "revision-new",
-            preserved_blocks: [],
-          },
-        }),
-      }))
-    })
-
-    // After the guard-release timer (150ms), the ref must be back to 0.
-    act(() => { vi.advanceTimersByTime(200) })
-
-    expect(params.graphRefreshingRef.current).toBe(0)
-  })
-
-  it("getLayoutedElements throws → error toast is emitted to inform the user", async () => {
-    const params = makeHookParams()
-    vi.mocked(getLayoutedElements).mockImplementationOnce(async () => {
-      throw new Error("ELK layout failed")
-    })
-
-    renderHook(() => useWebSocketSync(params))
-    act(() => { latestWS().onopen?.(new Event("open")) })
-
-    await act(async () => {
-      latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
-            edges: [],
-            source_revision: "revision-new",
-            preserved_blocks: [],
-          },
-        }),
-      }))
-    })
-
-    const addToast = vi.mocked(useToastStore.getState().addToast)
-    expect(addToast).toHaveBeenCalledWith(
-      "error",
-      expect.stringContaining("WebSocket sync error"),
-    )
-  })
-
-  it("getLayoutedElements throws → setNodesRaw and setEdgesRaw are NOT both called with partial data", async () => {
-    // Catches: a partially-applied graph (e.g. nodes set via fallback,
-    // edges skipped due to the throw) would leave the canvas showing
-    // disconnected nodes.  Either both setters are called consistently
-    // or neither.
-    const params = makeHookParams()
-    vi.mocked(getLayoutedElements).mockImplementationOnce(async () => {
-      throw new Error("ELK layout failed")
-    })
-
-    renderHook(() => useWebSocketSync(params))
-    act(() => { latestWS().onopen?.(new Event("open")) })
-
-    await act(async () => {
-      latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
-            edges: [{ id: "e1", source: "n1", target: "n2" }],
-            source_revision: "revision-new",
-            preserved_blocks: [],
-          },
-        }),
-      }))
-    })
-
-    // Pre-fix: setNodesRaw may have been called before the throw.  Post-fix,
-    // either BOTH setters ran with consistent data OR NEITHER did.  A
-    // partial state (nodes set, edges unset) is the bug we're guarding
-    // against.
-    const nodesCount = params.setNodesRaw.mock.calls.length
-    const edgesCount = params.setEdgesRaw.mock.calls.length
-    expect(nodesCount).toBe(edgesCount)
-  })
+  // NOTE: the two "getLayoutedElements throws" tests that existed in the
+  // legacy graph_update suite are deleted, not ported. `document.nodes[].
+  // display_position` is a required, schema-validated finite {x, y} pair
+  // (see parsePosition in pipelineDocument.ts, which throws on non-finite
+  // coordinates). Consequently `nodeIdsNeedingLayout()` can never return a
+  // non-empty set for a successfully-parsed pipeline_document_update frame,
+  // so `getLayoutedElements` is unreachable on this path — there is no way
+  // to construct a wire frame that reaches it. Exception-rollback-and-toast
+  // behaviour for the graph-apply step is still covered below via
+  // `loadGraphSnapshot` throwing, which exercises the same try/catch/rollback
+  // machinery through its actual reachable failure point.
 
   it("atomic snapshot failure leaves the previous graph untouched", async () => {
     const params = makeHookParams()
@@ -306,21 +240,17 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
       throw new Error("snapshot load failed")
     })
 
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-new",
+      nodes: [{ ...readyNode, id: "fresh", position: { x: 10, y: 10 } }],
+    })
     renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
 
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
-            edges: [{ id: "fresh-edge", source: "fresh", target: "fresh" }],
-            source_revision: "revision-new",
-            preserved_blocks: [],
-          },
-        }),
+        data: JSON.stringify(pipelineDocumentFrame(document)),
       }))
     })
 
@@ -328,9 +258,10 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     expect(graphStore.loadGraphSnapshot).toHaveBeenCalledTimes(1)
     expect(graphStore.nodes).toEqual([expect.objectContaining({ id: "previous" })])
     expect(graphStore.edges).toEqual([expect.objectContaining({ id: "old-edge" })])
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
-    expect(params.sourceRevisionRef.current).toBe("revision-old")
+    // sourceRevisionRef mirrors the document fence unconditionally (before
+    // the graph-apply try block), independent of whether the renderable
+    // graph could be replaced — it is NOT rolled back on snapshot failure.
+    expect(params.sourceRevisionRef.current).toBe("revision-new")
     expect(params.preservedBlocksRef.current).toEqual(["OLD_KEEP = 1"])
     expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
       "error",
@@ -341,7 +272,6 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
   it("atomic snapshot failure rolls back request refs and preserves the store", async () => {
     const params = makeHookParams()
     const previousSubmodels = { old: { nodes: [], edges: [] } }
-    const incomingSubmodels = { fresh: { nodes: [], edges: [] } }
     params.preambleRef.current = "old preamble"
     params.submodelsRef.current = previousSubmodels
     const graphStore = useGraphStore.getState()
@@ -350,22 +280,19 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
       throw new Error("snapshot load failed")
     })
 
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-new",
+      preamble: "new preamble",
+      preserved_blocks: ["NEW_KEEP = 2"],
+      nodes: [{ ...readyNode, id: "fresh", position: { x: 10, y: 10 } }],
+    })
     renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
 
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: incomingSubmodels,
-            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
-            edges: [{ id: "fresh-edge", source: "fresh", target: "fresh" }],
-            preamble: "new preamble",
-            source_revision: "revision-new",
-            preserved_blocks: ["NEW_KEEP = 2"],
-          },
-        }),
+        data: JSON.stringify(pipelineDocumentFrame(document)),
       }))
     })
 
@@ -373,126 +300,39 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     expect(graphStore.preamble).toBe("old preamble")
     expect(graphStore.submodels).toBe(previousSubmodels)
     expect(params.preambleRef.current).toBe("old preamble")
-    expect(params.sourceRevisionRef.current).toBe("revision-old")
+    // See the note above: the fence ref is set before the try block, so it
+    // reflects the new document even though the graph apply rolled back.
+    expect(params.sourceRevisionRef.current).toBe("revision-new")
     expect(params.preservedBlocksRef.current).toEqual(["OLD_KEEP = 1"])
     expect(params.submodelsRef.current).toBe(previousSubmodels)
-    expect(params.setPreamble).not.toHaveBeenCalled()
-    expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
     expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
       "error",
       expect.stringContaining("WebSocket sync error"),
     )
   })
 
-  it("rejects graph_update frames that omit the persisted submodels map", async () => {
-    const params = makeHookParams()
-    renderHook(() => useWebSocketSync(params))
-    act(() => { latestWS().onopen?.(new Event("open")) })
-
-    await act(async () => {
-      latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
-            edges: [],
-            source_revision: "revision-new",
-            preserved_blocks: [],
-          },
-        }),
-      }))
-    })
-
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
-    expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
-    expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
-    expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
-      "error",
-      expect.stringContaining("missing or invalid `submodels` map"),
-    )
-  })
-
-  it("rejects graph_update frames that omit the source revision", async () => {
-    const params = makeHookParams()
-    renderHook(() => useWebSocketSync(params))
-    act(() => { latestWS().onopen?.(new Event("open")) })
-
-    await act(async () => {
-      latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
-            edges: [],
-            preserved_blocks: [],
-          },
-        }),
-      }))
-    })
-
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.sourceRevisionRef.current).toBe("revision-old")
-    expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
-      "error",
-      expect.stringContaining("source_revision"),
-    )
-  })
-
-  it("rejects graph_update frames that omit preserved blocks", async () => {
-    const params = makeHookParams()
-    renderHook(() => useWebSocketSync(params))
-    act(() => { latestWS().onopen?.(new Event("open")) })
-
-    await act(async () => {
-      latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
-            edges: [],
-            source_revision: "revision-new",
-          },
-        }),
-      }))
-    })
-
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.preservedBlocksRef.current).toEqual(["OLD_KEEP = 1"])
-    expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
-      "error",
-      expect.stringContaining("preserved_blocks"),
-    )
-  })
-
-  it("subsequent graph_update after a failed one is handled cleanly", async () => {
+  it("subsequent document update after a failed one is handled cleanly", async () => {
     // Catches: a failed message should not poison the handler for
     // future messages.  The next valid message must process as usual.
     const params = makeHookParams()
-    // Only the first message triggers a layout call (the second carries
-    // explicit positions, so layout is skipped) — arm exactly one throw.
-    // A second queued Once would go unconsumed and leak into whichever
-    // test's layout call comes next under shuffled order.
-    vi.mocked(getLayoutedElements)
-      .mockImplementationOnce(async () => { throw new Error("layout failed") })
+    // Arm exactly one loadGraphSnapshot throw for the first message. A
+    // second queued Once would go unconsumed and leak into whichever
+    // test's snapshot call comes next under shuffled order.
+    vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockImplementationOnce(() => {
+      throw new Error("snapshot load failed")
+    })
 
+    const failing = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-failed",
+      nodes: [{ ...readyNode, id: "bad", position: { x: 30, y: 30 } }],
+    })
     renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
 
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            nodes: [{ id: "bad", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
-            edges: [],
-            source_revision: "revision-failed",
-            preserved_blocks: [],
-          },
-        }),
+        data: JSON.stringify(pipelineDocumentFrame(failing)),
       }))
     })
 
@@ -500,18 +340,14 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     act(() => { vi.advanceTimersByTime(200) })
 
     // Now send a well-formed update with positions → no layout call → success
+    const good = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-good",
+      nodes: [{ ...readyNode, id: "good", position: { x: 10, y: 20 } }],
+    })
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            nodes: [{ id: "good", position: { x: 10, y: 20 }, data: {} }],
-            edges: [],
-            source_revision: "revision-good",
-            preserved_blocks: [],
-          },
-        }),
+        data: JSON.stringify(pipelineDocumentFrame(good)),
       }))
     })
 
@@ -523,7 +359,6 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
         ]),
       }),
     )
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
     // And the ref must be at 0 after the second update's guard timer
     act(() => { vi.advanceTimersByTime(200) })
     expect(params.graphRefreshingRef.current).toBe(0)

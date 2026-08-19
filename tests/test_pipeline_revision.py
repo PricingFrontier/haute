@@ -119,3 +119,61 @@ def test_revision_changes_with_canonical_graph_config(tmp_path: Path) -> None:
     changed = graph.model_copy(update={"nodes": [node.model_copy(update={"data": changed_data})]})
 
     assert _revision(changed, parent, tmp_path) != before
+
+
+def test_recovery_revision_is_order_independent_and_deduplicates_aliases(
+    tmp_path: Path,
+) -> None:
+    from haute._pipeline_revision import pipeline_recovery_revision
+
+    source = tmp_path / "main.py"
+    source.write_bytes(b"source")
+    sidecar = tmp_path / "main.haute.json"
+    sidecar.write_bytes(b'{"positions":')
+    first = pipeline_recovery_revision(
+        project_root=tmp_path,
+        artifacts=[
+            ("parent_source", source),
+            ("parent_sidecar", sidecar),
+            ("parent_source", tmp_path / "." / "main.py"),
+        ],
+    )
+    second = pipeline_recovery_revision(
+        project_root=tmp_path,
+        artifacts=[
+            ("parent_sidecar", sidecar),
+            ("parent_source", source),
+        ],
+    )
+
+    assert first == second
+
+
+def test_recovery_revision_tracks_raw_bytes_and_missing_transitions(tmp_path: Path) -> None:
+    from haute._pipeline_revision import pipeline_recovery_revision
+
+    source = tmp_path / "main.py"
+    source.write_bytes(b"source")
+    config = tmp_path / "config.json"
+    artifacts = [("parent_source", source), ("node_config", config)]
+    missing = pipeline_recovery_revision(project_root=tmp_path, artifacts=artifacts)
+    config.write_bytes(b'{"invalid":')
+    malformed = pipeline_recovery_revision(project_root=tmp_path, artifacts=artifacts)
+    config.write_bytes(b'{"still_invalid":')
+    changed = pipeline_recovery_revision(project_root=tmp_path, artifacts=artifacts)
+    config.unlink()
+    missing_again = pipeline_recovery_revision(project_root=tmp_path, artifacts=artifacts)
+
+    assert len({missing, malformed, changed}) == 3
+    assert missing_again == missing
+
+
+def test_recovery_revision_rejects_artifacts_outside_project(tmp_path: Path) -> None:
+    from haute._pipeline_revision import pipeline_recovery_revision
+
+    outside = tmp_path.parent / "outside.py"
+    with pytest.raises(ValueError, match="escapes the project root"):
+        pipeline_recovery_revision(
+            project_root=tmp_path,
+            artifacts=[("parent_source", outside)],
+        )

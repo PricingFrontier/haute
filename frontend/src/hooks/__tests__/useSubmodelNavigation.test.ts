@@ -520,6 +520,32 @@ describe("useSubmodelNavigation", () => {
     vi.useRealTimers()
   })
 
+  it("resets drilled navigation without restoring a stale graph after authoritative adoption", async () => {
+    const params = makeParams()
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+    await act(async () => {
+      await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
+    })
+    expect(result.current.viewStack).toHaveLength(2)
+    expect(params.parentGraphRef.current).not.toBeNull()
+    vi.mocked(params.setNodesRaw).mockClear()
+    vi.mocked(params.setEdgesRaw).mockClear()
+    vi.mocked(params.setSelectedNode).mockClear()
+
+    act(() => {
+      result.current.resetToAuthoritativeRoot("repaired.py", "repaired")
+    })
+
+    expect(result.current.viewStack).toEqual([
+      { type: "pipeline", name: "repaired", file: "repaired.py" },
+    ])
+    expect(params.parentGraphRef.current).toBeNull()
+    expect(params.setActiveSubmodelIdentity).toHaveBeenLastCalledWith(null)
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+  })
+
   it("handleBreadcrumbNavigate restores the reconciled parent graph and metadata", async () => {
     vi.useFakeTimers()
     mockLoad.mockResolvedValue({

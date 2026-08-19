@@ -14,11 +14,13 @@ import useNodeResultsStore, {
   resetNodeResultsDerivedCaches,
 } from "../../stores/useNodeResultsStore.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
 import type { OptimiserSolveResult } from "../../api/types.ts"
 import type { ExploreCacheReport, ExplorePivotResult, ExplorePivotStatusResponse } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 import { makeTrainResult } from "../../test-utils/factories.ts"
+import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
 
 const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
 
@@ -27,6 +29,7 @@ const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_
 function resetStore() {
   resetNodeResultsDerivedCaches()
   useGraphStore.setState({ structuralVersion: 0 })
+  useDocumentStatusStore.getState().reset()
   useNodeResultsStore.setState({
     previews: {},
     pinnedPreviewNodeId: null,
@@ -150,6 +153,31 @@ describe("useNodeResultsStore", () => {
         elapsed_seconds: 1,
       })
       expect(useNodeResultsStore.getState().solveJobs["unknown"]).toBeUndefined()
+    })
+
+    it("discards a completion captured under an obsolete document fence", () => {
+      useDocumentStatusStore.getState().loadDocumentStatus(
+        makePipelineEditorDocument({
+          source_file: "rating/main.py",
+          source_revision: "r1",
+        }),
+      )
+      const state = useNodeResultsStore.getState()
+      state.startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
+
+      useDocumentStatusStore.getState().loadLiveDocumentStatus(
+        makePipelineEditorDocument({
+          load_status: "degraded",
+          source_file: "rating/main.py",
+          source_revision: "r2",
+        }),
+        null,
+        true,
+      )
+      state.completeSolveJob("n1", makeSolveResult())
+
+      expect(useNodeResultsStore.getState().solveJobs.n1).toBeUndefined()
+      expect(useNodeResultsStore.getState().solveResults.n1).toBeUndefined()
     })
 
     it("completeSolveJob moves result to solveResults and removes the job", () => {
@@ -550,6 +578,33 @@ describe("useNodeResultsStore", () => {
       })
     })
 
+    it("drops pivot completions and failures captured under an obsolete document fence", () => {
+      useDocumentStatusStore.getState().loadDocumentStatus(
+        makePipelineEditorDocument({
+          source_file: "rating/main.py",
+          source_revision: "r1",
+        }),
+      )
+      const completedKey = start("e1", "completed")
+      const failedKey = start("e1", "failed")
+
+      useDocumentStatusStore.getState().loadLiveDocumentStatus(
+        makePipelineEditorDocument({
+          load_status: "degraded",
+          source_file: "rating/main.py",
+          source_revision: "r2",
+        }),
+        null,
+        true,
+      )
+      const state = useNodeResultsStore.getState()
+      state.completeExplorePivotJob(completedKey, makePivotResult({ pivot_id: "completed" }))
+      state.failExplorePivotJob(failedKey, "obsolete failure")
+
+      expect(useNodeResultsStore.getState().pivotJobs).toEqual({})
+      expect(useNodeResultsStore.getState().pivotResults).toEqual({})
+    })
+
     it("clearNode removes only pivot entries owned by that node", () => {
       const first = start("e1", "p1")
       const second = start("e1", "p2")
@@ -557,11 +612,15 @@ describe("useNodeResultsStore", () => {
       useNodeResultsStore.getState().completeExplorePivotJob(first, makePivotResult())
       useNodeResultsStore.getState().completeExplorePivotJob(second, makePivotResult({ pivot_id: "p2" }))
       useNodeResultsStore.getState().completeExplorePivotJob(other, makePivotResult({ node_id: "e10" }))
+      const pending = start("e1", "pending")
+      const pendingOther = start("e10", "pending")
       useNodeResultsStore.getState().clearNode("e1")
       const state = useNodeResultsStore.getState()
       expect(state.pivotResults[first]).toBeUndefined()
       expect(state.pivotResults[second]).toBeUndefined()
       expect(state.pivotResults[other]).toBeDefined()
+      expect(state.pivotJobs[pending]).toBeUndefined()
+      expect(state.pivotJobs[pendingOther]).toBeDefined()
     })
 
     it("enforces the pivot result LRU cap", () => {

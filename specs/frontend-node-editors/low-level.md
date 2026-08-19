@@ -5,6 +5,7 @@
 | File | Responsibility |
 | --- | --- |
 | `frontend/src/panels/NodePanel.tsx` | Selects configuration/columns/instance views, routes the selected node to an editor, hosts the supported modelling node's five-pane strip and active-training indicator, and derives the per-edge `InputSource` list via `edgeInputName` (memoised on a per-edge signature covering edge id, source id/label, `sourceHandle`, the derived input name, and the `frameUnresolved` resolution state). |
+| `frontend/src/components/PipelineRepairDialog.tsx` | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned remove-only dry-run and confirmation UI invoked from the unavailable-node inspector. |
 | `frontend/src/panels/PreviewPanelTabs.tsx` | Generic ARIA tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md) and used by the node panel for the five modelling panes and active-training indicator. |
 | `frontend/src/panels/NodePalette.tsx` | Renders draggable node templates. |
 | `frontend/src/panels/LazyNodeEditors.tsx` | Central dynamic-import registry and loading boundaries for editor bodies. |
@@ -685,3 +686,40 @@ labels, active-indicator routing, and no stale active state after a node change.
 indicator and keyboard
 contract is owned by
 [frontend-preview-explore](../frontend-preview-explore/low-level.md#modelling-config-panes).
+
+## Approved change contract — recovery-only node surfaces
+
+`frontend/src/nodes/PipelineNode.tsx` reads `_loadAvailability` independently of `_status` and
+renders accessible unavailable/blocked labels and distinct card styling. The metadata comes only
+from the validated recovery adapter. `frontend/src/nodes/UnavailablePipelineNode.tsx` is registered
+under the reserved `unavailablePipelineNode` React Flow type; `NODE_TYPES` and the palette do not
+include that value.
+
+`frontend/src/panels/NodePanel.tsx` subscribes to the central document diagnostics and, after all
+hooks have executed, branches to a recovery inspector whenever the selected node's load
+availability is not `ready`. It never instantiates a normal node editor for that element. For a
+document-wide recovery read-only state, a ready node renders a static JSON configuration inspector
+instead of mounting the normal editor tree; this prevents editor effects as well as user events
+from starting preview/train/cache/schema/publication actions behind the App-level capability fence.
+Created read-only submodel instances retain the normal inert editor presentation, and all read-only
+update handlers reject calls.
+
+## Approved change contract — minimal unavailable-node removal
+
+`NodePanel` renders the repair affordance only for an `unavailable` recovery
+node when `useDocumentStatusStore.capabilities.can_repair` is true. It passes
+the node's `_recoveryId` and server-supplied `_sourceFile` to the document-level
+repair flow; it never derives or submits source spans.
+
+The confirmation dialog requests a strict dry-run plan, displays each touched
+artifact and bounded unified diff, and distinguishes retained config from an
+explicitly requested config deletion. Toggling config deletion invalidates the
+old confirmation and requests a fresh plan. Apply submits the unchanged plan
+identity/hash and disables duplicate confirmation while in flight. Expected
+409/422 detail is rendered in the dialog with focus retained; success closes
+the panel only after App has atomically adopted the returned editor document.
+
+Component tests pin unavailable-only visibility, capability gating, dry-run
+before apply, touched-file/diff presentation, default config retention,
+replanning for explicit config deletion, stale-plan errors, duplicate-submit
+suppression, and successful document adoption. There is no migration UI.

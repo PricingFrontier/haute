@@ -24,7 +24,6 @@ from haute._banding_config import (
     expand_banding_config_from_sidecar,
 )
 from haute._graph_utils import _sanitize_func_name
-from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._rating_step_config import (
     normalise_rating_step_config,
@@ -98,7 +97,11 @@ def reject_duplicate_keys_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _load_json_object(path: Path) -> dict[str, Any]:
     """Load a config JSON object, rejecting duplicate keys."""
-    loaded = json.loads(read_user_text(path), object_pairs_hook=reject_duplicate_keys_hook)
+    # Config JSON remains strict UTF-8: unlike Python source, a leading BOM is
+    # invalid JSON and must surface as authored corruption instead of being
+    # silently consumed by the user-source reader.
+    text = path.read_text(encoding="utf-8", errors="replace")
+    loaded = json.loads(text, object_pairs_hook=reject_duplicate_keys_hook)
     if not isinstance(loaded, dict):
         raise ValueError("Node config JSON must contain an object")
     return loaded

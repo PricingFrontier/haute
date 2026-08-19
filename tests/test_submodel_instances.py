@@ -746,10 +746,13 @@ pipeline.submodel(
 
     from haute import parser as parser_module
 
+    # Parent parsing feeds its captured child bytes directly into the source
+    # parser, bypassing the file convenience wrapper so recovery can authenticate
+    # exactly the bytes it parsed.
     with patch.object(
         parser_module,
-        "parse_submodel_file",
-        wraps=parser_module.parse_submodel_file,
+        "_parse_submodel_source",
+        wraps=parser_module._parse_submodel_source,
     ) as parse_child:
         graph = parse_pipeline_source(
             parent_source,

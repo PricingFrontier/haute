@@ -12,14 +12,14 @@ implementation-detail gaps that those behaviour tests don't exercise:
 
 from __future__ import annotations
 
-from haute._event_bus import EventBus, GraphUpdatePayload
+from haute._event_bus import EventBus, PipelineDocumentUpdatePayload
 
 
-def test_graph_update_payload_declares_complete_wire_contract() -> None:
+def test_pipeline_document_update_payload_declares_complete_wire_contract() -> None:
     """Static publisher checks must cover every field sent to WebSocket clients."""
-    assert GraphUpdatePayload.__required_keys__ == {
-        "graph",
-        "graph_fingerprint",
+    assert PipelineDocumentUpdatePayload.__required_keys__ == {
+        "document",
+        "document_fingerprint",
         "source_file",
     }
 
@@ -80,11 +80,11 @@ def test_repr_reports_subscriber_counts_per_event_type() -> None:
     bus = EventBus()
     assert repr(bus) == "EventBus(subscribers={})"
 
-    bus.subscribe("graph.update", lambda _p: None)
-    bus.subscribe("graph.update", lambda _p: None)
+    bus.subscribe("pipeline.document.update", lambda _p: None)
+    bus.subscribe("pipeline.document.update", lambda _p: None)
     bus.subscribe("parse.error", lambda _p: None)
 
-    assert repr(bus) == "EventBus(subscribers={'graph.update': 2, 'parse.error': 1})"
+    assert repr(bus) == ("EventBus(subscribers={'pipeline.document.update': 2, 'parse.error': 1})")
 
 
 def test_snapshot_is_a_deep_copy_of_the_registry() -> None:

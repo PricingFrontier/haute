@@ -1,7 +1,7 @@
 """Decorator-kwarg parsing contract tests.
 
-``_parse_decorator_kwargs_regex`` in ``src/haute/_parser_regex.py`` powers the
-syntax-error fallback parser. It parses decorator arguments with
+``_parse_decorator_kwargs_regex`` in ``src/haute/_parser_regex.py`` powers
+editor-only syntax recovery. It parses decorator arguments with
 ``ast.parse(f"f({inner})")`` and ``ast.literal_eval`` over the resulting
 ``Call.keywords`` list.
 
@@ -19,12 +19,12 @@ Split:
 * ``TestValueParsingPolicyPin`` — the current policy is "literal
   Python value via ``ast.literal_eval``".  Asserts explicitly so a
   drift to raw-source-string semantics must update this test.
-* ``TestFallbackParseSmoke`` — integration: fallback recovery succeeds
+* ``TestRecoveredFragmentSmoke`` — neutral recovery succeeds
   for valid fragments and fails loudly for visible unrecoverable fragments.
 
 The test file intentionally only touches:
   * ``_parse_decorator_kwargs_regex`` (unit surface)
-  * ``fallback_parse`` (integration surface)
+  * ``recover_pipeline_fragments`` (integration surface)
 so the dev is free to refactor all internal helpers.
 """
 
@@ -32,9 +32,8 @@ from __future__ import annotations
 
 import pytest
 
-from haute._parser_regex import _parse_decorator_kwargs_regex, fallback_parse
+from haute._parser_regex import _parse_decorator_kwargs_regex, recover_pipeline_fragments
 from haute.errors import ParseError
-from tests.conftest import write_data_input_config
 
 # ---------------------------------------------------------------------------
 # Part 1: Regression — kwarg shapes that currently work (must stay green)
@@ -314,67 +313,38 @@ class TestFailLoudOnMalformedInput:
 
 
 # ---------------------------------------------------------------------------
-# Part 5: Integration smoke — pathological decorators survive fallback_parse
+# Part 5: Neutral fragment integration
 # ---------------------------------------------------------------------------
 
 
-class TestFallbackParseSmoke:
-    """End-to-end: a pipeline file with a real syntax error + a valid
-    decorator body must still produce a PipelineGraph with the correct
-    node configs.
+class TestRecoveredFragmentSmoke:
+    def test_pipeline_name_and_multiline_decorator_survive(self) -> None:
+        source = """import haute
+pipeline = haute.Pipeline("smoke")
 
-    This is the contract the GUI depends on — the fallback parser is
-    invoked whenever ``ast.parse`` rejects a file, and the graph it
-    returns must be best-effort-correct so the user can still see
-    their pipeline alongside the error markers.
-    """
+@pipeline.polars(
+    selected_columns=["premium", "claims"],
+)
+def transform(df):
+    return df
 
-    def test_fallback_parse_rejects_unrecoverable_visible_decorator(self, tmp_path) -> None:
-        """Visible decorators that cannot be recovered must fail loud.
+def broken(:
+    pass
+"""
 
-        Returning a partial graph here would let the next save silently
-        delete the malformed node from disk.
-        """
-        write_data_input_config(tmp_path, "load", "input.csv")
-        source = (
-            'pipeline = haute.Pipeline("smoke_test")\n'
-            "\n"
-            '@pipeline.data_input(config="config/data_input/load.json")\n'
-            "def load():\n"
-            '    return pl.scan_csv("input.csv")\n'
-            "\n"
-            "# Deliberately broken — this is what triggers the fallback\n"
-            "@pipeline.polars(\n"
-            "    this is not valid python\n"
-        )
-        with pytest.raises(ParseError, match="pipeline decorator argument list is never closed"):
-            fallback_parse(source, str(tmp_path / "smoke.py"), SyntaxError("broken"))
+        fragments = recover_pipeline_fragments(source)
 
-    def test_fallback_parse_pipeline_name_survives(self) -> None:
-        source = (
-            'pipeline = haute.Pipeline("named", description="my pipeline")\n'
-            "\n"
-            "@pipeline.polars\n"
-            "def transform(df):\n"
-            "    return df\n"
-            "\n"
-            "x = {unclosed\n"
-        )
-        graph = fallback_parse(source, "smoke.py", SyntaxError("broken"))
-        assert graph.pipeline_name == "named"
-        assert graph.pipeline_description == "my pipeline"
+        assert fragments.pipeline_name == "smoke"
+        assert len(fragments.functions) == 1
+        kwargs = _parse_decorator_kwargs_regex(fragments.functions[0].decorator_text)
+        assert kwargs == {"selected_columns": ["premium", "claims"]}
 
-    def test_fallback_parse_multiline_kwarg_decorator(self) -> None:
-        """Multi-line kwargs on a recovered decorator must parse correctly.
+    def test_visible_unrecoverable_decorator_is_not_silently_dropped(self) -> None:
+        source = """pipeline = haute.Pipeline("smoke")
+@pipeline.polars(selected_columns=["premium"
+def transform(df):
+    return df
+"""
 
-        The regex decorator finder is single-paren-only, so it won't pick
-        up a genuinely multi-line decorator body — but if it does capture
-        a decorator whose body spans lines, the kwarg parser must handle
-        the multi-line form.  Exercise that by directly feeding a
-        multi-line decorator text to the kwarg parser (the call path
-        inside fallback_parse).
-        """
-        decorator_text = '@pipeline.data_input(\n    path="multi.csv",\n    table="t",\n)'
-        result = _parse_decorator_kwargs_regex(decorator_text)
-        assert result["path"] == "multi.csv"
-        assert result["table"] == "t"
+        with pytest.raises(ParseError):
+            recover_pipeline_fragments(source)

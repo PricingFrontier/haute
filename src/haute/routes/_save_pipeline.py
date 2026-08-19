@@ -95,6 +95,52 @@ def _mark_self_write_cb(_path: Path) -> None:
     mark_self_write(_path)
 
 
+def _stage_artifact_write_bytes(
+    out_path: Path,
+    payload: bytes,
+    touched: list[_TouchedFile],
+) -> None:
+    """Write one artifact atomically while recording exact rollback state."""
+    previous_bytes = out_path.read_bytes() if out_path.exists() else None
+    touched.append(_TouchedFile(target=out_path, previous_bytes=previous_bytes))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with Writer(out_path, mark_self_write=_mark_self_write_cb) as writer:
+        writer.write_bytes(payload)
+
+
+def _stage_artifact_delete(target: Path, touched: list[_TouchedFile]) -> None:
+    """Delete one file after snapshotting it and registering a self-write."""
+    if not target.exists():
+        return
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="Artifact delete target is not a file.")
+    touched.append(_TouchedFile(target=target, previous_bytes=target.read_bytes()))
+    mark_self_write(target)
+    target.unlink()
+
+
+def _rollback_artifacts(touched: list[_TouchedFile]) -> list[Path]:
+    """Best-effort reverse rollback shared by Save and recovery repair."""
+    failed: list[Path] = []
+    for entry in reversed(touched):
+        target = entry.target
+        try:
+            mark_self_write(target)
+            if entry.previous_bytes is None:
+                if target.is_file():
+                    target.unlink()
+            else:
+                atomic_write_bytes(target, entry.previous_bytes)
+        except OSError as exc:
+            failed.append(target)
+            logger.error(
+                "save_rollback_failed",
+                target=str(target),
+                error=str(exc),
+            )
+    return failed
+
+
 class SavePipelineService:
     """Orchestrates every side-effect of saving a pipeline graph.
 
@@ -201,13 +247,17 @@ class SavePipelineService:
 
             from haute.routes import _helpers
 
-            committed_graph = _helpers.parse_pipeline_to_graph(
+            _helpers.parse_pipeline_to_graph(
                 py_path,
                 project_root=self._root,
             )
-            source_revision = committed_graph.source_revision
-            if not source_revision:
-                raise RuntimeError("Committed pipeline did not produce a source revision.")
+            committed_document = _helpers.load_pipeline_editor_document(
+                py_path,
+                project_root=self._root,
+            )
+            source_revision = committed_document.source_revision
+            if committed_document.load_status != "ready" or not source_revision:
+                raise RuntimeError("Committed pipeline did not produce a ready editor revision.")
         except BaseException:
             self._rollback(touched)
             raise
@@ -1041,29 +1091,11 @@ class SavePipelineService:
         rename so the file-watcher sees a coherent self-write event for
         every file, not just the last one of a long save.
         """
-        # Snapshot the previous state BEFORE writing so a failed rename
-        # is recoverable.  ``previous_bytes is None`` means the file did
-        # not exist and rollback should delete it.
-        previous_bytes: bytes | None = None
-        if out_path.exists():
-            previous_bytes = out_path.read_bytes()
-        touched.append(_TouchedFile(target=out_path, previous_bytes=previous_bytes))
-
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with Writer(out_path, mark_self_write=_mark_self_write_cb) as w:
-            w.write_text(code)
+        _stage_artifact_write_bytes(out_path, code.encode("utf-8"), touched)
 
     def _stage_delete(self, target: Path, touched: list[_TouchedFile]) -> None:
         """Delete one file after recording enough state to restore it."""
-        if not target.exists():
-            return
-        if not target.is_file():
-            raise HTTPException(
-                status_code=400,
-                detail="Submodel delete target is not a file.",
-            )
-        touched.append(_TouchedFile(target=target, previous_bytes=target.read_bytes()))
-        target.unlink()
+        _stage_artifact_delete(target, touched)
 
     # ------------------------------------------------------------------
     # Code generation
@@ -1614,19 +1646,4 @@ class SavePipelineService:
         files still have a chance to recover — losing *part* of a
         rollback is strictly better than losing all of it.
         """
-        # Undo in reverse order of writes so a file we created is
-        # removed before any directory cleanup later in the list.
-        for entry in reversed(touched):
-            target = entry.target
-            try:
-                if entry.previous_bytes is None:
-                    if target.is_file():
-                        target.unlink()
-                else:
-                    atomic_write_bytes(target, entry.previous_bytes)
-            except OSError as exc:
-                logger.error(
-                    "save_rollback_failed",
-                    target=str(target),
-                    error=str(exc),
-                )
+        _rollback_artifacts(touched)

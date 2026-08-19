@@ -16,9 +16,12 @@ from haute._types import DECORATOR_TO_NODE_TYPE, NodeType
 from haute.errors import ParseError
 
 __all__ = [
+    "_chained_receiver_calls",
     "_eval_ast_literal",
     "_get_decorator_kwargs",
+    "_is_pipeline_authored_decorator",
     "_is_pipeline_node_decorator",
+    "_is_submodel_authored_decorator",
     "_is_submodel_node_decorator",
     "_get_decorator_node_type",
     "_get_docstring",
@@ -162,6 +165,33 @@ def _is_pipeline_node_decorator(decorator: ast.expr) -> bool:
         return _is_pipeline_node_decorator(decorator.func)
 
     return False
+
+
+def _is_receiver_authored_decorator(decorator: ast.expr, receiver: str) -> bool:
+    """Return whether *decorator* is any direct ``@receiver.<name>`` use.
+
+    Recovery must discover authored structures before deciding whether their
+    decorator is supported.  Keeping this predicate separate from the known
+    node predicate prevents tolerant discovery from weakening config/runtime
+    type validation.
+    """
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    return (
+        isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == receiver
+        and bool(target.attr)
+    )
+
+
+def _is_pipeline_authored_decorator(decorator: ast.expr) -> bool:
+    """Return whether *decorator* is any direct ``@pipeline.<name>`` use."""
+    return _is_receiver_authored_decorator(decorator, "pipeline")
+
+
+def _is_submodel_authored_decorator(decorator: ast.expr) -> bool:
+    """Return whether *decorator* is any direct ``@submodel.<name>`` use."""
+    return _is_receiver_authored_decorator(decorator, "submodel")
 
 
 def _get_decorator_node_type(decorator: ast.expr) -> NodeType | None:
@@ -374,33 +404,43 @@ def _extract_connect_calls(
     """
     connects: list[tuple[str, str, str | None, str | None]] = []
 
-    for node in ast.iter_child_nodes(tree):
-        if not isinstance(node, ast.Expr):
-            continue
-        call = node.value
-        if not isinstance(call, ast.Call):
-            continue
-
-        # Collect every .connect link in the method chain, walking from
-        # the outermost call down to the base receiver.
-        links: list[ast.Call] = []
-        cur: ast.expr = call
-        while isinstance(cur, ast.Call) and isinstance(cur.func, ast.Attribute):
-            if cur.func.attr == "connect":
-                links.append(cur)
-            cur = cur.func.value
-        if not links:
-            continue
-        if not (isinstance(cur, ast.Name) and cur.id == receiver):
-            continue
-
-        # links were collected outermost-first; reverse for source order.
-        for link in reversed(links):
+    for node in tree.body:
+        for link in _chained_receiver_calls(node, receiver=receiver, method="connect"):
             edge = _connect_call_edge(link, receiver)
             if edge is not None:
                 connects.append(edge)
 
     return connects
+
+
+def _chained_receiver_calls(
+    statement: ast.stmt,
+    *,
+    receiver: str,
+    method: str,
+) -> list[ast.Call]:
+    """Return each ``<receiver>...<method>(...)`` link in one top-level statement.
+
+    The chain is walked from the outermost call down to its base receiver,
+    which must be a bare ``ast.Name`` matching *receiver* —
+    ``module.pipeline.connect(...)`` and ``get_pipeline().connect(...)`` stay
+    rejected. Non-*method* links are scanned over so a chain's later calls are
+    not lost. Links are returned in authored (source) order; an empty list
+    means the statement contributes nothing.
+    """
+    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+        return []
+    links: list[ast.Call] = []
+    current: ast.expr = statement.value
+    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
+        if current.func.attr == method:
+            links.append(current)
+        current = current.func.value
+    if not links or not (isinstance(current, ast.Name) and current.id == receiver):
+        return []
+    # Links were collected outermost-first; reverse for source order.
+    links.reverse()
+    return links
 
 
 # ---------------------------------------------------------------------------
@@ -590,7 +630,9 @@ def _extract_preamble_from_ast(
 
     generated_start_line = len(lines) + 1
     is_node_decorator = (
-        _is_pipeline_node_decorator if receiver == "pipeline" else _is_submodel_node_decorator
+        _is_pipeline_authored_decorator
+        if receiver == "pipeline"
+        else _is_submodel_authored_decorator
     )
     for statement in tree.body:
         value: ast.expr | None = None
@@ -725,12 +767,8 @@ def _extract_preamble_textual(
             break
         decorator_prefix = f"@{receiver}."
         if stripped.startswith(decorator_prefix):
-            # Check if the decorator name after the receiver is a known type
-            dot_rest = stripped[len(decorator_prefix) :]
-            dec_name = dot_rest.split("(")[0].split()[0] if dot_rest else ""
-            if dec_name in DECORATOR_TO_NODE_TYPE:
-                generated_start_idx = i
-                break
+            generated_start_idx = i
+            break
 
     # Extract lines between standard imports and generated object code.
     preamble_lines = _slice_without_module_preserve_spans(

@@ -82,10 +82,11 @@ name contract without requiring execution data. Init creates neither `prompts/` 
 `parse_pipeline_file` then `execute_graph`, prints one line per node (row/column count or error),
 exits 1 if any node failed, then previews the last node's output as a `polars.DataFrame`.
 
-**`lint`**: resolves the pipeline file, parses it, and runs three structural checks in order: edges
-referencing missing node ids, nodes carrying a `parseError` in their config, and (for multi-node
-graphs) orphan nodes with no edges at all. All findings are collected before reporting, so a single
-run surfaces every issue rather than stopping at the first.
+**`lint`**: resolves the pipeline file and parses it through the strict canonical entry point. Any
+syntax, configuration, topology, or other parse failure is reported and exits 1; editor recovery
+fragments never reach lint. For a valid graph it checks edges referencing missing node ids and, for
+multi-node graphs, orphan nodes with no edges at all. Those post-parse findings are collected before
+reporting so one run surfaces every independent structural issue.
 
 **`train`**: validates the script exists, runs it through
 `haute._sandbox.validate_user_code(..., allow_imports=True)` before execution, loads it as a module

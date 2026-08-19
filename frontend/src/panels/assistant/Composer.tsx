@@ -7,14 +7,15 @@ import useAssistantStore, { assistantSendDisabledReason } from "../../stores/use
 interface ComposerProps {
   isInsideSubmodel: boolean
   currentSourceFile: string | null
+  readOnly: boolean
 }
 
-export default function Composer({ isInsideSubmodel, currentSourceFile }: ComposerProps) {
+export default function Composer({ isInsideSubmodel, currentSourceFile, readOnly }: ComposerProps) {
   const [text, setText] = useState("")
   const turnStatus = useAssistantStore((state) => state.turnStatus)
   const status = useAssistantStore((state) => state.status)
   const dirty = useGraphStore((state) => state.dirty)
-  const reason = assistantSendDisabledReason(status, isInsideSubmodel, dirty)
+  const reason = assistantSendDisabledReason(status, isInsideSubmodel, dirty, readOnly)
   const streaming = turnStatus === "streaming"
   const disabled = streaming || reason !== null
 
@@ -24,6 +25,7 @@ export default function Composer({ isInsideSubmodel, currentSourceFile }: Compos
     void useAssistantStore.getState().sendMessage(text, {
       isInsideSubmodel,
       currentSourceFile: currentSourceFile ?? "",
+      readOnly,
     })
   }
 

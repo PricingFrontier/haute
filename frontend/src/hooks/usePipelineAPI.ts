@@ -2,7 +2,13 @@ import { useEffect, useCallback, useRef, useState } from "react"
 import type { Node } from "@xyflow/react"
 import type { PreviewData } from "../panels/DataPreview"
 import { makePreviewData } from "../utils/makePreviewData"
-import { ApiError, loadPipeline, previewNode, savePipeline } from "../api/client"
+import {
+  ApiError,
+  loadPipeline,
+  previewNode,
+  previewRecoveryNode,
+  savePipeline,
+} from "../api/client"
 import type { ApiTimeoutError, RetryPolicy } from "../api/client"
 import { resolveGraphFromRefs } from "../utils/buildGraph"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
@@ -13,12 +19,17 @@ import useGraphStore, { captureGraphSnapshot } from "../stores/useGraphStore"
 import useGitStore from "../stores/useGitStore"
 import { isIdentityPromptDismissed } from "../stores/identityPrompt"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
+import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
 import { effectiveNodeType, nodeData } from "../types/node"
 import type { PipelineEdge } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
-import { parsePipelineResponse } from "../types/guards"
+import {
+  adaptPipelineEditorDocument,
+  parsePipelineEditorDocument,
+  type PipelineLoadStatus,
+} from "../types/pipelineDocument"
 import { columnsEqualByFingerprint, type ColumnFingerprintInput } from "../utils/columnFingerprint"
 import { apiInputFrameLabels } from "../utils/apiInputPorts"
 import {
@@ -50,6 +61,7 @@ interface PipelineAPIParams {
 
 export interface PipelineAPIReturn {
   loading: boolean
+  loadError: string | null
   previewData: PreviewData | null
   setPreviewData: React.Dispatch<React.SetStateAction<PreviewData | null>>
   previewBusy: boolean
@@ -68,6 +80,8 @@ export interface PipelineAPIReturn {
   /** Save the pipeline. Resolves true on success, false on failure (never rejects);
    *  callers chaining follow-on work (such as Commit) await this. */
   handleSave: () => Promise<boolean>
+  /** Atomically ingest a validated authoritative editor document. */
+  adoptPipelineDocument: (document: import("../types/pipelineDocument").PipelineEditorDocument) => void
 }
 
 export interface FetchPreviewOptions {
@@ -151,8 +165,64 @@ function previewColumnNamesForNode(node: Node): string[] | undefined {
     : undefined
 }
 
+function submodelRecoveryPreviewNotice(node: Node): PreviewData {
+  // Recovery preview is planned server-side from the root document, so a
+  // drilled submodel view has no admissible preview; say so instead of
+  // silently blanking the panel.
+  return makePreviewData(node.id, nodeLabel(node), {
+    status: "error",
+    error:
+      "Preview is unavailable inside a submodel while the pipeline is in recovery mode. " +
+      "Return to the main pipeline to preview ready nodes.",
+  })
+}
+
 function canPreviewNode(node: Node): boolean {
-  return !NON_EXECUTABLE_PREVIEW_TYPES.has(effectiveNodeType(node))
+  const documentStatus = useDocumentStatusStore.getState()
+  const documentCanPreview = documentStatus.capabilities?.can_preview === true &&
+    documentStatus.graphSynchronized
+  return documentCanPreview &&
+    nodeData(node)._loadAvailability !== "unavailable" &&
+    nodeData(node)._loadAvailability !== "blocked" &&
+    !NON_EXECUTABLE_PREVIEW_TYPES.has(effectiveNodeType(node))
+}
+
+interface PreviewDocumentFence {
+  sourceFile: string
+  sourceRevision: string
+  storeSourceRevision: string
+  loadStatus: PipelineLoadStatus | null
+  canPreview: boolean
+  graphSynchronized: boolean
+}
+
+function capturePreviewDocumentFence(
+  sourceRevisionRef: React.MutableRefObject<string>,
+): PreviewDocumentFence {
+  const document = useDocumentStatusStore.getState()
+  return {
+    sourceFile: document.sourceFile,
+    sourceRevision: sourceRevisionRef.current,
+    storeSourceRevision: document.sourceRevision ?? "",
+    loadStatus: document.loadStatus,
+    canPreview: document.capabilities?.can_preview === true,
+    graphSynchronized: document.graphSynchronized,
+  }
+}
+
+function isPreviewDocumentFenceCurrent(
+  captured: PreviewDocumentFence,
+  sourceRevisionRef: React.MutableRefObject<string>,
+): boolean {
+  const current = useDocumentStatusStore.getState()
+  return captured.canPreview &&
+    captured.graphSynchronized &&
+    current.sourceFile === captured.sourceFile &&
+    sourceRevisionRef.current === captured.sourceRevision &&
+    (current.sourceRevision ?? "") === captured.storeSourceRevision &&
+    current.loadStatus === captured.loadStatus &&
+    current.capabilities?.can_preview === true &&
+    current.graphSynchronized
 }
 
 function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: ColumnDef[], result: NodeResult, source: string): Node[] {
@@ -261,6 +331,7 @@ export default function usePipelineAPI({
   const activeSource = useSettingsStore((s) => s.activeSource)
   const addToast = useToastStore((s) => s.addToast)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [previewData, setPreviewData] = useState<PreviewData | null>(null)
   const [previewBusy, setPreviewBusy] = useState(false)
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, "ok" | "error" | "running">>({})
@@ -298,10 +369,45 @@ export default function usePipelineAPI({
     setNodesRaw((nds) => invalidateStaleColumnStashes(nds, activeSource))
   }, [activeSource, setNodesRaw])
 
+  const adoptPipelineDocument = useCallback((data: import("../types/pipelineDocument").PipelineEditorDocument) => {
+    if (data.source_file && data.source_revision === null) {
+      throw new Error("parsePipelineEditorDocument: live document has no source_revision")
+    }
+    const adapted = adaptPipelineEditorDocument(data)
+    const pipelineNodes = adapted.nodes
+    const pipelineEdges = adapted.edges
+    const loadedPreamble = data.preamble ?? ""
+    const loadedSubmodels = adapted.submodels
+    preambleRef.current = loadedPreamble
+    submodelsRef.current = loadedSubmodels
+    sourceRevisionRef.current = data.source_revision ?? ""
+    preservedBlocksRef.current = data.preserved_blocks
+    useDocumentStatusStore.getState().loadDocumentStatus(data, false)
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: pipelineNodes,
+      edges: normalizeEdges(pipelineEdges),
+      preamble: loadedPreamble,
+      submodels: loadedSubmodels,
+    })
+    useDocumentStatusStore.getState().setGraphSynchronized(true)
+    if (data.pipeline_name) pipelineNameRef.current = data.pipeline_name
+    if (data.pipeline_description != null) descriptionRef.current = data.pipeline_description
+    if (data.source_file) {
+      sourceFileRef.current = data.source_file
+      setCurrentSourceFile?.(data.source_file)
+    }
+    if (data.source_selection_trusted) {
+      useSettingsStore.getState().setSources(data.sources)
+      if (data.active_source) useSettingsStore.getState().setActiveSource(data.active_source)
+    }
+    nodeIdCounterRef.current = computeNextNodeId(pipelineNodes)
+  }, [setCurrentSourceFile, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, submodelsRef, nodeIdCounterRef])
+
   // Initial pipeline load
   useEffect(() => {
     const controller = new AbortController()
     let disposed = false
+    useDocumentStatusStore.getState().reset()
 
     loadPipeline({ signal: controller.signal, retry: INITIAL_PIPELINE_RETRY_POLICY })
       .then((raw) => {
@@ -311,47 +417,15 @@ export default function usePipelineAPI({
         // optional field) throws a named Error that flows into the
         // `.catch` handler below — rather than surfacing downstream as a
         // cryptic "undefined is not iterable" three callbacks deep.
-        const data = parsePipelineResponse(raw)
-        if (data.source_file && data.source_revision === null) {
-          throw new Error("parsePipelineResponse: live document has no source_revision")
-        }
-        const pipelineNodes = data.nodes
-        const pipelineEdges = data.edges
-        const loadedPreamble = data.preamble ?? ""
-        const loadedSubmodels = data.submodels ?? {}
-        // Refs are request-facing mirrors read outside React render. Update
-        // them before publishing the atomic store transition so subscribers
-        // can never observe the new document with stale mirrors.
-        preambleRef.current = loadedPreamble
-        submodelsRef.current = loadedSubmodels
-        sourceRevisionRef.current = data.source_revision ?? ""
-        preservedBlocksRef.current = data.preserved_blocks
-        useGraphStore.getState().loadGraphSnapshot({
-          nodes: pipelineNodes,
-          edges: normalizeEdges(pipelineEdges),
-          preamble: loadedPreamble,
-          submodels: loadedSubmodels,
-        })
-        if (data.pipeline_name) pipelineNameRef.current = data.pipeline_name
-        if (data.pipeline_description != null) descriptionRef.current = data.pipeline_description
-        if (data.source_file) {
-          sourceFileRef.current = data.source_file
-          setCurrentSourceFile?.(data.source_file)
-        }
-        // Populate source state from backend sidecar
-        if (data.sources) {
-          useSettingsStore.getState().setSources(data.sources)
-        }
-        if (data.active_source) {
-          useSettingsStore.getState().setActiveSource(data.active_source)
-        }
-        nodeIdCounterRef.current = computeNextNodeId(pipelineNodes)
-        if (data.warning) addToast("warning", data.warning)
+        const data = parsePipelineEditorDocument(raw)
+        adoptPipelineDocument(data)
         setLoading(false)
       })
       .catch((err) => {
         if (disposed || (isAbortError(err) && controller.signal.aborted)) return
-        addToast("error", `Failed to load pipeline: ${err.message}`)
+        const detail = err instanceof Error ? err.message : String(err)
+        setLoadError(detail)
+        addToast("error", `Failed to load pipeline: ${detail}`)
         setLoading(false)
       })
 
@@ -359,7 +433,7 @@ export default function usePipelineAPI({
       disposed = true
       controller.abort()
     }
-  }, [setCurrentSourceFile, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, submodelsRef, nodeIdCounterRef, addToast])
+  }, [adoptPipelineDocument, addToast])
 
   const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number, options?: { bypassCache?: boolean; snapshotsEnsured?: boolean }) => {
     const requestId = existingRequestId ?? ++previewRequestSeq.current
@@ -368,6 +442,14 @@ export default function usePipelineAPI({
     previewAbort.current = null
     if (!canPreviewNode(node)) {
       setPreviewData(null)
+      setPreviewBusy(false)
+      return
+    }
+    if (
+      useDocumentStatusStore.getState().loadStatus === "degraded" &&
+      activeSubmodelIdentity !== null
+    ) {
+      setPreviewData(submodelRecoveryPreviewNotice(node))
       setPreviewBusy(false)
       return
     }
@@ -386,13 +468,20 @@ export default function usePipelineAPI({
     const snapshotRowLimit = rowLimitRef.current
     const snapshotSource = activeSourceRef.current
     const snapshotChunkSize = streamingChunkSizeRef.current
+    const snapshotDocumentFence = capturePreviewDocumentFence(sourceRevisionRef)
+    const snapshotDocumentRevision = snapshotDocumentFence.sourceRevision
+    const snapshotDocumentStatus = snapshotDocumentFence.loadStatus
+    const recoveryPreview = snapshotDocumentStatus === "degraded"
+    const documentStillCurrent = () =>
+      isPreviewDocumentFenceCurrent(snapshotDocumentFence, sourceRevisionRef)
     const matchesRequestContext = (cached: { structuralVersion: number; source?: string; rowLimit?: number }) =>
       cached.structuralVersion === structuralVersion &&
       cached.source === snapshotSource &&
       cached.rowLimit === snapshotRowLimit
     const requestStillCurrent = () =>
       previewRequestSeq.current === requestId &&
-      useGraphStore.getState().structuralVersion === structuralVersion
+      useGraphStore.getState().structuralVersion === structuralVersion &&
+      documentStillCurrent()
 
     // Cache-first: show cached data immediately if available
     const cached = getPreview(node.id)
@@ -596,23 +685,36 @@ export default function usePipelineAPI({
       if (!requestStillCurrent() || controller.signal.aborted) {
         throw new DOMException("Preview request was superseded.", "AbortError")
       }
+      if (recoveryPreview) {
+        return previewRecoveryNode({
+          sourceFile: sourceFileRef.current,
+          sourceRevision: snapshotDocumentRevision,
+          targetRecoveryId: node.id,
+          rowLimit: snapshotRowLimit,
+          source: snapshotSource,
+          requestedPreviewColumns: previewColumnNamesForNode(node),
+          portLabel,
+          streamingChunkSize: snapshotChunkSize,
+          signal: controller.signal,
+        })
+      }
       return previewNode({
-        graph,
-        nodeId: runtimeNodeIdForVisibleNode(
-          graphRef.current.nodes,
-          node.id,
-          activeSubmodelIdentity,
-        ),
-        rowLimit: snapshotRowLimit,
-        source: snapshotSource,
-        requestedPreviewColumns: previewColumnNamesForNode(node),
-        portLabel,
-        streamingChunkSize: snapshotChunkSize,
-        signal: controller.signal,
-      })
+          graph,
+          nodeId: runtimeNodeIdForVisibleNode(
+            graphRef.current.nodes,
+            node.id,
+            activeSubmodelIdentity,
+          ),
+          rowLimit: snapshotRowLimit,
+          source: snapshotSource,
+          requestedPreviewColumns: previewColumnNamesForNode(node),
+          portLabel,
+          streamingChunkSize: snapshotChunkSize,
+          signal: controller.signal,
+        })
     }
     const previewRequest =
-      options?.snapshotsEnsured
+      recoveryPreview || options?.snapshotsEnsured
         ? executePreview()
         : ensureSnapshotsForNodes(graph.nodes, controller.signal).then(
             executePreview,
@@ -622,6 +724,10 @@ export default function usePipelineAPI({
         // Superseded by a newer preview request: that request owns the
         // panel surface and will reach its own terminal state.
         if (previewRequestSeq.current !== requestId) return
+        // The live document fence is authoritative even when a dirty local
+        // graph was retained. Results admitted under an older revision/status
+        // must never paint the panel or enter its cache.
+        if (!documentStillCurrent()) return
         const preview = resultToPreview(node.id, label, result, portLabel)
         if (!requestStillCurrent()) {
           // The graph changed while this response was in flight (e.g. an
@@ -654,7 +760,7 @@ export default function usePipelineAPI({
           cascadeNodes = applyPreviewResultColumnsToNodes(cascadeNodes, node.id, result, snapshotSource)
           setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, node.id, result, snapshotSource))
           // Cascade to downstream nodes if columns changed.
-          if (!columnsEqual(oldColumns, newColumns)) {
+          if (!recoveryPreview && !columnsEqual(oldColumns, newColumns)) {
             propagationDone = propagate(node.id)
           }
         }
@@ -663,6 +769,7 @@ export default function usePipelineAPI({
         // Superseded by a newer preview request: that request owns the
         // panel surface.
         if (previewRequestSeq.current !== requestId) return
+        if (!documentStillCurrent()) return
         if (isAbortError(err) || isPreviewSupersededError(err)) return
         const detail = previewErrorDetail(err)
         const failure = makePreviewData(node.id, label, { status: "error", error: detail })
@@ -689,7 +796,7 @@ export default function usePipelineAPI({
           }
         })
       })
-  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
+  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
 
   const fetchPreview = useCallback((node: Node, options: FetchPreviewOptions = {}) => {
     const requestId = ++previewRequestSeq.current
@@ -708,6 +815,18 @@ export default function usePipelineAPI({
       return
     }
     setPreviewBusy(true)
+    if (useDocumentStatusStore.getState().loadStatus === "degraded") {
+      if (activeSubmodelIdentity !== null) {
+        setPreviewData(submodelRecoveryPreviewNotice(node))
+        setPreviewBusy(false)
+        return
+      }
+      fetchPreviewImmediate(node, requestId, {
+        bypassCache: true,
+        snapshotsEnsured: true,
+      })
+      return
+    }
     // Cached data should paint immediately. Deferring it creates a visible
     // "Executing pipeline..." flash when switching away from result panels.
     const cached = useNodeResultsStore.getState().getPreview(node.id)
@@ -720,7 +839,7 @@ export default function usePipelineAPI({
       previewDebounce.current = null
       fetchPreviewImmediate(node, requestId)
     }, options.debounceMs ?? 200)
-  }, [fetchPreviewImmediate])
+  }, [activeSubmodelIdentity, fetchPreviewImmediate])
 
   const cancelPreview = useCallback(() => {
     ++previewRequestSeq.current
@@ -752,10 +871,28 @@ export default function usePipelineAPI({
       return
     }
     setPreviewBusy(true)
+    if (useDocumentStatusStore.getState().loadStatus === "degraded") {
+      if (activeSubmodelIdentity !== null) {
+        controller.abort()
+        previewAbort.current = null
+        setPreviewData(submodelRecoveryPreviewNotice(node))
+        setPreviewBusy(false)
+        return
+      }
+      fetchPreviewImmediate(node, requestId, {
+        bypassCache: true,
+        snapshotsEnsured: true,
+      })
+      return
+    }
     const structuralVersion = useGraphStore.getState().structuralVersion
+    const snapshotDocumentFence = capturePreviewDocumentFence(sourceRevisionRef)
+    const documentStillCurrent = () =>
+      isPreviewDocumentFenceCurrent(snapshotDocumentFence, sourceRevisionRef)
     const requestStillCurrent = () =>
       previewRequestSeq.current === requestId &&
-      useGraphStore.getState().structuralVersion === structuralVersion
+      useGraphStore.getState().structuralVersion === structuralVersion &&
+      documentStillCurrent()
 
     const { nodes, edges } = graphRef.current
     const nodeMap = new Map(nodes.map((n) => [n.id, n]))
@@ -865,6 +1002,7 @@ export default function usePipelineAPI({
       })
       .catch((err: unknown) => {
         if (previewRequestSeq.current !== requestId || isAbortError(err)) return
+        if (!documentStillCurrent()) return
         const detail = previewErrorDetail(err)
         setPreviewData(
           makePreviewData(node.id, nodeLabel(node), {
@@ -880,7 +1018,7 @@ export default function usePipelineAPI({
           previewAbort.current = null
         }
       })
-  }, [fetchPreviewImmediate, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
+  }, [fetchPreviewImmediate, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
 
   const previewNodeFrame = useCallback((nodeId: string, portLabel: string) => {
     const node = graphRef.current.nodes.find((n) => n.id === nodeId)
@@ -899,14 +1037,41 @@ export default function usePipelineAPI({
     // Keep the current table on screen (marked busy via setPreviewBusy) while
     // the requested frame loads, so switching frames doesn't flash empty.
     const structuralVersion = useGraphStore.getState().structuralVersion
+    const snapshotDocumentFence = capturePreviewDocumentFence(sourceRevisionRef)
+    const snapshotDocumentRevision = snapshotDocumentFence.sourceRevision
+    const snapshotDocumentStatus = snapshotDocumentFence.loadStatus
+    const documentStillCurrent = () =>
+      isPreviewDocumentFenceCurrent(snapshotDocumentFence, sourceRevisionRef)
     const requestStillCurrent = () =>
       previewRequestSeq.current === requestId &&
-      useGraphStore.getState().structuralVersion === structuralVersion
+      useGraphStore.getState().structuralVersion === structuralVersion &&
+      documentStillCurrent()
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
-    ensureSnapshotsForNodes(graph.nodes, controller.signal)
-      .then(() => {
+    const recoveryPreview = snapshotDocumentStatus === "degraded"
+    if (recoveryPreview && activeSubmodelIdentity !== null) {
+      controller.abort()
+      previewAbort.current = null
+      setPreviewBusy(false)
+      return
+    }
+    const snapshotsReady = recoveryPreview
+      ? Promise.resolve()
+      : ensureSnapshotsForNodes(graph.nodes, controller.signal)
+    snapshotsReady.then(() => {
         if (!requestStillCurrent() || controller.signal.aborted) {
           throw new DOMException("Preview request was superseded.", "AbortError")
+        }
+        if (recoveryPreview) {
+          return previewRecoveryNode({
+            sourceFile: sourceFileRef.current,
+            sourceRevision: snapshotDocumentRevision,
+            targetRecoveryId: node.id,
+            rowLimit: rowLimitRef.current,
+            source: activeSourceRef.current,
+            portLabel,
+            streamingChunkSize: streamingChunkSizeRef.current,
+            signal: controller.signal,
+          })
         }
         return previewNode({
           graph,
@@ -929,6 +1094,7 @@ export default function usePipelineAPI({
       })
       .catch((err: unknown) => {
         if (previewRequestSeq.current !== requestId) return
+        if (!documentStillCurrent()) return
         if (isAbortError(err) || isPreviewSupersededError(err)) return
         const detail = previewErrorDetail(err)
         setPreviewData(makePreviewData(node.id, label, { status: "error", error: detail }))
@@ -940,12 +1106,17 @@ export default function usePipelineAPI({
         if (previewRequestSeq.current === requestId) setPreviewBusy(false)
         if (previewAbort.current === controller) previewAbort.current = null
       })
-  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, addToast, ensureSnapshotsForNodes])
+  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForNodes])
 
   // Returns true when the save succeeded, false on failure — callers that
   // chain follow-on work (for example Commit) await this so they only proceed
   // once the ledger actually holds the latest editor state. Never rejects.
   const handleSave = useCallback(async (): Promise<boolean> => {
+    const documentStatus = useDocumentStatusStore.getState()
+    if (documentStatus.capabilities?.can_save !== true || !documentStatus.graphSynchronized) {
+      addToast("error", documentReadOnlyReason())
+      return false
+    }
     if (parentGraphRef.current) {
       addToast("error", "Return to the main pipeline before saving.")
       return false
@@ -994,6 +1165,7 @@ export default function usePipelineAPI({
         useGraphStore.getState().markSaved(savedSnapshot)
         appliedSaveSeq.current = saveRequestId
         sourceRevisionRef.current = data.source_revision
+        useDocumentStatusStore.getState().setSourceRevision(data.source_revision)
       }
       // Reflect the new ledger commit in the toolbar indicator (P2). null
       // when no working branch is configured — the indicator stays as-is.
@@ -1048,9 +1220,10 @@ export default function usePipelineAPI({
 
   return {
     loading,
+    loadError,
     previewData, setPreviewData,
     previewBusy,
     nodeStatuses,
-    fetchPreview, cancelPreview, refreshPreview, previewNodeFrame, handleSave,
+    fetchPreview, cancelPreview, refreshPreview, previewNodeFrame, handleSave, adoptPipelineDocument,
   }
 }

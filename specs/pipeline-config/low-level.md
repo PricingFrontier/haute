@@ -12,7 +12,9 @@
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration documents its builder-interception seam. |
 | `src/haute/_contracts.py` | Pipeline-config-owned `Contract`/`ColumnContract` model and registry-backed `get_column_contract()` lookup used by parse-time validation and execution. |
 | `src/haute/_registry.py` | Pipeline-config-owned `NODE_REGISTRY` storage shared with execution and codegen. |
-| `src/haute/_graph_builders.py` | AST-derived raw node dicts → `GraphNode`/`GraphEdge` Pydantic models (`_extract_decorated_nodes`, `_build_edges`, `_build_rf_nodes`). |
+| `src/haute/_graph_builders.py` | AST node-skeleton discovery separated from resolution; the strict builder resolves every skeleton fail-loud before producing canonical `GraphNode`/`GraphEdge`, while editor recovery resolves skeletons independently. |
+| `src/haute/_parser_regex.py` | [expression-parsing](../expression-parsing/low-level.md)-owned neutral syntax-recovery fragments (metadata, decorated functions, declared connections, and submodel registrations). It does not sit behind either strict parser entry point and does not return a canonical graph. |
+| `src/haute/_pipeline_recovery.py` | [server-api](../server-api/low-level.md)-owned editor-only recovery orchestration and availability diagnostics, forbidden to canonical parser consumers. |
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
 | `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
@@ -111,10 +113,11 @@ node and edge construction to the same `_build_rf_nodes`/`_build_edges` path as 
 parsing, so explicit connections and positional parameter-name inference are represented
 consistently; keyword-only parameters remain configuration rather than edges.
 
-**2. Static source graph (`_graph_builders.py` + `_config_builder.py`).** Given an
-already-parsed AST module and pre-extracted function bodies (produced upstream, not by this
-component), `_extract_decorated_nodes` walks top-level `FunctionDef`/`AsyncFunctionDef` nodes
-matching the pipeline-decorator checker. For each match it calls `_resolve_node_config`, which
+**2. Strict static source graph (`_graph_builders.py` + `_config_builder.py`).** Given an
+already-parsed AST module and pre-extracted function bodies, skeleton discovery records each
+decorated function's identity, decorator token/kwargs, parameters, body, and source span
+without loading external config. The strict `_extract_decorated_nodes` path then resolves
+every skeleton and propagates any failure. For each skeleton it calls `_resolve_node_config`, which
 either: loads and normalises a `config=` sidecar via `_config_io.load_node_config` and
 attaches code parsed from the function body (`_attach_code_from_body`); raises
 `_sidecar_required_error` if the node type is folder-backed but no `config=` was given; or
@@ -129,6 +132,13 @@ wiring parses as a disconnected graph) and `_build_rf_nodes` (assigns x-spaced G
 produce
 the final `list[GraphNode]`/`list[GraphEdge]` — the graph the frontend, codegen, and the real
 executor operate on.
+
+`parse_pipeline_source()` converts `SyntaxError` into a contextual `ParseError` and never
+calls regex recovery. `parse_pipeline_file()` inherits that strict behaviour. The separate
+editor recovery service consumes the same AST skeletons when syntax is valid and neutral
+`_parser_regex` fragments otherwise, catches expected authored failures per named node, and
+constructs only recovery DTOs. No recovery value can be passed to `_build_rf_nodes`, codegen,
+execution, lint, deploy, or strict post-save verification.
 
 **Sidecar write path.** `_config_io.collect_node_configs(graph)` walks a `PipelineGraph`,
 skips node types without a config folder, instance nodes (`config["instanceOf"]` set), and

@@ -28,9 +28,9 @@ Out of scope:
 
 - Everything server-side — loop, tools, providers, sessions — see
   [assistant](../assistant/high-level.md).
-- Canvas updates. Assistant mutations arrive as ordinary `graph.update` frames handled by
-  [frontend-graph-canvas](../frontend-graph-canvas/high-level.md)'s WebSocket sync; this
-  component never writes to the graph store.
+- Canvas updates. Assistant mutations arrive as ordinary `pipeline_document_update` frames
+  handled by [frontend-graph-canvas](../frontend-graph-canvas/high-level.md)'s WebSocket
+  sync; this component never writes to the graph store.
 - The shared side-panel shell chrome, owned by
   [frontend-node-editors](../frontend-node-editors/high-level.md), and the shared API-client
   machinery, stores, toasts, and theme tokens owned by
@@ -79,6 +79,13 @@ edits, showing why ("save or discard your canvas changes first") — because the
 operates on the saved pipeline, and because an incoming live-sync update while dirty would
 hit the canvas's reload-or-discard banner instead of applying. The gate derives from the
 canvas's existing dirty state; this component adds no dirty tracking of its own.
+
+**The document-readiness gate.** The composer also refuses to send while the current editor
+document is degraded, source-only, or has not synchronized its retained canvas with the
+authoritative document revision. Assistant authoring always starts from a strict on-disk graph;
+it must not turn a recovery document or stale retained canvas into an indirect mutation path.
+The app supplies the same central document-read-only gate used by Save and canvas editing, and
+the store rechecks it when a message is sent rather than trusting button state alone.
 
 **The top-level-view gate.** The composer likewise refuses to send while the canvas is
 drilled into a submodel, showing why: v1 tools author the top-level graph only, and letting

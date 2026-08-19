@@ -170,9 +170,11 @@
    developer already has Haute running; the harness and Playwright config
    validate and share those values.
    `frontend/scripts/check-bundle-size.mjs` counts the production entry and
-   modulepreload chunks against a default 247 KiB initial-JavaScript gzip
-   ceiling. The measured bundle is approximately 244.1 KiB after moving the
-   modelling training response parsers into a dynamically imported
+   modulepreload chunks against default ceilings of 271 KiB initial and
+   1,320 KiB total JavaScript gzip. The measured bundle is approximately
+   268.5 KiB initial and 1,309.4 KiB total after adding the eager pipeline
+   recovery document validator/adapter, recovery state, and live-sync fences.
+   Modelling training response parsers remain in a dynamically imported
    `types/trainGuards.ts` chunk. The checker classifies that chunk as lazy-only
    and fails if it becomes a startup modulepreload; CI may override the ceiling
    only through the documented

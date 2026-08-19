@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from haute._pipeline_recovery import load_pipeline_editor_document
 from haute.errors import ConfigError, ParseError
 from haute.parser import parse_pipeline_file
 from tests.conftest import write_data_input_config
@@ -537,151 +538,99 @@ def src() -> pl.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-class TestRegexFallbackPath:
-    """When ast.parse() fails, the regex fallback must still extract nodes.
+class TestSyntaxRecoveryBoundary:
+    """Strict parsing raises while the editor recovery path conserves structure."""
 
-    Production failure: a user saves a half-edited file (e.g. unclosed
-    parenthesis). Without the regex path the GUI would show zero nodes,
-    losing all visual feedback.
-    """
-
-    def test_syntax_error_triggers_regex_fallback(self, tmp_path):
-        """A file with a syntax error should still parse nodes via regex."""
+    def test_strict_syntax_error_raises_and_editor_recovers_nodes(self, tmp_path):
         source_config = write_data_input_config(tmp_path, "load_data", "data.parquet")
-        code = f'''\
-import polars as pl
+        code = f'''import polars as pl
 import haute
-
 pipeline = haute.Pipeline("broken", description="has syntax error")
-
 
 @pipeline.data_input(config="{source_config}")
 def load_data() -> pl.DataFrame:
-    """Load data."""
     return pl.scan_parquet("data.parquet")
-
 
 @pipeline.polars
 def transform(load_data: pl.DataFrame) -> pl.DataFrame:
-    """Transform."""
     return load_data.with_columns(
-'''  # <-- unclosed paren = SyntaxError
-        p = _write_pipeline(tmp_path, code)
-        graph = parse_pipeline_file(p)
+'''
+        path = _write_pipeline(tmp_path, code)
 
-        # Regex fallback must still find the first (valid) node
-        assert len(graph.nodes) >= 1
-        assert graph.pipeline_name == "broken"
+        with pytest.raises(ParseError, match="syntax"):
+            parse_pipeline_file(path)
+        document = load_pipeline_editor_document(path, project_root=tmp_path)
 
-    def test_fallback_keeps_preserved_blocks(self, tmp_path):
-        """A preserve block must survive a fallback-parse -> codegen cycle.
+        assert document.load_status == "degraded"
+        assert document.pipeline_name == "broken"
+        assert {node.authored_id for node in document.nodes} == {"load_data", "transform"}
 
-        Production failure: saving a half-edited file (syntax error) went
-        through the regex fallback, which built its graph without
-        ``preserved_blocks`` — silently deleting every ``# haute:preserve``
-        block on the next save.
-        """
-        from haute.codegen import graph_to_code
-
-        code = '''\
-import polars as pl
-import haute
-
+    def test_editor_recovery_keeps_preserved_blocks(self, tmp_path):
+        code = """import haute
 pipeline = haute.Pipeline("broken_preserve")
-
 # haute:preserve-start
 KEEP_ME = True
 # haute:preserve-end
 
-
 @pipeline.polars
-def transform() -> pl.DataFrame:
-    """Transform."""
+def transform():
     return pl.DataFrame()
-
 
 broken = (
-'''  # <-- unclosed paren = SyntaxError
-        p = _write_pipeline(tmp_path, code)
-        graph = parse_pipeline_file(p)
+"""
+        path = _write_pipeline(tmp_path, code)
 
-        assert graph.warning  # proves the fallback path fired
-        assert len(graph.preserved_blocks) == 1
-        assert "KEEP_ME" in graph.preserved_blocks[0]
+        document = load_pipeline_editor_document(path, project_root=tmp_path)
 
-        generated = graph_to_code(graph, pipeline_name="broken_preserve")
-        assert "KEEP_ME = True" in generated
-        assert "# haute:preserve-start" in generated
-        assert "# haute:preserve-end" in generated
-        assert graph.warning is not None
-        assert "syntax error" in graph.warning.lower()
+        assert document.preserved_blocks == ["KEEP_ME = True"]
+        assert document.capabilities.can_save is False
 
-    def test_regex_fallback_extracts_connect_calls(self, tmp_path):
-        """Regex fallback should still wire edges from pipeline.connect()."""
+    def test_editor_recovery_conserves_connect_calls(self, tmp_path):
         source_config = write_data_input_config(tmp_path, "a", "a.parquet")
-        code = f"""\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("edges_fallback")
-
+        code = f'''import haute
+pipeline = haute.Pipeline("edges_recovery")
 
 @pipeline.data_input(config="{source_config}")
-def a() -> pl.DataFrame:
+def a():
     return pl.DataFrame()
 
-
 @pipeline.polars
-def b(a: pl.DataFrame) -> pl.DataFrame:
+def b(a):
     return a
 
-
 pipeline.connect("a", "b")
-
-# syntax bomb below
 x = {{
-"""
-        p = _write_pipeline(tmp_path, code)
-        graph = parse_pipeline_file(p)
+'''
+        path = _write_pipeline(tmp_path, code)
 
-        edge_pairs = [(e.source, e.target) for e in graph.edges]
-        assert ("a", "b") in edge_pairs
+        document = load_pipeline_editor_document(path, project_root=tmp_path)
 
-    def test_regex_fallback_keeps_multi_arg_connect_calls(self, tmp_path):
-        """Remediation 5.7: the old fallback regex required ``connect("a", "b")``
-        with the closing paren immediately after the second string, silently
-        dropping every ``source_port=`` / ``target_port=`` form codegen emits —
-        losing edges exactly when the user needs recovery."""
+        assert [(edge.source_authored_id, edge.target_authored_id) for edge in document.edges] == [
+            ("a", "b")
+        ]
+
+    def test_editor_recovery_keeps_connection_ports(self, tmp_path):
         source_config = write_data_input_config(tmp_path, "a", "a.parquet")
-        code = f"""\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("edges_fallback_ports")
-
+        code = f'''import haute
+pipeline = haute.Pipeline("edges_recovery_ports")
 
 @pipeline.data_input(config="{source_config}")
-def a() -> pl.DataFrame:
+def a():
     return pl.DataFrame()
 
-
 @pipeline.polars
-def b(df: pl.DataFrame) -> pl.DataFrame:
+def b(df):
     return df
 
-
 pipeline.connect("a", "b", target_port="base")
-
-# syntax bomb below
 x = {{
-"""
-        p = _write_pipeline(tmp_path, code)
-        graph = parse_pipeline_file(p)
+'''
+        path = _write_pipeline(tmp_path, code)
 
-        assert graph.warning is not None
-        edges = {(e.source, e.target): e for e in graph.edges}
-        assert ("a", "b") in edges
-        assert edges[("a", "b")].targetHandle == "base"
+        document = load_pipeline_editor_document(path, project_root=tmp_path)
+
+        assert len(document.edges) == 1
+        assert document.edges[0].target_handle == "base"
 
 
 class TestSubmodelFileParsing:
@@ -990,7 +939,7 @@ def node() -> pl.DataFrame:
         assert "THRESHOLD" in preamble
 
     def test_preamble_with_unknown_decorator_attr(self, tmp_path):
-        """@pipeline.custom_thing is not a known type, preamble continues."""
+        """Strict parsing rejects unknown node types instead of hiding them."""
         code = """\
 import polars as pl
 import haute
@@ -1009,11 +958,13 @@ def node() -> pl.DataFrame:
     return pl.DataFrame()
 """
         p = _write_pipeline(tmp_path, code)
-        graph = parse_pipeline_file(p)
-        preamble = graph.preamble or ""
-        # @pipeline.custom_thing is not in DECORATOR_TO_NODE_TYPE, so
-        # the preamble extraction should NOT stop there.
-        assert "from pathlib import Path" in preamble
+        with pytest.raises(ParseError, match="custom_thing"):
+            parse_pipeline_file(p)
+
+        document = load_pipeline_editor_document(p, project_root=tmp_path)
+        unknown = next(node for node in document.nodes if node.authored_id == "helper")
+        assert unknown.availability == "unavailable"
+        assert unknown.decorator_name == "custom_thing"
 
 
 class TestPreservedBlockUnmatchedMarker:

@@ -596,7 +596,7 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
     "/api/pipeline": {
         "GET": {
             "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/PipelineGraph"},
+            "success_schema": {"$ref": "#/components/schemas/PipelineEditorDocument"},
         },
     },
     "/api/pipeline/read-json": {
@@ -609,6 +609,24 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "POST": {
             "request_ref": "#/components/schemas/PreviewNodeRequest",
             "success_schema": {"$ref": "#/components/schemas/PreviewNodeResponse"},
+        },
+    },
+    "/api/pipeline/recovery-preview": {
+        "POST": {
+            "request_ref": "#/components/schemas/RecoveryPreviewRequest",
+            "success_schema": {"$ref": "#/components/schemas/PreviewNodeResponse"},
+        },
+    },
+    "/api/pipeline/repair/remove/apply": {
+        "POST": {
+            "request_ref": "#/components/schemas/PipelineRepairApplyRequest",
+            "success_schema": {"$ref": "#/components/schemas/PipelineRepairApplyResponse"},
+        },
+    },
+    "/api/pipeline/repair/remove/dry-run": {
+        "POST": {
+            "request_ref": "#/components/schemas/PipelineRepairDryRunRequest",
+            "success_schema": {"$ref": "#/components/schemas/PipelineRepairPlanResponse"},
         },
     },
     "/api/pipeline/output-destination": {
@@ -638,7 +656,7 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
     "/api/pipeline/{name}": {
         "GET": {
             "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/PipelineGraph"},
+            "success_schema": {"$ref": "#/components/schemas/PipelineEditorDocument"},
         },
     },
     "/api/pipelines": {

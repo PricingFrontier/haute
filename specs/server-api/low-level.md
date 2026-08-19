@@ -6,16 +6,19 @@
 |---|---|
 | `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (bytecode clear, logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher, and credential-free static SPA serving. |
 | `src/haute/_local_security.py` | [sandbox-security](../sandbox-security/low-level.md)-owned per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
-| `src/haute/schemas.py` | Shared Pydantic request/response models used across the app — re-exports the canonical graph types from `_types.py` and defines per-feature model groups (pipeline save/preview/trace/output write and destination, Explore materialisation and typed pivot matrices/jobs/members, files/schema, Databricks, JSON cache, utility, submodel, modelling, MLflow, optimiser, git, I/O capabilities and execution diagnostics). The OUTPUT dry-run models are the deliberate route-local exception. |
+| `src/haute/schemas.py` | Shared Pydantic request/response models used across the app — re-exports the canonical graph types from `_types.py` and defines per-feature model groups, including the structurally separate pipeline editor-recovery document and diagnostics. The OUTPUT dry-run models are the deliberate route-local exception. |
 | `src/haute/errors.py` | The `HauteError` hierarchy, including execution, bounded-memory, schema/contract, deployment, and feature errors. Route-visible public subclasses carry stable `error_code` and `public_fields` metadata consumed by `_contract_errors.py`. |
 | `src/haute/_validation_error.py` | `HauteValidationError` — the ValueError-derived marker for haute-authored validation messages (re-exported by `errors.py`); the modelling worker boundary keys its curated-message promotion on it. |
 | `src/haute/_logging.py` | `configure_logging()` (structlog + stdlib bridge, dev-console vs. JSON-lines modes) and `get_logger()`. |
-| `src/haute/_event_bus.py` | `EventBus` — thread-safe synchronous pub/sub with typed `graph.update` / `parse.error` overloads; `default_bus` is the module-level singleton the watcher and server wire together. |
+| `src/haute/_event_bus.py` | `EventBus` — thread-safe synchronous pub/sub with typed `parse.error` and `pipeline.document.update` overloads; `default_bus` is the module-level singleton the watcher and server wire together. |
 | `src/haute/_types.py` | `NodeType` (`StrEnum`), the decorator↔NodeType maps, every per-node-type config `TypedDict`, the `SolveResultLike` Protocol family, and the canonical `NodeData` / `GraphNode` / `GraphEdge` / `PipelineGraph` Pydantic models (with `PipelineGraph`'s cached-property-invalidating `model_copy` override). |
-| `src/haute/_pipeline_revision.py` | [submodels](../submodels/low-level.md)-owned canonical pipeline-document revision over parsed graph state plus parent/referenced-child source and sidecar hashes. |
+| `src/haute/_pipeline_revision.py` | [submodels](../submodels/low-level.md)-owned canonical parsed-graph revision plus the editor recovery revision over a contained, role-qualified raw-artifact manifest with explicit missing sentinels. |
+| `src/haute/_pipeline_recovery.py` | Side-effect-free editor loader: AST/regex skeleton discovery, isolated node resolution, availability/diagnostic propagation, typed sidecar merge, raw-artifact revision assembly, and ready/degraded/source-only classification. It never returns a canonical `PipelineGraph`. |
+| `src/haute/_pipeline_repair.py` | Pure minimal-scope unavailable-node removal planner plus revision/plan verification service. It computes exact source, explicit-connection, position-sidecar, and separately approved config edits; it never accepts client-authored bytes or implements migrations. |
+| `src/haute/_sidecar.py` | Core read-side `.haute.json` contract: `SidecarModel`, the typed absent/valid/corrupt/unreadable read state, and the sidecar source/position normalisers. Lives outside the web layer so editor recovery never imports routes. |
 | `src/haute/routes/__init__.py` | Package docstring only — no code. |
-| `src/haute/routes/_helpers.py` | `SidecarModel` (the `.haute.json` on-disk schema); `validate_safe_path`; `pipeline_dir()`; the pipeline-name→path index (`_ensure_pipeline_index`, `invalidate_pipeline_index`, `lookup_pipeline_by_name`) and its module-dependency twin (`_ensure_module_deps`, `pipelines_importing_module`); self-write tracking (`mark_self_write`, `is_self_write`); watcher-pause (`pause_watcher`, `watcher_is_paused`); the WebSocket client registry and `broadcast()`; sidecar load/save (`load_sidecar`, `save_sidecar`); `parse_pipeline_to_graph` (parse + sidecar merge); `commit_pipeline_graph` (read-only historical-commit parse); the shared `save_lock` asyncio.Lock. |
-| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/save`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
+| `src/haute/routes/_helpers.py` | Re-exports the core sidecar read contract and `load_pipeline_editor_document` for route consumers; path/index/watcher/WebSocket helpers; strict `parse_pipeline_to_graph`; the sidecar write path (`save_sidecar`); historical-commit parsing; and the shared `save_lock`. |
+| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/save`, `/api/pipeline/repair/remove/dry-run`, `/api/pipeline/repair/remove/apply`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/recovery-preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
 | `src/haute/routes/files.py` | `/api/files` (directory browse) and `/api/schema` (flat-file plus XML structured-record schema/preview). |
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
@@ -97,7 +100,21 @@ graph/file manifest, and the revision algorithm excludes that field from its
 own input. Mutation preconditions and committed response revisions use a
 non-empty, whitespace-free `RevisionToken`.
 
-**`SidecarModel`** (`routes/_helpers.py`) is the typed `.haute.json` schema: `positions:
+**Pipeline editor recovery models** (`schemas.py`) all use `extra="forbid"` and schema
+version 1. `PipelineEditorDocument` carries `document_kind`, `schema_version`,
+`load_status`, metadata/source text, `RecoveryPipelineNode[]`, `RecoveryPipelineEdge[]`,
+structured diagnostics, capabilities, source-selection trust, submodels, and a raw-artifact
+revision. `RecoveryPipelineNode` uses `recovery_id`, `authored_id`, `decorator_name`,
+`node_type`, `display_position`, `availability`, optional validated `config`, source/config
+locations, diagnostic ids, and blocker path; it intentionally has no canonical
+`id/type/position/data` tuple. Recovery edges likewise use recovery endpoint identities, not
+canonical `source`/`target`. `PipelineRecoveryDiagnostic` supplies a stable id/code,
+severity, scope, safe message, optional element identity and source span, remediation, and
+incident id. `PipelineDocumentCapabilities` is the server-derived mutation/persistence/
+execution/preview/submodel/repair fence. The response types do not subclass or relax
+`PipelineGraph`.
+
+**`SidecarModel`** (`haute/_sidecar.py`, re-exported by `routes/_helpers.py`) is the typed `.haute.json` schema: `positions:
 dict[str, dict[str, float]]`, `sources: list[str]` (defaults to `["live"]`), `active_source:
 str`, and optional `managed_parent: str | None`. `managed_parent` is emitted
 only when the existing child sidecar already proves the same canonical
@@ -114,10 +131,11 @@ produces a sidecar with only `positions`.
 republishes doesn't deadlock). `subscribe()` returns a zero-arg unsubscribe closure;
 `publish()` snapshots the handler list under the lock, then calls each handler *outside* the
 lock, catching and logging any exception per-handler so one misbehaving subscriber can't
-silence the rest. `GraphUpdatePayload` is a closed required-key contract containing
-`graph`, `graph_fingerprint`, and `source_file`; `ParseErrorPayload` contains `error` and
-`source_file`. They are the two currently-declared typed events; `default_bus` is the
-module-level singleton `server.py`'s watcher and WebSocket translator share.
+silence the rest. `PipelineDocumentUpdatePayload` is a closed required-key contract
+containing `document`, `document_fingerprint`, and `source_file`; `ParseErrorPayload`
+contains `error` and `source_file`. They are the two currently-declared typed events;
+`default_bus` is the module-level singleton `server.py`'s watcher and WebSocket
+translator share.
 
 **`SupersessionCoordinator._SupersessionState`** (`routes/_supersession.py`) is one
 `asyncio.Condition` + `latest_generation: int` + `active: bool` + `references: int` +
@@ -138,9 +156,9 @@ when a path/query/body fails model validation):
 |---|---|---|
 | `GET /api/session` | No body | `SessionStatusResponse {ok: bool=true}` |
 | `POST /api/session/bootstrap` | No body; explicit exact local Origin required | `SessionStatusResponse {ok: bool=true}` plus HttpOnly, SameSite=Strict session cookie and no-store headers |
-| `GET /api/pipelines` | No body | `list[PipelineSummary]`; each item is `{name, description, file, node_count, error}` |
-| `GET /api/pipeline` | No body | First parseable `PipelineGraph` with `source_revision`; an empty graph only when no pipeline file exists. If files exist but none parses, the first parse diagnostic is returned as 422. |
-| `GET /api/pipeline/{name}` | Pipeline name path parameter | `PipelineGraph` with `source_revision` |
+| `GET /api/pipelines` | No body | `list[PipelineSummary]`; each item carries `{name, description, file, node_count, load_status, diagnostic_count}`. |
+| `GET /api/pipeline` | No body | First discovered authored `PipelineEditorDocument`, irrespective of load status; a new empty ready document only when no authored document exists. Readable authored errors remain HTTP 200. |
+| `GET /api/pipeline/{name}` | Pipeline name path parameter | Named `PipelineEditorDocument`; a readable non-ready document is found by recovered metadata or file stem and remains HTTP 200. |
 | `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live"}` | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, warnings=[], git_sha=null}` |
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
 | `POST /api/pipeline/preview` | `PreviewNodeRequest {graph, node_id, row_limit=100 (1..10000), source="live", requested_preview_columns=null (non-empty when present), streaming_chunk_size=null (1..10000000, bool rejected), port_label=null}`; `node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child | `PreviewNodeResponse`, extending `NodeResult` with `node_id`, timings/memory, per-node schemas/statuses, and optional execution metrics |
@@ -172,12 +190,18 @@ trace dictionaries.
 **WebSocket contract.** `GET /ws/sync` upgrades only after an explicit Origin exactly matches
 the loopback Host authority and the HttpOnly cookie or non-browser token header validates.
 Query parameters are not an authentication transport.
-The client may send `{"type":"resync","source_file":str,"graph_fingerprint":str|null}`;
-plain text, malformed JSON, non-object JSON, and unknown message types are keep-alive no-ops.
-The server sends either `{"type":"graph_update","graph":object,
-"graph_fingerprint":sha256,"source_file":str}` or
-`{"type":"parse_error","error":str,"source_file":str}`. A matching fingerprint produces
-no frame. The frame builder rejects an event payload that already contains reserved key
+The client sends `{"type":"resync","source_file":str,"document_schema_version":1,
+"document_fingerprint"?:sha256}`; a resync whose `document_schema_version` is not the
+current literal `1` receives a `parse_error` frame naming the unsupported version, and
+plain text, malformed JSON, non-object JSON, and unknown message types are keep-alive
+no-ops. The server sends exactly two frame types: a complete
+`{"type":"pipeline_document_update","schema_version":1,"document":object,
+"document_fingerprint":sha256,"source_file":str}` or
+`{"type":"parse_error","error":str,"source_file":str}`.
+A matching document fingerprint produces no frame. A parse error is emitted only when the
+editor document itself cannot be loaded or resynced and carries a fixed safe message;
+authored pipeline errors are never parse errors — they arrive as degraded or source-only
+documents. The frame builder rejects an event payload that already contains reserved key
 `type`.
 
 ## Control flow
@@ -259,13 +283,14 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
    pipeline `.py` addition, modification, or deletion invalidates the pipeline name→path
    index before discovery; a deletion is not reparsed. Module and config changes (including
    deletion) do not discard an otherwise valid pipeline index.
-5. For each changed pipeline: hash raw bytes first (cheap) and skip the parse entirely if the
-   byte hash is unchanged *and* the change wasn't dependency-triggered (a module/config
-   change always re-parses even if this pipeline's own bytes are unchanged, since its
-   *effective* graph may differ). On a successful parse, publish `graph.update` with the
-   graph payload + a content fingerprint + the wire-form source path; on failure, publish
-   `parse.error` and evict the stale fingerprint so the next successful parse re-broadcasts
-   even if the bytes happen to match a previous good state.
+5. For each changed pipeline: hash raw bytes first (cheap) and skip the recovery load
+   entirely if the byte hash is unchanged *and* the change wasn't dependency-triggered (a
+   module/config change always re-recovers even if this pipeline's own bytes are unchanged,
+   since its *effective* document may differ). On a successful document load, publish
+   `pipeline.document.update` with the document payload + a content fingerprint + the
+   wire-form source path; if the document itself cannot be loaded, publish `parse.error`
+   with the fixed safe message and evict the stale fingerprint so the next successful load
+   re-broadcasts even if the bytes happen to match a previous good state.
 6. If the flush body itself raises, the *entire* processed batch is requeued and `_flush`
    retries it in the same task at most three times with exponential backoff. Cancellation
    after snapshotting also requeues the batch. On exhaustion, `_flush` removes that batch
@@ -314,8 +339,8 @@ concurrent plain saves, but does not coordinate another worker process):
 10. Stage deletion of any derived submodel source and
     its sibling `.haute.json` sidecar (skipping any that casefold-collide with a path this
     same save just wrote).
-11. Reparse the fully staged document and compute the new
-    `source_revision`. On any propagated exception in steps 5–11, roll back every staged write (restore
+11. Reparse the fully staged document, require its editor recovery state to be
+    `ready`, and return that document's raw-artifact `source_revision`. On any propagated exception in steps 5–11, roll back every staged write (restore
    snapshotted bytes, delete newly-created files) and re-raise unchanged.
 12. Only after every write commits: delete stale config files (the diff from step 4, minus
     what this save just wrote or protects), invalidate the pipeline index, and — if the
@@ -528,6 +553,9 @@ for route-level tests, and direct unit tests for the pure-function modules.
   `/ws/sync` protocol (resync requests, fingerprint short-circuit, rejection reasons), and
   the file watcher end-to-end (debounce, module-dependency re-parse, config-triggered
   full-reparse, self-write suppression).
+- **`test_pipeline_recovery.py`** — editor-document DTO separation, degraded/source-only
+  recovery, authored-structure conservation, bounded diagnostics, raw-artifact revision safety,
+  mutation fences, and server-owned ready-closure preview admission.
 - **`test_security_gaps.py`** — local-session token generation/override/disable behaviour,
   HTTP and WebSocket Origin/token rejection, trusted hosts (including bracketed IPv6), and
   malformed authority cases.
@@ -595,3 +623,63 @@ Under the [prerelease canonical-only format contract](../README.md#approved-chan
 server routes return and consume only current versioned payload fields. They do not append
 temporary historical detail keys, classify earlier config generations, strip old fields, or try
 alternate sidecar identifiers. Ordinary current-schema validation and safe error translation remain.
+
+## Pipeline editor recovery implementation contract
+
+- `_pipeline_recovery.py` owns phased discovery, independent node/submodel resolution, topology
+  attribution, deterministic blocker propagation, diagnostic caps, and raw-artifact revisions.
+- `PipelineEditorDocument` and all recovery element DTOs use exact forbidden-extra schemas that are
+  structurally incompatible with `PipelineGraph`/`GraphNode`/`GraphEdge`.
+- `RecoveryPreviewRequest` carries `source_file`, `source_revision`, `target_recovery_id`, source and
+  selector limits. The route reloads recovery state, compares revisions before planning, rejects an
+  untrusted source selection or a non-ready closure with stable structured detail, and sends only a
+  freshly built canonical closure into the shared preview execution helper.
+- `pipeline_document_update` WebSocket frames have schema version 1 and carry the complete validated
+  editor document plus its document fingerprint. Resync compares that fingerprint; watcher ownership
+  includes parent/child Python, config JSON, and `.haute.json` sidecars.
+- A document-load exception is logged with its stack and becomes a sanitized `parse_error`; that
+  frame is reserved for document transport failure, so clients activate the dedicated
+  system-failure surface without ever treating ordinary authored recovery as a transport error.
+- Diagnostic ordering follows authored discovery order, connection order, submodel registration order,
+  then deterministic propagation. At most 200 diagnostics are serialized and `diagnostics_omitted`
+  reports the exact remainder.
+
+## Minimal pipeline repair implementation contract
+
+`PipelineRepairDryRunRequest` and `PipelineRepairApplyRequest` are
+forbidden-extra models carrying the root document source, raw-artifact
+revision, target source/recovery identity, and explicit `delete_config`
+choice; apply additionally requires the 64-hex plan hash returned by dry-run.
+The response contains no executable graph and no replacement bytes.
+
+`_pipeline_repair.py` locates one unavailable target by server-produced source
+identity and recovery id. It rejects blocked/ready nodes, duplicate authored
+identity, absent or ambiguous spans, downstream signature consumers, shared
+or managed-artifact config deletion, a connection line containing other
+authored content, and a chain whose unrelated link would otherwise be removed.
+Source edits operate on exact line-bounded bytes and are applied in descending
+offsets. Both recovery span sources are decorator-inclusive: AST skeletons span
+from the first matched decorator line and regex fragments from their decorator
+anchor line through the last body line, so removing a node from a syntax-broken
+parent never strands decorator text. Position JSON editing preserves unrelated
+bytes and rejects duplicate positions/target keys as ambiguous. The
+public patch is bounded; the plan hash covers the complete untruncated edits,
+revision, identities, options, and touched-artifact manifest.
+`predicted_load_status` treats as removed the target's own diagnostics,
+diagnostics anchored inside the target's span in its file, and diagnostics of
+unresolved connections naming the target's authored id — exactly what a
+successful plan provably deletes; any other diagnostic or unavailable node
+keeps the prediction `degraded`. The post-apply document remains authoritative.
+
+Both routes acquire `save_lock`. Dry-run writes nothing. Apply reloads the
+document and recomputes the complete plan under the lock; a stale revision or
+different plan hash is HTTP 409 before staging. Staged writes/deletes and
+rollback reuse `_save_pipeline.py`'s touched-file and `Writer` primitives so
+each forward and rollback write participates in self-write suppression. After
+staging, recovery parsing must conserve the remaining source and the selected
+identity must be absent. Strict parse success is recorded by the returned
+editor document; an independent authored error may validly remain degraded.
+Any verification or write failure rolls back all touched artifacts.
+
+The minimal package deliberately defines no migration schema, registry, or
+upgrade route.

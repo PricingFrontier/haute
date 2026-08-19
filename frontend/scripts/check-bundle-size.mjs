@@ -9,9 +9,12 @@ const assetsDir = path.join(staticDir, "assets")
 const indexHtmlPath = path.join(staticDir, "index.html")
 
 // PivotCharts deliberately add a 195.6 KiB gzip ECharts core chunk beneath the
-// lazy Charts pane. The 1,300 KiB aggregate cap keeps ~19 KiB headroom while a
-// separate chart-vendor cap below prevents that dependency consuming it.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1300
+// lazy Charts pane. Pipeline load recovery adds ~10.5 KiB across the exact
+// editor-document validator/adapter, recovery state, live-sync fences, and the
+// minimal repair contract. The merged bundle is 1,309.4 KiB; 1,320 KiB keeps
+// ~10 KiB headroom while the separate chart-vendor cap below prevents that
+// dependency consuming it.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1320
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -59,7 +62,12 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // chart gallery, formatting editors, and data adapters all stay in lazy
 // chunks. The merged initial bundle is 258.0 KiB; 260 KiB restores about
 // 2 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 260
+// Pipeline load recovery adds ~10.5 KiB of deliberate eager core: every load
+// and resync must validate and adapt the editor document, publish diagnostics
+// and capabilities atomically, and preserve a truthful degraded canvas. The
+// repair dialog itself remains small and the chart/editor vendors remain lazy.
+// The merged initial bundle is 268.5 KiB; 271 KiB retains ~2.5 KiB headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 271
 
 // Chunks that should only be fetched after a user opens a code/editor-heavy
 // surface. If one appears as a startup modulepreload, the app has likely

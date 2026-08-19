@@ -177,6 +177,12 @@ selection is a pure re-derivation from cached
 frontier data — selecting a different point never re-fetches unless the
 caller asks the backend to solve/select explicitly.
 
+Active solve, train, Explore, and Pivot jobs additionally capture the
+authoritative pipeline document identity/status fence. A live revision,
+status, capability, or graph-synchronisation change drops active polling
+state, and a late response rechecks its captured fence before it can enter a
+result cache.
+
 **Global settings.** `useSettingsStore` holds row limit, streaming chunk
 size, per-section open/closed UI memory, the MLflow connectivity check
 (fetched once, shared, retried on a 10s cooldown after failure), the list of
@@ -359,3 +365,36 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   it logs via `console.error` and shows a "Try again" fallback scoped to
   the boundary it wraps, so one panel's crash is visible and recoverable
   without reloading the whole app.
+
+## Approved change contract — pipeline editor document trust boundary
+
+The initial pipeline endpoint returns `unknown` through the generic transport. A dedicated strict
+parser validates the complete versioned editor-document shape, including exact nested keys,
+finite positions and spans, recovery endpoint references, diagnostics, raw revision, and
+server-derived capabilities. Only then does one adapter create React Flow presentation nodes.
+Recovery wire objects are never passed to canonical graph request builders.
+
+`useDocumentStatusStore` atomically owns the authoritative load state, capabilities, diagnostics,
+raw revision, current readable source, source-selection trust, graph-synchronisation state, and any
+current system load failure. The request-facing revision ref is updated before graph publication.
+Authored `degraded` and `source_only` responses are successful load states and do not emit the generic
+load-failure toast; transport, permission, unreadable-file, and malformed-response failures retain an
+explicit read-only failure surface and cannot leave a retained canvas looking current.
+
+The same strict parser validates `pipeline_document_update` frames before any store mutation. Status
+and capability state is applied before a graph snapshot and remains applied when a dirty-graph guard
+rejects graph replacement. A `parse_error` is a sanitized system failure for the current editor
+document: it marks the graph unsynchronised and activates the load-failure surface until the next
+valid document update. Authored recovery states never arrive through that frame.
+Degraded preview calls use the recovery-preview transport with source, revision, and target identity
+only. A current source-only state and an optional in-memory last-renderable snapshot retain separate
+revisions and are never merged.
+
+Minimal repair responses cross a separate strict parser boundary. Dry-run
+validation requires the remove-only discriminator, source/target identities,
+64-hex plan hash, bounded artifact patches, retained artifacts, warnings, and
+predicted load state. Apply validation requires the same plan identity plus a
+complete valid editor document. The browser never accepts replacement bytes,
+source spans, migration instructions, or a recovery graph as an apply payload;
+it sends only server identities, revision, explicit config-deletion choice,
+and the confirmed plan hash.

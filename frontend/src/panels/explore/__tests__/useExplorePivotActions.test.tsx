@@ -6,6 +6,7 @@ import type {
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
 } from "../../../api/types"
+import useDocumentStatusStore from "../../../stores/useDocumentStatusStore"
 import useGraphStore from "../../../stores/useGraphStore"
 import useNodeResultsStore, {
   explorePivotResultKey,
@@ -118,11 +119,36 @@ describe("useExplorePivotActions", () => {
       streamingChunkSize: 250_000,
     })
     useGraphStore.setState({ structuralVersion: 0 })
+    useDocumentStatusStore.getState().reset()
   })
 
   it("does nothing for a pivot without values", async () => {
     const { result: hook } = renderActions()
     await act(() => hook.current.updatePivot(pivot({ values: [] })))
+    expect(mockRunExplorePivot).not.toHaveBeenCalled()
+    expect(hook.current.submitting).toEqual({})
+    expect(useNodeResultsStore.getState().pivotJobs).toEqual({})
+  })
+
+  it("does not submit while the current document cannot execute", async () => {
+    useDocumentStatusStore.setState({
+      loadStatus: "degraded",
+      capabilities: {
+        can_mutate: false,
+        can_save: false,
+        can_execute: false,
+        can_preview: false,
+        can_manage_submodels: false,
+        can_repair: true,
+      },
+      sourceFile: "rating/main.py",
+      sourceRevision: "degraded-revision",
+      graphSynchronized: true,
+    })
+    const { result: hook } = renderActions()
+
+    await act(() => hook.current.updatePivot(pivot()))
+
     expect(mockRunExplorePivot).not.toHaveBeenCalled()
     expect(hook.current.submitting).toEqual({})
     expect(useNodeResultsStore.getState().pivotJobs).toEqual({})
