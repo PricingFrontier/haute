@@ -14,9 +14,10 @@ import weakref
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from fastapi import HTTPException, WebSocket
 from pydantic import BaseModel, Field, model_validator
@@ -27,6 +28,9 @@ from haute._logging import get_logger
 from haute._submodel_paths import resolve_submodel_reference
 from haute.errors import ConfigError
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
+
+if TYPE_CHECKING:
+    from haute.schemas import PipelineEditorDocument
 
 logger = get_logger(component="server")
 
@@ -74,6 +78,51 @@ class SidecarModel(BaseModel):
                 f"active_source={self.active_source!r} is not in sources={self.sources!r}"
             )
         return self
+
+
+SidecarReadState = Literal["absent", "valid", "corrupt", "unreadable"]
+
+
+@dataclass(frozen=True, slots=True)
+class SidecarReadResult:
+    """Typed, side-effect-free state of one editor position sidecar."""
+
+    path: Path
+    state: SidecarReadState
+    data: SidecarModel | None = None
+    error_type: str | None = None
+
+
+def read_sidecar_state(py_path: Path) -> SidecarReadResult:
+    """Read a sidecar without collapsing absent and invalid content together."""
+    sidecar = py_path.with_suffix(".haute.json")
+    if not sidecar.exists():
+        return SidecarReadResult(path=sidecar, state="absent")
+    try:
+        raw = read_user_text(sidecar)
+    except OSError as exc:
+        logger.warning("unreadable_sidecar", file=sidecar.name, error=str(exc))
+        return SidecarReadResult(
+            path=sidecar,
+            state="unreadable",
+            error_type=type(exc).__name__,
+        )
+    try:
+        payload = _json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError("Sidecar JSON must contain an object.")
+        data = SidecarModel.model_validate(payload)
+        raw_positions = payload.get("positions", {})
+        if raw_positions != _normalise_sidecar_positions(raw_positions):
+            raise ValueError("Sidecar positions must contain finite x/y coordinates.")
+    except (_json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning("corrupt_sidecar", file=sidecar.name, error=str(exc))
+        return SidecarReadResult(
+            path=sidecar,
+            state="corrupt",
+            error_type=type(exc).__name__,
+        )
+    return SidecarReadResult(path=sidecar, state="valid", data=data)
 
 
 # ---------------------------------------------------------------------------
@@ -955,6 +1004,17 @@ def parse_pipeline_to_graph(
     )
 
     return graph
+
+
+def load_pipeline_editor_document(
+    py_path: Path,
+    *,
+    project_root: Path | None = None,
+) -> PipelineEditorDocument:
+    """Load the editor-only recovery DTO without weakening strict parsing."""
+    from haute._pipeline_recovery import load_pipeline_editor_document as _load
+
+    return _load(py_path, project_root=project_root)
 
 
 def commit_pipeline_graph(sha: str) -> PipelineGraph:

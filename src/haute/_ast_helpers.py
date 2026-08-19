@@ -18,7 +18,9 @@ from haute.errors import ParseError
 __all__ = [
     "_eval_ast_literal",
     "_get_decorator_kwargs",
+    "_is_pipeline_authored_decorator",
     "_is_pipeline_node_decorator",
+    "_is_submodel_authored_decorator",
     "_is_submodel_node_decorator",
     "_get_decorator_node_type",
     "_get_docstring",
@@ -162,6 +164,33 @@ def _is_pipeline_node_decorator(decorator: ast.expr) -> bool:
         return _is_pipeline_node_decorator(decorator.func)
 
     return False
+
+
+def _is_receiver_authored_decorator(decorator: ast.expr, receiver: str) -> bool:
+    """Return whether *decorator* is any direct ``@receiver.<name>`` use.
+
+    Recovery must discover authored structures before deciding whether their
+    decorator is supported.  Keeping this predicate separate from the known
+    node predicate prevents tolerant discovery from weakening config/runtime
+    type validation.
+    """
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    return (
+        isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == receiver
+        and bool(target.attr)
+    )
+
+
+def _is_pipeline_authored_decorator(decorator: ast.expr) -> bool:
+    """Return whether *decorator* is any direct ``@pipeline.<name>`` use."""
+    return _is_receiver_authored_decorator(decorator, "pipeline")
+
+
+def _is_submodel_authored_decorator(decorator: ast.expr) -> bool:
+    """Return whether *decorator* is any direct ``@submodel.<name>`` use."""
+    return _is_receiver_authored_decorator(decorator, "submodel")
 
 
 def _get_decorator_node_type(decorator: ast.expr) -> NodeType | None:
@@ -590,7 +619,9 @@ def _extract_preamble_from_ast(
 
     generated_start_line = len(lines) + 1
     is_node_decorator = (
-        _is_pipeline_node_decorator if receiver == "pipeline" else _is_submodel_node_decorator
+        _is_pipeline_authored_decorator
+        if receiver == "pipeline"
+        else _is_submodel_authored_decorator
     )
     for statement in tree.body:
         value: ast.expr | None = None
@@ -725,12 +756,8 @@ def _extract_preamble_textual(
             break
         decorator_prefix = f"@{receiver}."
         if stripped.startswith(decorator_prefix):
-            # Check if the decorator name after the receiver is a known type
-            dot_rest = stripped[len(decorator_prefix) :]
-            dec_name = dot_rest.split("(")[0].split()[0] if dot_rest else ""
-            if dec_name in DECORATOR_TO_NODE_TYPE:
-                generated_start_idx = i
-                break
+            generated_start_idx = i
+            break
 
     # Extract lines between standard imports and generated object code.
     preamble_lines = _slice_without_module_preserve_spans(

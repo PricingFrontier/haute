@@ -1,4 +1,4 @@
-"""Tests for haute._parser_regex — regex-based fallback parser."""
+"""Tests for neutral syntax-recovery fragments in ``haute._parser_regex``."""
 
 from __future__ import annotations
 
@@ -10,10 +10,9 @@ from haute._parser_regex import (
     _parenthesized_wrapper_depth_before,
     _parenthesized_wrapper_tail_closes,
     _parse_decorator_kwargs_regex,
-    fallback_parse,
+    recover_pipeline_fragments,
 )
-from haute.errors import ConfigError, ParseError
-from tests.conftest import write_data_input_config
+from haute.errors import ParseError
 
 
 def test_terminal_comment_stops_parenthesis_scanners() -> None:
@@ -105,11 +104,13 @@ class TestFindFunctionBlocks:
         assert len(blocks) == 1
         assert 'path="data.csv"' in blocks[0]["decorator_text"]
 
-    def test_unrecognised_method_skipped(self) -> None:
-        """@pipeline.connect(...) should not be matched as a node decorator."""
+    def test_unrecognised_method_is_conserved_for_recovery(self) -> None:
+        """Every authored pipeline decorator is retained before support checks."""
         source = '@pipeline.connect("a", "b")\ndef not_a_node(df):\n    return df\n'
         blocks = _find_function_blocks(source)
-        assert blocks == []
+        assert len(blocks) == 1
+        assert blocks[0]["decorator_method"] == "connect"
+        assert blocks[0]["explicit_node_type"] is None
 
     def test_bare_decorator(self) -> None:
         """@pipeline.polars (no parens) should be matched."""
@@ -508,526 +509,59 @@ class TestFindConnectCalls:
 
 
 # ---------------------------------------------------------------------------
-# fallback_parse (integration)
+# Neutral fragment recovery (integration)
 # ---------------------------------------------------------------------------
 
 
-class TestFallbackParse:
-    def test_basic_pipeline_with_syntax_error(self) -> None:
-        source = """\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("test_pipe", description="A test")
+class TestRecoverPipelineFragments:
+    def test_recovers_nodes_connections_metadata_and_preserved_blocks(self) -> None:
+        source = """import haute
+pipeline = haute.Pipeline("demo", description="Recovered")
+# haute:preserve-start
+CUSTOM = 1
+# haute:preserve-end
 
 @pipeline.polars()
-def transform(df):
+def first(df):
     return df
 
 @pipeline.polars()
-def output_node(transform):
-    return transform
+def second(first):
+    return first
 
-pipeline.connect("transform", "output_node")
+pipeline.connect("first", "second")
 
-# Syntax error below — fallback_parse should still work above
-x = {unclosed
+def broken(:
+    pass
 """
-        err = SyntaxError("invalid syntax")
-        err.lineno = 17
-        graph = fallback_parse(source, "test.py", err)
 
-        assert graph.pipeline_name == "test_pipe"
-        assert graph.pipeline_description == "A test"
-        assert graph.warning is not None
-        assert "syntax errors" in graph.warning
-        assert len(graph.nodes) >= 2
+        fragments = recover_pipeline_fragments(source)
 
-    def test_empty_source_returns_graph(self) -> None:
-        err = SyntaxError("empty")
-        err.lineno = 1
-        graph = fallback_parse("", "empty.py", err)
-        assert graph.pipeline_name == "main"
-        assert graph.nodes == []
+        assert fragments.pipeline_name == "demo"
+        assert fragments.pipeline_description == "Recovered"
+        assert [function.authored_id for function in fragments.functions] == [
+            "first",
+            "second",
+        ]
+        assert fragments.connections == (("first", "second", None, None),)
+        assert fragments.preserved_blocks == ("CUSTOM = 1",)
 
-    def test_pipeline_name_fallback(self) -> None:
-        source = "@pipeline.polars()\ndef foo(df):\n    return df\n"
-        err = SyntaxError("oops")
-        err.lineno = 1
-        graph = fallback_parse(source, "file.py", err)
-        assert graph.pipeline_name == "main"  # default when no Pipeline() found
+    def test_empty_source_has_no_authored_fragments(self) -> None:
+        fragments = recover_pipeline_fragments("")
 
-    def test_edges_extracted(self) -> None:
-        source = """\
-import haute
-pipeline = haute.Pipeline("p")
+        assert fragments.functions == ()
+        assert fragments.connections == ()
+        assert fragments.submodel_registrations == ()
 
-@pipeline.polars()
-def a(df):
+    def test_visible_unrecoverable_decorator_fails_loudly(self) -> None:
+        source = """pipeline = haute.Pipeline("demo")
+@pipeline.polars(value=(
+def node(df):
     return df
 
-@pipeline.polars()
-def b(a):
-    return a
-
-pipeline.connect("a", "b")
+def broken(:
+    pass
 """
-        err = SyntaxError("test")
-        err.lineno = 99
-        graph = fallback_parse(source, "f.py", err)
-        edge_pairs = [(e.source, e.target) for e in graph.edges]
-        assert ("a", "b") in edge_pairs
 
-    def test_config_backed_node_without_sidecar_fails_loudly(self, tmp_path) -> None:
-        source = (
-            'pipeline = haute.Pipeline("broken")\n'
-            '@pipeline.data_input(config="config/data_input/load.json")\n'
-            "def load():\n"
-            '    return pl.scan_csv("input.csv")\n'
-        )
-        err = SyntaxError("broken")
-        err.lineno = 2
-
-        with pytest.raises(ConfigError, match="config/data_input/") as excinfo:
-            fallback_parse(source, str(tmp_path / "broken.py"), err)
-        # The recovery path surfaces the same concrete-folder guidance as the
-        # healthy parse path (F532): names the real folder + remediation.
-        message = str(excinfo.value)
-        assert "<type>" not in message
-        assert "haute init" in message
-
-    def test_config_backed_node_preserves_body_code_from_fallback(self, tmp_path) -> None:
-        write_data_input_config(tmp_path, "load", "data/input.csv")
-        source = """\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("broken")
-
-@pipeline.data_input(config="config/data_input/load.json")
-def load():
-    df = pl.scan_csv("data/input.csv")
-    df = df.with_columns(pl.col("premium").cast(pl.Float64))
-    return df
-
-x = {unclosed
-"""
-        err = SyntaxError("broken")
-        err.lineno = 12
-
-        graph = fallback_parse(source, str(tmp_path / "broken.py"), err)
-
-        node = next(node for node in graph.nodes if node.id == "load")
-        assert node.data.config["path"] == "data/input.csv"
-        assert "with_columns" in node.data.config["code"]
-        assert "return df" not in node.data.config["code"]
-
-    def test_source_file_stored(self) -> None:
-        err = SyntaxError("x")
-        err.lineno = 1
-        graph = fallback_parse("", "my_pipeline.py", err)
-        assert graph.source_file == "my_pipeline.py"
-
-    def test_node_with_syntax_error_in_body(self) -> None:
-        """A broken function body stays visible but is marked unsafe to save."""
-        source = """\
-import haute
-pipeline = haute.Pipeline("p")
-
-@pipeline.polars()
-def good(df):
-    return df
-
-@pipeline.polars()
-def bad(df):
-    x = {unclosed
-"""
-        err = SyntaxError("bad body")
-        err.lineno = 10
-        graph = fallback_parse(source, "f.py", err)
-        nodes = {n.id: n for n in graph.nodes}
-        assert "good" in nodes
-        assert "bad" in nodes
-        assert "body could not be parsed" in nodes["bad"].data.config["_load_error"]
-        assert "code" not in nodes["bad"].data.config
-
-    def test_nested_call_decorator_fails_loud_with_syntax_error_elsewhere(self) -> None:
-        """Computed decorator values must not be serialized as config strings."""
-        source = """\
-import haute
-pipeline = haute.Pipeline("p")
-
-@pipeline.polars(selected_columns=Path("premium"))
-def calc(df):
-    return df
-
-x = {unclosed
-"""
-        err = SyntaxError("bad")
-        err.lineno = 8
-        with pytest.raises(ParseError, match="selected_columns"):
-            fallback_parse(source, "f.py", err)
-
-    def test_star_kwargs_decorator_fails_loud_with_syntax_error_elsewhere(self) -> None:
-        """Visible ``**cfg`` cannot be resolved; fallback must not drop it silently."""
-        source = """\
-import haute
-pipeline = haute.Pipeline("p")
-
-@pipeline.polars(**cfg, selected_columns=["premium"])
-def calc(df):
-    return df
-
-x = {unclosed
-"""
-        err = SyntaxError("bad")
-        err.lineno = 8
-        with pytest.raises(ParseError, match=r"\*\*"):
-            fallback_parse(source, "f.py", err)
-
-    # --- Remediation 5.7: multi-arg connect() forms survive the fallback --
-
-    def test_multi_arg_connects_not_dropped(self) -> None:
-        """RED for 5.7: the old regex silently dropped every connect() with
-        port kwargs, losing edges exactly when the user needs recovery."""
-        source = """\
-import haute
-pipeline = haute.Pipeline("p")
-
-@pipeline.polars()
-def a(df):
-    return df
-
-@pipeline.polars()
-def b(df):
-    return df
-
-@pipeline.polars()
-def c(df):
-    return df
-
-pipeline.connect("a", "b", target_port="base")
-pipeline.connect("b", "c", source_port="p", target_port="q")
-
-x = {unclosed
-"""
-        err = SyntaxError("bad")
-        err.lineno = 19
-        graph = fallback_parse(source, "f.py", err)
-
-        edges = {(e.source, e.target): e for e in graph.edges}
-        assert ("a", "b") in edges
-        assert edges[("a", "b")].targetHandle == "base"
-        assert ("b", "c") in edges
-        assert edges[("b", "c")].sourceHandle == "p"
-        assert edges[("b", "c")].targetHandle == "q"
-
-    def test_chained_connects_recovered(self) -> None:
-        source = """\
-import haute
-pipeline = haute.Pipeline("p")
-
-@pipeline.polars()
-def a(df):
-    return df
-
-@pipeline.polars()
-def b(df):
-    return df
-
-@pipeline.polars()
-def c(df):
-    return df
-
-pipeline.connect("a", "b").connect("b", "c")
-
-x = {unclosed
-"""
-        err = SyntaxError("bad")
-        err.lineno = 18
-        graph = fallback_parse(source, "f.py", err)
-        edge_pairs = {(e.source, e.target) for e in graph.edges}
-        assert ("a", "b") in edge_pairs
-        assert ("b", "c") in edge_pairs
-
-    def test_unparseable_connect_fails_loud(self) -> None:
-        """If the syntax error is inside a connect() call itself, the
-        fallback cannot recover the edge — it must refuse to return a
-        plausible-but-incomplete graph."""
-        source = """\
-import haute
-pipeline = haute.Pipeline("p")
-
-@pipeline.polars()
-def a(df):
-    return df
-
-@pipeline.polars()
-def b(df):
-    return df
-
-pipeline.connect("a",
-"""
-        err = SyntaxError("unexpected EOF")
-        err.lineno = 12
-        with pytest.raises(ParseError, match="connect"):
-            fallback_parse(source, "f.py", err)
-
-    def test_commented_broken_connect_does_not_block_recovery(self) -> None:
-        """A connect inside a comment — even an unparseable one — must be
-        ignored entirely.  If comment handling failed, the truncated call
-        text would raise ParseError and kill the whole recovery parse."""
-        source = """\
-import haute
-pipeline = haute.Pipeline("p")
-
-@pipeline.polars()
-def a(df):
-    return df
-
-@pipeline.polars()
-def b(df):
-    return df
-
-# pipeline.connect("a",
-pipeline.connect("a", "b", target_port="base")
-
-x = {unclosed
-"""
-        err = SyntaxError("bad")
-        err.lineno = 15
-        graph = fallback_parse(source, "f.py", err)
-        edges = {(e.source, e.target): e for e in graph.edges}
-        assert ("a", "b") in edges
-        assert edges[("a", "b")].targetHandle == "base"
-
-    def test_connect_text_inside_string_does_not_create_phantom_edge(self) -> None:
-        """Fallback recovery must match the healthy parser: strings are not edges."""
-        source = """\
-import haute
-pipeline = haute.Pipeline("p")
-
-@pipeline.polars()
-def a(df):
-    return df
-
-@pipeline.polars()
-def b(df):
-    return df
-
-@pipeline.polars()
-def c(df):
-    return df
-
-note = '''
-pipeline.connect("a", "b")
-'''
-pipeline.connect("b", "c")
-
-x = {unclosed
-"""
-        err = SyntaxError("bad")
-        err.lineno = 22
-        graph = fallback_parse(source, "f.py", err)
-        edge_pairs = {(e.source, e.target) for e in graph.edges}
-        assert ("a", "b") not in edge_pairs
-        assert ("b", "c") in edge_pairs
-
-    def test_indented_connect_inside_if_does_not_create_phantom_edge(self) -> None:
-        source = """\
-import haute
-pipeline = haute.Pipeline("p")
-
-@pipeline.polars()
-def a(df):
-    return df
-
-@pipeline.polars()
-def b(df):
-    return df
-
-@pipeline.polars()
-def c(df):
-    return df
-
-if False:
-    pipeline.connect("a", "c")
-
-x = {unclosed
-"""
-        err = SyntaxError("bad")
-        err.lineno = 19
-        graph = fallback_parse(source, "f.py", err)
-        edge_pairs = {(e.source, e.target) for e in graph.edges}
-        assert ("a", "c") not in edge_pairs
-
-    def test_indented_connect_inside_function_does_not_create_phantom_edge(self) -> None:
-        source = """\
-import haute
-pipeline = haute.Pipeline("p")
-
-@pipeline.polars()
-def a(df):
-    return df
-
-@pipeline.polars()
-def b(df):
-    return df
-
-@pipeline.polars()
-def c(df):
-    return df
-
-def disabled():
-    pipeline.connect("a", "c")
-
-x = {unclosed
-"""
-        err = SyntaxError("bad")
-        err.lineno = 19
-        graph = fallback_parse(source, "f.py", err)
-        edge_pairs = {(e.source, e.target) for e in graph.edges}
-        assert ("a", "c") not in edge_pairs
-
-    def test_escaped_pipeline_metadata_survives_fallback(self) -> None:
-        source = """\
-import haute
-pipeline = haute.Pipeline("p\\"q", description="d\\"e")
-
-@pipeline.polars()
-def a(df):
-    return df
-
-x = {unclosed
-"""
-        err = SyntaxError("bad")
-        err.lineno = 8
-        graph = fallback_parse(source, "f.py", err)
-        assert graph.pipeline_name == 'p"q'
-        assert graph.pipeline_description == 'd"e'
-
-    @pytest.mark.parametrize(
-        "ignored_import",
-        [
-            "import haute as",
-            "import haute; import os",
-        ],
-        ids=["malformed", "multiple-statements"],
-    )
-    def test_unusable_import_lines_do_not_block_canonical_pipeline_metadata(
-        self,
-        ignored_import: str,
-    ) -> None:
-        source = f"""\
-import haute
-{ignored_import}
-pipeline = haute.Pipeline("motor_rating", description="real desc")
-
-@pipeline.polars()
-def broken(df):
-    return (
-"""
-        graph = fallback_parse(source, "f.py", SyntaxError("bad"))
-        assert graph.pipeline_name == "motor_rating"
-        assert graph.pipeline_description == "real desc"
-
-    @pytest.mark.parametrize(
-        ("import_line", "constructor"),
-        [
-            ("import haute as ht", "ht.Pipeline"),
-            ("import haute as ht  # project API", "ht.Pipeline"),
-            ("from haute import Pipeline as BuildPipeline", "BuildPipeline"),
-            ("from haute import Pipeline, Submodel", "Pipeline"),
-            (
-                "from haute import Pipeline as BuildPipeline, Submodel  # public API",
-                "BuildPipeline",
-            ),
-        ],
-    )
-    def test_aliased_pipeline_metadata_survives_fallback(
-        self,
-        import_line: str,
-        constructor: str,
-    ) -> None:
-        source = f"""\
-{import_line}
-pipeline = {constructor}("motor_rating", description="real desc")
-
-@pipeline.polars()
-def broken(df):
-    return (
-"""
-        graph = fallback_parse(source, "f.py", SyntaxError("bad"))
-        assert graph.pipeline_name == "motor_rating"
-        assert graph.pipeline_description == "real desc"
-
-    def test_visible_unrecoverable_pipeline_assignment_fails_loud(self) -> None:
-        source = """\
-from somewhere import Builder
-pipeline = Builder("secret_name")
-
-@pipeline.polars()
-def broken(df):
-    return (
-"""
-        with pytest.raises(ParseError, match="pipeline metadata"):
-            fallback_parse(source, "f.py", SyntaxError("bad"))
-
-    def test_unclosed_pipeline_metadata_fails_loud(self) -> None:
-        source = """\
-import haute
-pipeline = haute.Pipeline("p"
-
-@pipeline.polars()
-def a(df):
-    return df
-"""
-        err = SyntaxError("bad")
-        err.lineno = 2
-        with pytest.raises(ParseError, match="pipeline metadata"):
-            fallback_parse(source, "f.py", err)
-
-    def test_pipeline_metadata_trailing_text_fails_loud(self) -> None:
-        source = """\
-import haute
-pipeline = haute.Pipeline("p") + other
-
-@pipeline.polars()
-def a(df):
-    return df
-"""
-        err = SyntaxError("bad")
-        err.lineno = 2
-        with pytest.raises(ParseError, match="trailing text"):
-            fallback_parse(source, "f.py", err)
-
-    def test_pipeline_metadata_invalid_kw_syntax_fails_loud(self) -> None:
-        source = """\
-import haute
-pipeline = haute.Pipeline("p", for=1)
-
-@pipeline.polars()
-def a(df):
-    return df
-"""
-        err = SyntaxError("bad")
-        err.lineno = 2
-        with pytest.raises(ParseError, match="pipeline metadata"):
-            fallback_parse(source, "f.py", err)
-
-    def test_contract_constructor_survives_fallback_parse_config(self) -> None:
-        source = """\
-import haute
-pipeline = haute.Pipeline("p")
-
-@pipeline.polars(contract=Contract(inputs=["x"], outputs=["y"]))
-def calc(df):
-    return df
-
-x = {unclosed
-"""
-        err = SyntaxError("bad")
-        err.lineno = 8
-        graph = fallback_parse(source, "f.py", err)
-        node = next(node for node in graph.nodes if node.id == "calc")
-        assert node.data.config["contract"] == {"inputs": ["x"], "outputs": ["y"]}
+        with pytest.raises(ParseError):
+            recover_pipeline_fragments(source)

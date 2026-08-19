@@ -20,7 +20,7 @@ from haute._ast_helpers import (
     _extract_preamble,
     _extract_preserved_blocks,
     _extract_submodel_meta,
-    _is_submodel_node_decorator,
+    _is_submodel_authored_decorator,
 )
 from haute._flatten import flatten_graph
 from haute._graph_builders import (
@@ -323,9 +323,10 @@ def parse_submodel_source(
     func_bodies = _extract_function_bodies(source, tree=tree)
     raw_nodes = _extract_decorated_nodes(
         tree,
-        _is_submodel_node_decorator,
+        _is_submodel_authored_decorator,
         func_bodies,
         _base_dir,
+        source=source,
     )
 
     explicit_connects = _extract_connect_calls(tree, receiver="submodel")

@@ -13,6 +13,11 @@
  */
 import { create } from "zustand"
 import useGraphStore from "./useGraphStore"
+import {
+  captureDocumentExecutionFence,
+  isDocumentExecutionFenceCurrent,
+  type DocumentExecutionFence,
+} from "./useDocumentStatusStore"
 import type { PreviewData } from "../panels/DataPreview"
 import type { OptimiserPreviewData } from "../panels/OptimiserPreview"
 import type {
@@ -194,6 +199,7 @@ interface ActiveSolveJob {
   configHash: string
   source: string
   structuralVersion: number
+  documentFence?: DocumentExecutionFence
 }
 
 interface CachedTrainResult {
@@ -215,6 +221,7 @@ interface ActiveTrainJob {
   configHash: string
   source: string
   structuralVersion: number
+  documentFence?: DocumentExecutionFence
   /** The only two samples retained for the browser-derived ETA. */
   estimateSamples?: TrainEstimateSample[]
   estimatedRemainingSeconds?: number | null
@@ -240,6 +247,7 @@ interface ActiveExploreJob {
   configHash: string
   source: string
   structuralVersion: number
+  documentFence?: DocumentExecutionFence
 }
 
 interface CachedExplorePivotResult {
@@ -263,6 +271,7 @@ export interface ExplorePivotStartClaim {
   dataframeCacheKey: string | null
   calculationIdentity: string
   token: number
+  documentFence?: DocumentExecutionFence
 }
 
 // Monotonic token source for pivot auto-update claims; uniqueness is all that
@@ -280,8 +289,20 @@ interface ActiveExplorePivotJob {
   requestedDataframeCacheKey: string | null
   source: string
   structuralVersion: number
+  documentFence?: DocumentExecutionFence
   progress: ExplorePivotProgress | null
   error: string | null
+}
+
+function omitRecordKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  const next = { ...record }
+  delete next[key]
+  return next
+}
+
+function jobFenceIsCurrent(job: { documentFence?: DocumentExecutionFence }): boolean {
+  return job.documentFence === undefined ||
+    isDocumentExecutionFenceCurrent(job.documentFence)
 }
 
 // ─── Config hashing ──────────────────────────────────────────────
@@ -816,6 +837,8 @@ interface NodeResultsState {
   touchExplorePreview: (nodeId: string) => void
 
   // ── Cleanup ──
+  /** Drop active work captured under an obsolete live-document fence. */
+  discardActiveJobs: () => void
   clearNode: (nodeId: string) => void
 }
 
@@ -889,7 +912,18 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => ({
       solveJobs: {
         ...s.solveJobs,
-        [nodeId]: { jobId, nodeId, nodeLabel, progress: null, error: null, constraints, configHash, source, structuralVersion },
+        [nodeId]: {
+          jobId,
+          nodeId,
+          nodeLabel,
+          progress: null,
+          error: null,
+          constraints,
+          configHash,
+          source,
+          structuralVersion,
+          documentFence: captureDocumentExecutionFence(),
+        },
       },
     })),
 
@@ -897,6 +931,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const job = s.solveJobs[nodeId]
       if (!job) return s
+      if (!jobFenceIsCurrent(job)) {
+        return { solveJobs: omitRecordKey(s.solveJobs, nodeId) }
+      }
       return {
         solveJobs: { ...s.solveJobs, [nodeId]: { ...job, progress } },
       }
@@ -906,6 +943,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const job = s.solveJobs[nodeId]
       if (!job) return s
+      if (!jobFenceIsCurrent(job)) {
+        return { solveJobs: omitRecordKey(s.solveJobs, nodeId) }
+      }
       const { [nodeId]: _removedJob, ...remainingJobs } = s.solveJobs; void _removedJob
       // Extract frontier data from the result if present
       const rawFrontier = result.frontier
@@ -963,6 +1003,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const job = s.solveJobs[nodeId]
       if (!job) return s
+      if (!jobFenceIsCurrent(job)) {
+        return { solveJobs: omitRecordKey(s.solveJobs, nodeId) }
+      }
       const { [nodeId]: _removedJob, ...remainingJobs } = s.solveJobs; void _removedJob
       touchCachedResult(solveResultRecency, nodeId)
       const nextCached: CachedSolveResult = {
@@ -1117,7 +1160,19 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   startTrainJob: (nodeId, jobId, nodeLabel, configHash, source, structuralVersion) =>
     set((s) => {
-      const nextJob = { jobId, nodeId, nodeLabel, progress: null, error: null, configHash, source, structuralVersion, estimateSamples: [], estimatedRemainingSeconds: null }
+      const nextJob = {
+        jobId,
+        nodeId,
+        nodeLabel,
+        progress: null,
+        error: null,
+        configHash,
+        source,
+        structuralVersion,
+        documentFence: captureDocumentExecutionFence(),
+        estimateSamples: [],
+        estimatedRemainingSeconds: null,
+      }
       const cached = s.trainResults[nodeId]
       if (cached && cached.result.status !== "error") {
         cacheModellingPreview(nodeId, cached, nextJob)
@@ -1134,6 +1189,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const job = s.trainJobs[nodeId]
       if (!job) return s
+      if (!jobFenceIsCurrent(job)) {
+        return { trainJobs: omitRecordKey(s.trainJobs, nodeId) }
+      }
       const estimate = nextTrainEstimate(job.estimateSamples ?? [], progress)
       return {
         trainJobs: { ...s.trainJobs, [nodeId]: { ...job, progress, estimateSamples: estimate.samples, estimatedRemainingSeconds: estimate.estimatedRemainingSeconds } },
@@ -1143,6 +1201,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   completeTrainJob: (nodeId, result, terminalStatus) =>
     set((s) => {
       const job = s.trainJobs[nodeId]
+      if (job && !jobFenceIsCurrent(job)) {
+        return { trainJobs: omitRecordKey(s.trainJobs, nodeId) }
+      }
       // Remove the active job if present; also works for direct completion
       // (no active job) used by ModellingConfig for sync/error results.
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
@@ -1184,6 +1245,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const job = s.trainJobs[nodeId]
       if (!job) return s
+      if (!jobFenceIsCurrent(job)) {
+        return { trainJobs: omitRecordKey(s.trainJobs, nodeId) }
+      }
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
       touchCachedResult(trainResultRecency, nodeId)
       const nextCached: CachedTrainResult = {
@@ -1228,6 +1292,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
           configHash,
           source,
           structuralVersion,
+          documentFence: captureDocumentExecutionFence(),
         },
       },
     })),
@@ -1236,6 +1301,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const job = s.exploreJobs[nodeId]
       if (!job) return s
+      if (!jobFenceIsCurrent(job)) {
+        return { exploreJobs: omitRecordKey(s.exploreJobs, nodeId) }
+      }
       return {
         exploreJobs: { ...s.exploreJobs, [nodeId]: { ...job, progress } },
       }
@@ -1245,6 +1313,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const job = s.exploreJobs[nodeId]
       if (!job) return s
+      if (!jobFenceIsCurrent(job)) {
+        return { exploreJobs: omitRecordKey(s.exploreJobs, nodeId) }
+      }
       const { [nodeId]: _removedJob, ...remainingJobs } = s.exploreJobs; void _removedJob
       touchCachedResult(exploreResultRecency, nodeId)
       const nextCached: CachedExploreResult = {
@@ -1275,6 +1346,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const job = s.exploreJobs[nodeId]
       if (!job) return s
+      if (!jobFenceIsCurrent(job)) {
+        return { exploreJobs: omitRecordKey(s.exploreJobs, nodeId) }
+      }
       const { [nodeId]: _removedJob, ...remainingJobs } = s.exploreJobs; void _removedJob
       touchCachedResult(exploreResultRecency, nodeId)
       const previous = s.exploreResults[nodeId]
@@ -1312,20 +1386,41 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => ({
       pivotJobs: {
         ...s.pivotJobs,
-        [key]: { jobId, key, nodeId, pivotId, nodeLabel, pivotName, calculationIdentity, requestedDataframeCacheKey, source, structuralVersion, progress: null, error: null },
+        [key]: {
+          jobId,
+          key,
+          nodeId,
+          pivotId,
+          nodeLabel,
+          pivotName,
+          calculationIdentity,
+          requestedDataframeCacheKey,
+          source,
+          structuralVersion,
+          documentFence: captureDocumentExecutionFence(),
+          progress: null,
+          error: null,
+        },
       },
     })),
 
   updateExplorePivotProgress: (key, progress) =>
     set((s) => {
       const job = s.pivotJobs[key]
-      return job ? { pivotJobs: { ...s.pivotJobs, [key]: { ...job, progress } } } : s
+      if (!job) return s
+      if (!jobFenceIsCurrent(job)) {
+        return { pivotJobs: omitRecordKey(s.pivotJobs, key) }
+      }
+      return { pivotJobs: { ...s.pivotJobs, [key]: { ...job, progress } } }
     }),
 
   completeExplorePivotJob: (key, result, terminalStatus) =>
     set((s) => {
       const job = s.pivotJobs[key]
       if (!job) return s
+      if (!jobFenceIsCurrent(job)) {
+        return { pivotJobs: omitRecordKey(s.pivotJobs, key) }
+      }
       const { [key]: _removedJob, ...pivotJobs } = s.pivotJobs; void _removedJob
       touchCachedResult(explorePivotResultRecency, key)
       const pivotResults = trimExplorePivotCache({
@@ -1353,6 +1448,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const job = s.pivotJobs[key]
       if (!job) return s
+      if (!jobFenceIsCurrent(job)) {
+        return { pivotJobs: omitRecordKey(s.pivotJobs, key) }
+      }
       const { [key]: _removedJob, ...pivotJobs } = s.pivotJobs; void _removedJob
       touchCachedResult(explorePivotResultRecency, key)
       const previous = s.pivotResults[key]
@@ -1399,7 +1497,13 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => ({
       pivotStartClaims: {
         ...s.pivotStartClaims,
-        [key]: { nodeId, dataframeCacheKey, calculationIdentity, token },
+        [key]: {
+          nodeId,
+          dataframeCacheKey,
+          calculationIdentity,
+          token,
+          documentFence: captureDocumentExecutionFence(),
+        },
       },
     }))
     return token
@@ -1416,7 +1520,13 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => ({
       pivotStartClaims: {
         ...s.pivotStartClaims,
-        [key]: { nodeId, dataframeCacheKey, calculationIdentity, token },
+        [key]: {
+          nodeId,
+          dataframeCacheKey,
+          calculationIdentity,
+          token,
+          documentFence: captureDocumentExecutionFence(),
+        },
       },
     }))
     return token
@@ -1477,6 +1587,14 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       dropCachedResult(exploreResultRecency, nodeId)
     }
   },
+
+  discardActiveJobs: () => set({
+    solveJobs: {},
+    trainJobs: {},
+    exploreJobs: {},
+    pivotJobs: {},
+    pivotStartClaims: {},
+  }),
 
   clearNode: (nodeId) => {
     // Clear derived-getter caches for this node

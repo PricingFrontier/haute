@@ -33,6 +33,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
   previewNode: vi.fn(),
+  previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
   ApiError: class ApiError extends Error {
     status: number
@@ -71,6 +72,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 
 import { loadPipeline, previewNode } from "../../api/client"
 import { makeNode } from "../../test-utils/factories"
+import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 
@@ -144,7 +146,7 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
     // effect bumped structuralVersion while the request was in flight,
     // stranding the panel on "Executing pipeline..." with no further
     // requests and no error.
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
 
     let resolvePreview!: (value: PreviewEnvelope) => void
     mockPreview.mockImplementation(() => new Promise((resolve) => {
@@ -201,7 +203,7 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
   it("surfaces a preview failure that arrives after a mid-flight structuralVersion bump", async () => {
     // Same interleave as above but the backend fails: the panel must show
     // the error, never an eternal "loading" with no error surfaced.
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
 
     let rejectPreview!: (reason: unknown) => void
     mockPreview.mockImplementation(() => new Promise((_resolve, reject) => {
@@ -239,7 +241,7 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
     // handleDeleteNode clears previewData to null and removes the node;
     // the late response must keep that terminal state (no panel for a
     // node that no longer exists, no orphaned cache entry).
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
 
     let resolvePreview!: (value: PreviewEnvelope) => void
     mockPreview.mockImplementation(() => new Promise((resolve) => {

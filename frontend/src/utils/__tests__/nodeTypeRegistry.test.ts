@@ -14,8 +14,9 @@ describe("nodeTypeRegistry", () => {
     expect(missing).toEqual([])
   })
 
-  it("has no entries for unknown node types", () => {
+  it("has no entries beyond persisted node types and the editor recovery renderer", () => {
     const known = new Set(Object.values(NODE_TYPES) as string[])
+    known.add("unavailablePipelineNode")
     const unknown = Object.keys(nodeTypes).filter((t) => !known.has(t))
     expect(unknown).toEqual([])
   })

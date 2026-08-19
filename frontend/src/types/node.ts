@@ -43,6 +43,7 @@ export interface ColumnInfo {
  */
 export type BackendNodeStatus = "ok" | "error"
 export type NodeStatus = BackendNodeStatus | "running"
+export type LoadAvailability = "ready" | "unavailable" | "blocked"
 
 /**
  * Base data shape for all Haute pipeline nodes.
@@ -70,6 +71,24 @@ export interface HauteNodeData extends Record<string, unknown> {
   _columnsSource?: string
   /** Node execution status — set by useTracing */
   _status?: NodeStatus
+  /** Persisted editor-load availability; independent of transient execution status. */
+  _loadAvailability?: LoadAvailability
+  /** Stable ids into the current pipeline editor document's diagnostic collection. */
+  _loadDiagnosticIds?: string[]
+  /** Authored node path from the nearest unavailable dependency through this node. */
+  _loadBlockingPath?: string[]
+  /** Editor-only identity and source metadata supplied by the recovery adapter. */
+  _recoveryId?: string
+  _authoredId?: string
+  _authoredDecorator?: string
+  _configReference?: string
+  _sourceFile?: string
+  _sourceSpan?: {
+    start_line: number
+    start_column: number
+    end_line: number
+    end_column: number
+  }
   _traceActive?: boolean
   _traceDimmed?: boolean
   _hoverDimmed?: boolean

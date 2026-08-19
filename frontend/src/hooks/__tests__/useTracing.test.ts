@@ -8,6 +8,8 @@ import useTracing, {
 } from "../useTracing"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 import type { TraceResult } from "../../types/trace"
@@ -131,6 +133,9 @@ function makeTrace(nodeIds: string[]): TraceResult {
 describe("useTracing", () => {
   beforeEach(() => {
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live" })
+    useDocumentStatusStore.getState().loadDocumentStatus(
+      makePipelineEditorDocument({ source_file: "main.py", source_revision: "r1" }),
+    )
     mockTraceCell.mockReset()
     mockReducedMotion(false)
   })
@@ -170,6 +175,77 @@ describe("useTracing", () => {
       result.current.handleCellClick(0, "price")
     })
     expect(mockTraceCell).not.toHaveBeenCalled()
+  })
+
+  it("does not start a trace while the document graph is unavailable or unsynchronized", () => {
+    useDocumentStatusStore.getState().loadLiveDocumentStatus(
+      makePipelineEditorDocument({
+        source_file: "main.py",
+        source_revision: "r2",
+        load_status: "degraded",
+      }),
+      null,
+      false,
+    )
+    const { result } = renderHook(() => useTracing(makeParams()))
+
+    act(() => result.current.handleCellClick(0, "price"))
+
+    expect(mockTraceCell).not.toHaveBeenCalled()
+    expect(result.current.traceState).toEqual({ status: "idle" })
+  })
+
+  it("discards a trace response when the authoritative document fence changes", async () => {
+    type TraceCellValue = Awaited<ReturnType<typeof traceCell>>
+    let resolveTrace!: (value: TraceCellValue) => void
+    mockTraceCell.mockImplementationOnce(
+      () => new Promise<TraceCellValue>((resolve) => { resolveTrace = resolve }),
+    )
+    const { result } = renderHook(() => useTracing(makeParams()))
+    act(() => result.current.handleCellClick(0, "price"))
+
+    useDocumentStatusStore.getState().loadLiveDocumentStatus(
+      makePipelineEditorDocument({
+        source_file: "main.py",
+        source_revision: "r2",
+        load_status: "degraded",
+      }),
+      null,
+      false,
+    )
+    await act(async () => {
+      resolveTrace({ status: "ok", trace: makeTrace(["stale_trace"]) })
+      await Promise.resolve()
+    })
+
+    expect(result.current.traceResult).toBeNull()
+    expect(result.current.tracedCell).toBeNull()
+    expect(result.current.traceState).toEqual({ status: "idle" })
+  })
+
+  it("discards a trace response when the pipeline source identity changes", async () => {
+    type TraceCellValue = Awaited<ReturnType<typeof traceCell>>
+    let resolveTrace!: (value: TraceCellValue) => void
+    mockTraceCell.mockImplementationOnce(
+      () => new Promise<TraceCellValue>((resolve) => { resolveTrace = resolve }),
+    )
+    const { result } = renderHook(() => useTracing(makeParams()))
+    act(() => result.current.handleCellClick(0, "price"))
+
+    useDocumentStatusStore.getState().loadDocumentStatus(
+      makePipelineEditorDocument({
+        source_file: "other.py",
+        source_revision: "r1",
+      }),
+    )
+    await act(async () => {
+      resolveTrace({ status: "ok", trace: makeTrace(["stale_trace"]) })
+      await Promise.resolve()
+    })
+
+    expect(result.current.traceResult).toBeNull()
+    expect(result.current.tracedCell).toBeNull()
+    expect(result.current.traceState).toEqual({ status: "idle" })
   })
 
   it("handleCellClick calls traceCell and sets result on success", async () => {

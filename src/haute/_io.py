@@ -442,7 +442,10 @@ def read_user_text(path: str | Path) -> str:
     User files may contain Windows-1252 or other non-UTF-8 bytes. Invalid
     bytes are replaced instead of raising ``UnicodeDecodeError``.
     """
-    return Path(path).read_text(encoding="utf-8", errors="replace")
+    # ``utf-8-sig`` is identical to UTF-8 except that it consumes an optional
+    # leading BOM. Feeding U+FEFF to ``ast.parse`` would turn an otherwise
+    # valid user pipeline into a false syntax error.
+    return Path(path).read_text(encoding="utf-8-sig", errors="replace")
 
 
 _OBJECT_CACHE_MAX_SIZE = 32

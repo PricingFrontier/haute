@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from haute._submodel_paths import resolve_submodel_reference
 from haute._types import PipelineGraph
 
 _REVISION_FORMAT = 1
+_RECOVERY_REVISION_FORMAT = 1
 
 
 def _project_relative(path: Path, project_root: Path) -> str:
@@ -111,6 +113,56 @@ def pipeline_document_revision(
     payload = {
         "format": _REVISION_FORMAT,
         "graph": _normalise_graph_value(graph.model_dump(mode="json"), root),
+        "files": manifest,
+    }
+    return content_hash_bytes(canonical_json(payload).encode("utf-8"))
+
+
+def pipeline_recovery_revision(
+    *,
+    project_root: Path,
+    artifacts: Iterable[tuple[str, Path]],
+) -> str:
+    """Hash raw, contained artifacts without requiring a canonical graph.
+
+    Repeated references to the same resolved path in the same role collapse to
+    one manifest entry. Missing and unreadable artifacts remain explicit states
+    so either transition changes the revision.
+    """
+    root = project_root.resolve()
+    unique: dict[tuple[str, str], tuple[str, Path]] = {}
+    for role, raw_path in artifacts:
+        if not role or not role.strip():
+            raise ValueError("Recovery artifact roles must be non-empty.")
+        path = raw_path.resolve()
+        if not path.is_relative_to(root):
+            raise ValueError(
+                f"Recovery artifact escapes the project root: {_project_relative(path, root)}"
+            )
+        key = (role, str(path).casefold())
+        unique[key] = (role, path)
+
+    manifest: list[dict[str, str]] = []
+    ordered = sorted(
+        unique.values(),
+        key=lambda item: (_project_relative(item[1], root), item[0]),
+    )
+    for role, path in ordered:
+        entry = {"role": role, "path": _project_relative(path, root)}
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            entry["state"] = "missing"
+        except OSError as exc:
+            entry["state"] = "unreadable"
+            entry["error_type"] = type(exc).__name__
+        else:
+            entry["state"] = "present"
+            entry["content_hash"] = content_hash_bytes(raw)
+        manifest.append(entry)
+
+    payload = {
+        "format": _RECOVERY_REVISION_FORMAT,
         "files": manifest,
     }
     return content_hash_bytes(canonical_json(payload).encode("utf-8"))

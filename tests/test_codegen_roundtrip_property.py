@@ -29,8 +29,8 @@ Known W5 tensions intentionally scoped here:
   ``pipeline.submodel("{path}")``; fuzzing that path would be a production bug
   report, not a harness fallback.
 * Tier-3 ``_parse_decorator_kwargs_regex`` policy: these properties exercise
-  generated AST-valid artifacts. Regex fallback policy for manually corrupted
-  files is intentionally left to the parser fallback tests.
+  generated AST-valid artifacts. Editor-only recovery for manually corrupted
+  files is covered by the pipeline recovery tests.
 """
 
 from __future__ import annotations

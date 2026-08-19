@@ -96,6 +96,8 @@ import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
+import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "../../api/client.ts"
 
 // ── WebSocket mock infrastructure ────────────────────────────────
@@ -153,6 +155,19 @@ function makeHookParams(sourceFile = "") {
   }
 }
 
+function pipelineDocumentFrame(
+  document: ReturnType<typeof makePipelineEditorDocument>,
+  documentFingerprint = "document-fingerprint",
+) {
+  return {
+    type: "pipeline_document_update",
+    schema_version: 1,
+    document,
+    document_fingerprint: documentFingerprint,
+    source_file: document.source_file,
+  }
+}
+
 // ── Test suites ──────────────────────────────────────────────────
 
 describe("useWebSocketSync", () => {
@@ -173,6 +188,7 @@ describe("useWebSocketSync", () => {
     useGraphStore.getState().edges = []
     useGraphStore.getState().preamble = ""
     useGraphStore.getState().submodels = {}
+    useDocumentStatusStore.getState().reset()
   })
 
   afterEach(() => {
@@ -291,6 +307,7 @@ describe("useWebSocketSync", () => {
       expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
         type: "resync",
         source_file: "rating/main.py",
+        document_schema_version: 1,
       }))
     })
 
@@ -328,6 +345,7 @@ describe("useWebSocketSync", () => {
       expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
         type: "resync",
         source_file: "rating/main.py",
+        document_schema_version: 1,
         graph_fingerprint: "applied-fp",
       }))
     })
@@ -367,6 +385,7 @@ describe("useWebSocketSync", () => {
       expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
         type: "resync",
         source_file: "modules/submodel.py",
+        document_schema_version: 1,
       }))
     })
 
@@ -423,6 +442,288 @@ describe("useWebSocketSync", () => {
   // ────────────────────────────────────────────────────────────────
   // Message handling — graph_update
   // ────────────────────────────────────────────────────────────────
+
+  describe("pipeline document update messages", () => {
+    const readyNode: Node = {
+      id: "disk",
+      type: "polars",
+      position: { x: 100, y: 200 },
+      data: { label: "Disk", nodeType: "polars", config: {} },
+    }
+
+    it("atomically applies a clean degraded document and its authoritative fence", async () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        load_status: "ready",
+        source_file: "rating/main.py",
+        source_revision: "r1",
+        nodes: [readyNode],
+      }))
+      const degraded = makePipelineEditorDocument({
+        load_status: "degraded",
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        nodes: [readyNode],
+        capabilities: { can_preview: true },
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(degraded)),
+        }))
+      })
+
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        loadStatus: "degraded",
+        sourceRevision: "r2",
+        capabilities: { can_mutate: false, can_execute: false, can_preview: true },
+        graphSynchronized: true,
+      })
+      expect(params.sourceRevisionRef.current).toBe("r2")
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledOnce()
+      expect(useGraphStore.getState().nodes).toHaveLength(1)
+    })
+
+    it("applies a degraded status fence without replacing a dirty local graph", async () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        load_status: "ready",
+        source_file: "rating/main.py",
+        source_revision: "r1",
+        nodes: [readyNode],
+      }))
+      useGraphStore.getState().nodes = [{ ...readyNode, id: "local-edit" }]
+      useGraphStore.getState().dirty = true
+      const degraded = makePipelineEditorDocument({
+        load_status: "degraded",
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        nodes: [readyNode],
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(degraded)),
+        }))
+      })
+
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        loadStatus: "degraded",
+        sourceRevision: "r2",
+        capabilities: { can_save: false, can_execute: false },
+        graphSynchronized: false,
+      })
+      expect(params.sourceRevisionRef.current).toBe("r2")
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["local-edit"])
+      expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
+        expect.stringContaining("unsaved changes"),
+      )
+    })
+
+    it("keeps a dirty retained graph unsynchronized even when the new disk document is ready", async () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        load_status: "ready",
+        source_file: "rating/main.py",
+        source_revision: "r1",
+        nodes: [readyNode],
+      }))
+      useGraphStore.getState().nodes = [{ ...readyNode, id: "local-edit" }]
+      useGraphStore.getState().dirty = true
+      const ready = makePipelineEditorDocument({
+        load_status: "ready",
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        nodes: [readyNode],
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(ready)),
+        }))
+      })
+
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        loadStatus: "ready",
+        sourceRevision: "r2",
+        capabilities: { can_save: true, can_execute: true },
+        graphSynchronized: false,
+      })
+      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["local-edit"])
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+    })
+
+    it("retains a clean last-renderable canvas with a separate revision for source-only", async () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        load_status: "ready",
+        source_file: "rating/main.py",
+        source_revision: "r1",
+        nodes: [readyNode],
+      }))
+      useGraphStore.getState().nodes = [readyNode]
+      const sourceOnly = makePipelineEditorDocument({
+        load_status: "source_only",
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        source_text: "this is not recoverable Python",
+        nodes: [],
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(sourceOnly)),
+        }))
+      })
+
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["disk"])
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        loadStatus: "source_only",
+        sourceRevision: "r2",
+        sourceText: "this is not recoverable Python",
+        retainedCanvas: {
+          kind: "last_renderable",
+          sourceRevision: "r1",
+          loadStatus: "ready",
+        },
+        graphSynchronized: false,
+      })
+    })
+
+    it("keeps a fresh source-only session on the source surface without a stale canvas", async () => {
+      const params = makeHookParams("rating/main.py")
+      const sourceOnly = makePipelineEditorDocument({
+        load_status: "source_only",
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        source_text: "broken",
+        nodes: [],
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(sourceOnly)),
+        }))
+      })
+
+      expect(useDocumentStatusStore.getState().retainedCanvas).toBeNull()
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+    })
+
+    it("surfaces a versioned system failure after document sync and clears on repair", async () => {
+      const params = makeHookParams("rating/main.py")
+      const ready = makePipelineEditorDocument({
+        load_status: "ready",
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        nodes: [readyNode],
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(ready)),
+        }))
+      })
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "parse_error",
+            error: "Pipeline document could not be loaded. Check the server logs for details.",
+            source_file: "rating/main.py",
+            document_schema_version: 1,
+          }),
+        }))
+      })
+
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        systemFailure: "Pipeline document could not be loaded. Check the server logs for details.",
+        graphSynchronized: false,
+      })
+
+      const repaired = makePipelineEditorDocument({
+        load_status: "ready",
+        source_file: "rating/main.py",
+        source_revision: "r3",
+        nodes: [readyNode],
+      })
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(repaired, "repaired-fingerprint")),
+        }))
+      })
+
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        systemFailure: null,
+        sourceRevision: "r3",
+        graphSynchronized: true,
+      })
+    })
+
+    it("rejects a malformed document frame before mutating status or graph state", async () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        load_status: "ready",
+        source_file: "rating/main.py",
+        source_revision: "r1",
+      }))
+      renderHook(() => useWebSocketSync(params))
+      const malformed = pipelineDocumentFrame(makePipelineEditorDocument({
+        load_status: "degraded",
+        source_file: "rating/main.py",
+        source_revision: "r2",
+      })) as Record<string, unknown>
+      malformed.unexpected = true
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(malformed),
+        }))
+      })
+
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        loadStatus: "ready",
+        sourceRevision: "r1",
+      })
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
+        "error",
+        expect.stringContaining("unexpected frame fields"),
+      )
+    })
+
+    it("resyncs by whole-document fingerprint after the new protocol is applied", async () => {
+      const params = makeHookParams("rating/main.py")
+      const document = makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        nodes: [readyNode],
+      })
+      renderHook(() => useWebSocketSync(params))
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(document, "doc-fp")),
+        }))
+      })
+      act(() => latestWS().onclose?.({} as CloseEvent))
+      act(() => vi.advanceTimersByTime(1000))
+      act(() => latestWS().onopen?.(new Event("open")))
+
+      expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
+        type: "resync",
+        source_file: "rating/main.py",
+        document_schema_version: 1,
+        document_fingerprint: "doc-fp",
+      }))
+    })
+  })
 
   describe("graph update messages", () => {
     it("updates nodes and edges on graph_update with positions", async () => {
@@ -1259,6 +1560,7 @@ describe("useWebSocketSync", () => {
       expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
         type: "resync",
         source_file: "rating/main.py",
+        document_schema_version: 1,
       }))
     })
 

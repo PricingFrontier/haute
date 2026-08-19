@@ -80,6 +80,13 @@ operates on the saved pipeline, and because an incoming live-sync update while d
 hit the canvas's reload-or-discard banner instead of applying. The gate derives from the
 canvas's existing dirty state; this component adds no dirty tracking of its own.
 
+**The document-readiness gate.** The composer also refuses to send while the current editor
+document is degraded, source-only, or has not synchronized its retained canvas with the
+authoritative document revision. Assistant authoring always starts from a strict on-disk graph;
+it must not turn a recovery document or stale retained canvas into an indirect mutation path.
+The app supplies the same central document-read-only gate used by Save and canvas editing, and
+the store rechecks it when a message is sent rather than trusting button state alone.
+
 **The top-level-view gate.** The composer likewise refuses to send while the canvas is
 drilled into a submodel, showing why: v1 tools author the top-level graph only, and letting
 the agent rewire a graph the analyst is not currently looking at invites unseen changes.

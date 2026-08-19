@@ -24,11 +24,17 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._hashing import content_hash_bytes
 from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
+from haute._pipeline_repair import (
+    PipelineRepairError,
+    apply_remove_unavailable_node_plan,
+    build_remove_unavailable_node_plan,
+)
 from haute._polars_io_registry import (
     PolarsIoConfigError,
     format_for_config,
@@ -37,6 +43,7 @@ from haute._polars_io_registry import (
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streaming_chunk_size
 from haute._sandbox import _get_project_root
 from haute._topo import ancestors
+from haute._types import GraphEdge, GraphNode, NodeData, SubmodelDefinition
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
@@ -61,7 +68,6 @@ from haute.graph_utils import (
     flatten_graph,
     graph_fingerprint,
 )
-from haute.parser import parse_pipeline_file
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
@@ -70,8 +76,8 @@ from haute.routes._contract_errors import (
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
     discover_pipelines,
+    load_pipeline_editor_document,
     lookup_pipeline_by_name,
-    parse_pipeline_to_graph,
     pipeline_dir,
     raise_pipeline_not_found,
     save_lock,
@@ -90,11 +96,17 @@ from haute.schemas import (
     NodeTimingInfo,
     OutputDestinationRequest,
     OutputDestinationResponse,
+    PipelineEditorDocument,
+    PipelineRepairApplyRequest,
+    PipelineRepairApplyResponse,
+    PipelineRepairDryRunRequest,
+    PipelineRepairPlanResponse,
     PipelineSummary,
     PreviewNodeRequest,
     PreviewNodeResponse,
     ReadJsonRequest,
     ReadJsonResponse,
+    RecoveryPreviewRequest,
     SavePipelineRequest,
     SavePipelineResponse,
     TraceRequest,
@@ -367,88 +379,130 @@ async def list_pipelines() -> list[PipelineSummary]:
 
     async def _parse_one(f: Path) -> PipelineSummary:
         try:
-            graph = await asyncio.to_thread(parse_pipeline_file, f)
-            return PipelineSummary(
-                name=graph.pipeline_name or f.stem,
-                description=graph.pipeline_description or "",
-                file=_wire_file(f),
-                node_count=len(graph.nodes),
+            document = await asyncio.to_thread(
+                load_pipeline_editor_document,
+                f,
+                project_root=cwd,
             )
-        except ParseError as e:
-            # Hand-authored parser messages are the path-safe client contract.
-            return PipelineSummary(name=f.stem, file=_wire_file(f), error=str(e))
+            return PipelineSummary(
+                name=document.pipeline_name or f.stem,
+                description=document.pipeline_description or "",
+                file=_wire_file(f),
+                node_count=len(document.nodes),
+                load_status=document.load_status,
+                diagnostic_count=len(document.diagnostics) + document.diagnostics_omitted,
+            )
         except Exception as e:
             logger.warning("pipeline_list_parse_failed", file=f.name, error=str(e))
-            return PipelineSummary(
-                name=f.stem,
-                file=_wire_file(f),
-                error="Failed to parse pipeline. Check the server logs for details.",
-            )
+            raise
 
     return list(await asyncio.gather(*[_parse_one(f) for f in files]))
 
 
-@router.get("/pipeline/{name}", response_model=PipelineGraph)
-async def get_pipeline(name: str) -> PipelineGraph:
-    """Return the graph for a specific pipeline."""
+@router.get("/pipeline/{name}", response_model=PipelineEditorDocument)
+async def get_pipeline(name: str) -> PipelineEditorDocument:
+    """Return the editor document for a specific readable pipeline."""
 
-    def _find() -> PipelineGraph | None:
+    def _find() -> PipelineEditorDocument | None:
         # O(1) lookup via cached index
         f = lookup_pipeline_by_name(name)
         if f is not None:
-            try:
-                return parse_pipeline_to_graph(f)
-            except Exception as e:
-                logger.warning("parse_failed", file=f.name, error=str(e))
+            return load_pipeline_editor_document(f, project_root=Path.cwd())
 
         # Fallback: linear scan (index may be stale)
         for f in discover_pipelines():
             try:
-                graph = parse_pipeline_to_graph(f)
-                if graph.pipeline_name == name:
-                    return graph
+                document = load_pipeline_editor_document(f, project_root=Path.cwd())
+                if document.pipeline_name == name or f.stem == name:
+                    return document
             except Exception as e:
-                logger.warning("parse_failed", file=f.name, error=str(e))
+                logger.warning("pipeline_editor_load_failed", file=f.name, error=str(e))
                 continue
         return None
 
-    graph = await asyncio.to_thread(_find)
-    if graph is None:
+    document = await asyncio.to_thread(_find)
+    if document is None:
         raise_pipeline_not_found(name)
-    return graph
+    return document
 
 
-@router.get("/pipeline", response_model=PipelineGraph)
-async def get_first_pipeline() -> PipelineGraph:
-    """Return the graph for the active pipeline, or an empty canvas.
+@router.get("/pipeline", response_model=PipelineEditorDocument)
+async def get_first_pipeline() -> PipelineEditorDocument:
+    """Return the first authored editor document, or a new empty canvas.
 
     Python file is the source of truth. Sidecar .haute.json provides positions.
     """
     cwd = Path.cwd()
 
-    def _find_first() -> tuple[PipelineGraph | None, str | None]:
-        best: PipelineGraph | None = None
-        first_parse_error: str | None = None
+    def _find_first() -> PipelineEditorDocument:
         for f in discover_pipelines():
-            try:
-                graph = parse_pipeline_to_graph(f)
-                graph.source_file = str(f.relative_to(cwd))
-                if graph.nodes:
-                    return graph, None
-                if best is None:
-                    best = graph
-            except Exception as e:
-                logger.warning("parse_failed", file=f.name, error=str(e))
-                if first_parse_error is None:
-                    first_parse_error = str(e)
-        return best, first_parse_error
+            document = load_pipeline_editor_document(f, project_root=cwd)
+            if document.has_authored_content:
+                return document
+        from haute._pipeline_recovery import empty_pipeline_editor_document
 
-    graph, parse_error = await asyncio.to_thread(_find_first)
-    if graph is not None:
-        return graph
-    if parse_error is not None:
-        raise HTTPException(status_code=422, detail=parse_error)
-    return PipelineGraph()
+        return empty_pipeline_editor_document()
+
+    return await asyncio.to_thread(_find_first)
+
+
+@router.post(
+    "/pipeline/repair/remove/dry-run",
+    response_model=PipelineRepairPlanResponse,
+)
+async def dry_run_remove_unavailable_node(
+    body: PipelineRepairDryRunRequest,
+) -> PipelineRepairPlanResponse:
+    """Plan one exact remove-only recovery repair without writing."""
+    try:
+        async with save_lock:
+            plan = await run_in_threadpool(
+                build_remove_unavailable_node_plan,
+                project_root=Path.cwd().resolve(),
+                request=body,
+            )
+        return plan.response
+    except PipelineRepairError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail()) from None
+    except OSError as exc:
+        logger.warning("pipeline_repair_dry_run_io_failed", error=str(exc))
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "repair_artifact_unavailable",
+                "message": "A repair artifact could not be read; reload and try again.",
+            },
+        ) from None
+
+
+@router.post(
+    "/pipeline/repair/remove/apply",
+    response_model=PipelineRepairApplyResponse,
+)
+async def apply_remove_unavailable_node(
+    body: PipelineRepairApplyRequest,
+) -> PipelineRepairApplyResponse:
+    """Apply one freshly recomputed and explicitly confirmed repair plan."""
+    try:
+        async with save_lock:
+            return await run_in_threadpool(
+                apply_remove_unavailable_node_plan,
+                project_root=Path.cwd().resolve(),
+                request=body,
+            )
+    except PipelineRepairError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail()) from None
+    except OSError as exc:
+        logger.warning("pipeline_repair_apply_io_failed", error=str(exc))
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "repair_artifact_unavailable",
+                "message": (
+                    "A repair artifact could not be written; original artifacts were restored."
+                ),
+            },
+        ) from None
 
 
 @router.post("/pipeline/save", response_model=SavePipelineResponse)
@@ -465,7 +519,27 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
     """
     try:
         async with save_lock:
-            svc = SavePipelineService(project_root=Path.cwd(), pipeline_root=pipeline_dir())
+            project_root = Path.cwd().resolve()
+            if body.source_file.strip():
+                target = validate_safe_path(project_root, body.source_file)
+                if target.is_file():
+                    current_document = await run_in_threadpool(
+                        load_pipeline_editor_document,
+                        target,
+                        project_root=project_root,
+                    )
+                    if current_document.load_status != "ready":
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                "The pipeline is not ready on disk. Reload it and resolve "
+                                "its diagnostics before saving."
+                            ),
+                        )
+            svc = SavePipelineService(
+                project_root=project_root,
+                pipeline_root=pipeline_dir(),
+            )
             return await run_in_threadpool(svc.save, body)
     except ConfigError as exc:
         logger.warning("save_pipeline_config_invalid", error=str(exc))
@@ -642,8 +716,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
             trace_context.release_admission(preserve_primary_error=True)
 
 
-@router.post("/pipeline/preview", response_model=PreviewNodeResponse)
-async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
+async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeResponse:
     """Run pipeline up to a specific node and return its output.
 
     Accepts an optional ``row_limit`` (default 100) that is pushed into
@@ -875,6 +948,267 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
     finally:
         if preview_context is not None:
             preview_context.release_admission(preserve_primary_error=True)
+
+
+@router.post("/pipeline/preview", response_model=PreviewNodeResponse)
+async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
+    """Preview a client-supplied canonical graph."""
+    return await _preview_canonical_graph(body)
+
+
+def _recovery_preview_error(
+    code: str,
+    message: str,
+    *,
+    status_code: int = 409,
+    **context: Any,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message, **context},
+    )
+
+
+def _recovery_ancestor_ids(
+    document: PipelineEditorDocument,
+    target_id: str,
+) -> set[str]:
+    incoming: dict[str, list[str]] = {}
+    for edge in document.edges:
+        incoming.setdefault(edge.target_recovery_id, []).append(edge.source_recovery_id)
+    closure = {target_id}
+    pending = [target_id]
+    while pending:
+        current = pending.pop()
+        for source in incoming.get(current, []):
+            if source in closure:
+                continue
+            closure.add(source)
+            pending.append(source)
+    return closure
+
+
+def _canonical_snapshot_graph(
+    *,
+    nodes: list[Any],
+    edges: list[Any],
+    submodels: dict[str, Any] | None,
+    allowed_node_ids: set[str] | None = None,
+    pipeline_name: str | None = None,
+    pipeline_description: str | None = None,
+    preamble: str | None = None,
+    preserved_blocks: list[str] | None = None,
+    source_file: str = "",
+) -> PipelineGraph:
+    """Build a fresh canonical graph from already-validated ready elements."""
+    selected_nodes = [
+        node for node in nodes if allowed_node_ids is None or node.recovery_id in allowed_node_ids
+    ]
+    canonical_nodes: list[GraphNode] = []
+    referenced_definitions: set[str] = set()
+    for node in selected_nodes:
+        if node.availability != "ready" or node.node_type is None or node.config is None:
+            raise _recovery_preview_error(
+                "node_unavailable",
+                f"Node {node.authored_id!r} is not available for preview.",
+                target_recovery_id=node.recovery_id,
+            )
+        if node.node_type == NodeType.SUBMODEL:
+            definition_id = node.config.get("definitionId")
+            if isinstance(definition_id, str):
+                referenced_definitions.add(definition_id)
+        canonical_nodes.append(
+            GraphNode(
+                id=node.recovery_id,
+                type=node.node_type,
+                position=node.display_position,
+                data=NodeData(
+                    label=node.label,
+                    description=node.description,
+                    nodeType=node.node_type,
+                    config=node.config,
+                ),
+            )
+        )
+
+    selected_ids = {node.id for node in canonical_nodes}
+    canonical_edges = [
+        GraphEdge(
+            id=edge.recovery_id,
+            source=edge.source_recovery_id,
+            target=edge.target_recovery_id,
+            sourceHandle=edge.source_handle,
+            targetHandle=edge.target_handle,
+            sourcePort=edge.source_port,
+            targetPort=edge.target_port,
+        )
+        for edge in edges
+        if edge.source_recovery_id in selected_ids
+        and edge.target_recovery_id in selected_ids
+        and edge.availability == "ready"
+    ]
+
+    canonical_submodels: dict[str, SubmodelDefinition] = {}
+    for definition_id in sorted(referenced_definitions):
+        definition = (submodels or {}).get(definition_id)
+        if definition is None or definition.availability != "ready":
+            raise _recovery_preview_error(
+                "submodel_unavailable",
+                f"Submodel definition {definition_id!r} is not available for preview.",
+                definition_id=definition_id,
+            )
+        canonical_submodels[definition_id] = SubmodelDefinition(
+            definitionId=definition.definition_id,
+            file=definition.file,
+            graph=_canonical_snapshot_graph(
+                nodes=definition.graph.nodes,
+                edges=definition.graph.edges,
+                submodels=definition.graph.submodels,
+                source_file=definition.file,
+            ),
+            inputPorts=definition.input_ports,
+            outputPorts=definition.output_ports,
+        )
+
+    return PipelineGraph(
+        nodes=canonical_nodes,
+        edges=canonical_edges,
+        submodels=canonical_submodels or None,
+        pipeline_name=pipeline_name,
+        pipeline_description=pipeline_description,
+        preamble=preamble,
+        preserved_blocks=list(preserved_blocks or []),
+        source_file=source_file,
+    )
+
+
+def _plan_recovery_preview(
+    document: PipelineEditorDocument,
+    body: RecoveryPreviewRequest,
+) -> PreviewNodeRequest:
+    if not document.source_selection_trusted:
+        sidecar_codes = [
+            diagnostic.code
+            for diagnostic in document.diagnostics
+            if diagnostic.code in {"sidecar_corrupt", "sidecar_unreadable"}
+        ]
+        raise _recovery_preview_error(
+            "source_selection_untrusted",
+            "Preview is unavailable because source selection metadata is not trusted.",
+            diagnostics=sidecar_codes,
+        )
+    if body.source not in document.sources:
+        raise _recovery_preview_error(
+            "source_not_available",
+            f"Source {body.source!r} is not available for this document.",
+            status_code=400,
+            source=body.source,
+        )
+
+    node_map = {node.recovery_id: node for node in document.nodes}
+    target = node_map.get(body.target_recovery_id)
+    if target is None:
+        raise _recovery_preview_error(
+            "recovery_target_not_found",
+            f"Recovery node {body.target_recovery_id!r} was not found.",
+            status_code=404,
+            target_recovery_id=body.target_recovery_id,
+        )
+    if target.availability == "unavailable":
+        raise _recovery_preview_error(
+            "node_unavailable",
+            f"Node {target.authored_id!r} is unavailable.",
+            target_recovery_id=target.recovery_id,
+            diagnostic_ids=target.diagnostic_ids,
+        )
+    if target.availability == "blocked":
+        raise _recovery_preview_error(
+            "node_blocked_by_load_error",
+            f"Node {target.authored_id!r} depends on an unavailable node.",
+            target_recovery_id=target.recovery_id,
+            blocking_path=target.blocking_path,
+        )
+
+    closure = _recovery_ancestor_ids(document, target.recovery_id)
+    for node_id in sorted(closure):
+        node = node_map.get(node_id)
+        if node is None or node.availability != "ready":
+            raise _recovery_preview_error(
+                "node_blocked_by_load_error",
+                f"Preview closure contains unavailable recovery node {node_id!r}.",
+                target_recovery_id=target.recovery_id,
+                blocking_path=(node.blocking_path if node is not None else [node_id]),
+            )
+    unresolved = [
+        connection
+        for connection in document.unresolved_connections
+        if connection.target_recovery_id in closure
+    ]
+    if unresolved:
+        raise _recovery_preview_error(
+            "node_blocked_by_unresolved_connection",
+            "Preview closure contains an unresolved authored connection.",
+            target_recovery_id=target.recovery_id,
+            connection_ids=[connection.recovery_id for connection in unresolved],
+        )
+
+    graph = _canonical_snapshot_graph(
+        nodes=document.nodes,
+        edges=document.edges,
+        submodels=document.submodels,
+        allowed_node_ids=closure,
+        pipeline_name=document.pipeline_name,
+        pipeline_description=document.pipeline_description,
+        preamble=document.preamble,
+        preserved_blocks=document.preserved_blocks,
+        source_file=document.source_file,
+    )
+    validate_pipeline_graph_shape_contracts(
+        graph,
+        graph_label=document.pipeline_name or document.source_file or "recovery-preview",
+    )
+    return PreviewNodeRequest(
+        graph=graph,
+        node_id=target.recovery_id,
+        row_limit=body.row_limit,
+        source=body.source,
+        requested_preview_columns=body.requested_preview_columns,
+        port_label=body.port_label,
+        **(
+            {"streaming_chunk_size": body.streaming_chunk_size}
+            if body.streaming_chunk_size is not None
+            else {}
+        ),
+    )
+
+
+@router.post("/pipeline/recovery-preview", response_model=PreviewNodeResponse)
+async def recovery_preview_node(body: RecoveryPreviewRequest) -> PreviewNodeResponse:
+    """Preview one server-validated ready closure from a recovery document."""
+    _ensure_printable_lookup_id(body.target_recovery_id, "target_recovery_id")
+    project_root = _get_project_root().resolve()
+    source_path = validate_safe_path(project_root, body.source_file)
+    if not source_path.is_file():
+        raise _recovery_preview_error(
+            "pipeline_source_not_found",
+            "The pipeline source file no longer exists.",
+            status_code=404,
+            source_file=body.source_file,
+        )
+    document = await run_in_threadpool(
+        load_pipeline_editor_document,
+        source_path,
+        project_root=project_root,
+    )
+    if document.source_revision != body.source_revision:
+        raise _recovery_preview_error(
+            "stale_document_revision",
+            "The pipeline changed after this recovery document was loaded.",
+            expected_revision=document.source_revision,
+            provided_revision=body.source_revision,
+        )
+    request = _plan_recovery_preview(document, body)
+    return await _preview_canonical_graph(request)
 
 
 @router.post(

@@ -42,6 +42,12 @@ consumers = ["frontend-preview-explore"]
 reason = "Modelling owns the actionable execution banner; Explore consumes it for cache metrics."
 
 [[shared_file]]
+path = "frontend/src/components/PipelineRepairDialog.tsx"
+primary = "frontend-graph-canvas"
+consumers = ["frontend-node-editors"]
+reason = "The canvas owns authoritative document replacement after repair; the unavailable-node inspector invokes its remove-only confirmation surface."
+
+[[shared_file]]
 path = "frontend/src/components/Toolbar.tsx"
 primary = "frontend-shared"
 consumers = ["frontend-assistant-ui"]
@@ -124,6 +130,12 @@ path = "frontend/src/types/node.ts"
 primary = "frontend-shared"
 consumers = ["frontend-graph-canvas"]
 reason = "Shared UI owns canonical node-data types consumed at the canvas boundary."
+
+[[shared_file]]
+path = "frontend/src/types/pipelineRepair.ts"
+primary = "frontend-shared"
+consumers = ["frontend-graph-canvas"]
+reason = "Shared UI owns strict repair response parsing; the canvas consumes the validated plan and returned editor document."
 
 [[shared_file]]
 path = "frontend/src/types/trainGuards.ts"
@@ -210,10 +222,22 @@ consumers = ["pipeline-config"]
 reason = "Execution owns runtime builder interception; pipeline configuration documents the shared seam."
 
 [[shared_file]]
+path = "src/haute/_parser_regex.py"
+primary = "expression-parsing"
+consumers = ["pipeline-config"]
+reason = "Expression parsing owns neutral textual recovery; pipeline configuration consumes its fragments only through editor recovery."
+
+[[shared_file]]
 path = "src/haute/_path_resolution.py"
 primary = "sandbox-security"
 consumers = ["execution-engine", "io-layer"]
 reason = "Security owns runtime containment; execution and I/O consume the shared resolver."
+
+[[shared_file]]
+path = "src/haute/_pipeline_recovery.py"
+primary = "server-api"
+consumers = ["pipeline-config"]
+reason = "The server API owns editor recovery documents; pipeline configuration documents the isolated config-resolution boundary."
 
 [[shared_file]]
 path = "src/haute/_pipeline_revision.py"

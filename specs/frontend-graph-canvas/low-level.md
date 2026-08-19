@@ -15,7 +15,15 @@
 | `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract owned by [frontend-shared](../frontend-shared/low-level.md) and consumed by the canvas. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: ordinary atomic delete, guarded submodel deletion, duplicate, ordinary `instanceOf` creation, reusable-submodel occurrence creation with deterministic fresh id/alias allocation, rename dialog, and in-flight-guarded ELK auto-layout. |
 | `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion and always clear gesture feedback; the hook also owns `onSelectionChange`/`onNodeClick` (panel + debounced preview, gated while a structured API-input has no `tables[]` schema), `handleDeleteEdge`, `onNodeContextMenu`, and `onDragOver`/`onDrop` (palette node creation). |
-| `frontend/src/hooks/usePipelineAPI.ts` | Pipeline load-on-mount; request-facing source-revision and preserved-block refs; debounced, cache-first, concurrency-limited-cascade preview fetching (`fetchPreview`/`fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`), where every network preview path first awaits `ensureInputSnapshots` for the graph's snapshot-backed Data Inputs; an active-source-change effect (`invalidateStaleColumnStashes`) that strips any node's column stash tagged with a different (or no) `_columnsSource`; and `handleSave` (config-ref/edge-join pre-save validation, snapshot-scoped save-concurrency guard, `markSaved`, committed-revision update). |
+| `frontend/src/hooks/usePipelineAPI.ts` | Pipeline editor-document load-on-mount; recovery-to-React-Flow adaptation; atomic document-status/revision plus graph ingestion; request-facing refs; preview lifecycle; and capability-fenced Save. |
+| `frontend/src/stores/useDocumentStatusStore.ts` | Authoritative editor-document status, diagnostics, capabilities, raw revision, source-only text, and last accepted document identity. Graph state/history remain in `useGraphStore`. |
+| `frontend/src/types/pipelineDocument.ts` | Strict version-1 recovery wire types/guards and the single adapter from recovery nodes/edges/submodels into render-only React Flow snapshots. Recovery wire values are never accepted as canonical graph values. |
+| `frontend/src/components/PipelineRecoveryBanner.tsx` | Accessible degraded-document summary and issues entry point. |
+| `frontend/src/components/SourceRecoveryView.tsx` | Read-only current-source and document-diagnostic surface used when no trustworthy graph skeleton exists. |
+| `frontend/src/components/PipelineLoadFailureView.tsx` | Dedicated initial-load system-failure surface that keeps transport, permission, discovery, and unreadable-file failures distinct from authored recovery diagnostics. |
+| `frontend/src/components/StalePipelineReferenceBanner.tsx` | Labels a retained last-renderable canvas with its prior revision and prevents it from being mistaken for the current source. |
+| `frontend/src/components/PipelineRepairDialog.tsx` | Minimal unavailable-node dry-run/diff/confirmation surface. It submits only document/target identities and a confirmed plan hash, retains config by default, and never authors replacement bytes. |
+| `frontend/src/nodes/UnavailablePipelineNode.tsx` | Dedicated inaccessible node card for unknown decorators and recovery elements that cannot use a canonical node renderer. |
 | `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins builds (lazy-sink first, one admitted-eager retry on `snapshot_build_unsupported`), polls jobs to a terminal state with abort support, and notifies at most once when a build starts. |
 | `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, fingerprint-based resync, applying accepted `graph_update` frames through one atomic clean-snapshot transition (including preserved-block/revision refs and dirty blocking), handling `parse_error`, and session expiry. |
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — definition/occurrence-aware view-stack state machine, local embedded-definition drill/project/layout, revision-preconditioned transform requests, and one atomic dirty history entry per create/dissolve. |
@@ -58,6 +66,20 @@
 | `frontend/src/components/SubmodelDialog.tsx` | "Create submodel" name-entry modal. |
 
 ## Key types and data structures
+
+### Pipeline editor document state (normative)
+
+`DocumentStatusState` stores `loadStatus: "ready"|"degraded"|"source_only"`,
+the validated capability object, diagnostics, source identity/revision, source text, and
+source-selection trust. It is updated before a graph snapshot is published; the existing
+`sourceRevisionRef` is updated in the same transaction as a request-facing mirror. The graph
+store contains only adapted React Flow nodes/edges and their history. Adapted node data adds
+`_loadAvailability`, `_loadDiagnosticIds`, `_loadBlockingPath`, `_recoveryId`, and optional
+source/config location fields, none of which is confused with transient execution `_status`.
+`documentReadOnly` is derived from server mutation capability and gates every mutation and
+history entry point, including drag/layout, keyboard actions, preamble, assistant edits,
+Save/Git, and submodel transforms. Execution entry points separately require their server
+capability. Inspection, selection, pan/zoom, and issue/source navigation remain enabled.
 
 ### Reusable submodel instance state (normative)
 
@@ -1291,3 +1313,31 @@ again through the editor and save paths.
   for column-relevant steps. All
   drag points are derived from live locator geometry and every assertion is
   an observable DOM, preview, trace, or persisted-pipeline outcome.
+
+## Recovery implementation contract
+
+`adaptPipelineEditorDocument` is the sole recovery-to-React-Flow adapter. Unresolved declarations
+become `selectable: false` dashed presentation edges only when both recovery endpoint ids are non-null.
+`PipelineRecoveryBanner` exposes the bounded diagnostic list as an accessible navigator, while
+`NodePanel` resolves unavailable/blocked node diagnostic ids through `useDocumentStatusStore`.
+
+Live document application retains the last renderable snapshot in memory, keyed with its revision.
+Clean updates replace graph/status atomically from the user's perspective. Dirty updates apply status
+first and retain graph/history. Source-only rendering either shows current source alone or labels the
+retained snapshot stale; all mutation and execution handlers consume the shared capability fence.
+A current-source version-1 system `parse_error` sets the document store's `systemFailure`, marks graph
+state unsynchronised, and renders `PipelineLoadFailureView`; the next valid document transition clears
+the failure before publishing its graph.
+
+`usePipelineAPI` exposes the same validated document-adoption transition used
+by initial load for a successful repair response. `PipelineRepairDialog`
+performs no local node deletion: App adopts the returned document, updates
+request-facing source/revision refs, loads one fresh graph snapshot/history
+baseline, marks it synchronized, and only then closes the selected recovery
+panel. If the repair was launched from a drilled submodel, navigation metadata
+resets to the authoritative root without restoring the stale saved parent
+snapshot.
+Revision/plan errors do not call that transition. Although ordinary mutation
+remains fenced, `can_repair` independently admits this one document-level
+command. The dialog consumes only the strict validated DTOs from
+`frontend/src/types/pipelineRepair.ts`. There is no migration path.

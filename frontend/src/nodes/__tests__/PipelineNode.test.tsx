@@ -223,6 +223,23 @@ describe("PipelineNode", () => {
     expect(screen.getByText(nodeTypeLabels[NODE_TYPES.POLARS])).toBeInTheDocument()
   })
 
+  it.each(["unavailable", "blocked"] as const)(
+    "announces %s load availability independently from execution status",
+    (availability) => {
+      renderNode({
+        label: "Recovered node",
+        nodeType: NODE_TYPES.POLARS,
+        _loadAvailability: availability,
+        _status: "ok",
+      })
+
+      expect(screen.getByRole("button", {
+        name: new RegExp(`load status: ${availability}, status: ok`, "i"),
+      })).toBeInTheDocument()
+      expect(screen.getByText(availability)).toBeInTheDocument()
+    },
+  )
+
   it("renders a dataInput node", () => {
     renderNode({ label: "Load CSV", nodeType: NODE_TYPES.DATA_INPUT })
     expect(screen.getByText("Load CSV")).toBeInTheDocument()

@@ -8,6 +8,10 @@ import type {
   JobStatus,
 } from "../../api/types"
 import useGraphStore from "../../stores/useGraphStore"
+import {
+  captureDocumentExecutionFence,
+  isDocumentExecutionFenceCurrent,
+} from "../../stores/useDocumentStatusStore"
 import useNodeResultsStore, {
   explorePivotResultKey,
 } from "../../stores/useNodeResultsStore"
@@ -200,6 +204,8 @@ export default function useExplorePivotActions({
     ) => {
       if (!isPivotConfigured(pivot)) return
 
+      const documentFence = captureDocumentExecutionFence()
+      if (!isDocumentExecutionFenceCurrent(documentFence)) return
       const key = explorePivotResultKey(node.id, pivot.id)
       const calculationIdentity = pivotCalculationIdentity(pivot)
       const startToken = autoClaimToken
@@ -216,7 +222,7 @@ export default function useExplorePivotActions({
       // work shared by another mounted consumer.
       const claimCurrent = () =>
         useNodeResultsStore.getState().pivotStartClaims[key]?.token
-          === startToken
+          === startToken && isDocumentExecutionFenceCurrent(documentFence)
       setNotice(pivot.id, null)
       const submissionGeneration = beginSubmitting(pivot.id)
 

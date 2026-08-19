@@ -1,14 +1,12 @@
-"""Regex-based fallback parser for pipeline files with syntax errors.
+"""Neutral fragment recovery for pipeline files with syntax errors.
 
 When a .py file has syntax errors and ``ast.parse`` fails, this module
 extracts ``@pipeline.<type>`` decorated functions, ``pipeline.connect()``
 calls, and pipeline metadata.  Call/decorator *sites* are located with
 regular expressions (the file as a whole is unparseable by definition),
 but the recovered fragments are re-parsed with the real AST wherever
-possible so values keep full fidelity.  The result is a best-effort
-PipelineGraph that the GUI can render alongside error markers; fragments
-that are visible but unrecoverable fail loud rather than silently
-dropping graph content.
+possible so values keep full fidelity. Editor recovery consumes the neutral
+fragments; strict parser entry points never import this module.
 """
 
 from __future__ import annotations
@@ -16,8 +14,7 @@ from __future__ import annotations
 import ast
 import re
 from collections.abc import Iterator
-from os.path import normcase
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
 from haute._ast_helpers import (
@@ -26,29 +23,12 @@ from haute._ast_helpers import (
     _extract_pipeline_meta,
     _extract_preamble,
     _extract_preserved_blocks,
-    _get_docstring,
-)
-from haute._config_builder import (
-    _attach_code_from_body,
-    _build_node_config,
-    _sidecar_required_error,
-    _validate_user_contract,
-)
-from haute._config_io import find_config_by_func_name, has_config_folder
-from haute._graph_builders import _build_edges, _build_rf_nodes
-from haute._io import read_user_text
-from haute._parser_conservation import (
-    assert_parser_structure_conserved,
-    missing_submodel_error,
 )
 from haute._parser_submodels import (
     SubmodelRegistration,
     extract_submodel_registrations,
-    merge_submodels,
-    parse_submodel_source,
 )
-from haute._submodel_paths import resolve_submodel_reference
-from haute._types import DECORATOR_TO_NODE_TYPE, NodeType, PipelineGraph
+from haute._types import DECORATOR_TO_NODE_TYPE, NodeType
 from haute.errors import ParseError
 
 # ---------------------------------------------------------------------------
@@ -92,6 +72,35 @@ _RE_COMPOUND_SUITE_PREFIX = re.compile(
     r"async\s+(?:for(?=\s|\()|with(?=\s|\()|def\s)"
     r")"
 )
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveredFunctionFragment:
+    """One syntax-recovered decorated function before config resolution."""
+
+    authored_id: str
+    decorator_name: str
+    decorator_text: str
+    explicit_node_type: NodeType | None
+    param_names: tuple[str, ...]
+    edge_param_names: tuple[str, ...]
+    params_text: str
+    body_text: str
+    start_line: int
+    end_line: int
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveredPipelineFragments:
+    """Source-wide fragments safe to hand to the editor recovery boundary."""
+
+    pipeline_name: str
+    pipeline_description: str
+    preamble: str
+    preserved_blocks: tuple[str, ...]
+    functions: tuple[RecoveredFunctionFragment, ...]
+    connections: tuple[tuple[str, str, str | None, str | None], ...]
+    submodel_registrations: tuple[SubmodelRegistration, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -638,10 +647,6 @@ def _find_function_blocks(source: str) -> list[dict]:
             continue
         decorator_method = m.group(1)
 
-        # Skip decorators that aren't recognised type-specific methods
-        if decorator_method not in DECORATOR_TO_NODE_TYPE:
-            continue
-
         decorator_text = _recover_decorator_text(source, m)
         func_name, params_text, def_line_idx = _find_decorated_def(
             source,
@@ -688,7 +693,7 @@ def _find_function_blocks(source: str) -> list[dict]:
                 "func_name": func_name,
                 "decorator_text": decorator_text,
                 "decorator_method": decorator_method,
-                "explicit_node_type": DECORATOR_TO_NODE_TYPE[decorator_method],
+                "explicit_node_type": DECORATOR_TO_NODE_TYPE.get(decorator_method),
                 "param_names": param_names,
                 "edge_param_names": positional_param_names,
                 "params_text": params_text,
@@ -850,296 +855,37 @@ def _recover_submodel_registrations(source: str) -> list[SubmodelRegistration]:
     return registrations
 
 
-def _recover_submodels(
-    graph: PipelineGraph,
-    source: str,
-    source_file: str,
-    connect_pairs: list[tuple[str, str, str | None, str | None]],
-    base_dir: Path,
-    submodel_base_dir: Path,
-    *,
-    flatten: bool,
-) -> tuple[
-    PipelineGraph,
-    dict[str, PipelineGraph],
-    dict[str, str],
-    list[str],
-    set[str],
-]:
-    """Recover and merge submodels for the fallback graph (healthy-path parity)."""
-    registrations = _recover_submodel_registrations(source)
-    if not registrations:
-        return graph, {}, {}, [], set()
-
-    resolved_root = submodel_base_dir.resolve()
-    resolved: list[tuple[SubmodelRegistration, Path, Path, str]] = []
-    missing_paths: list[str] = []
-
-    for registration in registrations:
-        try:
-            sm_filepath, sm_base_dir = resolve_submodel_reference(
-                registration.path,
-                pipeline_dir=base_dir,
-                project_root=resolved_root,
-            )
-        except ValueError as exc:
-            raise ParseError(
-                "pipeline.submodel() path escapes the project directory",
-                path=registration.path,
-            ) from exc
-        if not sm_filepath.is_file():
-            missing_paths.append(registration.path)
-            continue
-        resolved.append(
-            (registration, sm_filepath, sm_base_dir, normcase(str(sm_filepath.resolve())))
-        )
-
-    if missing_paths:
-        raise missing_submodel_error(missing_paths)
-
-    by_source: dict[
-        str,
-        tuple[str, Path, Path, list[SubmodelRegistration]],
-    ] = {}
-    for registration, sm_filepath, sm_base_dir, source_key in resolved:
-        existing = by_source.get(source_key)
-        if existing is None:
-            by_source[source_key] = (
-                registration.path,
-                sm_filepath,
-                sm_base_dir,
-                [registration],
-            )
-        else:
-            existing[3].append(registration)
-
-    submodel_graphs: dict[str, PipelineGraph] = {}
-    submodel_files: dict[str, str] = {}
-    definition_sources: dict[str, str] = {}
-    for source_key, (rel_path, sm_filepath, sm_base_dir, source_registrations) in by_source.items():
-        definition_ids = {registration.definition_id for registration in source_registrations}
-        if len(definition_ids) != 1:
-            raise ParseError(
-                "One resolved submodel file is registered with conflicting definition ids.",
-                source_file=str(sm_filepath),
-                definition_ids=sorted(definition_ids),
-            )
-        definition_id = next(iter(definition_ids))
-        previous_source = definition_sources.get(definition_id)
-        if previous_source is not None and previous_source != source_key:
-            raise ParseError(
-                "One submodel definition id resolves to multiple files.",
-                definition_id=definition_id,
-                source_files=[previous_source, source_key],
-            )
-        definition_sources[definition_id] = source_key
-        sm_source = read_user_text(sm_filepath)
-        sm_graph = parse_submodel_source(
-            sm_source,
-            source_file=str(sm_filepath),
-            _base_dir=sm_base_dir,
-        )
-        submodel_graphs[definition_id] = sm_graph
-        submodel_files[definition_id] = rel_path
-
-    merged = merge_submodels(
-        graph,
-        submodel_graphs,
-        submodel_files,
-        connect_pairs,
-        registrations=registrations,
-        flatten=flatten,
-    )
-    return (
-        merged,
-        submodel_graphs,
-        submodel_files,
-        [registration.path for registration in registrations],
-        {registration.alias for registration in registrations},
-    )
-
-
 # ---------------------------------------------------------------------------
 # Public
 # ---------------------------------------------------------------------------
 
 
-def fallback_parse(
-    source: str,
-    source_file: str,
-    syntax_error: SyntaxError,
-    *,
-    _base_dir: Path | None = None,
-    _submodel_base_dir: Path | None = None,
-    flatten: bool = False,
-) -> PipelineGraph:
-    """Parse a pipeline file with syntax errors using regex fallback.
-
-    Extracts all @pipeline.<type> decorated functions, marks broken ones
-    with an error in their config, and still returns the full graph.
-
-    When base directories are provided, ``pipeline.submodel(...)`` references
-    are recovered and merged exactly like the healthy path, so a syntax error
-    in the main file no longer silently discards every submodel node/edge.
-    """
-    # Resolve base_dir from source_file for config loading
-    base_dir = _base_dir or (Path(source_file).parent if source_file else Path.cwd())
-
-    pipeline_name, pipeline_desc = _recover_pipeline_meta(source)
-
-    # Find function blocks
-    blocks = _find_function_blocks(source)
-    raw_nodes: list[dict] = []
-
-    for block in blocks:
-        func_name = block["func_name"]
-        decorator_kwargs = _parse_decorator_kwargs_regex(block["decorator_text"])
-        param_names = block["param_names"]
-        node_type: NodeType = block["explicit_node_type"]
-
-        # If the decorator references an external config file, try to
-        # load it.  The config= path in the source may be mangled by
-        # Windows backslash escapes (the reason we are in the regex
-        # fallback), so reconstruct it from the function name.
-        config_kwarg = decorator_kwargs.pop("config", None)
-        loaded_config: dict | None = None
-        if config_kwarg and func_name:
-            recovered = find_config_by_func_name(func_name, base_dir)
-            if recovered is not None:
-                # The node type always comes from the type-specific decorator
-                # (``@pipeline.<type>``); the anchor scan skips decorators not
-                # in DECORATOR_TO_NODE_TYPE, so the config-inferred type is
-                # never needed here.
-                loaded_config, _ = recovered
-
-        # Try to parse the function individually to get the docstring
-        func_source = (
-            f"{block['decorator_text']}\ndef {func_name}({block['params_text']}):\n"
-            f"{block['body_text']}"
-        )
-        description = ""
-        has_syntax_error = False
-
-        function_syntax_error: SyntaxError | None = None
-        try:
-            func_tree = ast.parse(func_source)
-            for stmt in ast.iter_child_nodes(func_tree):
-                if isinstance(stmt, ast.FunctionDef):
-                    description = _get_docstring(stmt)
-                    break
-        except SyntaxError as exc:
-            function_syntax_error = exc
-            has_syntax_error = True
-
-        body = block["body_text"] if not has_syntax_error else ""
-        config: dict[str, Any]
-        if has_syntax_error:
-            config = {
-                "_load_error": (
-                    "Function body could not be parsed during syntax-error recovery"
-                    + (
-                        f" at line {function_syntax_error.lineno}"
-                        if function_syntax_error and function_syntax_error.lineno
-                        else ""
-                    )
-                )
-            }
-        elif loaded_config is not None:
-            config = _attach_code_from_body(loaded_config, node_type, body, param_names)
-        elif has_config_folder(node_type):
-            raise _sidecar_required_error(node_type, func_name)
-        else:
-            config = _build_node_config(
-                node_type,
-                decorator_kwargs,
-                body,
-                param_names,
+def recover_pipeline_fragments(source: str) -> RecoveredPipelineFragments:
+    """Recover source structure without constructing or validating a graph."""
+    pipeline_name, pipeline_description = _recover_pipeline_meta(source)
+    recovered_functions: list[RecoveredFunctionFragment] = []
+    for block in _find_function_blocks(source):
+        start_line = int(block["start_line"]) + 1
+        recovered_functions.append(
+            RecoveredFunctionFragment(
+                authored_id=str(block["func_name"]),
+                decorator_name=str(block["decorator_method"]),
+                decorator_text=str(block["decorator_text"]),
+                explicit_node_type=block["explicit_node_type"],
+                param_names=tuple(str(value) for value in block["param_names"]),
+                edge_param_names=tuple(str(value) for value in block["edge_param_names"]),
+                params_text=str(block["params_text"]),
+                body_text=str(block["body_text"]),
+                start_line=start_line,
+                end_line=start_line + str(block["body_text"]).count("\n") + 1,
             )
-        if not has_syntax_error and node_type == NodeType.LIVE_SWITCH:
-            config["inputs"] = list(block["edge_param_names"])
-        if "contract" in decorator_kwargs:
-            # Cross-check a drifted ``contract=`` annotation at parse time, the
-            # same guard the healthy path runs — but only when a real config
-            # was built (a body that failed to parse carries only _load_error).
-            if not has_syntax_error:
-                _validate_user_contract(
-                    node_type,
-                    config,
-                    decorator_kwargs["contract"],
-                    func_name,
-                )
-            config["contract"] = decorator_kwargs["contract"]
-
-        raw_nodes.append(
-            {
-                "func_name": func_name,
-                "node_type": node_type,
-                "description": description or f"{func_name} node",
-                "config": config,
-                "param_names": param_names,
-                "edge_param_names": block["edge_param_names"],
-            }
         )
-
-    # Build edges + nodes using shared helpers
-    connect_pairs = _find_connect_calls(source)
-    edges = _build_edges(raw_nodes, connect_pairs)
-    rf_nodes = _build_rf_nodes(raw_nodes)
-    preamble = _extract_preamble(source)
-
-    graph = PipelineGraph(
-        nodes=rf_nodes,
-        edges=edges,
+    return RecoveredPipelineFragments(
         pipeline_name=pipeline_name,
-        pipeline_description=pipeline_desc,
-        preamble=preamble,
-        # The marker scan is a pure line scan, so it works on the
-        # syntactically-broken source that triggered this fallback; without
-        # it a fallback-parse -> save cycle deletes every preserve block.
-        preserved_blocks=_extract_preserved_blocks(source),
-        source_file=source_file,
-        warning=f"File has syntax errors (line {syntax_error.lineno}); parsed via regex fallback",
+        pipeline_description=pipeline_description,
+        preamble=_extract_preamble(source),
+        preserved_blocks=tuple(_extract_preserved_blocks(source)),
+        functions=tuple(recovered_functions),
+        connections=tuple(_find_connect_calls(source)),
+        submodel_registrations=tuple(_recover_submodel_registrations(source)),
     )
-    graph._parser_parameter_names = {
-        str(node["func_name"]): [str(name) for name in node.get("param_names", ())]
-        for node in raw_nodes
-    }
-
-    # Recover submodels so a syntax error in the main file does not silently
-    # discard every submodel node and edge.  Only runs when a base dir is
-    # available to resolve the referenced files against.
-    submodel_base_dir = _submodel_base_dir or _base_dir or base_dir
-    submodel_graphs: dict[str, PipelineGraph] = {}
-    submodel_files: dict[str, str] = {}
-    submodel_paths: list[str] = []
-    submodel_aliases: set[str] = set()
-    if submodel_base_dir is not None:
-        (
-            graph,
-            submodel_graphs,
-            submodel_files,
-            submodel_paths,
-            submodel_aliases,
-        ) = _recover_submodels(
-            graph,
-            source,
-            source_file,
-            connect_pairs,
-            base_dir,
-            submodel_base_dir,
-            flatten=flatten,
-        )
-
-    assert_parser_structure_conserved(
-        raw_nodes=raw_nodes,
-        explicit_connects=connect_pairs,
-        root_nodes=rf_nodes,
-        root_edges=edges,
-        submodel_paths=submodel_paths,
-        submodel_graphs=submodel_graphs,
-        submodel_files=submodel_files,
-        submodel_instance_paths=submodel_paths,
-        submodel_aliases=submodel_aliases,
-    )
-
-    return graph

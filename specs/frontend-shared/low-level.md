@@ -13,6 +13,7 @@
 | `frontend/src/types/banding.ts` | Banding-factor rule shapes shared between the banding node editor and its trace rendering. |
 | `frontend/src/types/guards.ts` | Shared runtime parser primitives plus parsers (`parse*`) and type guards for eagerly used concrete JSON API response shapes; part of the JSON/DOM trust boundary. `parseFileListResponse` accepts absent, numeric, or null `size` while retaining strict validation of every other field. Generic transport helpers, the caller-generic `readJson<T>`, and split-module local parsers are explicit exceptions. |
 | `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses. Training parsing strictly retains authoritative live-history/truncation and validates complete evaluation/tuning reports, weighted fit evidence, deterministic winner/count links, and bounded evaluation previews while remaining outside the initial JavaScript graph. |
+| `frontend/src/types/pipelineRepair.ts` | Exact-key minimal repair dry-run/apply wire types and parsers. Apply delegates its nested document to `parsePipelineEditorDocument`; no response or request type contains replacement source bytes or migration operations. |
 | `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore result caches, authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
 | `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, streaming chunk size, section open/closed state, MLflow status cache, data sources, file-listing cache. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
@@ -87,6 +88,12 @@
   `CachedExploreResult`** (`stores/useNodeResultsStore.ts`): one struct per
   result category, each carrying enough to redraw its panel plus a
   `configHash`/`source`/`structuralVersion` staleness key.
+  Every active solve/train/Explore/Pivot job also carries a captured
+  `DocumentExecutionFence` (source identity, raw revision, load status, and
+  execute capability). `useBackgroundJobs` drops all active jobs when that
+  live fence changes, while every progress/completion/failure store action
+  independently rejects a late response whose captured fence is no longer
+  current or whose renderable graph is no longer synchronised.
   `CachedSolveResult` additionally carries both `result` (current,
   possibly frontier-point-derived) and `originalResult` (the as-solved
   baseline), so switching frontier points never loses the original. A
@@ -199,7 +206,9 @@ entry for this job, a caller that unmounts mid-poll relies on its own
 failure remains visible.
 
 **Result-cache write path** (`useNodeResultsStore`): each `complete*Job`
-action (1) removes the corresponding entry from the `*Jobs` in-flight map,
+action first validates the active job's `DocumentExecutionFence`; a stale
+response removes only the obsolete in-flight entry and writes no result.
+A current response (1) removes the corresponding entry from the `*Jobs` in-flight map,
 (2) builds the next cached record, (3) calls `trimCacheByRecency` to bound
 the record count (recency tracked in a module-level `Map`, not store state,
 so touching a cache entry for read purposes doesn't trigger a re-render),
@@ -577,3 +586,43 @@ and strict malformed-row rejection.
 `frontend/src/__tests__/stores/useNodeResultsStore.test.ts` proves latest-snapshot (not append)
 semantics, every estimate show/hide case, terminal clearing, and reset on a replacement job for the
 same node. Consumer ownership is recorded in `ownership.toml`.
+
+## Approved change contract — recovery document ingestion
+
+`frontend/src/types/pipelineDocument.ts` defines and validates schema version 1 of
+`haute.pipeline_editor_document`. Exact-key validation applies recursively to document,
+capabilities, diagnostics, spans, nodes, edges, unresolved connections, submodels, and ports;
+duplicate recovery ids, non-finite coordinates, invalid spans, and edges with missing visual
+endpoints throw at ingestion. `adaptPipelineEditorDocument` clones configs and maps recovery
+identity, availability, diagnostic ids, blocker paths, decorator names, locations, handles, and
+submodel ports into presentation-only React Flow state.
+
+`frontend/src/stores/useDocumentStatusStore.ts` performs one atomic status transition and clones
+all externally supplied arrays/objects. Its `capabilities` value is the shared UI admission fence;
+components must not recreate status-to-capability policy locally. `systemFailure` is independent of
+authored recovery diagnostics: setting it also marks the graph unsynchronised, while any newly
+validated document atomically clears it. Reset leaves the editor without authority until a new
+validated document arrives.
+
+`useWebSocketSync` validates version-1 editor-document frames with that same parser. It calls the
+document-status transition before considering graph dirtiness or asynchronous layout. A dirty graph
+may reject snapshot replacement but cannot reject the status/capability fence. Once the client uses
+the document protocol it ignores legacy unversioned strict-parse errors, but a current-source
+`parse_error` carrying `document_schema_version: 1` sets the sanitized system-failure state, clears
+the applied document fingerprint, and prevents the retained graph from being treated as current.
+Recovery preview uses `api/client.ts`'s source/revision/target request and never serializes React Flow
+recovery objects.
+
+## Approved change contract — minimal repair transport
+
+`api/client.ts` exposes remove-only dry-run and apply calls. Both send the root
+document source, current raw revision, target source/recovery identity, and
+explicit `delete_config`; apply adds the exact dry-run plan hash. Runtime
+parsers reject unknown keys, non-remove discriminators, malformed hashes,
+unbounded/invalid patch entries, and a malformed nested editor document.
+
+The public dry-run plan contains bounded display diffs and artifact metadata,
+not the bytes that apply will write. The server recomputes those bytes. A
+config-retention toggle creates a new request and invalidates the previous plan
+hash. API errors preserve structured repair detail for the confirmation UI.
+No shared type defines a migration registry or upgrade request.

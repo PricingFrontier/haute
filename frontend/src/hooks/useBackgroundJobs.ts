@@ -10,11 +10,12 @@
  * to the generic useJobPolling hook — this file is a thin orchestrator that
  * wires up store selectors and API functions for each job type.
  */
-import { useCallback } from "react"
+import { useCallback, useEffect, useRef } from "react"
 import { getExplorePivotStatus, getExploreStatus, getOptimiserStatus, getTrainStatus } from "../api/client"
 import { FAILED_JOB_STATUSES } from "../api/types"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import type { ExplorePivotProgress, ExploreProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
+import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useToastStore from "../stores/useToastStore"
 import { buildExecutionFailureMessage } from "../utils/executionDiagnostics"
 import useJobPolling from "./useJobPolling"
@@ -42,6 +43,31 @@ function getMissingJobPollErrorMessage(error: unknown): string | undefined {
 
 export default function useBackgroundJobs() {
   const addToast = useToastStore((s) => s.addToast)
+  const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
+  const documentSourceRevision = useDocumentStatusStore((s) => s.sourceRevision)
+  const documentLoadStatus = useDocumentStatusStore((s) => s.loadStatus)
+  const documentCanExecute = useDocumentStatusStore(
+    (s) => s.capabilities?.can_execute === true,
+  )
+  const documentGraphSynchronized = useDocumentStatusStore(
+    (s) => s.graphSynchronized,
+  )
+  const discardActiveJobs = useNodeResultsStore((s) => s.discardActiveJobs)
+  const documentFenceKey = JSON.stringify([
+    documentSourceFile,
+    documentSourceRevision,
+    documentLoadStatus,
+    documentCanExecute,
+    documentGraphSynchronized,
+  ])
+  const previousDocumentFenceKey = useRef(documentFenceKey)
+
+  useEffect(() => {
+    if (previousDocumentFenceKey.current !== documentFenceKey) {
+      discardActiveJobs()
+      previousDocumentFenceKey.current = documentFenceKey
+    }
+  }, [discardActiveJobs, documentFenceKey])
 
   // ── Optimiser job polling ──
 

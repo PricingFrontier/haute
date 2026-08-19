@@ -9,6 +9,10 @@ import type {
 } from "../api/types"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
+import {
+  captureDocumentExecutionFence,
+  isDocumentExecutionFenceCurrent,
+} from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import useUIStore, { type ExplorePreviewPane } from "../stores/useUIStore"
@@ -174,6 +178,8 @@ export default function ExplorePreview({
 
   useEffect(() => {
     if (!hasInput || hasActiveExploreJob) return
+    const documentFence = captureDocumentExecutionFence()
+    if (!isDocumentExecutionFenceCurrent(documentFence)) return
     const controller = new AbortController()
     void getExploreCacheSnapshot({
       graph: buildGraph(allNodes, edges, submodels, preamble),
@@ -182,7 +188,10 @@ export default function ExplorePreview({
       streamingChunkSize,
       signal: controller.signal,
     }).then((snapshot) => {
-      if (controller.signal.aborted) return
+      if (
+        controller.signal.aborted ||
+        !isDocumentExecutionFenceCurrent(documentFence)
+      ) return
       if (snapshot.state === "current") {
         if (!snapshot.result) throw new Error("Current Explore cache status omitted its report")
         startExploreJob(nodeId, `cache-status:${nodeId}`, nodeLabel, configHash, activeSource, structuralVersion)
@@ -196,7 +205,11 @@ export default function ExplorePreview({
       }
       setCacheSnapshot({ configHash, state: snapshot.state })
     }).catch((err: unknown) => {
-      if (controller.signal.aborted || (err instanceof Error && err.name === "AbortError")) return
+      if (
+        controller.signal.aborted ||
+        !isDocumentExecutionFenceCurrent(documentFence) ||
+        (err instanceof Error && err.name === "AbortError")
+      ) return
       const message = err instanceof Error ? err.message : String(err)
       setCacheSnapshot({ configHash, state: "error" })
       addToast("error", `Explore cache inspection failed: ${message}`)
@@ -220,6 +233,8 @@ export default function ExplorePreview({
 
   const handleRun = useCallback(async () => {
     if (!hasInput || isBusy) return
+    const documentFence = captureDocumentExecutionFence()
+    if (!isDocumentExecutionFenceCurrent(documentFence)) return
     setSubmitting(true)
     try {
       const response = await runExplore({
@@ -229,6 +244,7 @@ export default function ExplorePreview({
         streamingChunkSize,
         refresh: cacheState === "error" || idleCacheState !== "missing",
       })
+      if (!isDocumentExecutionFenceCurrent(documentFence)) return
       if (response.status === "completed") {
         if (!response.result) throw new Error("Explore completed without a cache report")
         const jobId = response.job_id ?? `cached:${nodeId}`
@@ -254,6 +270,7 @@ export default function ExplorePreview({
         result: null,
       })
     } catch (err) {
+      if (!isDocumentExecutionFenceCurrent(documentFence)) return
       const message = err instanceof Error ? err.message : String(err)
       startExploreJob(nodeId, `startup-failure:${nodeId}`, nodeLabel, configHash, activeSource, structuralVersion)
       failExploreJob(nodeId, message, {

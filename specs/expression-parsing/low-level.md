@@ -4,9 +4,9 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/parser.py` | Public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates the AST-vs-regex-fallback branch, pipeline metadata/node/edge extraction, submodel resolution + merge, graph-shape validation, and warning aggregation for a whole pipeline `.py` file. |
-| `src/haute/_parser_conservation.py` | Shared fail-loud acceptance gate for both parser paths. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
-| `src/haute/_parser_regex.py` | `fallback_parse` and its helpers: a regex-anchored + AST-fragment recovery parser used when `ast.parse` fails on the whole file. Locates `@pipeline.<type>` decorator blocks, `pipeline.connect()`/`pipeline.submodel()` call sites, and pipeline metadata textually, then re-parses each recovered fragment with real `ast` wherever possible. |
+| `src/haute/parser.py` | Strict public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates AST metadata/node/edge extraction, submodel resolution + merge, conservation, and graph-shape validation for valid pipeline source; whole-file syntax errors raise contextual `ParseError`. |
+| `src/haute/_parser_conservation.py` | Strict fail-loud acceptance gate. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
+| `src/haute/_parser_regex.py` | Neutral syntax-recovery discovery. `recover_pipeline_fragments` locates pipeline metadata, `@pipeline.<type>` function fragments, `pipeline.connect()` declarations, and `pipeline.submodel()` registrations textually, re-parsing individual fragments with `ast` where possible. It never constructs canonical graph models. |
 | `src/haute/_parser_submodels.py` | `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: resolves explicit `pipeline.submodel("path", ...)` registrations, parses each referenced submodel file into its own `PipelineGraph`, and merges canonical occurrences into the parent (hierarchical or flattened). |
 | `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`) and to a concrete, Polars-mirroring value (`_ExprEvaluator` / `_BranchTrackingEvaluator`). |
 
@@ -47,9 +47,9 @@
 
 ## Control flow
 
-**`parse_pipeline_source`** (`parser.py`): `ast.parse(source)` → on `SyntaxError`, delegate the
-*whole file* to `_fallback_parse` (in `src/haute/_parser_regex.py`) and return its result directly
-→ else extract pipeline meta / decorated nodes / connect edges / preamble / preserved blocks by
+**`parse_pipeline_source`** (`parser.py`): `ast.parse(source)` → on `SyntaxError`, raise a
+contextual `ParseError` naming the source and syntax location → otherwise extract pipeline meta /
+decorated nodes / connect edges / preamble / preserved blocks by
 importing their implementation modules directly →
 collect labels from any nodes already carrying `_load_error` into a graph-level `warning` → if any
 `pipeline.submodel()` calls were found, require `_base_dir` or `_submodel_base_dir` (otherwise
@@ -58,27 +58,15 @@ each definition file once, and call `_parser_submodels.merge_submodels` → run
 the structure-conservation gate → `validate_pipeline_graph_shape_contracts` (owned outside this
 component) → log `pipeline_parsed`.
 
-**`fallback_parse`** (`_parser_regex.py`): recover alias-aware pipeline metadata by parsing each
-otherwise-valid import line independently (including comma-separated imports and trailing
-comments), then locating the matching constructor with a balanced-paren scan (`_scan_call_end`) → find every
-`@pipeline.<type>` block via `_RE_DECORATOR_ANCHOR`, recovering the full decorator argument list
-(`_recover_decorator_text`) and the function signature/body (`_find_decorated_def`,
-`_find_function_blocks`) even across multi-line signatures → parse each block's decorator kwargs
-with `_parse_decorator_kwargs_regex` (wraps the kwarg body as a synthetic `f(...)` call and lets
-`ast.parse` + `_eval_ast_literal` resolve literals/`Contract(...)`, rather than hand-rolled
-regex value parsing) → per-node: if the function body itself fails to re-parse, mark it
-`_load_error` and skip config construction; otherwise build config via the same
-`_build_node_config`/`_attach_code_from_body` helpers the healthy path uses → find
-`pipeline.connect()` call sites via `_find_connect_calls` (textual anchor + balanced scan +
-chain-link following for `.connect(...).connect(...)`, then a real `ast.parse` of the recovered
-span handed to the *same* `_extract_connect_calls` the healthy path uses) → build nodes/edges with
-the shared `_build_edges`/`_build_rf_nodes` helpers, so both parse paths emit identically-shaped
-output → recover `# haute:preserve` blocks via `_extract_preserved_blocks` — a pure line scan, so
-it works unchanged on the syntactically-broken source that triggered the fallback in the first
-place — and populate `preserved_blocks` on the result, mirroring the healthy path's preamble
-extraction → recover and merge every authored submodel via `_recover_submodels`, collecting
-unrecoverable/missing references into one `ParseError` rather than skipping individual calls →
-run the same structure-conservation gate as the healthy path.
+**`recover_pipeline_fragments`** (`_parser_regex.py`): recover alias-aware pipeline metadata by
+parsing otherwise-valid import lines independently, then locate the matching constructor with a
+balanced-parenthesis scan → find every `@pipeline.<type>` block textually, retaining the decorator,
+function identity/signature/body, parameters, and source lines → re-parse individual decorator,
+connection, and submodel call fragments with `ast` wherever possible → recover preamble and
+`# haute:preserve` blocks with line-oriented scans → return one frozen neutral fragment document.
+No step resolves node configuration, builds canonical nodes/edges, merges submodels, or returns a
+`PipelineGraph`; `src/haute/_pipeline_recovery.py` is the sole orchestrator that may resolve the
+fragments into editor-only recovery DTOs.
 
 **`merge_submodels`** (`_parser_submodels.py`): validate that every parsed
 child's declared `definition_id` matches its registration and that literal
@@ -172,7 +160,7 @@ appended before the column that depends on it) → return the parsed expressions
 - **BOM handling**: `parse_expression`, `parse_expression_chain`, `_compute_result_impl`, and
   `_evaluate_conditional_branches` all strip a leading `﻿` before parsing (`evaluate_expression`
   inherits this only transitively, by calling into `parse_expression`/`_compute_result_impl`).
-- **Regex-fallback string/comment-aware scanning**: `_skip_string_literal` deliberately avoids
+- **Neutral-recovery string/comment-aware scanning**: `_skip_string_literal` deliberately avoids
   `tokenize` (the file is syntactically broken by definition) and, when a triple-quoted string
   never closes, skips to EOF — conservative, because everything after an unclosed triple-quote is
   part of the broken string from Python's perspective. `_position_is_code` /
@@ -183,7 +171,7 @@ appended before the column that depends on it) → return the parsed expressions
   healthy AST parser) from an assignment/list/dict continuation like
   `disabled = [\npipeline.connect(...)\n]` (must stay rejected — it is not a top-level call).
 - **Preamble boundaries are alias-aware**: a valid module uses AST statement line spans to stop
-  before an aliased or multiline `Pipeline(...)` construction; the syntax fallback parses
+  before an aliased or multiline `Pipeline(...)` construction; neutral syntax recovery parses
   recoverable import lines independently, including comma-separated names and trailing comments,
   so both `import haute as <alias>` and `from haute import Pipeline as <alias>` preserve the same
   user preamble without capturing the constructor.
@@ -195,9 +183,8 @@ appended before the column that depends on it) → return the parsed expressions
   authored order.
 - **Submodel resolution roots are mandatory**: healthy in-memory parsing cannot conserve a
   `pipeline.submodel()` reference without `_base_dir` or `_submodel_base_dir`, so it raises with
-  `unresolved_paths` instead of returning a root-only graph. `fallback_parse` always has a
-  resolution root: `_submodel_base_dir`, else `_base_dir`, else
-  `Path(source_file).parent`, else `Path.cwd()`.
+  `unresolved_paths` instead of returning a root-only graph. Editor recovery resolves submodel
+  fragments against the explicitly supplied project and parent-pipeline roots.
 - **Repeated definition files are intentional for reusable occurrences**:
   registrations resolving to one file are grouped and parsed once. They must
   agree on one explicit definition id.
@@ -228,19 +215,19 @@ appended before the column that depends on it) → return the parsed expressions
   `pipeline.connect()`/`pipeline.submodel()`/`Pipeline(...)`/decorator-argument-list scan
   (`_scan_call_end` exhausts the source without balancing); a decorator/submodel/metadata call
   with trailing text after its closing paren; a decorator keyword argument or
-  `pipeline.submodel()` path that is not a literal (on both healthy and fallback paths; only
+  `pipeline.submodel()` path that is not a literal (only
   Python literals and the sanctioned `Contract(...)` constructor are resolvable at parse time);
-  `**kwargs` expansion in a decorator in the regex fallback; an `async def` pipeline node
+  `**kwargs` expansion in a decorator; an `async def` pipeline node
   function; a syntactically invalid referenced submodel file; a missing submodel file; a
   submodel reference without a resolution root; a conflicting definition/file registration; a missing or duplicate
   canonical occurrence identity; an invalid structured public-port contract; nested submodel references; an exact duplicate
   edge identity; a structure-conservation mismatch; or a submodel path that escapes the project
   root. A folder-backed node with no matching `config=` kwarg raises `ConfigError` through
   `_sidecar_required_error`, consistently with other sidecar configuration failures.
-- **`SyntaxError` from `ast.parse`** at the top of `parse_pipeline_source` is caught and converted
-  into a full `fallback_parse` call — never re-raised to the caller. A `SyntaxError` recovering one
-  individual function body *inside* `fallback_parse` is similarly caught and turned into a
-  `_load_error` config marker on that one node, without aborting recovery of the rest of the file.
+- **`SyntaxError` from `ast.parse`** at the top of `parse_pipeline_source` is converted into a
+  contextual `ParseError`; strict callers never receive syntax-recovered graph output. The editor
+  recovery service may independently parse a neutral function fragment and represent a broken
+  fragment as an unavailable recovery node with an attributed diagnostic.
 - **`parse_expression`/`_parse_expression_impl`**: the *only* deliberate bare `except Exception` in
   the expression parser, converting any internal failure into an `"opaque"` `ParsedExpression`
   carrying the original source text. Documented in the function's docstring as an intentional,
@@ -265,13 +252,12 @@ appended before the column that depends on it) → return the parsed expressions
 
 Tests live under `tests/`, split by concern:
 
-- **`test_parser.py`** (~1300 lines) — end-to-end `.py` → `PipelineGraph` coverage: the healthy
-  path, the regex-fallback path, submodel file parsing, the `flatten` parameter, decorator/config
+- **`test_parser.py`** (~1300 lines) — end-to-end valid `.py` → `PipelineGraph` coverage: the strict
+  path, syntax fail-loud behavior, submodel file parsing, the `flatten` parameter, decorator/config
   edge cases, malformed decorator kwargs, docstring stripping, preamble/preserved-block edge
   cases, roundtrip parsing, circular/non-existent/colliding/empty submodels, UTF-8 BOM handling.
-- **`test_parser_regex.py`** (~950 lines) — unit tests for the regex-recovery primitives
-  (`_find_function_blocks`, `_parse_decorator_kwargs_regex`, `_find_connect_calls`) and full
-  `fallback_parse` scenarios.
+- **`test_parser_regex.py`** — unit tests for neutral regex-recovery fragments and scanners,
+  including function, decorator-argument, connection, submodel, string, and comment boundaries.
 - **`test_parser_regex_contracts.py`** / **`test_parser_regex_ast_kwargs.py`** — pin the exact
   decorator-kwarg value-parsing policy (literals + `Contract(...)` only, everything else fails
   loud) across scalar/compound/multiple/degenerate/invalid-syntax cases; a dedicated TDD gate
@@ -282,7 +268,7 @@ Tests live under `tests/`, split by concern:
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node
   function shape, alias awareness, implicit-edge dedup, exact node/edge/handle/submodel identity,
   aggregated missing/unrecoverable submodel diagnostics, duplicate submodel-name rejection, and
-  parity between the fallback scan/submodel-recovery/contract-validation and the healthy path.
+  parity between neutral fragment discovery/editor recovery and strict authored-structure rules.
 - **`test_parser_project_layout.py`**, **`test_parser_internals.py`**, and
   **`test_parser_sanitize_contracts.py`** — project-root/base-directory handling, internal
   parser invariants, and sanitisation contracts.
@@ -320,7 +306,7 @@ Tests live under `tests/`, split by concern:
 Strategy is unit + scenario-regression throughout; no property-based/fuzz testing was found.
 Known coverage gaps:
 
-- The regex-fallback scanner is exercised only against curated malformed-input scenarios, not
+- The neutral syntax-recovery scanner is exercised only against curated malformed-input scenarios, not
   randomly-generated broken Python source.
 - `test_expression_parser_polars_parity.py` cross-checks a curated subset (notably rounding,
   regex `str.contains`, `is_between`, `is_in`, conditionals, and a few numeric methods) against
@@ -330,3 +316,17 @@ Known coverage gaps:
 - Window result calculation is described textually using regex extraction and a row-local AST
   evaluator; the suite does not prove full partition/window semantics against a multi-row Polars
   frame.
+
+## Neutral syntax-recovery fragments
+
+`src/haute/_parser_regex.py` owns textual discovery primitives and
+`recover_pipeline_fragments(source)`. Its public recovery result is a frozen neutral fragment
+model and contains no `GraphNode`, `GraphEdge`, or `PipelineGraph`. No canonical syntax-recovery
+integration exists. `src/haute/parser.py` never imports this module and wraps
+whole-file Python syntax failures as contextual `ParseError` values.
+
+`src/haute/_pipeline_recovery.py` may parse decorator fragments and resolve each known node inside
+an explicitly named isolation boundary. Expected configuration/contract failures become stable
+editor diagnostics; unexpected per-node failures are logged with an incident id. Tests keep the
+textual scanners focused on conservation and fail-loud ambiguity, while editor recovery tests own
+the end-to-end malformed-source graph behaviour.

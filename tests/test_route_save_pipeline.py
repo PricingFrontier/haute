@@ -1221,7 +1221,7 @@ class TestSaveEndpointIntegration:
         # mapped onto the reloaded node ids (== sanitize(label)).
         get = client.get("/api/pipeline")
         assert get.status_code == 200, get.text
-        positions = {n["id"]: n["position"] for n in get.json()["nodes"]}
+        positions = {n["recovery_id"]: n["display_position"] for n in get.json()["nodes"]}
         assert positions == {
             "My_Source": {"x": 111.0, "y": 222.0},
             "My_Transform": {"x": 333.0, "y": 444.0},

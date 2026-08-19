@@ -11,9 +11,14 @@ import useUIStore from "../../stores/useUIStore"
 interface AssistantPanelProps {
   isInsideSubmodel: boolean
   currentSourceFile: string | null
+  readOnly: boolean
 }
 
-export default function AssistantPanel({ isInsideSubmodel, currentSourceFile }: AssistantPanelProps) {
+export default function AssistantPanel({
+  isInsideSubmodel,
+  currentSourceFile,
+  readOnly,
+}: AssistantPanelProps) {
   const setAssistantOpen = useUIStore((state) => state.setAssistantOpen)
   const entries = useAssistantStore((state) => state.entries)
   const turnStatus = useAssistantStore((state) => state.turnStatus)
@@ -168,6 +173,7 @@ export default function AssistantPanel({ isInsideSubmodel, currentSourceFile }: 
         <Composer
           isInsideSubmodel={isInsideSubmodel}
           currentSourceFile={currentSourceFile}
+          readOnly={readOnly}
         />
       )}
     </PanelShell>

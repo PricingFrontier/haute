@@ -53,6 +53,11 @@ JobStatus = Literal[
     "contract_error",
 ]
 
+PipelineLoadStatus = Literal["ready", "degraded", "source_only"]
+PipelineElementAvailability = Literal["ready", "unavailable", "blocked"]
+PipelineDiagnosticSeverity = Literal["warning", "error"]
+PipelineDiagnosticScope = Literal["pipeline", "node", "edge", "submodel"]
+
 
 def _normalise_frontier_range_pair(value: Any, *, field: str) -> tuple[float, float]:
     """Validate one ``(min, max)`` frontier-range value.
@@ -231,6 +236,255 @@ AssistantStreamEvent = Annotated[
     | AssistantCancelledEvent,
     Field(discriminator="type"),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Pipeline editor recovery document
+# ---------------------------------------------------------------------------
+
+
+class RecoverySourceSpan(BaseModel):
+    """One bounded, one-based source range attributable during recovery."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start_line: int = Field(ge=1)
+    start_column: int = Field(ge=0)
+    end_line: int = Field(ge=1)
+    end_column: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> RecoverySourceSpan:
+        if (self.end_line, self.end_column) < (self.start_line, self.start_column):
+            raise ValueError("Recovery source span must end at or after its start.")
+        return self
+
+
+class PipelineRecoveryDiagnostic(BaseModel):
+    """Safe, stable diagnostic carried by an editor recovery document."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    diagnostic_id: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9._:-]*$")
+    code: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
+    severity: PipelineDiagnosticSeverity = "error"
+    scope: PipelineDiagnosticScope
+    message: str = Field(min_length=1, max_length=1024)
+    element_id: str | None = None
+    source_file: str | None = None
+    source_span: RecoverySourceSpan | None = None
+    remediation: str | None = Field(default=None, max_length=1024)
+    incident_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+
+
+class PipelineDocumentCapabilities(BaseModel):
+    """Server-derived admission fence for one loaded editor document."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    can_mutate: bool
+    can_save: bool
+    can_execute: bool
+    can_preview: bool
+    can_manage_submodels: bool
+    can_repair: bool = False
+
+
+class RecoveryPipelineNode(BaseModel):
+    """Editor node shape intentionally incompatible with canonical GraphNode."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    recovery_id: str = Field(min_length=1)
+    authored_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    decorator_name: str = Field(min_length=1)
+    node_type: str | None
+    description: str = ""
+    availability: PipelineElementAvailability
+    display_position: dict[str, float]
+    config: dict[str, Any] | None = None
+    config_reference: str | None = None
+    source_file: str | None = None
+    source_span: RecoverySourceSpan | None = None
+    diagnostic_ids: list[str] = Field(default_factory=list)
+    blocking_path: list[str] = Field(default_factory=list)
+
+    @field_validator("display_position")
+    @classmethod
+    def _finite_position(cls, value: dict[str, float]) -> dict[str, float]:
+        if set(value) != {"x", "y"}:
+            raise ValueError("Recovery display_position must contain exactly x and y.")
+        position = {"x": float(value["x"]), "y": float(value["y"])}
+        if not all(math.isfinite(coordinate) for coordinate in position.values()):
+            raise ValueError("Recovery display_position coordinates must be finite.")
+        return position
+
+
+class RecoveryPipelineEdge(BaseModel):
+    """Editor edge shape intentionally incompatible with canonical GraphEdge."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    recovery_id: str = Field(min_length=1)
+    source_recovery_id: str = Field(min_length=1)
+    target_recovery_id: str = Field(min_length=1)
+    source_authored_id: str = Field(min_length=1)
+    target_authored_id: str = Field(min_length=1)
+    source_handle: str | None = None
+    target_handle: str | None = None
+    source_port: str | None = None
+    target_port: str | None = None
+    availability: PipelineElementAvailability
+    source_span: RecoverySourceSpan | None = None
+    diagnostic_ids: list[str] = Field(default_factory=list)
+    blocking_path: list[str] = Field(default_factory=list)
+
+
+class RecoveryUnresolvedConnection(BaseModel):
+    """Authored connection retained as a diagnostic structure."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    recovery_id: str = Field(min_length=1)
+    source_recovery_id: str | None = None
+    target_recovery_id: str | None = None
+    source_authored_id: str = Field(min_length=1)
+    target_authored_id: str = Field(min_length=1)
+    source_handle: str | None = None
+    target_handle: str | None = None
+    source_port: str | None = None
+    target_port: str | None = None
+    source_span: RecoverySourceSpan | None = None
+    diagnostic_ids: list[str] = Field(min_length=1)
+
+
+class RecoveryGraphSnapshot(BaseModel):
+    """Renderable recovery graph used at the root and in submodel definitions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    nodes: list[RecoveryPipelineNode] = Field(default_factory=list)
+    edges: list[RecoveryPipelineEdge] = Field(default_factory=list)
+    unresolved_connections: list[RecoveryUnresolvedConnection] = Field(default_factory=list)
+    submodels: dict[str, RecoverySubmodelDefinition] | None = None
+
+
+class RecoverySubmodelDefinition(BaseModel):
+    """One editor-only recovered submodel definition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    definition_id: str = Field(min_length=1)
+    file: str = Field(min_length=1)
+    availability: PipelineElementAvailability
+    diagnostic_ids: list[str] = Field(default_factory=list)
+    graph: RecoveryGraphSnapshot
+    input_ports: list[dict[str, Any]] = Field(default_factory=list)
+    output_ports: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PipelineEditorDocument(BaseModel):
+    """Versioned editor load result; never a canonical executable graph."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    document_kind: Literal["haute.pipeline_editor_document"] = "haute.pipeline_editor_document"
+    schema_version: Literal[1] = 1
+    load_status: PipelineLoadStatus
+    pipeline_name: str | None = None
+    pipeline_description: str | None = None
+    preamble: str | None = None
+    preserved_blocks: list[str] = Field(default_factory=list)
+    source_file: str = ""
+    source_revision: RevisionToken | None = None
+    source_text: str = ""
+    sources: list[str] = Field(default_factory=lambda: ["live"])
+    active_source: str | None = "live"
+    source_selection_trusted: bool = True
+    has_authored_content: bool
+    nodes: list[RecoveryPipelineNode] = Field(default_factory=list)
+    edges: list[RecoveryPipelineEdge] = Field(default_factory=list)
+    unresolved_connections: list[RecoveryUnresolvedConnection] = Field(default_factory=list)
+    submodels: dict[str, RecoverySubmodelDefinition] | None = None
+    diagnostics: list[PipelineRecoveryDiagnostic] = Field(default_factory=list)
+    diagnostics_omitted: int = Field(default=0, ge=0)
+    capabilities: PipelineDocumentCapabilities
+
+
+RecoveryGraphSnapshot.model_rebuild()
+
+
+# ---------------------------------------------------------------------------
+# /api/pipeline/repair/remove/*
+# ---------------------------------------------------------------------------
+
+
+class PipelineRepairRemoveRequest(BaseModel):
+    """Server-identified remove-only repair request shared by dry-run/apply."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_file: str = Field(min_length=1)
+    source_revision: RevisionToken
+    target_source_file: str = Field(min_length=1)
+    target_recovery_id: str = Field(min_length=1)
+    delete_config: StrictBool = False
+
+
+class PipelineRepairDryRunRequest(PipelineRepairRemoveRequest):
+    """Read-only remove-node planning request."""
+
+
+class PipelineRepairApplyRequest(PipelineRepairRemoveRequest):
+    """Confirmed remove-only plan; replacement bytes never cross the API."""
+
+    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class PipelineRepairChange(BaseModel):
+    """Bounded display patch for one server-owned artifact edit."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1)
+    operation: Literal["update", "delete"]
+    description: str = Field(min_length=1, max_length=1024)
+    diff: str = Field(max_length=131_072)
+    diff_truncated: bool
+
+
+class PipelineRepairPlanResponse(BaseModel):
+    """Read-only remove-node plan presented for explicit confirmation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repair_kind: Literal["remove_unavailable_node"] = "remove_unavailable_node"
+    source_file: str = Field(min_length=1)
+    source_revision: RevisionToken
+    target_source_file: str = Field(min_length=1)
+    target_recovery_id: str = Field(min_length=1)
+    target_authored_id: str = Field(min_length=1)
+    delete_config: bool
+    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    changes: list[PipelineRepairChange] = Field(min_length=1)
+    retained_artifacts: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    predicted_load_status: Literal["ready", "degraded"]
+
+
+class PipelineRepairApplyResponse(BaseModel):
+    """Committed repair plus the newly authoritative editor document."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repair_kind: Literal["remove_unavailable_node"] = "remove_unavailable_node"
+    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    applied_artifacts: list[str] = Field(min_length=1)
+    document: PipelineEditorDocument
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +940,21 @@ class PreviewNodeRequest(BaseModel):
     streaming_chunk_size: StreamingChunkSize = None
     # Frame label selected for a multi-frame target. Single-frame targets
     # ignore it. It is part of the preview cache identity.
+    port_label: str | None = None
+
+
+class RecoveryPreviewRequest(BaseModel):
+    """Server-planned preview request for an editor recovery document."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_file: str = Field(min_length=1)
+    source_revision: RevisionToken
+    target_recovery_id: str = Field(min_length=1)
+    row_limit: int = Field(default=100, ge=1, le=10000)
+    source: str = "live"
+    requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
+    streaming_chunk_size: StreamingChunkSize = None
     port_label: str | None = None
 
 
@@ -1253,11 +1522,14 @@ class ReadJsonResponse(RootModel[dict[str, Any]]):
 
 
 class PipelineSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     description: str = ""
     file: str
     node_count: int = 0
-    error: str | None = None
+    load_status: PipelineLoadStatus
+    diagnostic_count: int = Field(default=0, ge=0)
 
 
 # ---------------------------------------------------------------------------

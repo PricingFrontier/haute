@@ -14,6 +14,14 @@ import {
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
+import useDocumentStatusStore, {
+  type RetainedPipelineCanvas,
+} from "../stores/useDocumentStatusStore"
+import {
+  adaptPipelineEditorDocument,
+  parsePipelineEditorDocument,
+  type PipelineEditorDocument,
+} from "../types/pipelineDocument"
 import {
   bootstrapHauteSession,
   isHauteSessionExpiredReason,
@@ -43,6 +51,8 @@ const INITIAL_BACKOFF_MS = 1_000
 const MAX_BACKOFF_MS = 30_000
 const ABNORMAL_CLOSE = 1006
 const GRAPH_FINGERPRINT_FIELD = "graph_fingerprint"
+const DOCUMENT_FINGERPRINT_FIELD = "document_fingerprint"
+const DOCUMENT_SCHEMA_VERSION = 1
 const MAX_REJECTED_EDGE_WARNING_DETAILS = 3
 const MAX_REJECTED_EDGE_WARNING_DETAIL_LENGTH = 120
 
@@ -134,6 +144,71 @@ function requireIntegrityMetadata(value: unknown): { sourceRevision: string; pre
   return { sourceRevision: graph.source_revision, preservedBlocks: graph.preserved_blocks }
 }
 
+interface PipelineDocumentUpdateFrame {
+  document: PipelineEditorDocument
+  documentFingerprint: string
+  sourceFile: string
+}
+
+function parsePipelineDocumentUpdateFrame(
+  message: Record<string, unknown>,
+): PipelineDocumentUpdateFrame {
+  const expectedKeys = [
+    "type",
+    "schema_version",
+    "document",
+    "document_fingerprint",
+    "source_file",
+  ]
+  const actualKeys = Object.keys(message).sort()
+  if (
+    actualKeys.length !== expectedKeys.length ||
+    !expectedKeys.slice().sort().every((key, index) => key === actualKeys[index])
+  ) {
+    throw new Error("pipeline_document_update: unexpected frame fields")
+  }
+  if (message.schema_version !== DOCUMENT_SCHEMA_VERSION) {
+    throw new Error("pipeline_document_update: unsupported schema_version")
+  }
+  const documentFingerprint =
+    typeof message.document_fingerprint === "string"
+      ? message.document_fingerprint.trim()
+      : ""
+  if (!documentFingerprint) {
+    throw new Error("pipeline_document_update: missing document_fingerprint")
+  }
+  if (typeof message.source_file !== "string" || !message.source_file.trim()) {
+    throw new Error("pipeline_document_update: missing source_file")
+  }
+  const document = parsePipelineEditorDocument(message.document)
+  if (!document.source_revision) {
+    throw new Error("pipeline_document_update: document is missing source_revision")
+  }
+  if (!isCurrentSourceFile(message.source_file, document.source_file)) {
+    throw new Error("pipeline_document_update: envelope and document source_file differ")
+  }
+  return {
+    document,
+    documentFingerprint,
+    sourceFile: message.source_file,
+  }
+}
+
+function retainedCanvasFor(
+  document: PipelineEditorDocument,
+  dirty: boolean,
+): RetainedPipelineCanvas | null {
+  if (document.load_status !== "source_only") return null
+  const current = useDocumentStatusStore.getState()
+  if (current.loadStatus === "source_only") return current.retainedCanvas
+  if (current.loadStatus !== "ready" && current.loadStatus !== "degraded") return null
+  return {
+    kind: dirty ? "local_dirty" : "last_renderable",
+    sourceRevision: current.sourceRevision,
+    loadStatus: current.loadStatus,
+  }
+}
+
 export default function useWebSocketSync({
   preambleRef, submodelsRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
   graphRefreshingRef, nodeIdCounter, fitView, enabled = true,
@@ -143,6 +218,10 @@ export default function useWebSocketSync({
   const [status, setStatus] = useState<WsStatus>(() => enabled ? "reconnecting" : "disconnected")
   const retriesRef = useRef(0)
   const appliedGraphFingerprintRef = useRef<{ sourceFile: string; fingerprint: string } | null>(null)
+  const appliedDocumentFingerprintRef = useRef<{
+    sourceFile: string
+    fingerprint: string
+  } | null>(null)
 
   useEffect(() => {
     if (!enabled) {
@@ -158,6 +237,7 @@ export default function useWebSocketSync({
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let mounted = true
     let graphUpdateSeq = 0
+    let documentProtocolSeen = false
     let activeSelectionGuardIncrements = 0
     const delayedTimers = new Set<ReturnType<typeof setTimeout>>()
 
@@ -195,6 +275,14 @@ export default function useWebSocketSync({
       return applied.fingerprint
     }
 
+    function appliedDocumentFingerprintFor(sourceFile: string): string | undefined {
+      const applied = appliedDocumentFingerprintRef.current
+      if (!applied || !isCurrentSourceFile(applied.sourceFile, sourceFile)) {
+        return undefined
+      }
+      return applied.fingerprint
+    }
+
     function rememberAppliedFingerprint(incomingSource: unknown, fingerprint: unknown) {
       const normalizedFingerprint = typeof fingerprint === "string" ? fingerprint.trim() : ""
       if (!normalizedFingerprint) {
@@ -205,6 +293,17 @@ export default function useWebSocketSync({
         ?? normalizeSourceFile(sourceFileRef?.current)
       appliedGraphFingerprintRef.current = sourceFile
         ? { sourceFile, fingerprint: normalizedFingerprint }
+        : null
+    }
+
+    function rememberAppliedDocumentFingerprint(
+      incomingSource: unknown,
+      fingerprint: string,
+    ) {
+      const sourceFile = normalizeSourceFile(incomingSource)
+        ?? normalizeSourceFile(sourceFileRef?.current)
+      appliedDocumentFingerprintRef.current = sourceFile
+        ? { sourceFile, fingerprint }
         : null
     }
 
@@ -258,13 +357,19 @@ export default function useWebSocketSync({
         const sourceFile = sourceFileRef?.current.trim()
         if (sourceFile) {
           try {
-            const resyncPayload: Record<string, string> = {
+            const resyncPayload: Record<string, string | number> = {
               type: "resync",
               source_file: sourceFile,
+              document_schema_version: DOCUMENT_SCHEMA_VERSION,
             }
-            const graphFingerprint = appliedFingerprintFor(sourceFile)
-            if (graphFingerprint) {
-              resyncPayload[GRAPH_FINGERPRINT_FIELD] = graphFingerprint
+            const documentFingerprint = appliedDocumentFingerprintFor(sourceFile)
+            if (documentFingerprint) {
+              resyncPayload[DOCUMENT_FINGERPRINT_FIELD] = documentFingerprint
+            } else {
+              const graphFingerprint = appliedFingerprintFor(sourceFile)
+              if (graphFingerprint) {
+                resyncPayload[GRAPH_FINGERPRINT_FIELD] = graphFingerprint
+              }
             }
             ws?.send(JSON.stringify(resyncPayload))
           } catch (err) {
@@ -282,7 +387,128 @@ export default function useWebSocketSync({
           return
         }
 
-        if (msg.type === "graph_update" && msg.graph) {
+        if (msg.type === "pipeline_document_update") {
+          let frame: PipelineDocumentUpdateFrame
+          try {
+            frame = parsePipelineDocumentUpdateFrame(msg)
+          } catch (err) {
+            addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
+            return
+          }
+          if (!isCurrentSourceFile(frame.sourceFile, sourceFileRef?.current)) {
+            return
+          }
+          documentProtocolSeen = true
+          const updateSeq = ++graphUpdateSeq
+          const graphState = useGraphStore.getState()
+          const dirty = graphState.dirty
+          const retainedCanvas = retainedCanvasFor(frame.document, dirty)
+
+          // The document fence is authoritative independently of whether the
+          // renderable graph can be replaced. Mirror its revision first so
+          // request admission can never race a stale ready state.
+          useDocumentStatusStore.getState().loadLiveDocumentStatus(
+            frame.document,
+            retainedCanvas,
+            false,
+          )
+          sourceRevisionRef.current = frame.document.source_revision ?? ""
+          rememberAppliedDocumentFingerprint(frame.sourceFile, frame.documentFingerprint)
+
+          if (frame.document.load_status === "source_only") {
+            if (dirty) {
+              blockDirtyGraphUpdate(frame.sourceFile)
+            } else {
+              setSyncBanner(null)
+            }
+            return
+          }
+
+          if (blockDirtyGraphUpdate(frame.sourceFile)) {
+            return
+          }
+
+          try {
+            const adapted = adaptPipelineEditorDocument(frame.document)
+            const newNodes = adapted.nodes
+            const newEdges = normalizeEdges(adapted.edges)
+            const {
+              validEdges: layoutEdges,
+              rejectedEdges,
+            } = filterIncomingEdges(newNodes, newEdges)
+            const missingNodeIds = nodeIdsNeedingLayout(newNodes)
+            const nodesToApply = missingNodeIds.size > 0
+              ? mergeLayoutedNodePositions(
+                  newNodes,
+                  await getLayoutedElements(newNodes, layoutEdges),
+                  missingNodeIds,
+                )
+              : newNodes
+
+            if (!mounted || updateSeq !== graphUpdateSeq) return
+            if (blockDirtyGraphUpdate(frame.sourceFile)) return
+
+            const previousPreservedBlocks = preservedBlocksRef.current
+            const previousPreamble = preambleRef.current
+            const previousSubmodels = submodelsRef.current
+            const nextPreamble = frame.document.preamble ?? ""
+
+            graphRefreshingRef.current += 1
+            activeSelectionGuardIncrements += 1
+            try {
+              preservedBlocksRef.current = [...frame.document.preserved_blocks]
+              submodelsRef.current = adapted.submodels
+              preambleRef.current = nextPreamble
+              useGraphStore.getState().loadGraphSnapshot({
+                nodes: nodesToApply,
+                edges: newEdges,
+                preamble: nextPreamble,
+                submodels: adapted.submodels,
+              })
+              useDocumentStatusStore.getState().setGraphSynchronized(true)
+              nodeIdCounter.current = computeNextNodeId(newNodes)
+              setSyncBanner(null)
+            } catch (err) {
+              preservedBlocksRef.current = previousPreservedBlocks
+              submodelsRef.current = previousSubmodels
+              preambleRef.current = previousPreamble
+              throw err
+            } finally {
+              scheduleDelayed(releaseSelectionGuard, SELECTION_CHANGE_GUARD_MS)
+            }
+
+            const newNodeIds = new Set<string>(newNodes.map((node) => node.id))
+            const ui = useUIStore.getState()
+            if (ui.renameDialog && !newNodeIds.has(ui.renameDialog.nodeId)) {
+              ui.setRenameDialog(null)
+            }
+            if (
+              ui.submodelDialog &&
+              ui.submodelDialog.nodeIds.some((id) => !newNodeIds.has(id))
+            ) {
+              ui.setSubmodelDialog(null)
+            }
+
+            addToast(
+              "info",
+              frame.document.load_status === "degraded"
+                ? "Pipeline updated in recovery mode"
+                : "Pipeline updated from file",
+            )
+            if (rejectedEdges.length > 0) {
+              addToast("warning", formatRejectedEdgeWarning(rejectedEdges))
+            }
+            scheduleDelayed(() => {
+              if (mounted && updateSeq === graphUpdateSeq) fitView({ padding: 0.8 })
+            }, 100)
+          } catch (err) {
+            if (!mounted || updateSeq !== graphUpdateSeq) return
+            addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
+          }
+          return
+        }
+
+        if (!documentProtocolSeen && msg.type === "graph_update" && msg.graph) {
           const g = msg.graph as {
             nodes?: Node[]
             edges?: Edge[]
@@ -398,7 +624,24 @@ export default function useWebSocketSync({
           return
         }
 
-        if (msg.type === "parse_error") {
+        if (
+          msg.type === "parse_error" &&
+          msg.document_schema_version === DOCUMENT_SCHEMA_VERSION
+        ) {
+          if (!isCurrentSourceFile(msg.source_file, sourceFileRef?.current)) {
+            return
+          }
+          documentProtocolSeen = true
+          ++graphUpdateSeq
+          appliedDocumentFingerprintRef.current = null
+          useDocumentStatusStore.getState().setSystemFailure(
+            String(msg.error || "Pipeline document could not be loaded."),
+          )
+          setSyncBanner(null)
+          return
+        }
+
+        if (!documentProtocolSeen && msg.type === "parse_error") {
           if (!isCurrentSourceFile(msg.source_file, sourceFileRef?.current)) {
             return
           }

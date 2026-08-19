@@ -32,6 +32,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
   previewNode: vi.fn(),
+  previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
   ApiError: class ApiError extends Error {
     status: number
@@ -48,6 +49,7 @@ vi.mock("../../api/client", () => ({
 
 import { loadPipeline, previewNode } from "../../api/client"
 import { makeNode, makeEdge } from "../../test-utils/factories"
+import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
@@ -113,7 +115,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
     })
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     mockLoad.mockReset()
-    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" })
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
     mockPreview.mockReset()
   })
 
@@ -135,7 +137,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
     const A = makeNode("A")
     const params = makeParams()
     params.graphRef.current = { nodes: [A], edges: [] }
-    mockLoad.mockResolvedValue({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test" })
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test", sources: ["live", "staging"], active_source: "staging" }))
     useSettingsStore.setState({ activeSource: "staging" })
 
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -155,10 +157,11 @@ describe("column-stash source identity (cache-key completeness)", () => {
     const A = makeStashedNode("A", "live")
     const params = makeParams()
     params.graphRef.current = { nodes: [A], edges: [] }
-    mockLoad.mockResolvedValue({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test" })
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test", sources: ["live", "staging"], active_source: "live" }))
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => { useGraphStore.getState().setNodesRaw([A]) })
 
     act(() => { useSettingsStore.getState().setActiveSource("staging") })
 
@@ -174,11 +177,12 @@ describe("column-stash source identity (cache-key completeness)", () => {
     const A = makeStashedNode("A", "staging")
     const params = makeParams()
     params.graphRef.current = { nodes: [A], edges: [] }
-    mockLoad.mockResolvedValue({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test" })
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test", sources: ["live", "staging"], active_source: "staging" }))
     useSettingsStore.setState({ activeSource: "staging" })
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => { useGraphStore.getState().setNodesRaw([A]) })
 
     act(() => { useSettingsStore.getState().setActiveSource("staging") })
 
@@ -192,10 +196,11 @@ describe("column-stash source identity (cache-key completeness)", () => {
     const A = makeStashedNode("A") // no _columnsSource — unknown provenance
     const params = makeParams()
     params.graphRef.current = { nodes: [A], edges: [] }
-    mockLoad.mockResolvedValue({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test" })
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => { useGraphStore.getState().setNodesRaw([A]) })
 
     act(() => { useSettingsStore.getState().setActiveSource("staging") })
 
@@ -219,6 +224,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
     const params = makeParams()
     params.graphRef.current = { nodes: [A, B], edges: [makeEdge("A", "B")] }
     useSettingsStore.setState({ activeSource: "staging" })
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [A, B], edges: [makeEdge("A", "B")], preserved_blocks: [], source_revision: "revision-test", sources: ["live", "staging"], active_source: "staging" }))
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))

@@ -20,6 +20,7 @@ import {
   shouldUseLiteGraphEffects,
 } from "../utils/graphPerformance"
 import useSettingsStore from "../stores/useSettingsStore"
+import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useGraphStore from "../stores/useGraphStore"
 
 export const TRACE_MOTION_GRAPH_SIZE_LIMIT = GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT
@@ -315,6 +316,19 @@ export default function useTracing({
 
   const startTrace = useCallback((rowIndex: number, column: string, rowValues?: Record<string, unknown>) => {
     if (!selectedNode) return
+    const documentSnapshot = useDocumentStatusStore.getState()
+    if (
+      documentSnapshot.capabilities?.can_execute !== true ||
+      !documentSnapshot.graphSynchronized
+    ) return
+    const documentStillCurrent = () => {
+      const current = useDocumentStatusStore.getState()
+      return current.sourceFile === documentSnapshot.sourceFile &&
+        current.sourceRevision === documentSnapshot.sourceRevision &&
+        current.loadStatus === documentSnapshot.loadStatus &&
+        current.graphSynchronized &&
+        current.capabilities?.can_execute === true
+    }
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
     const requestId = traceRequestSeq.current + 1
     traceRequestSeq.current = requestId
@@ -338,7 +352,8 @@ export default function useTracing({
     progressTimer.current = setTimeout(() => {
       if (
         traceRequestSeq.current === requestId &&
-        activeRequestContext.current === requestContext
+        activeRequestContext.current === requestContext &&
+        documentStillCurrent()
       ) {
         setStoredTraceState({ status: "loading", progressVisible: true })
       }
@@ -363,6 +378,16 @@ export default function useTracing({
           traceRequestSeq.current !== requestId ||
           activeRequestContext.current !== requestContext
         ) return
+        if (!documentStillCurrent()) {
+          if (progressTimer.current) clearTimeout(progressTimer.current)
+          progressTimer.current = null
+          retryRequest.current = null
+          activeRequestContext.current = null
+          setStoredTraceResult(null)
+          setStoredTracedCell(null)
+          setStoredTraceState({ status: "idle" })
+          return
+        }
         if (progressTimer.current) clearTimeout(progressTimer.current)
         progressTimer.current = null
         if (data.status === "ok") {
@@ -375,6 +400,16 @@ export default function useTracing({
       .catch((err) => {
         if (traceRequestSeq.current !== requestId) return
         if (controller.signal.aborted) return
+        if (!documentStillCurrent()) {
+          if (progressTimer.current) clearTimeout(progressTimer.current)
+          progressTimer.current = null
+          retryRequest.current = null
+          activeRequestContext.current = null
+          setStoredTraceResult(null)
+          setStoredTracedCell(null)
+          setStoredTraceState({ status: "idle" })
+          return
+        }
         if (progressTimer.current) clearTimeout(progressTimer.current)
         progressTimer.current = null
         if ((err as { status?: unknown })?.status === 409) {

@@ -13,6 +13,10 @@ import {
 } from "../hooks/useStaleConfigEstimate"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore, { type TrainProgress, type TrainResult } from "../stores/useNodeResultsStore"
+import {
+  captureDocumentExecutionFence,
+  isDocumentExecutionFenceCurrent,
+} from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import type { ModellingPane } from "../stores/useUIStore"
@@ -422,6 +426,8 @@ export default function ModellingConfig({
   )
   const onTrain = useCallback(async () => {
     if (hasTrainingConfigurationIssues) return
+    const documentFence = captureDocumentExecutionFence()
+    if (!isDocumentExecutionFenceCurrent(documentFence)) return
     setSubmitting(true)
     try {
       const result = await trainModel({
@@ -430,6 +436,7 @@ export default function ModellingConfig({
         source: useSettingsStore.getState().activeSource,
         streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
       })
+      if (!isDocumentExecutionFenceCurrent(documentFence)) return
       if (result.status === "started" && result.job_id) {
         startTrainJob(
           nodeId,
@@ -443,6 +450,7 @@ export default function ModellingConfig({
         completeTrainJob(nodeId, result as unknown as TrainResult)
       }
     } catch (error) {
+      if (!isDocumentExecutionFenceCurrent(documentFence)) return
       const message = errorMessage(error)
       completeTrainJob(
         nodeId,

@@ -18,6 +18,7 @@ from haute._types import NodeType, PipelineGraph, SubmodelInstanceConfig
 from haute.errors import ConfigError, ParseError
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
+    load_pipeline_editor_document,
     load_sidecar_positions,
     parse_pipeline_to_graph,
     pipeline_dir,
@@ -50,11 +51,24 @@ def _load_parent_document(source_file: str) -> tuple[Path, Path, PipelineGraph]:
     parent_path = validate_safe_path(project_root, source_file)
     if not parent_path.is_file():
         raise HTTPException(status_code=404, detail="Parent pipeline file not found.")
-    return (
-        project_root,
+    editor_document = load_pipeline_editor_document(
         parent_path,
-        parse_pipeline_to_graph(parent_path, project_root=project_root),
+        project_root=project_root,
     )
+    if editor_document.load_status != "ready":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The parent pipeline is not ready on disk. Reload it and resolve "
+                "its diagnostics before changing submodels."
+            ),
+        )
+    # The recovery revision deliberately hashes raw malformed artifacts for
+    # recovery-preview/repair admission.  Submodel operations retain their
+    # existing canonical graph revision contract; this guard only adds the
+    # independent server-side disk-readiness fence.
+    graph = parse_pipeline_to_graph(parent_path, project_root=project_root)
+    return project_root, parent_path, graph
 
 
 def _require_current_revision(graph: PipelineGraph, base_revision: str) -> None:

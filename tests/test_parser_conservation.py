@@ -23,8 +23,8 @@ from haute._parser_regex import (
     _find_connect_calls,
     _find_function_blocks,
     _recover_submodel_registrations,
-    fallback_parse,
 )
+from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._submodel_instances import qualified_runtime_node_id
 from haute.codegen import graph_to_code_multi
 from haute.errors import ParseError
@@ -366,12 +366,11 @@ class TestFallbackScanConservation:
 
 
 # ---------------------------------------------------------------------------
-# F027 — the regex fallback silently discarded every submodel when the main
-# file had any syntax error.
+# F027 — editor recovery conserves submodels when the main file has a syntax error.
 # ---------------------------------------------------------------------------
 
 
-class TestFallbackSubmodelRecovery:
+class TestSyntaxRecoverySubmodels:
     def test_submodels_survive_syntax_error(self, tmp_path: Path) -> None:
         _write(
             tmp_path,
@@ -392,7 +391,7 @@ class TestFallbackSubmodelRecovery:
                 return df.select("x")
             """,
         )
-        # A trailing syntax error forces the regex fallback path, but the
+        # A trailing syntax error forces editor recovery, but the
         # top-level submodel() call is still intact and recoverable.
         _write(
             tmp_path,
@@ -417,13 +416,17 @@ class TestFallbackSubmodelRecovery:
             x = = 5
             """,
         )
-        graph = parse_pipeline_file(tmp_path / "main.py")
-        assert graph.warning is not None and "regex fallback" in graph.warning
-        assert "scoring" in (graph.submodels or {})
-        node_ids = {n.id for n in graph.nodes}
+        with pytest.raises(ParseError, match="syntax"):
+            parse_pipeline_file(tmp_path / "main.py")
+        document = load_pipeline_editor_document(
+            tmp_path / "main.py",
+            project_root=tmp_path,
+        )
+        assert "scoring" in (document.submodels or {})
+        node_ids = {node.authored_id for node in document.nodes}
         assert "submodel__scoring" in node_ids
 
-    def test_flattened_submodel_child_survives_syntax_error(self, tmp_path: Path) -> None:
+    def test_recovered_submodel_child_survives_syntax_error(self, tmp_path: Path) -> None:
         _write(
             tmp_path,
             "modules/scoring.py",
@@ -466,9 +469,14 @@ class TestFallbackSubmodelRecovery:
             x = = 5
             """,
         )
-        graph = parse_pipeline_file(tmp_path / "main.py", flatten=True)
-        node_ids = {n.id for n in graph.nodes}
-        assert qualified_runtime_node_id("submodel__scoring", "Transform") in node_ids
+        document = load_pipeline_editor_document(
+            tmp_path / "main.py",
+            project_root=tmp_path,
+        )
+        assert document.submodels is not None
+        child = document.submodels["scoring"]
+        assert child.availability == "ready"
+        assert {node.authored_id for node in child.graph.nodes} == {"Transform"}
 
     def test_unrecoverable_paths_are_reported_together(self) -> None:
         source = textwrap.dedent(
@@ -808,20 +816,12 @@ class TestGraphStructureConservationGate:
 
 
 # ---------------------------------------------------------------------------
-# F325 — the fallback path skipped _validate_user_contract, so a drifted
-# contract= annotation was not cross-checked at parse time.
+# F325 — editor recovery must cross-check a drifted contract annotation.
 # ---------------------------------------------------------------------------
 
 
-class TestFallbackContractValidation:
-    def test_fallback_invokes_contract_validator(self, tmp_path: Path, monkeypatch) -> None:
-        calls: list[tuple] = []
-
-        def _spy(node_type, config, user_declared, func_name):  # noqa: ANN001, ANN202
-            calls.append((node_type, func_name, user_declared))
-
-        monkeypatch.setattr("haute._parser_regex._validate_user_contract", _spy)
-
+class TestRecoveryContractValidation:
+    def test_recovery_preserves_a_resolved_contract(self, tmp_path: Path) -> None:
         source = textwrap.dedent(
             """\
             import polars as pl
@@ -837,10 +837,15 @@ class TestFallbackContractValidation:
                 pass
             """
         )
-        fallback_parse(
-            source,
-            str(tmp_path / "main.py"),
-            SyntaxError("broken"),
-        )
-        assert len(calls) == 1
-        assert calls[0][1] == "node"
+        pipeline_path = _write(tmp_path, "main.py", source)
+
+        document = load_pipeline_editor_document(pipeline_path, project_root=tmp_path)
+
+        assert document.load_status == "degraded"
+        assert document.nodes[0].authored_id == "node"
+        assert document.nodes[0].availability == "ready"
+        assert document.nodes[0].config is not None
+        assert document.nodes[0].config["contract"] == {
+            "inputs": ("a",),
+            "outputs": ("b",),
+        }

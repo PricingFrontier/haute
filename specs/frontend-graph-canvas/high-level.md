@@ -280,11 +280,20 @@ well as occurrence-specific positions and bindings.
   execution request; Infer Tables followed by an explicit refresh is the
   normal first-preview flow.
 - **Pipeline load and save.** The pipeline loads once on mount with a
-  cold-start retry policy; a backend-contract violation in the response
-  throws before it reaches the graph, surfacing as a load-failure toast
-  rather than a downstream crash. A node whose persisted `type` or
-  `data.nodeType` is outside the canonical vocabulary is rejected at that parser boundary;
-  there is no legacy renderer or client migration. Save validates config references and
+  cold-start retry policy. Its versioned editor-document response is validated before state
+  changes, then adapted to React Flow; recovery wire nodes never enter the canonical graph
+  store directly. `ready` documents retain normal behaviour. A `degraded` document renders
+  every recoverable element, marks unavailable or blocked nodes separately from transient
+  execution status, shows one summary banner, and exposes the selected element's diagnostic
+  and source/config location. A `source_only` document replaces the canvas with the readable
+  current source and document diagnostics. Authored recovery states do not produce the
+  generic load-failure toast; transport, authentication, unreadable-source, and response-
+  contract failures render the dedicated load-failure surface. A dedicated document-status
+  store is authoritative for status, capabilities, diagnostics, revision, and source-only
+  text; the request-facing revision ref is updated atomically as its mirror.
+  A node whose ready persisted `type` or `data.nodeType` is outside the canonical vocabulary
+  is rejected at that parser boundary; unknown authored decorators use the recovery renderer
+  instead of a canonical node type. Save validates config references and
   edge-join wiring first — a broken edge-join blocks the save outright with
   an error toast, while broken config references only warn. A concurrent
   second save can never let an older response's `markSaved` clobber a newer
@@ -299,6 +308,11 @@ well as occurrence-specific positions and bindings.
   refs alongside `sourceFileRef`: load records both, save sends the preserved
   blocks unchanged, and a successful save replaces the revision with the
   committed response value.
+  All ordinary graph mutation, layout dragging, undo/redo, Save, submodel transforms,
+  assistant graph edits, and execution/publication actions derive from one document-status
+  fence and are disabled unless the corresponding server capability is present. Selection,
+  panning, zooming, diagnostic navigation, and raw source/config inspection remain available
+  in recovery states; frontend affordances never replace server-side admission checks.
 - **Preview fetching.** Selecting or refreshing a node debounces, then
   fetches its preview; a cache hit for the same structural version, source,
   and row limit paints instantly and skips the network call, otherwise
@@ -633,3 +647,28 @@ well as occurrence-specific positions and bindings.
 - Version comparison catches a failed historical-pipeline fetch and renders a
   dedicated error state (message plus a "Back to editor" button) in place
   of the canvases, rather than crashing the comparison view.
+
+## Recovery canvas behaviour
+
+Unavailable and blocked nodes remain selectable and expose their diagnostics, source/config location,
+and deterministic blocking path instead of a normal editor. The recovery banner contains an accessible
+issues navigator. Unresolved connections render as non-interactive dashed overlays only when the server
+supplies two unambiguous recovery endpoints. Selection, pan, zoom, and diagnostic navigation remain
+available while every mutation is fenced.
+
+When live sync reports a degraded document, a clean canvas atomically adopts the recovered snapshot; a
+dirty canvas retains local graph/history but immediately adopts the authoritative read-only capability
+fence. Source-only state shows the current source and diagnostics. If a renderable snapshot existed in
+this browser session, it may remain behind an explicit stale-reference label with its own prior revision;
+it cannot be saved, executed, or mistaken for current state. A versioned system load failure replaces
+the editor with the dedicated failure surface and marks any retained canvas unsynchronised; the next
+valid document update clears that failure atomically.
+
+Minimal repair is the one deliberate exception to the degraded canvas's
+mutation fence. It is admitted only by `can_repair`, targets a server recovery
+identity, and never mutates the in-memory React Flow graph optimistically.
+After a confirmed removal succeeds, App validates and atomically adopts the
+returned editor document, clears the removed selection, advances the raw
+revision mirror, and replaces graph/history from that authoritative snapshot.
+A failed or stale repair leaves the current recovery canvas unchanged. No
+migration or upgrade action exists.

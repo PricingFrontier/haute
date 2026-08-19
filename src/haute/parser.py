@@ -20,7 +20,7 @@ from haute._ast_helpers import (
     _extract_pipeline_meta,
     _extract_preamble,
     _extract_preserved_blocks,
-    _is_pipeline_node_decorator,
+    _is_pipeline_authored_decorator,
 )
 from haute._graph_builders import (
     _build_edges,
@@ -34,7 +34,6 @@ from haute._parser_conservation import (
     assert_parser_structure_conserved,
     missing_submodel_error,
 )
-from haute._parser_regex import fallback_parse as _fallback_parse
 from haute._parser_submodels import (
     SubmodelRegistration as _SubmodelRegistration,
 )
@@ -94,8 +93,8 @@ def parse_pipeline_file(filepath: str | Path, *, flatten: bool = False) -> Pipel
             (for executor / trace / deploy).  If *False* (default), keep
             submodel metadata so the GUI can render collapsed submodel nodes.
 
-    On syntax errors the file is still parsed via regex fallback so
-    that valid nodes are returned alongside broken ones.
+    Syntax and all other authored failures raise. Editor-only recovery is
+    exposed separately by :mod:`haute._pipeline_recovery`.
     """
     filepath = Path(filepath)
     source = read_user_text(filepath)
@@ -149,19 +148,16 @@ def parse_pipeline_source(
     if not source_file and _base_dir is not None:
         source_file = str((_base_dir / "__source__.py").resolve())
 
-    # Syntax check - fall back to regex if the file has errors
+    # Canonical consumers must never receive a regex-recovered graph.
     try:
         tree = ast.parse(source)
-    except SyntaxError as e:
-        logger.warning("fallback_parse", file=source_file, line=e.lineno)
-        return _fallback_parse(
-            source,
-            source_file,
-            e,
-            _base_dir=_base_dir,
-            _submodel_base_dir=_submodel_base_dir,
-            flatten=flatten,
-        )
+    except SyntaxError as exc:
+        raise ParseError(
+            "Pipeline source contains invalid Python syntax.",
+            source_file=source_file or None,
+            line=exc.lineno,
+            column=exc.offset,
+        ) from exc
 
     # Pipeline metadata
     pipeline_name, pipeline_desc = _extract_pipeline_meta(tree)
@@ -170,9 +166,10 @@ def parse_pipeline_source(
     func_bodies = _extract_function_bodies(source, tree=tree)
     raw_nodes = _extract_decorated_nodes(
         tree,
-        _is_pipeline_node_decorator,
+        _is_pipeline_authored_decorator,
         func_bodies,
         _base_dir,
+        source=source,
     )
 
     explicit_connects = _extract_connect_calls(tree)

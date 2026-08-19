@@ -56,6 +56,24 @@ several types, from Python code extracted out of the function body. The live `Pi
 API does not load or validate a `config=` path; it records the keyword as ordinary node metadata,
 and generated function bodies/runtime graph builders own the corresponding executable behaviour.
 
+**Strict parsing and editor recovery.** `parse_pipeline_file()` and
+`parse_pipeline_source()` are strict canonical entry points: Python syntax, decorator,
+configuration, contract, topology, and submodel failures raise and no regex-recovered graph
+can reach execution, lint, code generation, Save verification, CI, or deploy. Editor loading
+uses a separate recovery entry point and separate models. It first records authored node and
+connection skeletons with source spans, then resolves known nodes independently. An expected
+node-local configuration or contract failure becomes an unavailable recovery node without
+inventing config or mutating its referenced file; an unexpected exception is isolated only
+at that recovery boundary and receives a logged incident id. Syntax-invalid source may use
+the regex extractor only through recovery. If it cannot produce a trustworthy skeleton the
+result is `source_only`, never a successful empty canonical graph.
+
+The editor's `.haute.json` read distinguishes absent, valid, corrupt, and unreadable states.
+Only a valid sidecar supplies source selection. Corrupt or unreadable content leaves its raw
+bytes untouched, uses presentation-only default positions, degrades the document, and blocks
+preview because active-source state is untrusted. Recovery revisions hash raw dependency
+bytes and explicit missing sentinels rather than requiring a valid `PipelineGraph`.
+
 **Wiring.** In the statically parsed source graph, edges come from exactly two declared
 sources: explicit `connect()` calls and function parameter names matching other node names.
 Explicit calls take precedence and
