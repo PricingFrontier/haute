@@ -84,9 +84,7 @@ def test_repr_reports_subscriber_counts_per_event_type() -> None:
     bus.subscribe("pipeline.document.update", lambda _p: None)
     bus.subscribe("parse.error", lambda _p: None)
 
-    assert repr(bus) == (
-        "EventBus(subscribers={'pipeline.document.update': 2, 'parse.error': 1})"
-    )
+    assert repr(bus) == ("EventBus(subscribers={'pipeline.document.update': 2, 'parse.error': 1})")
 
 
 def test_snapshot_is_a_deep_copy_of_the_registry() -> None:

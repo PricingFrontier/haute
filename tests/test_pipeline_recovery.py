@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import textwrap
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -527,12 +528,20 @@ def test_recovery_revision_authenticates_the_bytes_the_document_presents(
     original_bytes = pipeline_file.read_bytes()
     real_artifacts = _pipeline_recovery._recovery_artifacts
 
-    def edit_after_discovery(*args: object, **kwargs: object):
+    def edit_after_discovery(
+        target_file: Path,
+        *args: object,
+        **kwargs: object,
+    ):
         artifacts = real_artifacts(*args, **kwargs)  # type: ignore[arg-type]
-        pipeline_file.write_text("import haute\n", encoding="utf-8")
+        target_file.write_text("import haute\n", encoding="utf-8")
         return artifacts
 
-    monkeypatch.setattr(_pipeline_recovery, "_recovery_artifacts", edit_after_discovery)
+    monkeypatch.setattr(
+        _pipeline_recovery,
+        "_recovery_artifacts",
+        partial(edit_after_discovery, pipeline_file),
+    )
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
 
     assert document.source_text == original_text
@@ -619,9 +628,7 @@ def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
 
     assert document.load_status == "ready"
     assert document.submodels is not None
-    child_nodes = {
-        node.authored_id for node in document.submodels["child-definition"].graph.nodes
-    }
+    child_nodes = {node.authored_id for node in document.submodels["child-definition"].graph.nodes}
     assert "transform" in child_nodes
 
     expected = pipeline_recovery_revision(
@@ -702,9 +709,7 @@ def test_recovery_revision_authenticates_child_bytes_the_document_presents(
 
     assert document.load_status == "degraded"
     assert document.submodels is not None
-    child_nodes = {
-        node.authored_id for node in document.submodels["child-definition"].graph.nodes
-    }
+    child_nodes = {node.authored_id for node in document.submodels["child-definition"].graph.nodes}
     assert "transform" in child_nodes
 
     expected = pipeline_recovery_revision(

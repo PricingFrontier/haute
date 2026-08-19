@@ -495,9 +495,7 @@ class TestApply:
             project_root=project_root,
             pipeline_root=project_root,
             mutations_readiness=lambda _root: (True, None),
-            publish_document_update=lambda source: (
-                published.append({"source": source}) or "f" * 64
-            ),
+            publish_document_update=lambda source: published.append({"source": source}) or "f" * 64,
             parse_graph=parser,
         )
         plan = service.dry_run(

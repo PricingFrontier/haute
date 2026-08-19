@@ -1268,9 +1268,9 @@ class TestWebSocketResync:
         monkeypatch.chdir(pipeline_dir)
         pipeline_file = pipeline_dir / "test_pipeline.py"
         current_fingerprint = _document_payload_fingerprint(
-            load_pipeline_editor_document(
-                pipeline_file, project_root=pipeline_dir
-            ).model_dump(mode="json", by_alias=True)
+            load_pipeline_editor_document(pipeline_file, project_root=pipeline_dir).model_dump(
+                mode="json", by_alias=True
+            )
         )
 
         ws = self._CollectingWebSocket()
@@ -3781,9 +3781,7 @@ class TestFileWatcherFingerprintDedup:
                 loop.close()
 
         # First change broadcasts, second with same fingerprint is skipped
-        document_updates = [
-            c for c in broadcast_calls if c["type"] == "pipeline_document_update"
-        ]
+        document_updates = [c for c in broadcast_calls if c["type"] == "pipeline_document_update"]
         assert len(document_updates) == 1
 
 
@@ -4118,9 +4116,7 @@ class TestFileWatcherRecovery:
             finally:
                 loop.close()
 
-        assert any(
-            call["type"] == "pipeline_document_update" for call in broadcast_calls
-        )
+        assert any(call["type"] == "pipeline_document_update" for call in broadcast_calls)
 
     def test_watcher_forever_restarts_after_crash(self):
         """The outer watcher loop should restart after an unexpected crash."""

@@ -610,7 +610,7 @@ describe("useWebSocketSync", () => {
       expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
     })
 
-    it("retains a clean last-renderable canvas with a separate revision for source-only", async () => {
+    it("retains a clean last-renderable canvas across repeated source-only updates", async () => {
       const params = makeHookParams("rating/main.py")
       useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
         load_status: "ready",
@@ -640,6 +640,32 @@ describe("useWebSocketSync", () => {
         loadStatus: "source_only",
         sourceRevision: "r2",
         sourceText: "this is not recoverable Python",
+        retainedCanvas: {
+          kind: "last_renderable",
+          sourceRevision: "r1",
+          loadStatus: "ready",
+        },
+        graphSynchronized: false,
+      })
+
+      const laterSourceOnly = {
+        ...sourceOnly,
+        source_revision: "r3",
+        source_text: "this is still not recoverable Python",
+      }
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(
+            laterSourceOnly,
+            "document-fingerprint-r3",
+          )),
+        }))
+      })
+
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        loadStatus: "source_only",
+        sourceRevision: "r3",
+        sourceText: "this is still not recoverable Python",
         retainedCanvas: {
           kind: "last_renderable",
           sourceRevision: "r1",

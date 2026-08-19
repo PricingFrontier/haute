@@ -134,9 +134,7 @@ def pipeline_recovery_revision(
     presents even when the file changes concurrently.
     """
     root = project_root.resolve()
-    captured = {
-        str(path.resolve()).casefold(): raw for path, raw in (known_bytes or {}).items()
-    }
+    captured = {str(path.resolve()).casefold(): raw for path, raw in (known_bytes or {}).items()}
     unique: dict[tuple[str, str], tuple[str, Path]] = {}
     for role, raw_path in artifacts:
         if not role or not role.strip():
