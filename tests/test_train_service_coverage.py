@@ -824,7 +824,7 @@ class TestExecuteAndSinkCleanupAbsentPaths:
         job_id = store.create_job({"status": "running"})
         return store, service, job_id, _source_only_request()
 
-    def _run_with_absent_paths(self, service, body, job_id, lazy_side_effect):
+    def _run_with_absent_paths(self, service, body, job_id, lazy_side_effect, tmp_path: Path):
         """Run _execute_and_sink with the temp parquet absent, exercising the
         cleanup guards' skip-unlink arms.
 
@@ -832,12 +832,15 @@ class TestExecuteAndSinkCleanupAbsentPaths:
         so the ``if Path(tmp_parquet).exists()`` guards are naturally False
         without mocking pathlib globally. Only the ``haute_train_`` temp is
         special-cased; the dataframe-cache machinery's own mkstemp temps are
-        delegated to the real implementation untouched. os.path.exists stays
-        globally False (as before) to keep that machinery off real filesystem
-        I/O, and os.unlink is mocked as the belt-and-braces assertion target."""
+        delegated to the real implementation untouched. The dataframe-cache
+        request is irrelevant once execute_lazy_graph is mocked, so stub it to
+        prevent this test's mkdtemp patch from becoming the process-wide cache
+        root. os.path.exists stays globally False (as before) to keep the
+        remaining machinery off real filesystem I/O, and os.unlink is mocked
+        as the belt-and-braces assertion target."""
         import tempfile as _tempfile
 
-        ckpt_missing = "/nonexistent/haute_ckpt_absent"
+        ckpt_missing = tmp_path / "haute_ckpt_absent"
         real_mkstemp = _tempfile.mkstemp
         real_unlink = os.unlink  # capture before the with-block mocks os.unlink
         real_close = os.close
@@ -862,7 +865,11 @@ class TestExecuteAndSinkCleanupAbsentPaths:
             ),
             patch("haute.routes._train_service.os.path.exists", return_value=False),
             patch.object(_tempfile, "mkstemp", side_effect=_mkstemp_training_absent),
-            patch.object(_tempfile, "mkdtemp", return_value=ckpt_missing),
+            patch.object(_tempfile, "mkdtemp", return_value=str(ckpt_missing)),
+            patch(
+                "haute.routes._train_service.build_dataframe_execution_cache_request",
+                return_value=MagicMock(),
+            ),
             patch("haute.routes._train_service.os.unlink") as mock_unlink,
             p1,
             p2,
@@ -874,7 +881,7 @@ class TestExecuteAndSinkCleanupAbsentPaths:
             service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
         return exc_info, mock_unlink
 
-    def test_memory_limit_skips_unlink_when_temp_absent(self):
+    def test_memory_limit_skips_unlink_when_temp_absent(self, tmp_path: Path):
         """ExecutionMemoryLimitExceededError with the temp already gone: the
         unlink guard is False (967->969) and no unlink is attempted."""
         store, service, job_id, body = self._service_body()
@@ -884,24 +891,24 @@ class TestExecuteAndSinkCleanupAbsentPaths:
                 "training_pipeline", rss_bytes=2, limit_bytes=1, job_id=job_id
             )
 
-        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy)
+        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy, tmp_path)
         assert exc_info.value.status_code == 507
         mock_unlink.assert_not_called()
         assert store.require_job(job_id)["status"] == "memory_limited"
 
-    def test_bounded_unsupported_skips_unlink_when_temp_absent(self):
+    def test_bounded_unsupported_skips_unlink_when_temp_absent(self, tmp_path: Path):
         """BoundedMemoryUnsupportedError with the temp already gone (981->983)."""
         store, service, job_id, body = self._service_body()
 
         def lazy(*a, **k):
             raise BoundedMemoryUnsupportedError("cannot stream")
 
-        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy)
+        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy, tmp_path)
         assert exc_info.value.status_code == 422
         mock_unlink.assert_not_called()
         assert store.require_job(job_id)["status"] == "contract_error"
 
-    def test_http_reraise_skips_unlink_when_temp_absent(self):
+    def test_http_reraise_skips_unlink_when_temp_absent(self, tmp_path: Path):
         """A re-raised HTTPException with the temp gone (996->998). The missing
         target node raises an HTTPException inside the try, which the HTTPException
         handler re-raises after the (skipped) unlink guard."""
@@ -914,11 +921,11 @@ class TestExecuteAndSinkCleanupAbsentPaths:
         def lazy(*a, **k):
             raise HTTPException(status_code=418, detail="teapot")
 
-        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy)
+        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy, tmp_path)
         assert exc_info.value.status_code == 418
         mock_unlink.assert_not_called()
 
-    def test_generic_failure_skips_unlink_when_temp_absent(self):
+    def test_generic_failure_skips_unlink_when_temp_absent(self, tmp_path: Path):
         """A generic Exception with the temp gone (1000->1002) plus the
         checkpoint-dir-absent finally arm (1019->1022)."""
         store, service, job_id, body = self._service_body()
@@ -926,7 +933,7 @@ class TestExecuteAndSinkCleanupAbsentPaths:
         def lazy(*a, **k):
             raise RuntimeError("kaboom")
 
-        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy)
+        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy, tmp_path)
         assert exc_info.value.status_code == 500
         mock_unlink.assert_not_called()
         assert store.require_job(job_id)["status"] == "error"
