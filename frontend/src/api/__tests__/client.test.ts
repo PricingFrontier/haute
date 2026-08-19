@@ -9,6 +9,7 @@ import {
   isHauteSessionExpiredError,
   loadPipeline,
   previewNode,
+  previewRecoveryNode,
   savePipeline,
   traceCell,
   resolveOutputDestination,
@@ -555,6 +556,7 @@ describe("endpoint contracts", () => {
   beforeEach(() => {
     mockFetch.mockImplementation((url: string) => {
       if (url === "/api/pipeline/preview") return jsonResponse(makePreviewResponse())
+      if (url === "/api/pipeline/recovery-preview") return jsonResponse(makePreviewResponse())
       if (url === "/api/pipeline/save") return jsonResponse(makeSavePipelineResponse())
       if (url === "/api/pipeline/write-output") return jsonResponse({ status: "ok", message: "Written", row_count: 3, path: "out.parquet", format: "parquet" })
       if (url === "/api/pipeline/trace") return jsonResponse(makeTraceResponse())
@@ -583,6 +585,47 @@ describe("endpoint contracts", () => {
     expect(body.node_id).toBe("node1")
     expect(body.row_limit).toBe(50)
     expect(body.source).toBe("live")
+  })
+
+  it("previewRecoveryNode sends the recovery fence and optional frame context", async () => {
+    await previewRecoveryNode({
+      sourceFile: "rating/main.py",
+      sourceRevision: "revision-2",
+      targetRecoveryId: "transform@12",
+      rowLimit: 50,
+      source: "staging",
+      requestedPreviewColumns: ["premium"],
+      portLabel: "rated",
+      streamingChunkSize: 25,
+      timeout: 2_000,
+    })
+    await previewRecoveryNode({
+      sourceFile: "rating/main.py",
+      sourceRevision: "revision-2",
+      targetRecoveryId: "transform@12",
+      rowLimit: 50,
+    })
+
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/pipeline/recovery-preview")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({
+      source_file: "rating/main.py",
+      source_revision: "revision-2",
+      target_recovery_id: "transform@12",
+      row_limit: 50,
+      source: "staging",
+      requested_preview_columns: ["premium"],
+      port_label: "rated",
+      streaming_chunk_size: 25,
+    })
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body)).toEqual({
+      source_file: "rating/main.py",
+      source_revision: "revision-2",
+      target_recovery_id: "transform@12",
+      row_limit: 50,
+      source: "live",
+    })
   })
 
   it("savePipeline posts to /api/pipeline/save", async () => {

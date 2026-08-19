@@ -52,6 +52,14 @@ vi.mock("../../stores/useUIStore.ts", () => {
       syncBanner = banner
       store.syncBanner = banner
     }),
+    renameDialog: null,
+    setRenameDialog: vi.fn((dialog: { nodeId: string; currentLabel: string } | null) => {
+      store.renameDialog = dialog
+    }),
+    submodelDialog: null,
+    setSubmodelDialog: vi.fn((dialog: { nodeIds: string[] } | null) => {
+      store.submodelDialog = dialog
+    }),
     // Other fields the hook destructures
     setPaletteOpen: vi.fn(),
     setShortcutsOpen: vi.fn(),
@@ -182,6 +190,10 @@ describe("useWebSocketSync", () => {
     // Reset mock state
     vi.mocked(useToastStore.getState().addToast).mockClear()
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
+    vi.mocked(useUIStore.getState().setRenameDialog).mockClear()
+    vi.mocked(useUIStore.getState().setSubmodelDialog).mockClear()
+    useUIStore.getState().renameDialog = null
+    useUIStore.getState().submodelDialog = null
     vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
     useGraphStore.getState().dirty = false
     useGraphStore.getState().nodes = []
@@ -485,6 +497,125 @@ describe("useWebSocketSync", () => {
       expect(useGraphStore.getState().nodes).toHaveLength(1)
     })
 
+    it("ignores a document update for another source", async () => {
+      const params = makeHookParams("rating/main.py")
+      const foreign = makePipelineEditorDocument({
+        source_file: "rating/other.py",
+        source_revision: "r2",
+        nodes: [readyNode],
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(foreign)),
+        }))
+      })
+
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(params.sourceRevisionRef.current).toBe("revision-test")
+    })
+
+    it("retains dirty local work when the source falls back to source-only", async () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r1",
+        nodes: [readyNode],
+      }))
+      useGraphStore.getState().nodes = [{ ...readyNode, id: "local-edit" }]
+      useGraphStore.getState().dirty = true
+      const sourceOnly = makePipelineEditorDocument({
+        load_status: "source_only",
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        source_text: "unrecoverable source",
+        nodes: [],
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(sourceOnly)),
+        }))
+      })
+
+      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["local-edit"])
+      expect(useDocumentStatusStore.getState().retainedCanvas?.kind).toBe("local_dirty")
+      expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
+        expect.stringContaining("unsaved changes"),
+      )
+    })
+
+    it("closes dialogs for removed nodes and warns while retaining an unresolved edge", async () => {
+      const params = makeHookParams("rating/main.py")
+      const targetNode: Node = {
+        ...readyNode,
+        id: "target",
+        data: { label: "Target", nodeType: "polars", config: {} },
+      }
+      useUIStore.getState().renameDialog = { nodeId: "removed", currentLabel: "Removed" }
+      useUIStore.getState().submodelDialog = { nodeIds: ["disk", "removed"] }
+      const document = makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        nodes: [readyNode, targetNode],
+        edges: [{
+          id: "unresolved-handle",
+          source: "disk",
+          target: "target",
+          sourceHandle: "missing-output",
+        }],
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(document)),
+        }))
+      })
+
+      expect(useUIStore.getState().setRenameDialog).toHaveBeenCalledWith(null)
+      expect(useUIStore.getState().setSubmodelDialog).toHaveBeenCalledWith(null)
+      expect(useGraphStore.getState().edges).toHaveLength(1)
+      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
+        "warning",
+        expect.stringContaining("unresolved synced edge"),
+      )
+    })
+
+    it("rolls request mirrors back when the graph snapshot cannot be applied", async () => {
+      const params = makeHookParams("rating/main.py")
+      params.preservedBlocksRef.current = ["old block"]
+      params.preambleRef.current = "old preamble"
+      params.submodelsRef.current = { old: { definitionId: "old" } }
+      vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockImplementationOnce(() => {
+        throw new Error("snapshot store failed")
+      })
+      const document = makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        preamble: "new preamble",
+        preserved_blocks: ["new block"],
+        nodes: [readyNode],
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(document)),
+        }))
+      })
+
+      expect(params.preservedBlocksRef.current).toEqual(["old block"])
+      expect(params.preambleRef.current).toBe("old preamble")
+      expect(params.submodelsRef.current).toEqual({ old: { definitionId: "old" } })
+      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
+        "error",
+        expect.stringContaining("snapshot store failed"),
+      )
+    })
+
     it("applies a degraded status fence without replacing a dirty local graph", async () => {
       const params = makeHookParams("rating/main.py")
       useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
@@ -697,6 +828,65 @@ describe("useWebSocketSync", () => {
         "error",
         expect.stringContaining("unexpected frame fields"),
       )
+    })
+
+    it("rejects each invalid document-envelope identity field", async () => {
+      const params = makeHookParams("rating/main.py")
+      const document = makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        nodes: [readyNode],
+      })
+      const validFrame = pipelineDocumentFrame(document)
+      const cases: Array<{ frame: Record<string, unknown>; error: string }> = [
+        { frame: { ...validFrame, schema_version: 2 }, error: "unsupported schema_version" },
+        { frame: { ...validFrame, document_fingerprint: " " }, error: "missing document_fingerprint" },
+        { frame: { ...validFrame, source_file: " " }, error: "missing source_file" },
+        {
+          frame: {
+            ...validFrame,
+            document: { ...document, source_revision: null },
+          },
+          error: "document is missing source_revision",
+        },
+        {
+          frame: { ...validFrame, source_file: "rating/other.py" },
+          error: "envelope and document source_file differ",
+        },
+      ]
+      renderHook(() => useWebSocketSync(params))
+
+      for (const testCase of cases) {
+        await act(async () => {
+          latestWS().onmessage?.(new MessageEvent("message", {
+            data: JSON.stringify(testCase.frame),
+          }))
+        })
+        expect(useToastStore.getState().addToast).toHaveBeenLastCalledWith(
+          "error",
+          expect.stringContaining(testCase.error),
+        )
+      }
+
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+    })
+
+    it("ignores a versioned parse error for another source", async () => {
+      const params = makeHookParams("rating/main.py")
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "parse_error",
+            error: "foreign failure",
+            source_file: "rating/other.py",
+            document_schema_version: 1,
+          }),
+        }))
+      })
+
+      expect(useDocumentStatusStore.getState().systemFailure).toBeNull()
     })
 
     it("resyncs by whole-document fingerprint after the new protocol is applied", async () => {

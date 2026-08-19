@@ -553,6 +553,30 @@ def broken(:
         assert fragments.connections == ()
         assert fragments.submodel_registrations == ()
 
+    def test_recovers_constructor_alias_and_inline_comment(self) -> None:
+        source = """from haute import Pipeline as P
+pipeline = P("aliased")  # the editor-created pipeline
+"""
+
+        fragments = recover_pipeline_fragments(source)
+
+        assert fragments.pipeline_name == "aliased"
+
+    def test_ignores_pipeline_looking_text_inside_a_triple_quoted_string(self) -> None:
+        source = '''"""
+pipeline = haute.Pipeline("not-authored")
+"""
+pipeline = haute.Pipeline("authored")
+'''
+
+        fragments = recover_pipeline_fragments(source)
+
+        assert fragments.pipeline_name == "authored"
+
+    def test_visible_unrecognised_pipeline_assignment_fails_loudly(self) -> None:
+        with pytest.raises(ParseError, match="cannot be recovered"):
+            recover_pipeline_fragments('pipeline = CustomPipeline("x")')
+
     def test_visible_unrecoverable_decorator_fails_loudly(self) -> None:
         source = """pipeline = haute.Pipeline("demo")
 @pipeline.polars(value=(

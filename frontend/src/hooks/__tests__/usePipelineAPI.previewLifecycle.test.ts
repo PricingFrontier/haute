@@ -200,6 +200,33 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
     expect(cached?.structuralVersion).toBe(requestStructuralVersion)
   })
 
+  it("previews a requested output frame without clearing the visible table first", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    mockPreview.mockResolvedValue(okEnvelope)
+
+    const applyNode = makeNode("browser_apply", "optimiserApply")
+    const params = makeParams()
+    params.graphRef.current = { nodes: [applyNode], edges: [] }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.previewNodeFrame(applyNode.id, "optimised")
+    })
+
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
+    expect(mockPreview).toHaveBeenCalledWith(expect.objectContaining({
+      nodeId: applyNode.id,
+      portLabel: "optimised",
+    }))
+    await waitFor(() => expect(result.current.previewBusy).toBe(false))
+    expect(result.current.previewData).toMatchObject({
+      nodeId: applyNode.id,
+      status: "ok",
+    })
+  })
+
   it("surfaces a preview failure that arrives after a mid-flight structuralVersion bump", async () => {
     // Same interleave as above but the backend fails: the panel must show
     // the error, never an eternal "loading" with no error surfaced.

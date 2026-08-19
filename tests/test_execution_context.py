@@ -2535,6 +2535,52 @@ async def test_get_pipeline_falls_back_after_indexed_and_scanned_load_failures(
 
 
 @pytest.mark.asyncio
+async def test_get_pipeline_reraises_indexed_load_error_after_all_candidates_fail(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from haute.routes import pipeline as pipeline_route
+
+    indexed = tmp_path / "indexed.py"
+    scanned_bad = tmp_path / "scanned_bad.py"
+
+    monkeypatch.chdir(tmp_path)
+
+    def load(path, *, project_root):
+        assert project_root == tmp_path
+        raise RuntimeError(f"{path.name} failed")
+
+    monkeypatch.setattr(pipeline_route, "lookup_pipeline_by_name", lambda _name: indexed)
+    monkeypatch.setattr(pipeline_route, "discover_pipelines", lambda: [indexed, scanned_bad])
+    monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
+
+    with pytest.raises(RuntimeError, match="indexed.py failed"):
+        await pipeline_route.get_pipeline("rating")
+
+
+@pytest.mark.asyncio
+async def test_get_first_pipeline_reraises_first_candidate_load_error(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from haute.routes import pipeline as pipeline_route
+
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    monkeypatch.chdir(tmp_path)
+
+    def load(path, *, project_root):
+        assert project_root == tmp_path
+        raise RuntimeError(f"{path.name} failed")
+
+    monkeypatch.setattr(pipeline_route, "discover_pipelines", lambda: [first, second])
+    monkeypatch.setattr(pipeline_route, "load_pipeline_editor_document", load)
+
+    with pytest.raises(RuntimeError, match="first.py failed"):
+        await pipeline_route.get_first_pipeline()
+
+
+@pytest.mark.asyncio
 async def test_get_first_pipeline_keeps_first_authored_empty_document(
     monkeypatch,
     tmp_path,

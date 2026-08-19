@@ -9,9 +9,17 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from haute._types import NodeType
 from haute.errors import ConfigError, ParseError
 from haute.parser import parse_pipeline_file, parse_pipeline_source
-from haute.schemas import PipelineEditorDocument
+from haute.schemas import (
+    PipelineEditorDocument,
+    RecoveryPipelineNode,
+    RecoveryPreviewRequest,
+    RecoverySourceSpan,
+    RecoverySubmodelDefinition,
+    RecoveryUnresolvedConnection,
+)
 from tests.conftest import write_data_input_config
 
 
@@ -275,6 +283,204 @@ def test_every_canonical_graph_request_model_rejects_recovery_documents(
     graph_errors = [error for error in exc_info.value.errors() if tuple(error["loc"]) == ("graph",)]
     assert len(graph_errors) == 1
     assert "not canonical" in graph_errors[0]["msg"]
+
+
+@pytest.mark.parametrize(
+    ("model", "payload", "message"),
+    [
+        (
+            RecoverySourceSpan,
+            {"start_line": 2, "start_column": 0, "end_line": 1, "end_column": 0},
+            "end at or after",
+        ),
+        (
+            RecoveryPipelineNode,
+            {
+                "recovery_id": "node",
+                "authored_id": "node",
+                "label": "node",
+                "decorator_name": "polars",
+                "node_type": "polars",
+                "availability": "ready",
+                "display_position": {"x": 0, "y": 0, "z": 0},
+            },
+            "exactly x and y",
+        ),
+        (
+            RecoveryPipelineNode,
+            {
+                "recovery_id": "node",
+                "authored_id": "node",
+                "label": "node",
+                "decorator_name": "polars",
+                "node_type": "polars",
+                "availability": "ready",
+                "display_position": {"x": float("nan"), "y": float("inf")},
+            },
+            "must be finite",
+        ),
+    ],
+)
+def test_recovery_schema_rejects_invalid_source_ranges_and_positions(
+    model: type[RecoverySourceSpan] | type[RecoveryPipelineNode],
+    payload: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        model.model_validate(payload)
+
+
+def test_recovery_preview_planner_rejects_unavailable_sources_and_nodes() -> None:
+    from haute._pipeline_recovery import empty_pipeline_editor_document
+    from haute.routes.pipeline import _plan_recovery_preview, _RecoveryPreviewRequestError
+    from haute.schemas import RecoveryPipelineEdge
+
+    def node(node_id: str, availability: str = "ready") -> RecoveryPipelineNode:
+        return RecoveryPipelineNode(
+            recovery_id=node_id,
+            authored_id=node_id,
+            label=node_id,
+            decorator_name="polars",
+            node_type="polars",
+            availability=availability,  # type: ignore[arg-type]
+            display_position={"x": 0, "y": 0},
+            config={},
+        )
+
+    def document(**updates: object) -> PipelineEditorDocument:
+        return empty_pipeline_editor_document().model_copy(
+            update={
+                "source_file": "main.py",
+                "source_revision": "revision",
+                "has_authored_content": True,
+                **updates,
+            }
+        )
+
+    def request(target: str, source: str = "live") -> RecoveryPreviewRequest:
+        return RecoveryPreviewRequest(
+            source_file="main.py",
+            source_revision="revision",
+            target_recovery_id=target,
+            source=source,
+        )
+
+    cases = [
+        (document(), request("missing", "archived"), "source_not_available", 400),
+        (document(), request("missing"), "recovery_target_not_found", 404),
+        (
+            document(nodes=[node("target", "unavailable")]),
+            request("target"),
+            "node_unavailable",
+            409,
+        ),
+        (
+            document(
+                nodes=[node("ancestor", "unavailable"), node("target")],
+                edges=[
+                    RecoveryPipelineEdge(
+                        recovery_id="ancestor->target",
+                        source_recovery_id="ancestor",
+                        target_recovery_id="target",
+                        source_authored_id="ancestor",
+                        target_authored_id="target",
+                        availability="unavailable",
+                    )
+                ],
+            ),
+            request("target"),
+            "node_blocked_by_load_error",
+            409,
+        ),
+        (
+            document(
+                nodes=[node("target")],
+                edges=[
+                    RecoveryPipelineEdge(
+                        recovery_id="missing->target",
+                        source_recovery_id="missing",
+                        target_recovery_id="target",
+                        source_authored_id="missing",
+                        target_authored_id="target",
+                        availability="unavailable",
+                    )
+                ],
+            ),
+            request("target"),
+            "node_blocked_by_load_error",
+            409,
+        ),
+        (
+            document(
+                nodes=[node("target")],
+                unresolved_connections=[
+                    RecoveryUnresolvedConnection(
+                        recovery_id="missing->target",
+                        source_authored_id="missing",
+                        target_authored_id="target",
+                        target_recovery_id="target",
+                        diagnostic_ids=["connection_endpoint_missing"],
+                    )
+                ],
+            ),
+            request("target"),
+            "node_blocked_by_unresolved_connection",
+            409,
+        ),
+    ]
+
+    for preview_document, preview_request, code, status_code in cases:
+        with pytest.raises(_RecoveryPreviewRequestError) as exc_info:
+            _plan_recovery_preview(preview_document, preview_request)
+        assert exc_info.value.status_code == status_code
+        assert exc_info.value.detail["code"] == code
+
+
+def test_canonical_snapshot_rejects_unavailable_nodes_and_submodels() -> None:
+    from haute.routes.pipeline import _canonical_snapshot_graph, _RecoveryPreviewRequestError
+    from haute.schemas import RecoveryGraphSnapshot
+
+    def node(
+        node_id: str,
+        availability: str = "ready",
+        node_type: str = "polars",
+        config: dict[str, object] | None = None,
+    ) -> RecoveryPipelineNode:
+        return RecoveryPipelineNode(
+            recovery_id=node_id,
+            authored_id=node_id,
+            label=node_id,
+            decorator_name="polars",
+            node_type=node_type,
+            availability=availability,  # type: ignore[arg-type]
+            display_position={"x": 0, "y": 0},
+            config={} if config is None else config,
+        )
+
+    unavailable_definition = RecoverySubmodelDefinition(
+        definition_id="pricing",
+        file="models/pricing.py",
+        availability="unavailable",
+        graph=RecoveryGraphSnapshot(),
+    )
+    cases = [
+        ([node("broken", "unavailable")], None, "node_unavailable"),
+        (
+            [node("pricing", node_type=NodeType.SUBMODEL, config={"definitionId": "pricing"})],
+            None,
+            "submodel_unavailable",
+        ),
+        (
+            [node("pricing", node_type=NodeType.SUBMODEL, config={"definitionId": "pricing"})],
+            {"pricing": unavailable_definition},
+            "submodel_unavailable",
+        ),
+    ]
+
+    for nodes, submodels, code in cases:
+        with pytest.raises(_RecoveryPreviewRequestError) as exc_info:
+            _canonical_snapshot_graph(nodes=nodes, edges=[], submodels=submodels)
+        assert exc_info.value.detail["code"] == code
 
 
 def test_recovery_revision_tracks_malformed_config_and_missing_sidecar(
