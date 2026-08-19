@@ -155,7 +155,7 @@ export default function PipelineRepairDialog({
       </div>
       <div className="flex justify-end gap-2 border-t px-5 py-3" style={{ borderColor: "var(--border)" }}>
         <button type="button" onClick={requestClose} disabled={applying} className="rounded px-3 py-1.5" style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}>Cancel</button>
-        <button type="button" onClick={() => void apply()} disabled={!plan || planning || applying} className="rounded px-3 py-1.5" style={{ color: "var(--text-inverse)", background: "var(--danger)" }}>{applying ? "Removing…" : "Remove node"}</button>
+        <button type="button" onClick={() => void apply()} disabled={!plan || planning || applying} className="rounded px-3 py-1.5" style={{ color: "var(--text-on-accent)", background: "var(--danger)" }}>{applying ? "Removing…" : "Remove node"}</button>
       </div>
     </ModalShell>
   )

@@ -338,8 +338,8 @@ concurrent plain saves, but does not coordinate another worker process):
 10. Stage deletion of any derived submodel source and
     its sibling `.haute.json` sidecar (skipping any that casefold-collide with a path this
     same save just wrote).
-11. Reparse the fully staged document and compute the new
-    `source_revision`. On any propagated exception in steps 5–11, roll back every staged write (restore
+11. Reparse the fully staged document, require its editor recovery state to be
+    `ready`, and return that document's raw-artifact `source_revision`. On any propagated exception in steps 5–11, roll back every staged write (restore
    snapshotted bytes, delete newly-created files) and re-raise unchanged.
 12. Only after every write commits: delete stale config files (the diff from step 4, minus
     what this save just wrote or protects), invalidate the pipeline index, and — if the

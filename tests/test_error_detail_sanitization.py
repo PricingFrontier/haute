@@ -1127,7 +1127,7 @@ class TestSensitiveInfoLeakage:
 
     # -- Cases that need special setup (not easily parametrizable) --
 
-    def test_list_pipelines_parse_error_no_absolute_path(
+    def test_list_pipelines_load_error_no_absolute_path(
         self,
         client: TestClient,
         tmp_path: Path,
@@ -1143,10 +1143,10 @@ class TestSensitiveInfoLeakage:
         from haute.server import app
 
         c = TestClient(app)
-        # Patch the route-scoped binding -- ``list_pipelines`` imports
-        # ``parse_pipeline_file`` at module top after #101.
+        # A single loader system failure is represented by a bounded summary;
+        # it must not fail or leak paths into the whole pipeline picker.
         with patch(
-            "haute.routes.pipeline.parse_pipeline_file",
+            "haute.routes.pipeline.load_pipeline_editor_document",
             side_effect=RuntimeError(
                 f"SyntaxError in {tmp_path / 'bad_pipeline.py'}: invalid token"
             ),
@@ -1154,16 +1154,16 @@ class TestSensitiveInfoLeakage:
             resp = c.get("/api/pipelines")
         assert resp.status_code == 200
         items = resp.json()
-        assert any(item.get("error") for item in items)
-        for item in items:
-            if item.get("error"):
-                assert str(tmp_path) not in item["error"], (
-                    f"Absolute path leaked in pipeline list error: {item['error']}"
-                )
-                assert "Check the server logs" in item["error"]
-                assert str(tmp_path) not in item["file"], (
-                    f"Absolute path leaked in pipeline list file field: {item['file']}"
-                )
+        assert items == [
+            {
+                "name": "bad_pipeline",
+                "description": "",
+                "file": "bad_pipeline.py",
+                "node_count": 0,
+                "load_status": "source_only",
+                "diagnostic_count": 1,
+            }
+        ]
 
     def test_trace_deep_exception_no_traceback_frames(
         self, client: TestClient, pipeline_graph

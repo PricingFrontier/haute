@@ -799,7 +799,6 @@ def apply_remove_unavailable_node_plan(
     plan instead of accepting any client-returned patch data.
     """
 
-    from haute.routes._helpers import invalidate_pipeline_index, mark_self_write
     from haute.routes._save_pipeline import (
         _rollback_artifacts,
         _stage_artifact_delete,
@@ -868,7 +867,6 @@ def apply_remove_unavailable_node_plan(
                 )
     except BaseException as exc:
         rollback_failures = _rollback_artifacts(touched)
-        invalidate_pipeline_index()
         if rollback_failures:
             raise PipelineRepairError(
                 "repair_rollback_failed",
@@ -878,8 +876,6 @@ def apply_remove_unavailable_node_plan(
             ) from exc
         raise
 
-    mark_self_write()
-    invalidate_pipeline_index()
     return PipelineRepairApplyResponse(
         plan_hash=plan.response.plan_hash,
         applied_artifacts=[edit.wire_path for edit in plan.edits],

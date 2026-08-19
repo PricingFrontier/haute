@@ -20,6 +20,11 @@ def _write(path: Path, source: str) -> Path:
     return path
 
 
+def _write_bytes(path: Path, payload: bytes) -> Path:
+    path.write_bytes(payload)
+    return path
+
+
 def _healthy_source(name: str = "healthy") -> str:
     return f'''\
         import haute
@@ -872,9 +877,9 @@ def test_recovery_preview_rejects_stale_revision_and_untrusted_sidecar(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("haute.routes.pipeline._get_project_root", lambda: tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
-    pipeline_file.write_text(
+    _write(
+        pipeline_file,
         pipeline_file.read_text(encoding="utf-8") + "\n# external edit\n",
-        encoding="utf-8",
     )
 
     stale = client.post(
@@ -1085,12 +1090,11 @@ def test_remove_unavailable_node_dry_run_is_no_write_and_enumerates_exact_edits(
     from haute._pipeline_recovery import load_pipeline_editor_document
 
     pipeline_file = _write(tmp_path / "main.py", _legacy_explore_source())
-    sidecar = pipeline_file.with_suffix(".haute.json")
-    sidecar.write_text(
+    _write(
+        pipeline_file.with_suffix(".haute.json"),
         '{"positions":{"quote_source":{"x":1,"y":2},'
         '"explore":{"x":30,"y":40},"model_input":{"x":50,"y":60}},'
         '"sources":["live"],"active_source":"live"}\n',
-        encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
@@ -1138,12 +1142,11 @@ def test_remove_unavailable_node_apply_commits_confirmed_plan_and_returns_docume
     from haute._pipeline_recovery import load_pipeline_editor_document
 
     pipeline_file = _write(tmp_path / "main.py", _legacy_explore_source())
-    sidecar = pipeline_file.with_suffix(".haute.json")
-    sidecar.write_text(
+    sidecar = _write(
+        pipeline_file.with_suffix(".haute.json"),
         '{"positions":{"quote_source":{"x":1,"y":2},'
         '"explore":{"x":30,"y":40},"model_input":{"x":50,"y":60}},'
         '"sources":["live"],"active_source":"live"}\n',
-        encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
@@ -1222,10 +1225,9 @@ def test_remove_unavailable_node_repairs_a_child_submodel_source(
             return None
         """,
     )
-    child_sidecar = child_file.with_suffix(".haute.json")
-    child_sidecar.write_text(
+    child_sidecar = _write(
+        child_file.with_suffix(".haute.json"),
         '{"positions":{"obsolete":{"x":1,"y":2},"healthy":{"x":3,"y":4}}}\n',
-        encoding="utf-8",
     )
     pipeline_file = _write(
         tmp_path / "main.py",
@@ -1357,7 +1359,7 @@ def test_remove_unavailable_node_apply_rejects_revision_and_plan_drift(
     assert wrong_plan.json()["detail"]["code"] == "repair_plan_conflict"
     assert pipeline_file.read_bytes() == original
 
-    pipeline_file.write_bytes(original + b"\n# concurrent external edit\n")
+    _write_bytes(pipeline_file, original + b"\n# concurrent external edit\n")
     externally_edited = pipeline_file.read_bytes()
     stale_revision = client.post(
         "/api/pipeline/repair/remove/apply",
@@ -1485,10 +1487,9 @@ def test_remove_unavailable_node_rejects_config_deletion_of_a_document_artifact(
             return None
         """,
     )
-    sidecar = pipeline_file.with_suffix(".haute.json")
-    sidecar.write_text(
+    sidecar = _write(
+        pipeline_file.with_suffix(".haute.json"),
         '{"positions":{"obsolete":{"x":1,"y":2}}}\n',
-        encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
@@ -1704,10 +1705,9 @@ def test_remove_unavailable_node_rolls_back_every_staged_artifact_on_write_failu
     from haute.routes import _save_pipeline
 
     pipeline_file = _write(tmp_path / "main.py", _legacy_explore_source())
-    sidecar = pipeline_file.with_suffix(".haute.json")
-    sidecar.write_text(
+    sidecar = _write(
+        pipeline_file.with_suffix(".haute.json"),
         '{"positions":{"explore":{"x":30,"y":40}}}\n',
-        encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)

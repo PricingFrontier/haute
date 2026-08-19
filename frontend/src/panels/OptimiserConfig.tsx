@@ -516,6 +516,7 @@ export default function OptimiserConfig({
       controller.abort()
       if (jobId) {
         void cancelOptimiserFrontierAutoRange(jobId).catch((err) => {
+          // Best-effort stale-document cancellation has no user action, so console-only diagnostics are intentional.
           console.warn("cancel_optimiser_frontier_auto_range_failed", { jobId, err })
         })
       }

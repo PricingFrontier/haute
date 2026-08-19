@@ -63,11 +63,14 @@ def _load_parent_document(source_file: str) -> tuple[Path, Path, PipelineGraph]:
                 "its diagnostics before changing submodels."
             ),
         )
-    # The recovery revision deliberately hashes raw malformed artifacts for
-    # recovery-preview/repair admission.  Submodel operations retain their
-    # existing canonical graph revision contract; this guard only adds the
-    # independent server-side disk-readiness fence.
+    if editor_document.source_revision is None:
+        raise RuntimeError("Ready parent pipeline did not produce a source revision.")
+
+    # Editor clients retain the raw-artifact document revision returned by
+    # GET /api/pipeline. Keep submodel compare-and-swap in that same revision
+    # domain while still using the strict graph for the transform itself.
     graph = parse_pipeline_to_graph(parent_path, project_root=project_root)
+    graph = graph.model_copy(update={"source_revision": editor_document.source_revision})
     return project_root, parent_path, graph
 
 

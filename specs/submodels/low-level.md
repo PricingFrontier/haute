@@ -6,7 +6,7 @@
 |---|---|
 | `src/haute/_submodel_instances.py` | Canonical reusable-instance resolver and validator, qualified-id expansion, schema-led reference rewriting, public-port binding, create-instance alias allocation, and targeted occurrence flattening. |
 | `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base. |
-| `src/haute/_pipeline_revision.py` | Build deterministic live-document revisions from canonical parsed graph state plus parent/child source and sidecar content hashes. |
+| `src/haute/_pipeline_revision.py` | Build deterministic canonical-graph revisions and the separate raw-artifact editor-document revision used by recovery-aware compare-and-swap. |
 | `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. |
 | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transform: extract selected nodes out of a `PipelineGraph` into a new submodel, producing the updated parent graph and submodel metadata. |
 | `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): transform-only `POST /create` and `POST /dissolve`, plus read-only persisted `GET /{definition_id}`. It validates the current parent revision and maps failures without writing files. |
@@ -257,8 +257,9 @@ document and returns the new revision.
 Acquires `save_lock`, runs the body in a threadpool:
 1. FastAPI rejects a missing, empty, or whitespace-only `base_revision` with its standard `422`
    request-validation envelope. Require a non-blank `source_file` in the
-   route, resolve the parent safely, parse its current persisted document
-   state, and compare its `source_revision`. A mismatch raises
+   route, resolve the parent safely, load its current ready editor document,
+   and compare the raw-artifact `source_revision` retained by the editor. The
+   route then parses a canonical graph only for the transform. A mismatch raises
    `HTTPException(409, <reload message>)` before any graph transform.
 2. Compute `sm_filename = f"{_sanitize_func_name(body.name.strip())}.py"`; if
    `is_windows_reserved_filename(sm_filename)`, raise `HTTPException(400,
@@ -297,8 +298,9 @@ Acquires `save_lock` and runs the body in a threadpool:
 
 1. Request validation requires a current revision, source file, and one
    non-empty unpadded `instance_id`.
-2. Parse the current parent only to compare its live revision with
-   `base_revision`. The submitted graph is the editor state being transformed,
+2. Load the current ready editor document only to compare its raw-artifact
+   revision with `base_revision`, then parse the current parent strictly for
+   canonical validation. The submitted graph is the editor state being transformed,
    including unsaved newly created definitions.
 3. Resolve the selected definition from the submitted graph, copy submitted
    support code, and call

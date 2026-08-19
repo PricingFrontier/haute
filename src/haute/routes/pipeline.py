@@ -30,6 +30,7 @@ from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
+from haute._pipeline_recovery import empty_pipeline_editor_document
 from haute._pipeline_repair import (
     PipelineRepairError,
     apply_remove_unavailable_node_plan,
@@ -394,7 +395,17 @@ async def list_pipelines() -> list[PipelineSummary]:
             )
         except Exception as e:
             logger.warning("pipeline_list_parse_failed", file=f.name, error=str(e))
-            raise
+            # One unreadable/system-failed pipeline must not make every other
+            # project document disappear from the picker. The named load still
+            # surfaces the underlying system failure if the user opens it.
+            return PipelineSummary(
+                name=f.stem,
+                description="",
+                file=_wire_file(f),
+                node_count=0,
+                load_status="source_only",
+                diagnostic_count=1,
+            )
 
     return list(await asyncio.gather(*[_parse_one(f) for f in files]))
 
@@ -404,20 +415,33 @@ async def get_pipeline(name: str) -> PipelineEditorDocument:
     """Return the editor document for a specific readable pipeline."""
 
     def _find() -> PipelineEditorDocument | None:
+        first_error: Exception | None = None
+        attempted: set[Path] = set()
         # O(1) lookup via cached index
         f = lookup_pipeline_by_name(name)
         if f is not None:
-            return load_pipeline_editor_document(f, project_root=Path.cwd())
+            attempted.add(f.resolve())
+            try:
+                return load_pipeline_editor_document(f, project_root=Path.cwd())
+            except Exception as exc:
+                first_error = exc
+                logger.warning("pipeline_editor_load_failed", file=f.name, error=str(exc))
 
         # Fallback: linear scan (index may be stale)
         for f in discover_pipelines():
+            if f.resolve() in attempted:
+                continue
             try:
                 document = load_pipeline_editor_document(f, project_root=Path.cwd())
                 if document.pipeline_name == name or f.stem == name:
                     return document
             except Exception as e:
                 logger.warning("pipeline_editor_load_failed", file=f.name, error=str(e))
+                if first_error is None:
+                    first_error = e
                 continue
+        if first_error is not None:
+            raise first_error
         return None
 
     document = await asyncio.to_thread(_find)
@@ -435,15 +459,36 @@ async def get_first_pipeline() -> PipelineEditorDocument:
     cwd = Path.cwd()
 
     def _find_first() -> PipelineEditorDocument:
-        for f in discover_pipelines():
-            document = load_pipeline_editor_document(f, project_root=cwd)
+        files = discover_pipelines()
+        first_error: Exception | None = None
+        for f in files:
+            try:
+                document = load_pipeline_editor_document(f, project_root=cwd)
+            except Exception as exc:
+                logger.warning("pipeline_editor_load_failed", file=f.name, error=str(exc))
+                if first_error is None:
+                    first_error = exc
+                continue
             if document.has_authored_content:
                 return document
-        from haute._pipeline_recovery import empty_pipeline_editor_document
-
+        if first_error is not None:
+            raise first_error
         return empty_pipeline_editor_document()
 
     return await asyncio.to_thread(_find_first)
+
+
+def _pipeline_recovery_error_response(
+    status_code: int,
+    detail: dict[str, Any],
+) -> JSONResponse:
+    """Return a deliberate structured recovery error outside HTTPException.
+
+    The application's ordinary HTTPException contract keeps ``detail`` a
+    short string. Recovery operations additionally need a stable machine code
+    and bounded context, so their named route boundary returns JSON directly.
+    """
+    return JSONResponse(status_code=status_code, content={"detail": detail})
 
 
 @router.post(
@@ -452,7 +497,7 @@ async def get_first_pipeline() -> PipelineEditorDocument:
 )
 async def dry_run_remove_unavailable_node(
     body: PipelineRepairDryRunRequest,
-) -> PipelineRepairPlanResponse:
+) -> PipelineRepairPlanResponse | JSONResponse:
     """Plan one exact remove-only recovery repair without writing."""
     try:
         async with save_lock:
@@ -463,16 +508,16 @@ async def dry_run_remove_unavailable_node(
             )
         return plan.response
     except PipelineRepairError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail()) from None
+        return _pipeline_recovery_error_response(exc.status_code, exc.detail())
     except OSError as exc:
         logger.warning("pipeline_repair_dry_run_io_failed", error=str(exc))
-        raise HTTPException(
-            status_code=409,
-            detail={
+        return _pipeline_recovery_error_response(
+            409,
+            {
                 "code": "repair_artifact_unavailable",
                 "message": "A repair artifact could not be read; reload and try again.",
             },
-        ) from None
+        )
 
 
 @router.post(
@@ -481,7 +526,7 @@ async def dry_run_remove_unavailable_node(
 )
 async def apply_remove_unavailable_node(
     body: PipelineRepairApplyRequest,
-) -> PipelineRepairApplyResponse:
+) -> PipelineRepairApplyResponse | JSONResponse:
     """Apply one freshly recomputed and explicitly confirmed repair plan."""
     try:
         async with save_lock:
@@ -491,18 +536,18 @@ async def apply_remove_unavailable_node(
                 request=body,
             )
     except PipelineRepairError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail()) from None
+        return _pipeline_recovery_error_response(exc.status_code, exc.detail())
     except OSError as exc:
         logger.warning("pipeline_repair_apply_io_failed", error=str(exc))
-        raise HTTPException(
-            status_code=409,
-            detail={
+        return _pipeline_recovery_error_response(
+            409,
+            {
                 "code": "repair_artifact_unavailable",
                 "message": (
                     "A repair artifact could not be written; original artifacts were restored."
                 ),
             },
-        ) from None
+        )
 
 
 @router.post("/pipeline/save", response_model=SavePipelineResponse)
@@ -956,16 +1001,25 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
     return await _preview_canonical_graph(body)
 
 
+class _RecoveryPreviewRequestError(ValueError):
+    """Expected recovery-preview rejection with stable structured detail."""
+
+    def __init__(self, status_code: int, detail: dict[str, Any]) -> None:
+        super().__init__(detail["message"])
+        self.status_code = status_code
+        self.detail = detail
+
+
 def _recovery_preview_error(
     code: str,
     message: str,
     *,
     status_code: int = 409,
     **context: Any,
-) -> HTTPException:
-    return HTTPException(
-        status_code=status_code,
-        detail={"code": code, "message": message, **context},
+) -> _RecoveryPreviewRequestError:
+    return _RecoveryPreviewRequestError(
+        status_code,
+        {"code": code, "message": message, **context},
     )
 
 
@@ -1183,32 +1237,37 @@ def _plan_recovery_preview(
 
 
 @router.post("/pipeline/recovery-preview", response_model=PreviewNodeResponse)
-async def recovery_preview_node(body: RecoveryPreviewRequest) -> PreviewNodeResponse:
+async def recovery_preview_node(
+    body: RecoveryPreviewRequest,
+) -> PreviewNodeResponse | JSONResponse:
     """Preview one server-validated ready closure from a recovery document."""
-    _ensure_printable_lookup_id(body.target_recovery_id, "target_recovery_id")
-    project_root = _get_project_root().resolve()
-    source_path = validate_safe_path(project_root, body.source_file)
-    if not source_path.is_file():
-        raise _recovery_preview_error(
-            "pipeline_source_not_found",
-            "The pipeline source file no longer exists.",
-            status_code=404,
-            source_file=body.source_file,
+    try:
+        _ensure_printable_lookup_id(body.target_recovery_id, "target_recovery_id")
+        project_root = _get_project_root().resolve()
+        source_path = validate_safe_path(project_root, body.source_file)
+        if not source_path.is_file():
+            raise _recovery_preview_error(
+                "pipeline_source_not_found",
+                "The pipeline source file no longer exists.",
+                status_code=404,
+                source_file=body.source_file,
+            )
+        document = await run_in_threadpool(
+            load_pipeline_editor_document,
+            source_path,
+            project_root=project_root,
         )
-    document = await run_in_threadpool(
-        load_pipeline_editor_document,
-        source_path,
-        project_root=project_root,
-    )
-    if document.source_revision != body.source_revision:
-        raise _recovery_preview_error(
-            "stale_document_revision",
-            "The pipeline changed after this recovery document was loaded.",
-            expected_revision=document.source_revision,
-            provided_revision=body.source_revision,
-        )
-    request = _plan_recovery_preview(document, body)
-    return await _preview_canonical_graph(request)
+        if document.source_revision != body.source_revision:
+            raise _recovery_preview_error(
+                "stale_document_revision",
+                "The pipeline changed after this recovery document was loaded.",
+                expected_revision=document.source_revision,
+                provided_revision=body.source_revision,
+            )
+        request = _plan_recovery_preview(document, body)
+        return await _preview_canonical_graph(request)
+    except _RecoveryPreviewRequestError as exc:
+        return _pipeline_recovery_error_response(exc.status_code, exc.detail)
 
 
 @router.post(

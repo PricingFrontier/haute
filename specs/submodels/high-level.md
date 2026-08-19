@@ -269,8 +269,8 @@ must resolve the original pipeline-owned sidecars.
 - **Writes are serialised and freshness-checked.** Both create and dissolve acquire the same shared
   lock used by the manual pipeline save endpoint while reading the persisted
   revision and computing a transform. Before transforming anything,
-  each route compares `base_revision` with a deterministic revision of the
-  current parent document and its referenced child state. A mismatch returns
+  each route compares `base_revision` with the editor document's deterministic
+  raw-artifact revision of the current parent and referenced child state. A mismatch returns
   `409`. A successful transform leaves that revision unchanged. The lock is process-local
   and is not a multi-worker filesystem lock.
 

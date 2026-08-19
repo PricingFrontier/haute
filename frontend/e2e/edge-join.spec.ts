@@ -24,7 +24,22 @@ type GraphEdge = {
   sourceHandle?: string | null
   targetHandle?: string | null
 }
+type RecoveryNode = {
+  recovery_id: string
+  label: string
+  decorator_name: string
+  node_type: string | null
+  config: Record<string, unknown> | null
+}
+type RecoveryEdge = {
+  recovery_id: string
+  source_recovery_id: string
+  target_recovery_id: string
+  source_handle: string | null
+  target_handle: string | null
+}
 type GraphEnvelope = {
+  document_kind?: string
   nodes?: GraphNode[]
   edges?: GraphEdge[]
   graph?: { nodes?: GraphNode[]; edges?: GraphEdge[] }
@@ -33,6 +48,27 @@ type GraphEnvelope = {
 type NormalizedGraph = { nodes: GraphNode[]; edges: GraphEdge[] }
 
 function graphEnvelope(payload: GraphEnvelope): NormalizedGraph {
+  if (payload.document_kind === "haute.pipeline_editor_document") {
+    const recoveryNodes = payload.nodes as unknown as RecoveryNode[]
+    const recoveryEdges = payload.edges as unknown as RecoveryEdge[]
+    return {
+      nodes: recoveryNodes.map((node) => ({
+        id: node.recovery_id,
+        data: {
+          label: node.label,
+          nodeType: node.node_type ?? node.decorator_name,
+          ...(node.config === null ? {} : { config: node.config }),
+        },
+      })),
+      edges: recoveryEdges.map((edge) => ({
+        id: edge.recovery_id,
+        source: edge.source_recovery_id,
+        target: edge.target_recovery_id,
+        sourceHandle: edge.source_handle,
+        targetHandle: edge.target_handle,
+      })),
+    }
+  }
   return {
     nodes: payload.graph?.nodes ?? payload.nodes ?? [],
     edges: payload.graph?.edges ?? payload.edges ?? [],

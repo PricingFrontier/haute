@@ -247,13 +247,17 @@ class SavePipelineService:
 
             from haute.routes import _helpers
 
-            committed_graph = _helpers.parse_pipeline_to_graph(
+            _helpers.parse_pipeline_to_graph(
                 py_path,
                 project_root=self._root,
             )
-            source_revision = committed_graph.source_revision
-            if not source_revision:
-                raise RuntimeError("Committed pipeline did not produce a source revision.")
+            committed_document = _helpers.load_pipeline_editor_document(
+                py_path,
+                project_root=self._root,
+            )
+            source_revision = committed_document.source_revision
+            if committed_document.load_status != "ready" or not source_revision:
+                raise RuntimeError("Committed pipeline did not produce a ready editor revision.")
         except BaseException:
             self._rollback(touched)
             raise
