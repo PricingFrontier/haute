@@ -899,14 +899,23 @@ class TestGetSchema:
 @pytest.fixture()
 def three_node_graph(pipeline_dir: Path) -> dict:
     """Parse the test pipeline and return its graph as a dict payload."""
-    from haute._pipeline_revision import pipeline_document_revision
     from haute.parser import parse_pipeline_file
 
     parent = pipeline_dir / "test_pipeline.py"
     graph = parse_pipeline_file(parent)
-    revision = pipeline_document_revision(graph, pipeline_path=parent, project_root=pipeline_dir)
+    revision = _editor_document_revision(parent, project_root=pipeline_dir)
     graph = graph.model_copy(update={"source_revision": revision})
     return graph.model_dump()
+
+
+def _editor_document_revision(parent: Path, *, project_root: Path) -> str:
+    """Return the recovery-aware revision an editor client receives from GET."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    document = load_pipeline_editor_document(parent, project_root=project_root)
+    assert document.load_status == "ready"
+    assert isinstance(document.source_revision, str) and document.source_revision
+    return document.source_revision
 
 
 def _submodel_instance_node(graph: dict, definition_id: str) -> dict:
@@ -4375,14 +4384,11 @@ class TestSubmodelOutputPorts:
     ):
         """When a selected node has edges going OUT to unselected nodes,
         those should become output ports on the submodel."""
-        from haute._pipeline_revision import pipeline_document_revision
         from haute.parser import parse_pipeline_file
 
         parent = pipeline_dir / "test_pipeline.py"
         graph = parse_pipeline_file(parent)
-        revision = pipeline_document_revision(
-            graph, pipeline_path=parent, project_root=pipeline_dir
-        )
+        revision = _editor_document_revision(parent, project_root=pipeline_dir)
         graph_dict = graph.model_copy(update={"source_revision": revision}).model_dump()
 
         # Select only "source" -- it has an edge to "transform" which is outside
@@ -4449,14 +4455,11 @@ pipeline.connect("source", "middle")
 pipeline.connect("middle", "final")
 """
         (pipeline_dir / "rewire_test.py").write_text(code)
-        from haute._pipeline_revision import pipeline_document_revision
         from haute.parser import parse_pipeline_file
 
         parent = pipeline_dir / "rewire_test.py"
         graph = parse_pipeline_file(parent)
-        revision = pipeline_document_revision(
-            graph, pipeline_path=parent, project_root=pipeline_dir
-        )
+        revision = _editor_document_revision(parent, project_root=pipeline_dir)
         graph_dict = graph.model_copy(update={"source_revision": revision}).model_dump()
 
         # Select only "middle" and "source" (2 nodes) -- "final" stays outside
