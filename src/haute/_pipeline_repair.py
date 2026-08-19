@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from haute._ast_helpers import (
+    _chained_receiver_calls,
     _connect_call_edge,
     _extract_function_bodies,
     _is_pipeline_authored_decorator,
@@ -310,18 +311,8 @@ def _implicit_consumers(
 
 
 def _connection_links(statement: ast.stmt, *, receiver: str) -> list[tuple[str, str]]:
-    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
-        return []
-    links: list[ast.Call] = []
-    current: ast.expr = statement.value
-    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
-        if current.func.attr == "connect":
-            links.append(current)
-        current = current.func.value
-    if not links or not (isinstance(current, ast.Name) and current.id == receiver):
-        return []
     edges: list[tuple[str, str]] = []
-    for link in reversed(links):
+    for link in _chained_receiver_calls(statement, receiver=receiver, method="connect"):
         try:
             edge = _connect_call_edge(link, receiver)
         except Exception as exc:

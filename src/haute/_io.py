@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import functools
+import io
 import re as _re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -436,16 +437,30 @@ def read_data_source(
     )
 
 
+def read_user_bytes_and_text(path: str | Path) -> tuple[bytes, str]:
+    """Read a user text file once, returning the raw bytes and decoded text.
+
+    Consumers that both present decoded content and authenticate the exact
+    bytes (the recovery revision) must derive both from one read, or a
+    concurrent external edit could pair one read's content with the other
+    read's identity.
+    """
+    raw = Path(path).read_bytes()
+    # ``utf-8-sig`` is identical to UTF-8 except that it consumes an optional
+    # leading BOM. Feeding U+FEFF to ``ast.parse`` would turn an otherwise
+    # valid user pipeline into a false syntax error. ``TextIOWrapper`` applies
+    # the same universal-newline translation as ``Path.read_text``.
+    with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8-sig", errors="replace") as reader:
+        return raw, reader.read()
+
+
 def read_user_text(path: str | Path) -> str:
     """Read a user-supplied text file, tolerating non-UTF-8 bytes.
 
     User files may contain Windows-1252 or other non-UTF-8 bytes. Invalid
     bytes are replaced instead of raising ``UnicodeDecodeError``.
     """
-    # ``utf-8-sig`` is identical to UTF-8 except that it consumes an optional
-    # leading BOM. Feeding U+FEFF to ``ast.parse`` would turn an otherwise
-    # valid user pipeline into a false syntax error.
-    return Path(path).read_text(encoding="utf-8-sig", errors="replace")
+    return read_user_bytes_and_text(path)[1]
 
 
 _OBJECT_CACHE_MAX_SIZE = 32

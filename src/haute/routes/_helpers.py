@@ -93,29 +93,42 @@ class SidecarReadResult:
     error_type: str | None = None
 
 
-def read_sidecar_state(py_path: Path) -> SidecarReadResult:
-    """Read a sidecar without collapsing absent and invalid content together."""
-    sidecar = py_path.with_suffix(".haute.json")
+def _read_sidecar_json(sidecar: Path) -> tuple[SidecarReadState, dict[str, Any] | None, str | None]:
+    """Read and JSON-decode one sidecar object without model validation.
+
+    Returns ``(state, payload, error_type)``; ``payload`` is set only for
+    ``valid``. Shared by the permissive :func:`load_sidecar` and the typed
+    :func:`read_sidecar_state` so IO and JSON tolerance live in one place.
+    """
     if not sidecar.exists():
-        return SidecarReadResult(path=sidecar, state="absent")
+        return "absent", None, None
     try:
         raw = read_user_text(sidecar)
     except OSError as exc:
         logger.warning("unreadable_sidecar", file=sidecar.name, error=str(exc))
-        return SidecarReadResult(
-            path=sidecar,
-            state="unreadable",
-            error_type=type(exc).__name__,
-        )
+        return "unreadable", None, type(exc).__name__
     try:
         payload = _json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("Sidecar JSON must contain an object.")
+    except (_json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning("corrupt_sidecar", file=sidecar.name, error=str(exc))
+        return "corrupt", None, type(exc).__name__
+    return "valid", payload, None
+
+
+def read_sidecar_state(py_path: Path) -> SidecarReadResult:
+    """Read a sidecar without collapsing absent and invalid content together."""
+    sidecar = py_path.with_suffix(".haute.json")
+    state, payload, error_type = _read_sidecar_json(sidecar)
+    if state != "valid" or payload is None:
+        return SidecarReadResult(path=sidecar, state=state, error_type=error_type)
+    try:
         data = SidecarModel.model_validate(payload)
         raw_positions = payload.get("positions", {})
         if raw_positions != _normalise_sidecar_positions(raw_positions):
             raise ValueError("Sidecar positions must contain finite x/y coordinates.")
-    except (_json.JSONDecodeError, TypeError, ValueError) as exc:
+    except (TypeError, ValueError) as exc:
         logger.warning("corrupt_sidecar", file=sidecar.name, error=str(exc))
         return SidecarReadResult(
             path=sidecar,
@@ -795,13 +808,8 @@ def load_sidecar(py_path: Path) -> dict[str, Any]:
     Returns a dict with ``positions``, ``sources``, and ``active_source``
     keys (all optional — callers should use ``.get()``).
     """
-    sidecar = py_path.with_suffix(".haute.json")
-    if sidecar.exists():
-        try:
-            return dict(_json.loads(read_user_text(sidecar)))
-        except (_json.JSONDecodeError, OSError, TypeError, ValueError) as e:
-            logger.warning("corrupt_sidecar", file=sidecar.name, error=str(e))
-    return {}
+    _state, payload, _error_type = _read_sidecar_json(py_path.with_suffix(".haute.json"))
+    return dict(payload) if payload is not None else {}
 
 
 def load_sidecar_positions(py_path: Path) -> dict[str, Any]:

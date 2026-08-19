@@ -149,7 +149,7 @@ class TestMutationEndToEnd:
             published.append(dict(payload))
             publish_threads.append(threading.current_thread())
 
-        unsubscribe = default_bus.subscribe("graph.update", subscriber)
+        unsubscribe = default_bus.subscribe("pipeline.document.update", subscriber)
         try:
             store = SessionStore()
             session_id = store.create("main.py").id
@@ -170,16 +170,18 @@ class TestMutationEndToEnd:
         # The preserve block survives byte-identically.
         assert PRESERVED_BLOCK in saved
 
-        # The bus got exactly the watcher-shaped payload with the post-save
-        # fingerprint, matching the loop's graph_updated event.
+        # The bus got exactly the watcher-shaped document payload with the
+        # post-save fingerprint, matching the loop's graph_updated event.
         assert len(published) == 1
         # Regression: publish must run on the event-loop thread — the
         # /ws/sync broadcast subscriber schedules onto the running loop and
         # silently skips when publish happens on a worker thread.
         assert publish_threads == [loop_thread]
         graph_updated = next(event for event in events if event.type == "graph_updated")
-        assert published[0]["graph_fingerprint"] == graph_updated.fingerprint
-        node_ids = {node["id"] for node in published[0]["graph"]["nodes"]}
+        assert published[0]["document_fingerprint"] == graph_updated.fingerprint
+        document = published[0]["document"]
+        assert document["load_status"] == "ready"
+        node_ids = {node["authored_id"] for node in document["nodes"]}
         assert "Age_band" in node_ids
 
         # A subsequent read tool sees the assistant's own edit.

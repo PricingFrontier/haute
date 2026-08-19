@@ -25,7 +25,7 @@
 | `frontend/src/components/PipelineRepairDialog.tsx` | Minimal unavailable-node dry-run/diff/confirmation surface. It submits only document/target identities and a confirmed plan hash, retains config by default, and never authors replacement bytes. |
 | `frontend/src/nodes/UnavailablePipelineNode.tsx` | Dedicated inaccessible node card for unknown decorators and recovery elements that cannot use a canonical node renderer. |
 | `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins builds (lazy-sink first, one admitted-eager retry on `snapshot_build_unsupported`), polls jobs to a terminal state with abort support, and notifies at most once when a build starts. |
-| `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, fingerprint-based resync, applying accepted `graph_update` frames through one atomic clean-snapshot transition (including preserved-block/revision refs and dirty blocking), handling `parse_error`, and session expiry. |
+| `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, document-fingerprint resync, applying accepted `pipeline_document_update` frames through one atomic clean-snapshot transition with the authoritative status fence (including preserved-block/revision refs and graph-scoped dirty blocking), treating `parse_error` as a document system failure, and session expiry. |
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — definition/occurrence-aware view-stack state machine, local embedded-definition drill/project/layout, revision-preconditioned transform requests, and one atomic dirty history entry per create/dissolve. |
 | `frontend/src/utils/submodelViewGraph.ts` | Pure projection from one definition plus one occurrence's parent bindings into collision-safe composite Input/Output nodes and definition-port boundary edges. |
 | `frontend/src/utils/submodelDeletionPolicy.ts` | `withNativeDeletePolicy` applies the owner-aware React Flow deletion gate while preserving unchanged node identity. |
@@ -550,22 +550,22 @@ newer overlapping transform.
 19. **WebSocket sync (`useWebSocketSync`).** Connects to the credential-free
     `/ws/sync` URL; the browser supplies its HttpOnly same-origin cookie during
     the handshake. On open, sends a `resync` message
-    carrying the last-applied graph fingerprint for the current source file
+    carrying the last-applied document fingerprint for the current source file
     (server skips replying if it already matches). Every accepted
-    `graph_update` or `parse_error` synchronously advances a generation; an
-    older update may not mutate graph/banner/dialog state after awaiting
-    layout. Source matching tolerates absolute-vs-relative spelling, but if
+    `pipeline_document_update` or `parse_error` synchronously advances a
+    generation, and validated document nodes always carry finite display
+    positions, so updates apply synchronously with no layout pass. Source
+    matching tolerates absolute-vs-relative spelling, but if
     either side has an identity then both must resolve to the same file. If
     the store is `dirty`, the update is blocked and a sync banner shown
     instead of applied. Otherwise the incoming `submodels` value must be a
     plain map, except that the backend's explicit `null` empty-collection
     representation is normalised to `{}`; an omitted field still fails
     loudly. Edges are normalised and partitioned by live endpoint/handle
-    validity; all remain in graph state/save, one bounded warning describes
-    rejected layout edges, and only the valid partition is given to ELK.
-    `nodeIdsNeedingLayout` selects missing/non-finite positions and
-    `mergeLayoutedNodePositions` copies ELK positions only to those ids, so
-    every finite coordinate including `{x: 0, y: 0}` is retained. A
+    validity; all remain in graph state/save and one bounded warning
+    describes the rejected partition. Validated document nodes always carry
+    finite display positions, so external sync applies them directly with
+    no generated layout. A
     `graphRefreshingRef` guard prevents React Flow's spurious
     `onSelectionChange` during the swap from clearing the open panel.
     Nodes, edges, submodels, and preamble are installed together through one
@@ -863,9 +863,8 @@ newer overlapping transform.
   detail is preferred when present, else the exception's `message`, else a
   literal `"unknown error"`; every branch resolves `false` after toasting.
 - `useWebSocketSync` toasts on: WebSocket construction failure, unparsable
-  message JSON, an omitted or invalid non-object
-  `graph_update.graph.submodels` (explicit `null` means an empty map), and any
-  exception raised while applying a `graph_update` — the last case also
+  message JSON, a document frame that fails validation, and any
+  exception raised while applying a `pipeline_document_update` — the last case also
   attempts a best-effort rollback of nodes, edges, submodels/ref, and
   preamble to the pre-update snapshot (itself wrapped in a try/catch that
   swallows a rollback failure so it never masks the original error in the
@@ -1134,19 +1133,19 @@ again through the editor and save paths.
   - `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` and
     `frontend/src/__tests__/hooks/useWebSocketSync.gaps.test.ts` cover
     connection, reconnect/resync, source identity, message generations,
-    partial layout, bounded invalid-edge warnings, binary/bad messages,
-    delayed fit, and the required submodels apply/ref-before-save contract.
+    bounded invalid-edge warnings, malformed/unknown frames, delayed fit,
+    and the required submodels apply/ref-before-save contract.
   - `frontend/src/hooks/__tests__/useWebSocketSync.panelState.test.ts` (#39) — `renameDialog`/
     `submodelDialog` referencing a node removed by a WS sync are cleared;
     left alone when the referenced node(s) survive; null dialogs stay
     null.
-  - `frontend/src/hooks/__tests__/useWebSocketSync.failLoudly.test.ts` (#37) — a `getLayoutedElements`
-    throw restores `graphRefreshingRef` and toasts an error without
-    calling all raw setters with partial data; a setter failure rolls back
+  - `frontend/src/hooks/__tests__/useWebSocketSync.failLoudly.test.ts` (#37) — a snapshot-apply
+    failure restores `graphRefreshingRef` and toasts an error without
+    leaving partial state applied; a store failure rolls back
     nodes/edges/submodels/ref/preamble to the previous snapshot without
-    marking the failed graph saved; missing submodels fails loudly; a
-    subsequent `graph_update` after a failed one is still handled cleanly.
-  - `frontend/src/hooks/__tests__/useWebSocketSync.undoHistory.test.ts` (#8) — `graph_update` only ever
+    marking the failed graph saved; an invalid document frame fails loudly; a
+    subsequent `pipeline_document_update` after a failed one is still handled cleanly.
+  - `frontend/src/hooks/__tests__/useWebSocketSync.undoHistory.test.ts` (#8) — `pipeline_document_update` only ever
     installs one complete saved snapshot, never a history-aware editor action,
     so external sync never pollutes undo/redo or publishes an occurrence
     before its definition registry.
@@ -1325,7 +1324,7 @@ Live document application retains the last renderable snapshot in memory, keyed 
 Clean updates replace graph/status atomically from the user's perspective. Dirty updates apply status
 first and retain graph/history. Source-only rendering either shows current source alone or labels the
 retained snapshot stale; all mutation and execution handlers consume the shared capability fence.
-A current-source version-1 system `parse_error` sets the document store's `systemFailure`, marks graph
+A current-source system `parse_error` sets the document store's `systemFailure`, marks graph
 state unsynchronised, and renders `PipelineLoadFailureView`; the next valid document transition clears
 the failure before publishing its graph.
 

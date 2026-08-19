@@ -24,7 +24,7 @@
 | `src/haute/assistant/_wire_ops.py` | Closed provider-wire graph-edit models plus graph-independent `parse_ops` validation. It imports no assistant modules, so recipes, the capability catalogue, and the graph domain layer share one operation vocabulary without lazy imports or dependency cycles. |
 | `src/haute/assistant/_ops.py` | Pure graph-edit domain layer, re-exporting the wire vocabulary for its existing public seam: ordered graph application, assistant-authoring validation (including connected new nodes and retained Polars results), canonical snapshot/revision and semantic-diff functions, typed plan models, deterministic verification policy, postcondition evaluation, and the bounded single-use `PlanStore`. It performs no writes. |
 | `src/haute/assistant/_render.py` | Shared compact graph renderer for live pipelines and packaged examples. It emits bounded node/config summaries, edges and handles, preamble presence/digest, and singleton presence without executable source or row values. Edge handles are rendered under the exact field names the graph-edit operations accept, so the shape the model reads back is the shape it must write; see Edge cases. |
-| `src/haute/assistant/_application.py` | `PipelineApplicationService`, the stateful inspect → dry-run → apply → verify service. It composes the public parser, the save service's no-write validation and transactional save, shared save lock, plan store and graph-update publisher; transport and model tools are adapters only. Schema validation resolves through `execute_lazy_graph(..., schema_only=True)`, and owns both the seed rule and the pre-existing-failure rule described under Plan/apply/verify. |
+| `src/haute/assistant/_application.py` | `PipelineApplicationService`, the stateful inspect → dry-run → apply → verify service. It composes the public parser, the save service's no-write validation and transactional save, shared save lock, plan store and document-update publisher; transport and model tools are adapters only. Schema validation resolves through `execute_lazy_graph(..., schema_only=True)`, and owns both the seed rule and the pre-existing-failure rule described under Plan/apply/verify. |
 | `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery. Config redaction is policy-driven: credentials and row values are never eligible, while executable keys follow the project's own `allow_executable_source` decision rather than being redacted unconditionally. Value profiling is the one data-reading adapter and is gated on the egress policy's row-sample permission; see Control flow. A routed Parquet showcase binds an omitted listing root to the safe folder explicitly named by the user and enables recursion. Each source-bound executor seeds its evidence ledger from schema/content evidence in the exact provider history window, then adds evidence returned during the current turn. The only provider-visible mutation tools are `dry_run_graph_edits` and `apply_graph_plan`: the model must pass the exact returned plan hash and cannot resend operations at apply time. Tool code does not own revision, save, or verification policy. |
 | `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, per-session `asyncio.Lock`, timestamps), create/lookup/resume, `list_sessions` for the chat list, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence and value-free validation diagnostics; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
@@ -32,7 +32,7 @@
 | `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `GET /api/assistant/sessions` (this pipeline's saved conversations for the panel's chat list, resolving the pipeline exactly as session creation does), `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
 | `src/haute/_column_summary.py` | Shared with [explore-eda](../explore-eda/low-level.md): the Polars dtype facts every column-summarising surface needs — `is_unhashable_dtype` for the columns that cannot be counted, the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. Polars-only, so the assistant reaches it without importing the routes layer. |
 | `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries, message request, usage, and the text-delta, tool-started, tool-finished, graph-updated, completed, failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
-| `src/haute/server.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); includes the assistant router with the other feature routers ahead of the API/WebSocket 404 catch-alls and supplies graph-update fingerprint/wire-path helpers used by mutation publishing. |
+| `src/haute/server.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); includes the assistant router with the other feature routers ahead of the API/WebSocket 404 catch-alls and supplies document-update fingerprint/wire-path helpers used by mutation publishing. |
 | `src/haute/routes/_save_pipeline.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); transactional save service used by assistant mutations; its `save_graph_transactionally` wrapper explicitly forwards the parsed graph's preserved blocks into `SavePipelineRequest` and owns rollback, self-write marking, and ledger-capture warnings. |
 | `pyproject.toml` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); declares `anthropic>=0.40` and `openai>=1.55` as core dependencies and omits `src/haute/assistant/assets/*` from import-coverage measurement because exemplar `.py` files are parsed package data, while ruff and parser tests still check them. |
 
@@ -395,7 +395,7 @@ excluded count; its path and content never cross the tool boundary.
 3. Still under the lock, it reparses, derives the actual diff/revision,
    verifies the visible diff plus complete semantic-diff digest, postconditions,
    and schema evidence at the declared tier, marks the plan applied, and publishes
-   one graph update. Errors before the save leave no files changed; post-save
+   one pipeline document update. Errors before the save leave no files changed; post-save
    verification errors report the committed state and ledger evidence without
    retrying the mutation.
 
@@ -593,7 +593,8 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    replays the stored normalized operations, recomputes the plan hash, checks
    one-use authority, invokes
    `SavePipelineService.save_graph_transactionally` once, reparses, verifies the
-   actual diff, schema evidence, and postconditions, and publishes the standard graph update.
+   actual diff, schema evidence, and postconditions, and publishes the standard pipeline
+   document update.
    The provider receives no operation that combines dry-run and apply.
 
    Every tool outcome is logged through the package's structlog logger before it
@@ -823,8 +824,8 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 - **The `graph_updated` fingerprint is the post-save re-parse fingerprint** — the same value
   `/ws/sync` clients receive, so the frontend can correlate the chat event with the canvas
   update.
-- **One `GraphUpdatePayload` contract**: the assistant publishes the identical payload shape
-  the watcher publishes; no assistant-specific frame type exists on `/ws/sync`.
+- **One `PipelineDocumentUpdatePayload` contract**: the assistant publishes the identical
+  payload shape the watcher publishes; no assistant-specific frame type exists on `/ws/sync`.
 - **Bounded retention, turn-atomic**: the provider request carries the most recent
   complete turns within a 40-message budget plus the always-complete system prompt; stored
   history caps at 200 messages by evicting whole oldest turns. No pruning boundary ever
@@ -1078,7 +1079,8 @@ fixture for route tests). The implemented coverage is:
   cannot subsequently be opened.
 - **`tests/test_assistant_integration.py`** — fake-provider end-to-end on a tmp project:
   instruction → ops → real transactional save (files on disk assert codegen/sidecars) →
-  `graph.update` published with the post-save fingerprint (asserted via a test subscriber)
+  `pipeline.document.update` published with the post-save fingerprint (asserted via a test
+  subscriber)
   → a second turn reads its own edit back; a pipeline containing preserve markers survives
   an assistant edit byte-identically outside the edited region; the mutation precondition
   (non-ready working-branch state → tool error carrying the git reason, nothing written);

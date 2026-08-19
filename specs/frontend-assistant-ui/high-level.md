@@ -28,9 +28,9 @@ Out of scope:
 
 - Everything server-side — loop, tools, providers, sessions — see
   [assistant](../assistant/high-level.md).
-- Canvas updates. Assistant mutations arrive as ordinary `graph.update` frames handled by
-  [frontend-graph-canvas](../frontend-graph-canvas/high-level.md)'s WebSocket sync; this
-  component never writes to the graph store.
+- Canvas updates. Assistant mutations arrive as ordinary `pipeline_document_update` frames
+  handled by [frontend-graph-canvas](../frontend-graph-canvas/high-level.md)'s WebSocket
+  sync; this component never writes to the graph store.
 - The shared side-panel shell chrome, owned by
   [frontend-node-editors](../frontend-node-editors/high-level.md), and the shared API-client
   machinery, stores, toasts, and theme tokens owned by

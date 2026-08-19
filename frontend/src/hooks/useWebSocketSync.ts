@@ -1,10 +1,4 @@
 import { useEffect, useRef, useState } from "react"
-import type { Node, Edge } from "@xyflow/react"
-import {
-  getLayoutedElements,
-  mergeLayoutedNodePositions,
-  nodeIdsNeedingLayout,
-} from "../utils/layout"
 import {
   computeNextNodeId,
   filterIncomingEdges,
@@ -50,7 +44,6 @@ const SELECTION_CHANGE_GUARD_MS = 150
 const INITIAL_BACKOFF_MS = 1_000
 const MAX_BACKOFF_MS = 30_000
 const ABNORMAL_CLOSE = 1006
-const GRAPH_FINGERPRINT_FIELD = "graph_fingerprint"
 const DOCUMENT_FINGERPRINT_FIELD = "document_fingerprint"
 const DOCUMENT_SCHEMA_VERSION = 1
 const MAX_REJECTED_EDGE_WARNING_DETAILS = 3
@@ -72,7 +65,7 @@ function formatRejectedEdgeWarning(rejectedEdges: RejectedIncomingEdge[]): strin
   const omitted = rejectedEdges.length - MAX_REJECTED_EDGE_WARNING_DETAILS
   const omittedSummary = omitted > 0 ? `; ${omitted} more omitted` : ""
   const edgeLabel = rejectedEdges.length === 1 ? "edge" : "edges"
-  return `Retained ${rejectedEdges.length} unresolved synced ${edgeLabel} to prevent data loss; only valid edges were used for layout. ${details}${omittedSummary}. Saving may fail until they are repaired.`
+  return `Retained ${rejectedEdges.length} unresolved synced ${edgeLabel} to prevent data loss. ${details}${omittedSummary}. Saving may fail until they are repaired.`
 }
 
 function normalizeSourceFile(value: unknown): string | null {
@@ -117,31 +110,6 @@ function isCurrentSourceFile(incoming: unknown, current: string | undefined): bo
 function sourceFileLabel(value: unknown, fallback = "the current pipeline"): string {
   if (typeof value !== "string" || value.trim() === "") return fallback
   return value.replace(/\\/g, "/")
-}
-
-function requireSubmodels(value: unknown): Record<string, unknown> {
-  // PipelineGraph serializes an empty submodel collection as null. Keep that
-  // wire representation distinct from an omitted field: null clears the
-  // persisted map, while undefined must fail loudly to prevent stale writes.
-  if (value === null) return {}
-  if (typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("graph_update: missing or invalid `submodels` map")
-  }
-  return value as Record<string, unknown>
-}
-
-function requireIntegrityMetadata(value: unknown): { sourceRevision: string; preservedBlocks: string[] } {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("graph_update: missing graph payload")
-  }
-  const graph = value as Record<string, unknown>
-  if (typeof graph.source_revision !== "string" || graph.source_revision.trim() === "") {
-    throw new Error("graph_update: missing or invalid source_revision")
-  }
-  if (!Array.isArray(graph.preserved_blocks) || !graph.preserved_blocks.every((item) => typeof item === "string")) {
-    throw new Error("graph_update: missing or invalid preserved_blocks")
-  }
-  return { sourceRevision: graph.source_revision, preservedBlocks: graph.preserved_blocks }
 }
 
 interface PipelineDocumentUpdateFrame {
@@ -217,7 +185,6 @@ export default function useWebSocketSync({
   const { addToast } = useToastStore()
   const [status, setStatus] = useState<WsStatus>(() => enabled ? "reconnecting" : "disconnected")
   const retriesRef = useRef(0)
-  const appliedGraphFingerprintRef = useRef<{ sourceFile: string; fingerprint: string } | null>(null)
   const appliedDocumentFingerprintRef = useRef<{
     sourceFile: string
     fingerprint: string
@@ -237,7 +204,6 @@ export default function useWebSocketSync({
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let mounted = true
     let graphUpdateSeq = 0
-    let documentProtocolSeen = false
     let activeSelectionGuardIncrements = 0
     const delayedTimers = new Set<ReturnType<typeof setTimeout>>()
 
@@ -267,33 +233,12 @@ export default function useWebSocketSync({
       return true
     }
 
-    function appliedFingerprintFor(sourceFile: string): string | undefined {
-      const applied = appliedGraphFingerprintRef.current
-      if (!applied || !isCurrentSourceFile(applied.sourceFile, sourceFile)) {
-        return undefined
-      }
-      return applied.fingerprint
-    }
-
     function appliedDocumentFingerprintFor(sourceFile: string): string | undefined {
       const applied = appliedDocumentFingerprintRef.current
       if (!applied || !isCurrentSourceFile(applied.sourceFile, sourceFile)) {
         return undefined
       }
       return applied.fingerprint
-    }
-
-    function rememberAppliedFingerprint(incomingSource: unknown, fingerprint: unknown) {
-      const normalizedFingerprint = typeof fingerprint === "string" ? fingerprint.trim() : ""
-      if (!normalizedFingerprint) {
-        appliedGraphFingerprintRef.current = null
-        return
-      }
-      const sourceFile = normalizeSourceFile(incomingSource)
-        ?? normalizeSourceFile(sourceFileRef?.current)
-      appliedGraphFingerprintRef.current = sourceFile
-        ? { sourceFile, fingerprint: normalizedFingerprint }
-        : null
     }
 
     function rememberAppliedDocumentFingerprint(
@@ -365,11 +310,6 @@ export default function useWebSocketSync({
             const documentFingerprint = appliedDocumentFingerprintFor(sourceFile)
             if (documentFingerprint) {
               resyncPayload[DOCUMENT_FINGERPRINT_FIELD] = documentFingerprint
-            } else {
-              const graphFingerprint = appliedFingerprintFor(sourceFile)
-              if (graphFingerprint) {
-                resyncPayload[GRAPH_FINGERPRINT_FIELD] = graphFingerprint
-              }
             }
             ws?.send(JSON.stringify(resyncPayload))
           } catch (err) {
@@ -398,7 +338,6 @@ export default function useWebSocketSync({
           if (!isCurrentSourceFile(frame.sourceFile, sourceFileRef?.current)) {
             return
           }
-          documentProtocolSeen = true
           const updateSeq = ++graphUpdateSeq
           const graphState = useGraphStore.getState()
           const dirty = graphState.dirty
@@ -432,21 +371,10 @@ export default function useWebSocketSync({
             const adapted = adaptPipelineEditorDocument(frame.document)
             const newNodes = adapted.nodes
             const newEdges = normalizeEdges(adapted.edges)
-            const {
-              validEdges: layoutEdges,
-              rejectedEdges,
-            } = filterIncomingEdges(newNodes, newEdges)
-            const missingNodeIds = nodeIdsNeedingLayout(newNodes)
-            const nodesToApply = missingNodeIds.size > 0
-              ? mergeLayoutedNodePositions(
-                  newNodes,
-                  await getLayoutedElements(newNodes, layoutEdges),
-                  missingNodeIds,
-                )
-              : newNodes
-
-            if (!mounted || updateSeq !== graphUpdateSeq) return
-            if (blockDirtyGraphUpdate(frame.sourceFile)) return
+            // Every validated document node carries a finite display position,
+            // so external sync never generates layout and applies synchronously.
+            const { rejectedEdges } = filterIncomingEdges(newNodes, newEdges)
+            const nodesToApply = newNodes
 
             const previousPreservedBlocks = preservedBlocksRef.current
             const previousPreamble = preambleRef.current
@@ -508,146 +436,19 @@ export default function useWebSocketSync({
           return
         }
 
-        if (!documentProtocolSeen && msg.type === "graph_update" && msg.graph) {
-          const g = msg.graph as {
-            nodes?: Node[]
-            edges?: Edge[]
-            preamble?: string
-            submodels?: unknown
-            warning?: string
-            source_file?: string
-            source_revision?: string
-            preserved_blocks?: string[]
-          }
-          const incomingSource = msg.source_file ?? g.source_file
-          if (!isCurrentSourceFile(incomingSource, sourceFileRef?.current)) {
-            return
-          }
-          const updateSeq = ++graphUpdateSeq
-          if (blockDirtyGraphUpdate(incomingSource)) {
-            return
-          }
-
-          try {
-            const { sourceRevision, preservedBlocks } = requireIntegrityMetadata(g)
-            const newSubmodels = requireSubmodels(g.submodels)
-            const newNodes = g.nodes || []
-            const newEdges = normalizeEdges(g.edges || [])
-            const {
-              validEdges: layoutEdges,
-              rejectedEdges,
-            } = filterIncomingEdges(newNodes, newEdges)
-            const missingNodeIds = nodeIdsNeedingLayout(newNodes)
-            const nodesToApply = missingNodeIds.size > 0
-              ? mergeLayoutedNodePositions(
-                  newNodes,
-                  await getLayoutedElements(newNodes, layoutEdges),
-                  missingNodeIds,
-                )
-              : newNodes
-
-            if (!mounted || updateSeq !== graphUpdateSeq) {
-              return
-            }
-            if (blockDirtyGraphUpdate(incomingSource)) {
-              return
-            }
-
-            const previousSourceRevision = sourceRevisionRef.current
-            const previousPreservedBlocks = preservedBlocksRef.current
-            const previousPreamble = preambleRef.current
-            const previousSubmodels = submodelsRef.current
-            const nextPreamble = g.preamble !== undefined
-              ? (g.preamble || "")
-              : preambleRef.current
-
-            // Guard: prevent React Flow's onSelectionChange from clearing
-            // the open panel while we replace nodes.
-            graphRefreshingRef.current += 1
-            activeSelectionGuardIncrements += 1
-            try {
-              sourceRevisionRef.current = sourceRevision
-              preservedBlocksRef.current = preservedBlocks
-              submodelsRef.current = newSubmodels
-              preambleRef.current = nextPreamble
-              useGraphStore.getState().loadGraphSnapshot({
-                nodes: nodesToApply,
-                edges: newEdges,
-                preamble: nextPreamble,
-                submodels: newSubmodels,
-              })
-              nodeIdCounter.current = computeNextNodeId(newNodes)
-              setSyncBanner(null)
-              rememberAppliedFingerprint(incomingSource, msg.graph_fingerprint)
-            } catch (err) {
-              sourceRevisionRef.current = previousSourceRevision
-              preservedBlocksRef.current = previousPreservedBlocks
-              submodelsRef.current = previousSubmodels
-              preambleRef.current = previousPreamble
-              throw err
-            } finally {
-              scheduleDelayed(releaseSelectionGuard, SELECTION_CHANGE_GUARD_MS)
-            }
-
-            // Clear UI that references nodes removed by this graph update.
-            const newNodeIds = new Set<string>(newNodes.map((n) => n.id))
-            const ui = useUIStore.getState()
-            if (ui.renameDialog && !newNodeIds.has(ui.renameDialog.nodeId)) {
-              ui.setRenameDialog(null)
-            }
-            if (
-              ui.submodelDialog &&
-              ui.submodelDialog.nodeIds.some((id) => !newNodeIds.has(id))
-            ) {
-              ui.setSubmodelDialog(null)
-            }
-
-            addToast("info", "Pipeline updated from file")
-            if (rejectedEdges.length > 0) {
-              addToast(
-                "warning",
-                formatRejectedEdgeWarning(rejectedEdges),
-              )
-            }
-            if (g.warning) addToast("warning", g.warning)
-            scheduleDelayed(() => {
-              if (mounted && updateSeq === graphUpdateSeq) {
-                fitView({ padding: 0.8 })
-              }
-            }, 100)
-          } catch (err) {
-            if (!mounted || updateSeq !== graphUpdateSeq) {
-              return
-            }
-            addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
-          }
-          return
-        }
-
-        if (
-          msg.type === "parse_error" &&
-          msg.document_schema_version === DOCUMENT_SCHEMA_VERSION
-        ) {
+        if (msg.type === "parse_error") {
           if (!isCurrentSourceFile(msg.source_file, sourceFileRef?.current)) {
             return
           }
-          documentProtocolSeen = true
+          // A parse_error frame now means one thing: the current document
+          // could not be loaded or resynced at all. Authored errors arrive
+          // as degraded/source-only documents, never through this frame.
           ++graphUpdateSeq
           appliedDocumentFingerprintRef.current = null
           useDocumentStatusStore.getState().setSystemFailure(
             String(msg.error || "Pipeline document could not be loaded."),
           )
           setSyncBanner(null)
-          return
-        }
-
-        if (!documentProtocolSeen && msg.type === "parse_error") {
-          if (!isCurrentSourceFile(msg.source_file, sourceFileRef?.current)) {
-            return
-          }
-          ++graphUpdateSeq
-          appliedGraphFingerprintRef.current = null
-          setSyncBanner(String(msg.error || "Parse error in pipeline file"))
         }
       }
 

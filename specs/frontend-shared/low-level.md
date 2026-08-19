@@ -605,11 +605,12 @@ validated document atomically clears it. Reset leaves the editor without authori
 validated document arrives.
 
 `useWebSocketSync` validates version-1 editor-document frames with that same parser. It calls the
-document-status transition before considering graph dirtiness or asynchronous layout. A dirty graph
-may reject snapshot replacement but cannot reject the status/capability fence. Once the client uses
-the document protocol it ignores legacy unversioned strict-parse errors, but a current-source
-`parse_error` carrying `document_schema_version: 1` sets the sanitized system-failure state, clears
-the applied document fingerprint, and prevents the retained graph from being treated as current.
+document-status transition before considering graph dirtiness; validated document nodes always
+carry finite display positions, so external sync never generates layout and applies synchronously.
+A dirty graph may reject snapshot replacement but cannot reject the status/capability fence. Any
+current-source `parse_error` frame sets the sanitized system-failure state, clears the applied
+document fingerprint, and prevents the retained graph from being treated as current; authored
+recovery states are never delivered through that frame.
 Recovery preview uses `api/client.ts`'s source/revision/target request and never serializes React Flow
 recovery objects.
 

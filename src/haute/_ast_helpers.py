@@ -16,6 +16,7 @@ from haute._types import DECORATOR_TO_NODE_TYPE, NodeType
 from haute.errors import ParseError
 
 __all__ = [
+    "_chained_receiver_calls",
     "_eval_ast_literal",
     "_get_decorator_kwargs",
     "_is_pipeline_authored_decorator",
@@ -403,33 +404,43 @@ def _extract_connect_calls(
     """
     connects: list[tuple[str, str, str | None, str | None]] = []
 
-    for node in ast.iter_child_nodes(tree):
-        if not isinstance(node, ast.Expr):
-            continue
-        call = node.value
-        if not isinstance(call, ast.Call):
-            continue
-
-        # Collect every .connect link in the method chain, walking from
-        # the outermost call down to the base receiver.
-        links: list[ast.Call] = []
-        cur: ast.expr = call
-        while isinstance(cur, ast.Call) and isinstance(cur.func, ast.Attribute):
-            if cur.func.attr == "connect":
-                links.append(cur)
-            cur = cur.func.value
-        if not links:
-            continue
-        if not (isinstance(cur, ast.Name) and cur.id == receiver):
-            continue
-
-        # links were collected outermost-first; reverse for source order.
-        for link in reversed(links):
+    for node in tree.body:
+        for link in _chained_receiver_calls(node, receiver=receiver, method="connect"):
             edge = _connect_call_edge(link, receiver)
             if edge is not None:
                 connects.append(edge)
 
     return connects
+
+
+def _chained_receiver_calls(
+    statement: ast.stmt,
+    *,
+    receiver: str,
+    method: str,
+) -> list[ast.Call]:
+    """Return each ``<receiver>...<method>(...)`` link in one top-level statement.
+
+    The chain is walked from the outermost call down to its base receiver,
+    which must be a bare ``ast.Name`` matching *receiver* —
+    ``module.pipeline.connect(...)`` and ``get_pipeline().connect(...)`` stay
+    rejected. Non-*method* links are scanned over so a chain's later calls are
+    not lost. Links are returned in authored (source) order; an empty list
+    means the statement contributes nothing.
+    """
+    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+        return []
+    links: list[ast.Call] = []
+    current: ast.expr = statement.value
+    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
+        if current.func.attr == method:
+            links.append(current)
+        current = current.func.value
+    if not links or not (isinstance(current, ast.Name) and current.id == receiver):
+        return []
+    # Links were collected outermost-first; reverse for source order.
+    links.reverse()
+    return links
 
 
 # ---------------------------------------------------------------------------

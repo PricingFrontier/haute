@@ -1,7 +1,7 @@
 """In-process pub/sub event bus for Haute server events.
 
-The file watcher publishes typed events (``"graph.update"``,
-``"parse.error"``, ``"pipeline.document.update"``) to the bus;
+The file watcher publishes typed events (``"parse.error"``,
+``"pipeline.document.update"``) to the bus;
 subscribers — most notably the WebSocket broadcaster — translate each
 event into whatever wire format their transport needs.  Decoupling the producer
 from the consumer makes the watcher trivial to unit-test and lets new
@@ -21,7 +21,7 @@ Design choices:
   context, and move on.
 * **Event-type routing.**  Handlers are stored in a dict keyed by
   event type, so a subscriber for ``"file.changed"`` never sees
-  ``"graph.update"`` traffic.
+  ``"pipeline.document.update"`` traffic.
 * **Typed payloads.**  :meth:`EventBus.publish` annotates its payload
   parameter as ``dict[str, Any]`` rather than bare ``Any``.  The point
   of the refactor is to stop smuggling arbitrary shapes across
@@ -37,8 +37,8 @@ Design choices:
 
 Naming convention (keep this consistent across the codebase):
 
-* **Bus event types** use dotted names: ``"graph.update"``,
-  ``"parse.error"``, ``"pipeline.document.update"``, ``"file.changed"``.
+* **Bus event types** use dotted names: ``"parse.error"``,
+  ``"pipeline.document.update"``, ``"file.changed"``.
   The dotted form reads as a topic hierarchy and pairs cleanly with any
   future wildcard routing.
 * **structlog event names** (see :mod:`haute._logging`) use
@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from typing import Any, Literal, NotRequired, TypedDict, overload
+from typing import Any, Literal, TypedDict, overload
 
 from haute._logging import get_logger
 
@@ -81,20 +81,11 @@ logger = get_logger(component="event_bus")
 # experimental events that do not yet warrant a TypedDict.
 
 
-class GraphUpdatePayload(TypedDict):
-    """Emitted by the file-watcher when a pipeline file re-parses cleanly."""
-
-    graph: dict[str, Any]
-    graph_fingerprint: str
-    source_file: str
-
-
 class ParseErrorPayload(TypedDict):
-    """Emitted by the file-watcher when a pipeline file fails to parse."""
+    """Emitted when a pipeline document cannot be loaded at all."""
 
     error: str
     source_file: str
-    document_schema_version: NotRequired[Literal[1]]
 
 
 class PipelineDocumentUpdatePayload(TypedDict):
@@ -105,7 +96,7 @@ class PipelineDocumentUpdatePayload(TypedDict):
     source_file: str
 
 
-EventType = Literal["graph.update", "parse.error", "pipeline.document.update"]
+EventType = Literal["parse.error", "pipeline.document.update"]
 
 # Wide backstop used at the bus' *implementation* signature and for
 # ad-hoc test events.  Producers that publish a typed event should use
@@ -147,13 +138,6 @@ class EventBus:
         # not deadlock the bus.  Handler-driven publishes are rare but
         # legitimate — e.g. a translate-then-republish bridge.
         self._lock = threading.RLock()
-
-    @overload
-    def subscribe(
-        self,
-        event_type: Literal["graph.update"],
-        handler: Callable[[GraphUpdatePayload], None],
-    ) -> Callable[[], None]: ...
 
     @overload
     def subscribe(
@@ -209,9 +193,6 @@ class EventBus:
                     self._handlers.pop(event_type, None)
 
         return _unsubscribe
-
-    @overload
-    def publish(self, event_type: Literal["graph.update"], payload: GraphUpdatePayload) -> None: ...
 
     @overload
     def publish(self, event_type: Literal["parse.error"], payload: ParseErrorPayload) -> None: ...
@@ -305,7 +286,6 @@ default_bus = EventBus()
 __all__ = [
     "EventBus",
     "EventType",
-    "GraphUpdatePayload",
     "HandlerType",
     "ParseErrorPayload",
     "PipelineDocumentUpdatePayload",

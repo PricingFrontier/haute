@@ -1,19 +1,20 @@
 /**
- * Phase 1 Package 1H — Item #39: a WebSocket graph sync that removes nodes
- * must also clear UI panel state that references those nodes.
+ * Phase 1 Package 1H — Item #39: a WebSocket document sync that removes
+ * nodes must also clear UI panel state that references those nodes.
  *
  * Pre-fix: `submodelDialog` and `renameDialog` in useUIStore may still
  * reference nodes that no longer exist after a file-watcher update.  The
  * dialogs then show obsolete labels or, worse, fire onConfirm with a nodeId
  * that maps to nothing.
  *
- * Fix: after applying a graph update, the hook should clear any
+ * Fix: after applying a document update, the hook should clear any
  * renameDialog / submodelDialog entries whose referenced nodeId is NOT in
  * the new nodes array.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, act, cleanup } from "@testing-library/react"
 import { type Mock } from "vitest"
+import type { Node } from "@xyflow/react"
 
 vi.mock("../../utils/layout.ts", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../utils/layout.ts")>(),
@@ -55,9 +56,9 @@ vi.mock("../../stores/useUIStore.ts", () => {
   return { default: useUIStore }
 })
 
-// The hook reads dirty-state from useGraphStore and applies incoming graphs
-// through loadGraphSnapshot; the mock must provide both or every
-// graph_update rolls back before reaching the dialog cleanup under test.
+// The hook reads dirty-state from useGraphStore and applies incoming
+// documents through loadGraphSnapshot; the mock must provide both or every
+// document update rolls back before reaching the dialog cleanup under test.
 vi.mock("../../stores/useGraphStore.ts", () => {
   const store = {
     dirty: false,
@@ -88,6 +89,8 @@ vi.mock("../../stores/useGraphStore.ts", () => {
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
 import useUIStore from "../../stores/useUIStore.ts"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
+import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
 
 type MockWSInstance = {
   url: string
@@ -111,19 +114,40 @@ function createMockWebSocket() {
   return MockWebSocket
 }
 
-function makeHookParams() {
+const SOURCE_FILE = "rating/main.py"
+
+function makeHookParams(sourceFile = SOURCE_FILE) {
   return {
-    setNodesRaw: vi.fn(),
-    setEdgesRaw: vi.fn(),
-    setSubmodelsRaw: vi.fn(),
-    setPreamble: vi.fn(),
     preambleRef: { current: "" },
     submodelsRef: { current: {} as Record<string, unknown> },
+    sourceFileRef: { current: sourceFile },
     sourceRevisionRef: { current: "revision-test" },
     preservedBlocksRef: { current: [] as string[] },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
+  }
+}
+
+function pipelineDocumentFrame(
+  document: ReturnType<typeof makePipelineEditorDocument>,
+  documentFingerprint = "document-fingerprint",
+) {
+  return {
+    type: "pipeline_document_update",
+    schema_version: 1,
+    document,
+    document_fingerprint: documentFingerprint,
+    source_file: document.source_file,
+  }
+}
+
+function nodeWithId(id: string): Node {
+  return {
+    id,
+    type: "polars",
+    position: { x: 10, y: 10 },
+    data: { label: id, nodeType: "polars", config: {} },
   }
 }
 
@@ -142,6 +166,7 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
     store.submodelDialog = null
     vi.mocked(useUIStore.getState().setRenameDialog as Mock).mockClear()
     vi.mocked(useUIStore.getState().setSubmodelDialog as Mock).mockClear()
+    useDocumentStatusStore.getState().reset()
   })
 
   afterEach(() => {
@@ -152,32 +177,28 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
 
   it("renameDialog referring to a node removed by WS sync is cleared", async () => {
     // Simulate: user had opened the Rename dialog for node "doomed_42",
-    // then the backend file watcher sends a graph_update where
+    // then the backend file watcher sends a document update where
     // "doomed_42" no longer exists.
     const store = useUIStore.getState() as unknown as Record<string, unknown>
     store.renameDialog = { nodeId: "doomed_42", currentLabel: "To Be Deleted" }
 
     const params = makeHookParams()
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-test",
+      // Note: "doomed_42" is NOT in the new nodes list
+      nodes: [nodeWithId("survivor_1")],
+    })
     renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
 
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            source_revision: "revision-test",
-            preserved_blocks: [],
-            // Note: "doomed_42" is NOT in the new nodes list
-            nodes: [{ id: "survivor_1", position: { x: 10, y: 10 }, data: {} }],
-            edges: [],
-          },
-        }),
+        data: JSON.stringify(pipelineDocumentFrame(document)),
       }))
     })
 
-    // After applying the graph update, the dialog state must be cleared.
+    // After applying the document update, the dialog state must be cleared.
     const setRename = useUIStore.getState().setRenameDialog as Mock
     expect(setRename).toHaveBeenCalledWith(null)
   })
@@ -190,24 +211,17 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
     store.renameDialog = { nodeId: "keeper_1", currentLabel: "Keep" }
 
     const params = makeHookParams()
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-test",
+      nodes: [nodeWithId("keeper_1"), nodeWithId("other")],
+    })
     renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
 
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            source_revision: "revision-test",
-            preserved_blocks: [],
-            nodes: [
-              { id: "keeper_1", position: { x: 10, y: 10 }, data: {} },
-              { id: "other", position: { x: 20, y: 20 }, data: {} },
-            ],
-            edges: [],
-          },
-        }),
+        data: JSON.stringify(pipelineDocumentFrame(document)),
       }))
     })
 
@@ -222,25 +236,18 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
     store.submodelDialog = { nodeIds: ["a", "gone_b", "c"] }
 
     const params = makeHookParams()
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-test",
+      // Missing "gone_b"
+      nodes: [nodeWithId("a"), nodeWithId("c")],
+    })
     renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
 
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            source_revision: "revision-test",
-            preserved_blocks: [],
-            // Missing "gone_b"
-            nodes: [
-              { id: "a", position: { x: 10, y: 10 }, data: {} },
-              { id: "c", position: { x: 20, y: 20 }, data: {} },
-            ],
-            edges: [],
-          },
-        }),
+        data: JSON.stringify(pipelineDocumentFrame(document)),
       }))
     })
 
@@ -253,25 +260,17 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
     store.submodelDialog = { nodeIds: ["a", "b"] }
 
     const params = makeHookParams()
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-test",
+      nodes: [nodeWithId("a"), nodeWithId("b"), nodeWithId("c")],
+    })
     renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
 
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            source_revision: "revision-test",
-            preserved_blocks: [],
-            nodes: [
-              { id: "a", position: { x: 10, y: 10 }, data: {} },
-              { id: "b", position: { x: 20, y: 20 }, data: {} },
-              { id: "c", position: { x: 30, y: 30 }, data: {} },
-            ],
-            edges: [],
-          },
-        }),
+        data: JSON.stringify(pipelineDocumentFrame(document)),
       }))
     })
 
@@ -288,21 +287,17 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
     store.submodelDialog = null
 
     const params = makeHookParams()
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-test",
+      nodes: [nodeWithId("a")],
+    })
     renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
 
     await act(async () => {
       latestWS().onmessage?.(new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "graph_update",
-          graph: {
-            submodels: {},
-            source_revision: "revision-test",
-            preserved_blocks: [],
-            nodes: [{ id: "a", position: { x: 10, y: 10 }, data: {} }],
-            edges: [],
-          },
-        }),
+        data: JSON.stringify(pipelineDocumentFrame(document)),
       }))
     })
 

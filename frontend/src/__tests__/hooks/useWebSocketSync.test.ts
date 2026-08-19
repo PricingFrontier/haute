@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Tests for useWebSocketSync — WebSocket connection lifecycle, message handling,
  * reconnection with exponential backoff, error handling, and cleanup on unmount.
  *
@@ -323,84 +323,6 @@ describe("useWebSocketSync", () => {
       }))
     })
 
-    it("includes the last applied graph fingerprint in reconnect resync requests", async () => {
-      const params = makeHookParams("rating/main.py")
-      renderHook(() => useWebSocketSync(params))
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            source_file: "rating/main.py",
-            graph_fingerprint: "applied-fp",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
-              edges: [],
-            },
-          }),
-        }))
-      })
-
-      act(() => {
-        latestWS().onclose?.({} as CloseEvent)
-      })
-      act(() => {
-        vi.advanceTimersByTime(1000)
-      })
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
-        type: "resync",
-        source_file: "rating/main.py",
-        document_schema_version: 1,
-        graph_fingerprint: "applied-fp",
-      }))
-    })
-
-    it("does not send a graph fingerprint remembered for another source", async () => {
-      const params = makeHookParams("rating/main.py")
-      renderHook(() => useWebSocketSync(params))
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            source_file: "rating/main.py",
-            graph_fingerprint: "main-fp",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
-              edges: [],
-            },
-          }),
-        }))
-      })
-
-      params.sourceFileRef.current = "modules/submodel.py"
-      act(() => {
-        latestWS().onclose?.({} as CloseEvent)
-      })
-      act(() => {
-        vi.advanceTimersByTime(1000)
-      })
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
-        type: "resync",
-        source_file: "modules/submodel.py",
-        document_schema_version: 1,
-      }))
-    })
-
     it("does not request reconnect resync when the current source file is blank", () => {
       const params = makeHookParams()
       params.sourceFileRef.current = "   "
@@ -452,7 +374,7 @@ describe("useWebSocketSync", () => {
   })
 
   // ────────────────────────────────────────────────────────────────
-  // Message handling — graph_update
+  // Message handling — pipeline document update
   // ────────────────────────────────────────────────────────────────
 
   describe("pipeline document update messages", () => {
@@ -748,7 +670,7 @@ describe("useWebSocketSync", () => {
       expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
     })
 
-    it("surfaces a versioned system failure after document sync and clears on repair", async () => {
+    it("surfaces a document system failure and clears it on repair", async () => {
       const params = makeHookParams("rating/main.py")
       const ready = makePipelineEditorDocument({
         load_status: "ready",
@@ -769,7 +691,6 @@ describe("useWebSocketSync", () => {
             type: "parse_error",
             error: "Pipeline document could not be loaded. Check the server logs for details.",
             source_file: "rating/main.py",
-            document_schema_version: 1,
           }),
         }))
       })
@@ -871,7 +792,37 @@ describe("useWebSocketSync", () => {
       expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
     })
 
-    it("ignores a versioned parse error for another source", async () => {
+    it("silently ignores frames with an unknown or missing type", async () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        load_status: "ready",
+        source_file: "rating/main.py",
+        source_revision: "r1",
+      }))
+      renderHook(() => useWebSocketSync(params))
+
+      const unknownFrames = [
+        { document: { nodes: [] }, source_file: "rating/main.py" },
+        { type: "totally_unknown", payload: { nodes: [] }, source_file: "rating/main.py" },
+      ]
+      for (const frame of unknownFrames) {
+        await act(async () => {
+          latestWS().onmessage?.(new MessageEvent("message", {
+            data: JSON.stringify(frame),
+          }))
+        })
+      }
+
+      expect(useToastStore.getState().addToast).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        loadStatus: "ready",
+        sourceRevision: "r1",
+        systemFailure: null,
+      })
+    })
+
+    it("ignores a parse error for another source", async () => {
       const params = makeHookParams("rating/main.py")
       renderHook(() => useWebSocketSync(params))
 
@@ -881,7 +832,6 @@ describe("useWebSocketSync", () => {
             type: "parse_error",
             error: "foreign failure",
             source_file: "rating/other.py",
-            document_schema_version: 1,
           }),
         }))
       })
@@ -913,887 +863,139 @@ describe("useWebSocketSync", () => {
         document_fingerprint: "doc-fp",
       }))
     })
-  })
-
-  describe("graph update messages", () => {
-    it("updates nodes and edges on graph_update with positions", async () => {
-      const params = makeHookParams()
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      const graphMsg = {
-        type: "graph_update",
-        graph: {
-          submodels: {},
-          source_revision: "revision-test",
-          preserved_blocks: [],
-          nodes: [
-            { id: "transform_3", position: { x: 100, y: 200 }, data: { label: "test" } },
-            { id: "transform_4", position: { x: 400, y: 200 }, data: { label: "target" } },
-          ],
-          edges: [
-            { id: "e1", source: "transform_3", target: "transform_4" },
-          ],
-          preamble: "import numpy as np",
-        },
-      }
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify(graphMsg),
-        }))
-      })
-
-      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith({
-        nodes: graphMsg.graph.nodes,
-        edges: expect.arrayContaining([
-          expect.objectContaining({
-            id: "e1",
-            source: "transform_3",
-            target: "transform_4",
-            type: "default",
-            animated: false,
-          }),
-        ]),
-        preamble: "import numpy as np",
-        submodels: {},
-      })
-      expect(params.setNodesRaw).not.toHaveBeenCalled()
-      expect(params.setEdgesRaw).not.toHaveBeenCalled()
-      expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
-      expect(params.setPreamble).not.toHaveBeenCalled()
-      expect(params.preambleRef.current).toBe("import numpy as np")
-      // nodeIdCounter updated — computed from max numeric suffix (4) + 1
-      expect(params.nodeIdCounter.current).toBe(5)
-      // Toast fired
-      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
-        "info",
-        "Pipeline updated from file",
-      )
-      // Sync banner cleared
-      expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(null)
-    })
-
-    it("applies incoming submodels to the store and request mirror atomically", async () => {
-      const params = makeHookParams()
-      params.submodelsRef.current = {
-        old: { nodes: [{ id: "stale" }], edges: [] },
-      }
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      const incomingSubmodels = {
-        external: {
-          nodes: [{ id: "fresh", position: { x: 10, y: 20 }, data: { label: "Fresh" } }],
-          edges: [],
-        },
-      }
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              nodes: [],
-              edges: [],
-              preamble: "",
-              submodels: incomingSubmodels,
-              source_revision: "revision-test",
-              preserved_blocks: [],
-            },
-          }),
-        }))
-      })
-
-      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
-        expect.objectContaining({ submodels: incomingSubmodels }),
-      )
-      expect(useGraphStore.getState().submodels).toEqual(incomingSubmodels)
-      expect(params.submodelsRef.current).toEqual(incomingSubmodels)
-      expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
-      expect(params.submodelsRef.current).not.toHaveProperty("old")
-    })
-
-    it("normalizes the backend's null empty-submodels representation without treating it as omitted", async () => {
-      const params = makeHookParams()
-      params.submodelsRef.current = {
-        old: { nodes: [{ id: "stale" }], edges: [] },
-      }
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              nodes: [],
-              edges: [],
-              submodels: null,
-              source_revision: "revision-test",
-              preserved_blocks: [],
-            },
-          }),
-        }))
-      })
-
-      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
-        expect.objectContaining({ submodels: {} }),
-      )
-      expect(useGraphStore.getState().submodels).toEqual({})
-      expect(params.submodelsRef.current).toEqual({})
-      expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
-    })
-
-    it("uses layout when nodes have non-finite positions", async () => {
-      const { getLayoutedElements } = await import("../../utils/layout.ts")
-      const params = makeHookParams()
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      const graphMsg = {
-        type: "graph_update",
-        graph: {
-          submodels: {},
-          source_revision: "revision-test",
-          preserved_blocks: [],
-          nodes: [
-            { id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: { label: "test" } },
-          ],
-          edges: [],
-        },
-      }
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify(graphMsg),
-        }))
-      })
-
-      expect(getLayoutedElements).toHaveBeenCalled()
-    })
-
-    it("ignores graph_update messages for a different source_file", async () => {
-      const params = makeHookParams("rating/main.py")
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      const graphMsg = {
-        type: "graph_update",
-        source_file: "modules/foreign_submodel.py",
-        graph: {
-          submodels: {},
-          source_revision: "revision-test",
-          preserved_blocks: [],
-          nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
-          edges: [],
-        },
-      }
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify(graphMsg),
-        }))
-      })
-
-      expect(params.setNodesRaw).not.toHaveBeenCalled()
-      expect(params.setEdgesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
-    })
-
-    it("rejects a graph_update when only the current graph has a source identity", async () => {
-      const params = makeHookParams("rating/main.py")
-      renderHook(() => useWebSocketSync(params))
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "unidentified", position: { x: 100, y: 200 }, data: {} }],
-              edges: [],
-            },
-          }),
-        }))
-      })
-
-      expect(params.setNodesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
-    })
-
-    it("rejects a graph_update when only the message has a source identity", async () => {
-      const params = makeHookParams()
-      renderHook(() => useWebSocketSync(params))
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            source_file: "rating/main.py",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "unmatched", position: { x: 100, y: 200 }, data: {} }],
-              edges: [],
-            },
-          }),
-        }))
-      })
-
-      expect(params.setNodesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
-    })
 
     it("does not match source_file paths by lowercasing case-twin names", async () => {
-      const params = makeHookParams()
-      params.sourceFileRef.current = "modules/Main.py"
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            source_file: "modules/main.py",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "wrong-case", position: { x: 100, y: 200 }, data: {} }],
-              edges: [],
-            },
-          }),
-        }))
-      })
-
-      expect(params.setNodesRaw).not.toHaveBeenCalled()
-      expect(params.setEdgesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
-    })
-
-    it("accepts graph_update for the current source_file even when one side is absolute", async () => {
-      const params = makeHookParams()
-      params.sourceFileRef.current = "rating/main.py"
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            source_file: "C:\\Users\\prici\\haute\\rating\\main.py",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
-              edges: [],
-            },
-          }),
-        }))
-      })
-
-      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
-        expect.objectContaining({
-          nodes: [expect.objectContaining({ id: "n1" })],
-        }),
-      )
-    })
-
-    it("accepts graph_update when the current source_file is absolute and the message is relative", async () => {
-      const params = makeHookParams()
-      params.sourceFileRef.current = "C:\\Users\\prici\\haute\\rating\\main.py"
-      renderHook(() => useWebSocketSync(params))
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            source_file: "rating/main.py",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
-              edges: [],
-            },
-          }),
-        }))
-      })
-
-      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
-        expect.objectContaining({
-          nodes: [expect.objectContaining({ id: "n1" })],
-        }),
-      )
-    })
-
-    it("rejects same-basename graph_update messages when the current source is ambiguous", async () => {
-      const params = makeHookParams()
-      params.sourceFileRef.current = "main.py"
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            source_file: "C:\\Users\\prici\\haute\\rating\\main.py",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
-              edges: [],
-            },
-          }),
-        }))
-      })
-
-      expect(params.setNodesRaw).not.toHaveBeenCalled()
-      expect(params.setEdgesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
-    })
-
-    it("does not overwrite unsaved local edits with an external graph_update", async () => {
-      const params = makeHookParams("rating/main.py")
-      useGraphStore.getState().dirty = true
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            source_file: "rating/main.py",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "disk", position: { x: 100, y: 200 }, data: {} }],
-              edges: [],
-            },
-          }),
-        }))
-      })
-
-      expect(params.setNodesRaw).not.toHaveBeenCalled()
-      expect(params.setEdgesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
-      expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
-        expect.stringContaining("changed on disk"),
-      )
-      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
-        "warning",
-        expect.stringContaining("unsaved changes"),
-      )
-      expect(useUIStore.getState().syncBanner).toEqual(
-        expect.not.stringContaining("Save"),
-      )
-      expect(useUIStore.getState().syncBanner).toEqual(
-        expect.stringContaining("Reload"),
-      )
-    })
-
-    it("does not overwrite edits made while an external graph_update is laying out", async () => {
-      const { getLayoutedElements } = await import("../../utils/layout.ts")
-      let resolveLayout!: (nodes: Node[]) => void
-      const layoutPromise = new Promise<Node[]>((resolve) => {
-        resolveLayout = resolve
-      })
-      vi.mocked(getLayoutedElements).mockImplementationOnce(async () => layoutPromise)
-
-      const params = makeHookParams("rating/main.py")
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      let messagePromise!: Promise<void>
-      act(() => {
-        messagePromise = latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            source_file: "rating/main.py",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "disk", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
-              edges: [],
-            },
-          }),
-        })) as unknown as Promise<void>
-      })
-
-      expect(getLayoutedElements).toHaveBeenCalled()
-
-      useGraphStore.getState().dirty = true
-      await act(async () => {
-        resolveLayout([{ id: "disk", position: { x: 100, y: 200 }, data: {} } as Node])
-        await messagePromise
-      })
-
-      expect(params.setNodesRaw).not.toHaveBeenCalled()
-      expect(params.setEdgesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
-      expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
-        expect.stringContaining("changed on disk"),
-      )
-      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
-        "warning",
-        expect.stringContaining("unsaved changes"),
-      )
-    })
-
-    it("does not let a foreign source_file update cancel the current update layout", async () => {
-      const { getLayoutedElements } = await import("../../utils/layout.ts")
-      let resolveLayout!: (nodes: Node[]) => void
-      const layoutPromise = new Promise<Node[]>((resolve) => {
-        resolveLayout = resolve
-      })
-      vi.mocked(getLayoutedElements).mockClear()
-      vi.mocked(getLayoutedElements).mockImplementationOnce(async () => layoutPromise)
-
-      const params = makeHookParams()
-      params.sourceFileRef.current = "rating/main.py"
-      renderHook(() => useWebSocketSync(params))
-
-      let currentMessage!: Promise<void>
-      act(() => {
-        currentMessage = latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            source_file: "rating/main.py",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "current", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
-              edges: [],
-            },
-          }),
-        })) as unknown as Promise<void>
-      })
-
-      expect(getLayoutedElements).toHaveBeenCalledTimes(1)
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            source_file: "modules/foreign.py",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "foreign", position: { x: 100, y: 200 }, data: {} }],
-              edges: [],
-            },
-          }),
-        }))
-      })
-
-      await act(async () => {
-        resolveLayout([{ id: "current", position: { x: 100, y: 200 }, data: {} } as Node])
-        await currentMessage
-      })
-
-      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledTimes(1)
-      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
-        expect.objectContaining({
-          nodes: [expect.objectContaining({ id: "current" })],
-        }),
-      )
-      expect(params.setNodesRaw).not.toHaveBeenCalled()
-    })
-
-    it("sets graphRefreshingRef around node replacement and clears after 150ms", async () => {
-      const params = makeHookParams()
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      const graphMsg = {
-        type: "graph_update",
-        graph: {
-          submodels: {},
-          source_revision: "revision-test",
-          preserved_blocks: [],
-          nodes: [
-            { id: "transform_1", position: { x: 100, y: 200 }, data: { label: "test" } },
-          ],
-          edges: [],
-        },
-      }
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify(graphMsg),
-        }))
-      })
-
-      // Guard active — onSelectionChange will skip spurious deselections
-      expect(params.graphRefreshingRef.current).toBeGreaterThan(0)
-
-      // Guard released — normal selection behaviour resumes
-      act(() => {
-        vi.advanceTimersByTime(150)
-      })
-
-      expect(params.graphRefreshingRef.current).toBe(0)
-    })
-
-    it("handles parse_error messages by setting sync banner", async () => {
-      const params = makeHookParams()
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "parse_error",
-            error: "SyntaxError on line 42",
-          }),
-        }))
-      })
-
-      expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
-        "SyntaxError on line 42",
-      )
-    })
-
-    it("keeps a parse_error when an older async graph layout finishes later", async () => {
-      const { getLayoutedElements } = await import("../../utils/layout.ts")
-      let resolveLayout!: (nodes: Node[]) => void
-      const pendingLayout = new Promise<Node[]>((resolve) => {
-        resolveLayout = resolve
-      })
-      vi.mocked(getLayoutedElements).mockImplementationOnce(async () => pendingLayout)
-
-      const params = makeHookParams("rating/main.py")
-      renderHook(() => useWebSocketSync(params))
-
-      let graphMessage!: Promise<void>
-      act(() => {
-        graphMessage = latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            source_file: "rating/main.py",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "stale", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
-              edges: [],
-            },
-          }),
-        })) as unknown as Promise<void>
-      })
-
-      await act(async () => {
-        await latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "parse_error",
-            source_file: "rating/main.py",
-            error: "Newest parse failure",
-          }),
-        }))
-      })
-
-      await act(async () => {
-        resolveLayout([{ id: "stale", position: { x: 200, y: 100 }, data: {} } as Node])
-        await graphMessage
-      })
-
-      expect(params.setNodesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
-      expect(useUIStore.getState().syncBanner).toBe("Newest parse failure")
-      expect(useUIStore.getState().setSyncBanner).not.toHaveBeenCalledWith(null)
-    })
-
-    it("lays out only new non-finite nodes and preserves an established origin", async () => {
-      const { getLayoutedElements } = await import("../../utils/layout.ts")
-      const established = {
-        id: "origin",
-        position: { x: 0, y: 0 },
-        data: { label: "Origin", nodeType: "polars", config: {} },
-      } as Node
-      useGraphStore.getState().nodes = [established]
-      vi.mocked(getLayoutedElements).mockImplementationOnce(async (nodes: Node[]) =>
-        nodes.map(node => ({
-          ...node,
-          position: node.id === "origin" ? { x: 600, y: 400 } : { x: 0, y: 0 },
-        })),
-      )
-
-      const params = makeHookParams()
-      renderHook(() => useWebSocketSync(params))
-
-      await act(async () => {
-        await latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [
-                established,
-                {
-                  id: "new",
-                  position: { x: Number.NaN, y: Number.NaN },
-                  data: { label: "New", nodeType: "polars", config: {} },
-                },
-              ],
-              edges: [],
-            },
-          }),
-        }))
-      })
-
-      expect(getLayoutedElements).toHaveBeenCalled()
-      const applied = vi.mocked(useGraphStore.getState().loadGraphSnapshot)
-        .mock.calls[0][0].nodes as Node[]
-      expect(applied.find(node => node.id === "origin")?.position).toEqual({ x: 0, y: 0 })
-      expect(applied.find(node => node.id === "new")?.position).not.toEqual({ x: 0, y: 0 })
-    })
-
-    it("retains unresolved synced edges for save while only valid edges guide layout", async () => {
-      const { getLayoutedElements } = await import("../../utils/layout.ts")
-      vi.mocked(getLayoutedElements).mockImplementationOnce(async (nodes: Node[]) =>
-        nodes.map(node => ({
-          ...node,
-          position: node.id === "target" ? { x: 300, y: 10 } : node.position,
-        })),
-      )
-      const params = makeHookParams()
-      renderHook(() => useWebSocketSync(params))
-
-      await act(async () => {
-        await latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [
-                {
-                  id: "api",
-                  position: { x: 10, y: 10 },
-                  data: {
-                    label: "Quote input",
-                    nodeType: "apiInput",
-                    config: {
-                      tables: [{
-                        label: "quotes",
-                        emit: true,
-                        columns: [{ name: "id", selected: true }],
-                      }],
-                    },
-                  },
-                },
-                {
-                  id: "target",
-                  position: { x: Number.NaN, y: Number.NaN },
-                  data: { label: "Transform", nodeType: "polars", config: {} },
-                },
-              ],
-              edges: [
-                { id: "live", source: "api", target: "target", sourceHandle: "quotes" },
-                { id: "stale-handle", source: "api", target: "target", sourceHandle: "gone" },
-                { id: "missing-node", source: "api", target: "gone", sourceHandle: "quotes" },
-              ],
-            },
-          }),
-        }))
-      })
-
-      expect(getLayoutedElements).toHaveBeenCalledWith(
-        expect.any(Array),
-        [expect.objectContaining({ id: "live", sourceHandle: "quotes" })],
-      )
-      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
-        expect.objectContaining({
-          edges: [
-            expect.objectContaining({ id: "live", sourceHandle: "quotes" }),
-            expect.objectContaining({ id: "stale-handle", sourceHandle: "gone" }),
-            expect.objectContaining({ id: "missing-node", target: "gone" }),
-          ],
-        }),
-      )
-      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
-        "warning",
-        expect.stringMatching(/retained.*stale-handle.*missing-node|retained.*missing-node.*stale-handle/i),
-      )
-    })
-
-    it("bounds unresolved-edge warning details and reports the omitted count", async () => {
-      const params = makeHookParams()
-      renderHook(() => useWebSocketSync(params))
-      const unresolvedEdges = Array.from({ length: 8 }, (_, index) => ({
-        id: `unresolved-${index}-${"x".repeat(180)}`,
-        source: "source",
-        target: `missing-${index}`,
+      const params = makeHookParams("modules/Main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        source_file: "modules/Main.py",
+        source_revision: "r1",
+        nodes: [readyNode],
       }))
+      const wrongCase = makePipelineEditorDocument({
+        source_file: "modules/main.py",
+        source_revision: "r2",
+        nodes: [{ ...readyNode, id: "wrong-case" }],
+      })
+      renderHook(() => useWebSocketSync(params))
 
       await act(async () => {
-        await latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{
-                id: "source",
-                position: { x: 10, y: 10 },
-                data: { label: "Source", nodeType: "polars", config: {} },
-              }],
-              edges: unresolvedEdges,
-            },
-          }),
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(wrongCase)),
+        }))
+      })
+
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(useDocumentStatusStore.getState().loadStatus).toBe("ready")
+      expect(useDocumentStatusStore.getState().sourceRevision).toBe("r1")
+    })
+
+    it("accepts a document update for the current source_file even when one side is absolute", async () => {
+      const params = makeHookParams("rating/main.py")
+      const document = makePipelineEditorDocument({
+        source_file: "C:\\Users\\prici\\haute\\rating\\main.py",
+        source_revision: "r2",
+        nodes: [readyNode],
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(document)),
         }))
       })
 
       expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
         expect.objectContaining({
-          edges: unresolvedEdges.map(edge => expect.objectContaining({ id: edge.id })),
+          nodes: [expect.objectContaining({ id: "disk" })],
         }),
       )
-      const warningCall = vi.mocked(useToastStore.getState().addToast).mock.calls
-        .find(([type, text]) => type === "warning" && text.includes("unresolved synced edges"))
-      expect(warningCall).toBeDefined()
-      expect(warningCall?.[1]).toContain("8 unresolved synced edges")
-      expect(warningCall?.[1]).toContain("5 more")
-      expect(warningCall?.[1].length).toBeLessThanOrEqual(650)
     })
 
-    it("clears remembered graph fingerprints after a parse_error", async () => {
-      const params = makeHookParams("rating/main.py")
-      renderHook(() => useWebSocketSync(params))
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            source_file: "rating/main.py",
-            graph_fingerprint: "applied-before-error",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
-              edges: [],
-            },
-          }),
-        }))
-      })
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "parse_error",
-            source_file: "rating/main.py",
-            error: "SyntaxError on line 42",
-          }),
-        }))
-      })
-
-      act(() => {
-        latestWS().onclose?.({} as CloseEvent)
-      })
-      act(() => {
-        vi.advanceTimersByTime(1000)
-      })
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
-        type: "resync",
+    it("accepts a document update when the current source_file is absolute and the frame is relative", async () => {
+      const params = makeHookParams("C:\\Users\\prici\\haute\\rating\\main.py")
+      const document = makePipelineEditorDocument({
         source_file: "rating/main.py",
-        document_schema_version: 1,
-      }))
-    })
-
-    it("ignores parse_error messages for a different source_file", async () => {
-      const params = makeHookParams("rating/main.py")
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
+        source_revision: "r2",
+        nodes: [readyNode],
       })
+      renderHook(() => useWebSocketSync(params))
 
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "parse_error",
-            source_file: "modules/foreign.py",
-            error: "SyntaxError in a foreign file",
-          }),
+          data: JSON.stringify(pipelineDocumentFrame(document)),
         }))
       })
 
-      expect(useUIStore.getState().setSyncBanner).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nodes: [expect.objectContaining({ id: "disk" })],
+        }),
+      )
+    })
+
+    it("rejects same-basename document frames when the current source is ambiguous", async () => {
+      const params = makeHookParams("main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        source_file: "main.py",
+        source_revision: "r1",
+        nodes: [readyNode],
+      }))
+      const document = makePipelineEditorDocument({
+        source_file: "C:\\Users\\prici\\haute\\rating\\main.py",
+        source_revision: "r2",
+        nodes: [readyNode],
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(document)),
+        }))
+      })
+
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(useDocumentStatusStore.getState().loadStatus).toBe("ready")
+      expect(useDocumentStatusStore.getState().sourceRevision).toBe("r1")
     })
 
     it("uses default error message when parse_error has no error field", async () => {
-      const params = makeHookParams()
+      const params = makeHookParams("rating/main.py")
       renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
 
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({ type: "parse_error" }),
+          data: JSON.stringify({
+            type: "parse_error",
+            source_file: "rating/main.py",
+          }),
         }))
       })
 
-      expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
-        "Parse error in pipeline file",
+      expect(useDocumentStatusStore.getState().systemFailure).toBe(
+        "Pipeline document could not be loaded.",
       )
+      expect(useUIStore.getState().setSyncBanner).toHaveBeenLastCalledWith(null)
+    })
+
+    it("routes parse_error text to the system failure state, not the banner", async () => {
+      const params = makeHookParams("rating/main.py")
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "parse_error",
+            source_file: "rating/main.py",
+            error: "boom",
+          }),
+        }))
+      })
+
+      expect(useDocumentStatusStore.getState().systemFailure).toBe("boom")
+      expect(useUIStore.getState().setSyncBanner).toHaveBeenLastCalledWith(null)
     })
   })
+
 
   // ────────────────────────────────────────────────────────────────
   // JSON parse error handling

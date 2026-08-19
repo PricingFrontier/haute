@@ -11,6 +11,7 @@ preserving formatting matters.
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from os.path import normcase
 from pathlib import Path
 
@@ -136,6 +137,7 @@ def parse_pipeline_source(
     flatten: bool = False,
     _base_dir: Path | None = None,
     _submodel_base_dir: Path | None = None,
+    _read_submodel_source: Callable[[Path], str] | None = None,
 ) -> PipelineGraph:
     """Parse pipeline source code and return a PipelineGraph.
 
@@ -144,6 +146,10 @@ def parse_pipeline_source(
         _base_dir: Directory to resolve relative config paths against.
         _submodel_base_dir: Directory to resolve relative submodel paths
             against. Defaults to ``_base_dir`` when omitted.
+        _read_submodel_source: Override for reading a registered submodel
+            file. Editor recovery injects its first-read byte capture here so
+            one load never pairs parsed child content with different bytes
+            than its revision authenticates. Defaults to ``read_user_text``.
     """
     if not source_file and _base_dir is not None:
         source_file = str((_base_dir / "__source__.py").resolve())
@@ -274,8 +280,14 @@ def parse_pipeline_source(
                     source_files=[previous_source, source_key],
                 )
             definition_sources[definition_id] = source_key
-            child_graph = parse_submodel_file(
-                sm_filepath,
+            child_source = (
+                _read_submodel_source(sm_filepath)
+                if _read_submodel_source is not None
+                else read_user_text(sm_filepath)
+            )
+            child_graph = _parse_submodel_source(
+                child_source,
+                source_file=str(sm_filepath),
                 _base_dir=sm_base_dir,
             )
             submodel_graphs[definition_id] = child_graph

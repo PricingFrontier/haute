@@ -513,6 +513,267 @@ def test_recovery_revision_tracks_malformed_config_and_missing_sidecar(
     assert second.source_revision != third.source_revision
 
 
+def test_recovery_revision_authenticates_the_bytes_the_document_presents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A concurrent parent edit must not pair old content with a new revision."""
+    from haute import _pipeline_recovery
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_revision import pipeline_recovery_revision
+
+    pipeline_file = _write(tmp_path / "main.py", _healthy_source("revision-byte-parity"))
+    original_text = pipeline_file.read_text(encoding="utf-8")
+    original_bytes = pipeline_file.read_bytes()
+    real_artifacts = _pipeline_recovery._recovery_artifacts
+
+    def edit_after_discovery(*args: object, **kwargs: object):
+        artifacts = real_artifacts(*args, **kwargs)  # type: ignore[arg-type]
+        pipeline_file.write_text("import haute\n", encoding="utf-8")
+        return artifacts
+
+    monkeypatch.setattr(_pipeline_recovery, "_recovery_artifacts", edit_after_discovery)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.source_text == original_text
+    expected = pipeline_recovery_revision(
+        project_root=tmp_path,
+        artifacts=[
+            ("parent_source", pipeline_file),
+            ("parent_sidecar", pipeline_file.with_suffix(".haute.json")),
+        ],
+        known_bytes={pipeline_file: original_bytes},
+    )
+    assert document.source_revision == expected
+
+    changed_on_disk = pipeline_recovery_revision(
+        project_root=tmp_path,
+        artifacts=[
+            ("parent_source", pipeline_file),
+            ("parent_sidecar", pipeline_file.with_suffix(".haute.json")),
+        ],
+    )
+    assert document.source_revision != changed_on_disk
+
+
+def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ready load's strict child parse and revision must share one read."""
+    from haute import _pipeline_recovery
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_revision import pipeline_recovery_revision
+
+    child = tmp_path / "modules" / "child.py"
+    child.parent.mkdir()
+    _write(
+        child,
+        """
+        import haute
+        submodel = haute.Submodel(
+            "child",
+            definition_id="child-definition",
+            input_ports=[],
+            output_ports=[],
+        )
+
+        @submodel.polars
+        def transform():
+            return None
+        """,
+    )
+    parent = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("ready-child-byte-parity")
+
+        @pipeline.polars
+        def source():
+            return None
+
+        pipeline.submodel(
+            "modules/child.py",
+            definition_id="child-definition",
+            instance_id="child__one",
+            alias="child_one",
+        )
+        """,
+    )
+    parent_bytes = parent.read_bytes()
+    child_bytes = child.read_bytes()
+    real_artifacts = _pipeline_recovery._recovery_artifacts
+    saved_artifacts: list[tuple[str, Path]] = []
+
+    def edit_child_before_discovery(*args: object, **kwargs: object):
+        # Rewrite BEFORE delegating: the walk and revision must reuse the
+        # construction-time capture, never the changed bytes now on disk.
+        child.write_text("import haute" + chr(10), encoding="utf-8")
+        artifacts = real_artifacts(*args, **kwargs)  # type: ignore[arg-type]
+        saved_artifacts.extend(artifacts)
+        return artifacts
+
+    monkeypatch.setattr(_pipeline_recovery, "_recovery_artifacts", edit_child_before_discovery)
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+
+    assert document.load_status == "ready"
+    assert document.submodels is not None
+    child_nodes = {
+        node.authored_id for node in document.submodels["child-definition"].graph.nodes
+    }
+    assert "transform" in child_nodes
+
+    expected = pipeline_recovery_revision(
+        project_root=tmp_path,
+        artifacts=saved_artifacts,
+        known_bytes={parent: parent_bytes, child: child_bytes},
+    )
+    assert document.source_revision == expected
+
+    changed_on_disk = pipeline_recovery_revision(
+        project_root=tmp_path,
+        artifacts=saved_artifacts,
+        known_bytes={parent: parent_bytes},
+    )
+    assert document.source_revision != changed_on_disk
+
+
+def test_recovery_revision_authenticates_child_bytes_the_document_presents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A concurrent child edit must not pair old submodel content with a new revision."""
+    from haute import _pipeline_recovery
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_revision import pipeline_recovery_revision
+
+    child = tmp_path / "modules" / "child.py"
+    child.parent.mkdir()
+    _write(
+        child,
+        """
+        import haute
+        submodel = haute.Submodel(
+            "child",
+            definition_id="child-definition",
+            input_ports=[],
+            output_ports=[],
+        )
+
+        @submodel.polars
+        def transform():
+            return None
+        """,
+    )
+    parent = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("child-byte-parity")
+
+        @pipeline.removed_node
+        def unavailable():
+            return None
+
+        pipeline.submodel(
+            "modules/child.py",
+            definition_id="child-definition",
+            instance_id="child__one",
+            alias="child_one",
+        )
+        """,
+    )
+    parent_bytes = parent.read_bytes()
+    child_bytes = child.read_bytes()
+    real_artifacts = _pipeline_recovery._recovery_artifacts
+    saved_artifacts: list[tuple[str, Path]] = []
+
+    def edit_child_before_discovery(*args: object, **kwargs: object):
+        # Rewrite BEFORE delegating: the walk and revision must reuse the
+        # construction-time capture, never the changed bytes now on disk.
+        child.write_text("import haute" + chr(10), encoding="utf-8")
+        artifacts = real_artifacts(*args, **kwargs)  # type: ignore[arg-type]
+        saved_artifacts.extend(artifacts)
+        return artifacts
+
+    monkeypatch.setattr(_pipeline_recovery, "_recovery_artifacts", edit_child_before_discovery)
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    assert document.submodels is not None
+    child_nodes = {
+        node.authored_id for node in document.submodels["child-definition"].graph.nodes
+    }
+    assert "transform" in child_nodes
+
+    expected = pipeline_recovery_revision(
+        project_root=tmp_path,
+        artifacts=saved_artifacts,
+        known_bytes={parent: parent_bytes, child: child_bytes},
+    )
+    assert document.source_revision == expected
+
+    changed_on_disk = pipeline_recovery_revision(
+        project_root=tmp_path,
+        artifacts=saved_artifacts,
+        known_bytes={parent: parent_bytes},
+    )
+    assert document.source_revision != changed_on_disk
+
+
+def test_submodel_failure_codes_classify_by_exception_type_not_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a genuine child SyntaxError earns ``submodel_syntax_invalid``."""
+    from haute import _pipeline_recovery
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute.errors import ParseError
+
+    child = tmp_path / "modules" / "child.py"
+    child.parent.mkdir()
+    _write(
+        child,
+        """
+        import haute
+        def broken(:
+        """,
+    )
+    parent = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("submodel-codes")
+
+        pipeline.submodel(
+            "modules/child.py",
+            definition_id="child-definition",
+            instance_id="child__one",
+            alias="child_one",
+        )
+        """,
+    )
+
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    codes = {diagnostic.code for diagnostic in document.diagnostics}
+    assert "submodel_syntax_invalid" in codes
+    assert "submodel_definition_invalid" not in codes
+
+    def misleading_definition_error(*_args: object, **_kwargs: object) -> object:
+        raise ParseError("This definition mentions syntax but is not a SyntaxError.")
+
+    monkeypatch.setattr(
+        _pipeline_recovery,
+        "parse_submodel_source",
+        misleading_definition_error,
+    )
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    codes = {diagnostic.code for diagnostic in document.diagnostics}
+    assert "submodel_definition_invalid" in codes
+    assert "submodel_syntax_invalid" not in codes
+
+
 def test_recovery_revision_tracks_child_config_from_parent_config_base(
     tmp_path: Path,
 ) -> None:
@@ -1036,6 +1297,90 @@ def test_recovery_preview_plans_only_the_ready_ancestor_closure(
     assert planned.node_id == "clean"  # type: ignore[attr-defined]
 
 
+def test_recovery_preview_closure_shares_canonical_cache_identity(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The planned ready closure keys caches exactly like its strict twin.
+
+    Preview cache and supersession identity derive from ``graph_fingerprint``
+    of the request graph. The server-planned recovery closure must therefore
+    fingerprint identically to the canonical graph a ready document would
+    produce once the broken node is removed, so neither path spawns a second
+    cache family for equivalent work.
+    """
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute.graph_utils import graph_fingerprint
+    from haute.parser import parse_pipeline_file
+    from haute.schemas import PreviewNodeResponse
+
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("closure-cache-parity")
+
+        @pipeline.polars
+        def source():
+            return None
+
+        @pipeline.polars
+        def clean(source):
+            return source
+
+        @pipeline.explore(pivots=[{"version": 1}])
+        def broken(source):
+            return source
+        """,
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("haute.routes.pipeline._get_project_root", lambda: tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    captured: dict[str, object] = {}
+
+    async def execute(body: object) -> PreviewNodeResponse:
+        captured["body"] = body
+        return PreviewNodeResponse(node_id="clean", status="ok")
+
+    monkeypatch.setattr("haute.routes.pipeline._preview_canonical_graph", execute)
+
+    response = client.post(
+        "/api/pipeline/recovery-preview",
+        json={
+            "source_file": "main.py",
+            "source_revision": document.source_revision,
+            "target_recovery_id": "clean",
+            "source": "live",
+        },
+    )
+    assert response.status_code == 200, response.text
+    planned_graph = captured["body"].graph  # type: ignore[attr-defined]
+
+    _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("closure-cache-parity")
+
+        @pipeline.polars
+        def source():
+            return None
+
+        @pipeline.polars
+        def clean(source):
+            return source
+        """,
+    )
+    # A ready client previews with the project-relative wire path, so align
+    # the strict twin to the same canonical source identity before comparing.
+    repaired_graph = parse_pipeline_file(pipeline_file).model_copy(
+        update={"source_file": "main.py"}
+    )
+
+    assert graph_fingerprint(planned_graph) == graph_fingerprint(repaired_graph)
+
+
 def test_recovery_preview_rejects_blocked_target_before_execution(
     tmp_path: Path,
     client: TestClient,
@@ -1160,11 +1505,11 @@ def test_unexpected_strict_parser_defect_is_not_laundered_as_authored_input(
 
     pipeline_file = _write(tmp_path / "main.py", _healthy_source("strict-incident"))
 
-    def fail_strict_parse(_path: Path) -> object:
+    def fail_strict_parse(*_args: object, **_kwargs: object) -> object:
         raise RuntimeError("private strict parser implementation detail")
 
     monkeypatch.setattr(
-        "haute._pipeline_recovery.parse_pipeline_file",
+        "haute._pipeline_recovery.parse_pipeline_source",
         fail_strict_parse,
     )
 
@@ -1265,11 +1610,11 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
         """,
     )
 
-    def fail_submodel_parse(_path: Path, *, _base_dir: Path) -> object:
+    def fail_submodel_parse(*_args: object, **_kwargs: object) -> object:
         raise RuntimeError("private submodel parser implementation detail")
 
     monkeypatch.setattr(
-        "haute._pipeline_recovery.parse_submodel_file",
+        "haute._pipeline_recovery.parse_submodel_source",
         fail_submodel_parse,
     )
 

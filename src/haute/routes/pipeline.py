@@ -1027,6 +1027,10 @@ def _recovery_ancestor_ids(
     document: PipelineEditorDocument,
     target_id: str,
 ) -> set[str]:
+    # Deliberately not haute._topo.ancestors: that helper walks canonical
+    # GraphEdge models, and constructing canonical edges from unvalidated
+    # recovery elements would cross the strict/recovery boundary this
+    # closure exists to protect.
     incoming: dict[str, list[str]] = {}
     for edge in document.edges:
         incoming.setdefault(edge.target_recovery_id, []).append(edge.source_recovery_id)

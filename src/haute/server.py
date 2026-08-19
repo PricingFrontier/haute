@@ -45,7 +45,6 @@ from haute._local_security import (
     websocket_rejection_reason,
 )
 from haute._logging import configure_logging, get_logger
-from haute.graph_utils import PipelineGraph
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._helpers import (
     _ensure_pipeline_index,
@@ -54,7 +53,6 @@ from haute.routes._helpers import (
     invalidate_pipeline_index,
     is_self_write,
     load_pipeline_editor_document,
-    parse_pipeline_to_graph,
     pipeline_dir,
     pipelines_importing_module,
     watcher_is_paused,
@@ -112,22 +110,12 @@ _optimiser_reaper_task: asyncio.Task[None] | None = None
 _WATCHER_RESTART_DELAY_SECONDS = 0.1
 _WATCHER_FLUSH_MAX_RETRIES = 3
 _WATCHER_FLUSH_RETRY_BASE_SECONDS = 0.1
-WS_FRAME_GRAPH_UPDATE = "graph_update"
 WS_FRAME_PARSE_ERROR = "parse_error"
 WS_FRAME_PIPELINE_DOCUMENT_UPDATE = "pipeline_document_update"
 PIPELINE_DOCUMENT_SCHEMA_VERSION = 1
 PIPELINE_DOCUMENT_LOAD_ERROR = (
     "Pipeline document could not be loaded. Check the server logs for details."
 )
-
-
-@dataclass(frozen=True)
-class _WsResyncResult:
-    source_file: str
-    graph: dict[str, Any] | None = None
-    graph_fingerprint: str | None = None
-    error: str | None = None
-    unchanged: bool = False
 
 
 @dataclass(frozen=True)
@@ -243,26 +231,17 @@ async def _send_ws_parse_error(
     *,
     error: str,
     source_file: str,
-    document_schema_version: int | None = None,
 ) -> None:
-    payload: dict[str, Any] = {
-        "error": error,
-        "source_file": source_file,
-    }
-    if document_schema_version is not None:
-        payload["document_schema_version"] = document_schema_version
     await _send_ws_json(
         websocket,
         _ws_message_frame(
             WS_FRAME_PARSE_ERROR,
-            payload,
+            {
+                "error": error,
+                "source_file": source_file,
+            },
         ),
     )
-
-
-def _graph_payload_fingerprint(graph_payload: dict[str, Any]) -> str:
-    canonical = canonical_json(graph_payload)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _document_payload_fingerprint(document_payload: dict[str, Any]) -> str:
@@ -270,45 +249,11 @@ def _document_payload_fingerprint(document_payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json(document_payload).encode("utf-8")).hexdigest()
 
 
-def _graph_wire_payload(graph: PipelineGraph) -> dict[str, Any]:
-    """Serialize a graph using the canonical frontend-facing field aliases."""
-
-    return graph.model_dump(mode="json", by_alias=True)
-
-
 def _client_fingerprint(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     fingerprint = value.strip()
     return fingerprint or None
-
-
-def _prepare_ws_resync(source_path: Path, client_graph_fingerprint: str | None) -> _WsResyncResult:
-    """Discover, fingerprint, and parse one resync target off the event loop."""
-    discovered = _discovered_pipeline_paths()
-    pipeline_path = discovered.get(str(source_path))
-    if pipeline_path is None:
-        return _WsResyncResult(
-            error="Resync source is not a discovered pipeline",
-            source_file=_wire_source_file(source_path),
-        )
-
-    source_file = _wire_source_file(pipeline_path)
-    try:
-        graph = parse_pipeline_to_graph(pipeline_path)
-        graph_payload = _graph_wire_payload(graph)
-        graph_fingerprint = _graph_payload_fingerprint(graph_payload)
-        if client_graph_fingerprint == graph_fingerprint:
-            return _WsResyncResult(source_file=source_file, unchanged=True)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("parse_error", file=pipeline_path.name, error=str(exc))
-        return _WsResyncResult(error=str(exc), source_file=source_file)
-
-    return _WsResyncResult(
-        graph=graph_payload,
-        graph_fingerprint=graph_fingerprint,
-        source_file=source_file,
-    )
 
 
 def _prepare_ws_document_resync(
@@ -371,66 +316,39 @@ async def _handle_ws_sync_message(websocket: WebSocket, message_text: str) -> No
         )
         return
 
-    if "document_schema_version" in message:
-        if message.get("document_schema_version") != PIPELINE_DOCUMENT_SCHEMA_VERSION:
-            await _send_ws_parse_error(
-                websocket,
-                error="Unsupported pipeline document schema version",
-                source_file=_wire_source_file(source_path),
-            )
-            return
-        document_result = await run_in_threadpool(
-            _prepare_ws_document_resync,
-            source_path,
-            _client_fingerprint(message.get("document_fingerprint")),
-        )
-        if document_result.unchanged:
-            return
-        if document_result.error is not None:
-            await _send_ws_parse_error(
-                websocket,
-                error=document_result.error,
-                source_file=document_result.source_file,
-                document_schema_version=PIPELINE_DOCUMENT_SCHEMA_VERSION,
-            )
-            return
-        await _send_ws_json(
-            websocket,
-            _ws_message_frame(
-                WS_FRAME_PIPELINE_DOCUMENT_UPDATE,
-                {
-                    "schema_version": PIPELINE_DOCUMENT_SCHEMA_VERSION,
-                    "document": document_result.document,
-                    "document_fingerprint": document_result.document_fingerprint,
-                    "source_file": document_result.source_file,
-                },
-            ),
-        )
-        return
-
-    graph_result = await run_in_threadpool(
-        _prepare_ws_resync,
-        source_path,
-        _client_fingerprint(message.get("graph_fingerprint")),
-    )
-    if graph_result.unchanged:
-        return
-    if graph_result.error is not None:
+    # There is exactly one sync protocol: the versioned editor document.
+    # A resync without the current schema version is a defective client,
+    # not a legacy one to accommodate.
+    if message.get("document_schema_version") != PIPELINE_DOCUMENT_SCHEMA_VERSION:
         await _send_ws_parse_error(
             websocket,
-            error=graph_result.error,
-            source_file=graph_result.source_file,
+            error="Unsupported pipeline document schema version",
+            source_file=_wire_source_file(source_path),
         )
         return
-
+    document_result = await run_in_threadpool(
+        _prepare_ws_document_resync,
+        source_path,
+        _client_fingerprint(message.get("document_fingerprint")),
+    )
+    if document_result.unchanged:
+        return
+    if document_result.error is not None:
+        await _send_ws_parse_error(
+            websocket,
+            error=document_result.error,
+            source_file=document_result.source_file,
+        )
+        return
     await _send_ws_json(
         websocket,
         _ws_message_frame(
-            WS_FRAME_GRAPH_UPDATE,
+            WS_FRAME_PIPELINE_DOCUMENT_UPDATE,
             {
-                "graph": graph_result.graph,
-                "graph_fingerprint": graph_result.graph_fingerprint,
-                "source_file": graph_result.source_file,
+                "schema_version": PIPELINE_DOCUMENT_SCHEMA_VERSION,
+                "document": document_result.document,
+                "document_fingerprint": document_result.document_fingerprint,
+                "source_file": document_result.source_file,
             },
         ),
     )
@@ -439,11 +357,6 @@ async def _handle_ws_sync_message(websocket: WebSocket, message_text: str) -> No
 # Keep strong refs to the handlers so the bus cannot collect them, and
 # retain the unsubscribe callables on the module for lifespan teardown
 # / test isolation.
-def _ws_graph_update_subscriber(payload: dict[str, Any]) -> None:
-    """Forward ``graph.update`` bus events to every connected WebSocket."""
-    _broadcast_event_as_ws_message(WS_FRAME_GRAPH_UPDATE, payload)
-
-
 def _ws_parse_error_subscriber(payload: dict[str, Any]) -> None:
     """Forward ``parse.error`` bus events to every connected WebSocket."""
     _broadcast_event_as_ws_message(WS_FRAME_PARSE_ERROR, payload)
@@ -457,7 +370,6 @@ def _ws_pipeline_document_update_subscriber(payload: dict[str, Any]) -> None:
     )
 
 
-_unsubscribe_graph_update = default_bus.subscribe("graph.update", _ws_graph_update_subscriber)
 _unsubscribe_parse_error = default_bus.subscribe("parse.error", _ws_parse_error_subscriber)
 _unsubscribe_pipeline_document_update = default_bus.subscribe(
     "pipeline.document.update", _ws_pipeline_document_update_subscriber
@@ -941,7 +853,6 @@ async def _file_watcher() -> None:
             # Deduplicate and parse
             for p, dependency_triggered in changed_files.values():
                 logger.info("file_changed", file=p.name)
-                document_published = False
                 try:
                     # Hash raw bytes so ANY edit triggers a broadcast.  The parser
                     # normalises code (strips whitespace, docstrings, return
@@ -954,14 +865,12 @@ async def _file_watcher() -> None:
                     if not file_changed and not dependency_triggered:
                         logger.info("graph_unchanged", file=p.name)
                         continue
-                    # The recovery document is the v1 live-sync source of
-                    # truth.  It deliberately remains available in degraded
-                    # and source-only states, where strict graph parsing can
-                    # fail.  Never replace a serialization failure with an
-                    # empty document: send the established safe parse error.
-                    document_payload = load_pipeline_editor_document(
-                        p, project_root=Path.cwd()
-                    ).model_dump(mode="json", by_alias=True)
+                    # The recovery document is the only live-sync payload.  It
+                    # deliberately remains available in degraded and
+                    # source-only states, so an authored error still reaches
+                    # clients as an honest document rather than a parse error.
+                    document = load_pipeline_editor_document(p, project_root=Path.cwd())
+                    document_payload = document.model_dump(mode="json", by_alias=True)
                     document_fingerprint = _document_payload_fingerprint(document_payload)
                     _last_broadcast_fp[fp_key] = fp
                     default_bus.publish(
@@ -972,52 +881,27 @@ async def _file_watcher() -> None:
                             "source_file": _wire_source_file(p),
                         },
                     )
-                    document_published = True
-                    # Legacy graph frames remain during migration, but only
-                    # after the v1 document event so v1 clients can ignore
-                    # the old protocol.  Strict parsing is intentionally
-                    # separate: degraded/source-only documents still reached
-                    # new clients above.
-                    try:
-                        graph = parse_pipeline_to_graph(p)
-                    except Exception as graph_exc:  # noqa: BLE001
-                        logger.error("parse_error", file=p.name, error=str(graph_exc))
-                        default_bus.publish(
-                            "parse.error",
-                            {"error": str(graph_exc), "source_file": _wire_source_file(p)},
-                        )
-                        continue
-                    graph_payload = _graph_wire_payload(graph)
-                    graph_fp = _graph_payload_fingerprint(graph_payload)
-                    default_bus.publish(
-                        "graph.update",
-                        {
-                            "graph": graph_payload,
-                            "graph_fingerprint": graph_fp,
-                            "source_file": _wire_source_file(p),
-                        },
-                    )
-                    n_nodes = len(graph.nodes)
                     with ws_clients_lock:
                         client_count = len(ws_clients)
                     logger.info(
-                        "graph_broadcast",
+                        "document_broadcast",
                         clients=client_count,
-                        nodes=n_nodes,
+                        load_status=document.load_status,
+                        nodes=len(document.nodes),
                     )
                 except Exception as e:
+                    # Only a document-load or serialization defect lands here;
+                    # authored errors were already representable above.  Send
+                    # the established safe message, never the raw exception.
                     fp_key = str(p.resolve())
                     _last_broadcast_fp.pop(fp_key, None)
                     logger.error("parse_error", file=p.name, error=str(e), exc_info=True)
-                    error_payload: dict[str, Any] = {
-                        "error": str(e) if document_published else PIPELINE_DOCUMENT_LOAD_ERROR,
-                        "source_file": _wire_source_file(p),
-                    }
-                    if not document_published:
-                        error_payload["document_schema_version"] = PIPELINE_DOCUMENT_SCHEMA_VERSION
                     default_bus.publish(
                         "parse.error",
-                        error_payload,
+                        {
+                            "error": PIPELINE_DOCUMENT_LOAD_ERROR,
+                            "source_file": _wire_source_file(p),
+                        },
                     )
         except asyncio.CancelledError:
             if requeue_on_error:

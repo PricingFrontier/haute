@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -122,14 +122,21 @@ def pipeline_recovery_revision(
     *,
     project_root: Path,
     artifacts: Iterable[tuple[str, Path]],
+    known_bytes: Mapping[Path, bytes] | None = None,
 ) -> str:
     """Hash raw, contained artifacts without requiring a canonical graph.
 
     Repeated references to the same resolved path in the same role collapse to
     one manifest entry. Missing and unreadable artifacts remain explicit states
-    so either transition changes the revision.
+    so either transition changes the revision. *known_bytes* supplies the exact
+    bytes a caller already read for an artifact; hashing those instead of
+    re-reading keeps the revision authenticating the same content the caller
+    presents even when the file changes concurrently.
     """
     root = project_root.resolve()
+    captured = {
+        str(path.resolve()).casefold(): raw for path, raw in (known_bytes or {}).items()
+    }
     unique: dict[tuple[str, str], tuple[str, Path]] = {}
     for role, raw_path in artifacts:
         if not role or not role.strip():
@@ -150,7 +157,8 @@ def pipeline_recovery_revision(
     for role, path in ordered:
         entry = {"role": role, "path": _project_relative(path, root)}
         try:
-            raw = path.read_bytes()
+            captured_raw = captured.get(str(path).casefold())
+            raw = captured_raw if captured_raw is not None else path.read_bytes()
         except FileNotFoundError:
             entry["state"] = "missing"
         except OSError as exc:

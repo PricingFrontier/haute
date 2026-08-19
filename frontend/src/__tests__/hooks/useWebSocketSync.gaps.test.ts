@@ -1,10 +1,10 @@
 /**
  * Gap tests for useWebSocketSync — covers scenarios missing from the main test file:
  *
- * 1. fitView delayed call (setTimeout 100ms after graph_update)
+ * 1. fitView delayed call (setTimeout 100ms after pipeline_document_update)
  * 2. Binary/blob messages (non-string event.data)
- * 3. Preamble undefined vs empty string handling
- * 4. Multiple rapid graph_update messages (only last one wins)
+ * 3. Preamble normalization
+ * 4. Multiple rapid pipeline_document_update messages (only last one wins)
  * 5. WebSocket constructor throwing (e.g. invalid URL, blocked by CSP)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
@@ -49,6 +49,10 @@ vi.mock("../../stores/useUIStore.ts", () => {
     }),
     setPaletteOpen: vi.fn(),
     setShortcutsOpen: vi.fn(),
+    submodelDialog: null,
+    setSubmodelDialog: vi.fn(),
+    renameDialog: null,
+    setRenameDialog: vi.fn(),
   }
   const useUIStore = Object.assign(() => store, {
     getState: () => store,
@@ -58,9 +62,9 @@ vi.mock("../../stores/useUIStore.ts", () => {
   return { default: useUIStore }
 })
 
-// The hook reads dirty-state from useGraphStore and applies incoming graphs
-// through loadGraphSnapshot; the mock must provide both or every
-// graph_update rolls back before reaching the behavior under test.
+// The hook reads dirty-state from useGraphStore and applies incoming
+// documents through loadGraphSnapshot; the mock must provide both or every
+// document update rolls back before reaching the behavior under test.
 vi.mock("../../stores/useGraphStore.ts", () => {
   const store = {
     dirty: false,
@@ -93,7 +97,9 @@ import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
 import { getLayoutedElements } from "../../utils/layout.ts"
+import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
 
 // ── WebSocket mock infrastructure ────────────────────────────────
 
@@ -127,19 +133,40 @@ function createMockWebSocket() {
   return MockWebSocket
 }
 
-function makeHookParams() {
+const SOURCE_FILE = "rating/main.py"
+
+function makeHookParams(sourceFile = SOURCE_FILE) {
   return {
-    setNodesRaw: vi.fn(),
-    setEdgesRaw: vi.fn(),
-    setSubmodelsRaw: vi.fn(),
-    setPreamble: vi.fn(),
     submodelsRef: { current: {} },
     preambleRef: { current: "" },
+    sourceFileRef: { current: sourceFile },
     sourceRevisionRef: { current: "revision-test" },
     preservedBlocksRef: { current: [] as string[] },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
+  }
+}
+
+function pipelineDocumentFrame(
+  document: ReturnType<typeof makePipelineEditorDocument>,
+  documentFingerprint = "document-fingerprint",
+) {
+  return {
+    type: "pipeline_document_update",
+    schema_version: 1,
+    document,
+    document_fingerprint: documentFingerprint,
+    source_file: document.source_file,
+  }
+}
+
+function nodeAt(id: string, x: number, y: number, label?: string): Node {
+  return {
+    id,
+    type: "polars",
+    position: { x, y },
+    data: { label: label ?? id, nodeType: "polars", config: {} },
   }
 }
 
@@ -158,6 +185,7 @@ describe("useWebSocketSync — gap tests", () => {
     vi.mocked(useToastStore.getState().addToast).mockClear()
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
     vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
+    useDocumentStatusStore.getState().reset()
   })
 
   afterEach(() => {
@@ -167,15 +195,20 @@ describe("useWebSocketSync — gap tests", () => {
   })
 
   // ────────────────────────────────────────────────────────────────
-  // 1. fitView delayed call after graph_update
+  // 1. fitView delayed call after pipeline_document_update
   // ────────────────────────────────────────────────────────────────
 
   describe("fitView delayed call", () => {
-    it("calls fitView with padding 0.8 after a 100ms delay on graph_update", async () => {
+    it("calls fitView with padding 0.8 after a 100ms delay on document update", async () => {
       // Catches: if someone removes the setTimeout or changes the delay,
       // graph will not fit to view after receiving a file-watcher update,
       // leaving the user looking at an empty canvas.
       const params = makeHookParams()
+      const document = makePipelineEditorDocument({
+        source_file: SOURCE_FILE,
+        source_revision: "revision-test",
+        nodes: [nodeAt("n1", 10, 20, "A")],
+      })
       renderHook(() => useWebSocketSync(params))
 
       act(() => {
@@ -184,16 +217,7 @@ describe("useWebSocketSync — gap tests", () => {
 
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "n1", position: { x: 10, y: 20 }, data: { label: "A" } }],
-              edges: [],
-            },
-          }),
+          data: JSON.stringify(pipelineDocumentFrame(document)),
         }))
       })
 
@@ -213,6 +237,11 @@ describe("useWebSocketSync — gap tests", () => {
       // Catches: premature fitView call before nodes are rendered by React,
       // which would compute the wrong viewport bounds.
       const params = makeHookParams()
+      const document = makePipelineEditorDocument({
+        source_file: SOURCE_FILE,
+        source_revision: "revision-test",
+        nodes: [nodeAt("n1", 10, 20)],
+      })
       renderHook(() => useWebSocketSync(params))
 
       act(() => {
@@ -221,16 +250,7 @@ describe("useWebSocketSync — gap tests", () => {
 
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "n1", position: { x: 10, y: 20 }, data: {} }],
-              edges: [],
-            },
-          }),
+          data: JSON.stringify(pipelineDocumentFrame(document)),
         }))
       })
 
@@ -275,16 +295,20 @@ describe("useWebSocketSync — gap tests", () => {
   })
 
   // ────────────────────────────────────────────────────────────────
-  // 3. Preamble undefined vs empty string
+  // 3. Preamble normalization
   // ────────────────────────────────────────────────────────────────
 
   describe("preamble handling", () => {
-    it("does NOT call setPreamble when graph.preamble is undefined", async () => {
-      // Catches: if the guard `g.preamble !== undefined` is removed,
-      // every graph_update (even partial ones without preamble) would
-      // overwrite the user's preamble with "".
+    it("normalizes empty string preamble (document.preamble = '')", async () => {
+      // Catches: preamble should normalize to "" so the preamble editor
+      // starts clean rather than showing `undefined`.
       const params = makeHookParams()
-      params.preambleRef.current = "import polars as pl"
+      const document = makePipelineEditorDocument({
+        source_file: SOURCE_FILE,
+        source_revision: "revision-test",
+        nodes: [nodeAt("n1", 1, 1)],
+        preamble: "",
+      })
       renderHook(() => useWebSocketSync(params))
 
       act(() => {
@@ -293,48 +317,7 @@ describe("useWebSocketSync — gap tests", () => {
 
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "n1", position: { x: 1, y: 1 }, data: {} }],
-              edges: [],
-              // preamble key is intentionally absent
-            },
-          }),
-        }))
-      })
-
-      expect(params.setPreamble).not.toHaveBeenCalled()
-      // preambleRef should be untouched
-      expect(params.preambleRef.current).toBe("import polars as pl")
-    })
-
-    it("normalizes empty string preamble (g.preamble = '')", async () => {
-      // Catches: `g.preamble || ""` should normalize falsy preamble to ""
-      // so the preamble editor starts clean rather than showing `undefined`.
-      const params = makeHookParams()
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "n1", position: { x: 1, y: 1 }, data: {} }],
-              edges: [],
-              preamble: "",
-            },
-          }),
+          data: JSON.stringify(pipelineDocumentFrame(document)),
         }))
       })
 
@@ -346,11 +329,11 @@ describe("useWebSocketSync — gap tests", () => {
   })
 
   // ────────────────────────────────────────────────────────────────
-  // 4. Multiple rapid graph_update messages
+  // 4. Multiple rapid pipeline_document_update messages
   // ────────────────────────────────────────────────────────────────
 
-  describe("multiple rapid graph_update messages", () => {
-    it("processes each graph_update — last one's nodes win", async () => {
+  describe("multiple rapid document update messages", () => {
+    it("processes each document update — last one's nodes win", async () => {
       // Catches: if the hook accumulated state or debounced updates
       // incorrectly, intermediate updates might be dropped or merged
       // wrong, leaving the UI out of sync with the file on disk.
@@ -361,39 +344,27 @@ describe("useWebSocketSync — gap tests", () => {
         latestWS().onopen?.(new Event("open"))
       })
 
-      const msg1 = {
-        type: "graph_update",
-        graph: {
-          submodels: {},
-          source_revision: "revision-test",
-          preserved_blocks: [],
-          nodes: [{ id: "n1", position: { x: 1, y: 1 }, data: { label: "first" } }],
-          edges: [],
-        },
-      }
-      const msg2 = {
-        type: "graph_update",
-        graph: {
-          submodels: {},
-          source_revision: "revision-test",
-          preserved_blocks: [],
-          nodes: [
-            { id: "n1", position: { x: 10, y: 10 }, data: { label: "second" } },
-            { id: "n2", position: { x: 20, y: 20 }, data: { label: "new" } },
-          ],
-          edges: [{ id: "e1", source: "n1", target: "n2" }],
-        },
-      }
+      const doc1 = makePipelineEditorDocument({
+        source_file: SOURCE_FILE,
+        source_revision: "revision-test",
+        nodes: [nodeAt("n1", 1, 1, "first")],
+      })
+      const doc2 = makePipelineEditorDocument({
+        source_file: SOURCE_FILE,
+        source_revision: "revision-test-2",
+        nodes: [nodeAt("n1", 10, 10, "second"), nodeAt("n2", 20, 20, "new")],
+        edges: [{ id: "e1", source: "n1", target: "n2" }],
+      })
 
       // Fire both messages rapidly (no timer advancement between them)
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify(msg1),
+          data: JSON.stringify(pipelineDocumentFrame(doc1)),
         }))
       })
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify(msg2),
+          data: JSON.stringify(pipelineDocumentFrame(doc2)),
         }))
       })
 
@@ -406,7 +377,7 @@ describe("useWebSocketSync — gap tests", () => {
       expect(lastCallNodes[0].data.label).toBe("second")
     })
 
-    it("only runs delayed fitView for the latest rapid graph_update", async () => {
+    it("only runs delayed fitView for the latest rapid document update", async () => {
       // Catches: multiple pending fitView timers should not cause
       // excessive viewport jumps after rapid file-watcher updates.
       const params = makeHookParams()
@@ -416,22 +387,21 @@ describe("useWebSocketSync — gap tests", () => {
         latestWS().onopen?.(new Event("open"))
       })
 
-      const graphMsg = (id: string) => ({
-        type: "graph_update",
-        graph: {
-          submodels: {},
-          source_revision: "revision-test",
-          preserved_blocks: [],
-          nodes: [{ id, position: { x: 1, y: 1 }, data: {} }],
-          edges: [],
-        },
+      const docFor = (id: string, revision: string) => makePipelineEditorDocument({
+        source_file: SOURCE_FILE,
+        source_revision: revision,
+        nodes: [nodeAt(id, 1, 1)],
       })
 
       await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(graphMsg("a")) }))
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(docFor("a", "revision-a"))),
+        }))
       })
       await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(graphMsg("b")) }))
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(docFor("b", "revision-b"))),
+        }))
       })
 
       act(() => {
@@ -441,93 +411,17 @@ describe("useWebSocketSync — gap tests", () => {
       expect(params.fitView).toHaveBeenCalledTimes(1)
     })
 
-    it("ignores a stale graph_update whose async layout finishes after a newer update", async () => {
-      // Catches: layout is async. If edit A starts layout, edit B arrives
-      // and applies, then edit A finishes later, the UI must not roll back
-      // to stale graph data.
-      let resolveFirstLayout!: (nodes: Node[]) => void
-      const firstLayout = new Promise<Node[]>((resolve) => {
-        resolveFirstLayout = resolve
-      })
-      vi.mocked(getLayoutedElements)
-        .mockImplementationOnce(async () => firstLayout)
-        .mockImplementationOnce(async (nodes: Node[]) =>
-          nodes.map(node => ({ ...node, position: { x: 20, y: 20 } })),
-        )
-
-      const params = makeHookParams()
-      renderHook(() => useWebSocketSync(params))
-
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      let firstMessage!: Promise<void>
-      await act(async () => {
-        firstMessage = latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{
-                id: "node_99",
-                position: { x: Number.NaN, y: Number.NaN },
-                data: { label: "old" },
-              }],
-              edges: [],
-            },
-          }),
-        })) as unknown as Promise<void>
-        await Promise.resolve()
-      })
-
-      await act(async () => {
-        await (latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{
-                id: "node_2",
-                position: { x: Number.NaN, y: Number.NaN },
-                data: { label: "new" },
-              }],
-              edges: [],
-            },
-          }),
-        })) as unknown as Promise<void>)
-      })
-
-      const loadSnapshot = vi.mocked(useGraphStore.getState().loadGraphSnapshot)
-      expect(loadSnapshot).toHaveBeenCalledTimes(1)
-      expect(loadSnapshot).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          nodes: [expect.objectContaining({ id: "node_2" })],
-        }),
-      )
-
-      await act(async () => {
-        resolveFirstLayout([{ id: "node_99", position: { x: 10, y: 10 }, data: { label: "old" } }])
-        await firstMessage
-      })
-
-      expect(loadSnapshot).toHaveBeenCalledTimes(1)
-      expect(loadSnapshot).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          nodes: [expect.objectContaining({ id: "node_2" })],
-        }),
-      )
-      expect(params.nodeIdCounter.current).toBe(3)
-      expect(useToastStore.getState().addToast).toHaveBeenCalledTimes(1)
-      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
-        "info",
-        "Pipeline updated from file",
-      )
-    })
+    // NOTE: the legacy "ignores a stale graph_update whose async layout
+    // finishes after a newer update" race test is deleted, not ported.
+    // `document.nodes[].display_position` is a required, schema-validated
+    // finite {x, y} pair (parsePosition in pipelineDocument.ts throws on
+    // non-finite coordinates), so `nodeIdsNeedingLayout()` is always empty
+    // for a successfully-parsed pipeline_document_update frame and
+    // `getLayoutedElements` is never awaited on this path. With no await
+    // point in the handler, two document updates can no longer interleave
+    // mid-processing — there is nothing left to race. The updateSeq
+    // staleness guard itself is still exercised indirectly by "processes
+    // each document update — last one's nodes win" above.
   })
 
   // ────────────────────────────────────────────────────────────────
@@ -555,59 +449,25 @@ describe("useWebSocketSync — gap tests", () => {
   })
 
   describe("unmount cleanup", () => {
-    it("does not apply a graph_update whose async layout resolves after unmount", async () => {
-      // Catches: a queued WebSocket message should not mutate React state
-      // or stores after the hook has unmounted.
-      let resolveLayout!: (nodes: Node[]) => void
-      const layout = new Promise<Node[]>((resolve) => {
-        resolveLayout = resolve
-      })
-      vi.mocked(getLayoutedElements).mockImplementationOnce(async () => layout)
-
-      const params = makeHookParams()
-      const { unmount } = renderHook(() => useWebSocketSync(params))
-      act(() => {
-        latestWS().onopen?.(new Event("open"))
-      })
-
-      let message!: Promise<void>
-      await act(async () => {
-        message = latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{
-                id: "after-unmount",
-                position: { x: Number.NaN, y: Number.NaN },
-                data: {},
-              }],
-              edges: [],
-            },
-          }),
-        })) as unknown as Promise<void>
-        await Promise.resolve()
-      })
-
-      unmount()
-
-      await act(async () => {
-        resolveLayout([{ id: "after-unmount", position: { x: 1, y: 1 }, data: {} }])
-        await message
-      })
-
-      expect(params.setNodesRaw).not.toHaveBeenCalled()
-      expect(params.setEdgesRaw).not.toHaveBeenCalled()
-      expect(params.fitView).not.toHaveBeenCalled()
-      expect(useToastStore.getState().addToast).not.toHaveBeenCalled()
-    })
+    // NOTE: the legacy "does not apply a graph_update whose async layout
+    // resolves after unmount" test is deleted, not ported. It relied on
+    // `getLayoutedElements` being invoked and awaited so the message could
+    // still be mid-flight at unmount time. As established above,
+    // `getLayoutedElements` is unreachable for a successfully-parsed
+    // pipeline_document_update frame (display_position is always a
+    // schema-validated finite pair), so the document-update handler never
+    // suspends on an await — there is no in-flight async gap for unmount to
+    // race against.
 
     it("clears delayed fitView and selection-guard timers on unmount", async () => {
       // Catches: delayed callbacks from a successful sync should not fire
       // after unmount, and the selection guard must not remain stuck on.
       const params = makeHookParams()
+      const document = makePipelineEditorDocument({
+        source_file: SOURCE_FILE,
+        source_revision: "revision-test",
+        nodes: [nodeAt("n1", 10, 10)],
+      })
       const { unmount } = renderHook(() => useWebSocketSync(params))
       act(() => {
         latestWS().onopen?.(new Event("open"))
@@ -615,16 +475,7 @@ describe("useWebSocketSync — gap tests", () => {
 
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", {
-          data: JSON.stringify({
-            type: "graph_update",
-            graph: {
-              submodels: {},
-              source_revision: "revision-test",
-              preserved_blocks: [],
-              nodes: [{ id: "n1", position: { x: 10, y: 10 }, data: {} }],
-              edges: [],
-            },
-          }),
+          data: JSON.stringify(pipelineDocumentFrame(document)),
         }))
       })
 

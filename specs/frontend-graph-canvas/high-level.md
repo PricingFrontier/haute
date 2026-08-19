@@ -570,9 +570,9 @@ well as occurrence-specific positions and bindings.
   history.
 - [frontend-assistant-ui](../frontend-assistant-ui/high-level.md) — depends on
   this component in two read-only ways: assistant backend mutations arrive as
-  ordinary `graph.update` frames through `useWebSocketSync` (same apply,
-  rollback, and dirty-gating behaviour as any external edit — nothing here
-  special-cases them), and the assistant panel reads the derived dirty state
+  ordinary `pipeline_document_update` frames through `useWebSocketSync` (same
+  apply, rollback, and dirty-gating behaviour as any external edit — nothing
+  here special-cases them), and the assistant panel reads the derived dirty state
   to gate sending while local edits are unsaved.
 - `frontend-shared` — the shared node-data types (`types/node.ts`) and the
   edge-join role/api-input-port handle-id conventions
@@ -634,8 +634,8 @@ well as occurrence-specific positions and bindings.
   client-side preview *timeout* additionally shows an `error` toast.
 - Live sync toasts on WebSocket construction errors, unparsable message JSON,
   and any error raised while applying an
-  incoming `graph_update`, including an omitted or invalid non-object
-  `submodels` value (explicit `null` means an empty map); a failed apply
+  incoming `pipeline_document_update`, including a document frame that
+  fails validation; a failed apply
   attempts to roll nodes, edges, submodels, and preamble
   back to their pre-update snapshot (best-effort — a rollback failure is
   swallowed so it doesn't mask the original error in the toast). A session-expiry

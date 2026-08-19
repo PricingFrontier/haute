@@ -33,20 +33,16 @@ def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _service(project_root: Path, *, published: list[dict] | None = None):
     from haute.assistant._application import PipelineApplicationService
 
-    def publish(source_file, graph):
-        payload = {
-            "source_file": source_file,
-            "nodes": tuple(node.id for node in graph.nodes),
-        }
+    def publish(source_file):
         if published is not None:
-            published.append(payload)
+            published.append({"source_file": source_file})
         return "f" * 64
 
     return PipelineApplicationService(
         project_root=project_root,
         pipeline_root=project_root,
         mutations_readiness=lambda _root: (True, None),
-        publish_graph_update=publish,
+        publish_document_update=publish,
     )
 
 
@@ -59,7 +55,7 @@ class TestDryRun:
             project_root=project_root,
             pipeline_root=project_root,
             mutations_readiness=lambda _root: (True, None),
-            publish_graph_update=lambda _source, _graph: "f" * 64,
+            publish_document_update=lambda _source: "f" * 64,
             plan_store=shared_store,
         )
 
@@ -359,7 +355,7 @@ class TestApply:
         assert result.verification_tier == "schema"
         assert result.verification_evidence
         assert result.graph_fingerprint == "f" * 64
-        assert published == [{"source_file": "main.py", "nodes": ("quotes", "Age_band")}]
+        assert published == [{"source_file": "main.py"}]
 
         with pytest.raises(AssistantOperationError) as exc:
             await service.apply("main.py", plan.plan_hash)
@@ -429,7 +425,7 @@ class TestApply:
             project_root=project_root,
             pipeline_root=project_root,
             mutations_readiness=lambda _root: (True, None),
-            publish_graph_update=lambda _source, _graph: "f" * 64,
+            publish_document_update=lambda _source: "f" * 64,
             project_sources=lambda _source: (evidence,),
         )
         plan = service.dry_run(
@@ -465,7 +461,7 @@ class TestApply:
             project_root=project_root,
             pipeline_root=project_root,
             mutations_readiness=lambda _root: (False, "working branch is not ready"),
-            publish_graph_update=lambda _source, _graph: "f" * 64,
+            publish_document_update=lambda _source: "f" * 64,
         )
         plan = service.dry_run(
             "main.py",
@@ -499,8 +495,8 @@ class TestApply:
             project_root=project_root,
             pipeline_root=project_root,
             mutations_readiness=lambda _root: (True, None),
-            publish_graph_update=lambda source, graph: (
-                published.append({"source": source, "nodes": len(graph.nodes)}) or "f" * 64
+            publish_document_update=lambda source: (
+                published.append({"source": source}) or "f" * 64
             ),
             parse_graph=parser,
         )
@@ -515,7 +511,7 @@ class TestApply:
         assert exc.value.result["verification_status"] == "failed"
         assert exc.value.result["graph_fingerprint"] == "f" * 64
         assert "def renamed(" in (project_root / "main.py").read_text(encoding="utf-8")
-        assert published == [{"source": "main.py", "nodes": 1}]
+        assert published == [{"source": "main.py"}]
         with pytest.raises(AssistantOperationError) as second:
             await service.apply("main.py", plan.plan_hash)
         assert second.value.code == "plan_already_applied"

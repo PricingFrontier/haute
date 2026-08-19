@@ -383,9 +383,9 @@ explicit read-only failure surface and cannot leave a retained canvas looking cu
 
 The same strict parser validates `pipeline_document_update` frames before any store mutation. Status
 and capability state is applied before a graph snapshot and remains applied when a dirty-graph guard
-rejects graph replacement. A version-1 `parse_error` is a sanitized system failure for the current
-editor document: it marks the graph unsynchronised and activates the load-failure surface until the next
-valid document update. Legacy unversioned strict-parse errors do not override versioned document state.
+rejects graph replacement. A `parse_error` is a sanitized system failure for the current editor
+document: it marks the graph unsynchronised and activates the load-failure surface until the next
+valid document update. Authored recovery states never arrive through that frame.
 Degraded preview calls use the recovery-preview transport with source, revision, and target identity
 only. A current source-only state and an optional in-memory last-renderable snapshot retain separate
 revisions and are never merged.

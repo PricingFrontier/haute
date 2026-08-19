@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from haute._ast_helpers import (
+    _chained_receiver_calls,
     _connect_call_edge,
     _extract_function_bodies,
     _extract_pipeline_meta,
@@ -31,7 +32,7 @@ from haute._graph_builders import (
     _resolve_node_skeleton,
 )
 from haute._hashing import content_hash_bytes
-from haute._io import read_user_text
+from haute._io import read_user_bytes_and_text, read_user_text
 from haute._logging import get_logger
 from haute._parser_regex import (
     RecoveredFunctionFragment,
@@ -42,12 +43,13 @@ from haute._parser_submodels import (
     SubmodelRegistration,
     _extract_definition_contract,
     extract_submodel_registrations,
+    parse_submodel_source,
 )
 from haute._pipeline_revision import pipeline_recovery_revision
 from haute._submodel_paths import resolve_submodel_reference
 from haute._types import NODE_TYPE_TO_DECORATOR, NodeType, PipelineGraph
 from haute.errors import ConfigError, HauteError, ParseError
-from haute.parser import parse_pipeline_file, parse_submodel_file
+from haute.parser import _infer_parse_base_dir, parse_pipeline_source
 from haute.routes._helpers import (
     SidecarReadResult,
     _normalise_sidecar_sources,
@@ -71,6 +73,35 @@ from haute.schemas import (
 logger = get_logger(component="pipeline.recovery")
 
 _MAX_DIAGNOSTICS = 200
+
+
+class _SourceCaptures:
+    """First-read byte/text capture for every source artifact in one load.
+
+    The recovery revision must authenticate the exact bytes this document was
+    built from, so each parent/child source is read once and every later
+    consumer — including the revision manifest — reuses that capture instead
+    of re-reading a file a concurrent edit may have changed.
+    """
+
+    def __init__(self) -> None:
+        self._by_key: dict[str, tuple[Path, bytes, str]] = {}
+
+    @staticmethod
+    def _key(path: Path) -> str:
+        return str(path.resolve()).casefold()
+
+    def read(self, path: Path) -> tuple[bytes, str]:
+        key = self._key(path)
+        captured = self._by_key.get(key)
+        if captured is None:
+            raw, text = read_user_bytes_and_text(path)
+            captured = (path, raw, text)
+            self._by_key[key] = captured
+        return captured[1], captured[2]
+
+    def known_bytes(self) -> dict[Path, bytes]:
+        return {path: raw for path, raw, _text in self._by_key.values()}
 
 
 @dataclass(slots=True)
@@ -615,17 +646,7 @@ def _recover_ast_connections(
     unresolved: list[RecoveryUnresolvedConnection] = []
     ordinal = 0
     for statement in tree.body:
-        if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
-            continue
-        links: list[ast.Call] = []
-        current: ast.expr = statement.value
-        while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
-            if current.func.attr == "connect":
-                links.append(current)
-            current = current.func.value
-        if not links or not (isinstance(current, ast.Name) and current.id == receiver):
-            continue
-        for link in reversed(links):
+        for link in _chained_receiver_calls(statement, receiver=receiver, method="connect"):
             span = _span(
                 link.lineno,
                 link.col_offset,
@@ -677,14 +698,7 @@ def _is_receiver_method_statement(
     receiver: str,
     method: str,
 ) -> bool:
-    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
-        return False
-    current: ast.expr = statement.value
-    found = False
-    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
-        found = found or current.func.attr == method
-        current = current.func.value
-    return found and isinstance(current, ast.Name) and current.id == receiver
+    return bool(_chained_receiver_calls(statement, receiver=receiver, method=method))
 
 
 def _recover_ast_submodel_registrations(
@@ -1163,11 +1177,12 @@ def _recover_submodel_snapshot(
     project_root: Path,
     config_base: Path,
     diagnostics: list[PipelineRecoveryDiagnostic],
+    captures: _SourceCaptures,
 ) -> tuple[RecoveryGraphSnapshot, list[dict[str, Any]], list[dict[str, Any]]]:
     """Best-effort child graph recovery without making it canonical."""
     child_source_file = _wire_path(child_path, project_root)
     try:
-        source = read_user_text(child_path)
+        _raw, source = captures.read(child_path)
         tree = ast.parse(source)
     except (OSError, SyntaxError):
         return RecoveryGraphSnapshot(), [], []
@@ -1259,6 +1274,7 @@ def _recover_unavailable_submodel_definition(
     project_root: Path,
     config_base: Path,
     diagnostics: list[PipelineRecoveryDiagnostic],
+    captures: _SourceCaptures,
     code: str,
     message: str,
     remediation: str,
@@ -1271,6 +1287,7 @@ def _recover_unavailable_submodel_definition(
         project_root=project_root,
         config_base=config_base,
         diagnostics=diagnostics,
+        captures=captures,
     )
     diagnostic = _diagnostic(
         code=code,
@@ -1298,6 +1315,7 @@ def _recover_registered_submodels(
     project_root: Path,
     source_file: str,
     diagnostics: list[PipelineRecoveryDiagnostic],
+    captures: _SourceCaptures,
 ) -> tuple[dict[str, RecoverySubmodelDefinition] | None, list[_RecoveredCandidate]]:
     """Resolve each definition once and retain every occurrence independently."""
     if not registrations:
@@ -1392,11 +1410,16 @@ def _recover_registered_submodels(
             continue
 
         try:
-            child_graph = parse_submodel_file(child_path, _base_dir=config_base)
+            _child_raw, child_source = captures.read(child_path)
+            child_graph = parse_submodel_source(
+                child_source,
+                source_file=str(child_path),
+                _base_dir=config_base,
+            )
         except (HauteError, OSError, UnicodeError) as exc:
             code = (
                 "submodel_syntax_invalid"
-                if "syntax" in _exception_message(exc).casefold()
+                if isinstance(exc, ParseError) and isinstance(exc.__cause__, SyntaxError)
                 else "submodel_definition_invalid"
             )
             definitions[registration.definition_id] = _recover_unavailable_submodel_definition(
@@ -1405,6 +1428,7 @@ def _recover_registered_submodels(
                 project_root=project_root,
                 config_base=config_base,
                 diagnostics=diagnostics,
+                captures=captures,
                 code=code,
                 message=_exception_message(exc),
                 remediation=("Open the submodel source and correct the diagnosed definition."),
@@ -1425,6 +1449,7 @@ def _recover_registered_submodels(
                 project_root=project_root,
                 config_base=config_base,
                 diagnostics=diagnostics,
+                captures=captures,
                 code="submodel_recovery_internal_error",
                 message=("This submodel could not be recovered because of an internal error."),
                 remediation=("Check the server logs with the incident id and report the defect."),
@@ -1590,6 +1615,9 @@ def _source_references(
 def _recovery_artifacts(
     pipeline_path: Path,
     project_root: Path,
+    *,
+    parent_source: str | None = None,
+    captures: _SourceCaptures | None = None,
 ) -> list[tuple[str, Path]]:
     root = project_root.resolve()
     parent = pipeline_path.resolve()
@@ -1599,15 +1627,25 @@ def _recovery_artifacts(
     ]
     visited: set[str] = set()
 
-    def visit(source_path: Path, *, child: bool, config_base: Path) -> None:
+    def visit(
+        source_path: Path,
+        *,
+        child: bool,
+        config_base: Path,
+        source: str | None = None,
+    ) -> None:
         source_key = str(source_path.resolve()).casefold()
         if source_key in visited:
             return
         visited.add(source_key)
-        try:
-            source = read_user_text(source_path)
-        except OSError:
-            return
+        if source is None:
+            try:
+                if captures is not None:
+                    _raw, source = captures.read(source_path)
+                else:
+                    source = read_user_text(source_path)
+            except OSError:
+                return
         config_refs, registrations = _source_references(source, child=child)
         for reference in config_refs:
             config_path = (config_base / reference.replace("\\", "/")).resolve()
@@ -1631,7 +1669,7 @@ def _recovery_artifacts(
             if child_path.is_file():
                 visit(child_path, child=True, config_base=child_config_base)
 
-    visit(parent, child=False, config_base=parent.parent)
+    visit(parent, child=False, config_base=parent.parent, source=parent_source)
     return artifacts
 
 
@@ -1664,6 +1702,7 @@ def _load_readable_pipeline_editor_document(
     path: Path,
     root: Path,
     source: str,
+    captures: _SourceCaptures,
 ) -> PipelineEditorDocument:
     """Recover a source string whose path and readability are already trusted."""
     source_file = _wire_path(path, root)
@@ -1688,7 +1727,16 @@ def _load_readable_pipeline_editor_document(
     strict_failure: BaseException | None = None
     strict_graph: PipelineGraph | None = None
     try:
-        strict_graph = parse_pipeline_file(path)
+        # Parse the exact bytes this document presents. Re-reading the file
+        # here could straddle a concurrent external edit and silently disagree
+        # with ``source_text`` and the recovery pass.
+        strict_graph = parse_pipeline_source(
+            source,
+            source_file=str(path),
+            _base_dir=path.parent,
+            _submodel_base_dir=_infer_parse_base_dir(path),
+            _read_submodel_source=lambda child_path: captures.read(child_path)[1],
+        )
     except (HauteError, OSError, UnicodeError) as exc:
         strict_failure = exc
     else:
@@ -1791,6 +1839,7 @@ def _load_readable_pipeline_editor_document(
                     project_root=root,
                     source_file=source_file,
                     diagnostics=diagnostics,
+                    captures=captures,
                 )
                 candidates.extend(submodel_occurrences)
                 nodes, edges, unresolved = _build_recovery_graph(
@@ -1847,6 +1896,7 @@ def _load_readable_pipeline_editor_document(
                 project_root=root,
                 source_file=source_file,
                 diagnostics=diagnostics,
+                captures=captures,
             )
             candidates.extend(submodel_occurrences)
             nodes, edges, unresolved = _build_recovery_graph(
@@ -1888,10 +1938,11 @@ def _load_readable_pipeline_editor_document(
     if syntax_failed and not nodes:
         load_status = "source_only"
 
-    artifacts = _recovery_artifacts(path, root)
+    artifacts = _recovery_artifacts(path, root, parent_source=source, captures=captures)
     source_revision = pipeline_recovery_revision(
         project_root=root,
         artifacts=artifacts,
+        known_bytes=captures.known_bytes(),
     )
     kept_diagnostics = diagnostics[:_MAX_DIAGNOSTICS]
     return PipelineEditorDocument(
@@ -1936,9 +1987,10 @@ def load_pipeline_editor_document(
     root = (project_root or path.parent).resolve()
     if not path.is_relative_to(root):
         raise ValueError("Pipeline recovery path escapes the project root.")
-    source = read_user_text(path)
+    captures = _SourceCaptures()
+    raw_source, source = captures.read(path)
     try:
-        return _load_readable_pipeline_editor_document(path, root, source)
+        return _load_readable_pipeline_editor_document(path, root, source, captures)
     except Exception:  # noqa: BLE001 - named editor recovery isolation boundary
         incident_id = uuid4().hex
         source_file = _wire_path(path, root)
@@ -1955,6 +2007,7 @@ def load_pipeline_editor_document(
                     ("parent_source", path),
                     ("parent_sidecar", path.with_suffix(".haute.json")),
                 ],
+                known_bytes={path: raw_source},
             )
         except Exception:  # noqa: BLE001 - best-effort incident metadata
             source_revision = None

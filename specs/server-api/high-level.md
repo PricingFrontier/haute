@@ -117,13 +117,16 @@ An inbound `x-request-id` is retained only when it is a 1–64 character ASCII t
 Rejected values are logged only by bounded reason and numeric length, never by their bytes.
 
 **Live sync.** A pricing analyst can edit a pipeline's `.py` file directly in an IDE while
-the canvas is open. A background watcher (debounced 300ms) detects the change, re-parses
-only the affected pipeline(s), and publishes a `graph.update` (or `parse.error`) event on an
-in-process event bus; a subscriber wired at import time turns that into a WebSocket frame
-broadcast to every connected canvas. The canvas can also request a targeted resync over the
-same socket by sending `{"type": "resync", "source_file": ..., "graph_fingerprint": ...}`;
-the server replies only to that client, and skips the reply entirely if the client's
-fingerprint already matches (no redundant payload). Edits the server itself makes (via
+the canvas is open. A background watcher (debounced 300ms) detects the change, recovers
+only the affected pipeline(s) into editor documents, and publishes a
+`pipeline.document.update` (or, for a document that cannot be loaded at all, a
+`parse.error`) event on an in-process event bus; a subscriber wired at import time turns
+that into a WebSocket frame broadcast to every connected canvas. The canvas can also
+request a targeted resync over the same socket by sending
+`{"type": "resync", "source_file": ..., "document_schema_version": 1,
+"document_fingerprint": ...}`; the server replies only to that client, and skips the
+reply entirely if the client's document fingerprint already matches (no redundant
+payload). Edits the server itself makes (via
 `/api/pipeline/save`) are tagged as self-writes so they never round-trip back through the watcher
 as a phantom external edit. A change to a `modules/*.py` file re-parses only the pipelines
 that import it; a change to a `config/*.json` file re-parses every discovered pipeline (a
@@ -295,7 +298,7 @@ become diagnostic-unavailable rather than a fabricated success.
 The server exposes the assistant application service inside the running
 process; it adds no headless or serverless mutation API. GUI saves and
 assistant applies share the same process-wide save lock, transactional
-`SavePipelineService`, self-write marking, graph-update broadcast and Git
+`SavePipelineService`, self-write marking, document-update broadcast and Git
 ledger capture.
 
 `SavePipelineService.validate_graph(...)` is the public, no-write validation
@@ -349,8 +352,8 @@ describes. Stale, changed or already-applied plans fail before
 - **[assistant](../assistant/high-level.md)** — owns `routes/assistant.py`, included into the same
   app; its `Assistant*` request/response/SSE-event models live in `schemas.py`; its mutation
   tools run `SavePipelineService` under the shared `save_lock`, mark self-writes, and publish
-  `graph.update` on the shared event bus so assistant edits broadcast over `/ws/sync` exactly
-  like external edits.
+  `pipeline.document.update` on the shared event bus so assistant edits broadcast over
+  `/ws/sync` exactly like external edits.
 - **[codegen](../codegen/high-level.md)** — `SavePipelineService._write_code` calls
   `graph_to_code` / `graph_to_code_multi` and therefore depends on the shared registry
   between codegen and the executor.
@@ -450,8 +453,9 @@ source-only states. Status, capabilities, diagnostics, source identity, and revi
 even when a dirty client retains its local graph. Sidecar changes are dependency events. A source-only
 update may leave a prior canvas visible only as an explicitly stale read-only reference; it is never
 treated as the current graph or accepted by save/execution routes. If the editor document itself cannot
-be read or built, the server logs the underlying exception and sends a sanitized version-1
-`parse_error`; this is distinct from the unversioned strict-parser frame retained for legacy clients.
+be read or built, the server logs the underlying exception and sends a sanitized
+`parse_error`; that frame carries only document transport failure — authored errors always
+arrive as degraded or source-only documents.
 
 ## Approved change contract — minimal transactional pipeline repair
 

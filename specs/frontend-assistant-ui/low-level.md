@@ -169,9 +169,10 @@ settled transcript row.
   revisions, plan hashes, or consent metadata. Staleness, expiry and prior use
   are enforced when the model invokes the exact stored plan.
 - **Canvas dirtied mid-turn** (the analyst edits while the agent works): the send-time gate
-  can't prevent it. Incoming `graph.update` frames then hit the canvas's existing
-  dirty-guard banner (reload/discard) rather than applying — the transcript still records
-  `graph_updated` activity, and resolution happens in the canvas, not this panel. Accepted
+  can't prevent it. Incoming `pipeline_document_update` frames then hit the canvas's
+  existing dirty-guard banner (reload/discard) rather than replacing the graph — the
+  transcript still records `graph_updated` activity, and resolution happens in the canvas,
+  not this panel. Accepted
   v1 behaviour, documented rather than special-cased.
 - **Drilled into a submodel mid-turn**: likewise send-time-gated only. A running turn keeps
   editing the top-level graph; the drilled-in view is rebuilt from the parent graph on
