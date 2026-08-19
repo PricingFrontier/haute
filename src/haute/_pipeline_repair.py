@@ -37,6 +37,8 @@ from haute.schemas import (
     PipelineRepairRemoveRequest,
     RecoveryGraphSnapshot,
     RecoveryPipelineNode,
+    RecoverySourceSpan,
+    RecoveryUnresolvedConnection,
 )
 
 _UTF8_BOM = b"\xef\xbb\xbf"
@@ -165,6 +167,15 @@ def _iter_recovery_nodes(
     for definition in (graph.submodels or {}).values():
         nodes.extend(_iter_recovery_nodes(definition.graph))
     return nodes
+
+
+def _iter_unresolved_connections(
+    graph: PipelineEditorDocument | RecoveryGraphSnapshot,
+) -> list[RecoveryUnresolvedConnection]:
+    connections = list(graph.unresolved_connections)
+    for definition in (graph.submodels or {}).values():
+        connections.extend(_iter_unresolved_connections(definition.graph))
+    return connections
 
 
 def _find_target(
@@ -584,10 +595,40 @@ def _predicted_status(
         for node in _iter_recovery_nodes(document)
     ):
         return "degraded"
+    # A successful plan deletes the target's complete source span and every
+    # connection statement naming its authored id, so diagnostics anchored to
+    # either cannot survive the repair; only genuinely independent
+    # diagnostics keep the prediction degraded.
+    target_source = (target.source_file or "").replace("\\", "/").casefold()
+    removed_diagnostic_ids = {
+        diagnostic_id
+        for connection in _iter_unresolved_connections(document)
+        if target.authored_id in (connection.source_authored_id, connection.target_authored_id)
+        for diagnostic_id in connection.diagnostic_ids
+    }
+
+    def _is_removed_with_target(
+        diagnostic_source: str | None,
+        span: RecoverySourceSpan | None,
+    ) -> bool:
+        if (diagnostic_source or "").replace("\\", "/").casefold() != target_source:
+            return False
+        if span is None or target.source_span is None:
+            return False
+        return (
+            target.source_span.start_line <= span.start_line
+            and span.end_line <= target.source_span.end_line
+        )
+
     target_diagnostics = set(target.diagnostic_ids)
     if any(
         diagnostic.diagnostic_id not in target_diagnostics
         and diagnostic.element_id not in {target.recovery_id, target.authored_id}
+        and not (
+            diagnostic.diagnostic_id in removed_diagnostic_ids
+            and (diagnostic.source_file or "").replace("\\", "/").casefold() == target_source
+        )
+        and not _is_removed_with_target(diagnostic.source_file, diagnostic.source_span)
         for diagnostic in document.diagnostics
     ):
         return "degraded"

@@ -114,6 +114,22 @@ const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
   reset: () => set(initialState()),
 }))
 
+/**
+ * User-facing reason the current document cannot be edited or saved right
+ * now. Distinguishes unresolved load diagnostics from an out-of-sync canvas
+ * so fences never blame "diagnostics" for a pending external change.
+ */
+export function documentReadOnlyReason(): string {
+  const state = useDocumentStatusStore.getState()
+  if (state.systemFailure !== null) {
+    return "The pipeline document could not be loaded. Resolve the failure and reload before editing."
+  }
+  if (state.capabilities?.can_mutate === true && !state.graphSynchronized) {
+    return "Pipeline changed on disk while you have unsaved changes. Reload the file or discard local edits first."
+  }
+  return "This pipeline is read-only until its load diagnostics are resolved."
+}
+
 function executionFence(state: DocumentStatusState): DocumentExecutionFence {
   return {
     sourceFile: state.sourceFile,

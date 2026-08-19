@@ -74,8 +74,10 @@ the validated capability object, diagnostics, source identity/revision, source t
 source-selection trust. It is updated before a graph snapshot is published; the existing
 `sourceRevisionRef` is updated in the same transaction as a request-facing mirror. The graph
 store contains only adapted React Flow nodes/edges and their history. Adapted node data adds
-`_loadAvailability`, `_loadDiagnosticIds`, `_loadBlockingPath`, `_recoveryId`, and optional
-source/config location fields, none of which is confused with transient execution `_status`.
+`_loadAvailability`, `_loadDiagnosticIds`, `_loadBlockingPath`, `_recoveryId`, the authoring
+receiver (`_authoredReceiver`: `pipeline` for root nodes, `submodel` for submodel-graph nodes),
+and optional source/config location fields, none of which is confused with transient execution
+`_status`.
 `documentReadOnly` is derived from server mutation capability and gates every mutation and
 history entry point, including drag/layout, keyboard actions, preamble, assistant edits,
 Save/Git, and submodel transforms. Execution entry points separately require their server

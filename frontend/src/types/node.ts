@@ -81,6 +81,8 @@ export interface HauteNodeData extends Record<string, unknown> {
   _recoveryId?: string
   _authoredId?: string
   _authoredDecorator?: string
+  /** Decorator receiver of the authoring file: @pipeline.* vs @submodel.*. */
+  _authoredReceiver?: "pipeline" | "submodel"
   _configReference?: string
   _sourceFile?: string
   _sourceSpan?: {

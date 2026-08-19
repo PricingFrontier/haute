@@ -41,4 +41,34 @@ describe("UnavailablePipelineNode", () => {
     })).toBeInTheDocument()
     expect(screen.getByText("@pipeline.removed_type")).toBeInTheDocument()
   })
+
+  it("labels a submodel-authored node with its @submodel receiver", () => {
+    const props = {
+      id: "child@L4",
+      type: "unavailablePipelineNode",
+      data: {
+        label: "Child node",
+        nodeType: "removed_type",
+        _authoredDecorator: "removed_type",
+        _authoredReceiver: "submodel",
+        _loadAvailability: "unavailable",
+      } satisfies HauteNodeData,
+      selected: false,
+      isConnectable: false,
+      positionAbsoluteX: 0,
+      positionAbsoluteY: 0,
+      zIndex: 0,
+      dragging: false,
+      deletable: false,
+      selectable: true,
+    }
+
+    render(
+      <ReactFlowProvider>
+        <UnavailablePipelineNode {...(props as unknown as NodeProps<UnavailableNode>)} />
+      </ReactFlowProvider>,
+    )
+
+    expect(screen.getByText("@submodel.removed_type")).toBeInTheDocument()
+  })
 })

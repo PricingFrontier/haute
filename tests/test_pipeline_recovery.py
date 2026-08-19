@@ -1752,6 +1752,200 @@ def test_remove_unavailable_node_apply_commits_confirmed_plan_and_returns_docume
     assert parse_pipeline_file(pipeline_file).pipeline_name == "legacy"
 
 
+def test_remove_unavailable_node_repairs_syntax_broken_source_completely(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regex-recovered spans are decorator-inclusive, so no decorator dangles.
+
+    Regression: fragment spans used to start at the ``def`` line, so removing
+    a node from a syntax-broken source left its (multi-line) decorator behind
+    and committed a corrupted file.
+    """
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """\
+        import haute
+
+        pipeline = haute.Pipeline("syntax-broken")
+
+        @pipeline.polars
+        def source():
+            return None
+
+        @pipeline.polars(
+        )
+        def broken(source):
+            return source +
+
+        @pipeline.polars
+        def tail(source):
+            return source
+        """,
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    assert document.load_status == "degraded"
+    assert [(node.authored_id, node.availability) for node in document.nodes] == [
+        ("source", "ready"),
+        ("broken", "unavailable"),
+        ("tail", "ready"),
+    ]
+    target = next(node for node in document.nodes if node.authored_id == "broken")
+
+    request = {
+        "source_file": document.source_file,
+        "source_revision": document.source_revision,
+        "target_source_file": target.source_file,
+        "target_recovery_id": target.recovery_id,
+        "delete_config": False,
+    }
+    plan_response = client.post("/api/pipeline/repair/remove/dry-run", json=request)
+    assert plan_response.status_code == 200, plan_response.text
+    plan = plan_response.json()
+    assert "@pipeline.polars(" in plan["changes"][0]["diff"]
+    assert plan["predicted_load_status"] == "ready"
+
+    response = client.post(
+        "/api/pipeline/repair/remove/apply",
+        json={**request, "plan_hash": plan["plan_hash"]},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["document"]["load_status"] == "ready"
+    assert [node["authored_id"] for node in payload["document"]["nodes"]] == [
+        "source",
+        "tail",
+    ]
+    assert pipeline_file.read_text(encoding="utf-8") == textwrap.dedent(
+        """\
+        import haute
+
+        pipeline = haute.Pipeline("syntax-broken")
+
+        @pipeline.polars
+        def source():
+            return None
+
+
+        @pipeline.polars
+        def tail(source):
+            return source
+        """
+    )
+    assert parse_pipeline_file(pipeline_file).pipeline_name == "syntax-broken"
+
+
+def test_remove_unavailable_node_repairs_trailing_syntax_broken_node(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dangling decorator at end-of-file would make every later load raise."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """\
+        import haute
+
+        pipeline = haute.Pipeline("syntax-broken-tail")
+
+        @pipeline.polars
+        def source():
+            return None
+
+        @pipeline.polars()
+        def broken(source):
+            return source +
+        """,
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "broken")
+    assert target.availability == "unavailable"
+
+    request = {
+        "source_file": document.source_file,
+        "source_revision": document.source_revision,
+        "target_source_file": target.source_file,
+        "target_recovery_id": target.recovery_id,
+        "delete_config": False,
+    }
+    plan = client.post("/api/pipeline/repair/remove/dry-run", json=request)
+    assert plan.status_code == 200, plan.text
+
+    response = client.post(
+        "/api/pipeline/repair/remove/apply",
+        json={**request, "plan_hash": plan.json()["plan_hash"]},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["document"]["load_status"] == "ready"
+    assert [node["authored_id"] for node in payload["document"]["nodes"]] == ["source"]
+    assert pipeline_file.read_text(encoding="utf-8") == textwrap.dedent(
+        """\
+        import haute
+
+        pipeline = haute.Pipeline("syntax-broken-tail")
+
+        @pipeline.polars
+        def source():
+            return None
+
+        """
+    )
+    assert parse_pipeline_file(pipeline_file).pipeline_name == "syntax-broken-tail"
+
+
+def test_remove_unavailable_node_predicts_ready_when_only_target_connections_block(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Diagnostics on connections naming the target do not degrade the prediction."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        _legacy_explore_source().rstrip() + '\n        pipeline.connect("explore", "ghost")\n',
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "explore")
+    assert any(
+        connection.target_authored_id == "ghost" for connection in document.unresolved_connections
+    )
+
+    request = {
+        "source_file": document.source_file,
+        "source_revision": document.source_revision,
+        "target_source_file": target.source_file,
+        "target_recovery_id": target.recovery_id,
+        "delete_config": False,
+    }
+    plan_response = client.post("/api/pipeline/repair/remove/dry-run", json=request)
+    assert plan_response.status_code == 200, plan_response.text
+    plan = plan_response.json()
+    assert plan["predicted_load_status"] == "ready"
+
+    response = client.post(
+        "/api/pipeline/repair/remove/apply",
+        json={**request, "plan_hash": plan["plan_hash"]},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["document"]["load_status"] == "ready"
+    repaired_source = pipeline_file.read_text(encoding="utf-8")
+    assert '"explore"' not in repaired_source
+
+
 def test_remove_unavailable_node_repairs_a_child_submodel_source(
     tmp_path: Path,
     client: TestClient,

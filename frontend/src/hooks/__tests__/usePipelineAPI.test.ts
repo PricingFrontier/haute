@@ -562,10 +562,12 @@ describe("usePipelineAPI", () => {
 
     expect(saved).toBe(false)
     expect(mockSave).not.toHaveBeenCalled()
+    // The document itself is saveable; only synchronization blocks. The
+    // toast must name the pending on-disk change, not "load diagnostics".
     expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
       expect.objectContaining({
         type: "error",
-        text: expect.stringContaining("read-only"),
+        text: expect.stringContaining("changed on disk"),
       }),
     ]))
   })
@@ -1016,6 +1018,31 @@ describe("usePipelineAPI", () => {
     expect(mockPreview).not.toHaveBeenCalled()
     expect(mockBuildInputCache).not.toHaveBeenCalled()
     expect(mockGetInputCacheStatus).not.toHaveBeenCalled()
+  })
+
+  it("explains rather than blanks the preview inside a submodel of a degraded document", async () => {
+    const node = makeNode("recovery_node", "polars", {
+      data: { label: "Recovered node", nodeType: "polars", config: {} },
+    })
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({
+      load_status: "degraded",
+      capabilities: { can_preview: true },
+      nodes: [node],
+      edges: [],
+      source_file: "pipelines/recovered.py",
+      source_revision: "revision-recovered",
+    }))
+    const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => { result.current.fetchPreview(node, { debounceMs: 0 }) })
+
+    await waitFor(() => expect(result.current.previewBusy).toBe(false))
+    expect(result.current.previewData?.status).toBe("error")
+    expect(result.current.previewData?.error).toMatch(/recovery mode/)
+    expect(mockRecoveryPreview).not.toHaveBeenCalled()
+    expect(mockPreview).not.toHaveBeenCalled()
   })
 
   it("discards a preview response admitted under an older document fence", async () => {

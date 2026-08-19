@@ -651,6 +651,7 @@ const supportedNodeTypes = new Set<string>(Object.values(PIPELINE_NODE_TYPES))
 function adaptRecoveryGraph(
   graph: RecoveryGraph,
   includeRecoveryMetadata: boolean,
+  receiver: "pipeline" | "submodel",
 ): AdaptedPipelineEditorDocument {
   const nodes = graph.nodes.map((node): Node => {
     const knownNodeType = node.node_type !== null && supportedNodeTypes.has(node.node_type)
@@ -672,6 +673,7 @@ function adaptRecoveryGraph(
               _recoveryId: node.recovery_id,
               _authoredId: node.authored_id,
               _authoredDecorator: node.decorator_name,
+              _authoredReceiver: receiver,
               ...(node.config_reference === null
                 ? {}
                 : { _configReference: node.config_reference }),
@@ -751,7 +753,7 @@ function adaptRecoveryGraph(
   }
   const submodels = Object.fromEntries(
     Object.entries(graph.submodels ?? {}).map(([id, submodel]) => {
-      const adaptedGraph = adaptRecoveryGraph(submodel.graph, includeRecoveryMetadata)
+      const adaptedGraph = adaptRecoveryGraph(submodel.graph, includeRecoveryMetadata, "submodel")
       return [
         id,
         {
@@ -770,5 +772,5 @@ function adaptRecoveryGraph(
 export function adaptPipelineEditorDocument(
   document: PipelineEditorDocument,
 ): AdaptedPipelineEditorDocument {
-  return adaptRecoveryGraph(document, document.load_status !== "ready")
+  return adaptRecoveryGraph(document, document.load_status !== "ready", "pipeline")
 }

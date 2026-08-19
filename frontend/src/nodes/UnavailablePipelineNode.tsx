@@ -9,6 +9,7 @@ export default function UnavailablePipelineNode({ data, selected }: NodeProps<Un
   const decorator = typeof data._authoredDecorator === "string"
     ? data._authoredDecorator
     : String(data.nodeType || "unknown")
+  const receiver = data._authoredReceiver === "submodel" ? "submodel" : "pipeline"
   return (
     <div
       role="button"
@@ -33,7 +34,7 @@ export default function UnavailablePipelineNode({ data, selected }: NodeProps<Un
         {data.label}
       </div>
       <div className="mt-1 truncate font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>
-        @pipeline.{decorator}
+        @{receiver}.{decorator}
       </div>
       <Handle type="source" position={Position.Right} isConnectable={false} />
     </div>

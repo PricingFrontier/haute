@@ -19,7 +19,7 @@ import useGraphStore, { captureGraphSnapshot } from "../stores/useGraphStore"
 import useGitStore from "../stores/useGitStore"
 import { isIdentityPromptDismissed } from "../stores/identityPrompt"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
-import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
 import { effectiveNodeType, nodeData } from "../types/node"
@@ -163,6 +163,18 @@ function previewColumnNamesForNode(node: Node): string[] | undefined {
   return columns && columns.length > 0
     ? columns.slice(0, PREVIEW_INITIAL_COLUMN_LIMIT).map((column) => column.name)
     : undefined
+}
+
+function submodelRecoveryPreviewNotice(node: Node): PreviewData {
+  // Recovery preview is planned server-side from the root document, so a
+  // drilled submodel view has no admissible preview; say so instead of
+  // silently blanking the panel.
+  return makePreviewData(node.id, nodeLabel(node), {
+    status: "error",
+    error:
+      "Preview is unavailable inside a submodel while the pipeline is in recovery mode. " +
+      "Return to the main pipeline to preview ready nodes.",
+  })
 }
 
 function canPreviewNode(node: Node): boolean {
@@ -437,7 +449,7 @@ export default function usePipelineAPI({
       useDocumentStatusStore.getState().loadStatus === "degraded" &&
       activeSubmodelIdentity !== null
     ) {
-      setPreviewData(null)
+      setPreviewData(submodelRecoveryPreviewNotice(node))
       setPreviewBusy(false)
       return
     }
@@ -805,7 +817,7 @@ export default function usePipelineAPI({
     setPreviewBusy(true)
     if (useDocumentStatusStore.getState().loadStatus === "degraded") {
       if (activeSubmodelIdentity !== null) {
-        setPreviewData(null)
+        setPreviewData(submodelRecoveryPreviewNotice(node))
         setPreviewBusy(false)
         return
       }
@@ -863,7 +875,7 @@ export default function usePipelineAPI({
       if (activeSubmodelIdentity !== null) {
         controller.abort()
         previewAbort.current = null
-        setPreviewData(null)
+        setPreviewData(submodelRecoveryPreviewNotice(node))
         setPreviewBusy(false)
         return
       }
@@ -1102,7 +1114,7 @@ export default function usePipelineAPI({
   const handleSave = useCallback(async (): Promise<boolean> => {
     const documentStatus = useDocumentStatusStore.getState()
     if (documentStatus.capabilities?.can_save !== true || !documentStatus.graphSynchronized) {
-      addToast("error", "This pipeline is read-only until its load diagnostics are resolved.")
+      addToast("error", documentReadOnlyReason())
       return false
     }
     if (parentGraphRef.current) {

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
-import math
 import shutil
 import tempfile
 import threading
@@ -14,128 +13,40 @@ import weakref
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NoReturn
+from typing import Any, NoReturn
 
 from fastapi import HTTPException, WebSocket
-from pydantic import BaseModel, Field, model_validator
 
 from haute._file_ops import atomic_write_text
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._sidecar import (
+    SidecarModel,
+    SidecarReadResult,
+    SidecarReadState,
+    _normalise_sidecar_positions,
+    _normalise_sidecar_sources,
+    _read_sidecar_json,
+    read_sidecar_state,
+)
 from haute._submodel_paths import resolve_submodel_reference
 from haute.errors import ConfigError
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 
-if TYPE_CHECKING:
-    from haute.schemas import PipelineEditorDocument
+# The sidecar read schema lives in the core ``haute._sidecar`` module so editor
+# recovery never imports the web layer; routes keep importing it from here.
+__all__ = [
+    "SidecarModel",
+    "SidecarReadResult",
+    "SidecarReadState",
+    "load_pipeline_editor_document",
+    "read_sidecar_state",
+]
 
 logger = get_logger(component="server")
-
-
-# ---------------------------------------------------------------------------
-# Sidecar schema (.haute.json on-disk format)
-# ---------------------------------------------------------------------------
-
-
-class SidecarModel(BaseModel):
-    """On-disk schema for the ``.haute.json`` sidecar file.
-
-    The sidecar carries editor-state that doesn't belong in the pipeline
-    ``.py`` source-of-truth:
-
-    * ``positions`` — canvas (x, y) co-ordinates per sanitised node id,
-      so the layout survives label renames.
-    * ``sources`` — ordered list of available data sources for this
-      pipeline (``"live"`` is always first).
-    * ``active_source`` — which source is currently selected in the UI.
-
-    Every optional field has a sensible default so sparse sidecars still
-    parse.  That current-shape defaulting contract is pinned by
-    ``tests/test_routes_hygiene.py::TestSidecarDefaults``.
-
-    Write path: ``save_sidecar`` constructs a ``SidecarModel`` and
-    serialises via :meth:`model_dump_json`, excluding defaults so a
-    freshly-saved pipeline with ``sources=["live"]`` does not bloat the
-    file with redundant state (see
-    ``tests/test_route_helpers.py::test_default_source_not_saved``).
-    Read path: ``load_sidecar``/``parse_pipeline_to_graph`` still parses
-    as plain JSON today, but consumers may upgrade to
-    :meth:`model_validate_json` for typed access.
-    """
-
-    positions: dict[str, dict[str, float]] = Field(default_factory=dict)
-    sources: list[str] = Field(default_factory=lambda: ["live"])
-    active_source: str = "live"
-    managed_parent: str | None = None
-
-    @model_validator(mode="after")
-    def _active_source_must_be_in_sources(self) -> SidecarModel:
-        if self.active_source not in self.sources:
-            raise ValueError(
-                f"active_source={self.active_source!r} is not in sources={self.sources!r}"
-            )
-        return self
-
-
-SidecarReadState = Literal["absent", "valid", "corrupt", "unreadable"]
-
-
-@dataclass(frozen=True, slots=True)
-class SidecarReadResult:
-    """Typed, side-effect-free state of one editor position sidecar."""
-
-    path: Path
-    state: SidecarReadState
-    data: SidecarModel | None = None
-    error_type: str | None = None
-
-
-def _read_sidecar_json(sidecar: Path) -> tuple[SidecarReadState, dict[str, Any] | None, str | None]:
-    """Read and JSON-decode one sidecar object without model validation.
-
-    Returns ``(state, payload, error_type)``; ``payload`` is set only for
-    ``valid``. Shared by the permissive :func:`load_sidecar` and the typed
-    :func:`read_sidecar_state` so IO and JSON tolerance live in one place.
-    """
-    if not sidecar.exists():
-        return "absent", None, None
-    try:
-        raw = read_user_text(sidecar)
-    except OSError as exc:
-        logger.warning("unreadable_sidecar", file=sidecar.name, error=str(exc))
-        return "unreadable", None, type(exc).__name__
-    try:
-        payload = _json.loads(raw)
-        if not isinstance(payload, dict):
-            raise ValueError("Sidecar JSON must contain an object.")
-    except (_json.JSONDecodeError, TypeError, ValueError) as exc:
-        logger.warning("corrupt_sidecar", file=sidecar.name, error=str(exc))
-        return "corrupt", None, type(exc).__name__
-    return "valid", payload, None
-
-
-def read_sidecar_state(py_path: Path) -> SidecarReadResult:
-    """Read a sidecar without collapsing absent and invalid content together."""
-    sidecar = py_path.with_suffix(".haute.json")
-    state, payload, error_type = _read_sidecar_json(sidecar)
-    if state != "valid" or payload is None:
-        return SidecarReadResult(path=sidecar, state=state, error_type=error_type)
-    try:
-        data = SidecarModel.model_validate(payload)
-        raw_positions = payload.get("positions", {})
-        if raw_positions != _normalise_sidecar_positions(raw_positions):
-            raise ValueError("Sidecar positions must contain finite x/y coordinates.")
-    except (TypeError, ValueError) as exc:
-        logger.warning("corrupt_sidecar", file=sidecar.name, error=str(exc))
-        return SidecarReadResult(
-            path=sidecar,
-            state="corrupt",
-            error_type=type(exc).__name__,
-        )
-    return SidecarReadResult(path=sidecar, state="valid", data=data)
 
 
 # ---------------------------------------------------------------------------
@@ -1014,17 +925,6 @@ def parse_pipeline_to_graph(
     return graph
 
 
-def load_pipeline_editor_document(
-    py_path: Path,
-    *,
-    project_root: Path | None = None,
-) -> PipelineEditorDocument:
-    """Load the editor-only recovery DTO without weakening strict parsing."""
-    from haute._pipeline_recovery import load_pipeline_editor_document as _load
-
-    return _load(py_path, project_root=project_root)
-
-
 def commit_pipeline_graph(sha: str) -> PipelineGraph:
     """Parse the active pipeline as it was at commit *sha* into a read-only graph
     (S11). Only pipeline artifacts are materialised (no checkout, no HEAD
@@ -1067,51 +967,3 @@ def commit_pipeline_graph(sha: str) -> PipelineGraph:
                     logger.warning("commit_temp_cleanup_failed", path=str(root), error=str(exc))
                 else:
                     time.sleep(0.02 * (attempt + 1))
-
-
-def _normalise_sidecar_sources(raw_sources: Any) -> list[str] | None:
-    if not isinstance(raw_sources, list):
-        return None
-
-    seen: set[str] = set()
-    cleaned: list[str] = []
-    saw_live = False
-    for value in raw_sources:
-        if not isinstance(value, str):
-            continue
-        source = value.strip()
-        if not source:
-            continue
-        if source == "live":
-            saw_live = True
-            continue
-        if source in seen:
-            continue
-        seen.add(source)
-        cleaned.append(source)
-
-    if not cleaned and not saw_live:
-        return None
-    return ["live", *cleaned]
-
-
-def _normalise_sidecar_positions(raw_positions: Any) -> dict[str, dict[str, float]]:
-    if not isinstance(raw_positions, dict):
-        return {}
-
-    positions: dict[str, dict[str, float]] = {}
-    for node_id, position in raw_positions.items():
-        if not isinstance(node_id, str) or not isinstance(position, dict):
-            continue
-        x = position.get("x")
-        y = position.get("y")
-        if not isinstance(x, (int, float)) or isinstance(x, bool):
-            continue
-        if not isinstance(y, (int, float)) or isinstance(y, bool):
-            continue
-        xf = float(x)
-        yf = float(y)
-        if not math.isfinite(xf) or not math.isfinite(yf):
-            continue
-        positions[node_id] = {"x": xf, "y": yf}
-    return positions

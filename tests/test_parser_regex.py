@@ -74,7 +74,7 @@ class TestFindFunctionBlocks:
         assert "y = 2" in blocks[0]["body_text"]
         assert "return df" in blocks[0]["body_text"]
 
-    def test_records_def_start_line_and_stops_body_at_next_top_level_stmt(self) -> None:
+    def test_records_decorator_span_and_stops_body_at_next_top_level_stmt(self) -> None:
         source = (
             "import haute\n"
             "\n"
@@ -88,8 +88,28 @@ class TestFindFunctionBlocks:
         )
         blocks = _find_function_blocks(source)
 
-        assert blocks[0]["start_line"] == 4
+        # The span is decorator-inclusive: remove-only repair deletes exactly
+        # [start_line, end_line], so the decorator must be inside it.
+        assert blocks[0]["start_line"] == 3
+        assert blocks[0]["end_line"] == 6
         assert blocks[0]["body_text"] == "    x = 1\n    return df"
+
+    def test_span_covers_multi_line_decorator_and_wrapped_signature(self) -> None:
+        source = (
+            "import haute\n"
+            "@pipeline.transform(\n"
+            '    config="cfg.json",\n'
+            ")\n"
+            "def calc(\n"
+            "    df,\n"
+            "):\n"
+            "    return df\n"
+            "next_value = 42\n"
+        )
+        blocks = _find_function_blocks(source)
+
+        assert blocks[0]["start_line"] == 1
+        assert blocks[0]["end_line"] == 7
 
     def test_empty_source(self) -> None:
         assert _find_function_blocks("") == []
@@ -552,6 +572,29 @@ def broken(:
         assert fragments.functions == ()
         assert fragments.connections == ()
         assert fragments.submodel_registrations == ()
+
+    def test_fragment_spans_are_one_based_and_decorator_inclusive(self) -> None:
+        source = (
+            'pipeline = haute.Pipeline("demo")\n'  # line 1
+            "\n"
+            "@pipeline.transform(\n"  # line 3: decorator opens
+            ")\n"
+            "def calc(\n"
+            "    df,\n"
+            "):\n"
+            "    return df +\n"  # line 8: last body line (syntax-broken)
+            "\n"
+            "@pipeline.polars()\n"  # line 10
+            "def tail(df):\n"
+            "    return df\n"  # line 12
+        )
+
+        fragments = recover_pipeline_fragments(source)
+
+        assert [
+            (function.authored_id, function.start_line, function.end_line)
+            for function in fragments.functions
+        ] == [("calc", 3, 8), ("tail", 10, 12)]
 
     def test_recovers_constructor_alias_and_inline_comment(self) -> None:
         source = """from haute import Pipeline as P

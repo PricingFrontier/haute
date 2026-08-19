@@ -76,7 +76,13 @@ _RE_COMPOUND_SUITE_PREFIX = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class RecoveredFunctionFragment:
-    """One syntax-recovered decorated function before config resolution."""
+    """One syntax-recovered decorated function before config resolution.
+
+    ``start_line``/``end_line`` are one-based and span the complete authored
+    block — from the matched decorator's first line through the last body
+    line — matching the AST skeleton span contract that remove-only repair
+    relies on for byte-true deletion.
+    """
 
     authored_id: str
     decorator_name: str
@@ -637,7 +643,10 @@ def _find_function_blocks(source: str) -> list[dict]:
 
     Returns a list of dicts with keys: func_name, decorator_text,
     decorator_method, explicit_node_type, param_names, body_text,
-    start_line.
+    start_line, end_line.  Both line values are 0-based; ``start_line`` is
+    the matched decorator's first line and ``end_line`` the last body line,
+    so the pair spans the complete authored block exactly like the AST
+    skeleton extractor — remove-only repair deletes these spans byte-true.
     """
     lines = source.splitlines()
     blocks: list[dict] = []
@@ -672,7 +681,7 @@ def _find_function_blocks(source: str) -> list[dict]:
         ]
 
         # Find the body: everything indented after the def line
-        start_line = def_line_idx
+        decorator_line_idx = source.count("\n", 0, m.start())
         body_lines = []
         for i in range(def_line_idx + 1, len(lines)):
             line = lines[i]
@@ -698,7 +707,8 @@ def _find_function_blocks(source: str) -> list[dict]:
                 "edge_param_names": positional_param_names,
                 "params_text": params_text,
                 "body_text": "\n".join(body_lines),
-                "start_line": start_line,
+                "start_line": decorator_line_idx,
+                "end_line": def_line_idx + len(body_lines),
             }
         )
 
@@ -865,7 +875,6 @@ def recover_pipeline_fragments(source: str) -> RecoveredPipelineFragments:
     pipeline_name, pipeline_description = _recover_pipeline_meta(source)
     recovered_functions: list[RecoveredFunctionFragment] = []
     for block in _find_function_blocks(source):
-        start_line = int(block["start_line"]) + 1
         recovered_functions.append(
             RecoveredFunctionFragment(
                 authored_id=str(block["func_name"]),
@@ -876,8 +885,10 @@ def recover_pipeline_fragments(source: str) -> RecoveredPipelineFragments:
                 edge_param_names=tuple(str(value) for value in block["edge_param_names"]),
                 params_text=str(block["params_text"]),
                 body_text=str(block["body_text"]),
-                start_line=start_line,
-                end_line=start_line + str(block["body_text"]).count("\n") + 1,
+                # One-based and decorator-inclusive, mirroring the AST
+                # skeleton span the repair planner deletes byte-true.
+                start_line=int(block["start_line"]) + 1,
+                end_line=int(block["end_line"]) + 1,
             )
         )
     return RecoveredPipelineFragments(

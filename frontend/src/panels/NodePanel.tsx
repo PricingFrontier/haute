@@ -41,7 +41,7 @@ import {
 import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useUIStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
-import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import { buildExploreCacheIdentity } from "./explore/cacheIdentity"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
@@ -769,7 +769,7 @@ export default function NodePanel({
       return {
         ok: false,
         error: documentReadOnly
-          ? "This pipeline is read-only until its load diagnostics are resolved."
+          ? documentReadOnlyReason()
           : "This submodel instance is read-only.",
       }
     }
@@ -801,7 +801,7 @@ export default function NodePanel({
       return {
         ok: false,
         error: documentReadOnly
-          ? "This pipeline is read-only until its load diagnostics are resolved."
+          ? documentReadOnlyReason()
           : "This submodel instance is read-only.",
       }
     }

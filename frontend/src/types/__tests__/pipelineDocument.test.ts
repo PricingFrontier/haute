@@ -18,9 +18,35 @@ describe("pipeline editor document contract", () => {
   it("parses a degraded document and adapts independent canvas metadata", () => {
     const parsed = parsePipelineEditorDocument(document())
     const adapted = adaptPipelineEditorDocument(parsed)
-    expect(adapted.nodes[0]).toMatchObject({ id: "node:a", type: "dataInput", data: { _loadAvailability: "ready", _recoveryId: "node:a", _authoredId: "a", _authoredDecorator: "source" } })
+    expect(adapted.nodes[0]).toMatchObject({ id: "node:a", type: "dataInput", data: { _loadAvailability: "ready", _recoveryId: "node:a", _authoredId: "a", _authoredDecorator: "source", _authoredReceiver: "pipeline" } })
     ;(adapted.nodes[0].data.config as { nested: number[] }).nested[0] = 9
     expect((parsed.nodes[0].config?.nested as number[])[0]).toBe(1)
+  })
+
+  it("marks submodel-graph nodes with the @submodel authoring receiver", () => {
+    const fixture = document()
+    fixture.submodels = {
+      child: {
+        definition_id: "child",
+        file: "modules/child.py",
+        availability: "ready",
+        diagnostic_ids: [],
+        graph: {
+          nodes: [{ ...fixture.nodes[0], recovery_id: "node:c", authored_id: "c", label: "C", diagnostic_ids: [] }],
+          edges: [],
+          unresolved_connections: [],
+          submodels: null,
+        },
+        input_ports: [],
+        output_ports: [],
+      },
+    }
+
+    const adapted = adaptPipelineEditorDocument(parsePipelineEditorDocument(fixture))
+    expect(adapted.submodels.child.graph.nodes[0]).toMatchObject({
+      id: "node:c",
+      data: { _authoredReceiver: "submodel" },
+    })
   })
 
   it("renders an unresolved declaration only when both visual endpoints are known", () => {

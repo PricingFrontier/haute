@@ -15,8 +15,9 @@
 | `src/haute/_pipeline_revision.py` | [submodels](../submodels/low-level.md)-owned canonical parsed-graph revision plus the editor recovery revision over a contained, role-qualified raw-artifact manifest with explicit missing sentinels. |
 | `src/haute/_pipeline_recovery.py` | Side-effect-free editor loader: AST/regex skeleton discovery, isolated node resolution, availability/diagnostic propagation, typed sidecar merge, raw-artifact revision assembly, and ready/degraded/source-only classification. It never returns a canonical `PipelineGraph`. |
 | `src/haute/_pipeline_repair.py` | Pure minimal-scope unavailable-node removal planner plus revision/plan verification service. It computes exact source, explicit-connection, position-sidecar, and separately approved config edits; it never accepts client-authored bytes or implements migrations. |
+| `src/haute/_sidecar.py` | Core read-side `.haute.json` contract: `SidecarModel`, the typed absent/valid/corrupt/unreadable read state, and the sidecar source/position normalisers. Lives outside the web layer so editor recovery never imports routes. |
 | `src/haute/routes/__init__.py` | Package docstring only — no code. |
-| `src/haute/routes/_helpers.py` | `SidecarModel` and typed editor sidecar read state; path/index/watcher/WebSocket helpers; strict `parse_pipeline_to_graph`; separate `load_pipeline_editor_document`; historical-commit parsing; and the shared `save_lock`. |
+| `src/haute/routes/_helpers.py` | Re-exports the core sidecar read contract and `load_pipeline_editor_document` for route consumers; path/index/watcher/WebSocket helpers; strict `parse_pipeline_to_graph`; the sidecar write path (`save_sidecar`); historical-commit parsing; and the shared `save_lock`. |
 | `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/save`, `/api/pipeline/repair/remove/dry-run`, `/api/pipeline/repair/remove/apply`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/recovery-preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
 | `src/haute/routes/files.py` | `/api/files` (directory browse) and `/api/schema` (flat-file plus XML structured-record schema/preview). |
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
@@ -113,7 +114,7 @@ incident id. `PipelineDocumentCapabilities` is the server-derived mutation/persi
 execution/preview/submodel/repair fence. The response types do not subclass or relax
 `PipelineGraph`.
 
-**`SidecarModel`** (`routes/_helpers.py`) is the typed `.haute.json` schema: `positions:
+**`SidecarModel`** (`haute/_sidecar.py`, re-exported by `routes/_helpers.py`) is the typed `.haute.json` schema: `positions:
 dict[str, dict[str, float]]`, `sources: list[str]` (defaults to `["live"]`), `active_source:
 str`, and optional `managed_parent: str | None`. `managed_parent` is emitted
 only when the existing child sidecar already proves the same canonical
@@ -657,10 +658,18 @@ identity, absent or ambiguous spans, downstream signature consumers, shared
 or managed-artifact config deletion, a connection line containing other
 authored content, and a chain whose unrelated link would otherwise be removed.
 Source edits operate on exact line-bounded bytes and are applied in descending
-offsets. Position JSON editing preserves unrelated bytes and rejects duplicate
-positions/target keys as ambiguous. The
+offsets. Both recovery span sources are decorator-inclusive: AST skeletons span
+from the first matched decorator line and regex fragments from their decorator
+anchor line through the last body line, so removing a node from a syntax-broken
+parent never strands decorator text. Position JSON editing preserves unrelated
+bytes and rejects duplicate positions/target keys as ambiguous. The
 public patch is bounded; the plan hash covers the complete untruncated edits,
 revision, identities, options, and touched-artifact manifest.
+`predicted_load_status` treats as removed the target's own diagnostics,
+diagnostics anchored inside the target's span in its file, and diagnostics of
+unresolved connections naming the target's authored id — exactly what a
+successful plan provably deletes; any other diagnostic or unavailable node
+keeps the prediction `degraded`. The post-apply document remains authoritative.
 
 Both routes acquire `save_lock`. Dry-run writes nothing. Apply reloads the
 document and recomputes the complete plan under the lock; a stale revision or

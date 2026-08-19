@@ -594,12 +594,15 @@ same node. Consumer ownership is recorded in `ownership.toml`.
 capabilities, diagnostics, spans, nodes, edges, unresolved connections, submodels, and ports;
 duplicate recovery ids, non-finite coordinates, invalid spans, and edges with missing visual
 endpoints throw at ingestion. `adaptPipelineEditorDocument` clones configs and maps recovery
-identity, availability, diagnostic ids, blocker paths, decorator names, locations, handles, and
-submodel ports into presentation-only React Flow state.
+identity, availability, diagnostic ids, blocker paths, decorator names and receivers, locations,
+handles, and submodel ports into presentation-only React Flow state.
 
 `frontend/src/stores/useDocumentStatusStore.ts` performs one atomic status transition and clones
 all externally supplied arrays/objects. Its `capabilities` value is the shared UI admission fence;
-components must not recreate status-to-capability policy locally. `systemFailure` is independent of
+components must not recreate status-to-capability policy locally. `documentReadOnlyReason()` is
+the shared user-facing explanation for a blocked mutation/save: a live document-transport failure
+names itself, a mutable-but-unsynchronised canvas names the pending on-disk change, and only a
+genuinely non-mutable document blames unresolved load diagnostics. `systemFailure` is independent of
 authored recovery diagnostics: setting it also marks the graph unsynchronised, while any newly
 validated document atomically clears it. Reset leaves the editor without authority until a new
 validated document arrives.

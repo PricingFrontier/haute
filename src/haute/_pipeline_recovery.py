@@ -46,15 +46,15 @@ from haute._parser_submodels import (
     parse_submodel_source,
 )
 from haute._pipeline_revision import pipeline_recovery_revision
-from haute._submodel_paths import resolve_submodel_reference
-from haute._types import NODE_TYPE_TO_DECORATOR, NodeType, PipelineGraph
-from haute.errors import ConfigError, HauteError, ParseError
-from haute.parser import _infer_parse_base_dir, parse_pipeline_source
-from haute.routes._helpers import (
+from haute._sidecar import (
     SidecarReadResult,
     _normalise_sidecar_sources,
     read_sidecar_state,
 )
+from haute._submodel_paths import resolve_submodel_reference
+from haute._types import NODE_TYPE_TO_DECORATOR, NodeType, PipelineGraph
+from haute.errors import ConfigError, HauteError, ParseError
+from haute.parser import _infer_parse_base_dir, parse_pipeline_source
 from haute.schemas import (
     PipelineDiagnosticScope,
     PipelineDocumentCapabilities,
@@ -220,6 +220,35 @@ def _node_failure_code(exc: BaseException) -> str:
     return "node_contract_invalid"
 
 
+def _unavailable_candidate(
+    authored: PipelineNodeSkeleton | RecoveredFunctionFragment,
+    *,
+    recovery_id: str,
+    node_type: NodeType | None,
+    description: str,
+    config_reference: str | None,
+    span: RecoverySourceSpan,
+    diagnostic: PipelineRecoveryDiagnostic,
+    diagnostics: list[PipelineRecoveryDiagnostic],
+) -> _RecoveredCandidate:
+    """Record *diagnostic* and return its non-canonical candidate."""
+    diagnostics.append(diagnostic)
+    return _RecoveredCandidate(
+        authored_id=authored.authored_id,
+        recovery_id=recovery_id,
+        decorator_name=authored.decorator_name,
+        node_type=node_type,
+        description=description,
+        config=None,
+        config_reference=config_reference,
+        param_names=tuple(authored.param_names),
+        edge_param_names=tuple(authored.edge_param_names),
+        span=span,
+        availability="unavailable",
+        diagnostic_ids=[diagnostic.diagnostic_id],
+    )
+
+
 def _candidate_from_ast(
     skeleton: PipelineNodeSkeleton,
     *,
@@ -244,61 +273,51 @@ def _candidate_from_ast(
         config_reference = raw_reference.replace("\\", "/")
 
     if skeleton.explicit_node_type is None:
-        diagnostic = _diagnostic(
-            code="node_decorator_unknown",
-            scope="node",
-            message=(
-                f"The authored @{skeleton.decorator_name} node type is not available "
-                "in this Haute version."
-            ),
-            source_file=source_file,
-            element_id=recovery_id,
-            source_span=span,
-            remediation="Install a compatible node implementation or update the source explicitly.",
-        )
-        diagnostics.append(diagnostic)
-        return _RecoveredCandidate(
-            authored_id=skeleton.authored_id,
+        return _unavailable_candidate(
+            skeleton,
             recovery_id=recovery_id,
-            decorator_name=skeleton.decorator_name,
             node_type=None,
             description=skeleton.description,
-            config=None,
             config_reference=config_reference,
-            param_names=skeleton.param_names,
-            edge_param_names=skeleton.edge_param_names,
             span=span,
-            availability="unavailable",
-            diagnostic_ids=[diagnostic.diagnostic_id],
+            diagnostic=_diagnostic(
+                code="node_decorator_unknown",
+                scope="node",
+                message=(
+                    f"The authored @{skeleton.decorator_name} node type is not available "
+                    "in this Haute version."
+                ),
+                source_file=source_file,
+                element_id=recovery_id,
+                source_span=span,
+                remediation=(
+                    "Install a compatible node implementation or update the source explicitly."
+                ),
+            ),
+            diagnostics=diagnostics,
         )
     try:
         if skeleton.is_async:
             raise ParseError("Pipeline node bodies must be synchronous; remove the async keyword.")
         raw_node = _resolve_node_skeleton(skeleton, base_dir)
     except HauteError as exc:
-        diagnostic = _diagnostic(
-            code=_node_failure_code(exc),
-            scope="node",
-            message=_exception_message(exc),
-            source_file=source_file,
-            element_id=recovery_id,
-            source_span=span,
-            remediation="Open the referenced source or config and correct this node.",
-        )
-        diagnostics.append(diagnostic)
-        return _RecoveredCandidate(
-            authored_id=skeleton.authored_id,
+        return _unavailable_candidate(
+            skeleton,
             recovery_id=recovery_id,
-            decorator_name=skeleton.decorator_name,
             node_type=skeleton.explicit_node_type,
             description=skeleton.description,
-            config=None,
             config_reference=config_reference,
-            param_names=skeleton.param_names,
-            edge_param_names=skeleton.edge_param_names,
             span=span,
-            availability="unavailable",
-            diagnostic_ids=[diagnostic.diagnostic_id],
+            diagnostic=_diagnostic(
+                code=_node_failure_code(exc),
+                scope="node",
+                message=_exception_message(exc),
+                source_file=source_file,
+                element_id=recovery_id,
+                source_span=span,
+                remediation="Open the referenced source or config and correct this node.",
+            ),
+            diagnostics=diagnostics,
         )
     except Exception:
         incident_id = uuid4().hex
@@ -309,30 +328,24 @@ def _candidate_from_ast(
             incident_id=incident_id,
             exc_info=True,
         )
-        diagnostic = _diagnostic(
-            code="node_recovery_internal_error",
-            scope="node",
-            message="This node could not be recovered because of an internal error.",
-            source_file=source_file,
-            element_id=recovery_id,
-            source_span=span,
-            remediation="Check the server logs with the incident id and report the defect.",
-            incident_id=incident_id,
-        )
-        diagnostics.append(diagnostic)
-        return _RecoveredCandidate(
-            authored_id=skeleton.authored_id,
+        return _unavailable_candidate(
+            skeleton,
             recovery_id=recovery_id,
-            decorator_name=skeleton.decorator_name,
             node_type=skeleton.explicit_node_type,
             description=skeleton.description,
-            config=None,
             config_reference=config_reference,
-            param_names=skeleton.param_names,
-            edge_param_names=skeleton.edge_param_names,
             span=span,
-            availability="unavailable",
-            diagnostic_ids=[diagnostic.diagnostic_id],
+            diagnostic=_diagnostic(
+                code="node_recovery_internal_error",
+                scope="node",
+                message="This node could not be recovered because of an internal error.",
+                source_file=source_file,
+                element_id=recovery_id,
+                source_span=span,
+                remediation="Check the server logs with the incident id and report the defect.",
+                incident_id=incident_id,
+            ),
+            diagnostics=diagnostics,
         )
 
     return _RecoveredCandidate(
@@ -369,34 +382,28 @@ def _candidate_from_regex(
             config_reference = raw_reference.replace("\\", "/")
 
         if fragment.explicit_node_type is None:
-            diagnostic = _diagnostic(
-                code="node_decorator_unknown",
-                scope="node",
-                message=(
-                    f"The authored @{fragment.decorator_name} node type is not "
-                    "available in this Haute version."
-                ),
-                source_file=source_file,
-                element_id=recovery_id,
-                source_span=span,
-                remediation=(
-                    "Install a compatible node implementation or update the source explicitly."
-                ),
-            )
-            diagnostics.append(diagnostic)
-            return _RecoveredCandidate(
-                authored_id=fragment.authored_id,
+            return _unavailable_candidate(
+                fragment,
                 recovery_id=recovery_id,
-                decorator_name=fragment.decorator_name,
                 node_type=None,
                 description="",
-                config=None,
                 config_reference=config_reference,
-                param_names=fragment.param_names,
-                edge_param_names=fragment.edge_param_names,
                 span=span,
-                availability="unavailable",
-                diagnostic_ids=[diagnostic.diagnostic_id],
+                diagnostic=_diagnostic(
+                    code="node_decorator_unknown",
+                    scope="node",
+                    message=(
+                        f"The authored @{fragment.decorator_name} node type is not "
+                        "available in this Haute version."
+                    ),
+                    source_file=source_file,
+                    element_id=recovery_id,
+                    source_span=span,
+                    remediation=(
+                        "Install a compatible node implementation or update the source explicitly."
+                    ),
+                ),
+                diagnostics=diagnostics,
             )
 
         function_source = (
@@ -423,31 +430,27 @@ def _candidate_from_regex(
             edge_param_names=list(fragment.edge_param_names),
         )
     except (HauteError, SyntaxError) as exc:
-        diagnostic = _diagnostic(
-            code=(
-                "node_syntax_invalid" if isinstance(exc, SyntaxError) else _node_failure_code(exc)
-            ),
-            scope="node",
-            message=_exception_message(exc),
-            source_file=source_file,
-            element_id=recovery_id,
-            source_span=span,
-            remediation="Open the referenced source or config and correct this node.",
-        )
-        diagnostics.append(diagnostic)
-        return _RecoveredCandidate(
-            authored_id=fragment.authored_id,
+        return _unavailable_candidate(
+            fragment,
             recovery_id=recovery_id,
-            decorator_name=fragment.decorator_name,
             node_type=fragment.explicit_node_type,
             description=description,
-            config=None,
             config_reference=config_reference,
-            param_names=fragment.param_names,
-            edge_param_names=fragment.edge_param_names,
             span=span,
-            availability="unavailable",
-            diagnostic_ids=[diagnostic.diagnostic_id],
+            diagnostic=_diagnostic(
+                code=(
+                    "node_syntax_invalid"
+                    if isinstance(exc, SyntaxError)
+                    else _node_failure_code(exc)
+                ),
+                scope="node",
+                message=_exception_message(exc),
+                source_file=source_file,
+                element_id=recovery_id,
+                source_span=span,
+                remediation="Open the referenced source or config and correct this node.",
+            ),
+            diagnostics=diagnostics,
         )
     except Exception:
         incident_id = uuid4().hex
@@ -458,30 +461,24 @@ def _candidate_from_regex(
             incident_id=incident_id,
             exc_info=True,
         )
-        diagnostic = _diagnostic(
-            code="node_recovery_internal_error",
-            scope="node",
-            message="This node could not be recovered because of an internal error.",
-            source_file=source_file,
-            element_id=recovery_id,
-            source_span=span,
-            remediation="Check the server logs with the incident id and report the defect.",
-            incident_id=incident_id,
-        )
-        diagnostics.append(diagnostic)
-        return _RecoveredCandidate(
-            authored_id=fragment.authored_id,
+        return _unavailable_candidate(
+            fragment,
             recovery_id=recovery_id,
-            decorator_name=fragment.decorator_name,
             node_type=fragment.explicit_node_type,
             description=description,
-            config=None,
             config_reference=config_reference,
-            param_names=fragment.param_names,
-            edge_param_names=fragment.edge_param_names,
             span=span,
-            availability="unavailable",
-            diagnostic_ids=[diagnostic.diagnostic_id],
+            diagnostic=_diagnostic(
+                code="node_recovery_internal_error",
+                scope="node",
+                message="This node could not be recovered because of an internal error.",
+                source_file=source_file,
+                element_id=recovery_id,
+                source_span=span,
+                remediation="Check the server logs with the incident id and report the defect.",
+                incident_id=incident_id,
+            ),
+            diagnostics=diagnostics,
         )
 
     return _RecoveredCandidate(
@@ -885,7 +882,7 @@ def _build_recovery_graph(
 
     seen_implicit: set[tuple[str, str]] = set()
     implicit_ordinal = len(normalised_connections)
-    for target_index, target_candidate in enumerate(candidates):
+    for target_candidate in candidates:
         raw = {
             "func_name": target_candidate.authored_id,
             "node_type": target_candidate.node_type,
@@ -937,7 +934,7 @@ def _build_recovery_graph(
                     source_port=None,
                     target_port=None,
                     span=target_candidate.span,
-                    ordinal=implicit_ordinal + target_index,
+                    ordinal=implicit_ordinal,
                 )
             )
             implicit_ordinal += 1
@@ -1721,7 +1718,6 @@ def _load_readable_pipeline_editor_document(
     submodels: dict[str, RecoverySubmodelDefinition] | None = None
     connections: Sequence[_RecoveredConnection | tuple[str, str, str | None, str | None]] = []
     registrations: list[SubmodelRegistration] = []
-    syntax_failed = False
     source_wide_failed = False
 
     strict_failure: BaseException | None = None
@@ -1762,7 +1758,6 @@ def _load_readable_pipeline_editor_document(
         try:
             tree = ast.parse(source)
         except SyntaxError as syntax_error:
-            syntax_failed = True
             syntax_span = _span(
                 syntax_error.lineno or 1,
                 max(0, (syntax_error.offset or 1) - 1),
@@ -1934,9 +1929,6 @@ def _load_readable_pipeline_editor_document(
         load_status = "degraded"
     else:
         load_status = "ready"
-
-    if syntax_failed and not nodes:
-        load_status = "source_only"
 
     artifacts = _recovery_artifacts(path, root, parent_source=source, captures=captures)
     source_revision = pipeline_recovery_revision(
