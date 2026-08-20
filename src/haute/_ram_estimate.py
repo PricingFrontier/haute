@@ -29,22 +29,24 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 import polars as pl
 
-from haute._api_input_schema import is_json_api_input_path
+from haute._api_input_schema import ApiInputSchemaError, is_json_api_input_path
 from haute._edge_join import build_edge_join_kwargs, edge_join_key_columns_by_role
 from haute._graph_utils import build_parents_of
 from haute._host_memory import available_ram_bytes, require_positive_available_ram
 from haute._logging import get_logger
 from haute._polars_utils import read_parquet_metadata
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
+from haute.projection import ProjectionEdgeKey
 
 logger = get_logger(component="ram_estimate")
 
 __all__ = [
     "MaterialisationEstimate",
+    "MaterialisationEstimateBasis",
     "MaterialisationEstimateState",
     "estimate_gpu_vram_bytes",
     "estimate_materialisation_boundaries",
@@ -61,6 +63,14 @@ class MaterialisationEstimateState(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+class MaterialisationEstimateBasis(StrEnum):
+    """Evidence used for a materialisation estimate's width."""
+
+    PROVIDED = "provided"
+    PROJECTED_COLUMNS = "projected_columns"
+    COMPLETE_WIDTH_FALLBACK = "complete_width_fallback"
+
+
 @dataclass(frozen=True, slots=True)
 class MaterialisationEstimate:
     """Conservative peak estimate used to admit a full materialisation.
@@ -73,8 +83,11 @@ class MaterialisationEstimate:
     estimated_peak_bytes: int | None
     assumptions: tuple[str, ...] = ()
     unavailable_reason: str | None = None
+    basis: MaterialisationEstimateBasis = MaterialisationEstimateBasis.PROVIDED
 
     def __post_init__(self) -> None:
+        if not isinstance(self.basis, MaterialisationEstimateBasis):
+            raise TypeError("materialisation estimate basis must be a MaterialisationEstimateBasis")
         if self.state is MaterialisationEstimateState.AVAILABLE:
             if (
                 not isinstance(self.estimated_peak_bytes, int)
@@ -95,11 +108,13 @@ class MaterialisationEstimate:
         estimated_peak_bytes: int,
         *,
         assumptions: Iterable[str] = (),
+        basis: MaterialisationEstimateBasis = MaterialisationEstimateBasis.PROVIDED,
     ) -> MaterialisationEstimate:
         return cls(
             state=MaterialisationEstimateState.AVAILABLE,
             estimated_peak_bytes=estimated_peak_bytes,
             assumptions=tuple(str(item) for item in assumptions),
+            basis=basis,
         )
 
     @classmethod
@@ -388,9 +403,17 @@ def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSource
 
     from haute._json_flatten import _json_cache_dir
     from haute._json_shred import (
+        _build_lock_for,
+        _cache_manifest_structure_failure,
         _data_file_signature,
-        _read_matching_cache_meta,
+        _declared_frame_schema,
+        _emitting_table_specs,
+        _read_matching_cache_meta_unlocked,
+        _read_per_port_cache_meta_unlocked,
+        _release_runtime_snapshot,
         _sanitise_label,
+        _snapshot_cache_artifact_locked,
+        _v2_fingerprint,
     )
 
     config = dict(node.data.config)
@@ -401,27 +424,64 @@ def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSource
     try:
         if not data_path.exists():
             return None
-        signature = _data_file_signature(data_path)
+        complete_specs = _emitting_table_specs(config)
+        specs_by_label = {spec.label: spec for spec in complete_specs}
+        port_spec = specs_by_label.get(port)
+        if port_spec is None:
+            return None
+        expected_labels = tuple(spec.label for spec in complete_specs)
+        expected_fingerprint = _v2_fingerprint(config)
+        signature: Mapping[str, Any] | None = None
         for layer in ("working", "committed"):
             cache_dir = _json_cache_dir(data_path, layer)
-            if (
-                _read_matching_cache_meta(
+            with _build_lock_for(cache_dir):
+                candidate_meta = _read_per_port_cache_meta_unlocked(cache_dir)
+                if (
+                    candidate_meta is None
+                    or candidate_meta.get("schema_mode") != "v2"
+                    or candidate_meta.get("schema_fingerprint") != expected_fingerprint
+                ):
+                    continue
+                if signature is None:
+                    signature = _data_file_signature(data_path)
+                meta = _read_matching_cache_meta_unlocked(
                     cache_dir,
                     config,
                     data_path=data_path,
                     data_file_signature=signature,
                 )
-                is None
-            ):
-                continue
-            parquet_path = cache_dir / f"{_sanitise_label(port)}.parquet"
-            if not parquet_path.exists():
-                continue
-            return _source_scoped_metadata(
-                _detailed_parquet_metadata(str(parquet_path)),
-                node.id,
-            )
-    except (OSError, TypeError, ValueError) as exc:
+                if meta is None or _cache_manifest_structure_failure(
+                    meta,
+                    expected_labels=expected_labels,
+                ):
+                    continue
+                entries = {entry["label"]: entry for entry in meta["tables"]}
+                parquet_path = cache_dir / f"{_sanitise_label(port)}.parquet"
+                snapshot_path = _snapshot_cache_artifact_locked(
+                    cache_dir,
+                    parquet_path,
+                    entries[port]["content_signature"],
+                )
+                if snapshot_path is None:
+                    continue
+                try:
+                    actual_schema = pl.scan_parquet(snapshot_path).collect_schema()
+                    expected_schema = _declared_frame_schema(port_spec)
+                    if dict(actual_schema.items()) != dict(expected_schema.items()):
+                        continue
+                    return _source_scoped_metadata(
+                        _detailed_parquet_metadata(str(snapshot_path)),
+                        node.id,
+                    )
+                finally:
+                    _release_runtime_snapshot(snapshot_path)
+    except (
+        ApiInputSchemaError,
+        OSError,
+        TypeError,
+        ValueError,
+        pl.exceptions.PolarsError,
+    ) as exc:
         logger.warning(
             "api_input_port_metadata_failed",
             node_id=node.id,
@@ -1121,6 +1181,8 @@ def estimate_materialisation_boundary(
         target_node_id,
         source=source,
         estimate_index=estimate_index,
+        edge_demands=None,
+        legacy_target_schema=True,
     )
 
 
@@ -1129,6 +1191,7 @@ def estimate_materialisation_boundaries(
     target_node_ids: Iterable[str],
     *,
     source: str = "live",
+    edge_demands: Mapping[ProjectionEdgeKey, frozenset[str] | None] | None = None,
 ) -> Iterator[tuple[str, MaterialisationEstimate]]:
     """Yield boundary estimates through one request-local metadata index.
 
@@ -1146,6 +1209,8 @@ def estimate_materialisation_boundaries(
                 target_node_id,
                 source=source,
                 estimate_index=estimate_index,
+                edge_demands=edge_demands,
+                legacy_target_schema=False,
             ),
         )
 
@@ -1156,6 +1221,8 @@ def _estimate_materialisation_boundary_from_index(
     *,
     source: str,
     estimate_index: _EstimateGraphIndex,
+    edge_demands: Mapping[ProjectionEdgeKey, frozenset[str] | None] | None,
+    legacy_target_schema: bool,
 ) -> MaterialisationEstimate:
     """Estimate one boundary using an already prepared request-local index."""
 
@@ -1168,26 +1235,154 @@ def _estimate_materialisation_boundary_from_index(
     total_rows = source_metadata.row_count
     if total_rows is None:
         return MaterialisationEstimate.unavailable("source_row_count_unavailable")
+    incoming_edges = (
+        ()
+        if legacy_target_schema
+        else tuple(
+            edge
+            for edge in estimate_index.pruned_edges
+            if edge.target == target_node_id and edge.source in estimate_index.node_map
+        )
+    )
+    resolved_inputs = tuple(
+        (
+            edge,
+            estimate_index.resolve_columns(edge.source, edge.sourceHandle),
+        )
+        for edge in incoming_edges
+    )
     if total_rows == 0:
+        exact_zero_width_proof = (
+            bool(incoming_edges)
+            and edge_demands is not None
+            and all(
+                ProjectionEdgeKey.from_edge(edge) in edge_demands
+                and edge_demands[ProjectionEdgeKey.from_edge(edge)] is not None
+                and resolved is not None
+                and bool(resolved.columns)
+                and cast(
+                    frozenset[str],
+                    edge_demands[ProjectionEdgeKey.from_edge(edge)],
+                ).issubset(resolved.columns)
+                for edge, resolved in resolved_inputs
+            )
+        )
         return MaterialisationEstimate.available(
             0,
             assumptions=("known-empty ancestor source",),
+            basis=(
+                MaterialisationEstimateBasis.PROJECTED_COLUMNS
+                if exact_zero_width_proof
+                else MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK
+            ),
         )
 
-    resolved_columns = _resolve_target_columns(
-        graph,
-        target_node_id,
-        source,
-        _index=estimate_index,
-    )
-    if resolved_columns is not None and resolved_columns.columns:
+    if legacy_target_schema:
+        resolved_columns = _resolve_target_columns(
+            graph,
+            target_node_id,
+            source,
+            _index=estimate_index,
+        )
+        if resolved_columns is None or not resolved_columns.columns:
+            return MaterialisationEstimate.unavailable("target_schema_unavailable")
         column_names = resolved_columns.columns
         width_column_names = tuple(
             resolved_columns.width_columns.get(column, column) for column in column_names
         )
         n_columns = len(column_names)
+        base_bytes_per_row = _estimate_base_bytes_per_row(
+            n_columns,
+            target_columns=column_names,
+            target_width_columns=width_column_names,
+            sources=source_metadata.sources,
+        )
+        return MaterialisationEstimate.available(
+            _estimate_peak_bytes(
+                total_rows,
+                n_columns,
+                base_bytes_per_row=base_bytes_per_row,
+            ),
+            assumptions=(
+                "ancestor source row count is the boundary row-count basis",
+                "join cardinality is not expanded without source statistics",
+                f"full-boundary overhead multiplier={_OVERHEAD_MULTIPLIER:g}",
+            ),
+            basis=MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK,
+        )
+
+    if not incoming_edges:
+        resolved_columns = _resolve_target_columns(
+            graph,
+            target_node_id,
+            source,
+            _index=estimate_index,
+        )
+        if resolved_columns is None or not resolved_columns.columns:
+            return MaterialisationEstimate.unavailable("target_schema_unavailable")
+        column_names = resolved_columns.columns
+        width_column_names = tuple(
+            resolved_columns.width_columns.get(column, column) for column in column_names
+        )
+        n_columns = len(column_names)
+        basis = MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK
+        projection_assumptions: tuple[str, ...] = ()
     else:
-        return MaterialisationEstimate.unavailable("target_schema_unavailable")
+        exact_demands = edge_demands is not None and all(
+            ProjectionEdgeKey.from_edge(edge) in edge_demands
+            and edge_demands[ProjectionEdgeKey.from_edge(edge)] is not None
+            for edge in incoming_edges
+        )
+        fallback_reason: str | None = None
+        if exact_demands:
+            for edge, resolved in resolved_inputs:
+                assert edge_demands is not None
+                demand = edge_demands[ProjectionEdgeKey.from_edge(edge)]
+                if resolved is None or not resolved.columns:
+                    fallback_reason = "complete_schema_unavailable"
+                    break
+                assert demand is not None
+                if not demand.issubset(resolved.columns):
+                    fallback_reason = "demanded_column_unmapped"
+                    break
+
+        if exact_demands and fallback_reason is None:
+            selected: list[tuple[str, str]] = []
+            carriers = 0
+            for edge, resolved in resolved_inputs:
+                assert edge_demands is not None and resolved is not None
+                demand = edge_demands[ProjectionEdgeKey.from_edge(edge)]
+                assert demand is not None
+                names = tuple(column for column in resolved.columns if column in demand)
+                if not names:
+                    names = (resolved.columns[0],)
+                    carriers += 1
+                selected.extend((name, resolved.width_columns.get(name, name)) for name in names)
+            column_names = tuple(name for name, _width in selected)
+            width_column_names = tuple(width for _name, width in selected)
+            n_columns = len(selected)
+            basis = MaterialisationEstimateBasis.PROJECTED_COLUMNS
+            projection_assumptions = (f"projected_column_count={n_columns}",) + (
+                (f"cardinality_carrier_columns={carriers}",) if carriers else ()
+            )
+        else:
+            if any(resolved is None or not resolved.columns for _edge, resolved in resolved_inputs):
+                return MaterialisationEstimate.unavailable("target_schema_unavailable")
+            complete: list[tuple[str, str]] = []
+            for _edge, resolved in resolved_inputs:
+                assert resolved is not None
+                complete.extend(
+                    (name, resolved.width_columns.get(name, name)) for name in resolved.columns
+                )
+            column_names = tuple(name for name, _width in complete)
+            width_column_names = tuple(width for _name, width in complete)
+            n_columns = len(complete)
+            basis = MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK
+            projection_assumptions = (
+                (f"projection_fallback_reason={fallback_reason}",)
+                if fallback_reason == "demanded_column_unmapped"
+                else ()
+            )
 
     base_bytes_per_row = _estimate_base_bytes_per_row(
         n_columns,
@@ -1205,5 +1400,7 @@ def _estimate_materialisation_boundary_from_index(
             "ancestor source row count is the boundary row-count basis",
             "join cardinality is not expanded without source statistics",
             f"full-boundary overhead multiplier={_OVERHEAD_MULTIPLIER:g}",
-        ),
+        )
+        + projection_assumptions,
+        basis=basis,
     )

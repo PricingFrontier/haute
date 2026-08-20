@@ -575,6 +575,12 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "os.environ.get",
     ),
     (
+        "src/haute/_interactive_workers.py",
+        "<module>.resolve_interactive_execution_mode",
+        "HAUTE_INTERACTIVE_EXECUTION_MODE",
+        "os.environ.get",
+    ),
+    (
         "src/haute/_git.py",
         "<module>._protected_branches",
         "HAUTE_PROTECTED_BRANCHES",

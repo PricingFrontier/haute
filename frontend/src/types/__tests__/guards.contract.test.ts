@@ -316,6 +316,15 @@ describe("parseExecutionStrategyDiagnostic", () => {
     expect(diagnostic?.reasons.items).toHaveLength(2)
     expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({ schema_version: 2 }))).toBeNull()
   })
+
+  it.each([
+    { estimated_peak_bytes: 10, raw_estimated_peak_bytes: 10 },
+    { estimated_peak_bytes: 10, raw_estimated_peak_bytes: 10, estimate_calibration_factor_basis_points: 9_999, estimate_admission_basis: "provided" },
+    { estimated_peak_bytes: 81, raw_estimated_peak_bytes: 10, estimate_calibration_factor_basis_points: 80_001, estimate_admission_basis: "provided" },
+    { estimated_peak_bytes: 11, raw_estimated_peak_bytes: 10, estimate_calibration_factor_basis_points: 10_000, estimate_admission_basis: "provided" },
+  ])("rejects incomplete, reducing, over-cap, or inexact calibration evidence", (calibration) => {
+    expect(() => parseExecutionStrategyDiagnostic(executionStrategyFixture(calibration))).toThrow(/calibrat/i)
+  })
 })
 
 describe("parseTrainFeatureSelection", () => {
@@ -519,6 +528,18 @@ describe("API response guards", () => {
     expect(parsed.execution_metrics?.column_widths.items.map((item) => item.node_id)).toEqual(["filter", "scan"])
     expect(parsed.execution_metrics?.bytes_written).toBeNull()
     expect(parsed.execution_metrics?.checkpoint_count).toBe(2)
+  })
+
+  it.each([
+    { estimated_bytes: 10, raw_estimated_bytes: 10 },
+    { estimated_bytes: 10, raw_estimated_bytes: 10, estimate_calibration_factor_basis_points: 9_999, estimate_admission_basis: "provided" },
+    { estimated_bytes: 81, raw_estimated_bytes: 10, estimate_calibration_factor_basis_points: 80_001, estimate_admission_basis: "provided" },
+    { estimated_bytes: 11, raw_estimated_bytes: 10, estimate_calibration_factor_basis_points: 10_000, estimate_admission_basis: "provided" },
+  ])("rejects invalid calibrated execution metrics", (calibration) => {
+    expect(() => parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: { ...executionMetricsFixture(), ...calibration },
+    })).toThrow(/calibrat/i)
   })
 
   it("rejects over-cap or non-deterministically ordered P12 wrappers", () => {

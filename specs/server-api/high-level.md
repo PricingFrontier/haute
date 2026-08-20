@@ -53,6 +53,14 @@ Out of scope (owned by neighbouring components, included as routers but not desc
   control, memory budgets — see [execution-engine](../execution-engine/high-level.md). This
   component only validates the HTTP boundary and translates execution exceptions to status
   codes.
+
+Interactive preview and trace are dispatched to the execution engine's warm isolated
+worker pool. Their HTTP deadline is destructive for the worker, not merely a response
+deadline: after a 504 the timed-out computation no longer consumes CPU or memory.
+Same-key supersession likewise kills obsolete work before the replacement is admitted
+to that affinity slot. Sink/write routes retain their separate transactional and
+cooperative-cancellation contract because killing an arbitrary external write can be
+less safe than allowing its atomic publication cleanup to finish.
 - Long-running job polling (training, optimiser solves, Explore materialisation, frontier
   auto-range) — see [background-jobs](../background-jobs/high-level.md). The response
   *shapes* for those jobs (`TrainResponse`, `OptimiserStatusResponse`, `ExploreStatusResponse`,

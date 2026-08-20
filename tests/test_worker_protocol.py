@@ -26,6 +26,7 @@ from haute._worker_protocol import (
     WorkerRemoteFailureError,
     WorkerRequest,
     WorkerResultManifest,
+    _protocol_entrypoint,
     build_artifact_manifest,
     run_worker_protocol,
     validate_result_manifest,
@@ -86,6 +87,40 @@ def _crash_worker(runtime, request):
 
 def _request() -> WorkerRequest:
     return WorkerRequest("request-1", "training", {"items": [1, True, None]})
+
+
+@pytest.mark.parametrize(
+    ("memory_limit", "caps_supported", "expected_limits"),
+    [(None, True, []), (128, False, []), (128, True, [128])],
+)
+def test_protocol_entrypoint_applies_only_supported_configured_address_space_caps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    memory_limit: int | None,
+    caps_supported: bool,
+    expected_limits: list[int],
+) -> None:
+    import haute._worker_protocol as protocol_mod
+
+    results: queue.Queue[object] = queue.Queue()
+    progress: queue.Queue[object] = queue.Queue()
+    applied: list[int] = []
+    monkeypatch.setattr(protocol_mod, "address_space_caps_supported", lambda: caps_supported)
+    monkeypatch.setattr(protocol_mod, "_apply_address_space_limit", applied.append)
+
+    _protocol_entrypoint(
+        results,
+        progress,
+        _worker_with_progress,
+        _request(),
+        str(tmp_path),
+        memory_limit,
+    )
+
+    status, result = results.get_nowait()  # type: ignore[misc]
+    assert status == "ok"
+    assert isinstance(result, WorkerResultManifest)
+    assert applied == expected_limits
 
 
 def test_dtos_reject_non_plain_data_and_bounds() -> None:

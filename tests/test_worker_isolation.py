@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import os
+import queue
 import shutil
+import signal
+import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -13,13 +17,16 @@ from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
     IsolatedWorkerHostError,
+    IsolatedWorkerMemoryLimitExceededError,
     IsolatedWorkerMemoryLimitUnsupportedError,
     IsolatedWorkerRemoteError,
     IsolatedWorkerStartError,
     IsolatedWorkerStoppedError,
     IsolatedWorkerTerminationError,
     IsolatedWorkerTimeoutError,
+    _create_worker_rss_watchdog,
     _terminate_process,
+    address_space_caps_supported,
     create_worker_queue,
     ensure_spawnable_interpreter,
     process_memory_caps_supported,
@@ -310,7 +317,7 @@ def test_required_memory_cap_fails_loudly_when_unsupported(
 
 
 @pytest.mark.skipif(
-    not process_memory_caps_supported(),
+    not address_space_caps_supported(),
     reason="worker address-space caps are only available on platforms with resource.RLIMIT_AS",
 )
 def test_memory_cap_is_applied_inside_child_process() -> None:
@@ -326,6 +333,218 @@ def test_memory_cap_is_applied_inside_child_process() -> None:
 
     assert soft == limit
     assert hard == limit
+
+
+def test_cross_platform_worker_rss_watchdog_enforces_growth_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._worker_isolation as isolation_mod
+
+    class _Process:
+        pid = 42
+
+    samples = iter([1_000, 1_051])
+    monkeypatch.setattr(isolation_mod, "process_rss_bytes", lambda _pid: next(samples))
+    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: False)
+
+    watchdog = _create_worker_rss_watchdog(
+        _Process(),  # type: ignore[arg-type]
+        memory_limit_bytes=50,
+        require_memory_limit=True,
+    )
+
+    with pytest.raises(IsolatedWorkerMemoryLimitExceededError) as exc_info:
+        watchdog.checkpoint()
+    assert exc_info.value.rss_bytes == 1_051
+    assert exc_info.value.rss_limit_bytes == 1_050
+
+
+def test_worker_rss_watchdog_required_mode_fails_when_child_is_unobservable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._worker_isolation as isolation_mod
+
+    class _Process:
+        pid = 42
+
+    monkeypatch.setattr(isolation_mod, "process_rss_bytes", lambda _pid: None)
+    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: False)
+
+    with pytest.raises(IsolatedWorkerMemoryLimitUnsupportedError):
+        _create_worker_rss_watchdog(
+            _Process(),  # type: ignore[arg-type]
+            memory_limit_bytes=50,
+            require_memory_limit=True,
+        )
+
+
+def test_process_memory_support_includes_verified_rss_sampling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._worker_isolation as isolation_mod
+
+    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: False)
+    monkeypatch.setattr(isolation_mod, "process_rss_sampling_supported", lambda: True)
+    assert process_memory_caps_supported() is True
+
+    monkeypatch.setattr(isolation_mod, "process_rss_sampling_supported", lambda: False)
+    assert process_memory_caps_supported() is False
+
+    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: True)
+    monkeypatch.setattr(
+        isolation_mod,
+        "process_rss_sampling_supported",
+        lambda: (_ for _ in ()).throw(AssertionError("short-circuit expected")),
+    )
+    assert process_memory_caps_supported() is True
+
+
+def test_worker_rss_watchdog_handles_absent_limits_and_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._worker_isolation as isolation_mod
+
+    no_limit = isolation_mod._WorkerRssWatchdog(None, None, False, False)
+    no_limit.checkpoint()
+
+    monkeypatch.setattr(isolation_mod, "process_rss_bytes", lambda _pid: None)
+    isolation_mod._WorkerRssWatchdog(42, 100, False, False).checkpoint()
+    isolation_mod._WorkerRssWatchdog(42, 100, True, True).checkpoint()
+    with pytest.raises(IsolatedWorkerMemoryLimitUnsupportedError):
+        isolation_mod._WorkerRssWatchdog(42, 100, True, False).checkpoint()
+
+    monkeypatch.setattr(isolation_mod, "process_rss_bytes", lambda _pid: 99)
+    isolation_mod._WorkerRssWatchdog(42, 100, True, False).checkpoint()
+
+
+def test_worker_rss_watchdog_creation_covers_unobservable_and_missing_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._worker_isolation as isolation_mod
+
+    class Process:
+        pid: int | None = None
+
+    no_limit = _create_worker_rss_watchdog(
+        Process(),  # type: ignore[arg-type]
+        memory_limit_bytes=None,
+        require_memory_limit=False,
+    )
+    assert no_limit.rss_limit_bytes is None
+
+    with pytest.raises(IsolatedWorkerStartError, match="process id"):
+        _create_worker_rss_watchdog(
+            Process(),  # type: ignore[arg-type]
+            memory_limit_bytes=50,
+            require_memory_limit=False,
+        )
+
+    Process.pid = 42
+    monkeypatch.setattr(isolation_mod, "process_rss_bytes", lambda _pid: None)
+    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: False)
+    optional = _create_worker_rss_watchdog(
+        Process(),  # type: ignore[arg-type]
+        memory_limit_bytes=50,
+        require_memory_limit=False,
+    )
+    assert optional.rss_limit_bytes is None
+    assert optional.address_space_cap_active is False
+
+    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: True)
+    required = _create_worker_rss_watchdog(
+        Process(),  # type: ignore[arg-type]
+        memory_limit_bytes=50,
+        require_memory_limit=True,
+    )
+    assert required.rss_limit_bytes is None
+    assert required.address_space_cap_active is True
+
+
+@pytest.mark.parametrize(
+    ("memory_limit", "caps_supported", "expected_limits"),
+    [(None, True, []), (128, False, []), (128, True, [128])],
+)
+def test_isolated_entrypoint_applies_only_supported_address_space_caps(
+    monkeypatch: pytest.MonkeyPatch,
+    memory_limit: int | None,
+    caps_supported: bool,
+    expected_limits: list[int],
+) -> None:
+    import haute._worker_isolation as isolation_mod
+
+    results: queue.Queue[tuple[str, object]] = queue.Queue()
+    applied: list[int] = []
+    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: caps_supported)
+    monkeypatch.setattr(isolation_mod, "_apply_address_space_limit", applied.append)
+
+    isolation_mod._isolated_worker_entrypoint(
+        results,
+        lambda value, *, increment: value + increment,
+        (2,),
+        {"increment": 3},
+        memory_limit,
+    )
+
+    assert results.get_nowait() == ("ok", 5)
+    assert applied == expected_limits
+
+
+def test_isolated_entrypoint_serialises_child_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import haute._worker_isolation as isolation_mod
+
+    results: queue.Queue[tuple[str, object]] = queue.Queue()
+    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: False)
+
+    isolation_mod._isolated_worker_entrypoint(
+        results,
+        _raise_value_error,
+        ("child boom",),
+        {},
+        128,
+    )
+
+    status, payload = results.get_nowait()
+    assert status == "error"
+    error_type, message, remote_traceback = payload  # type: ignore[misc]
+    assert error_type == "ValueError"
+    assert message == "child boom"
+    assert "ValueError: child boom" in remote_traceback
+
+
+@pytest.mark.parametrize(
+    ("current_limits", "expected"),
+    [((-1, -1), (100, 100)), ((50, 80), (50, 80))],
+)
+def test_apply_address_space_limit_respects_existing_finite_caps(
+    monkeypatch: pytest.MonkeyPatch,
+    current_limits: tuple[int, int],
+    expected: tuple[int, int],
+) -> None:
+    import haute._worker_isolation as isolation_mod
+
+    applied: list[tuple[int, tuple[int, int]]] = []
+    fake_resource = SimpleNamespace(
+        RLIMIT_AS=1,
+        RLIM_INFINITY=-1,
+        getrlimit=lambda _limit: current_limits,
+        setrlimit=lambda limit, values: applied.append((limit, values)),
+    )
+    monkeypatch.setattr(isolation_mod.sys, "platform", "linux")
+    monkeypatch.setitem(sys.modules, "resource", fake_resource)
+
+    isolation_mod._apply_address_space_limit(100)
+
+    assert applied == [(1, expected)]
+
+
+def test_memory_limited_exitcode_classification_is_platform_independent() -> None:
+    import haute._worker_isolation as isolation_mod
+
+    assert isolation_mod._exitcode_looks_memory_limited(None, 10) is False
+    assert isolation_mod._exitcode_looks_memory_limited(-9, None) is False
+    assert isolation_mod._exitcode_looks_memory_limited(-9, 10) is True
+    assert isolation_mod._exitcode_looks_memory_limited(-int(signal.SIGABRT), 10) is True
+    assert isolation_mod._exitcode_looks_memory_limited(-7, 10) is False
 
 
 def test_worker_memory_enforcement_defaults_to_best_effort(
@@ -731,6 +950,34 @@ class TestDeadResourceTrackerRecovery:
         info = _resource_tracker_diagnostics()
         assert "executable" in info
         assert isinstance(info.get("executable_usable"), bool)
+
+    def test_diagnostics_capture_tracker_status_and_available_resource_limits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import multiprocessing.resource_tracker as resource_tracker
+
+        from haute._worker_isolation import _resource_tracker_diagnostics
+
+        fake_tracker = SimpleNamespace(_pid=123, _fd=7)
+        fake_resource = SimpleNamespace(
+            RLIMIT_NPROC=1,
+            RLIMIT_AS=3,
+            getrlimit=lambda limit: (limit * 10, limit * 20),
+        )
+        monkeypatch.setattr(resource_tracker, "_resource_tracker", fake_tracker)
+        monkeypatch.setattr(os, "waitpid", lambda pid, options: (pid, options), raising=False)
+        monkeypatch.delattr(os, "WNOHANG", raising=False)
+        monkeypatch.setitem(sys.modules, "resource", fake_resource)
+
+        info = _resource_tracker_diagnostics()
+
+        assert info["tracker_pid"] == 123
+        assert info["tracker_reaped"] == 123
+        assert info["tracker_exit_status"] == 1
+        assert info["rlimit_nproc"] == (10, 20)
+        assert info["rlimit_as"] == (30, 60)
+        assert "rlimit_nofile" not in info
 
 
 class TestSpawnableInterpreter:

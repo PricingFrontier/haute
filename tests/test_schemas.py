@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from haute.schemas import (
+    ExecutionCacheProofPayload,
     FileItem,
     Graph,
     GraphEdge,
@@ -25,6 +26,16 @@ from haute.schemas import (
     TrainRequest,
     WriteOutputRequest,
 )
+
+
+def test_execution_cache_proof_rejects_an_incoherent_miss_total() -> None:
+    with pytest.raises(ValidationError, match="closed reason-count total"):
+        ExecutionCacheProofPayload.model_validate(
+            {
+                "misses": 1,
+                "miss_reason_counts": {"proof_unavailable": 0},
+            }
+        )
 
 
 class TestValidation:

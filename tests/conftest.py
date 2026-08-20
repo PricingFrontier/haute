@@ -23,6 +23,12 @@ _TEST_LOCAL_SESSION_TOKEN = "pytest-haute-local-session-token"
 
 
 @pytest.fixture(autouse=True)
+def _interactive_execution_test_mode(monkeypatch: pytest.MonkeyPatch):
+    """Keep legacy in-process seams explicit; isolation tests opt into processes."""
+    monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "thread")
+
+
+@pytest.fixture(autouse=True)
 def _clear_trace_caches():
     """Invalidate the global trace and preview caches between tests.
 
@@ -90,6 +96,16 @@ def _clear_execution_admission_reservations():
     _clear_in_flight_reservations_for_tests()
     yield
     _clear_in_flight_reservations_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _clear_materialisation_calibration():
+    """Keep process-local estimate learning deterministic between tests."""
+    from haute._estimate_calibration import _reset_materialisation_calibration_for_tests
+
+    _reset_materialisation_calibration_for_tests()
+    yield
+    _reset_materialisation_calibration_for_tests()
 
 
 @pytest.fixture(scope="session")

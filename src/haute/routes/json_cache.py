@@ -450,6 +450,7 @@ def _v2_status_response(
     from haute._api_input_schema import validate_v2_schema
     from haute._json_flatten import _json_cache_dir
     from haute._json_shred import (
+        _build_lock_for,
         is_per_port_cache_valid,
         read_per_port_cache_meta,
     )
@@ -464,12 +465,13 @@ def _v2_status_response(
     # invited to rebuild a cache that already existed and was in use.
     for layer in ("working", "committed"):
         cache_dir = _json_cache_dir(data_path, layer)
-        if not is_per_port_cache_valid(cache_dir, v2_config, data_path=data_path):
-            continue
-        meta = read_per_port_cache_meta(cache_dir)
-        if meta is None:
-            continue
-        return _aggregate_v2_status_response(cache_dir, data_path, meta)
+        with _build_lock_for(cache_dir):
+            if not is_per_port_cache_valid(cache_dir, v2_config, data_path=data_path):
+                continue
+            meta = read_per_port_cache_meta(cache_dir)
+            if meta is None:
+                continue
+            return _aggregate_v2_status_response(cache_dir, data_path, meta)
     return JsonCacheStatusResponse(cached=False, data_path=input_path)
 
 

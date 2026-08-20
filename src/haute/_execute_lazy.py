@@ -1266,6 +1266,11 @@ def _execute_lazy(
                     has_projection_seed=bool(planning_required_columns),
                     required_columns_by_node=planning_required_columns,
                     estimated_peak_bytes=previous_diagnostic.estimated_peak_bytes,
+                    raw_estimated_peak_bytes=(previous_diagnostic.raw_estimated_peak_bytes),
+                    estimate_calibration_factor_basis_points=(
+                        previous_diagnostic.estimate_calibration_factor_basis_points
+                    ),
+                    estimate_admission_basis=previous_diagnostic.estimate_admission_basis,
                     headroom_bytes=previous_diagnostic.headroom_bytes,
                     assumptions=previous_diagnostic.assumptions,
                 )
@@ -2145,6 +2150,15 @@ def _execute_eager_core(
                                 has_projection_seed=bool(normalised_required_columns),
                                 required_columns_by_node=normalised_required_columns,
                                 estimated_peak_bytes=(previous_diagnostic.estimated_peak_bytes),
+                                raw_estimated_peak_bytes=(
+                                    previous_diagnostic.raw_estimated_peak_bytes
+                                ),
+                                estimate_calibration_factor_basis_points=(
+                                    previous_diagnostic.estimate_calibration_factor_basis_points
+                                ),
+                                estimate_admission_basis=(
+                                    previous_diagnostic.estimate_admission_basis
+                                ),
                                 headroom_bytes=previous_diagnostic.headroom_bytes,
                                 assumptions=previous_diagnostic.assumptions,
                             )

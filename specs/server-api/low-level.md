@@ -229,7 +229,9 @@ execution-telemetry and optimiser-housekeeping configuration →
 spawn `_watcher_forever()` and a tracked worker-thread optimiser-reaper task. The lifespan yields
 without awaiting filesystem housekeeping, so temp-directory population cannot delay server
 readiness. Shutdown cancels and awaits the watcher and observes the reaper task; reaper failures
-are logged rather than silently discarded.
+are logged rather than silently discarded. A partial startup failure after the interactive pool
+has opened still cancels every task already created, clears the exported task handles, and closes
+the pool; no startup exception may strand a worker process or watcher.
 
 **Request middleware chain.** `add_middleware` prepends entries and Starlette later wraps in
 reverse, so runtime outer-to-inner order is `LocalTrustedHostMiddleware →
@@ -373,17 +375,20 @@ after request containment, build a composite key from
 `(operation, source_file, source, graph_fingerprint, ...
 operation-specific selectors)` → `run_latest()` → on preview, an
 `ExecutionCancellationToken` is threaded through so a superseded preview's in-flight work is
-asked to cancel cooperatively, not just abandoned. Trace has no corresponding token: its old
-route response is superseded, but the newer same-key trace waits on the condition until the
-old thread finishes. Both wrap execution in `run_blocking_with_response_timeout`. If that
-helper raises a
-`BlockingWorkTimeoutError`, `SupersessionCoordinator` extracts its `background_task` and
-defers clearing `state.active` and releasing the semaphore until the task finishes. Same-key
-work therefore cannot overlap after a 504 and timed-out calls cannot create a worker storm.
-An error carrying that background task is re-raised before the post-worker generation check,
-so a newer request cannot mask the timeout as 409 or trigger early cleanup.
-Preview also cancels its token and defers admission release; trace has no cancellation token,
-so its thread runs to completion while retaining the key/permit.
+stopped. In production process mode the call is submitted to the warm interactive-worker
+pool. The supervisor polls the preview cancellation token (trace receives an equivalent
+parent stop signal), kills and joins the process on timeout/supersession, replaces the
+slot, and only then resolves the route future. The coordinator can therefore clear
+`state.active`, release the semaphore, and release admission immediately after that
+terminal result; there is no late computation. Explicit thread mode retains
+`run_blocking_with_response_timeout`, `BlockingWorkTimeoutError`, and its
+`background_task`, so the existing deferred cleanup path remains correct and visible
+rather than becoming a silent fallback.
+The worker budget is the parent's actual admitted headroom plus its optional absolute
+process cap, not merely the wider profile default. Remote HTTP reconstruction accepts
+payloads only from the closed public-contract and memory-error identities; arbitrary
+child exceptions remain redacted internal failures even if they implement a method
+named `to_payload`.
 
 **OUTPUT dry-run** (`routes/output_assemble.py`): validate the mapping shape
 (`validate_v2_output_mapping`, data-independent) → flatten the graph → locate and type-check
@@ -487,7 +492,7 @@ until the worker actually exits.
 | `BoundedMemoryUnsupportedError` | output write | 422 | Distinguishes "cannot stream safely" from a hard resource limit. |
 | `DataOutputDestinationExistsError` | `POST /api/pipeline/write-output` | 409 | `overwrite=false` refuses an existing file/table before publication and returns the destination in the detail. |
 | `SupersededRequestError` | preview, trace | 409 | Raised by `SupersessionCoordinator`; the worker never runs for a superseded generation. |
-| `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, output write, output-assemble | 504 | Worker threads are never killed. Preview/output write request cooperative cancellation; trace retains its supersession key/permit; OUTPUT dry-run defers context release until its late worker finishes. A background timeout is not masked by supersession. |
+| `IsolatedWorkerTimeoutError`, `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, output write, output-assemble | 504 | Preview/trace process mode kills and replaces the exact worker before returning. Explicit thread mode and write/dry-run retain cooperative/deferred cleanup; a background timeout is not masked by supersession. |
 | `HTTPException` (raised directly) | path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | `raise_node_not_found`, `raise_node_type_error`, `raise_pipeline_not_found`, `raise_validation_error` centralise the structured-log + raise pattern. |
 | Any other `Exception` | route catch-alls | 500 | Route handlers generally log and return `_INTERNAL_ERROR_DETAIL`; `_RequestIdMiddleware` is a separate backstop whose fixed detail is `Internal server error`. |
 

@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, cast
 
@@ -218,11 +219,14 @@ def clear_json_cache(
 
     Returns True if anything was deleted.
     """
+    from haute._json_shred import _build_lock_for
+
     cache_dir = _json_cache_dir(data_path, layer)
-    if not cache_dir.exists():
-        return False
-    shutil.rmtree(cache_dir)
-    return True
+    with _build_lock_for(cache_dir):
+        if not cache_dir.exists():
+            return False
+        shutil.rmtree(cache_dir)
+        return True
 
 
 def mirror_cache_to_committed(
@@ -271,9 +275,15 @@ def mirror_cache_to_committed(
     working_dir = _json_cache_dir(data_path, _LAYER_WORKING)
     committed_dir = _json_cache_dir(data_path, _LAYER_COMMITTED)
 
-    # Hold the build lock across the whole read-meta + populate + swap so a
-    # build of working_dir can't interleave with this promotion.
-    with _build_lock_for(working_dir):
+    # Acquire both identities in canonical order so builders/readers cannot
+    # observe either side of promotion half-updated and two promotions cannot
+    # deadlock by choosing opposite lock order.
+    with ExitStack() as locks:
+        for cache_dir in sorted(
+            (working_dir, committed_dir),
+            key=lambda path: os.path.normcase(str(path.resolve())),
+        ):
+            locks.enter_context(_build_lock_for(cache_dir))
         if not working_dir.exists():
             if committed_dir.exists():
                 shutil.rmtree(committed_dir)

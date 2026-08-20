@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import statistics
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -26,6 +27,7 @@ from scripts.memory_smoke import run_smoke
 pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
 
 _PROBE = Path(__file__).with_name("_execution_engine_probe.py")
+_RESTART_PROBE = Path(__file__).with_name("_execution_restart_probe.py")
 _WIDE_ROWS = 50_000
 _WIDE_COLUMNS = 256
 _SELECTED_WIDE_COLUMNS = ("row_id", "value_000", "value_001", "value_002")
@@ -200,6 +202,156 @@ def _write_direct_jsonl_fixture(path: Path) -> dict[str, Any]:
 
 def _snapshot_parquets(root: Path) -> list[Path]:
     return sorted(path for path in root.rglob("*.parquet") if ".runtime-snapshots" in path.parts)
+
+
+def _cached_generation_digest(cache_dir: Path) -> str:
+    digest = hashlib.sha256()
+    for artifact in sorted(path for path in cache_dir.rglob("*") if path.is_file()):
+        digest.update(artifact.relative_to(cache_dir).as_posix().encode())
+        digest.update(artifact.read_bytes())
+    return digest.hexdigest()
+
+
+def _run_restart_cache_probe(
+    tmp_path: Path,
+    source_path: Path,
+    config_path: Path,
+    output_path: Path,
+) -> dict[str, Any]:
+    interpreter = str(getattr(sys, "_base_executable", sys.executable))
+    inherited_paths = [path for path in sys.path if path]
+    bootstrap = (
+        "import runpy,sys;"
+        f"sys.path[:0]={inherited_paths!r};"
+        f"runpy.run_path({str(_RESTART_PROBE)!r},run_name='__main__')"
+    )
+    completed = subprocess.run(
+        [
+            interpreter,
+            "-c",
+            bootstrap,
+            "--source",
+            str(source_path),
+            "--config",
+            str(config_path),
+            "--port",
+            "rows",
+            "--column",
+            "id",
+            "--column",
+            "amount",
+            "--output",
+            str(output_path),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(output_path.read_text(encoding="utf-8"))
+
+
+def _string_leaves(value: object) -> set[str]:
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, dict):
+        return set().union(*(_string_leaves(item) for item in value.values()))
+    if isinstance(value, list):
+        return set().union(*(_string_leaves(item) for item in value))
+    return set()
+
+
+def test_fresh_process_restart_reuses_cache_proof_and_safe_telemetry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Certify a committed cached port survives independent interpreter restarts."""
+    monkeypatch.chdir(tmp_path)
+    source_path = tmp_path / "restart-source.jsonl"
+    records = [
+        {"id": 1, "amount": 10, "ignored": 100},
+        {"id": 2, "amount": 20, "ignored": 200},
+        {"id": 3, "amount": 30, "ignored": 300},
+    ]
+    source_path.write_bytes(b"".join(orjson.dumps(row) + b"\n" for row in records))
+    config = {
+        "tables": [
+            _table(
+                "$[:]",
+                "rows",
+                [
+                    _column("id", "$[:].id"),
+                    _column("amount", "$[:].amount"),
+                    _column("ignored", "$[:].ignored"),
+                ],
+            )
+        ]
+    }
+    config_path = tmp_path / "restart-config.json"
+    config_path.write_bytes(orjson.dumps(config))
+    cache_dir = _json_cache_dir(source_path, "committed")
+    build_per_port_cache(source_path, config, cache_dir)
+    assert not _json_cache_dir(source_path, "working").exists()
+    generation_before = _cached_generation_digest(cache_dir)
+    cache_artifact_bytes = sum(path.stat().st_size for path in cache_dir.glob("*.parquet"))
+
+    first = _run_restart_cache_probe(
+        tmp_path, source_path, config_path, tmp_path / "restart-first.json"
+    )
+    assert _cached_generation_digest(cache_dir) == generation_before
+    assert not list(tmp_path.rglob(".runtime-snapshots/*/.owner.json"))
+    second = _run_restart_cache_probe(
+        tmp_path, source_path, config_path, tmp_path / "restart-second.json"
+    )
+    assert _cached_generation_digest(cache_dir) == generation_before
+    assert not list(tmp_path.rglob(".runtime-snapshots/*/.owner.json"))
+
+    expected_rows = [{"id": row["id"], "amount": row["amount"]} for row in records]
+    assert first["rows"] == second["rows"] == expected_rows
+    for result in (first, second):
+        assert result["cache_proof"] == {
+            "hits": 1,
+            "misses": 1,
+            "direct_fallbacks": 0,
+            "miss_reason_counts": {
+                "artifact_integrity_schema_failure": 0,
+                "metadata_source_mismatch": 0,
+                "proof_unavailable": 1,
+                "unreadable_artifact": 0,
+            },
+        }
+        assert len(result["telemetry"]) == 1
+        terminal = result["telemetry"][0]
+        assert terminal["cache_proof_hits"] == 1
+        assert terminal["cache_proof_misses"] == 1
+        assert terminal["cache_direct_fallbacks"] == 0
+        assert terminal["requested_column_width_total"] in (None, 2)
+        assert terminal["physically_scanned_column_width_total"] in (None, 2)
+        sensitive_values = {"restart-source", str(source_path), "id", "amount", "rows"}
+        assert not (sensitive_values & set(terminal))
+        assert not (sensitive_values & _string_leaves(terminal))
+
+    request.node.user_properties.append(
+        (
+            "haute_perf_evidence",
+            {
+                "scenario": "execution_engine_restart_cache_proof_telemetry",
+                "scale": "ci-restart",
+                "input": {"rows": len(records), "source_bytes": source_path.stat().st_size},
+                "product_metrics": {
+                    "cache_proof_hits": first["cache_proof"]["hits"],
+                    "cache_proof_misses": first["cache_proof"]["misses"],
+                    "cache_direct_fallbacks": first["cache_proof"]["direct_fallbacks"],
+                    "cache_artifact_bytes": cache_artifact_bytes,
+                },
+                "payload_bytes": len(orjson.dumps(first["rows"])),
+                "execution_profile": first["profile"],
+            },
+        )
+    )
 
 
 def test_unchanged_source_signature_reuses_one_complete_content_proof(

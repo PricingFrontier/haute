@@ -36,6 +36,7 @@ from __future__ import annotations
 import atexit
 import ctypes
 import hashlib
+import math
 import os
 import shutil
 import stat as stat_module
@@ -45,10 +46,11 @@ import uuid
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import Any, Literal, NoReturn, cast
 from weakref import WeakValueDictionary
 
 import orjson
@@ -72,15 +74,32 @@ from haute._api_input_schema import (
     sanitise_label_for_filesystem as _sanitise_label,
 )
 from haute._env import int_env
-from haute._execution_context import ExecutionContext, current_execution_context
+from haute._execution_context import (
+    ExecutionCacheProofMissReason,
+    ExecutionContext,
+    current_execution_context,
+)
 from haute._jsonpath import is_identifier_name
 from haute._logging import get_logger
+from haute._process_memory import process_is_alive
 
 logger = get_logger(component="json_shred")
 
 
 _META_FILENAME = "meta.json"
 _SHRED_EXECUTION_CHECKPOINT_ROWS = 1_024
+_DIRECT_SPILL_DIRNAME = ".runtime-spills"
+_DIRECT_SPILL_MAX_ROWS_DEFAULT = 10_000
+_DIRECT_SPILL_MAX_BYTES_DEFAULT = 16 * 1024 * 1024
+
+# Direct spill bundles are deliberately not cache artifacts.  An unmanaged
+# LazyFrame can be cloned and retained after this function returns, so its
+# bundle has the same process-exit lifetime rule as runtime snapshots.
+_DIRECT_SPILL_PROCESS_ID = os.getpid()
+_DIRECT_SPILL_PROCESS_TOKEN = f"{os.getpid()}-{uuid.uuid4().hex}"
+_DIRECT_SPILL_DIRS: set[Path] = set()
+_DIRECT_SPILL_LOCK = threading.Lock()
+_DIRECT_SPILL_ATEXIT_REGISTERED = False
 
 
 @dataclass(slots=True)
@@ -1043,14 +1062,359 @@ def _data_file_matches(
 # Build serialization (W2 item 2.6)
 # ---------------------------------------------------------------------------
 
-# One lock per canonical cache directory. Concurrent builds of the SAME
-# cache interleaving their write phases could stamp one schema's meta onto
-# another schema's parquets; builds of different caches stay independent.
-# Process-local by design: the FastAPI routes are the only production
-# producer and run builds in threads of this process.
-_BUILD_LOCKS: WeakValueDictionary[str, threading.RLock] = WeakValueDictionary()
+# One re-entrant lock per canonical cache directory. The thread lock protects
+# same-process callers; the stable sibling file lock protects independent CLI,
+# server, and test processes across a complete generation-selection or publish
+# transaction. Different cache identities retain independent locks.
+_BUILD_LOCKS: WeakValueDictionary[str, _CacheBuildLock]
 _BUILD_LOCKS_GUARD = threading.Lock()
+_BUILD_LOCKS_PROCESS_ID = os.getpid()
 _RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)  # pragma: no mutate
+
+
+class JsonCacheRecoveryError(RuntimeError):
+    """A crash-left cache publication cannot be recovered unambiguously."""
+
+
+def _cache_lock_path(cache_dir: Path) -> Path:
+    return cache_dir.with_name(f".{cache_dir.name}.build.lock")
+
+
+def _cache_lock_file_stat(path: Path, path_stat: os.stat_result) -> None:
+    if (
+        not stat_module.S_ISREG(path_stat.st_mode)
+        or stat_module.S_ISLNK(path_stat.st_mode)
+        or _is_reparse_point(path_stat)
+    ):
+        raise JsonCacheRecoveryError(f"Cache lock path is not a plain regular file: {path}")
+
+
+def _open_cache_lock_file(lock_path: Path) -> Any:
+    """Open one stable lock inode without trusting a link or replacement path."""
+    try:
+        existing_stat = lock_path.lstat()
+    except FileNotFoundError:
+        existing_stat = None
+    if existing_stat is not None:
+        _cache_lock_file_stat(lock_path, existing_stat)
+
+    flags = os.O_RDWR | os.O_CREAT
+    flags |= getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOINHERIT", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise JsonCacheRecoveryError(
+            f"Cache lock path could not be opened safely: {lock_path}"
+        ) from exc
+    try:
+        try:
+            path_stat = lock_path.lstat()
+        except OSError as exc:
+            raise JsonCacheRecoveryError(
+                f"Cache lock path changed while it was being opened: {lock_path}"
+            ) from exc
+        descriptor_stat = os.fstat(descriptor)
+        _cache_lock_file_stat(lock_path, path_stat)
+        _cache_lock_file_stat(lock_path, descriptor_stat)
+        if (
+            path_stat.st_ino
+            and descriptor_stat.st_ino
+            and (path_stat.st_dev, path_stat.st_ino)
+            != (descriptor_stat.st_dev, descriptor_stat.st_ino)
+        ):
+            raise JsonCacheRecoveryError(
+                f"Cache lock path changed file identity while it was being opened: {lock_path}"
+            )
+        return os.fdopen(descriptor, "r+b", buffering=0)
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _assert_cache_path_ancestors_plain(path: Path) -> None:
+    """Reject a cache root or existing descendant reached through a link/reparse point."""
+    absolute = Path(os.path.abspath(path))
+    cache_root = next(
+        (
+            candidate
+            for candidate in (absolute, *absolute.parents)
+            if candidate.name == ".haute_cache"
+        ),
+        absolute.parent,
+    )
+    chain: list[Path] = []
+    current = absolute.parent
+    while True:
+        chain.append(current)
+        if current == cache_root:
+            break
+        if current.parent == current:
+            break
+        current = current.parent
+    for directory in reversed(chain):
+        if not directory.exists() and not directory.is_symlink():
+            continue
+        _plain_directory_stat(directory)
+
+
+def _acquire_file_lock(
+    handle: Any,
+    *,
+    blocking: bool = True,
+    timeout_seconds: float | None = None,
+) -> bool:
+    """Acquire one OS file lock, optionally without waiting.
+
+    ``timeout_seconds`` applies only when ``blocking`` is true.  The polling
+    implementation is shared by POSIX and Windows so the public lock wrapper
+    retains the timeout/non-blocking contract of the ``RLock`` it replaced.
+    """
+    deadline = (
+        None if not blocking or timeout_seconds is None else time.monotonic() + timeout_seconds
+    )
+    if os.name != "nt":
+        import fcntl
+
+        fcntl_module = cast(Any, fcntl)
+        if blocking and deadline is None:
+            fcntl_module.flock(handle.fileno(), fcntl_module.LOCK_EX)
+            return True
+        while True:
+            try:
+                fcntl_module.flock(
+                    handle.fileno(),
+                    fcntl_module.LOCK_EX | fcntl_module.LOCK_NB,
+                )
+                return True
+            except OSError as exc:
+                if exc.errno not in {11, 13}:
+                    raise
+                if not blocking or (deadline is not None and time.monotonic() >= deadline):
+                    return False
+                time.sleep(0.01)
+
+    import msvcrt
+
+    while True:
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in {33, 36} and exc.errno not in {
+                11,
+                13,
+                36,
+            }:
+                raise
+            if not blocking or (deadline is not None and time.monotonic() >= deadline):
+                return False
+            time.sleep(0.01)
+
+
+def _release_file_lock(handle: Any) -> None:
+    if os.name != "nt":
+        import fcntl
+
+        fcntl_module = cast(Any, fcntl)
+        fcntl_module.flock(handle.fileno(), fcntl_module.LOCK_UN)
+        return
+
+    import msvcrt
+
+    handle.seek(0)
+    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def _is_reparse_point(path_stat: os.stat_result) -> bool:
+    return bool(getattr(path_stat, "st_file_attributes", 0) & 0x400)
+
+
+def _plain_directory_stat(path: Path) -> os.stat_result:
+    try:
+        path_stat = path.lstat()
+    except FileNotFoundError:
+        raise
+    if (
+        not stat_module.S_ISDIR(path_stat.st_mode)
+        or stat_module.S_ISLNK(path_stat.st_mode)
+        or _is_reparse_point(path_stat)
+    ):
+        raise JsonCacheRecoveryError(f"Cache recovery refused non-plain directory entry: {path}")
+    return path_stat
+
+
+def _remove_plain_cache_directory(path: Path) -> None:
+    _plain_directory_stat(path)
+    shutil.rmtree(path)
+
+
+def _publication_siblings(cache_dir: Path, kind: str) -> list[tuple[Path, os.stat_result]]:
+    prefix = f"{cache_dir.name}.build-{kind}-"
+    try:
+        children = tuple(cache_dir.parent.iterdir())
+    except FileNotFoundError:
+        return []
+    matches: list[tuple[Path, os.stat_result]] = []
+    for child in children:
+        if not child.name.startswith(prefix):
+            continue
+        matches.append((child, _plain_directory_stat(child)))
+    return matches
+
+
+def _recover_cache_publication(cache_dir: Path) -> None:
+    """Restore or remove only verified crash-left publication siblings."""
+    old_generations = _publication_siblings(cache_dir, "old")
+    staged_generations = _publication_siblings(cache_dir, "tmp")
+    if cache_dir.exists() or cache_dir.is_symlink():
+        _plain_directory_stat(cache_dir)
+        for path, _path_stat in (*old_generations, *staged_generations):
+            _remove_plain_cache_directory(path)
+        if old_generations or staged_generations:
+            logger.info(
+                "json_cache_publication_recovered",
+                cache_dir=str(cache_dir),
+                action="removed_superseded_siblings",
+                old_count=len(old_generations),
+                staged_count=len(staged_generations),
+            )
+        return
+
+    for path, _path_stat in staged_generations:
+        _remove_plain_cache_directory(path)
+    if not old_generations:
+        return
+    newest_mtime = max(path_stat.st_mtime_ns for _path, path_stat in old_generations)
+    newest = [path for path, path_stat in old_generations if path_stat.st_mtime_ns == newest_mtime]
+    if len(newest) != 1:
+        raise JsonCacheRecoveryError(
+            f"Cache recovery found ambiguous newest backup generations for {cache_dir}"
+        )
+    restored = newest[0]
+    _rename_dir_with_retry(restored, cache_dir)
+    for path, _path_stat in old_generations:
+        if path != restored:
+            _remove_plain_cache_directory(path)
+    logger.info(
+        "json_cache_publication_recovered",
+        cache_dir=str(cache_dir),
+        action="restored_backup_generation",
+        restored=str(restored),
+        discarded_old_count=len(old_generations) - 1,
+        discarded_staged_count=len(staged_generations),
+    )
+
+
+class _CacheBuildLock:
+    """Thread-reentrant wrapper around one cross-process cache file lock."""
+
+    def __init__(self, cache_dir: Path) -> None:
+        self._cache_dir = cache_dir
+        self._thread_lock = threading.RLock()
+        self._depth = 0
+        self._handle: Any | None = None
+        self._owner_thread_id: int | None = None
+
+    def __enter__(self) -> _CacheBuildLock:
+        acquired = self.acquire()
+        if not acquired:  # pragma: no cover - an unbounded acquire cannot time out
+            raise RuntimeError("cache build lock could not be acquired")
+        return self
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        """Acquire the thread and process lock with ``RLock``-compatible controls."""
+        if not blocking and timeout != -1:
+            raise ValueError("can't specify a timeout for a non-blocking call")
+        started_at = time.monotonic()
+        if not blocking:
+            thread_acquired = self._thread_lock.acquire(blocking=False)
+        elif timeout == -1:
+            thread_acquired = self._thread_lock.acquire()
+        else:
+            thread_acquired = self._thread_lock.acquire(timeout=timeout)
+        if not thread_acquired:
+            return False
+        if self._depth:
+            self._depth += 1
+            return True
+        handle: Any | None = None
+        try:
+            lock_path = _cache_lock_path(self._cache_dir)
+            _assert_cache_path_ancestors_plain(lock_path)
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            handle = _open_cache_lock_file(lock_path)
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            remaining_timeout = None
+            if timeout != -1:
+                remaining_timeout = max(0.0, timeout - (time.monotonic() - started_at))
+            if not _acquire_file_lock(
+                handle,
+                blocking=blocking,
+                timeout_seconds=remaining_timeout,
+            ):
+                handle.close()
+                self._thread_lock.release()
+                return False
+            _recover_cache_publication(self._cache_dir)
+            self._handle = handle
+            self._depth = 1
+            self._owner_thread_id = threading.get_ident()
+            return True
+        except BaseException:
+            if handle is not None:
+                try:
+                    _release_file_lock(handle)
+                except BaseException:
+                    pass
+                handle.close()
+            self._thread_lock.release()
+            raise
+
+    def release(self) -> None:
+        """Release one re-entrant acquisition."""
+        self._release(primary_exception=None)
+
+    def _release(self, *, primary_exception: BaseException | None) -> None:
+        if self._owner_thread_id != threading.get_ident() or self._depth <= 0:
+            raise RuntimeError("cannot release un-acquired cache build lock")
+        try:
+            self._depth -= 1
+            if self._depth:
+                return
+            handle, self._handle = self._handle, None
+            self._owner_thread_id = None
+            if handle is None:
+                raise RuntimeError("cache build lock lost its file handle")
+            try:
+                _release_file_lock(handle)
+            except BaseException as release_exc:
+                if primary_exception is None:
+                    raise
+                primary_exception.add_note(f"cache file lock release failed: {release_exc}")
+            finally:
+                handle.close()
+        finally:
+            self._thread_lock.release()
+
+    def __exit__(
+        self,
+        exc_type: Any,
+        exc: BaseException | None,
+        traceback: Any,
+    ) -> Literal[False]:
+        del exc_type, traceback
+        self._release(primary_exception=exc)
+        return False
+
+
+_BUILD_LOCKS = WeakValueDictionary()
 
 # File-backed runtime snapshots live outside a cache generation so replacing or
 # clearing that generation cannot retarget an already-returned LazyFrame. Repeated
@@ -1069,10 +1433,325 @@ _RUNTIME_SNAPSHOT_REFERENCES: dict[Path, int] = {}
 _RUNTIME_SNAPSHOT_PROCESS_PINS: set[Path] = set()
 _RUNTIME_SNAPSHOT_LOCK = threading.Lock()
 _RUNTIME_SNAPSHOT_ATEXIT_REGISTERED = False
+_RUNTIME_OWNER_META_FILENAME = ".owner.json"
+_RUNTIME_OWNER_FORMAT_VERSION = 1
+_RUNTIME_STORAGE_BUDGET_DEFAULT_BYTES = 4 * 1024 * 1024 * 1024
+_RUNTIME_STORAGE_ORPHAN_GRACE_DEFAULT_SECONDS = 60 * 60
+_RUNTIME_STORAGE_RECOVERY_PROCESS_ID = os.getpid()
+_RUNTIME_STORAGE_RECOVERED_ROOTS: set[Path] = set()
 RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES = int_env("HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES", 64)
 RUNTIME_SNAPSHOT_CACHE_MAX_BYTES = int_env(
     "HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_BYTES", 512 * 1024 * 1024
 )
+
+
+class JsonRuntimeDiskBudgetExceededError(RuntimeError):
+    """A runtime snapshot/spill allocation exceeded the project disk budget."""
+
+    def __init__(self, *, used_bytes: int, budget_bytes: int) -> None:
+        super().__init__(
+            f"JSON runtime storage requires {used_bytes} bytes, exceeding its "
+            f"{budget_bytes} byte disk budget"
+        )
+        self.used_bytes = used_bytes
+        self.budget_bytes = budget_bytes
+
+
+class JsonRuntimeStorageIntegrityError(RuntimeError):
+    """Runtime storage contains an entry whose size cannot be trusted."""
+
+    def __init__(self, *, path: Path, reason: str) -> None:
+        super().__init__(
+            f"JSON runtime storage cannot be measured safely because {path} is {reason}"
+        )
+        self.path = path
+        self.reason = reason
+
+
+def _runtime_storage_root_for_cache(cache_dir: Path) -> Path:
+    absolute = Path(os.path.abspath(cache_dir))
+    for candidate in (absolute, *absolute.parents):
+        if candidate.name == ".haute_cache":
+            return candidate
+    return absolute.parent
+
+
+def _runtime_storage_parents(cache_root: Path) -> tuple[Path, ...]:
+    return (
+        cache_root / _RUNTIME_SNAPSHOT_DIRNAME,
+        cache_root / _DIRECT_SPILL_DIRNAME,
+        cache_root / "working" / _RUNTIME_SNAPSHOT_DIRNAME,
+        cache_root / "committed" / _RUNTIME_SNAPSHOT_DIRNAME,
+    )
+
+
+def _runtime_owner_payload() -> dict[str, int | float]:
+    return {
+        "format_version": _RUNTIME_OWNER_FORMAT_VERSION,
+        "pid": os.getpid(),
+        "created_at": time.time(),
+    }
+
+
+def _ensure_runtime_owner_metadata(owner_dir: Path) -> None:
+    meta_path = owner_dir / _RUNTIME_OWNER_META_FILENAME
+    if meta_path.exists():
+        return
+    temp_path = owner_dir / f".{_RUNTIME_OWNER_META_FILENAME}.{uuid.uuid4().hex}.tmp"
+    try:
+        temp_path.write_bytes(orjson.dumps(_runtime_owner_payload()))
+        os.replace(temp_path, meta_path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _remove_empty_runtime_owner_dir(owner_dir: Path) -> None:
+    """Remove an owner directory only when no runtime artifacts remain."""
+    try:
+        children = tuple(owner_dir.iterdir())
+    except FileNotFoundError:
+        return
+    if any(child.name != _RUNTIME_OWNER_META_FILENAME for child in children):
+        return
+    (owner_dir / _RUNTIME_OWNER_META_FILENAME).unlink(missing_ok=True)
+    owner_dir.rmdir()
+
+
+def _runtime_owner_record(owner_dir: Path) -> tuple[int, float] | None:
+    try:
+        payload = orjson.loads((owner_dir / _RUNTIME_OWNER_META_FILENAME).read_bytes())
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or type(payload.get("format_version")) is not int
+        or payload.get("format_version") != _RUNTIME_OWNER_FORMAT_VERSION
+    ):
+        return None
+    pid = payload.get("pid")
+    created_at = payload.get("created_at")
+    if (
+        isinstance(pid, bool)
+        or not isinstance(pid, int)
+        or pid <= 0
+        or isinstance(created_at, bool)
+        or not isinstance(created_at, (int, float))
+        or not math.isfinite(created_at)
+    ):
+        return None
+    return pid, float(created_at)
+
+
+def _recover_runtime_storage_parent(
+    runtime_parent: Path,
+    *,
+    now: float,
+    grace_seconds: int,
+) -> dict[str, int]:
+    report = {"inspected": 0, "removed": 0, "preserved": 0}
+    if not runtime_parent.exists() and not runtime_parent.is_symlink():
+        return report
+    try:
+        _plain_directory_stat(runtime_parent)
+        children = tuple(runtime_parent.iterdir())
+    except (OSError, JsonCacheRecoveryError) as exc:
+        logger.warning(
+            "json_runtime_storage_parent_preserved",
+            path=str(runtime_parent),
+            reason="non_plain_or_unreadable",
+            error_type=type(exc).__name__,
+        )
+        report["preserved"] += 1
+        return report
+
+    for owner_dir in children:
+        report["inspected"] += 1
+        try:
+            _plain_directory_stat(owner_dir)
+        except (OSError, JsonCacheRecoveryError) as exc:
+            report["preserved"] += 1
+            logger.warning(
+                "json_runtime_storage_owner_preserved",
+                path=str(owner_dir),
+                reason="non_plain_or_unreadable",
+                error_type=type(exc).__name__,
+            )
+            continue
+        owner = _runtime_owner_record(owner_dir)
+        if owner is None:
+            report["preserved"] += 1
+            logger.warning(
+                "json_runtime_storage_owner_preserved",
+                path=str(owner_dir),
+                reason="malformed_owner_metadata",
+            )
+            continue
+        pid, created_at = owner
+        if now - created_at < grace_seconds:
+            report["preserved"] += 1
+            continue
+        if process_is_alive(pid):
+            report["preserved"] += 1
+            continue
+        _remove_plain_cache_directory(owner_dir)
+        report["removed"] += 1
+        logger.info(
+            "json_runtime_storage_owner_reaped",
+            path=str(owner_dir),
+            pid=pid,
+        )
+    try:
+        runtime_parent.rmdir()
+    except OSError:
+        pass
+    return report
+
+
+def recover_json_runtime_storage(
+    cache_root: str | Path | None = None,
+    *,
+    now: float | None = None,
+) -> dict[str, int]:
+    """Reap only old, plain, ownership-marked directories from dead processes."""
+    root = (
+        Path(os.path.abspath(Path.cwd() / ".haute_cache"))
+        if cache_root is None
+        else Path(os.path.abspath(cache_root))
+    )
+    grace_seconds = int_env(
+        "HAUTE_JSON_RUNTIME_ORPHAN_GRACE_SECONDS",
+        _RUNTIME_STORAGE_ORPHAN_GRACE_DEFAULT_SECONDS,
+    )
+    current_time = time.time() if now is None else now
+    if (
+        isinstance(current_time, bool)
+        or not isinstance(current_time, (int, float))
+        or not math.isfinite(current_time)
+    ):
+        raise ValueError("now must be finite")
+    aggregate = {"inspected": 0, "removed": 0, "preserved": 0}
+    if root.exists() or root.is_symlink():
+        try:
+            _plain_directory_stat(root)
+        except (OSError, JsonCacheRecoveryError) as exc:
+            logger.warning(
+                "json_runtime_storage_root_preserved",
+                path=str(root),
+                reason="non_plain_or_unreadable",
+                error_type=type(exc).__name__,
+            )
+            aggregate["preserved"] = 1
+            return aggregate
+    for runtime_parent in _runtime_storage_parents(root):
+        report = _recover_runtime_storage_parent(
+            runtime_parent,
+            now=current_time,
+            grace_seconds=grace_seconds,
+        )
+        for key, value in report.items():
+            aggregate[key] += value
+    return aggregate
+
+
+def _runtime_file_identity(path: Path, path_stat: os.stat_result) -> tuple[object, ...]:
+    if path_stat.st_ino:
+        return ("inode", path_stat.st_dev, path_stat.st_ino)
+    return ("path", os.path.normcase(str(path.resolve())))
+
+
+def _runtime_storage_usage_bytes(cache_root: Path) -> int:
+    identities: set[tuple[object, ...]] = set()
+    total = 0
+
+    def _visit(directory: Path) -> None:
+        nonlocal total
+        try:
+            _plain_directory_stat(directory)
+            children = tuple(directory.iterdir())
+        except FileNotFoundError:
+            return
+        except (OSError, JsonCacheRecoveryError) as exc:
+            raise JsonRuntimeStorageIntegrityError(
+                path=directory,
+                reason="a non-plain or unreadable directory",
+            ) from exc
+        for child in children:
+            try:
+                child_stat = child.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise JsonRuntimeStorageIntegrityError(
+                    path=child,
+                    reason="unreadable",
+                ) from exc
+            if stat_module.S_ISDIR(child_stat.st_mode) and not _is_reparse_point(child_stat):
+                _visit(child)
+                continue
+            if (
+                not stat_module.S_ISREG(child_stat.st_mode)
+                or stat_module.S_ISLNK(child_stat.st_mode)
+                or _is_reparse_point(child_stat)
+            ):
+                raise JsonRuntimeStorageIntegrityError(
+                    path=child,
+                    reason="not a plain file or directory",
+                )
+            try:
+                identity = _runtime_file_identity(child, child_stat)
+            except OSError as exc:
+                raise JsonRuntimeStorageIntegrityError(
+                    path=child,
+                    reason="unreadable while resolving its file identity",
+                ) from exc
+            if identity in identities:
+                continue
+            identities.add(identity)
+            total += child_stat.st_size
+
+    for runtime_parent in _runtime_storage_parents(cache_root):
+        _visit(runtime_parent)
+    return total
+
+
+def _recover_runtime_storage_once(cache_root: Path) -> None:
+    global _RUNTIME_STORAGE_RECOVERY_PROCESS_ID, _RUNTIME_STORAGE_RECOVERED_ROOTS
+    if os.getpid() != _RUNTIME_STORAGE_RECOVERY_PROCESS_ID:
+        _RUNTIME_STORAGE_RECOVERY_PROCESS_ID = os.getpid()
+        _RUNTIME_STORAGE_RECOVERED_ROOTS = set()
+    if cache_root in _RUNTIME_STORAGE_RECOVERED_ROOTS:
+        return
+    recover_json_runtime_storage(cache_root)
+    _RUNTIME_STORAGE_RECOVERED_ROOTS.add(cache_root)
+
+
+@contextmanager
+def _runtime_disk_budget_transaction(
+    cache_root: Path,
+    *,
+    allow_existing_excess: bool = False,
+) -> Iterator[None]:
+    root = Path(os.path.abspath(cache_root))
+    budget_bytes = int_env(
+        "HAUTE_JSON_RUNTIME_DISK_BUDGET_BYTES",
+        _RUNTIME_STORAGE_BUDGET_DEFAULT_BYTES,
+    )
+    with _build_lock_for(root / ".runtime-storage-budget"):
+        _recover_runtime_storage_once(root)
+        used_before = _runtime_storage_usage_bytes(root)
+        if used_before > budget_bytes and not allow_existing_excess:
+            raise JsonRuntimeDiskBudgetExceededError(
+                used_bytes=used_before,
+                budget_bytes=budget_bytes,
+            )
+        yield
+        used_after = _runtime_storage_usage_bytes(root)
+        if used_after > budget_bytes:
+            raise JsonRuntimeDiskBudgetExceededError(
+                used_bytes=used_after,
+                budget_bytes=budget_bytes,
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1242,10 +1921,18 @@ _VERIFIED_RUNTIME_SNAPSHOT_CACHE = _VerifiedRuntimeSnapshotCache(
 )
 
 
-def _build_lock_for(cache_dir: Path) -> threading.RLock:
-    key = os.path.normcase(str(cache_dir.resolve()))
+def _build_lock_for(cache_dir: Path) -> _CacheBuildLock:
+    global _BUILD_LOCKS_PROCESS_ID, _BUILD_LOCKS_GUARD, _BUILD_LOCKS
+    if os.getpid() != _BUILD_LOCKS_PROCESS_ID:
+        # A forked child must not acquire locks inherited from vanished parent
+        # threads or reuse inherited file-lock ownership.
+        _BUILD_LOCKS_PROCESS_ID = os.getpid()
+        _BUILD_LOCKS_GUARD = threading.Lock()
+        _BUILD_LOCKS = WeakValueDictionary()
+    absolute = Path(os.path.abspath(cache_dir))
+    key = os.path.normcase(str(absolute))
     with _BUILD_LOCKS_GUARD:
-        return _BUILD_LOCKS.setdefault(key, threading.RLock())
+        return _BUILD_LOCKS.setdefault(key, _CacheBuildLock(absolute))
 
 
 def _cleanup_runtime_snapshot_dirs() -> None:
@@ -1271,9 +1958,8 @@ def _cleanup_runtime_snapshot_dirs() -> None:
             pass
 
 
-def _runtime_snapshot_dir(cache_dir: Path) -> Path:
-    """Return this process's private snapshot directory beside *cache_dir*."""
-    global _RUNTIME_SNAPSHOT_ATEXIT_REGISTERED
+def _ensure_runtime_snapshot_process_state() -> None:
+    """Discard snapshot ownership inherited from another process."""
     global _RUNTIME_SNAPSHOT_PROCESS_ID, _RUNTIME_SNAPSHOT_PROCESS_TOKEN, _RUNTIME_SNAPSHOT_LOCK
 
     # This check deliberately precedes acquiring the lock. A forked child can
@@ -1287,11 +1973,25 @@ def _runtime_snapshot_dir(cache_dir: Path) -> Path:
         _RUNTIME_SNAPSHOT_PROCESS_PINS.clear()
         _VERIFIED_RUNTIME_SNAPSHOT_CACHE.reset_after_fork()
 
+
+def _runtime_snapshot_dir(cache_dir: Path) -> Path:
+    """Return this process's private snapshot directory beside *cache_dir*."""
+    global _RUNTIME_SNAPSHOT_ATEXIT_REGISTERED
+
+    _ensure_runtime_snapshot_process_state()
+    snapshot_dir = cache_dir.parent / _RUNTIME_SNAPSHOT_DIRNAME / _RUNTIME_SNAPSHOT_PROCESS_TOKEN
+    cache_root = _runtime_storage_root_for_cache(cache_dir)
+    try:
+        with _runtime_disk_budget_transaction(cache_root):
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+            _ensure_runtime_owner_metadata(snapshot_dir)
+    except BaseException:
+        try:
+            _remove_empty_runtime_owner_dir(snapshot_dir)
+        except OSError:
+            pass
+        raise
     with _RUNTIME_SNAPSHOT_LOCK:
-        snapshot_dir = (
-            cache_dir.parent / _RUNTIME_SNAPSHOT_DIRNAME / _RUNTIME_SNAPSHOT_PROCESS_TOKEN
-        )
-        snapshot_dir.mkdir(parents=True, exist_ok=True)
         _RUNTIME_SNAPSHOT_DIRS.add(snapshot_dir)
         if not _RUNTIME_SNAPSHOT_ATEXIT_REGISTERED:
             atexit.register(_cleanup_runtime_snapshot_dirs)
@@ -1335,7 +2035,7 @@ def _release_runtime_snapshot(snapshot_path: Path) -> None:
         except FileNotFoundError:
             pass
         try:
-            snapshot_path.parent.rmdir()
+            _remove_empty_runtime_owner_dir(snapshot_path.parent)
         except OSError:
             # Another content snapshot in this process directory is still live.
             pass
@@ -1355,7 +2055,7 @@ def _remove_unpinned_runtime_snapshot(snapshot_path: Path) -> None:
         except FileNotFoundError:
             pass
         try:
-            snapshot_path.parent.rmdir()
+            _remove_empty_runtime_owner_dir(snapshot_path.parent)
         except OSError:
             pass
 
@@ -1401,37 +2101,40 @@ def _capture_runtime_snapshot(
     """Capture and verify one generation, retaining it only when proof permits."""
     # A stale-entry eviction can remove the now-empty process directory after
     # `_runtime_snapshot_dir` returned it for this operation.
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
     candidate = snapshot_dir / f".{uuid.uuid4().hex}.parquet.tmp"
     copied = False
     captured_revision: _StrongFileRevision | None = None
     try:
-        try:
-            os.link(parquet_path, candidate)
-        except FileNotFoundError:
-            raise
-        except OSError as exc:
-            copied = True
-            logger.warning(
-                "json_shred_runtime_snapshot_copy_fallback",
-                cache_dir=str(cache_dir),
-                parquet_path=str(parquet_path),
-                error_type=type(exc).__name__,
-            )
-            # A regular Windows read handle blocks the rename-based publisher.
-            # This fallback is serialized with same-process builders.
-            with _build_lock_for(cache_dir):
-                observed_size, observed_digest = _stream_copy_with_signature(
-                    parquet_path, candidate
+        cache_root = _runtime_storage_root_for_cache(cache_dir)
+        with _runtime_disk_budget_transaction(cache_root):
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+            _ensure_runtime_owner_metadata(snapshot_dir)
+            try:
+                os.link(parquet_path, candidate)
+            except FileNotFoundError:
+                raise
+            except OSError as exc:
+                copied = True
+                logger.warning(
+                    "json_shred_runtime_snapshot_copy_fallback",
+                    cache_dir=str(cache_dir),
+                    parquet_path=str(parquet_path),
+                    error_type=type(exc).__name__,
                 )
-        else:
-            # Linking itself may change inode metadata. Observe the captured
-            # generation only after the link exists, then prove that revision
-            # survived the complete verification hash below.
-            captured_revision = _strong_file_revision(candidate)
-            observed = _file_content_signature(candidate)
-            observed_size = observed["size"]
-            observed_digest = observed["sha256"]
+                # A regular Windows read handle blocks the rename-based publisher.
+                # This fallback is serialized with same-process builders.
+                with _build_lock_for(cache_dir):
+                    observed_size, observed_digest = _stream_copy_with_signature(
+                        parquet_path, candidate
+                    )
+            else:
+                # Linking itself may change inode metadata. Observe the captured
+                # generation only after the link exists, then prove that revision
+                # survived the complete verification hash below.
+                captured_revision = _strong_file_revision(candidate)
+                observed = _file_content_signature(candidate)
+                observed_size = observed["size"]
+                observed_digest = observed["sha256"]
 
         if (observed_size, observed_digest) != (expected_size, expected_digest):
             candidate.unlink(missing_ok=True)
@@ -1520,6 +2223,19 @@ def _snapshot_cache_artifact(
     parquet_path: Path,
     recorded_signature: Any,
 ) -> Path | None:
+    with _build_lock_for(cache_dir):
+        return _snapshot_cache_artifact_locked(
+            cache_dir,
+            parquet_path,
+            recorded_signature,
+        )
+
+
+def _snapshot_cache_artifact_locked(
+    cache_dir: Path,
+    parquet_path: Path,
+    recorded_signature: Any,
+) -> Path | None:
     """Pin and verify one cache artifact without materialising its payload.
 
     A hard link captures one rename-published generation atomically and does not
@@ -1529,9 +2245,10 @@ def _snapshot_cache_artifact(
     holding the same-process build lock; the copied bytes are hashed as written.
     ``None`` means the captured generation did not match its manifest signature.
     """
-    # Establishing the private directory first also performs the fork reset
-    # before touching cache-owned synchronization state.
-    snapshot_dir = _runtime_snapshot_dir(cache_dir)
+    # A child must discard inherited lock and cache state before touching any
+    # cache-owned synchronization primitive. Runtime storage itself is allocated
+    # only after the verified-generation lookup misses.
+    _ensure_runtime_snapshot_process_state()
     expected = _content_signature_parts(recorded_signature)
     assert expected is not None
     expected_size, expected_digest = expected
@@ -1540,6 +2257,7 @@ def _snapshot_cache_artifact(
     initial_revision = _strong_file_revision(visible_path)
     if initial_revision is None:
         _VERIFIED_RUNTIME_SNAPSHOT_CACHE.warn_revision_unavailable_once(path_key, visible_path)
+        snapshot_dir = _runtime_snapshot_dir(cache_dir)
         return _capture_runtime_snapshot(
             cache_dir, visible_path, snapshot_dir, expected_size, expected_digest, None
         )
@@ -1553,6 +2271,7 @@ def _snapshot_cache_artifact(
                 _VERIFIED_RUNTIME_SNAPSHOT_CACHE.warn_revision_unavailable_once(
                     path_key, visible_path
                 )
+                snapshot_dir = _runtime_snapshot_dir(cache_dir)
                 return _capture_runtime_snapshot(
                     cache_dir, visible_path, snapshot_dir, expected_size, expected_digest, None
                 )
@@ -1566,6 +2285,7 @@ def _snapshot_cache_artifact(
                 _remove_unpinned_runtime_snapshot(evicted_path)
             if hit is not None:
                 return hit
+            snapshot_dir = _runtime_snapshot_dir(cache_dir)
             return _capture_runtime_snapshot(
                 cache_dir,
                 visible_path,
@@ -1721,20 +2441,62 @@ def _iter_records(
                 else:
                     _count_record_skip()
         return
-    raw = data_path.read_bytes()
-    if not raw.strip():
-        return
-    obj = orjson.loads(raw)
-    if isinstance(obj, list):
-        for item in obj:
-            if isinstance(item, dict):
-                yield item
+    # A root array can be arbitrarily large.  Read precisely one complete
+    # element at a time, while still consuming and validating the complete
+    # document (including the closing bracket and any trailing bytes).
+    pos = 0
+    with data_path.open("rb") as f:
+
+        def _read_byte() -> bytes:
+            nonlocal pos
+            byte = f.read(1)
+            if byte:
+                pos += 1
+            return byte
+
+        def _read_non_ws() -> bytes:
+            while True:
+                byte = _read_byte()
+                if not byte or byte not in b" \t\r\n":
+                    return byte
+
+        first = _read_non_ws()
+        if not first:
+            return
+        if first != b"[":
+            # Root-object/scalar semantics remain exactly the existing JSON
+            # semantics.  This branch is necessarily record-sized.
+            obj = orjson.loads(first + f.read())
+            if isinstance(obj, dict):
+                yield obj
             else:
                 _count_record_skip()
-    elif isinstance(obj, dict):
-        yield obj
-    else:
-        _count_record_skip()
+            return
+
+        expect_value = False
+        while True:
+            first = _read_non_ws()
+            if not first:
+                raise _json_decode_error("unexpected end of data", pos)
+            if first == b"]":
+                if expect_value:
+                    raise _json_decode_error("trailing comma in array", pos)
+                trailing = f.read()
+                if any(byte not in b" \t\r\n" for byte in trailing):
+                    raise _json_decode_error("unexpected trailing data", pos)
+                return
+            value, delimiter = _read_root_array_value(first, _read_byte, lambda: pos)
+            obj = orjson.loads(value)
+            if isinstance(obj, dict):
+                yield obj
+            else:
+                _count_record_skip()
+            expect_value = delimiter == b","
+            if delimiter == b"]":
+                trailing = f.read()
+                if any(byte not in b" \t\r\n" for byte in trailing):
+                    raise _json_decode_error("unexpected trailing data", pos)
+                return
 
 
 def _json_decode_error(message: str, pos: int) -> orjson.JSONDecodeError:
@@ -2047,6 +2809,8 @@ def shred_to_buffers(
     *,  # pragma: no mutate
     stats: ShredSkipStats | None = None,  # pragma: no mutate
     _table_specs: tuple[_EmittingTableSpec, ...] | None = None,  # pragma: no mutate
+    _row_sink: Callable[[str, dict[str, Any]], None] | None = None,  # pragma: no mutate
+    _emitted_counts: dict[str, int] | None = None,  # pragma: no mutate
 ) -> dict[str, list[dict[str, Any]]]:
     """Shred *records* according to *v2_config*, returning per-frame row buffers.
 
@@ -2120,8 +2884,18 @@ def shred_to_buffers(
             else:
                 obj_prefix.append(key)
 
-    # Buffers — one list per emitting table, keyed by label.
+    # The public path retains its historic per-table buffers.  Direct runtime
+    # loading supplies a sink, so the walk instead hands each row to its bounded
+    # spill bundle immediately and does not accumulate file-sized Python lists.
     buffers: dict[str, list[dict[str, Any]]] = {label: [] for label, _, _ in emit_tables}
+
+    def _deliver_row(label: str, row: dict[str, Any]) -> None:
+        if _emitted_counts is not None:
+            _emitted_counts[label] = _emitted_counts.get(label, 0) + 1
+        if _row_sink is None:
+            buffers[label].append(row)
+        else:
+            _row_sink(label, row)
 
     def _count_row_skip(label: str) -> None:
         if stats is not None:
@@ -2166,7 +2940,7 @@ def shred_to_buffers(
             if not shape_matches:
                 _count_row_skip(label)
                 continue
-            buffers[label].append(_emit_row(col_specs, record, ancestors, depth))
+            _deliver_row(label, _emit_row(col_specs, record, ancestors, depth))
 
         if not is_dict:
             return
@@ -2195,7 +2969,7 @@ def shred_to_buffers(
                 # non-record for an object table (counted as a dropped row).
                 for label, is_scalar_table, col_specs in tables_by_pos.get(pos, []):
                     if is_scalar_table:
-                        buffers[label].append(_emit_row(col_specs, None, ancestors, depth))
+                        _deliver_row(label, _emit_row(col_specs, None, ancestors, depth))
                     else:
                         _count_row_skip(label)
                 continue
@@ -2216,12 +2990,17 @@ def _assert_root_conservation(
     record_count: int,
     *,
     location: str = "",
+    emitted_counts: Mapping[str, int] | None = None,
 ) -> None:
     """Assert that every root input record was emitted or explicitly skipped."""
     for table_spec in table_specs:
         if table_spec.segments:
             continue
-        emitted = len(buffers.get(table_spec.label, ()))
+        emitted = (
+            emitted_counts.get(table_spec.label, 0)
+            if emitted_counts is not None
+            else len(buffers.get(table_spec.label, ()))
+        )
         skipped = skip_stats.skipped_rows_by_table.get(table_spec.label, 0)
         if emitted + skipped != record_count:
             raise RuntimeError(
@@ -2838,6 +3617,228 @@ def _buffer_to_frame(
     return frame
 
 
+def _cleanup_direct_spill_dirs() -> None:
+    """Remove direct-spill bundles owned by this process only."""
+    with _DIRECT_SPILL_LOCK:
+        if os.getpid() != _DIRECT_SPILL_PROCESS_ID:
+            return
+        spill_dirs = tuple(_DIRECT_SPILL_DIRS)
+        _DIRECT_SPILL_DIRS.clear()
+    for spill_dir in spill_dirs:
+        shutil.rmtree(spill_dir, ignore_errors=True)
+    for parent in {spill_dir.parent for spill_dir in spill_dirs}:
+        try:
+            shutil.rmtree(parent)
+        except OSError:
+            pass
+
+
+def _new_direct_spill_dir(cache_dir: Path) -> Path:
+    """Create a private direct-runtime bundle outside both cache layers."""
+    global _DIRECT_SPILL_ATEXIT_REGISTERED
+    global _DIRECT_SPILL_PROCESS_ID, _DIRECT_SPILL_PROCESS_TOKEN, _DIRECT_SPILL_LOCK
+    if os.getpid() != _DIRECT_SPILL_PROCESS_ID:
+        # A child must forget inherited ownership before it can register its
+        # own cleanup; its atexit callback must never remove parent spills.
+        _DIRECT_SPILL_PROCESS_ID = os.getpid()
+        _DIRECT_SPILL_PROCESS_TOKEN = f"{os.getpid()}-{uuid.uuid4().hex}"
+        _DIRECT_SPILL_LOCK = threading.Lock()
+        _DIRECT_SPILL_DIRS.clear()
+    cache_root = _runtime_storage_root_for_cache(cache_dir)
+    with _DIRECT_SPILL_LOCK:
+        owner_dir = cache_root / _DIRECT_SPILL_DIRNAME / _DIRECT_SPILL_PROCESS_TOKEN
+        spill_dir = owner_dir / uuid.uuid4().hex
+        try:
+            with _runtime_disk_budget_transaction(cache_root):
+                owner_dir.mkdir(parents=True, exist_ok=True)
+                _ensure_runtime_owner_metadata(owner_dir)
+                spill_dir.mkdir(exist_ok=False)
+        except BaseException:
+            shutil.rmtree(spill_dir, ignore_errors=True)
+            try:
+                _remove_empty_runtime_owner_dir(owner_dir)
+            except OSError:
+                pass
+            raise
+        _DIRECT_SPILL_DIRS.add(spill_dir)
+        if not _DIRECT_SPILL_ATEXIT_REGISTERED:
+            atexit.register(_cleanup_direct_spill_dirs)
+            _DIRECT_SPILL_ATEXIT_REGISTERED = True
+    return spill_dir
+
+
+def _release_direct_spill_dir(spill_dir: Path) -> None:
+    """Release a managed direct-spill bundle once its execution has ended."""
+    with _DIRECT_SPILL_LOCK:
+        _DIRECT_SPILL_DIRS.discard(spill_dir)
+    try:
+        shutil.rmtree(spill_dir)
+    except FileNotFoundError:
+        pass
+    with _DIRECT_SPILL_LOCK:
+        owner_dir = spill_dir.parent
+        try:
+            _remove_empty_runtime_owner_dir(owner_dir)
+        except FileNotFoundError:
+            pass
+
+
+class _DirectSpillBundle:
+    """One aggregate-bounded row buffer writing ordered Parquet row groups."""
+
+    def __init__(
+        self,
+        cache_dir: Path,
+        table_specs: tuple[_EmittingTableSpec, ...],
+    ) -> None:
+        import pyarrow.parquet as pq
+
+        self.cache_root = _runtime_storage_root_for_cache(cache_dir)
+        self.spill_dir = _new_direct_spill_dir(cache_dir)
+        self.table_specs = table_specs
+        self.max_rows = int_env("HAUTE_JSON_DIRECT_SPILL_MAX_ROWS", _DIRECT_SPILL_MAX_ROWS_DEFAULT)
+        self.max_bytes = int_env(
+            "HAUTE_JSON_DIRECT_SPILL_MAX_BYTES", _DIRECT_SPILL_MAX_BYTES_DEFAULT
+        )
+        self.buffers: dict[str, list[dict[str, Any]]] = {spec.label: [] for spec in table_specs}
+        self.buffered_rows = 0
+        self.buffered_bytes = 0
+        self.paths: dict[str, Path] = {}
+        self.writers: dict[str, Any] = {}
+        try:
+            with _runtime_disk_budget_transaction(self.cache_root):
+                for spec in table_specs:
+                    frame = _buffer_to_frame([], spec.leaf_specs)
+                    path = self.spill_dir / f"{_sanitise_label(spec.label)}.parquet"
+                    arrow_schema = frame.to_arrow().schema.with_metadata(
+                        _per_frame_metadata(spec.label, spec.leaf_specs)
+                    )
+                    self.paths[spec.label] = path
+                    self.writers[spec.label] = pq.ParquetWriter(
+                        path,
+                        arrow_schema,
+                        compression="zstd",
+                    )
+        except BaseException as exc:
+            try:
+                self.close()
+            except BaseException as cleanup_exc:
+                exc.add_note(f"direct spill writer cleanup failed: {cleanup_exc}")
+            try:
+                _release_direct_spill_dir(self.spill_dir)
+            except BaseException as cleanup_exc:
+                exc.add_note(f"direct spill directory cleanup failed: {cleanup_exc}")
+            raise
+
+    def emit(self, label: str, row: dict[str, Any]) -> None:
+        self.buffers[label].append(row)
+        self.buffered_rows += 1
+        # This is an accounting estimate, not serialisation retained in memory.
+        self.buffered_bytes += len(orjson.dumps(row))
+        if self.buffered_rows >= self.max_rows or self.buffered_bytes >= self.max_bytes:
+            self.flush()
+
+    def flush(self) -> None:
+        progress = _ShredExecutionProgress.current()
+        progress.checkpoint("json_shred_direct_spill_before_flush")
+        with _runtime_disk_budget_transaction(self.cache_root):
+            for spec in self.table_specs:
+                rows = self.buffers[spec.label]
+                if not rows:
+                    continue
+                frame = _buffer_to_frame(rows, spec.leaf_specs)
+                self.writers[spec.label].write_table(frame.to_arrow())
+                rows.clear()
+        self.buffered_rows = 0
+        self.buffered_bytes = 0
+        progress.checkpoint("json_shred_direct_spill_after_flush")
+
+    def close(self) -> None:
+        if not self.writers:
+            return
+        errors: list[BaseException] = []
+        try:
+            with _runtime_disk_budget_transaction(
+                self.cache_root,
+                allow_existing_excess=True,
+            ):
+                for writer in self.writers.values():
+                    try:
+                        writer.close()
+                    except BaseException as exc:
+                        errors.append(exc)
+        finally:
+            self.writers.clear()
+        if errors:
+            first, *rest = errors
+            for error in rest:
+                first.add_note(f"additional direct spill writer cleanup failure: {error}")
+            raise first
+
+    def lazy_bundle(self) -> dict[str, pl.LazyFrame]:
+        return {spec.label: pl.scan_parquet(self.paths[spec.label]) for spec in self.table_specs}
+
+
+def _shred_data_file_to_direct_spill(
+    data_path: Path,
+    v2_config: dict[str, Any],
+    table_specs: tuple[_EmittingTableSpec, ...],
+    cache_dir: Path,
+) -> tuple[dict[str, pl.LazyFrame], ShredSkipStats]:
+    """Shred one uncached source into a leased, bounded Parquet spill bundle."""
+    skip_stats = ShredSkipStats()
+    emitted_counts: dict[str, int] = {spec.label: 0 for spec in table_specs}
+    record_count = 0
+    bundle = _DirectSpillBundle(cache_dir, table_specs)
+    try:
+
+        def _counted_records() -> Iterator[dict[str, Any]]:
+            nonlocal record_count
+            for record in _iter_records(data_path, stats=skip_stats):
+                record_count += 1
+                yield record
+
+        shred_to_buffers(
+            _counted_records(),
+            v2_config,
+            stats=skip_stats,
+            _table_specs=table_specs,
+            _row_sink=bundle.emit,
+            _emitted_counts=emitted_counts,
+        )
+        _assert_root_conservation(
+            table_specs,
+            {},
+            skip_stats,
+            record_count,
+            emitted_counts=emitted_counts,
+        )
+        bundle.flush()
+        bundle.close()
+        direct_bundle = bundle.lazy_bundle()
+        execution_context = current_execution_context()
+        if execution_context is not None:
+            spill_dir = bundle.spill_dir
+            try:
+                execution_context.add_cleanup(lambda: _release_direct_spill_dir(spill_dir))
+            except BaseException:
+                _release_direct_spill_dir(bundle.spill_dir)
+                raise
+        # Unmanaged bundles intentionally stay in _DIRECT_SPILL_DIRS for the
+        # process atexit hook: derived LazyFrames have no observable lifetime.
+        return direct_bundle, skip_stats
+    except BaseException as exc:
+        try:
+            bundle.close()
+        except BaseException as cleanup_exc:
+            exc.add_note(f"direct spill writer cleanup failed: {cleanup_exc}")
+        try:
+            _release_direct_spill_dir(bundle.spill_dir)
+        except BaseException as cleanup_exc:
+            exc.add_note(f"direct spill directory cleanup failed: {cleanup_exc}")
+        raise
+
+
 def _per_frame_metadata(label: str, col_specs: list[_LeafSpec]) -> dict[bytes, bytes]:
     """Build the parquet-footer key-value metadata describing this frame.
 
@@ -3208,24 +4209,25 @@ def load_per_port_cache(
     :func:`is_per_port_cache_valid` or :func:`load_v2_api_source`.
     """
     cd = Path(cache_dir)
-    table_specs = _emitting_table_specs(v2_config)
-    meta = read_per_port_cache_meta(cd)
-    if (
-        meta is None
-        or meta.get("schema_mode") != "v2"
-        or meta.get("schema_fingerprint") != _v2_fingerprint(v2_config)
-    ):
-        return {}
-    try:
-        bundle, failure = _probe_cache_bundle(
-            cd,
-            table_specs,
-            meta,
-            retain_snapshots=True,
-        )
-    except (OSError, pl.exceptions.PolarsError):
-        return {}
-    return bundle if failure is None else {}
+    with _build_lock_for(cd):
+        table_specs = _emitting_table_specs(v2_config)
+        meta = read_per_port_cache_meta(cd)
+        if (
+            meta is None
+            or meta.get("schema_mode") != "v2"
+            or meta.get("schema_fingerprint") != _v2_fingerprint(v2_config)
+        ):
+            return {}
+        try:
+            bundle, failure = _probe_cache_bundle(
+                cd,
+                table_specs,
+                meta,
+                retain_snapshots=True,
+            )
+        except (OSError, pl.exceptions.PolarsError):
+            return {}
+        return bundle if failure is None else {}
 
 
 def _cache_meta_matches_config_and_source(
@@ -3251,20 +4253,13 @@ def _cache_meta_matches_config_and_source(
     )
 
 
-def _read_matching_cache_meta(
-    cache_dir: str | Path,  # pragma: no mutate
+def _read_matching_cache_meta_unlocked(
+    cd: Path,
     v2_config: dict[str, Any],
-    *,  # pragma: no mutate
-    data_path: str | Path,  # pragma: no mutate
-    data_file_signature: Mapping[str, Any] | None = None,  # pragma: no mutate
-) -> dict[str, Any] | None:  # pragma: no mutate
-    """Read metadata once and return it when schema/source identity matches.
-
-    This deliberately does not touch parquet files. Runtime and public
-    validity pass the returned object into the same signed-artifact/footer
-    probe, avoiding a second ``meta.json`` read and validation drift.
-    """
-    cd = Path(cache_dir)
+    *,
+    data_path: str | Path,
+    data_file_signature: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
     meta_path = cd / _META_FILENAME
     try:
         meta = orjson.loads(meta_path.read_bytes())
@@ -3386,8 +4381,12 @@ def load_v2_api_source(
             for spec in complete_table_specs
             if spec.label in requested_by_label
         )
-    # Reuse one raw-data signature while probing both cache layers.
-    data_file_sig = _data_file_signature(Path(data_path))
+    # Defer the complete source proof until a cache layer has plausible schema
+    # metadata. A cold uncached execution should parse the source once, not hash
+    # the whole file first merely to prove that two absent caches are absent.
+    expected_fingerprint = _v2_fingerprint(config)
+    data_file_sig: dict[str, Any] | None = None
+    execution_context = current_execution_context()
     # A valid parquet cache is an optimization, not a runtime prerequisite.
     # Prefer the user's current working cache, then the saved/deployable
     # committed cache. If either disappears between validation and scanning,
@@ -3395,64 +4394,94 @@ def load_v2_api_source(
     # dependency.
     for layer in ("working", "committed"):
         cache_dir = _json_cache_dir(data_path, layer)
-        cache_meta = _read_matching_cache_meta(
-            cache_dir,
-            config,
-            data_path=data_path,
-            data_file_signature=data_file_sig,
-        )
-        if cache_meta is None:
-            continue
-        try:
-            bundle, probe_failure = _probe_cache_bundle(
-                cache_dir,
-                table_specs,
-                cache_meta,
-                complete_table_specs=complete_table_specs,
-                retain_snapshots=True,
+        with _build_lock_for(cache_dir):
+            candidate_meta = _read_per_port_cache_meta_unlocked(cache_dir)
+            plausible_meta = (
+                candidate_meta is not None
+                and candidate_meta.get("schema_mode") == "v2"
+                and candidate_meta.get("schema_fingerprint") == expected_fingerprint
             )
-        except (OSError, pl.exceptions.PolarsError) as exc:
-            logger.warning(
-                "json_shred_cache_candidate_rejected",
-                data_path=data_path,
-                cache_dir=str(cache_dir),
-                layer=layer,
-                reason="unreadable_parquet",
-                error_type=type(exc).__name__,
-            )
-            continue
-        if probe_failure is not None:
-            logger.warning(
-                "json_shred_cache_candidate_rejected",
-                data_path=data_path,
-                cache_dir=str(cache_dir),
-                layer=layer,
-                reason=probe_failure.reason,
-                label=probe_failure.label,
-                expected_schema=(
-                    str(probe_failure.expected_schema)
-                    if probe_failure.expected_schema is not None
-                    else None
-                ),
-                actual_schema=(
-                    str(probe_failure.actual_schema)
-                    if probe_failure.actual_schema is not None
-                    else None
-                ),
-            )
-            continue
-        return {table_spec.label: bundle[table_spec.label] for table_spec in table_specs}
+            cache_meta: dict[str, Any] | None = None
+            if plausible_meta:
+                assert candidate_meta is not None
+                if data_file_sig is None:
+                    data_file_sig = _data_file_signature(Path(data_path))
+                if _cache_meta_matches_config_and_source(
+                    candidate_meta,
+                    config,
+                    data_path=data_path,
+                    data_file_signature=data_file_sig,
+                ):
+                    cache_meta = candidate_meta
+            if cache_meta is None:
+                if execution_context is not None:
+                    reason = (
+                        ExecutionCacheProofMissReason.METADATA_SOURCE_MISMATCH
+                        if (cache_dir / _META_FILENAME).is_file()
+                        else ExecutionCacheProofMissReason.PROOF_UNAVAILABLE
+                    )
+                    execution_context.record_cache_proof_miss(reason)
+                continue
+            try:
+                bundle, probe_failure = _probe_cache_bundle(
+                    cache_dir,
+                    table_specs,
+                    cache_meta,
+                    complete_table_specs=complete_table_specs,
+                    retain_snapshots=True,
+                )
+            except (OSError, pl.exceptions.PolarsError) as exc:
+                if execution_context is not None:
+                    execution_context.record_cache_proof_miss(
+                        ExecutionCacheProofMissReason.UNREADABLE_ARTIFACT
+                    )
+                logger.warning(
+                    "json_shred_cache_candidate_rejected",
+                    data_path=data_path,
+                    cache_dir=str(cache_dir),
+                    layer=layer,
+                    reason="unreadable_parquet",
+                    error_type=type(exc).__name__,
+                )
+                continue
+            if probe_failure is not None:
+                if execution_context is not None:
+                    execution_context.record_cache_proof_miss(
+                        ExecutionCacheProofMissReason.ARTIFACT_INTEGRITY_SCHEMA_FAILURE
+                    )
+                logger.warning(
+                    "json_shred_cache_candidate_rejected",
+                    data_path=data_path,
+                    cache_dir=str(cache_dir),
+                    layer=layer,
+                    reason=probe_failure.reason,
+                    label=probe_failure.label,
+                    expected_schema=(
+                        str(probe_failure.expected_schema)
+                        if probe_failure.expected_schema is not None
+                        else None
+                    ),
+                    actual_schema=(
+                        str(probe_failure.actual_schema)
+                        if probe_failure.actual_schema is not None
+                        else None
+                    ),
+                )
+                continue
+            if execution_context is not None:
+                execution_context.record_cache_proof_hit()
+            return {table_spec.label: bundle[table_spec.label] for table_spec in table_specs}
 
     # Neither cache can serve the current post-schema shape. Shred the source
     # for this execution only; do not write, refresh, or promote cache state.
-    buffers, skip_stats = _shred_data_file(Path(data_path), config, table_specs)
-    direct_bundle = {
-        table_spec.label: _buffer_to_frame(
-            buffers.get(table_spec.label, []),
-            table_spec.leaf_specs,
-        ).lazy()
-        for table_spec in table_specs
-    }
+    direct_bundle, skip_stats = _shred_data_file_to_direct_spill(
+        Path(data_path),
+        config,
+        table_specs,
+        _json_cache_dir(data_path, "working"),
+    )
+    if execution_context is not None:
+        execution_context.record_cache_direct_fallback()
     if skip_stats.total:
         logger.warning(
             "json_shred_direct_records_skipped",
@@ -3493,6 +4522,34 @@ def is_per_port_cache_valid(
     moved. Metadata without a recorded source or per-parquet signature is
     invalid.
     """
+    cd = Path(cache_dir)
+    with _build_lock_for(cd):
+        return _is_per_port_cache_valid_unlocked(
+            cd,
+            v2_config,
+            data_path=data_path,
+            data_file_signature=data_file_signature,
+        )
+
+
+def _is_per_port_cache_valid_unlocked(
+    cache_dir: Path,
+    v2_config: dict[str, Any],
+    *,
+    data_path: str | Path,
+    data_file_signature: Mapping[str, Any] | None,
+) -> bool:
+    try:
+        expected_fingerprint = _v2_fingerprint(v2_config)
+    except ApiInputSchemaError:
+        return False
+    cache_meta = _read_per_port_cache_meta_unlocked(cache_dir)
+    if (
+        cache_meta is None
+        or cache_meta.get("schema_mode") != "v2"
+        or cache_meta.get("schema_fingerprint") != expected_fingerprint
+    ):
+        return False
     try:
         signature = (
             _data_file_signature(Path(data_path))
@@ -3501,19 +4558,17 @@ def is_per_port_cache_valid(
         )
     except OSError:
         return False
-    cache_meta = _read_matching_cache_meta(
-        cache_dir,
+    if not _cache_meta_matches_config_and_source(
+        cache_meta,
         v2_config,
         data_path=data_path,
         data_file_signature=signature,
-    )
-    if cache_meta is None:
+    ):
         return False
-    cd = Path(cache_dir)
     try:
         table_specs = _emitting_table_specs(v2_config)
         _bundle, probe_failure = _probe_cache_bundle(
-            cd,
+            cache_dir,
             table_specs,
             cache_meta,
             retain_snapshots=False,
@@ -3953,6 +5008,11 @@ def read_per_port_cache_meta(cache_dir: str | Path) -> dict[str, Any] | None:  #
     without re-shredding.
     """
     cd = Path(cache_dir)
+    with _build_lock_for(cd):
+        return _read_per_port_cache_meta_unlocked(cd)
+
+
+def _read_per_port_cache_meta_unlocked(cd: Path) -> dict[str, Any] | None:
     meta_path = cd / _META_FILENAME
     try:
         meta = orjson.loads(meta_path.read_bytes())

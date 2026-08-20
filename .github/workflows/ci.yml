@@ -412,8 +412,23 @@ jobs:
 
       - run: uv sync --group dev --locked
 
-      - name: Cross-platform path and debt smoke
-        run: uv run pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py tests/test_file_ops.py tests/test_write_sandbox_guard.py tests/test_data_io_roundtrips.py -q
+      - name: Cross-platform path, process isolation, spill, cache, and debt smoke
+        run: >
+          uv run pytest
+          tests/test_path_resolution.py
+          tests/test_pipeline_runtime_path_validation.py
+          tests/test_test_debt.py
+          tests/test_file_ops.py
+          tests/test_write_sandbox_guard.py
+          tests/test_data_io_roundtrips.py
+          tests/test_process_memory.py
+          tests/test_worker_isolation.py
+          tests/test_interactive_worker_pool.py
+          tests/test_interactive_route_isolation.py
+          tests/test_json_direct_spill.py
+          tests/test_json_cache_cross_process.py
+          tests/test_json_runtime_storage.py
+          -q
 
   mutation-config-smoke:
     runs-on: ubuntu-latest

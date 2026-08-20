@@ -491,3 +491,73 @@ def test_server_lifespan_reaps_artifacts_without_delaying_readiness(
             await task
 
     asyncio.run(exercise_lifespan())
+
+
+@pytest.mark.parametrize("fail_on_task", [1, 2])
+def test_server_lifespan_cleans_partial_interactive_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    fail_on_task: int,
+) -> None:
+    import haute.deploy._config as deploy_config
+    import haute.server as server
+
+    lifecycle: list[str] = []
+
+    class FakeTask:
+        def __init__(self, coroutine) -> None:
+            self.coroutine = coroutine
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+            self.coroutine.close()
+
+        def __await__(self):
+            if not self.cancelled:
+                self.coroutine.close()
+            if False:
+                yield None
+            return None
+
+    created: list[FakeTask] = []
+
+    def create_task(coroutine):
+        if len(created) + 1 == fail_on_task:
+            coroutine.close()
+            raise RuntimeError(f"task {fail_on_task} failed")
+        task = FakeTask(coroutine)
+        created.append(task)
+        return task
+
+    monkeypatch.setattr(server, "_clear_bytecache", lambda: None)
+    monkeypatch.setattr(server, "configure_logging", lambda: None)
+    monkeypatch.setattr(deploy_config, "_load_env", lambda _path: None)
+    monkeypatch.setattr(server, "configure_execution_telemetry", lambda: None)
+    monkeypatch.setattr(server, "recover_json_runtime_storage", lambda: None)
+    monkeypatch.setattr(server, "_artifact_stale_seconds", lambda: 86_400)
+    monkeypatch.setattr(server, "_ensure_pipeline_index", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "start_interactive_worker_pool",
+        lambda: lifecycle.append("started"),
+    )
+    monkeypatch.setattr(
+        server,
+        "shutdown_interactive_worker_pool",
+        lambda: lifecycle.append("stopped"),
+    )
+    monkeypatch.setattr(server.asyncio, "create_task", create_task)
+    server._watcher_task = None
+    server._optimiser_reaper_task = None
+
+    async def exercise_lifespan() -> None:
+        with pytest.raises(RuntimeError, match=f"task {fail_on_task} failed"):
+            async with server._lifespan(server.app):
+                raise AssertionError("startup failure must not yield readiness")
+
+    asyncio.run(exercise_lifespan())
+
+    assert lifecycle == ["started", "stopped"]
+    assert all(task.cancelled for task in created)
+    assert server._watcher_task is None
+    assert server._optimiser_reaper_task is None

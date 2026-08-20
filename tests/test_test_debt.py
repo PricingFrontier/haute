@@ -176,7 +176,9 @@ _EXPECTED_DEBT_IDS = {
     "df789ca110c56d8d",
     "e800d20c2fdb0d00",
     "f6ab12590998eb2c",
-    "394d6f9aa801fa62",
+    # This test is now specifically address-space-cap gated because RSS watchdog
+    # support exists cross-platform.
+    "b84cbd5e85977fa9",
     # 4a.4 — the Poisson/Tweedie CatBoost SHAP space-reconciliation tests
     # train a real CatBoost model; catboost is an optional extra, so the
     # shared trainer helper importorskips it (same convention as every other

@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import polars as pl
@@ -11,11 +12,15 @@ import pytest
 
 from haute._execution_admission import (
     ExecutionAdmissionError,
+    IsolatedExecutionBudget,
     create_admitted_execution_context,
+    create_isolated_execution_context,
     execution_budget_for_profile,
+    isolated_execution_budget,
 )
 from haute._execution_context import (
     ExecutionAdmission,
+    ExecutionCacheProofMissReason,
     ExecutionCancellationToken,
     ExecutionCancelledError,
     ExecutionContext,
@@ -1033,6 +1038,13 @@ def test_execution_telemetry_is_bounded_redacted_and_emitted_once_per_terminal_s
     context.record_bytes_read(1_024)
     context.record_bytes_written(512)
     context.record_chunk()
+    context.record_column_widths(
+        node_id="source",
+        requested_width=2,
+        physically_scanned_width=3,
+    )
+    context.record_cache_proof_miss(ExecutionCacheProofMissReason.PROOF_UNAVAILABLE)
+    context.record_cache_direct_fallback()
 
     terminal_reason = "bounded_reason_" + ("x" * 256)
     context.metrics_payload(status="completed", terminal_reason=terminal_reason)
@@ -1042,7 +1054,7 @@ def test_execution_telemetry_is_bounded_redacted_and_emitted_once_per_terminal_s
     event = events[0]
     assert event.schema_version == 1
     assert event.event == "execution_terminal"
-    assert len(event.attributes) <= 32
+    assert len(event.attributes) <= 48
     assert all(
         not isinstance(value, str) or len(value) <= 128 for value in event.attributes.values()
     )
@@ -1050,6 +1062,15 @@ def test_execution_telemetry_is_bounded_redacted_and_emitted_once_per_terminal_s
     assert event.attributes["bytes_read"] == 1_024
     assert event.attributes["bytes_written"] == 512
     assert event.attributes["chunk_count"] == 1
+    assert "rss_start_bytes" in event.attributes
+    assert "strategy_status" in event.attributes
+    assert "admission_headroom_bytes" in event.attributes
+    assert "column_widths_state" in event.attributes
+    assert event.attributes["requested_column_width_total"] == 2
+    assert event.attributes["physically_scanned_column_width_total"] == 3
+    assert event.attributes["cache_proof_misses"] == 1
+    assert event.attributes["cache_miss_proof_unavailable"] == 1
+    assert event.attributes["cache_direct_fallbacks"] == 1
     serialised = json.dumps(event.to_dict())
     assert "secret-operation" not in serialised
     assert "secret-job" not in serialised
@@ -1097,10 +1118,10 @@ def test_execution_telemetry_environment_is_parsed_once_across_default_contexts(
 
 
 def test_bounded_telemetry_attributes_rejects_overflow_instead_of_slicing() -> None:
-    attributes = {f"key_{index}": index for index in range(32)}
+    attributes = {f"key_{index}": index for index in range(48)}
     assert _bounded_telemetry_attributes(attributes) == attributes
-    with pytest.raises(ValueError, match="32"):
-        _bounded_telemetry_attributes({**attributes, "overflow": 33})
+    with pytest.raises(ValueError, match="48"):
+        _bounded_telemetry_attributes({**attributes, "overflow": 49})
 
 
 def test_telemetry_attribute_failure_does_not_change_metrics_payload() -> None:
@@ -1728,6 +1749,76 @@ def test_execution_metrics_payload_bounds_width_evidence_and_keeps_unavailable_c
     ExecutionMetricsPayload.model_validate(payload)
 
 
+def test_execution_efficiency_evidence_uses_closed_cache_reasons_and_aggregate_widths() -> None:
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
+    context.record_column_widths(
+        node_id="a",
+        requested_width=2,
+        physically_scanned_width=3,
+    )
+    context.record_column_widths(
+        node_id="b",
+        requested_width=5,
+        physically_scanned_width=8,
+    )
+    context.record_cache_proof_hit()
+    context.record_cache_proof_miss(ExecutionCacheProofMissReason.METADATA_SOURCE_MISMATCH)
+    context.record_cache_proof_miss(ExecutionCacheProofMissReason.PROOF_UNAVAILABLE)
+    context.record_cache_direct_fallback()
+
+    payload = context.metrics_payload(status="completed")
+
+    assert payload["requested_column_width_total"] == 7
+    assert payload["physically_scanned_column_width_total"] == 11
+    assert payload["cache_proof"] == {
+        "hits": 1,
+        "misses": 2,
+        "direct_fallbacks": 1,
+        "miss_reason_counts": {
+            "artifact_integrity_schema_failure": 0,
+            "metadata_source_mismatch": 1,
+            "proof_unavailable": 1,
+            "unreadable_artifact": 0,
+        },
+    }
+    assert ExecutionMetricsPayload.model_validate(payload).model_dump(mode="json") == payload
+
+
+def test_execution_efficiency_width_totals_fail_closed_on_partial_evidence() -> None:
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
+    context.record_column_widths(
+        node_id="known",
+        requested_width=2,
+        physically_scanned_width=3,
+    )
+    context.record_column_widths(
+        node_id="partial",
+        requested_width=None,
+        physically_scanned_width=5,
+    )
+
+    payload = context.metrics_payload(status="completed")
+
+    assert payload["requested_column_width_total"] is None
+    assert payload["physically_scanned_column_width_total"] == 8
+
+
+def test_execution_efficiency_evidence_rejects_unknown_cache_reason() -> None:
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
+
+    with pytest.raises(TypeError, match="ExecutionCacheProofMissReason"):
+        context.record_cache_proof_miss("new_reason")  # type: ignore[arg-type]
+
+
 def test_projection_strategy_summary_is_bounded() -> None:
     from haute.projection import ProjectionPlan
 
@@ -1856,6 +1947,242 @@ def test_admitted_execution_context_uses_profile_specific_memory_limit(monkeypat
     assert context.admission.config_key == "HAUTE_PREVIEW_MEMORY_LIMIT_MB"
 
 
+def test_isolated_context_uses_plain_parent_budget_without_reserving_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._execution_admission as admission_mod
+
+    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "64")
+    parent = create_admitted_execution_context(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: 100,
+    )
+    budget = isolated_execution_budget(parent)
+    monkeypatch.setattr(admission_mod, "current_rss_bytes", lambda: 200)
+
+    child = create_isolated_execution_context(budget)
+
+    assert budget.memory_limit_bytes == 64 * 1024 * 1024
+    assert child.memory_baseline_bytes == 200
+    assert child.rss_limit_bytes == 200 + 64 * 1024 * 1024
+    assert child.admission is not None
+    assert child.admission.operation == "pipeline_preview"
+    assert child.admission_release is None
+    child.release_admission()
+    parent.release_admission()
+
+
+def test_isolated_context_requires_admitted_parent_and_child_rss_sampler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._execution_admission as admission_mod
+
+    with pytest.raises(ValueError, match="admitted parent context"):
+        isolated_execution_budget(
+            ExecutionContext(
+                operation="pipeline_preview",
+                profile=ExecutionProfile.PREVIEW_EAGER,
+                memory_limit_bytes=1,
+            )
+        )
+
+    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "64")
+    parent = create_admitted_execution_context(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: 100,
+    )
+    budget = isolated_execution_budget(parent)
+    monkeypatch.setattr(admission_mod, "current_rss_bytes", lambda: None)
+    try:
+        with pytest.raises(ExecutionAdmissionError) as exc_info:
+            create_isolated_execution_context(budget)
+    finally:
+        parent.release_admission()
+
+    assert exc_info.value.reason == "memory_sampler_unavailable"
+
+
+@pytest.mark.parametrize("memory_limit", [0, -1, True, 1.5])
+def test_isolated_budget_rejects_invalid_memory_limit(memory_limit: object) -> None:
+    with pytest.raises(ValueError, match="memory_limit_bytes"):
+        IsolatedExecutionBudget(
+            operation="preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=memory_limit,  # type: ignore[arg-type]
+            config_key="test",
+            budget_policy="fixed_default",
+        )
+
+
+@pytest.mark.parametrize("process_limit", [0, -1, True, 1.5])
+def test_isolated_budget_rejects_invalid_optional_process_limit(process_limit: object) -> None:
+    with pytest.raises(ValueError, match="process_rss_limit_bytes"):
+        IsolatedExecutionBudget(
+            operation="preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=1,
+            process_rss_limit_bytes=process_limit,  # type: ignore[arg-type]
+            config_key="test",
+            budget_policy="fixed_default",
+        )
+
+
+@pytest.mark.parametrize("headroom", [None, 0, -1, True])
+def test_isolated_budget_requires_positive_admitted_headroom(headroom: object) -> None:
+    parent = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        admission=ExecutionAdmission(
+            operation="preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=10,
+            rss_at_admission_bytes=1,
+            rss_limit_bytes=11,
+            headroom_bytes=headroom,  # type: ignore[arg-type]
+            config_key="test",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="positive admitted memory headroom"):
+        isolated_execution_budget(parent)
+
+
+def test_create_isolated_context_rejects_the_wrong_budget_type() -> None:
+    with pytest.raises(TypeError, match="IsolatedExecutionBudget"):
+        create_isolated_execution_context(object())  # type: ignore[arg-type]
+
+
+def test_admitted_context_rejects_an_unavailable_initial_sampler() -> None:
+    with pytest.raises(ExecutionAdmissionError) as exc_info:
+        create_admitted_execution_context(
+            operation="preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_sampler=lambda: None,
+        )
+
+    assert exc_info.value.reason == "memory_sampler_unavailable"
+
+
+def test_invalid_execution_memory_policy_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_POLICY", "guess")
+
+    with pytest.raises(RuntimeError, match="HAUTE_EXECUTION_MEMORY_POLICY"):
+        execution_budget_for_profile(ExecutionProfile.PREVIEW_EAGER)
+
+
+def test_terminal_calibration_ignores_invalid_positive_evidence() -> None:
+    context = ExecutionContext(operation="preview", profile=ExecutionProfile.PREVIEW_EAGER)
+    diagnostic = SimpleNamespace(strategy=SimpleNamespace(value="materialisation-boundary"))
+
+    context._record_estimate_calibration(
+        {
+            "status": "completed",
+            "raw_estimated_bytes": True,
+            "observed_peak_rss_growth_bytes": 1,
+        },
+        diagnostic=diagnostic,
+    )
+
+    assert context._estimate_calibration_recorded is False
+
+
+def test_isolated_context_uses_admitted_headroom_and_absolute_process_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A child cannot reacquire the profile's wider nominal allowance."""
+
+    import haute._execution_admission as admission_mod
+
+    parent = ExecutionContext(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_limit_bytes=100,
+        admission=ExecutionAdmission(
+            operation="pipeline_preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=100,
+            rss_at_admission_bytes=100,
+            rss_limit_bytes=125,
+            process_rss_limit_bytes=125,
+            headroom_bytes=25,
+            config_key="test",
+        ),
+    )
+    budget = isolated_execution_budget(parent)
+    monkeypatch.setattr(admission_mod, "current_rss_bytes", lambda: 110)
+
+    child = create_isolated_execution_context(budget)
+
+    assert budget.memory_limit_bytes == 25
+    assert budget.process_rss_limit_bytes == 125
+    assert child.memory_limit_bytes == 25
+    assert child.memory_baseline_bytes == 110
+    assert child.rss_limit_bytes == 125
+    assert child.admission is not None
+    assert child.admission.headroom_bytes == 15
+
+
+def test_isolated_context_rejects_child_already_above_absolute_process_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._execution_admission as admission_mod
+
+    parent = ExecutionContext(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_limit_bytes=100,
+        admission=ExecutionAdmission(
+            operation="pipeline_preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=100,
+            rss_at_admission_bytes=100,
+            rss_limit_bytes=125,
+            process_rss_limit_bytes=125,
+            headroom_bytes=25,
+            config_key="test",
+        ),
+    )
+    budget = isolated_execution_budget(parent)
+    monkeypatch.setattr(admission_mod, "current_rss_bytes", lambda: 126)
+
+    with pytest.raises(ExecutionAdmissionError) as exc_info:
+        create_isolated_execution_context(budget)
+
+    assert exc_info.value.reason == "process_rss_limit_exceeded"
+    assert exc_info.value.process_rss_limit_bytes == 125
+
+
+def test_isolated_context_rejects_child_with_no_absolute_cap_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._execution_admission as admission_mod
+
+    parent = ExecutionContext(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        admission=ExecutionAdmission(
+            operation="pipeline_preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=100,
+            rss_at_admission_bytes=100,
+            rss_limit_bytes=125,
+            process_rss_limit_bytes=125,
+            headroom_bytes=25,
+            config_key="test",
+        ),
+    )
+    budget = isolated_execution_budget(parent)
+    monkeypatch.setattr(admission_mod, "current_rss_bytes", lambda: 125)
+
+    with pytest.raises(ExecutionAdmissionError) as exc_info:
+        create_isolated_execution_context(budget)
+
+    assert exc_info.value.reason == "process_rss_limit_exceeded"
+    assert exc_info.value.process_rss_limit_bytes == 125
+
+
 def test_admitted_execution_context_allows_warm_process_above_operation_budget(
     monkeypatch,
 ) -> None:
@@ -1957,6 +2284,23 @@ def test_admitted_execution_context_rejects_when_process_rss_cap_exceeded(
         "headroom_bytes": -1 * 1024 * 1024,
         "reason": "process_rss_limit_exceeded",
     }
+
+
+def test_admitted_execution_context_rejects_at_process_rss_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HAUTE_PREVIEW_PROCESS_RSS_LIMIT_BYTES", "100")
+
+    with pytest.raises(ExecutionAdmissionError) as exc_info:
+        create_admitted_execution_context(
+            operation="pipeline_preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_sampler=lambda: 100,
+        )
+
+    assert exc_info.value.reason == "process_rss_limit_exceeded"
+    assert exc_info.value.rss_at_admission_bytes == 100
+    assert exc_info.value.process_rss_limit_bytes == 100
 
 
 def test_execution_metrics_payload_includes_admission_metadata(monkeypatch) -> None:

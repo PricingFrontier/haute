@@ -28,6 +28,7 @@ from haute.executor import _build_node_fn, execute_graph
 from haute.projection import _canonical_topological_ranks, prepare_graph
 from haute.schemas import (
     ExecutionColumnWidthsCollectionPayload,
+    ExecutionMetricsPayload,
     ExecutionStrategyDiagnosticPayload,
     ExecutionStreamabilityEvidencePayload,
     TrainingFeatureColumnReasonCollectionPayload,
@@ -205,6 +206,118 @@ def test_v1_dto_rejects_inconsistent_and_over_cap_collections() -> None:
     }
     with pytest.raises(ValidationError):
         ExecutionStrategyDiagnosticPayload.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "calibration_fields",
+    [
+        {"estimated_peak_bytes": -1},
+        {"estimated_peak_bytes": True},
+        {"estimate_admission_basis": "mystery"},
+        {"estimated_peak_bytes": 10, "raw_estimated_peak_bytes": 10},
+        {
+            "estimated_peak_bytes": 10,
+            "raw_estimated_peak_bytes": 10,
+            "estimate_calibration_factor_basis_points": 9_999,
+            "estimate_admission_basis": "provided",
+        },
+        {
+            "estimated_peak_bytes": 81,
+            "raw_estimated_peak_bytes": 10,
+            "estimate_calibration_factor_basis_points": 80_001,
+            "estimate_admission_basis": "provided",
+        },
+        {
+            "estimated_peak_bytes": 11,
+            "raw_estimated_peak_bytes": 10,
+            "estimate_calibration_factor_basis_points": 10_000,
+            "estimate_admission_basis": "provided",
+        },
+    ],
+)
+def test_calibrated_strategy_evidence_is_complete_upward_bounded_and_exact(
+    calibration_fields: dict[str, object],
+) -> None:
+    base = {
+        "strategy": ExecutionStrategy.PROJECTED,
+        "profile": ExecutionProfile.PREVIEW_EAGER,
+        "boundedness": ExecutionBoundedness.BOUNDED,
+        "reason_code": "projection_seed",
+        "boundaries": _available([]),
+        "reasons": _available([]),
+        "provenance": _available([]),
+    }
+    with pytest.raises(ValueError):
+        ExecutionStrategyDiagnostic.create(**base, **calibration_fields)
+
+    valid_payload = ExecutionStrategyDiagnostic.create(**base).to_dict()
+    valid_payload.update(calibration_fields)
+    with pytest.raises(ValidationError):
+        ExecutionStrategyDiagnosticPayload.model_validate(valid_payload)
+
+
+@pytest.mark.parametrize(
+    "calibration_fields",
+    [
+        {"estimated_bytes": 10, "raw_estimated_bytes": 10},
+        {
+            "estimated_bytes": 10,
+            "raw_estimated_bytes": 10,
+            "estimate_calibration_factor_basis_points": 9_999,
+            "estimate_admission_basis": "provided",
+        },
+        {
+            "estimated_bytes": 81,
+            "raw_estimated_bytes": 10,
+            "estimate_calibration_factor_basis_points": 80_001,
+            "estimate_admission_basis": "provided",
+        },
+        {
+            "estimated_bytes": 11,
+            "raw_estimated_bytes": 10,
+            "estimate_calibration_factor_basis_points": 10_000,
+            "estimate_admission_basis": "provided",
+        },
+    ],
+)
+def test_calibrated_metric_evidence_uses_the_same_closed_contract(
+    calibration_fields: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        ExecutionMetricsPayload.model_validate(calibration_fields)
+
+
+def test_calibrated_payloads_accept_exact_upward_evidence() -> None:
+    diagnostic = ExecutionStrategyDiagnostic.create(
+        strategy=ExecutionStrategy.PROJECTED,
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        boundedness=ExecutionBoundedness.BOUNDED,
+        reason_code="projection_seed",
+        boundaries=_available([]),
+        reasons=_available([]),
+        provenance=_available([]),
+    ).to_dict()
+    diagnostic.update(
+        {
+            "estimated_peak_bytes": 11,
+            "raw_estimated_peak_bytes": 10,
+            "estimate_calibration_factor_basis_points": 11_000,
+            "estimate_admission_basis": "provided",
+        }
+    )
+
+    assert ExecutionStrategyDiagnosticPayload.model_validate(diagnostic).estimated_peak_bytes == 11
+    assert (
+        ExecutionMetricsPayload.model_validate(
+            {
+                "estimated_bytes": 11,
+                "raw_estimated_bytes": 10,
+                "estimate_calibration_factor_basis_points": 11_000,
+                "estimate_admission_basis": "provided",
+            }
+        ).estimated_bytes
+        == 11
+    )
 
 
 def test_v1_dto_rejects_every_inconsistent_collection_state_and_order() -> None:
@@ -658,9 +771,10 @@ def test_automatic_group_by_estimate_targets_the_boundary_node(
     estimated_nodes: list[str] = []
 
     def estimate(
-        _graph, node_ids: Iterable[str], *, source: str
+        _graph, node_ids: Iterable[str], *, source: str, edge_demands
     ) -> Iterable[tuple[str, MaterialisationEstimate]]:
         assert source == "live"
+        assert edge_demands
         requested = list(node_ids)
         estimated_nodes.extend(requested)
         return [(node_id, MaterialisationEstimate.available(0)) for node_id in requested]

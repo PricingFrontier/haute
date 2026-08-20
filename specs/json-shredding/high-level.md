@@ -64,8 +64,8 @@ derived parquet, so payload corruption is rejected before the footer-only schema
 probe can accept it. Caching is an optional performance prewarm: runtime first
 tries signed, readable, exact-schema `working/` then `committed/` parquets; when
 neither can serve, it applies the same parsed table specs, shredding, type checks,
-skip accounting, and conservation guards directly in memory without creating or
-refreshing cache files. Execution may supply a proven per-port column demand: the
+skip accounting, and conservation guards through private spill-backed lazy frames
+without creating or refreshing cache files. Execution may supply a proven per-port column demand: the
 loader still validates the complete v2 config and cache manifest, but opens only
 the requested port payloads, validates each loaded payload against its complete
 declared schema, and projects it to the requested columns. Cache payloads remain
@@ -89,6 +89,19 @@ table is `quote_info`, `$[:].proposer.claims[:]` becomes `claims`, and two level
 sharing a key name qualify symmetrically (`a_items`/`b_items`) — never raw path
 strings, so an inferred schema is immediately valid under the label rule below
 and its labels read as the argument names they will become.
+
+The uncached JSON/JSONL path parses at most one top-level value, walks emitted rows
+into one shared byte/row-bounded buffer, and flushes typed row groups to private
+runtime Parquet spills. Returned LazyFrames scan those leased files. A single source
+record/value may itself exceed the configured buffer—the irreducible bound—but memory
+does not grow with file or emitted-table row count. XML retains its documented
+document-materialising parser.
+
+Cache publication and runtime storage are coordinated across server processes.
+Readers, builders, and promotion share an OS file lock per cache identity; a reader
+never sees the rename gap. Runtime snapshots and direct spills share a project-wide
+disk budget, process-owner metadata, orderly cleanup, and stale-owner recovery.
+Exhaustion fails loudly before serving an unverified or partial generation.
 
 XML is converted to the same object/list/scalar record shape before inference or
 shredding. Element namespaces are removed from field names; attributes become

@@ -302,7 +302,11 @@ the skip/conservation accounting.
    row-cardinality-only demand and physically retains the first declared column as a
    carrier because Polars cannot represent a non-zero-row, zero-column frame. Invalid
    labels or columns fail before cache access. Projected specs retain schema order.
-3. Try `working/`, then `committed/`. Read each candidate manifest once. It must
+3. Try `working/`, then `committed/`. Read each candidate manifest once. Runtime
+   loading, admission metadata, and public cache-validity probes compute a complete
+   source-content signature lazily only after a candidate has the right schema
+   identity; when no layer has plausible metadata, they do not perform an
+   otherwise-unused full-file hash pass. A candidate must
    pass fingerprint/source validity; contain exactly one entry per emitting label;
    derive the expected filename from that label; and carry a strict size/SHA-256
    signature. Missing, duplicate, malformed, or unsigned entries invalidate
@@ -321,7 +325,10 @@ the skip/conservation accounting.
    `HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_BYTES`. A later probe acquires that snapshot
    without hashing only when the current visible path has the exact strong native
    identity/change revision captured after verification and the private file still
-   exists. Revision movement, atomic replacement, cache eviction, fork reset, or an
+   exists. The warm-hit path performs the fork-safe process-state reset and native
+   revision checks before allocating or scanning runtime storage; it creates and
+   disk-budget-checks a snapshot directory only after the verified-snapshot lookup
+   misses. Revision movement, atomic replacement, cache eviction, fork reset, or an
    unavailable strong revision takes the full capture/hash path. Cache eviction removes
    only the cache's pin; an active execution lease or unmanaged process pin keeps its
    snapshot alive until its existing lifetime boundary. Repeated access to the same
@@ -359,15 +366,20 @@ the skip/conservation accounting.
    process termination may leave a
    private snapshot directory for later operational cleanup, but never makes that
    directory part of cache discovery or serving.
-4. If no cache can serve, `_shred_data_file` streams `_iter_records` into
-   `shred_to_buffers` with only the requested projected specs, preserving skip
-   accounting and root conservation for those tables, then
-   `_buffer_to_frame(...).lazy()` creates each requested in-memory frame. With an
-   active `ExecutionContext`, the Python record/row walk and buffer-to-series
-   conversion checkpoint before, after, and at a fixed work interval so cancellation
-   and admitted RSS limits remain observable while buffers grow. This path is still an explicitly materialising
-   fallback, not a constant-memory stream, and it does not write, refresh, delete,
-   or promote either cache layer.
+4. If no cache can serve, JSON/JSONL uses `_iter_records` plus the shared shred walker
+   with only the requested projected specs. A direct-spill sink owns one aggregate
+   byte/row-bounded buffer across all requested tables. Crossing either bound flushes
+   every non-empty table buffer through the same strict `_buffer_to_frame` conversion
+   into a PyArrow `ParquetWriter` row group, then releases those Python rows. The
+   resulting `{label: scan_parquet(...)}` bundle preserves schema order, row order,
+   carrier-column cardinality, skip accounting, strict bool/date errors, and root
+   conservation. JSON root arrays are tokenised one complete top-level value at a
+   time; root objects and individual JSONL lines are the irreducible record-sized
+   bound. XML retains its document-sized bound. Checkpoints run during parsing,
+   emission, conversion, and flush. Runtime spill files live outside `working/` and
+   `committed/`; this path never writes, refreshes, deletes, or promotes cache state.
+   A managed `ExecutionContext` owns the spill lease until collection/cleanup; an
+   unmanaged LazyFrame is conservatively process-pinned until orderly exit.
 5. Return a `{label: LazyFrame}` dict in schema order for every requested frame
    (or every eligible frame when `port_columns` is absent) — there is no bare-frame single-table special case, so a
    sole frame routes through the same per-edge `source_port` resolution as
@@ -380,7 +392,8 @@ the skip/conservation accounting.
 1. No-op if this process has not built `working/` for this data file this session
    (`_session_consulted_hashes`, populated only by a successful build-route call) —
    guards against promoting a stale on-disk `working/` left from a previous process.
-2. Under the shred's own build lock for `working/`: if `working/` is absent, ensure
+2. Acquire the `working/` and `committed/` cache-identity locks in canonical resolved
+   path order and hold both for the complete promotion transaction. If `working/` is absent, ensure
    `committed/` is also absent (propagate deletion). If working metadata has a
    non-v2 mode, malformed fingerprint/source identity, or source signature that no
    longer matches `data_path`, or if its artifacts are unsigned, malformed, missing,
@@ -405,18 +418,42 @@ rename raises, it attempts to rename the backup back before re-raising.
 (`0.01s..0.1s`) before giving up — a Windows-specific transient-handle-lock
 accommodation.
 
-**Reader-visibility caveat.** Replacing an existing directory is not atomic to
-readers: the live path is absent between the two renames. `_build_lock_for` is a
-process-local thread lock that serializes same-process builders (and a promotion
-against a build of its working directory), but it does not lock readers or other
-processes. A hard interruption after `live_dir` is renamed aside, or a failed
-restoration, can leave `live_dir` absent with a UUID `.build-old-<uuid>` backup.
-Existing tests exercise same-process build serialization, different-cache
-parallelism, staging-write cleanup, transient rename retry, synchronous
-restoration after a failed second rename, staged mirror mutation rejection, and
-already-returned LazyFrames surviving rebuild, mirror, and clear. A brand-new
-concurrent reader can still observe an absent live path and reject that
-candidate; cross-process publishers and mid-swap process death are not covered.
+**Cross-process publication and recovery.** `_build_lock_for` is re-entrant within a
+thread and combines the existing per-process `RLock` with an OS advisory lock on a
+stable sibling lock file (`flock` on POSIX, one-byte `msvcrt.locking` on Windows).
+An existing lock path must be a plain regular file; symlinks, reparse points, and
+file-identity swaps are rejected before the lock is trusted.
+Builders, promotion, metadata readers, and snapshot capture hold it across the full
+generation selection/publication window. Independent cache identities remain
+parallel. On outermost acquisition the owner recovers crash-left siblings: a missing
+live directory with a single newest plain `.build-old-*` generation is restored;
+superseded plain backups and `.build-tmp-*` stages are removed. Symlinks, junctions,
+and other reparse points are never traversed or deleted. Recovery is idempotent and
+logged; ambiguous or non-directory state fails loudly.
+
+**Runtime storage budget.** `.runtime-snapshots` and `.runtime-spills` live below the
+project cache root and use owner directories named by PID plus a random token. Owner
+metadata records a format version and creation time. A global OS-locked budget
+(`HAUTE_JSON_RUNTIME_DISK_BUDGET_BYTES`, positive integer) counts unique allocated
+file identities so hard links are not double charged. Allocation/flush checks run
+under that lock; crossing the budget raises `JsonRuntimeDiskBudgetExceededError` and
+cleans the caller's partial spill or snapshot. Startup and first-use recovery remove
+only plain owner directories older than the configured grace whose PID is no longer
+live; active, young, malformed, symlink, and reparse-point entries are preserved and
+logged. Budget accounting is fail-closed: a preserved non-plain or unreadable entry
+raises `JsonRuntimeStorageIntegrityError` and blocks new runtime allocation until the
+entry can be inspected or removed. A concurrently released plain entry may disappear
+during the scan and is treated as a benign reduction in usage, never as zero-sized
+evidence for an entry that still exists.
+
+**Admission metadata uses a verified generation.** Per-port JSON metadata used by
+materialisation admission never trusts a mutable parquet footer merely because a
+matching manifest exists. Under the same cache lock it captures the manifest-named
+artifact through the bounded verified-snapshot path, checks the complete declared
+schema, reads row/width metadata from that exact snapshot, and releases the transient
+lease. A missing, unsigned, corrupt, or schema-mismatched generation makes the
+estimate unavailable (or moves to the next layer); runtime never falls back to a
+different source generation behind an optimistic estimate.
 
 **Schema inference** — `infer_v2_schema_from_data(data_path, sample_size=None)`:
 1. Input dispatch preserves a complete scan by default. JSONL/NDJSON at or above
@@ -685,6 +722,9 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
   ownership and failure-path coverage: inherited-PID isolation, reference and
   process-pin transitions, cleanup-registration rollback, partial-copy cleanup,
   missing-file release, and hard-link signature failure.
+- `tests/test_json_cache_cross_process.py` — spawn-process cache-build lock serialisation and crash-stage/backup recovery, including fail-closed non-plain paths.
+- `tests/test_json_direct_spill.py` — uncached JSON/JSONL direct-spill streaming, validation, disk-budget, and cleanup regressions.
+- `tests/test_json_runtime_storage.py` — owned runtime-storage orphan recovery, symlink/reparse preservation, hard-link accounting, and budget-integrity safeguards.
 - `tests/test_json_cache_routes.py` — API integration tests for the build/status/
   delete HTTP routes (404/422/504 shapes, progress reporting).
 - `tests/test_json_cache_integrity.py` — the Wave-2 build/validity/load rework end

@@ -91,10 +91,12 @@ representative multi-branch graph:
 - first trace backed by a full preview cache: `< 0.8s`
 - trace-cache hit: `< 0.3s`
 
-CI runs the small Polars scale scenario by default. The larger generated
-scenarios are opt-in: use `--polars-scale 1m` for a local one-million-row run
-or `--polars-scale 10m` for the ten-million-row run.
-The 10m run is not part of default CI.
+The ordinary pull-request suite excludes `pytest.mark.perf`. A manual
+Performance workflow dispatch defaults to the small `ci` scale and can select
+either larger scale explicitly. The scheduled Performance workflow runs the
+one-million-row scale weekly and the ten-million-row stress scale monthly,
+retaining the same structured artifacts. Locally, use `--polars-scale 1m` or
+`--polars-scale 10m` to reproduce those scheduled lanes.
 
 ```powershell
 uv run python scripts/run_perf_suite.py --polars-scale 1m

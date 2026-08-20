@@ -6,7 +6,7 @@ import asyncio
 import json
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -16,7 +16,10 @@ from haute._cache import GraphFingerprintMemo, canonical_json
 from haute._env import float_env, int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
+    IsolatedExecutionBudget,
     create_admitted_execution_context,
+    create_isolated_execution_context,
+    isolated_execution_budget,
 )
 from haute._execution_context import (
     ExecutionCancellationToken,
@@ -26,6 +29,14 @@ from haute._execution_context import (
 )
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._hashing import content_hash_bytes
+from haute._interactive_workers import (
+    InteractiveWorkerMemoryLimitError,
+    InteractiveWorkerRemoteError,
+    InteractiveWorkerStoppedError,
+    InteractiveWorkerTimeoutError,
+    resolve_interactive_execution_mode,
+    run_in_interactive_worker,
+)
 from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
@@ -45,6 +56,7 @@ from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streamin
 from haute._sandbox import _get_project_root
 from haute._topo import ancestors
 from haute._types import GraphEdge, GraphNode, NodeData, SubmodelDefinition
+from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
@@ -118,6 +130,30 @@ from haute.schemas import (
 from haute.trace import execute_trace, trace_result_to_dict
 
 logger = get_logger(component="server.pipeline")
+
+_PUBLIC_REMOTE_ERROR_CODES = {
+    (error_type.__module__, error_type.__name__): error_type.error_code
+    for error_type in PUBLIC_CONTRACT_ERROR_TYPES
+}
+_MEMORY_REMOTE_ERROR_CODES = {
+    (ExecutionAdmissionError.__module__, ExecutionAdmissionError.__name__): "memory_limit",
+    (
+        ExecutionMemoryLimitExceededError.__module__,
+        ExecutionMemoryLimitExceededError.__name__,
+    ): "memory_limit",
+}
+_PREVIEW_PROJECTION_REMOTE_IDENTITY = (
+    PreviewProjectionError.__module__,
+    PreviewProjectionError.__name__,
+)
+_PREVIEW_TARGET_REMOTE_IDENTITY = (__name__, "_PreviewTargetNotReturnedError")
+_TRACE_CONTRACT_REMOTE_IDENTITIES = frozenset(
+    {
+        (ContractMismatchError.__module__, ContractMismatchError.__name__),
+        (SchemaMismatchError.__module__, SchemaMismatchError.__name__),
+    }
+)
+_VALUE_ERROR_REMOTE_IDENTITY = (ValueError.__module__, ValueError.__name__)
 
 router = APIRouter(prefix="/api", tags=["pipeline"])
 
@@ -276,10 +312,12 @@ def _preview_supersession_key(
     row_limit: int,
     requested_preview_columns: list[str] | None,
     port_label: str | None,
+    *,
+    memo: GraphFingerprintMemo | None = None,
 ) -> tuple[str, ...]:
     requested_columns = tuple(requested_preview_columns or ())
     return (
-        *_supersession_key("preview", graph, source),
+        *_supersession_key("preview", graph, source, memo=memo),
         "node",
         node_id,
         "row_limit",
@@ -324,6 +362,68 @@ def _trace_supersession_key(
         "row_values",
         _trace_row_values_fingerprint(row_values),
     )
+
+
+def _interactive_affinity_key(
+    graph: PipelineGraph,
+    source: str,
+    *,
+    memo: GraphFingerprintMemo | None = None,
+) -> tuple[str, ...]:
+    """Route preview and trace for one lineage to the same warm cache owner."""
+    return _supersession_key("interactive", graph, source, memo=memo)
+
+
+class _PreviewTargetNotReturnedError(RuntimeError):
+    """The executor completed but omitted the requested target result."""
+
+
+def _raise_interactive_remote_http_error(
+    exc: InteractiveWorkerRemoteError,
+    *,
+    operation: str,
+) -> NoReturn:
+    payload = exc.public_payload
+    identity = (exc.remote_module, exc.remote_type)
+    expected_memory_code = _MEMORY_REMOTE_ERROR_CODES.get(identity)
+    if (
+        payload is not None
+        and expected_memory_code is not None
+        and payload.get("error_code") == expected_memory_code
+    ):
+        raise HTTPException(status_code=507, detail=payload) from None
+    expected_public_code = _PUBLIC_REMOTE_ERROR_CODES.get(identity)
+    if (
+        payload is not None
+        and expected_public_code is not None
+        and payload.get("error_code") == expected_public_code
+    ):
+        raise HTTPException(status_code=422, detail=payload) from None
+    if operation == "pipeline_preview":
+        if identity == _PREVIEW_PROJECTION_REMOTE_IDENTITY:
+            raise HTTPException(status_code=400, detail=exc.remote_message) from None
+        if identity == _PREVIEW_TARGET_REMOTE_IDENTITY:
+            raise HTTPException(status_code=404, detail=exc.remote_message) from None
+    if operation == "pipeline_trace":
+        if identity in _TRACE_CONTRACT_REMOTE_IDENTITIES:
+            raise HTTPException(status_code=422, detail=exc.remote_message) from None
+        if identity == _VALUE_ERROR_REMOTE_IDENTITY:
+            detail = exc.remote_message
+            if detail.startswith(("Trace data does not match", "Trace row match is ambiguous")):
+                raise HTTPException(status_code=409, detail=detail) from None
+            if detail.startswith("row_index ") and "out of range" in detail:
+                raise HTTPException(status_code=400, detail=detail) from None
+            if detail.startswith("Target node") and "multiple frames" in detail:
+                raise HTTPException(status_code=400, detail=detail) from None
+            if detail.startswith("Target node ") and "not found in graph" in detail:
+                raise HTTPException(status_code=404, detail=detail) from None
+    logger.error(
+        "interactive_worker_remote_failure",
+        operation=operation,
+        remote_type=exc.remote_type,
+        remote_module=exc.remote_module,
+    )
+    raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
 
 
 def _ensure_source_file(graph: PipelineGraph) -> None:
@@ -613,6 +713,146 @@ async def read_json_file(body: ReadJsonRequest) -> ReadJsonResponse:
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
 
 
+def _preview_response_from_results(
+    graph: PipelineGraph,
+    body: PreviewNodeRequest,
+    results: dict[str, Any],
+    execution_context: ExecutionContext,
+) -> PreviewNodeResponse:
+    node_result = results.get(body.node_id)
+    if not node_result:
+        raise _PreviewTargetNotReturnedError(f"Node '{body.node_id}' not found in results")
+
+    node_map = graph.node_map
+    pruned = prune_source_switch_edges(graph.edges, node_map, body.source)
+    relevant = ancestors(body.node_id, pruned, set(node_map.keys()))
+    timings = [
+        NodeTimingInfo(
+            node_id=node_id,
+            label=node_map[node_id].data.label,
+            timing_ms=result.timing_ms,
+        )
+        for node_id, result in results.items()
+        if node_id in node_map and node_id in relevant
+    ]
+    memory = [
+        NodeMemoryInfo(
+            node_id=node_id,
+            label=node_map[node_id].data.label,
+            memory_bytes=result.memory_bytes,
+        )
+        for node_id, result in results.items()
+        if node_id in node_map and node_id in relevant
+    ]
+    node_statuses = {
+        node_id: result.status for node_id, result in results.items() if node_id in relevant
+    }
+    node_columns = {
+        node_id: result.columns
+        for node_id, result in results.items()
+        if node_id in node_map and node_id in relevant
+    }
+    node_available_columns = {
+        node_id: result.available_columns or result.columns
+        for node_id, result in results.items()
+        if node_id in node_map and node_id in relevant
+    }
+    node_frame_columns = {
+        node_id: result.frame_columns
+        for node_id, result in results.items()
+        if node_id in node_map and node_id in relevant and result.frame_columns
+    }
+    node_schema_warnings = {
+        node_id: result.schema_warnings
+        for node_id, result in results.items()
+        if node_id in node_map and node_id in relevant
+    }
+    return PreviewNodeResponse(
+        node_id=body.node_id,
+        status=node_result.status,
+        row_count=node_result.row_count,
+        column_count=node_result.column_count,
+        columns=node_result.columns,
+        available_columns=node_result.available_columns,
+        preview=rows_to_json_safe(node_result.preview),
+        preview_columns=node_result.preview_columns,
+        preview_row_count=node_result.preview_row_count,
+        preview_row_limit=node_result.preview_row_limit,
+        preview_truncated=node_result.preview_truncated,
+        error=node_result.error,
+        error_line=node_result.error_line,
+        timing_ms=node_result.timing_ms,
+        memory_bytes=node_result.memory_bytes,
+        timings=timings,
+        memory=memory,
+        schema_warnings=node_result.schema_warnings,
+        node_statuses=node_statuses,
+        node_columns=node_columns,
+        node_available_columns=node_available_columns,
+        node_frame_columns=node_frame_columns,
+        node_schema_warnings=node_schema_warnings,
+        execution_metrics=ExecutionMetricsPayload.model_validate(
+            execution_context.metrics_payload(status="completed")
+        ),
+    )
+
+
+def _execute_preview_worker(
+    graph: PipelineGraph,
+    body: PreviewNodeRequest,
+    budget: IsolatedExecutionBudget,
+) -> PreviewNodeResponse:
+    context = create_isolated_execution_context(budget)
+    try:
+        chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+        try:
+            with temporary_streaming_chunk_size(chunk_size):
+                results = execute_graph(
+                    graph,
+                    target_node_id=body.node_id,
+                    row_limit=body.row_limit,
+                    source=body.source,
+                    target_preview_only=True,
+                    requested_preview_columns=body.requested_preview_columns,
+                    include_schema_metadata=True,
+                    port_label=body.port_label,
+                    execution_context=context,
+                )
+            return _preview_response_from_results(graph, body, results, context)
+        except (ContractMismatchError, SchemaMismatchError, ParseError, ConfigError) as exc:
+            return PreviewNodeResponse(node_id=body.node_id, status="error", error=str(exc))
+    finally:
+        context.release_admission(preserve_primary_error=True)
+
+
+def _execute_trace_worker(
+    graph: PipelineGraph,
+    body: TraceRequest,
+    budget: IsolatedExecutionBudget,
+) -> dict[str, Any]:
+    context = create_isolated_execution_context(budget)
+    try:
+        chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+        with temporary_streaming_chunk_size(chunk_size):
+            result = execute_trace(
+                graph,
+                row_index=body.row_index,
+                target_node_id=body.target_node_id,
+                column=body.column,
+                row_limit=body.row_limit,
+                source=body.source,
+                row_values=body.row_values,
+                preview=_preview_cache,
+                fingerprint_memo=GraphFingerprintMemo(),
+                execution_context=context,
+            )
+            trace_payload = trace_result_to_dict(result)
+            TraceResponse.model_validate({"status": "ok", "trace": trace_payload})
+            return trace_payload
+    finally:
+        context.release_admission(preserve_primary_error=True)
+
+
 @router.post("/pipeline/trace", response_model=TraceResponse)
 async def trace_row(body: TraceRequest) -> JSONResponse:
     """Trace a single row through the pipeline, returning per-node snapshots."""
@@ -623,6 +863,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
     _ensure_printable_lookup_id(body.target_node_id, "target_node_id")
     _validate_runtime_input_paths(graph)
 
+    trace_token = ExecutionCancellationToken()
     trace_context: ExecutionContext | None = None
 
     try:
@@ -651,7 +892,26 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
             trace_context = create_admitted_execution_context(
                 operation="pipeline_trace",
                 profile=ExecutionProfile.PREVIEW_EAGER,
+                cancellation_token=trace_token,
             )
+            if resolve_interactive_execution_mode() == "process":
+                budget = isolated_execution_budget(trace_context)
+                return await run_in_interactive_worker(
+                    _execute_trace_worker,
+                    graph,
+                    body,
+                    budget,
+                    affinity_key=_interactive_affinity_key(
+                        graph,
+                        body.source,
+                        memo=fingerprint_memo,
+                    ),
+                    timeout_seconds=_trace_timeout(),
+                    stop_reason=(lambda: "superseded" if trace_token.cancelled else None),
+                    absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
+                    memory_growth_limit_bytes=budget.memory_limit_bytes,
+                    require_memory_limit=resolve_worker_memory_enforcement() == "required",
+                )
             chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
 
             def _execute_trace_with_chunk_size() -> dict[str, Any]:
@@ -693,6 +953,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
             supersession_key,
             _run_trace,
             limiter=_trace_work_slots,
+            cancel_active=trace_token.cancel,
             superseded_message="Trace request superseded by a newer request",
         )
         # ``trace_dict`` is already JSON-safe and was validated against
@@ -703,9 +964,22 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
         raise _memory_limit_http_exception(e) from None
     except ExecutionMemoryLimitExceededError as e:
         raise _memory_budget_http_exception(e) from None
+    except InteractiveWorkerMemoryLimitError as e:
+        raise HTTPException(status_code=507, detail=e.to_payload()) from None
+    except InteractiveWorkerTimeoutError:
+        trace_token.cancel()
+        raise HTTPException(
+            status_code=504,
+            detail=f"Trace execution timed out ({_trace_timeout():.0f}s limit)",
+        ) from None
+    except InteractiveWorkerStoppedError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
+    except InteractiveWorkerRemoteError as e:
+        _raise_interactive_remote_http_error(e, operation="pipeline_trace")
     except SupersededRequestError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
     except BlockingWorkTimeoutError as e:
+        trace_token.cancel()
         if trace_context is not None:
             timed_out_context = trace_context
             e.background_task.add_done_callback(
@@ -783,13 +1057,33 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
             )
         _validate_runtime_input_paths(graph)
 
-        async def _run_preview() -> dict[str, Any]:
+        fingerprint_memo = GraphFingerprintMemo()
+
+        async def _run_preview() -> PreviewNodeResponse:
             nonlocal preview_context
             preview_context = create_admitted_execution_context(
                 operation="pipeline_preview",
                 profile=ExecutionProfile.PREVIEW_EAGER,
                 cancellation_token=preview_token,
             )
+            if resolve_interactive_execution_mode() == "process":
+                budget = isolated_execution_budget(preview_context)
+                return await run_in_interactive_worker(
+                    _execute_preview_worker,
+                    graph,
+                    body,
+                    budget,
+                    affinity_key=_interactive_affinity_key(
+                        graph,
+                        body.source,
+                        memo=fingerprint_memo,
+                    ),
+                    timeout_seconds=_preview_timeout(),
+                    stop_reason=(lambda: "superseded" if preview_token.cancelled else None),
+                    absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
+                    memory_growth_limit_bytes=budget.memory_limit_bytes,
+                    require_memory_limit=resolve_worker_memory_enforcement() == "required",
+                )
             chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
 
             def _execute_graph_with_chunk_size() -> dict[str, Any]:
@@ -806,13 +1100,14 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
                         execution_context=preview_context,
                     )
 
-            return await run_blocking_with_response_timeout(
+            results = await run_blocking_with_response_timeout(
                 _execute_graph_with_chunk_size,
                 timeout=_preview_timeout(),
                 operation="pipeline_preview",
             )
+            return _preview_response_from_results(graph, body, results, preview_context)
 
-        results = await _preview_supersession.run_latest(
+        response = await _preview_supersession.run_latest(
             _preview_supersession_key(
                 graph,
                 body.source,
@@ -820,118 +1115,30 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
                 body.row_limit,
                 body.requested_preview_columns,
                 body.port_label,
+                memo=fingerprint_memo,
             ),
             _run_preview,
             limiter=_preview_work_slots,
             cancel_active=preview_token.cancel,
             superseded_message="Preview request superseded by a newer request",
         )
-        if preview_context is None:
-            raise RuntimeError("Preview execution did not create an execution context")
-        node_result = results.get(body.node_id)
-        if not node_result:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Node '{body.node_id}' not found in results",
-            )
-
-        node_map = graph.node_map
-
-        # Only include timings/memory for ancestors of the target node
-        # (+ itself), pruned by the active source so the unused
-        # live_switch branch is excluded.
-        if body.node_id:
-            pruned = prune_source_switch_edges(
-                graph.edges,
-                node_map,
-                body.source,
-            )
-            relevant = ancestors(
-                body.node_id,
-                pruned,
-                set(node_map.keys()),
-            )
-        else:
-            relevant = set(results.keys())
-
-        timings = [
-            NodeTimingInfo(
-                node_id=nid,
-                label=node_map[nid].data.label,
-                timing_ms=r.timing_ms,
-            )
-            for nid, r in results.items()
-            if nid in node_map and nid in relevant
-        ]
-
-        memory = [
-            NodeMemoryInfo(
-                node_id=nid,
-                label=node_map[nid].data.label,
-                memory_bytes=r.memory_bytes,
-            )
-            for nid, r in results.items()
-            if nid in node_map and nid in relevant
-        ]
-
-        node_statuses = {nid: r.status for nid, r in results.items() if nid in relevant}
-        node_columns = {
-            nid: r.columns for nid, r in results.items() if nid in node_map and nid in relevant
-        }
-        node_available_columns = {
-            nid: r.available_columns or r.columns
-            for nid, r in results.items()
-            if nid in node_map and nid in relevant
-        }
-        # Per-frame columns for multi-port producers, keyed
-        # node_id → port_label → columns. Only present for nodes that
-        # actually emit 2+ frames (multi-table apiInput today; submodels
-        # / external callouts later), so the dict is empty for the common
-        # single-frame graph. The OUTPUT editor reads this to learn each
-        # incoming frame's schema regardless of source type.
-        node_frame_columns = {
-            nid: r.frame_columns
-            for nid, r in results.items()
-            if nid in node_map and nid in relevant and r.frame_columns
-        }
-        node_schema_warnings = {
-            nid: r.schema_warnings
-            for nid, r in results.items()
-            if nid in node_map and nid in relevant
-        }
-
-        return PreviewNodeResponse(
-            node_id=body.node_id,
-            status=node_result.status,
-            row_count=node_result.row_count,
-            column_count=node_result.column_count,
-            columns=node_result.columns,
-            available_columns=node_result.available_columns,
-            preview=rows_to_json_safe(node_result.preview),
-            preview_columns=node_result.preview_columns,
-            preview_row_count=node_result.preview_row_count,
-            preview_row_limit=node_result.preview_row_limit,
-            preview_truncated=node_result.preview_truncated,
-            error=node_result.error,
-            error_line=node_result.error_line,
-            timing_ms=node_result.timing_ms,
-            memory_bytes=node_result.memory_bytes,
-            timings=timings,
-            memory=memory,
-            schema_warnings=node_result.schema_warnings,
-            node_statuses=node_statuses,
-            node_columns=node_columns,
-            node_available_columns=node_available_columns,
-            node_frame_columns=node_frame_columns,
-            node_schema_warnings=node_schema_warnings,
-            execution_metrics=ExecutionMetricsPayload.model_validate(
-                preview_context.metrics_payload(status="completed")
-            ),
-        )
+        return response
     except ExecutionAdmissionError as e:
         raise _memory_limit_http_exception(e) from None
     except ExecutionMemoryLimitExceededError as e:
         raise _memory_budget_http_exception(e) from None
+    except InteractiveWorkerMemoryLimitError as e:
+        raise HTTPException(status_code=507, detail=e.to_payload()) from None
+    except InteractiveWorkerTimeoutError:
+        preview_token.cancel()
+        raise HTTPException(
+            status_code=504,
+            detail=f"Preview execution timed out ({_preview_timeout():.0f}s limit)",
+        ) from None
+    except InteractiveWorkerStoppedError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
+    except InteractiveWorkerRemoteError as e:
+        _raise_interactive_remote_http_error(e, operation="pipeline_preview")
     except SupersededRequestError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
     except BlockingWorkTimeoutError as e:
@@ -987,6 +1194,8 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
     except PreviewProjectionError as e:
         logger.warning("preview_bad_request", error=str(e))
         raise HTTPException(status_code=400, detail=str(e)) from None
+    except _PreviewTargetNotReturnedError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from None
     except Exception as e:
         logger.error("preview_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

@@ -24,6 +24,10 @@ from haute._edge_join import (
     narrow_join_parent_demand,
     resolve_edge_join_role_indices,
 )
+from haute._estimate_calibration import (
+    CALIBRATION_BASE_BASIS_POINTS,
+    CALIBRATION_MAX_BASIS_POINTS,
+)
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, build_parents_of, edge_input_name
 from haute._topo import ancestors, topo_sort_ids
@@ -257,6 +261,9 @@ class ExecutionStrategyDiagnostic:
     blocking_operator: str | None = None
     remediation: str | None = None
     estimated_peak_bytes: int | None = None
+    raw_estimated_peak_bytes: int | None = None
+    estimate_calibration_factor_basis_points: int | None = None
+    estimate_admission_basis: str | None = None
     headroom_bytes: int | None = None
     assumptions: tuple[str, ...] = ()
 
@@ -273,6 +280,51 @@ class ExecutionStrategyDiagnostic:
             raise ValueError("detail_state must be the worst bounded collection state")
         if len(self.remediation or "") > _DIAGNOSTIC_MESSAGE_LIMIT:
             raise ValueError("remediation exceeds the V1 512-character cap")
+        for name, value in (
+            ("estimated_peak_bytes", self.estimated_peak_bytes),
+            ("raw_estimated_peak_bytes", self.raw_estimated_peak_bytes),
+            (
+                "estimate_calibration_factor_basis_points",
+                self.estimate_calibration_factor_basis_points,
+            ),
+        ):
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative integer or None")
+        if self.estimate_admission_basis not in {
+            None,
+            "provided",
+            "projected_columns",
+            "complete_width_fallback",
+        }:
+            raise ValueError("estimate_admission_basis is not a supported V1 value")
+        calibration_values = (
+            self.raw_estimated_peak_bytes,
+            self.estimate_calibration_factor_basis_points,
+            self.estimate_admission_basis,
+        )
+        if any(value is not None for value in calibration_values):
+            if self.estimated_peak_bytes is None or any(
+                value is None for value in calibration_values
+            ):
+                raise ValueError(
+                    "calibrated estimate evidence requires estimated/raw bytes, "
+                    "factor, and admission basis together"
+                )
+            assert self.raw_estimated_peak_bytes is not None
+            assert self.estimate_calibration_factor_basis_points is not None
+            if self.estimate_calibration_factor_basis_points < CALIBRATION_BASE_BASIS_POINTS:
+                raise ValueError("estimate calibration factor cannot reduce an estimate")
+            if self.estimate_calibration_factor_basis_points > CALIBRATION_MAX_BASIS_POINTS:
+                raise ValueError("estimate calibration factor exceeds the supported cap")
+            expected = (
+                self.raw_estimated_peak_bytes * self.estimate_calibration_factor_basis_points
+                + CALIBRATION_BASE_BASIS_POINTS
+                - 1
+            ) // CALIBRATION_BASE_BASIS_POINTS
+            if self.estimated_peak_bytes != expected:
+                raise ValueError("calibrated estimate bytes do not match raw bytes and factor")
 
     @classmethod
     def create(
@@ -289,6 +341,9 @@ class ExecutionStrategyDiagnostic:
         blocking_operator: str | None = None,
         remediation: str | None = None,
         estimated_peak_bytes: int | None = None,
+        raw_estimated_peak_bytes: int | None = None,
+        estimate_calibration_factor_basis_points: int | None = None,
+        estimate_admission_basis: str | None = None,
         headroom_bytes: int | None = None,
         assumptions: Iterable[str] = (),
     ) -> ExecutionStrategyDiagnostic:
@@ -312,6 +367,9 @@ class ExecutionStrategyDiagnostic:
             blocking_operator=blocking_operator,
             remediation=(remediation[:_DIAGNOSTIC_MESSAGE_LIMIT] if remediation else None),
             estimated_peak_bytes=estimated_peak_bytes,
+            raw_estimated_peak_bytes=raw_estimated_peak_bytes,
+            estimate_calibration_factor_basis_points=(estimate_calibration_factor_basis_points),
+            estimate_admission_basis=estimate_admission_basis,
             headroom_bytes=headroom_bytes,
             assumptions=tuple(str(item) for item in assumptions),
         )
@@ -334,6 +392,11 @@ class ExecutionStrategyDiagnostic:
             "blocking_operator": self.blocking_operator,
             "remediation": self.remediation,
             "estimated_peak_bytes": self.estimated_peak_bytes,
+            "raw_estimated_peak_bytes": self.raw_estimated_peak_bytes,
+            "estimate_calibration_factor_basis_points": (
+                self.estimate_calibration_factor_basis_points
+            ),
+            "estimate_admission_basis": self.estimate_admission_basis,
             "headroom_bytes": self.headroom_bytes,
         }
         payload.update({key: value for key, value in optional.items() if value is not None})
@@ -702,6 +765,9 @@ def build_execution_strategy_result(
     boundary_operators: Mapping[str, str] | None = None,
     remediation: str | None = None,
     estimated_peak_bytes: int | None = None,
+    raw_estimated_peak_bytes: int | None = None,
+    estimate_calibration_factor_basis_points: int | None = None,
+    estimate_admission_basis: str | None = None,
     headroom_bytes: int | None = None,
     assumptions: Iterable[str] = (),
 ) -> ExecutionStrategyResult:
@@ -886,6 +952,9 @@ def build_execution_strategy_result(
         blocking_operator=(str(primary_boundary["operator"]) if primary_boundary else None),
         remediation=remediation,
         estimated_peak_bytes=estimated_peak_bytes,
+        raw_estimated_peak_bytes=raw_estimated_peak_bytes,
+        estimate_calibration_factor_basis_points=(estimate_calibration_factor_basis_points),
+        estimate_admission_basis=estimate_admission_basis,
         headroom_bytes=headroom_bytes,
         assumptions=assumptions,
     )

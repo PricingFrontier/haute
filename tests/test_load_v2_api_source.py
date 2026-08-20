@@ -20,6 +20,7 @@ import pytest
 
 import haute._json_shred as shred_mod
 from haute._api_input_schema import ApiInputSchemaError
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._json_flatten import _json_cache_dir, clear_json_cache
 from haute._json_shred import (
     build_per_port_cache,
@@ -119,6 +120,73 @@ def test_single_port_returns_one_entry_dict(tmp_path: Path) -> None:
     assert list(out) == ["root"]
     assert isinstance(out["root"], pl.LazyFrame)
     assert out["root"].collect()["id"].to_list() == [1, 2]
+
+
+def test_cache_hit_records_proof_evidence_on_the_active_execution(tmp_path: Path) -> None:
+    data = _write(tmp_path, [{"id": 1}, {"id": 2}])
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+    _build(data, cfg)
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
+
+    with context.stage("load_json"):
+        assert load_v2_api_source(str(data), cfg)["root"].collect().height == 2
+
+    assert context.metrics_payload(status="completed")["cache_proof"] == {
+        "hits": 1,
+        "misses": 0,
+        "direct_fallbacks": 0,
+        "miss_reason_counts": {
+            "artifact_integrity_schema_failure": 0,
+            "metadata_source_mismatch": 0,
+            "proof_unavailable": 0,
+            "unreadable_artifact": 0,
+        },
+    }
+
+
+def test_direct_json_fallback_records_both_unavailable_candidates(tmp_path: Path) -> None:
+    data = _write(tmp_path, [{"id": 1}, {"id": 2}])
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
+
+    with context.stage("load_json"):
+        assert load_v2_api_source(str(data), cfg)["root"].collect().height == 2
+
+    evidence = context.metrics_payload(status="completed")["cache_proof"]
+    assert evidence["hits"] == 0
+    assert evidence["misses"] == 2
+    assert evidence["direct_fallbacks"] == 1
+    assert evidence["miss_reason_counts"]["proof_unavailable"] == 2
+
+
+def test_source_mismatch_records_proof_miss_and_uses_current_data(tmp_path: Path) -> None:
+    data = _write(tmp_path, [{"id": 1}])
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+    _build(data, cfg)
+    assert _write(tmp_path, [{"id": 2}]) == data
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
+
+    with context.stage("load_json"):
+        frame = load_v2_api_source(str(data), cfg)["root"].collect()
+
+    assert frame.to_dict(as_series=False) == {"id": [2]}
+    evidence = context.metrics_payload(status="completed")["cache_proof"]
+    assert evidence["miss_reason_counts"] == {
+        "artifact_integrity_schema_failure": 0,
+        "metadata_source_mismatch": 1,
+        "proof_unavailable": 1,
+        "unreadable_artifact": 0,
+    }
+    assert evidence["direct_fallbacks"] == 1
 
 
 def test_multi_port_returns_dict_in_schema_order(tmp_path: Path) -> None:
@@ -671,6 +739,9 @@ def test_managed_executions_share_then_release_file_snapshot(
         def add_cleanup(self, callback: Any) -> None:
             self.cleanups.append(callback)
 
+        def record_cache_proof_hit(self) -> None:
+            pass
+
         def release(self) -> None:
             for callback in reversed(self.cleanups):
                 callback()
@@ -898,10 +969,21 @@ def test_unusable_working_cache_falls_through_to_valid_committed(
         pytest.fail("the valid committed cache should serve after rejecting working")
 
     monkeypatch.setattr("haute._json_shred._iter_records", _unexpected_reshred)
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
 
-    frame = load_v2_api_source(str(data), cfg)["root"].collect()
+    with context.stage("load_json"):
+        frame = load_v2_api_source(str(data), cfg)["root"].collect()
 
     assert frame.to_dict(as_series=False) == {"id": [17], "amount": [3]}
+    evidence = context.metrics_payload(status="completed")["cache_proof"]
+    expected_reason = (
+        "unreadable_artifact" if damage == "corrupt" else "artifact_integrity_schema_failure"
+    )
+    assert evidence["miss_reason_counts"][expected_reason] == 1
+    assert evidence["hits"] == 1
 
 
 @pytest.mark.parametrize("damage", ["corrupt", "wrong_name", "wrong_dtype"])
@@ -1013,12 +1095,19 @@ def test_unreadable_cache_candidate_is_logged_before_direct_fallback(
         "haute._json_shred.logger.warning",
         lambda event, **fields: warnings.append((event, fields)),
     )
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
 
-    frame = load_v2_api_source(str(data), cfg)["root"].collect()
+    with context.stage("load_json"):
+        frame = load_v2_api_source(str(data), cfg)["root"].collect()
 
     assert frame["id"].to_list() == [23]
     assert [event for event, _fields in warnings] == ["json_shred_cache_candidate_rejected"]
     assert warnings[0][1]["reason"] == "unreadable_parquet"
+    evidence = context.metrics_payload(status="completed")["cache_proof"]
+    assert evidence["miss_reason_counts"]["unreadable_artifact"] == 1
 
 
 def test_uncached_direct_shred_excludes_non_emitting_sibling(tmp_path: Path) -> None:
@@ -1306,6 +1395,26 @@ def test_is_per_port_cache_valid_false_states(tmp_path: Path) -> None:
     nondict.mkdir()
     (nondict / "meta.json").write_bytes(orjson.dumps([1, 2, 3]))
     assert is_per_port_cache_valid(nondict, cfg, data_path=data) is False
+
+
+def test_cache_validity_without_plausible_metadata_does_not_hash_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _write(tmp_path, [{"id": 1}])
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+    cache_dir = tmp_path / "empty"
+    cache_dir.mkdir()
+
+    def unexpected_source_proof(_path):
+        raise AssertionError("implausible cache metadata must not require a source hash")
+
+    monkeypatch.setattr(
+        "haute._json_shred._data_file_signature",
+        unexpected_source_proof,
+    )
+
+    assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is False
 
 
 def test_is_per_port_cache_valid_rejects_non_string_label_on_emitting_table(

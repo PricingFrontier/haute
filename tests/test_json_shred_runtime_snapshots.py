@@ -6,6 +6,7 @@ import hashlib
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +103,31 @@ def test_runtime_snapshot_dir_resets_inherited_state_for_new_pid(
     assert shred_mod._RUNTIME_SNAPSHOT_REFERENCES == {}
     assert shred_mod._RUNTIME_SNAPSHOT_PROCESS_PINS == set()
     assert shred_mod._RUNTIME_SNAPSHOT_PROCESS_TOKEN.startswith(f"{os.getpid()}-")
+
+
+def test_runtime_snapshot_creation_preserves_primary_error_when_cleanup_fails(
+    tmp_path: Path,
+    isolated_snapshot_state: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        shred_mod,
+        "_runtime_disk_budget_transaction",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        shred_mod,
+        "_ensure_runtime_owner_metadata",
+        lambda _path: (_ for _ in ()).throw(ValueError("invalid owner metadata")),
+    )
+    monkeypatch.setattr(
+        shred_mod,
+        "_remove_empty_runtime_owner_dir",
+        lambda _path: (_ for _ in ()).throw(OSError("cleanup denied")),
+    )
+
+    with pytest.raises(ValueError, match="invalid owner metadata"):
+        shred_mod._runtime_snapshot_dir(tmp_path / "cache")
 
 
 def test_stream_copy_removes_partial_target_when_copy_fails(
@@ -282,6 +308,13 @@ def test_unchanged_artifact_reuses_one_verified_snapshot_without_rehashing(
     assert first is not None
     shred_mod._release_runtime_snapshot(first)
     assert first.exists()
+    monkeypatch.setattr(
+        shred_mod,
+        "_runtime_snapshot_dir",
+        lambda _cache_dir: (_ for _ in ()).throw(
+            AssertionError("a verified warm hit must not allocate or scan runtime storage")
+        ),
+    )
 
     second = shred_mod._snapshot_cache_artifact(cache_dir, source, _signature(payload))
     assert second == first

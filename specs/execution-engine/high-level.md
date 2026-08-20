@@ -205,9 +205,11 @@ running heavy work in a child process the parent can kill on timeout or memory l
   ratio. The end-to-end training scenario derives its demand from the same target,
   metadata, and feature-menu exclusions used by the modelling service. Per-port
   cached API input and direct JSONL fallback scenarios retain structured width,
-  checkpoint, row-count, output-size, and snapshot-lifecycle evidence. Larger 1m
-  and 10m row scales remain explicit certification options rather than ordinary
-  unit-test cost.
+  checkpoint, row-count, output-size, restart/cache-proof, telemetry-privacy,
+  and snapshot-lifecycle evidence. The ordinary pull-request suite keeps the
+  bounded CI scale; scheduled certification runs the one-million-row scenario
+  weekly and the ten-million-row stress scenario monthly, with both larger
+  scales also available through explicit workflow dispatch.
 - Route/service long-running operations create an admitted `ExecutionContext` bound
   to an `ExecutionProfile` (preview, lazy sink, training prep, optimiser setup, deploy
   live/batch, chunked map-reduce, ...). An admitted context enforces a resident-memory
@@ -330,6 +332,22 @@ running heavy work in a child process the parent can kill on timeout or memory l
   specifically so it does not inherit the parent's already-large native heaps
   (Polars/Arrow buffers, loaded models) — a `fork`'d child would start already near
   its own memory limit.
+- **Interactive execution is killable without making every click cold.** Preview and
+  trace work runs in a small, eagerly warmed pool of `spawn` workers. Requests are
+  routed by a stable graph/source affinity so the worker-local preview and trace
+  caches remain useful. A response deadline, client cancellation, supersession, or
+  memory-cap breach terminates the worker process and replaces it before its slot is
+  reusable; no timed-out native Polars operation is allowed to continue invisibly in
+  a server thread. Admission is still decided and reserved by the server process, and
+  workers receive only a plain serialisable budget envelope rather than a shared
+  `ExecutionContext`.
+- **Materialisation admission follows proven physical demand.** When column lineage
+  proves every input edge of a materialising boundary exactly, the estimate uses
+  those projected columns (including grouping, join, filter, and expression inputs).
+  An opaque or partially proven edge keeps the complete-width estimate. Observed RSS
+  growth is compared with the estimate and feeds a bounded, profile-local upward
+  calibration factor so repeated under-estimation tightens later admission rather
+  than remaining an unobserved operational risk.
 - **Metadata-only RAM estimation, not a sample run.** An earlier probe-based approach
   ran a 1,000-row sample through the pipeline before training; inner joins with no key
   overlap in a small sample produced zero rows and broke the estimate. Reading
@@ -346,6 +364,11 @@ running heavy work in a child process the parent can kill on timeout or memory l
   one schema-versioned, allow-listed aggregate event per terminal status/reason,
   excluding identifiers, paths, columns, plans, messages, exception text, and user
   data. Telemetry failure cannot change execution status.
+  The same evidence reports logical requested width versus physical scanned width,
+  cache-proof hit/miss/fallback counts by a closed reason code, projected versus
+  complete-width admission basis, and estimated-versus-observed memory. These are
+  aggregate counters only; paths, graph identifiers, column names, and row values
+  remain excluded.
 
 ## Interactions
 

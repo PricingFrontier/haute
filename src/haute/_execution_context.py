@@ -25,7 +25,7 @@ _DEFAULT_MAX_RETAINED_STAGES = 200
 _DEFAULT_MAX_RETAINED_MEMORY_PRESSURE_EVENTS = 32
 _MAX_RETAINED_COLUMN_WIDTHS = 128
 _MAX_STREAMABILITY_EVIDENCE = 32
-_MAX_TELEMETRY_ATTRIBUTES = 32
+_MAX_TELEMETRY_ATTRIBUTES = 48
 _MAX_TELEMETRY_STRING_LENGTH = 128
 _MEMORY_PRESSURE_THRESHOLDS: tuple[float, ...] = (0.50, 0.75, 0.90)
 _RSS_SAMPLE_UNSET = object()
@@ -48,6 +48,15 @@ class ExecutionProfile(StrEnum):
     DEPLOY_LIVE = "deploy_live"
     DEPLOY_BATCH = "deploy_batch"
     CHUNKED_MAP_REDUCE = "chunked_map_reduce"
+
+
+class ExecutionCacheProofMissReason(StrEnum):
+    """Closed, data-free reasons an execution cache proof could not be used."""
+
+    METADATA_SOURCE_MISMATCH = "metadata_source_mismatch"
+    ARTIFACT_INTEGRITY_SCHEMA_FAILURE = "artifact_integrity_schema_failure"
+    UNREADABLE_ARTIFACT = "unreadable_artifact"
+    PROOF_UNAVAILABLE = "proof_unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -884,6 +893,14 @@ class ExecutionContext:
     _chunk_count: int = field(default=0, init=False)
     _observed_peak_rss_bytes: int | None = field(default=None, init=False)
     _cancellation_latency_ms: float | None = field(default=None, init=False)
+    _estimate_calibration_recorded: bool = field(default=False, init=False)
+    _cache_proof_hits: int = field(default=0, init=False)
+    _cache_proof_misses: int = field(default=0, init=False)
+    _cache_direct_fallbacks: int = field(default=0, init=False)
+    _cache_proof_miss_reason_counts: dict[ExecutionCacheProofMissReason, int] = field(
+        default_factory=lambda: {reason: 0 for reason in ExecutionCacheProofMissReason},
+        init=False,
+    )
 
     def cancel(self) -> None:
         self.cancellation_token.cancel()
@@ -1172,6 +1189,21 @@ class ExecutionContext:
         with self._evidence_lock:
             self._chunk_count += 1
 
+    def record_cache_proof_hit(self) -> None:
+        with self._evidence_lock:
+            self._cache_proof_hits += 1
+
+    def record_cache_proof_miss(self, reason: ExecutionCacheProofMissReason) -> None:
+        if not isinstance(reason, ExecutionCacheProofMissReason):
+            raise TypeError("cache proof miss reason must be an ExecutionCacheProofMissReason")
+        with self._evidence_lock:
+            self._cache_proof_misses += 1
+            self._cache_proof_miss_reason_counts[reason] += 1
+
+    def record_cache_direct_fallback(self) -> None:
+        with self._evidence_lock:
+            self._cache_direct_fallbacks += 1
+
     def metrics_summary(
         self,
         *,
@@ -1212,8 +1244,50 @@ class ExecutionContext:
             else None
         )
         payload.update(self._execution_evidence_payload(payload, diagnostic=diagnostic))
+        self._record_estimate_calibration(payload, diagnostic=diagnostic)
         self._emit_terminal_telemetry(payload)
         return payload
+
+    def _record_estimate_calibration(
+        self,
+        payload: Mapping[str, object],
+        *,
+        diagnostic: Any | None,
+    ) -> None:
+        """Consume one terminal, positive estimate/observation pair at most once."""
+
+        status = payload.get("status")
+        if (
+            not isinstance(status, str)
+            or not status
+            or status.lower() in _TERMINAL_NON_STATES
+            or getattr(getattr(diagnostic, "strategy", None), "value", None)
+            != "materialisation-boundary"
+        ):
+            return
+        raw_estimate = payload.get("raw_estimated_bytes")
+        observed_growth = payload.get("observed_peak_rss_growth_bytes")
+        if (
+            not isinstance(raw_estimate, int)
+            or isinstance(raw_estimate, bool)
+            or raw_estimate <= 0
+            or not isinstance(observed_growth, int)
+            or isinstance(observed_growth, bool)
+            or observed_growth <= 0
+        ):
+            return
+        with self._evidence_lock:
+            if self._estimate_calibration_recorded:
+                return
+            self._estimate_calibration_recorded = True
+
+        from haute._estimate_calibration import observe_materialisation_estimate
+
+        observe_materialisation_estimate(
+            self.profile,
+            estimated_bytes=raw_estimate,
+            observed_growth_bytes=observed_growth,
+        )
 
     def _emit_terminal_telemetry(self, payload: Mapping[str, object]) -> None:
         if not self.telemetry_enabled:
@@ -1259,6 +1333,10 @@ class ExecutionContext:
         strategy_payload = strategy if isinstance(strategy, Mapping) else {}
         admission = payload.get("admission")
         admission_payload = admission if isinstance(admission, Mapping) else {}
+        cache_proof = payload.get("cache_proof")
+        cache_proof_payload = cache_proof if isinstance(cache_proof, Mapping) else {}
+        miss_reasons = cache_proof_payload.get("miss_reason_counts")
+        miss_reason_payload = miss_reasons if isinstance(miss_reasons, Mapping) else {}
         widths = payload.get("column_widths")
         widths_payload = widths if isinstance(widths, Mapping) else {}
         raw_attributes: dict[str, object] = {
@@ -1276,7 +1354,13 @@ class ExecutionContext:
             "bytes_read": payload.get("bytes_read"),
             "bytes_written": payload.get("bytes_written"),
             "estimated_bytes": payload.get("estimated_bytes"),
+            "raw_estimated_bytes": payload.get("raw_estimated_bytes"),
             "observed_peak_rss_bytes": payload.get("observed_peak_rss_bytes"),
+            "observed_peak_rss_growth_bytes": payload.get("observed_peak_rss_growth_bytes"),
+            "estimate_calibration_factor_basis_points": payload.get(
+                "estimate_calibration_factor_basis_points"
+            ),
+            "estimate_admission_basis": payload.get("estimate_admission_basis"),
             "cancellation_latency_ms": payload.get("cancellation_latency_ms"),
             "stage_count": payload.get("stage_count"),
             "stages_truncated": payload.get("stages_truncated"),
@@ -1293,6 +1377,21 @@ class ExecutionContext:
             "memory_limit_bytes": payload.get("memory_limit_bytes"),
             "rss_limit_bytes": payload.get("rss_limit_bytes"),
             "column_widths_state": widths_payload.get("state"),
+            "requested_column_width_total": payload.get("requested_column_width_total"),
+            "physically_scanned_column_width_total": payload.get(
+                "physically_scanned_column_width_total"
+            ),
+            "cache_proof_hits": cache_proof_payload.get("hits"),
+            "cache_proof_misses": cache_proof_payload.get("misses"),
+            "cache_direct_fallbacks": cache_proof_payload.get("direct_fallbacks"),
+            "cache_miss_metadata_source_mismatch": miss_reason_payload.get(
+                "metadata_source_mismatch"
+            ),
+            "cache_miss_artifact_integrity_schema_failure": miss_reason_payload.get(
+                "artifact_integrity_schema_failure"
+            ),
+            "cache_miss_unreadable_artifact": miss_reason_payload.get("unreadable_artifact"),
+            "cache_miss_proof_unavailable": miss_reason_payload.get("proof_unavailable"),
         }
         return _bounded_telemetry_attributes(raw_attributes)
 
@@ -1309,6 +1408,10 @@ class ExecutionContext:
             chunk_count = self._chunk_count
             observed_peak_rss_bytes = self._observed_peak_rss_bytes
             cancellation_latency_ms = self._cancellation_latency_ms
+            cache_proof_hits = self._cache_proof_hits
+            cache_proof_misses = self._cache_proof_misses
+            cache_direct_fallbacks = self._cache_direct_fallbacks
+            cache_proof_miss_reason_counts = dict(self._cache_proof_miss_reason_counts)
 
         retained_widths = widths[:_MAX_RETAINED_COLUMN_WIDTHS]
         width_state = "truncated" if len(widths) > len(retained_widths) else "available"
@@ -1348,6 +1451,32 @@ class ExecutionContext:
             else "available"
         )
         estimated_bytes = getattr(diagnostic, "estimated_peak_bytes", None)
+        raw_estimated_bytes = getattr(diagnostic, "raw_estimated_peak_bytes", None)
+        calibration_factor = getattr(
+            diagnostic,
+            "estimate_calibration_factor_basis_points",
+            None,
+        )
+        estimate_admission_basis = getattr(diagnostic, "estimate_admission_basis", None)
+        baseline = self.memory_baseline_bytes
+        if baseline is None:
+            raw_rss_start = metrics_payload.get("rss_start_bytes")
+            baseline = raw_rss_start if isinstance(raw_rss_start, int) else None
+        observed_peak_rss_growth_bytes = (
+            max(0, observed_peak_rss_bytes - baseline)
+            if observed_peak_rss_bytes is not None and baseline is not None
+            else None
+        )
+        requested_width_total = (
+            sum(cast(int, item.requested_width) for item in widths)
+            if widths and all(item.requested_width is not None for item in widths)
+            else None
+        )
+        scanned_width_total = (
+            sum(cast(int, item.physically_scanned_width) for item in widths)
+            if widths and all(item.physically_scanned_width is not None for item in widths)
+            else None
+        )
         return {
             "streamability": streamability,
             "streamability_evidence": {
@@ -1360,12 +1489,27 @@ class ExecutionContext:
                 "total_count": len(widths),
                 "items": [item.to_dict() for item in retained_widths],
             },
+            "requested_column_width_total": requested_width_total,
+            "physically_scanned_column_width_total": scanned_width_total,
+            "cache_proof": {
+                "hits": cache_proof_hits,
+                "misses": cache_proof_misses,
+                "direct_fallbacks": cache_direct_fallbacks,
+                "miss_reason_counts": {
+                    reason.value: cache_proof_miss_reason_counts[reason]
+                    for reason in ExecutionCacheProofMissReason
+                },
+            },
             "bytes_read": bytes_read,
             "bytes_written": bytes_written,
             "estimated_bytes": estimated_bytes,
+            "raw_estimated_bytes": raw_estimated_bytes,
+            "estimate_calibration_factor_basis_points": calibration_factor,
+            "estimate_admission_basis": estimate_admission_basis,
             "checkpoint_count": metrics_payload["n_checkpoints"],
             "chunk_count": chunk_count,
             "observed_peak_rss_bytes": observed_peak_rss_bytes,
+            "observed_peak_rss_growth_bytes": observed_peak_rss_growth_bytes,
             "cancellation_latency_ms": cancellation_latency_ms,
         }
 

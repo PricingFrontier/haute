@@ -49,6 +49,7 @@ from haute._dataframe_execution_cache import (
     dataframe_execution_policy_fingerprint,
     materialize_lazy_frame_with_cache,
 )
+from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
@@ -56,6 +57,7 @@ from haute._json_flatten import cache_state_signature_for_graph
 from haute._path_resolution import _infer_project_root, resolve_runtime_file_path
 from haute._ram_estimate import (
     MaterialisationEstimate,
+    MaterialisationEstimateBasis,
     MaterialisationEstimateState,
     estimate_materialisation_boundaries,
 )
@@ -281,6 +283,7 @@ def plan_execution_strategy(
                 request.graph,
                 group_by_operators,
                 source=request.source,
+                projection_plan=projection_plan,
             )
         elif materialisation_estimate is None:
             resolved_estimate = MaterialisationEstimate.unavailable(
@@ -314,19 +317,32 @@ def _estimate_group_by_boundaries(
     node_ids: Iterable[str],
     *,
     source: str,
+    projection_plan: ProjectionPlan | None = None,
 ) -> MaterialisationEstimate:
     """Return the conservative peak across every declared group-by boundary."""
     peak_bytes = 0
     assumptions: list[str] = []
-    estimates = estimate_materialisation_boundaries(graph, node_ids, source=source)
+    basis = MaterialisationEstimateBasis.PROJECTED_COLUMNS
+    estimates = estimate_materialisation_boundaries(
+        graph,
+        node_ids,
+        source=source,
+        edge_demands=(projection_plan.edge_demands if projection_plan is not None else None),
+    )
     for node_id, estimate in estimates:
         if estimate.state is MaterialisationEstimateState.UNAVAILABLE:
             reason = estimate.unavailable_reason or "unknown"
             return MaterialisationEstimate.unavailable(f"{node_id}:{reason}")
         assert estimate.estimated_peak_bytes is not None
         peak_bytes = max(peak_bytes, estimate.estimated_peak_bytes)
+        if estimate.basis is not MaterialisationEstimateBasis.PROJECTED_COLUMNS:
+            basis = MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK
         assumptions.extend(f"{node_id}: {item}" for item in estimate.assumptions)
-    return MaterialisationEstimate.available(peak_bytes, assumptions=assumptions)
+    return MaterialisationEstimate.available(
+        peak_bytes,
+        assumptions=assumptions,
+        basis=basis,
+    )
 
 
 def plan_prepared_execution_strategy(
@@ -463,6 +479,9 @@ def _finalise_execution_strategy(
     reason_code: str | None = None
     remediation: str | None = None
     estimated_peak_bytes: int | None = None
+    raw_estimated_peak_bytes: int | None = None
+    estimate_calibration_factor_basis_points: int | None = None
+    estimate_admission_basis: str | None = None
     headroom_bytes: int | None = None
     assumptions: tuple[str, ...] = ()
 
@@ -515,8 +534,12 @@ def _finalise_execution_strategy(
                     else "no materialisation estimate was requested"
                 ),
             )
-        estimated_peak_bytes = materialisation_estimate.estimated_peak_bytes
-        assert estimated_peak_bytes is not None
+        raw_estimated_peak_bytes = materialisation_estimate.estimated_peak_bytes
+        assert raw_estimated_peak_bytes is not None
+        calibrated = calibrate_materialisation_bytes(profile, raw_estimated_peak_bytes)
+        estimated_peak_bytes = calibrated.calibrated_bytes
+        estimate_calibration_factor_basis_points = calibrated.factor_basis_points
+        estimate_admission_basis = materialisation_estimate.basis.value
         if estimated_peak_bytes > headroom_bytes:
             raise _group_by_rejection(
                 node_id=node_id,
@@ -533,7 +556,16 @@ def _finalise_execution_strategy(
         strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
         reason_code = "group_by_materialisation_admitted"
         remediation = "Keep the admitted boundary within its reported memory headroom."
-        assumptions = materialisation_estimate.assumptions
+        assumptions = (
+            *materialisation_estimate.assumptions,
+            f"raw_estimated_peak_bytes={raw_estimated_peak_bytes}",
+            f"calibrated_estimated_peak_bytes={estimated_peak_bytes}",
+            (
+                "estimate_calibration_factor_basis_points="
+                f"{estimate_calibration_factor_basis_points}"
+            ),
+            f"estimate_admission_basis={estimate_admission_basis}",
+        )
 
     return build_execution_strategy_result(
         projection_plan,
@@ -548,6 +580,9 @@ def _finalise_execution_strategy(
         boundary_operators=group_by_operators,
         remediation=remediation,
         estimated_peak_bytes=estimated_peak_bytes,
+        raw_estimated_peak_bytes=raw_estimated_peak_bytes,
+        estimate_calibration_factor_basis_points=(estimate_calibration_factor_basis_points),
+        estimate_admission_basis=estimate_admission_basis,
         headroom_bytes=headroom_bytes,
         assumptions=assumptions,
     )

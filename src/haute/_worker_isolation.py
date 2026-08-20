@@ -14,6 +14,7 @@ from multiprocessing.process import BaseProcess
 from typing import Any, Literal, TypeVar, cast
 
 from haute._logging import get_logger
+from haute._process_memory import process_rss_bytes, process_rss_sampling_supported
 
 logger = get_logger(component="worker_isolation")
 
@@ -208,11 +209,24 @@ class IsolatedWorkerMemoryLimitUnsupportedError(IsolatedWorkerError):
 
     def __init__(self, *, memory_limit_bytes: int) -> None:
         super().__init__(
-            "Isolated worker memory caps require resource.RLIMIT_AS, "
-            "which is not available on this platform.",
+            "Isolated worker memory caps require either an address-space limit "
+            "or observable child RSS, neither of which is available on this host.",
             terminal_reason="contract_error",
         )
         self.memory_limit_bytes = memory_limit_bytes
+
+
+class IsolatedWorkerMemoryLimitExceededError(IsolatedWorkerError, MemoryError):
+    """Raised when the parent watchdog observes a child above its RSS cap."""
+
+    def __init__(self, *, rss_bytes: int, rss_limit_bytes: int) -> None:
+        super().__init__(
+            f"Isolated worker exceeded its RSS cap: {rss_bytes} bytes used > "
+            f"{rss_limit_bytes} bytes allowed",
+            terminal_reason="memory_limited",
+        )
+        self.rss_bytes = rss_bytes
+        self.rss_limit_bytes = rss_limit_bytes
 
 
 class IsolatedWorkerCleanupError(IsolatedWorkerError):
@@ -236,7 +250,7 @@ class IsolatedWorkerTerminationError(IsolatedWorkerError):
         )
 
 
-def process_memory_caps_supported() -> bool:
+def address_space_caps_supported() -> bool:
     """Return whether this platform can enforce child address-space limits.
 
     macOS exposes ``resource.RLIMIT_AS`` and ``resource.setrlimit`` but
@@ -257,6 +271,71 @@ def process_memory_caps_supported() -> bool:
     if sys.platform == "darwin":
         return False
     return True
+
+
+def process_memory_caps_supported() -> bool:
+    """Return whether a kernel cap or verified parent RSS watchdog is available."""
+    return address_space_caps_supported() or process_rss_sampling_supported()
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkerRssWatchdog:
+    pid: int | None
+    rss_limit_bytes: int | None
+    require_memory_limit: bool
+    address_space_cap_active: bool
+
+    def checkpoint(self) -> None:
+        if self.rss_limit_bytes is None:
+            return
+        if self.pid is None:  # pragma: no cover - constructor invariant
+            raise RuntimeError("RSS watchdog has a limit without a process id")
+        rss_bytes = process_rss_bytes(self.pid)
+        if rss_bytes is None:
+            if self.require_memory_limit and not self.address_space_cap_active:
+                raise IsolatedWorkerMemoryLimitUnsupportedError(
+                    memory_limit_bytes=self.rss_limit_bytes
+                )
+            return
+        if rss_bytes > self.rss_limit_bytes:
+            raise IsolatedWorkerMemoryLimitExceededError(
+                rss_bytes=rss_bytes,
+                rss_limit_bytes=self.rss_limit_bytes,
+            )
+
+
+def _create_worker_rss_watchdog(
+    process: BaseProcess,
+    *,
+    memory_limit_bytes: int | None,
+    require_memory_limit: bool,
+) -> _WorkerRssWatchdog:
+    """Resolve a per-request RSS growth cap after the spawned child exists."""
+    if memory_limit_bytes is None:
+        return _WorkerRssWatchdog(None, None, require_memory_limit, False)
+    pid = process.pid
+    if pid is None:
+        raise IsolatedWorkerStartError(
+            "Isolated worker did not expose a process id after startup",
+            terminal_reason="error",
+        )
+    address_space_cap_active = address_space_caps_supported()
+    baseline_rss_bytes = process_rss_bytes(pid)
+    if baseline_rss_bytes is None:
+        if require_memory_limit and not address_space_cap_active:
+            raise IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=memory_limit_bytes)
+        return _WorkerRssWatchdog(
+            pid,
+            None,
+            require_memory_limit,
+            address_space_cap_active,
+        )
+    return _WorkerRssWatchdog(
+        pid,
+        baseline_rss_bytes + memory_limit_bytes,
+        require_memory_limit,
+        address_space_cap_active,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +429,7 @@ def _resource_tracker_diagnostics() -> dict[str, Any]:
             try:
                 # Reaps the tracker if it has exited, which is what
                 # ensure_running would do anyway, and reports how it died.
-                reaped, status = os.waitpid(pid, os.WNOHANG)
+                reaped, status = os.waitpid(pid, int(getattr(os, "WNOHANG", 1)))
                 info["tracker_reaped"] = reaped
                 info["tracker_exit_status"] = status
             except OSError as exc:
@@ -369,10 +448,11 @@ def _resource_tracker_diagnostics() -> dict[str, Any]:
     try:
         import resource as _resource
 
+        resource_module = cast(Any, _resource)
         for name in ("RLIMIT_NPROC", "RLIMIT_NOFILE", "RLIMIT_AS"):
-            limit = getattr(_resource, name, None)
+            limit = getattr(resource_module, name, None)
             if limit is not None:
-                info[name.lower()] = _resource.getrlimit(limit)
+                info[name.lower()] = resource_module.getrlimit(limit)
     except Exception:  # pragma: no cover - POSIX-only, best effort
         pass
 
@@ -496,7 +576,17 @@ def run_isolated_worker(
                 f"Failed to start isolated worker: {exc}",
             ) from exc
 
-        queued_payload = _wait_for_worker(process, worker_config, result_queue)
+        rss_watchdog = _create_worker_rss_watchdog(
+            process,
+            memory_limit_bytes=worker_config.memory_limit_bytes,
+            require_memory_limit=worker_config.require_memory_limit,
+        )
+        queued_payload = _wait_for_worker(
+            process,
+            worker_config,
+            result_queue,
+            rss_watchdog,
+        )
 
         status, payload = (
             queued_payload
@@ -585,7 +675,7 @@ def _isolated_worker_entrypoint(
     memory_limit_bytes: int | None,
 ) -> None:
     try:
-        if memory_limit_bytes is not None and process_memory_caps_supported():
+        if memory_limit_bytes is not None and address_space_caps_supported():
             _apply_address_space_limit(memory_limit_bytes)
         result_queue.put(("ok", function(*args, **kwargs)))
     except BaseException as exc:
@@ -603,20 +693,21 @@ def _isolated_worker_entrypoint(
 
 def _apply_address_space_limit(memory_limit_bytes: int) -> None:
     # ``resource`` only exists on POSIX. Callers gate this via
-    # ``process_memory_caps_supported`` so reaching the Windows branch here
+    # ``address_space_caps_supported`` so reaching the Windows branch here
     # means we hit a contract bug — fail loudly rather than silently no-op.
     if sys.platform == "win32":  # pragma: no cover - guarded by caller's support check
         raise IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=memory_limit_bytes)
     import resource
 
-    current_soft, current_hard = resource.getrlimit(resource.RLIMIT_AS)
+    resource_module = cast(Any, resource)
+    current_soft, current_hard = resource_module.getrlimit(resource_module.RLIMIT_AS)
     hard = memory_limit_bytes
-    if current_hard != resource.RLIM_INFINITY:
+    if current_hard != resource_module.RLIM_INFINITY:
         hard = min(hard, int(current_hard))
     soft = min(memory_limit_bytes, hard)
-    if current_soft != resource.RLIM_INFINITY:
+    if current_soft != resource_module.RLIM_INFINITY:
         soft = min(soft, int(current_soft))
-    resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
+    resource_module.setrlimit(resource_module.RLIMIT_AS, (soft, hard))
 
 
 def _read_worker_payload(
@@ -650,10 +741,12 @@ def _wait_for_worker(
     process: BaseProcess,
     config: IsolatedWorkerConfig,
     result_queue: mp.Queue[tuple[str, Any]],
+    rss_watchdog: _WorkerRssWatchdog,
 ) -> tuple[str, Any] | None:
     deadline = None if config.timeout_seconds is None else time.monotonic() + config.timeout_seconds
     queued_payload: tuple[str, Any] | None = None
     while process.is_alive():
+        rss_watchdog.checkpoint()
         if queued_payload is None:
             try:
                 queued_payload = result_queue.get_nowait()
@@ -709,10 +802,9 @@ def _exitcode_looks_memory_limited(
         import signal
     except ImportError:
         return False
-    # ``SIGKILL`` is POSIX-only. ``getattr`` lets this module typecheck on
-    # Windows where memory caps are unsupported anyway (callers gate via
-    # ``process_memory_caps_supported``).
-    sigkill = getattr(signal, "SIGKILL", None)
-    if sigkill is None:
-        return False
-    return exitcode in {-int(sigkill), -int(signal.SIGABRT)}
+    # ``SIGKILL`` is not exported by Python's Windows signal module. Keep the
+    # conventional POSIX value for decoded/synthetic worker status records so
+    # their classification is platform-independent; live Windows RSS breaches
+    # are reported directly by the parent watchdog rather than this heuristic.
+    sigkill_number = int(getattr(signal, "SIGKILL", 9))
+    return exitcode in {-sigkill_number, -int(signal.SIGABRT)}

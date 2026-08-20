@@ -1067,33 +1067,31 @@ class TestAtomicSerializedBuild:
         cache_dir = _json_cache_dir(str(data), "working")
         build_per_port_cache(data, cfg, cache_dir)
 
-        real_read_matching_meta = shred_mod._read_matching_cache_meta
+        real_probe_cache_bundle = shred_mod._probe_cache_bundle
         removed = False
 
-        def _matching_meta_then_remove(
-            checked_cache_dir: str | Path,
-            checked_config: dict[str, Any],
-            *,
-            data_path: str | Path,
-            data_file_signature: dict[str, Any] | None = None,
-        ) -> dict[str, Any] | None:
+        def _probe_after_remove(
+            checked_cache_dir: Path,
+            table_specs: Any,
+            meta: dict[str, Any],
+            **kwargs: Any,
+        ) -> Any:
             nonlocal removed
-            matching_meta = real_read_matching_meta(
-                checked_cache_dir,
-                checked_config,
-                data_path=data_path,
-                data_file_signature=data_file_signature,
-            )
-            if matching_meta is not None and not removed:
+            if checked_cache_dir == cache_dir and not removed:
                 removed = True
-                entry = next(table for table in matching_meta["tables"] if table["label"] == "root")
-                (Path(checked_cache_dir) / entry["parquet"]).unlink()
-            return matching_meta
+                entry = next(table for table in meta["tables"] if table["label"] == "root")
+                (checked_cache_dir / entry["parquet"]).unlink()
+            return real_probe_cache_bundle(
+                checked_cache_dir,
+                table_specs,
+                meta,
+                **kwargs,
+            )
 
         monkeypatch.setattr(
             shred_mod,
-            "_read_matching_cache_meta",
-            _matching_meta_then_remove,
+            "_probe_cache_bundle",
+            _probe_after_remove,
         )
 
         out = load_v2_api_source(str(data), cfg)

@@ -154,6 +154,12 @@ def test_materialisation_estimate_distinguishes_empty_from_unavailable() -> None
         )
     with pytest.raises(ValueError, match="requires a reason"):
         MaterialisationEstimate.unavailable("")
+    with pytest.raises(TypeError, match="basis must be"):
+        MaterialisationEstimate(
+            MaterialisationEstimateState.AVAILABLE,
+            1,
+            basis="provided",  # type: ignore[arg-type]
+        )
 
 
 def test_ram_estimate_column_index_rejects_recursive_resolution() -> None:
@@ -165,6 +171,22 @@ def test_ram_estimate_column_index_rejects_recursive_resolution() -> None:
 
     with pytest.raises(RuntimeError, match="cycle encountered"):
         index.resolve_columns(source.id)
+
+
+@pytest.mark.parametrize("duplicate_count", [0, 2])
+def test_ram_estimate_column_index_requires_exactly_one_parent_edge(
+    duplicate_count: int,
+) -> None:
+    source = _make_source_node(node_id="source")
+    target = _make_transform_node(node_id="target")
+    edges = [
+        GraphEdge(id=f"edge-{index}", source="source", target="target")
+        for index in range(duplicate_count)
+    ]
+    index = _EstimateGraphIndex.build(PipelineGraph(nodes=[source, target], edges=edges), "live")
+
+    with pytest.raises(RuntimeError, match=f"found {duplicate_count}"):
+        index.parent_port("target", "source")
 
 
 def test_source_metadata_propagates_programming_errors_but_marks_os_errors_unavailable(
@@ -1980,6 +2002,44 @@ class TestJsonApiInputPortMetadata:
 
         assert _json_api_input_port_metadata(node, "policies").row_count == 2
 
+    def test_source_proof_is_reused_when_plausible_working_is_stale(
+        self,
+        json_api_input,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import shutil
+
+        import orjson
+
+        import haute._json_shred as shred_mod
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        _data_path, config, working_dir, committed_dir = json_api_input
+        committed_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(working_dir, committed_dir, dirs_exist_ok=True)
+        working_meta_path = working_dir / "meta.json"
+        working_meta = orjson.loads(working_meta_path.read_bytes())
+        working_meta["data_file"]["sha256"] = "0" * 64
+        working_meta_path.write_bytes(orjson.dumps(working_meta))
+        node = _make_source_node(node_type="apiInput", config=config)
+        real_source_proof = shred_mod._data_file_signature
+        source_proof_calls = 0
+
+        def counting_source_proof(path):
+            nonlocal source_proof_calls
+            source_proof_calls += 1
+            return real_source_proof(path)
+
+        monkeypatch.setattr(
+            "haute._json_shred._data_file_signature",
+            counting_source_proof,
+        )
+
+        metadata = _json_api_input_port_metadata(node, "policies")
+
+        assert metadata is not None and metadata.row_count == 2
+        assert source_proof_calls == 1
+
     def test_a_port_the_cache_never_emitted_is_unavailable(self, json_api_input) -> None:
         from haute._ram_estimate import _json_api_input_port_metadata
 
@@ -2000,6 +2060,43 @@ class TestJsonApiInputPortMetadata:
 
         assert _json_api_input_port_metadata(node, "policies") is None
 
+    def test_a_tampered_cache_artifact_is_not_used_for_admission(
+        self,
+        json_api_input,
+    ) -> None:
+        """Admission must size the exact generation runtime would accept."""
+
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        _data_path, config, cache_dir, _committed_dir = json_api_input
+        pl.DataFrame({"policy_id": [999]}).write_parquet(cache_dir / "policies.parquet")
+        node = _make_source_node(node_type="apiInput", config=config)
+
+        assert _json_api_input_port_metadata(node, "policies") is None
+
+    def test_a_snapshot_with_a_different_schema_is_not_used_for_admission(
+        self,
+        json_api_input,
+        tmp_path: Path,
+    ) -> None:
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        incompatible_snapshot = tmp_path / "incompatible.parquet"
+        pl.DataFrame({"unexpected": [1]}).write_parquet(incompatible_snapshot)
+        node = _make_source_node(node_type="apiInput", config=config)
+
+        with (
+            patch(
+                "haute._json_shred._snapshot_cache_artifact_locked",
+                return_value=incompatible_snapshot,
+            ),
+            patch("haute._json_shred._release_runtime_snapshot") as release,
+        ):
+            assert _json_api_input_port_metadata(node, "policies") is None
+
+        assert release.call_count == 1
+
     @pytest.mark.parametrize("path_value", ["", None, 17])
     def test_a_node_without_a_usable_path_is_unavailable(self, path_value) -> None:
         from haute._ram_estimate import _json_api_input_port_metadata
@@ -2013,6 +2110,33 @@ class TestJsonApiInputPortMetadata:
 
         node = _make_source_node(
             node_type="apiInput", config={"path": str(tmp_path / "absent.json")}
+        )
+
+        assert _json_api_input_port_metadata(node, "policies") is None
+
+    def test_absent_cache_metadata_does_not_hash_the_uncached_source(
+        self,
+        json_api_input,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Admission must not add a full-file pass before direct execution."""
+
+        import shutil
+
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        _data_path, config, working_dir, committed_dir = json_api_input
+        shutil.rmtree(working_dir)
+        if committed_dir.exists():
+            shutil.rmtree(committed_dir)
+        node = _make_source_node(node_type="apiInput", config=config)
+
+        def unexpected_source_proof(_path):
+            raise AssertionError("an absent cache must not require a source hash")
+
+        monkeypatch.setattr(
+            "haute._json_shred._data_file_signature",
+            unexpected_source_proof,
         )
 
         assert _json_api_input_port_metadata(node, "policies") is None

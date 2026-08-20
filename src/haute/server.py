@@ -35,6 +35,11 @@ from haute import __version__
 from haute._cache import canonical_json
 from haute._event_bus import default_bus
 from haute._execution_context import configure_execution_telemetry
+from haute._interactive_workers import (
+    shutdown_interactive_worker_pool,
+    start_interactive_worker_pool,
+)
+from haute._json_shred import recover_json_runtime_storage
 from haute._local_security import (
     SESSION_TOKEN_COOKIE,
     TRUSTED_HOSTS_ENV,
@@ -408,6 +413,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     _load_env(Path.cwd())
     configure_execution_telemetry()
+    recover_json_runtime_storage()
     stale_after_seconds = _artifact_stale_seconds()
 
     # Prime the pipeline-name → path index so the first HTTP request doesn't
@@ -416,26 +422,31 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # callback that is allowed to (re)build this index — see
     # ``haute.routes._helpers`` for the full contract.
     _ensure_pipeline_index()
-
     global _watcher_task, _optimiser_reaper_task
-    _watcher_task = asyncio.create_task(_watcher_forever())
-    _optimiser_reaper_task = asyncio.create_task(
-        _reap_stale_optimiser_artifacts_in_background(stale_after_seconds)
-    )
+    _watcher_task = None
+    _optimiser_reaper_task = None
     try:
+        start_interactive_worker_pool()
+        _watcher_task = asyncio.create_task(_watcher_forever())
+        _optimiser_reaper_task = asyncio.create_task(
+            _reap_stale_optimiser_artifacts_in_background(stale_after_seconds)
+        )
         yield
     finally:
         try:
-            if _watcher_task:
-                _watcher_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await _watcher_task
+            try:
+                if _watcher_task:
+                    _watcher_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await _watcher_task
+            finally:
+                _watcher_task = None
+                if _optimiser_reaper_task:
+                    reaper_task = _optimiser_reaper_task
+                    _optimiser_reaper_task = None
+                    await reaper_task
         finally:
-            _watcher_task = None
-            if _optimiser_reaper_task:
-                reaper_task = _optimiser_reaper_task
-                _optimiser_reaper_task = None
-                await reaper_task
+            shutdown_interactive_worker_pool()
 
 
 app = FastAPI(title="Haute", version=__version__, lifespan=_lifespan)

@@ -24,7 +24,11 @@ from haute._cache import (
     graph_fingerprint,
 )
 from haute._env import optional_int_env
-from haute._execution_context import ExecutionProfile
+from haute._execution_context import (
+    ExecutionCacheProofMissReason,
+    ExecutionProfile,
+    current_execution_context,
+)
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
@@ -363,14 +367,39 @@ class DataFrameExecutionCache(LRUCache[str, DataFrameExecutionCacheEntry]):
             return entry
 
     def scan(self, key: DataFrameExecutionCacheKey) -> pl.LazyFrame | None:
+        frame, _reason = self.scan_with_proof(key)
+        return frame
+
+    def scan_with_proof(
+        self,
+        key: DataFrameExecutionCacheKey,
+    ) -> tuple[pl.LazyFrame | None, ExecutionCacheProofMissReason | None]:
+        """Open a validated entry and retain the closed reason for a miss."""
+
         with self._lock:
             entry = super().get(key.cache_key)
             if entry is None:
-                return None
+                return None, ExecutionCacheProofMissReason.PROOF_UNAVAILABLE
             if self._evict_if_invalid(entry):
-                return None
+                return (
+                    None,
+                    ExecutionCacheProofMissReason.ARTIFACT_INTEGRITY_SCHEMA_FAILURE,
+                )
             self._pin_scan(key.cache_key, entry)
-        return self._open_scan(key.cache_key, entry)
+        try:
+            return self._open_scan(key.cache_key, entry), None
+        except (OSError, pl.exceptions.PolarsError) as exc:
+            logger.warning(
+                "dataframe_execution_cache_artifact_unreadable",
+                cache_key=key.cache_key,
+                node_id=key.node_id,
+                error_type=type(exc).__name__,
+            )
+            with self._lock:
+                current = super().get(key.cache_key)
+                if current is entry and not super()._is_pinned(key.cache_key):
+                    self._remove_key(key.cache_key)
+            return None, ExecutionCacheProofMissReason.UNREADABLE_ARTIFACT
 
     def scan_stored_entry(
         self,
@@ -619,9 +648,15 @@ def materialize_lazy_frame_with_cache(
 
     _profile_value(profile)
     with cache.materialization_lock(key):
-        cached = cache.scan(key)
+        cached, miss_reason = cache.scan_with_proof(key)
+        execution_context = current_execution_context()
         if cached is not None:
+            if execution_context is not None:
+                execution_context.record_cache_proof_hit()
             return cached
+        assert miss_reason is not None
+        if execution_context is not None:
+            execution_context.record_cache_proof_miss(miss_reason)
 
         path = cache.path_for_key(key)
         try:
