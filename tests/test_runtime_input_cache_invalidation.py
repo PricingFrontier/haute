@@ -188,6 +188,38 @@ def _json_api_input_graph(data: Path):
     )
 
 
+def _json_api_input_group_by_graph(data: Path):
+    """JSON graph that exercises strategy estimation before runtime loading."""
+    return _g(
+        {
+            "nodes": [
+                _n(
+                    {
+                        "id": "api",
+                        "data": {
+                            "label": "api",
+                            "nodeType": "apiInput",
+                            "config": {"path": str(data), **_V2_AMOUNT_TABLES},
+                        },
+                    }
+                ),
+                _transform_node(
+                    "aggregate",
+                    "df = root.group_by('amount').agg(pl.len().alias('rows'))",
+                ),
+            ],
+            "edges": [
+                GraphEdge(
+                    id="e_api_aggregate",
+                    source="api",
+                    target="aggregate",
+                    sourceHandle="root",
+                )
+            ],
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # Preview: runtime file inputs invalidate the preview cache
 # ---------------------------------------------------------------------------
@@ -597,6 +629,93 @@ class TestStatGatedFingerprintMemo:
         graph = _parquet_graph(p)
         dataframe_graph_input_fingerprint(graph, target_node_id=None, source="test")
         dataframe_graph_input_fingerprint(graph, target_node_id=None, source="test")
+        assert hash_calls.get(key) == 1
+
+    def test_json_preview_uses_one_authoritative_source_content_proof(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Planning, identity, and loading must share one SHA-256 source read."""
+        import haute._json_shred as shred_mod
+        import haute.execution as execution_mod
+
+        monkeypatch.chdir(tmp_path)
+        data = tmp_path / "data.json"
+        _export_and_cache_amount(data, 10)
+        graph = _json_api_input_group_by_graph(data)
+        resolved = data.resolve()
+
+        shred_mod._clear_data_file_signature_memo()
+        execution_mod._runtime_path_fingerprint_cache.clear()
+        source_hashes = 0
+        generic_hashes = 0
+        real_source_hash = shred_mod._hash_file
+        real_generic_hash = execution_mod.content_hash
+
+        def counting_source_hash(path: Path) -> str:
+            nonlocal source_hashes
+            if path.resolve() == resolved:
+                source_hashes += 1
+            return real_source_hash(path)
+
+        def counting_generic_hash(path: Path) -> str:
+            nonlocal generic_hashes
+            if path.resolve() == resolved:
+                generic_hashes += 1
+            return real_generic_hash(path)
+
+        monkeypatch.setattr(shred_mod, "_hash_file", counting_source_hash)
+        monkeypatch.setattr(execution_mod, "content_hash", counting_generic_hash)
+
+        result = execute_graph(graph, target_node_id="aggregate")
+
+        assert result["aggregate"].preview == [{"amount": 10, "rows": 1}]
+        assert source_hashes == 1
+        assert generic_hashes == 0
+
+    def test_json_same_stat_byte_rewrite_invalidates_preview_identity(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The strong JSON revision, not size/mtime, gates cached previews."""
+        import haute._json_shred as shred_mod
+        import haute.execution as execution_mod
+
+        monkeypatch.chdir(tmp_path)
+        data = tmp_path / "data.json"
+        _export_and_cache_amount(data, 10)
+        graph = _json_api_input_graph(data)
+        shred_mod._clear_data_file_signature_memo()
+        execution_mod._runtime_path_fingerprint_cache.clear()
+
+        first = execute_graph(graph, target_node_id="t")
+        first_key = _preview_cache.most_recent_key
+        original_stat = data.stat()
+
+        data.write_text(json.dumps([{"amount": 20}]), encoding="utf-8")
+        assert data.stat().st_size == original_stat.st_size
+        os.utime(
+            data,
+            ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+        )
+
+        second = execute_graph(graph, target_node_id="t")
+
+        assert first["t"].preview == [{"amount": 10, "y": 20}]
+        assert second["t"].preview == [{"amount": 20, "y": 40}]
+        assert _preview_cache.most_recent_key != first_key
+
+    def test_flat_api_input_retains_generic_stat_gated_identity(self, tmp_path, hash_calls):
+        p = tmp_path / "quotes.csv"
+        _write_csv(p, [1, 2])
+        graph = _g({"nodes": [_flat_api_input_node("api", p)], "edges": []})
+        key = str(p.resolve())
+
+        execute_graph(graph)
+        execute_graph(graph)
+
         assert hash_calls.get(key) == 1
 
     def test_touch_with_identical_bytes_recomputes(self, tmp_path):

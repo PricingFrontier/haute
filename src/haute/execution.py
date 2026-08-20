@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from haute._api_input_schema import is_json_api_input_path
 from haute._cache import (
     CACHE_CONFIG_FIELD_CLASSIFICATIONS,
     CacheConsumer,
@@ -673,6 +674,48 @@ def _stat_gated_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
     )
 
 
+def _json_source_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
+    """Return runtime identity from the JSON cache's authoritative source proof.
+
+    The JSON strategy estimator and loader already require the exact SHA-256
+    signature maintained by ``_json_shred``. Reusing that record here prevents
+    preview/trace identity from streaming the same source a second time through
+    the generic xxHash boundary. Missing paths and non-files preserve the generic
+    payload and error semantics.
+    """
+    resolved = path.resolve()
+    if not resolved.is_file():
+        return _runtime_path_fingerprint(resolved)
+
+    from haute._json_shred import _data_file_signature
+
+    signature = _data_file_signature(resolved)
+    return {
+        "path": str(resolved),
+        "exists": True,
+        "is_file": True,
+        "size": signature["size"],
+        "mtime_ns": signature["mtime_ns"],
+        "hash_algo": "sha256",
+        "content_hash": signature["sha256"],
+    }
+
+
+def _runtime_file_fingerprint(
+    node: GraphNode,
+    path_field: str,
+    path: Path,
+) -> Mapping[str, object]:
+    """Return the versioned content identity for one node runtime file."""
+    if (
+        node.data.nodeType == NodeType.API_INPUT
+        and path_field == "path"
+        and is_json_api_input_path(str(path))
+    ):
+        return _json_source_runtime_path_fingerprint(path)
+    return _stat_gated_runtime_path_fingerprint(path)
+
+
 def dataframe_paths_input_fingerprint(paths: Mapping[str, str]) -> Mapping[str, object]:
     """Return stable file-state fingerprints for named external path inputs."""
 
@@ -782,7 +825,7 @@ def _runtime_input_fingerprint_entry(
 ) -> Mapping[str, object]:
     config = node.data.config
     files = {
-        path_field: _stat_gated_runtime_path_fingerprint(path)
+        path_field: _runtime_file_fingerprint(node, path_field, path)
         for path_field, path in _runtime_file_signature_paths(graph, node).items()
     }
     return checked_cache_identity_record(

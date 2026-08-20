@@ -285,10 +285,13 @@ running heavy work in a child process the parent can kill on timeout or memory l
   periodic parquet checkpoints, wins there instead. Running one
   strategy for both would either make preview too slow (rebuild the whole plan per
   click) or make batch runs memory-unsafe (materialise everything eagerly).
-  A JSON source's SHA-256 content proof is likewise shared between preview planning,
-  source loading, and later requests only while the JSON-shredding component's strong
-  native revision remains unchanged. This removes repeat multi-gigabyte source reads
-  from a cache hit without weakening same-size/same-mtime rewrite detection.
+  A JSON source's SHA-256 content proof is likewise the sole raw-file content proof
+  consumed by preview/trace identity, preview planning, source loading, and later
+  requests while the JSON-shredding component's strong native revision remains
+  unchanged. Runtime identity must not perform a second full-file hash with a different
+  algorithm. This removes duplicate and repeat multi-gigabyte source reads without
+  weakening same-size/same-mtime rewrite detection; non-JSON runtime files retain their
+  separately versioned runtime-file identity contract.
 - **Parquet checkpointing only at structural fan-in/fan-out/join-feeder points.**
   Polars duplicates the upstream plan for every downstream branch of a lazy frame
   (a known upstream limitation — pola-rs/polars#24206); checkpointing *every* node

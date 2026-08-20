@@ -225,8 +225,8 @@ replacement is documented in the low-level specification.
 Source signatures are process-memoised by canonical path in a bounded,
 single-flight cache. A cache hit requires the same strong native file identity,
 length, last-write value, and change token that surrounded the original complete
-SHA-256 pass. This shares one content proof between planning, loading, and later
-previews without trusting size/mtime alone. A changed token, an atomic replacement,
+SHA-256 pass. This shares one content proof between runtime cache identity, planning,
+loading, and later previews without trusting size/mtime alone. A changed token, an atomic replacement,
 a forked process, or a file that changes during hashing cannot reuse the proof;
 native-token failure disables reuse for that observation rather than weakening the
 freshness contract.

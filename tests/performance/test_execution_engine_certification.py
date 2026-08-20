@@ -14,10 +14,12 @@ import orjson
 import polars as pl
 import pytest
 
-from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._json_flatten import _json_cache_dir
 from haute._json_shred import build_per_port_cache, load_v2_api_source
 from haute._polars_utils import execution_collect
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute.executor import _preview_cache, execute_graph
 from scripts.memory_smoke import run_smoke
 
 pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
@@ -260,6 +262,156 @@ def test_unchanged_source_signature_reuses_one_complete_content_proof(
                 },
                 "admission": {"state": "not_required", "detail": None},
                 "payload_bytes": 0,
+            },
+        )
+    )
+
+
+def test_cached_json_target_preview_uses_one_authoritative_source_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Certify that planning, preview identity, and loading share JSON proof."""
+    import haute._json_shred as shred_mod
+    import haute.execution as execution_mod
+
+    monkeypatch.chdir(tmp_path)
+    source_path = tmp_path / "source.json"
+    records = [
+        {"amount": 10, "premium": 3},
+        {"amount": 10, "premium": 7},
+        {"amount": 20, "premium": 5},
+        {"amount": 20, "premium": 11},
+    ]
+    source_path.write_bytes(orjson.dumps(records))
+    config = {
+        "tables": [
+            _table(
+                "$[:]",
+                "root",
+                [
+                    _column("amount", "$[:].amount"),
+                    _column("premium", "$[:].premium"),
+                ],
+            )
+        ]
+    }
+    build_per_port_cache(source_path, config, _json_cache_dir(source_path, "working"))
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="api",
+                data=NodeData(
+                    label="api",
+                    nodeType=NodeType.API_INPUT,
+                    config={"path": str(source_path), **config},
+                ),
+            ),
+            GraphNode(
+                id="aggregate",
+                data=NodeData(
+                    label="aggregate",
+                    nodeType=NodeType.POLARS,
+                    config={
+                        "code": (
+                            "df = root.group_by('amount').agg("
+                            "pl.col('premium').sum().alias('premium_total')).sort('amount')"
+                        )
+                    },
+                ),
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                id="e_api_aggregate",
+                source="api",
+                target="aggregate",
+                sourceHandle="root",
+            )
+        ],
+    )
+    resolved = source_path.resolve()
+    shred_mod._clear_data_file_signature_memo()
+    execution_mod._runtime_path_fingerprint_cache.clear()
+    _preview_cache.clear()
+    source_hashes = 0
+    generic_hashes = 0
+    real_source_hash = shred_mod._hash_file
+    real_generic_hash = execution_mod.content_hash
+
+    def counting_source_hash(path: Path) -> str:
+        nonlocal source_hashes
+        if path.resolve() == resolved:
+            source_hashes += 1
+        return real_source_hash(path)
+
+    def counting_generic_hash(path: Path) -> str:
+        nonlocal generic_hashes
+        if path.resolve() == resolved:
+            generic_hashes += 1
+        return real_generic_hash(path)
+
+    monkeypatch.setattr(shred_mod, "_hash_file", counting_source_hash)
+    monkeypatch.setattr(execution_mod, "content_hash", counting_generic_hash)
+    headroom_bytes = 64 * 1024 * 1024
+    context = ExecutionContext(
+        operation="perf_json_source_proof_target_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        admission=ExecutionAdmission(
+            operation="perf_json_source_proof_target_preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=headroom_bytes,
+            rss_at_admission_bytes=0,
+            rss_limit_bytes=headroom_bytes,
+            headroom_bytes=headroom_bytes,
+            config_key="perf",
+        ),
+    )
+    started = time.perf_counter_ns()
+    try:
+        result = execute_graph(
+            graph,
+            target_node_id="aggregate",
+            target_preview_only=True,
+            execution_context=context,
+        )
+        elapsed_ns = time.perf_counter_ns() - started
+        metrics = context.metrics_payload(status="completed")
+    finally:
+        context.release_admission()
+
+    assert result["aggregate"].preview == [
+        {"amount": 10, "premium_total": 10},
+        {"amount": 20, "premium_total": 16},
+    ]
+    assert source_hashes == 1
+    assert generic_hashes == 0
+
+    request.node.user_properties.append(
+        (
+            "haute_perf_evidence",
+            {
+                "scenario": "execution_engine_cached_json_target_preview_source_proof",
+                "scale": "ci-small-cached-json",
+                "execution_profiles": [ExecutionProfile.PREVIEW_EAGER.value],
+                "input": {
+                    "rows": len(records),
+                    "source_bytes": source_path.stat().st_size,
+                },
+                "elapsed_ns": elapsed_ns,
+                "source_sha256_hashes": source_hashes,
+                "generic_runtime_xxhash_calls": generic_hashes,
+                "execution_profile": ExecutionProfile.PREVIEW_EAGER.value,
+                "product_metrics": {
+                    "n_collects": metrics["n_collects"],
+                    "n_checkpoints": metrics["n_checkpoints"],
+                    "chunk_count": metrics["chunk_count"],
+                    "output_bytes": 0,
+                    "temp_disk_peak_bytes": 0,
+                },
+                "admission": {"state": "direct_context", "detail": None},
+                "payload_bytes": len(orjson.dumps(result["aggregate"].preview)),
             },
         )
     )

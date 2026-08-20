@@ -196,7 +196,7 @@ def test_checked_contract_versions_advance_with_changed_byte_layouts() -> None:
     assert ALGO_VERSION == 8
     assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.GRAPH_STRUCTURE].version == 2
     assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.PREVIEW_TRACE].version == 3
-    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.RUNTIME_GRAPH_INPUT].version == 2
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.RUNTIME_GRAPH_INPUT].version == 3
 
 
 def test_preview_contract_checks_lineage_graph_dimensions_individually() -> None:

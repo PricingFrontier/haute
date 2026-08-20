@@ -49,6 +49,10 @@ claim. It retains structured evidence for all of these cases:
 - a 32 MiB source-signature control proving that the first observation performs
   one complete content hash while unchanged warm observations use the native
   revision proof at no more than 5% of the cold-hash median latency;
+- a small cached JSON apiInput through a downstream Polars `group_by`, proving
+  target-only preview strategy estimation, cache-key construction, and runtime
+  loading share one SHA-256 raw-source proof and make no generic runtime xxHash
+  call;
 - an uncached 20,000-row wide JSONL input projected to two fields, including
   the minimum cooperative-checkpoint count and proof that no cache was created;
 - the generated join-to-modelling scenario, whose demand is derived from the

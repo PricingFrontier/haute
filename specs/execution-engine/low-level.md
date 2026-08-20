@@ -313,13 +313,16 @@ schema through flat `columns` for a single port and through `frame_columns` for
 every configured multi-port frame; schema visibility never requires loading an
 unused parquet payload.
 
-The strategy planner's JSON footer estimator and the runtime loader both consult
-the JSON-shredding source-signature boundary. Their independently initiated calls
-share one process-wide SHA-256 proof only behind the same native identity/change
-revision; the planner therefore cannot introduce a second raw-source read before a
-cache hit. The first observation or any revision movement still performs the full
-content hash, and native-revision failure stays visible through the JSON component's
-structured conservative-fallback warning.
+The strategy planner's JSON footer estimator, runtime-input fingerprint, and runtime
+loader all consult the JSON-shredding source-signature boundary. Their independently
+initiated calls share one process-wide SHA-256 proof only behind the same native
+identity/change revision. The JSON `apiInput` runtime-file record therefore carries
+that SHA-256 proof directly and must not additionally call the generic xxHash runtime
+path boundary. This is a versioned `RUNTIME_GRAPH_INPUT` byte-layout change. The first
+observation or any revision movement still performs the full content hash, and
+native-revision failure stays visible through the JSON component's structured
+conservative-fallback warning. Non-JSON runtime paths continue through the generic
+stat-gated runtime-path fingerprint contract.
 
 An exact empty edge demand means that the consumer needs row cardinality but no
 user column (for example `select(pl.len())`). Polars cannot preserve non-zero row
