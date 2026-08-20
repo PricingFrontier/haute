@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest"
 
 import {
   cleanupFeatureDependencies,
-  featureRemovalUpdate,
   finalSelectedFeatureNames,
   roleColumns,
   type ModellingColumn,
@@ -123,33 +122,4 @@ describe("feature-selection transitions", () => {
     expect(cleanupFeatureDependencies({ custom: true }, ["age"])).toEqual({})
   })
 
-  it("cleans dependencies only for newly excluded final-selected features", () => {
-    const eligible = columns.filter(({ name }) => ["age", "region"].includes(name))
-    const config = {
-      terms: { age: { type: "linear" } },
-      monotone_constraints: { age: 1, region: -1 },
-      interactions: [{ factors: ["age", "region"] }],
-      custom: { retained: true },
-    }
-
-    expect(
-      featureRemovalUpdate(config, eligible, ["region"], "glm"),
-    ).toEqual({ exclude: ["region"] })
-    expect(
-      featureRemovalUpdate(config, eligible, ["age"], "glm"),
-    ).toEqual({
-      exclude: ["age"],
-      monotone_constraints: { region: -1 },
-      terms: {},
-      interactions: [],
-    })
-    expect(
-      featureRemovalUpdate(
-        { ...config, exclude: ["age"] },
-        eligible,
-        ["age", "region"],
-        "glm",
-      ),
-    ).toEqual({ exclude: ["age", "region"] })
-  })
 })

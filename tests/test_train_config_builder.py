@@ -80,6 +80,39 @@ class TestBuildTrainParams:
         assert params["var_power"] == 1.5
         assert params["offset"] == "log_exposure"
 
+    def test_glm_excluded_feature_settings_are_dormant_and_reversible(self):
+        config = {
+            "algorithm": "glm",
+            "exclude": ["age"],
+            "terms": {
+                "age": {"type": "linear"},
+                "region": {"type": "categorical"},
+            },
+            "interactions": [
+                {"factors": ["age", "region"], "include_main": True},
+                {"factors": ["region", "severity"], "include_main": False},
+            ],
+            "family": "poisson",
+        }
+
+        dormant = build_train_params(config)
+        assert dormant["terms"] == {"region": {"type": "categorical"}}
+        assert dormant["interactions"] == [
+            {"factors": ["region", "severity"], "include_main": False}
+        ]
+        assert config["terms"] == {
+            "age": {"type": "linear"},
+            "region": {"type": "categorical"},
+        }
+
+        restored = build_train_params({**config, "exclude": []})
+        assert restored["terms"] == config["terms"]
+        assert restored["interactions"] == config["interactions"]
+
+        explicitly_retained = build_train_params({**config, "feature_columns": ["age", "region"]})
+        assert explicitly_retained["terms"] == config["terms"]
+        assert explicitly_retained["interactions"] == config["interactions"]
+
     def test_glm_missing_keys_are_skipped_not_defaulted(self):
         config = {"algorithm": "glm", "family": "tweedie"}
         params = build_train_params(config)
@@ -197,6 +230,48 @@ class TestBuildTrainingJobKwargs:
         assert job.feature_columns == ["age"]
         assert job.fold_column == "fold"
         assert job.id_columns == ["policy_id"]
+
+    def test_excluded_monotone_constraints_are_dormant_and_reversible(self):
+        config = {
+            "target": "y",
+            "loss_function": "RMSE",
+            "evaluation": MINIMAL_EVALUATION,
+            "exclude": ["age"],
+            "monotone_constraints": {"age": 1, "risk": -1},
+        }
+
+        dormant = build_training_job_kwargs(config, data="d.parquet")
+        assert dormant["monotone_constraints"] == {"risk": -1}
+        assert config["monotone_constraints"] == {"age": 1, "risk": -1}
+
+        restored = build_training_job_kwargs({**config, "exclude": []}, data="d.parquet")
+        assert restored["monotone_constraints"] == {"age": 1, "risk": -1}
+
+        explicitly_retained = build_training_job_kwargs(
+            {**config, "feature_columns": ["age", "risk"]},
+            data="d.parquet",
+        )
+        assert explicitly_retained["monotone_constraints"] == {"age": 1, "risk": -1}
+
+        all_dormant = build_training_job_kwargs(
+            {**config, "exclude": ["age", "risk"]},
+            data="d.parquet",
+        )
+        assert all_dormant["monotone_constraints"] is None
+
+    def test_glm_rejects_when_every_configured_term_is_excluded(self):
+        with pytest.raises(TrainingConfigError, match="GLM config has no factors"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "poisson",
+                    "terms": {"age": {"type": "linear"}},
+                    "exclude": ["age"],
+                    "evaluation": MINIMAL_EVALUATION,
+                },
+                data="d.parquet",
+            )
 
     def test_empty_string_optionals_normalised_to_none(self):
         """Live training passes ``config.get(k) or None`` — empty strings from

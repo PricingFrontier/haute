@@ -140,6 +140,65 @@ def effective_metrics(config: Mapping[str, Any]) -> list[str]:
     return list(metrics)
 
 
+def _excluded_feature_names(config: Mapping[str, Any]) -> set[str]:
+    """Return exclusions that make feature settings dormant for this fit.
+
+    The established explicit ``feature_columns`` contract wins over a stale entry
+    in ``exclude``; keep that same precedence when projecting dependent settings.
+    """
+    raw = config.get("exclude")
+    if not isinstance(raw, list):
+        return set()
+    excluded = {name for name in raw if isinstance(name, str) and name}
+    explicit = config.get("feature_columns")
+    if isinstance(explicit, list):
+        excluded.difference_update(name for name in explicit if isinstance(name, str) and name)
+    return excluded
+
+
+def _effective_glm_params(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Project stored GLM config into the settings active for this fit.
+
+    Excluded feature settings remain in node config so the editor can restore them,
+    but they must not reach RustyStats while the feature is dormant.
+    """
+    params = {key: config[key] for key in GLM_CONFIG_KEYS if key in config}
+    excluded = _excluded_feature_names(config)
+    if not excluded:
+        return params
+
+    terms = params.get("terms")
+    if isinstance(terms, Mapping):
+        params["terms"] = {name: term for name, term in terms.items() if name not in excluded}
+
+    interactions = params.get("interactions")
+    if isinstance(interactions, list):
+        params["interactions"] = [
+            interaction
+            for interaction in interactions
+            if not (
+                isinstance(interaction, Mapping)
+                and isinstance(interaction.get("factors"), list)
+                and any(
+                    isinstance(factor, str) and factor in excluded
+                    for factor in interaction["factors"]
+                )
+            )
+        ]
+
+    return params
+
+
+def _effective_monotone_constraints(config: Mapping[str, Any]) -> Any:
+    """Omit dormant excluded constraints without mutating stored node config."""
+    constraints = config.get("monotone_constraints")
+    if not isinstance(constraints, Mapping):
+        return constraints or None
+    excluded = _excluded_feature_names(config)
+    effective = {name: direction for name, direction in constraints.items() if name not in excluded}
+    return effective or None
+
+
 def training_objective_issue(config: Mapping[str, Any]) -> str | None:
     """Return an actionable message when the training objective is incomplete.
 
@@ -153,7 +212,8 @@ def training_objective_issue(config: Mapping[str, Any]) -> str | None:
     """
     algorithm = str(config.get("algorithm", "catboost")).lower()
     if algorithm == "glm":
-        family = config.get("family")
+        effective_glm = _effective_glm_params(config)
+        family = effective_glm.get("family")
         if not family:
             return (
                 "GLM config has no family. Open the config panel and choose a "
@@ -176,16 +236,16 @@ def training_objective_issue(config: Mapping[str, Any]) -> str | None:
                 "not estimate theta, so an unset value would silently fit "
                 "at theta=1.0."
             )
-        terms = config.get("terms")
-        all_factors = config.get("all_factors")
+        terms = effective_glm.get("terms")
+        all_factors = effective_glm.get("all_factors")
         if not terms and not all_factors:
             return (
                 "GLM config has no factors. Add factors or tick 'All features' "
                 "— an empty factor set would silently auto-build a term for "
                 "every column."
             )
-        regularization = config.get("regularization")
-        l1_ratio = config.get("l1_ratio")
+        regularization = effective_glm.get("regularization")
+        l1_ratio = effective_glm.get("l1_ratio")
         if str(regularization or "").lower() == "elastic_net" and l1_ratio is None:
             return (
                 "Elastic-net regularisation has no L1 ratio. Set it explicitly "
@@ -221,7 +281,7 @@ def build_train_params(config: Mapping[str, Any]) -> dict[str, Any]:
     """
     algorithm = str(config.get("algorithm", "catboost")).lower()
     if algorithm == "glm":
-        return {key: config[key] for key in GLM_CONFIG_KEYS if key in config}
+        return _effective_glm_params(config)
     return {**(config.get("params") or {})}
 
 
@@ -306,7 +366,7 @@ def build_training_job_kwargs(
         "loss_function": config.get("loss_function") or None,
         "variance_power": variance_power,
         "offset": config.get("offset") or None,
-        "monotone_constraints": config.get("monotone_constraints") or None,
+        "monotone_constraints": _effective_monotone_constraints(config),
         "feature_weights": config.get("feature_weights") or None,
         "categorical_levels": config.get("categorical_levels") or None,
     }

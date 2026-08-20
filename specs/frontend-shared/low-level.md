@@ -576,8 +576,8 @@ The following remain shared-infrastructure-owned:
   backend truncation remains authoritative and bounded.
 
 `frontend/src/stores/useSettingsStore.ts` does not gain or remove a schema field: its section map is
-generic. The modelling feature/MLflow keys merely lose their consumers, any process-local entries
-become inert, and `modelling.monotonic` continues to use the existing API.
+generic. The modelling feature/MLflow/monotonic keys merely lose their consumers, and any
+process-local entries become inert.
 
 `frontend/src/stores/__tests__/useUIStore.test.ts` proves independent node memory.
 `frontend/src/types/__tests__/guards.contract.test.ts` and

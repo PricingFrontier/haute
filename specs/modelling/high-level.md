@@ -122,11 +122,14 @@ Out of scope, owned elsewhere:
   save/publish action. Its process supervisor enforces the timeout stamped at job
   creation; status polling is not required to trigger that timeout.
 - Monotonicity is the one additional cross-algorithm capability lever exposed in
-  modelling-node configuration. `monotone_constraints` maps selected numeric feature
+  modelling-node configuration. `monotone_constraints` maps configured numeric feature
   names to exactly `-1` (decreasing) or `1` (increasing); zero means absence and is
-  omitted by the editor. After the final CatBoost feature selection or GLM-term
+  omitted by the editor. Entries for features made dormant by `exclude` remain stored:
+  the shared config builder omits them from live training and script export, so re-including
+  the feature restores its prior direction. The established explicit `feature_columns` contract
+  still wins over a stale exclusion. After the final CatBoost feature selection or GLM-term
   narrowing is known, training rejects a non-object mapping, malformed names or
-  directions, constraints on absent/non-selected features, and constraints on
+  directions, active constraints on absent/non-selected features, and constraints on
   categorical, Boolean, temporal, or otherwise non-numeric features before splitting
   or fitting.
 

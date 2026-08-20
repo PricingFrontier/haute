@@ -94,10 +94,15 @@
   `variance_power`. GLM configuration is exclusively top-level
   (`terms`, `all_factors`, `family`, `link`, `interactions`, `regularization`, `alpha`,
   `l1_ratio`, `intercept`, `var_power`, `theta`, `offset`); `build_train_params`
-  projects those fields into the `TrainingJob.params` mapping consumed by RustyStats.
+  projects those fields into the `TrainingJob.params` mapping consumed by RustyStats. Terms and
+  interactions that reference a feature made dormant by `exclude` remain stored in node config
+  but are omitted from this effective mapping until that feature is re-included; explicit
+  `feature_columns` retains its established precedence over a stale exclusion.
 - **`monotone_constraints`** — the selected MOD-M09 product lever is a mapping from
-  final selected feature name to the exact integer `-1` or `1` (Boolean and zero are
-  invalid). `_validate_monotone_constraints` runs after GLM term narrowing and before
+  configured feature name to the exact integer `-1` or `1` (Boolean and zero are invalid).
+  `build_training_job_kwargs` removes entries named by `exclude` from the effective job mapping
+  without mutating stored config; an empty effective mapping becomes `None`.
+  `_validate_monotone_constraints` runs after GLM term narrowing and before
   `_split_data`; it requires a mapping with non-empty string keys, rejects names not in
   the final feature list, and accepts only canonical numeric contract dtypes
   (`Int64`/`Float64`). The resulting validated mapping is passed unchanged to
