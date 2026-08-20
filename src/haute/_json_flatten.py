@@ -303,6 +303,7 @@ def mirror_cache_to_committed(
                     working_dir,
                     table_specs,
                     cast(dict[str, Any], working_meta),
+                    retain_snapshots=False,
                 )
                 working_valid = probe_failure is None
         except (ApiInputSchemaError, OSError, pl.exceptions.PolarsError):
@@ -356,6 +357,7 @@ def mirror_cache_to_committed(
                     tmp_dir,
                     table_specs,
                     cast(dict[str, Any], working_meta),
+                    retain_snapshots=False,
                 )
                 # Recheck source identity after the copy and full staged probe,
                 # immediately before publish. A source edit during either step

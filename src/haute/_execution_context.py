@@ -1016,40 +1016,77 @@ class ExecutionContext:
         active_stage = _ActiveStage(name=name, node_id=node_id, rss_peak_bytes=rss_start)
         self._active_stage_stack().append(active_stage)
         current_context_token = _CURRENT_EXECUTION_CONTEXT.set(self)
-        failed = False
+        primary_error: BaseException | None = None
         skip_metric = False
         try:
             yield
         except BaseException as exc:
-            failed = True
+            primary_error = exc
             skip_metric = bool(
                 skip_metric_on_exception and isinstance(exc, skip_metric_on_exception)
             )
             raise
         finally:
             elapsed_ms = round((time.perf_counter() - t0) * 1000, 3)
-            rss_end = self.memory_sampler()
-            self._observe_rss(rss_end, stage=name, node_id=node_id)
-            self._active_stage_stack().pop()
-            _CURRENT_EXECUTION_CONTEXT.reset(current_context_token)
+            rss_end = active_stage.rss_peak_bytes
+            finalization_errors: list[BaseException] = []
+            try:
+                rss_end = self.memory_sampler()
+                self._observe_rss(rss_end, stage=name, node_id=node_id)
+            except BaseException as exc:
+                finalization_errors.append(exc)
+            try:
+                active_stack = self._active_stage_stack()
+                if not active_stack or active_stack[-1] is not active_stage:
+                    raise RuntimeError("execution stage stack is unbalanced")
+                active_stack.pop()
+            except BaseException as exc:
+                finalization_errors.append(exc)
+            try:
+                _CURRENT_EXECUTION_CONTEXT.reset(current_context_token)
+            except BaseException as exc:
+                finalization_errors.append(exc)
             if not skip_metric:
-                self.metrics.record(
-                    ExecutionStageMetric(
-                        name=name,
-                        elapsed_ms=elapsed_ms,
-                        operation=self.operation,
-                        profile=self.profile,
-                        node_id=node_id,
-                        job_id=self.job_id,
-                        rss_start_bytes=rss_start,
-                        rss_end_bytes=rss_end,
-                        rss_peak_bytes=active_stage.rss_peak_bytes,
-                        n_collects=active_stage.n_collects,
-                        n_checkpoints=active_stage.n_checkpoints,
+                try:
+                    self.metrics.record(
+                        ExecutionStageMetric(
+                            name=name,
+                            elapsed_ms=elapsed_ms,
+                            operation=self.operation,
+                            profile=self.profile,
+                            node_id=node_id,
+                            job_id=self.job_id,
+                            rss_start_bytes=rss_start,
+                            rss_end_bytes=rss_end,
+                            rss_peak_bytes=active_stage.rss_peak_bytes,
+                            n_collects=active_stage.n_collects,
+                            n_checkpoints=active_stage.n_checkpoints,
+                        )
                     )
-                )
-            if not failed:
+                except BaseException as exc:
+                    finalization_errors.append(exc)
+            if primary_error is None and not finalization_errors:
                 self._check_memory_budget(rss_bytes=rss_end)
+            if finalization_errors:
+                if primary_error is not None:
+                    primary_error.add_note(
+                        "\n".join(
+                            map(
+                                lambda error: (
+                                    "Execution stage finalization failed: "
+                                    f"{type(error).__name__}: {error}"
+                                ),
+                                finalization_errors,
+                            )
+                        )
+                    )
+                else:
+                    first_error, *later_errors = finalization_errors
+                    for error in later_errors:
+                        first_error.add_note(
+                            f"Execution stage finalization failed: {type(error).__name__}: {error}"
+                        )
+                    raise first_error
 
     def record_collect(self) -> None:
         """Record a Polars materialisation against active execution stages."""

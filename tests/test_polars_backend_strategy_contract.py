@@ -116,6 +116,42 @@ def test_bounded_diagnostic_collections_sort_before_truncating_and_retain_duplic
     )[:32]
 
 
+def test_truncated_boundaries_retain_each_present_boundary_kind() -> None:
+    boundaries = [
+        {
+            "topological_rank": index,
+            "node_id": f"materialise_{index:02d}",
+            "operator": "group_by",
+            "boundary_kind": "materialisation-boundary",
+        }
+        for index in range(33)
+    ]
+    boundaries.append(
+        {
+            "topological_rank": 99,
+            "node_id": "unprojected_source",
+            "operator": "apiInput",
+            "boundary_kind": "unprojected-streaming-boundary",
+        }
+    )
+
+    collection = BoundedDiagnosticCollection.from_items(
+        boundaries,
+        cap=32,
+        sort_key="boundaries",
+        retain_one_by="boundary_kind",
+    )
+
+    assert collection.state is DiagnosticDetailState.TRUNCATED
+    assert collection.total_count == 34
+    assert len(collection.items) == 32
+    assert collection.items[-1]["node_id"] == "unprojected_source"
+    assert {item["boundary_kind"] for item in collection.items} == {
+        "materialisation-boundary",
+        "unprojected-streaming-boundary",
+    }
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -721,11 +757,76 @@ def test_group_by_admits_only_an_estimated_materialisation_boundary(
     assert result.strategy is ExecutionStrategy.MATERIALISATION_BOUNDARY
     assert result.status is ExecutionStrategyStatus.BOUNDARY
     assert result.projection_plan.materialisation_boundaries == frozenset({"agg"})
+    assert result.projection_plan.opaque_boundaries == frozenset()
     assert result.diagnostic.estimated_peak_bytes == estimated
+    assert result.diagnostic.blocking_node_id == "agg"
+    assert result.diagnostic.blocking_operator == "group_by"
     group_by_boundary = next(
         item for item in result.diagnostic.boundaries.items if item["node_id"] == "agg"
     )
     assert group_by_boundary["boundary_kind"] == "materialisation-boundary"
+    assert result.diagnostic.boundaries.total_count == 1
+
+
+def test_group_by_strategy_keeps_an_unprovable_api_port_boundary_visible() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "api",
+                    "data": {
+                        "label": "Quote_Input_1",
+                        "nodeType": "apiInput",
+                        "config": {
+                            "path": "quotes.json",
+                            "tables": [
+                                {
+                                    "label": "claims",
+                                    "path": "$[:].claims[:]",
+                                    "emit": True,
+                                    "columns": [
+                                        {"name": "quote_id", "selected": True},
+                                    ],
+                                }
+                            ],
+                        },
+                    },
+                },
+                {
+                    "id": "claims_agg",
+                    "data": {
+                        "label": "claims_agg",
+                        "nodeType": "polars",
+                        "config": {
+                            "contract": "opaque",
+                            "code": "df = claims.group_by('missing').agg()",
+                        },
+                    },
+                },
+            ],
+            "edges": [make_edge("api", "claims_agg", source_handle="claims").model_dump()],
+        }
+    )
+
+    result = plan_execution_strategy(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="claims_agg",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        ),
+        execution_context=_context(ExecutionProfile.PREVIEW_EAGER),
+        materialisation_estimate=MaterialisationEstimate.available(10),
+    )
+
+    assert result.strategy is ExecutionStrategy.MATERIALISATION_BOUNDARY
+    assert result.diagnostic.blocking_node_id == "claims_agg"
+    assert result.diagnostic.boundaries.total_count == 2
+    assert {
+        (item["node_id"], item["boundary_kind"]) for item in result.diagnostic.boundaries.items
+    } == {
+        ("api", "unprojected-streaming-boundary"),
+        ("claims_agg", "materialisation-boundary"),
+    }
 
 
 def _single_source_graph(path: Path):

@@ -4273,7 +4273,8 @@ class TestEstimateRoute:
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
         assert status["status"] == "contract_error"
-        assert "Source projection references columns missing" in status["error_detail"]
+        assert "required by a projection contract are missing" in status["error_detail"]
+        assert "expected_margin" in status["error_detail"]
         assert "expected_margin" in status["error_detail"]
 
     @pytest.mark.usefixtures("_widen_sandbox_root")

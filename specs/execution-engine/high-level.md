@@ -163,6 +163,51 @@ running heavy work in a child process the parent can kill on timeout or memory l
   memory limit and headroom. Every other batch/bounded profile rejects before
   execution; missing admission, unavailable estimate, and excess headroom have
   distinct typed reason codes.
+- **A proven API-input demand is applied before payload loading.** For a target
+  lineage, the executor derives the JSON `apiInput` ports that actually feed the
+  prepared graph and, where projection analysis proves a concrete demand, the
+  columns required on each port. Demand identity is the complete incoming edge,
+  including its source and target handles; parallel ports between the same pair of
+  nodes never share or overwrite a demand. The runtime loader reads only those port
+  payloads and projects them before downstream materialisation. Generated/deploy
+  callers that request the source itself retain full-bundle semantics.
+- **Polars projection is one compositional lineage proof.** Opaque-contract Polars
+  code is parsed into a fail-closed linear frame-operation model rather than a set of
+  node-shape exceptions. Identity assignment and supported operations publish both
+  their exact output schema
+  when it is knowable and their backward input demand. Literal `select`,
+  `with_columns`, `rename`, `filter`, row-only slicing, `sort`, `unique`, `explode`,
+  closed `group_by(...).agg(...)`, and mechanically attributable joins therefore
+  compose before or after one another, including multiple joins and two ports from
+  one source node. A terminal literal select or closed aggregate supplies its own
+  exact output contract, so an unseeded preview can still be projected. Dynamic
+  selectors, unregistered expression helpers, helper/control-flow-dependent frame mutation,
+  unsupported join
+  semantics, unknown schemas needed for ownership, or ambiguous names preserve a
+  visible full-width boundary; the engine never guesses or suppresses that warning.
+- **Known full width is not an opaque boundary.** When a single-input node's
+  registered runtime contract is concrete, the planner carries an exact upstream
+  schema through the contract's passthrough-plus-produced-column transfer. A
+  terminal preview that intentionally returns every known column therefore records
+  that concrete set instead of the `None` sentinel reserved for unprovable width.
+  This includes preview-only identity nodes such as Model Training and Explore.
+  When the caller instead requests every column except a configured set (the normal
+  CatBoost feature-selection shape), that exact schema resolves the request to
+  `(schema - excluded) ∪ required metadata` before source loading. Target, weight,
+  offset, fold, identifier, and evaluation-split columns therefore survive even if
+  excluded from the feature matrix, while unused wide-source columns do not.
+  User-authored declarations do not manufacture this forward-schema proof, and
+  opaque contracts or ambiguous multi-input ownership retain the visible warning.
+- **Projection efficiency has an executable certification, not only plan tests.**
+  The maintained performance lane compares projected and full-width Parquet
+  collections in fresh processes over the same generated wide artifact, checks
+  semantic equality and exact selected width, and gates their incremental RSS
+  ratio. The end-to-end training scenario derives its demand from the same target,
+  metadata, and feature-menu exclusions used by the modelling service. Per-port
+  cached API input and direct JSONL fallback scenarios retain structured width,
+  checkpoint, row-count, output-size, and snapshot-lifecycle evidence. Larger 1m
+  and 10m row scales remain explicit certification options rather than ordinary
+  unit-test cost.
 - Route/service long-running operations create an admitted `ExecutionContext` bound
   to an `ExecutionProfile` (preview, lazy sink, training prep, optimiser setup, deploy
   live/batch, chunked map-reduce, ...). An admitted context enforces a resident-memory
@@ -240,6 +285,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
   periodic parquet checkpoints, wins there instead. Running one
   strategy for both would either make preview too slow (rebuild the whole plan per
   click) or make batch runs memory-unsafe (materialise everything eagerly).
+  A JSON source's SHA-256 content proof is likewise shared between preview planning,
+  source loading, and later requests only while the JSON-shredding component's strong
+  native revision remains unchanged. This removes repeat multi-gigabyte source reads
+  from a cache hit without weakening same-size/same-mtime rewrite detection.
 - **Parquet checkpointing only at structural fan-in/fan-out/join-feeder points.**
   Polars duplicates the upstream plan for every downstream branch of a lazy frame
   (a known upstream limitation — pola-rs/polars#24206); checkpointing *every* node

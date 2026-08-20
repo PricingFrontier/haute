@@ -197,7 +197,15 @@ def _select_columns(
             missing=sorted(missing),
             available=schema_columns,
         )
-    return lf.select([column for column in schema_columns if column in requested])
+    selected = [column for column in schema_columns if column in requested]
+    if not selected and not requested and schema_columns:
+        # An exact empty logical demand means "rows only". Polars collapses a
+        # zero-column select to zero rows, so retain one physical carrier. When
+        # selected_columns are being validated, choose the first of those so a
+        # later declarative selection cannot discard the carrier.
+        carrier_candidates = validation_requested or set(schema_columns)
+        selected = [next(column for column in schema_columns if column in carrier_candidates)]
+    return lf.select(selected)
 
 
 def _csv_header_columns(path: str) -> list[str]:
@@ -275,7 +283,11 @@ def _validate_csv_declared_schema_for_profile(
             )
 
     if _is_bounded_csv_profile(profile):
-        required = list(columns) if columns is not None else header
+        if columns == ():
+            carrier_candidates = set(validate_columns or header)
+            required = [next(column for column in header if column in carrier_candidates)]
+        else:
+            required = list(columns) if columns is not None else header
         missing_required = sorted(
             set(required) - set(schema_overrides or {}),
         )

@@ -87,6 +87,7 @@ from haute.projection import (
     ratebook_factor_required_columns,
     source_scan_projection,
     strict_projection_required,
+    with_api_input_port_projection_boundaries,
     with_materialisation_boundaries,
 )
 
@@ -264,6 +265,12 @@ def plan_execution_strategy(
             request.profile,
             required_columns_by_node,
         ),
+        relevant_edges=prepared.relevant_edges,
+    )
+    projection_plan = with_api_input_port_projection_boundaries(
+        projection_plan,
+        prepared.node_map,
+        prepared.relevant_edges,
     )
     group_by_operators = group_by_operators_by_node(prepared.order, prepared.node_map)
     resolved_estimate: MaterialisationEstimate | None
@@ -331,6 +338,7 @@ def plan_prepared_execution_strategy(
     execution_context: ExecutionContext | None = None,
     materialisation_estimate: MaterialisationEstimate | None = None,
     schema_only: bool = False,
+    relevant_edges: Iterable[GraphEdge] | None = None,
 ) -> ExecutionStrategyResult:
     """Plan projection/streaming strategy for an already prepared graph.
 
@@ -338,8 +346,10 @@ def plan_prepared_execution_strategy(
     collects a frame or invokes a sink. The group-by admission gate below
     bounds peak memory *during materialisation*; schema resolution
     materialises nothing, so under that declaration the gate is not evaluated
-    and no materialisation boundary is inserted.
+    and no materialisation boundary is inserted. When supplied, prepared
+    ``relevant_edges`` retain API-input port identity for projection diagnostics.
     """
+    prepared_relevant_edges = tuple(relevant_edges) if relevant_edges is not None else None
     required_columns_by_node = normalise_required_columns_by_node(
         required_columns_by_node,
         order,
@@ -350,7 +360,14 @@ def plan_prepared_execution_strategy(
         dict(node_map),
         required_columns_by_node=required_columns_by_node,
         strict_projection=strict_projection_required(profile, required_columns_by_node),
+        relevant_edges=prepared_relevant_edges,
     )
+    if prepared_relevant_edges is not None:
+        projection_plan = with_api_input_port_projection_boundaries(
+            projection_plan,
+            node_map,
+            prepared_relevant_edges,
+        )
     group_by_operators = group_by_operators_by_node(order, node_map)
     result = _finalise_execution_strategy(
         projection_plan,

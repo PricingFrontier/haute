@@ -199,7 +199,12 @@ if ($RunBackend) {
             if ($global:LASTEXITCODE -ne 0) {
                 throw "Critical coverage checker exited with code $global:LASTEXITCODE"
             }
-        } "Python tests or critical coverage"
+
+            & uv run python scripts/check_changed_coverage.py --coverage-json $CoverageJson
+            if ($global:LASTEXITCODE -ne 0) {
+                throw "Changed-code coverage checker exited with code $global:LASTEXITCODE"
+            }
+        } "Python tests or coverage gates"
 
         if ($RunPerf) {
             Invoke-Check "Python perf tests" {

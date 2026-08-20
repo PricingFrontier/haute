@@ -36,7 +36,7 @@ from haute.errors import (
     ContractMismatchError,
 )
 from haute.execution import plan_prepared_execution_strategy
-from haute.projection import _children_of, prepare_graph
+from haute.projection import ProjectionEdgeKey, _children_of, prepare_graph
 
 __all__ = [
     "BoundedChunkReducer",
@@ -131,7 +131,7 @@ class ChunkPlan:
     row_expansion_factor: int
     capabilities: Mapping[str, ChunkCapability]
     required_columns_by_node: Mapping[str, frozenset[str] | None]
-    edge_demands: Mapping[tuple[str, str], frozenset[str] | None]
+    edge_demands: Mapping[ProjectionEdgeKey, frozenset[str] | None]
     source: str = "batch"
     max_in_flight_chunks: int = 1
     serial: bool = True
@@ -1039,10 +1039,10 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
     active_fan_in_edge_demands = {
         edge: columns
         for edge, columns in plan.edge_demands.items()
-        if len(parents_of.get(edge[1], ())) > 1
+        if len(parents_of.get(edge.target, ())) > 1
         and not (
             request.start_frame is not None
-            and (edge[1] in plan.pre_chunk_node_ids or edge[1] == plan.chunk_start_node_id)
+            and (edge.target in plan.pre_chunk_node_ids or edge.target == plan.chunk_start_node_id)
         )
     }
     if active_fan_in_edge_demands:

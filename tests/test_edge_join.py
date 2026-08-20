@@ -11,6 +11,7 @@ import pytest
 from haute._config_validation import VALID_KEYS, warn_unrecognized_config_keys
 from haute._edge_join import (
     edge_join_config_to_decorator_kwargs,
+    execute_edge_join,
     resolve_edge_join_role_indices,
 )
 from haute._flatten import flatten_graph
@@ -68,6 +69,22 @@ def test_edge_join_node_type_and_decorator_contract() -> None:
     node = pipeline.nodes[0]
     assert node.config["_node_type"] is NodeType.EDGE_JOIN
     assert node.config["baseInput"] == "quotes"
+
+
+def test_execute_edge_join_collects_two_eager_frames_when_requested() -> None:
+    result = execute_edge_join(
+        pl.DataFrame({"id": [1, 2], "left": ["a", "b"]}),
+        pl.DataFrame({"id": [1], "right": [10]}),
+        {"how": "left", "on": ["id"]},
+        collect_eager=True,
+    )
+
+    assert isinstance(result, pl.DataFrame)
+    assert result.to_dict(as_series=False) == {
+        "id": [1, 2],
+        "left": ["a", "b"],
+        "right": [10, None],
+    }
 
 
 def test_edge_join_decorator_registers_original_function_like_other_nodes() -> None:

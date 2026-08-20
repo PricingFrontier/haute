@@ -14,6 +14,7 @@ from haute.projection import (
     UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME,
     AllExcept,
     ProjectionRequest,
+    api_input_port_columns_by_node,
     builder_required_output_columns_by_node,
     explain,
     model_score_required_output_columns,
@@ -29,6 +30,7 @@ from tests.conftest import make_edge, make_graph, make_output_config
 def test_projection_coverage_map_mentions_every_node_type() -> None:
     coverage = projection_rule_coverage_by_node_type()
     assert set(coverage) == set(NodeType)
+    assert "polars_column_lineage" in coverage[NodeType.POLARS].rules
     validate_projection_rule_coverage()
 
 
@@ -821,7 +823,7 @@ def test_single_parent_polars_with_columns_projects_expression_dependencies():
 
     assert projection.edge_demands[("source", "features")] == frozenset({"premium", "burn_cost"})
     assert projection.diagnostics.edge_reasons[("source", "features")].rule == (
-        "polars_expression_dependency"
+        "polars_column_lineage"
     )
 
 
@@ -876,7 +878,7 @@ def test_empty_declared_polars_contract_does_not_mask_expression_dependency():
     assert projection.needed_by_node["source"] == frozenset({"quote_id", "premium"})
     assert projection.edge_demands[("source", "features")] == frozenset({"quote_id", "premium"})
     assert projection.diagnostics.edge_reasons[("source", "features")].rule == (
-        "polars_expression_dependency"
+        "polars_column_lineage"
     )
 
 
@@ -1512,7 +1514,7 @@ def test_single_parent_polars_derived_column_filter_projects_expression_inputs()
     assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
     assert projection.needed_by_node["source"] == frozenset({"a", "b"})
     assert projection.diagnostics.edge_reasons[("source", "transform")].rule == (
-        "polars_expression_dependency"
+        "polars_column_lineage"
     )
 
 
@@ -1573,20 +1575,18 @@ def test_single_parent_polars_reference_before_production_still_demands_parent_c
     assert projection.edge_demands[("source", "transform")] == frozenset({"a", "m"})
 
 
-def test_single_parent_polars_helper_assignment_keeps_union_narrowing():
-    """Helper assignments stay on the union walk's established narrowing.
-
-    The ordered extractor cannot prove this shape (the helper hides a call),
-    so routing it anywhere but the union walk would widen ``{x, keep}`` to
-    full width - a forbidden narrowing regression.
-    """
+def test_single_parent_polars_helper_call_keeps_visible_full_width_boundary():
+    """A dynamic helper is not guessed through by the closed lineage model."""
     projection = _single_parent_polars_plan(
         "t = threshold()\ndf = df.filter(pl.col('x') > t)",
         ["x", "keep"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"x", "keep"})
-    assert projection.needed_by_node["source"] == frozenset({"x", "keep"})
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+    reason = projection.diagnostics.edge_reasons[("source", "transform")]
+    assert reason.rule == "polars_lineage_unsupported"
+    assert reason.details == {"reason": "dynamic_helper", "operation": None}
 
 
 def test_single_parent_polars_named_root_derive_select_narrows_parent_demand():
@@ -1607,13 +1607,8 @@ def test_single_parent_polars_named_root_derive_select_narrows_parent_demand():
 def test_single_parent_polars_select_subset_demands_inputs_of_every_select_output():
     """A select executes all of its output expressions, so all inputs are demanded.
 
-    PIN REVISION (2.12c): the 2.12b pin asserted the union walk's ``{a}``
-    here, which preserved a pre-existing loud failure - the node still
-    executes ``select('a', 'b', 'c')`` verbatim, so projecting ``b`` and
-    ``c`` off the parent edge broke a perfectly valid pipeline with
-    ``ColumnNotFoundError`` at execution.  Provable select-bearing chains
-    now route through the ordered extractor, which demands the inputs of
-    every select output, not just the downstream-demanded subset.
+    The lineage transfer therefore retains ``b`` and ``c`` even though the
+    downstream output only asks for ``a``.
     """
     projection = _single_parent_polars_plan(
         "df = df.select('a', 'b', 'c')",
@@ -1623,7 +1618,7 @@ def test_single_parent_polars_select_subset_demands_inputs_of_every_select_outpu
     assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c"})
     assert projection.needed_by_node["source"] == frozenset({"a", "b", "c"})
     assert projection.diagnostics.edge_reasons[("source", "transform")].rule == (
-        "polars_expression_dependency"
+        "polars_column_lineage"
     )
 
 
@@ -1693,15 +1688,11 @@ def test_single_parent_polars_chained_selects_demand_first_select_inputs():
     assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
 
 
-def test_single_parent_polars_unaliased_with_columns_then_select_keeps_union_demand():
+def test_single_parent_polars_unaliased_with_columns_tracks_structural_output_name():
     """Un-aliased ``with_columns`` outputs must never be demanded from the parent.
 
-    ``name.suffix`` creates ``a_2`` under a name the output walker cannot
-    see, so the ordered extractor must bail rather than let the in-node
-    created name survive backward propagation into the parent demand.  The
-    union walk's ``{a, b}`` keeps this today-working pipeline working: the
-    parent supplies ``a`` and ``b``, the node derives ``a_2`` and selects
-    it.
+    The structural naming transfer knows that ``name.suffix`` creates
+    ``a_2`` from ``a``, so only the real parent inputs ``a`` and ``b`` remain.
     """
     projection = _single_parent_polars_plan(
         "df = df.with_columns(pl.col('a').name.suffix('_2'))\ndf = df.select('a_2', 'b')",
@@ -1714,9 +1705,8 @@ def test_single_parent_polars_unaliased_with_columns_then_select_keeps_union_dem
 def test_single_parent_polars_unaliased_lit_then_select_excludes_literal_demand():
     """``pl.lit(1)`` creates the ``literal`` column in-node; never demand it.
 
-    Today-working pipeline: the parent supplies ``b``, the node creates
-    ``literal`` and selects it.  The ordered extractor cannot attribute the
-    un-aliased output name, so it bails to the union walk's ``{b}``.
+    The lineage model records Polars' unaliased literal output name, leaving
+    only the passthrough ``b`` as a parent dependency.
     """
     projection = _single_parent_polars_plan(
         "df = df.with_columns(pl.lit(1))\ndf = df.select('literal', 'b')",
@@ -1726,18 +1716,10 @@ def test_single_parent_polars_unaliased_lit_then_select_excludes_literal_demand(
     assert projection.edge_demands[("source", "transform")] == frozenset({"b"})
 
 
-def test_single_parent_polars_unaliased_sum_horizontal_then_select_excludes_sum_demand():
-    """``pl.sum_horizontal`` creates the ``sum`` column in-node; never demand it.
-
-    Today-working pipeline under demand ``{a, b, c}``: the union walk keeps
-    ``{a, b, c}``, the node computes ``sum`` from the supplied ``a``/``b``
-    and selects all four.  The ordered extractor cannot attribute the
-    un-aliased output name (and the column walker is blind to
-    ``sum_horizontal``'s string references), so it must bail rather than
-    demand ``sum`` from a parent that never had it.
-    """
+def test_single_parent_polars_unaliased_sum_horizontal_uses_first_input_name():
+    """Polars names an unaliased horizontal expression after its first input."""
     projection = _single_parent_polars_plan(
-        "df = df.with_columns(pl.sum_horizontal('a', 'b'))\ndf = df.select('sum', 'a', 'b', 'c')",
+        "df = df.with_columns(pl.sum_horizontal('a', 'b'))\ndf = df.select('a', 'b', 'c')",
         ["a", "b", "c"],
     )
 
@@ -1745,13 +1727,7 @@ def test_single_parent_polars_unaliased_sum_horizontal_then_select_excludes_sum_
 
 
 def test_single_parent_polars_select_of_derived_subset_demand_projects_expression_inputs():
-    """Select of a derived column keeps the ordered route under subset demand.
-
-    Lock-in: this shape already reached the ordered extractor via the
-    derived-reference predicate before 2.12c; the select-call trigger must
-    not change its result.  The select executes both outputs, so the
-    passthrough ``a`` stays demanded alongside the derive inputs.
-    """
+    """A derived select routes back to its inputs and executed passthrough."""
     projection = _single_parent_polars_plan(
         "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\ndf = df.select('m', 'a')",
         ["m"],
@@ -1763,9 +1739,8 @@ def test_single_parent_polars_select_of_derived_subset_demand_projects_expressio
 def test_single_parent_polars_select_demand_outside_outputs_keeps_full_width():
     """Demanding a column the select does not produce cannot be projected.
 
-    Lock-in: the ordered extractor bails (the demand is not satisfiable by
-    the select) and the union walk bails the same way, so full width lets
-    execution raise the genuine missing-column error.
+    The closed lineage proof rejects the unsatisfied output demand, so full
+    width preserves Polars' authoritative missing-column error.
     """
     projection = _single_parent_polars_plan(
         "df = df.select('a', 'b')",
@@ -1776,49 +1751,32 @@ def test_single_parent_polars_select_demand_outside_outputs_keeps_full_width():
     assert projection.needed_by_node["source"] is None
 
 
-def test_single_parent_polars_unprovable_select_keeps_loud_under_demand():
-    """An unprovable select shape keeps today's union-walk under-demand.
-
-    Deliberate: the branch makes the operation order unprovable, so the
-    ordered extractor bails and the union walk's demand-intersected select
-    handling is kept.  If the branch executes, the node fails loudly with
-    the pre-existing ``ColumnNotFoundError`` rather than the planner
-    widening shapes it cannot prove.
-    """
+def test_single_parent_polars_unprovable_select_fails_closed():
+    """Control-flow-dependent selection retains a visible full-width edge."""
     projection = _single_parent_polars_plan(
         "if True:\n    df = df.select('a', 'b', 'c')",
         ["a"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a"})
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+    reason = projection.diagnostics.edge_reasons[("source", "transform")]
+    assert reason.details == {"reason": "non_linear_control_flow", "operation": "If"}
 
 
-def test_single_parent_polars_unprovable_select_seq_keeps_union_result():
-    """An unprovable ``select_seq`` keeps the union walk's established result.
-
-    Deliberate: the ordered extractor bails on the branch and the union walk
-    does not model ``select_seq``, so the demand stays the filter input plus
-    the downstream demand - exactly today's behaviour.  If the branch
-    executes, the node fails loudly at execution; revising this requires a
-    sanctioned pin revision, never a silent union-walk change.
-    """
+def test_single_parent_polars_unprovable_select_seq_fails_closed():
+    """A supported operation inside control flow is still not guessed through."""
     projection = _single_parent_polars_plan(
         "df = df.filter(pl.col('x') > 0)\nif True:\n    df = df.select_seq('a', 'b', 'c')",
         ["a"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "x"})
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
 
 
-def test_single_parent_polars_unprovable_derived_reference_keeps_loud_over_demand():
-    """An unprovable derived-reference shape keeps today's behaviour.
-
-    Deliberate: the branch makes the operation order unprovable, so the
-    union walk's over-demand of the derived ``m`` is kept.  Execution then
-    fails loudly at the edge projection instead of the planner guessing a
-    narrowing it cannot prove, or widening shapes the union walk narrows
-    correctly today.
-    """
+def test_single_parent_polars_unprovable_derived_reference_fails_closed():
+    """Derived-column use behind control flow keeps the whole parent schema."""
     projection = _single_parent_polars_plan(
         "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\n"
         "if True:\n"
@@ -1826,10 +1784,11 @@ def test_single_parent_polars_unprovable_derived_reference_keeps_loud_over_deman
         ["m"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "m"})
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
 
 
-def test_single_parent_polars_group_by_uses_explicit_boundary_not_wrong_projection():
+def test_single_parent_polars_group_by_projects_literal_keys_and_aggregate_inputs():
     graph = make_graph(
         {
             "nodes": [
@@ -1878,11 +1837,427 @@ def test_single_parent_polars_group_by_uses_explicit_boundary_not_wrong_projecti
         )
     )
 
+    assert projection.edge_demands[("source", "agg")] == frozenset({"segment", "premium"})
+    assert projection.needed_by_node["source"] == frozenset({"segment", "premium"})
+    assert projection.diagnostics.edge_reasons[("source", "agg")].rule == ("polars_column_lineage")
+
+
+def test_single_parent_polars_group_by_with_dynamic_key_stays_full_width():
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": {"path": "data.parquet"},
+                    },
+                },
+                {
+                    "id": "agg",
+                    "data": {
+                        "label": "agg",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "key = 'segment'\n"
+                                "df = df.group_by(key).agg("
+                                "pl.col('premium').sum().alias('premium'))"
+                            )
+                        },
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": make_output_config(["premium"]),
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "agg").model_dump(),
+                make_edge("agg", "out").model_dump(),
+            ],
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
     assert projection.edge_demands.get(("source", "agg")) is None
-    assert projection.diagnostics.opaque_reasons["source"].rule in {
-        "opaque_demand",
-        "child_demand",
+    assert "source" in projection.opaque_boundaries
+
+
+def _api_join_select_fan_in_graph(*, join_key: str = '"quote_id"'):
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "api",
+                    "data": {
+                        "label": "Quote_Input_1",
+                        "nodeType": "apiInput",
+                        "config": {
+                            "contract": "opaque",
+                            "tables": [
+                                {
+                                    "label": "quote_info",
+                                    "path": "$[:]",
+                                    "emit": True,
+                                    "columns": [
+                                        {"name": name, "selected": True}
+                                        for name in (
+                                            "quote_id",
+                                            "cover_type",
+                                            "channel",
+                                            "date_of_birth",
+                                            "ncd_years",
+                                            "unused_quote_column",
+                                        )
+                                    ],
+                                },
+                                {
+                                    "label": "proposer_claims",
+                                    "path": "$[:].proposer.claims[:]",
+                                    "emit": True,
+                                    "columns": [
+                                        {"name": name, "selected": True}
+                                        for name in (
+                                            "quote_id",
+                                            "fault",
+                                            "amount_paid",
+                                            "unused_claim_column",
+                                        )
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                },
+                {
+                    "id": "claims_agg",
+                    "data": {
+                        "label": "claims_agg",
+                        "nodeType": "polars",
+                        "config": {
+                            "contract": "opaque",
+                            "code": (
+                                "df = proposer_claims\n"
+                                "df = df.group_by('quote_id').agg(\n"
+                                "    pl.len().alias('total_claims'),\n"
+                                "    (pl.col('fault') == 'at_fault').sum().alias("
+                                "'total_fault_claims'),\n"
+                                "    pl.col('amount_paid').sum().alias('total_incurred'),\n"
+                                ")"
+                            ),
+                        },
+                    },
+                },
+                {
+                    "id": "quote_features",
+                    "data": {
+                        "label": "quote_features",
+                        "nodeType": "polars",
+                        "config": {
+                            "contract": "opaque",
+                            "code": (
+                                "df = quote_info\n"
+                                f"df = claims_agg.join(quote_info, on={join_key})"
+                                ".with_columns(\n"
+                                "    (pl.col('date_of_birth').str.to_date('%Y-%m-%d')"
+                                ".dt.year() - 1970).alias('proposer_age')\n"
+                                ").select([\n"
+                                "    'quote_id', 'cover_type', 'channel', 'proposer_age',\n"
+                                "    'ncd_years', 'total_claims',\n"
+                                "])"
+                            ),
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("api", "claims_agg", source_handle="proposer_claims").model_dump(),
+                make_edge("api", "quote_features", source_handle="quote_info").model_dump(),
+                make_edge("claims_agg", "quote_features").model_dump(),
+            ],
+        }
+    )
+
+
+def test_api_input_port_projection_crosses_provable_polars_join_select_fan_in():
+    """Regression: quote_features must not make its wide quote_info port opaque."""
+    graph = _api_join_select_fan_in_graph()
+    prepared = prepare_graph(graph, "quote_features")
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="quote_features",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+    )
+
+    assert projection.needed_by_node["quote_features"] == frozenset(
+        {
+            "quote_id",
+            "cover_type",
+            "channel",
+            "proposer_age",
+            "ncd_years",
+            "total_claims",
+        }
+    )
+    assert projection.diagnostics.node_reasons["quote_features"].rule == ("polars_column_lineage")
+    assert projection.edge_demands[("claims_agg", "quote_features")] == frozenset(
+        {"quote_id", "total_claims"}
+    )
+    assert projection.edge_demands[("api", "quote_features")] == frozenset(
+        {"quote_id", "cover_type", "channel", "date_of_birth", "ncd_years"}
+    )
+    assert projection.diagnostics.edge_reasons[("api", "quote_features")].rule == (
+        "polars_column_lineage"
+    )
+    assert api_input_port_columns_by_node(
+        prepared.node_map,
+        prepared.relevant_edges,
+        projection,
+    ) == {
+        "api": {
+            "proposer_claims": frozenset({"quote_id", "fault", "amount_paid"}),
+            "quote_info": frozenset(
+                {"quote_id", "cover_type", "channel", "date_of_birth", "ncd_years"}
+            ),
+        }
     }
+    assert projection.opaque_boundaries == frozenset()
+
+
+def test_api_input_port_projection_resolves_join_rooted_at_seeded_df():
+    """Generated ``df = input`` boilerplate may be the join's live left operand."""
+    graph = _api_join_select_fan_in_graph()
+    graph.node_map["quote_features"].data.config["code"] = (
+        "df = quote_info\n"
+        "df = df.join(claims_agg, on='quote_id')"
+        ".with_columns(\n"
+        "    (pl.col('date_of_birth').str.to_date('%Y-%m-%d')"
+        ".dt.year() - 1970).alias('proposer_age')\n"
+        ").select([\n"
+        "    'quote_id', 'cover_type', 'channel', 'proposer_age',\n"
+        "    'ncd_years', 'total_claims',\n"
+        "])"
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="quote_features",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+    )
+
+    assert projection.edge_demands[("claims_agg", "quote_features")] == frozenset(
+        {"quote_id", "total_claims"}
+    )
+    assert projection.edge_demands[("api", "quote_features")] == frozenset(
+        {"quote_id", "cover_type", "channel", "date_of_birth", "ncd_years"}
+    )
+    assert "quote_features" not in projection.opaque_boundaries
+
+
+def test_api_input_port_projection_keeps_dynamic_polars_join_full_width():
+    graph = _api_join_select_fan_in_graph(join_key="join_key")
+    prepared = prepare_graph(graph, "quote_features")
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="quote_features",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+    )
+
+    assert ("api", "quote_features") not in projection.edge_demands
+    assert (
+        api_input_port_columns_by_node(
+            prepared.node_map,
+            prepared.relevant_edges,
+            projection,
+        )["api"]["quote_info"]
+        is None
+    )
+    assert "api" in projection.opaque_boundaries
+
+
+def test_polars_join_projection_rejects_a_coalesced_right_key_as_output():
+    """Default joins consume a distinct right key but do not emit it."""
+    graph = _api_join_select_fan_in_graph()
+    graph.node_map["quote_features"].data.config["code"] = (
+        "df = claims_agg.join("
+        "quote_info, left_on='quote_id', right_on='channel'"
+        ").select(['channel'])"
+    )
+    prepared = prepare_graph(graph, "quote_features")
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="quote_features",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+    )
+
+    assert ("api", "quote_features") not in projection.edge_demands
+    assert (
+        api_input_port_columns_by_node(
+            prepared.node_map,
+            prepared.relevant_edges,
+            projection,
+        )["api"]["quote_info"]
+        is None
+    )
+    assert "quote_features" in projection.opaque_boundaries
+
+
+def test_api_input_port_demands_union_consumers_and_project_exact_terminal_port():
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "api",
+                    "data": {
+                        "label": "api",
+                        "nodeType": "apiInput",
+                        "config": {
+                            "path": "data.json",
+                            "tables": [
+                                {
+                                    "label": "claims",
+                                    "path": "$[:].claims[:]",
+                                    "emit": True,
+                                    "columns": [
+                                        {"name": "quote_id", "selected": True},
+                                        {"name": "fault", "selected": True},
+                                    ],
+                                },
+                                {
+                                    "label": "quotes",
+                                    "path": "$[:]",
+                                    "emit": True,
+                                    "columns": [{"name": "postcode", "selected": True}],
+                                },
+                            ],
+                        },
+                    },
+                },
+                {
+                    "id": "by_quote",
+                    "data": {
+                        "label": "by_quote",
+                        "nodeType": "polars",
+                        "config": {"code": "df = claims.group_by('quote_id').agg()"},
+                    },
+                },
+                {
+                    "id": "by_fault",
+                    "data": {
+                        "label": "by_fault",
+                        "nodeType": "polars",
+                        "config": {"code": "df = claims.group_by('fault').agg()"},
+                    },
+                },
+                {
+                    "id": "opaque_quotes",
+                    "data": {
+                        "label": "opaque_quotes",
+                        "nodeType": "polars",
+                        "config": {"code": "df = quotes.sort('postcode')"},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("api", "by_quote", source_handle="claims").model_dump(),
+                make_edge("api", "by_fault", source_handle="claims").model_dump(),
+                make_edge("api", "opaque_quotes", source_handle="quotes").model_dump(),
+            ],
+        }
+    )
+    prepared = prepare_graph(graph)
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id=None,
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+    )
+
+    assert api_input_port_columns_by_node(
+        prepared.node_map,
+        prepared.relevant_edges,
+        projection,
+    ) == {
+        "api": {
+            "claims": frozenset({"quote_id", "fault"}),
+            "quotes": frozenset({"postcode"}),
+        }
+    }
+
+
+def test_api_input_port_demand_outside_declared_schema_stays_visible_and_full_width():
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "api",
+                    "data": {
+                        "label": "api",
+                        "nodeType": "apiInput",
+                        "config": {
+                            "path": "data.json",
+                            "tables": [
+                                {
+                                    "label": "claims",
+                                    "path": "$[:].claims[:]",
+                                    "emit": True,
+                                    "columns": [{"name": "quote_id", "selected": True}],
+                                }
+                            ],
+                        },
+                    },
+                },
+                {
+                    "id": "agg",
+                    "data": {
+                        "label": "agg",
+                        "nodeType": "polars",
+                        "config": {"code": "df = claims.group_by('missing').agg()"},
+                    },
+                },
+            ],
+            "edges": [make_edge("api", "agg", source_handle="claims").model_dump()],
+        }
+    )
+    prepared = prepare_graph(graph)
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id=None,
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+    )
+
+    assert projection.needed_by_node["api"] is None
+    assert "api" in projection.opaque_boundaries
+    assert api_input_port_columns_by_node(
+        prepared.node_map,
+        prepared.relevant_edges,
+        projection,
+    ) == {"api": {"claims": None}}
 
 
 def test_public_projection_plan_strict_profile_uses_boundary_for_unowned_fan_in():
@@ -2034,7 +2409,7 @@ def test_public_projection_plan_strict_profile_projects_simple_user_code():
     assert projection.needed_by_node["custom"] == frozenset({"a"})
     assert projection.needed_by_node["source"] == frozenset({"a"})
     assert projection.diagnostics.edge_reasons[("source", "custom")].rule == (
-        "polars_expression_dependency"
+        "polars_column_lineage"
     )
 
 

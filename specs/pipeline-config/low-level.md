@@ -313,7 +313,8 @@ forwards projection/profile fields; external-file resolution validates
 - **`ConfigError`** (`haute.errors`) — missing/unreadable/invalid-JSON sidecar; sidecar
   content failing schema validation; a folder-backed node type used without `config=`;
   `optimiserApply` misconfiguration (`artifact_path` set without `sourceType`); `modelScore`
-  misconfiguration (blank `run_id`/`registered_model` for the declared `sourceType`); project
+  misconfiguration (a non-string or unsupported `sourceType`, or a blank
+  `run_id`/`registered_model` for the declared source); project
   root not found, or found without a surrounding git repository.
 - **`ParseError`** (`haute.errors`) — `async def` node body; duplicate node function name;
   Explore-node topology violations (`_graph_shape.py`).

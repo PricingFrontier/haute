@@ -11,7 +11,6 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
-from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +135,216 @@ def test_multi_port_returns_dict_in_schema_order(tmp_path: Path) -> None:
     assert all(isinstance(frame, pl.LazyFrame) for frame in out.values())
     assert out["root"].collect()["id"].to_list() == [1]
     assert out["drivers"].collect()["age"].to_list() == [30, 40]
+
+
+def test_demand_scoped_cache_load_opens_only_requested_port_and_columns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _write(
+        tmp_path,
+        [{"id": 1, "premium": 12.5, "drivers": [{"age": 30, "name": "A"}]}],
+    )
+    cfg = {
+        "tables": [
+            _table(
+                "$[:]",
+                "root",
+                [
+                    _col("id", "$[:].id"),
+                    _col("premium", "$[:].premium", type_token="float"),
+                ],
+            ),
+            _table(
+                "$[:].drivers[:]",
+                "drivers",
+                [
+                    _col("age", "$[:].drivers[:].age"),
+                    _col("name", "$[:].drivers[:].name", type_token="str"),
+                ],
+            ),
+        ]
+    }
+    _build(data, cfg)
+    cache_dir = _json_cache_dir(str(data), "working")
+    parquet_reads = {"root": 0, "drivers": 0}
+    real_read_bytes = Path.read_bytes
+
+    def _count_payload_reads(path: Path) -> bytes:
+        if path.suffix == ".parquet" and path.parent == cache_dir:
+            parquet_reads[path.stem] += 1
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", _count_payload_reads)
+
+    out = load_v2_api_source(
+        str(data),
+        cfg,
+        port_columns={"drivers": frozenset({"age"})},
+    )
+
+    assert list(out) == ["drivers"]
+    assert out["drivers"].collect().to_dict(as_series=False) == {"age": [30]}
+    assert "PROJECT 1/2 COLUMNS" in out["drivers"].explain(optimized=True)
+    # Signature verification is chunked and Polars receives a stable file path;
+    # no requested Parquet is materialised through Path.read_bytes().
+    assert parquet_reads == {"root": 0, "drivers": 0}
+
+
+def test_demand_scoped_direct_shred_builds_only_requested_port_and_columns(
+    tmp_path: Path,
+) -> None:
+    data = _write(
+        tmp_path,
+        [{"id": 1, "premium": 12.5, "drivers": [{"age": 30, "name": "A"}]}],
+    )
+    cfg = {
+        "tables": [
+            _table(
+                "$[:]",
+                "root",
+                [
+                    _col("id", "$[:].id"),
+                    _col("premium", "$[:].premium", type_token="float"),
+                ],
+            ),
+            _table(
+                "$[:].drivers[:]",
+                "drivers",
+                [
+                    _col("age", "$[:].drivers[:].age"),
+                    _col("name", "$[:].drivers[:].name", type_token="str"),
+                ],
+            ),
+        ]
+    }
+
+    out = load_v2_api_source(
+        str(data),
+        cfg,
+        port_columns={"drivers": frozenset({"age"})},
+    )
+
+    assert list(out) == ["drivers"]
+    assert out["drivers"].collect().to_dict(as_series=False) == {"age": [30]}
+    assert not _json_cache_dir(str(data), "working").exists()
+    assert not _json_cache_dir(str(data), "committed").exists()
+
+
+def test_cardinality_only_demand_retains_one_declared_carrier_column(
+    tmp_path: Path,
+) -> None:
+    data = _write(
+        tmp_path,
+        [
+            {"id": 1, "drivers": [{"age": 30}, {"age": 40}]},
+            {"id": 2, "drivers": [{"age": 50}]},
+        ],
+    )
+    cfg = {
+        "tables": [
+            _table("$[:]", "root", [_col("id", "$[:].id")]),
+            _table(
+                "$[:].drivers[:]",
+                "drivers",
+                [
+                    _col("age", "$[:].drivers[:].age"),
+                    _col("name", "$[:].drivers[:].name", type_token="str"),
+                ],
+            ),
+        ]
+    }
+    _build(data, cfg)
+
+    frame = load_v2_api_source(
+        str(data),
+        cfg,
+        port_columns={"drivers": frozenset()},
+    )["drivers"]
+
+    assert frame.collect_schema().names() == ["age"]
+    assert "PROJECT 1/2 COLUMNS" in frame.explain(optimized=True)
+    assert frame.select(pl.len().alias("row_count")).collect().item() == 3
+
+
+def test_demand_scoped_load_none_selects_the_complete_port(tmp_path: Path) -> None:
+    data = _write(tmp_path, [{"id": 1, "drivers": [{"age": 30, "name": "A"}]}])
+    cfg = {
+        "tables": [
+            _table("$[:]", "root", [_col("id", "$[:].id")]),
+            _table(
+                "$[:].drivers[:]",
+                "drivers",
+                [
+                    _col("age", "$[:].drivers[:].age"),
+                    _col("name", "$[:].drivers[:].name", type_token="str"),
+                ],
+            ),
+        ]
+    }
+
+    frame = load_v2_api_source(str(data), cfg, port_columns={"drivers": None})["drivers"]
+
+    assert frame.collect().to_dict(as_series=False) == {"age": [30], "name": ["A"]}
+
+
+def test_cache_snapshot_vanishing_during_probe_falls_back_to_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _write(tmp_path, [{"id": 1}, {"id": 2}])
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+    _build(data, cfg)
+
+    monkeypatch.setattr(
+        "haute._json_shred._snapshot_cache_artifact",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("vanished")),
+    )
+
+    frame = load_v2_api_source(str(data), cfg)["root"]
+    assert frame.collect().to_dict(as_series=False) == {"id": [1, 2]}
+
+
+@pytest.mark.parametrize(
+    ("port_columns", "message"),
+    [
+        ({}, "non-empty"),
+        ({"missing": None}, "unknown"),
+        ({"drivers": frozenset({1})}, "non-empty string"),
+        ({"drivers": frozenset({"missing"})}, "missing"),
+    ],
+)
+def test_demand_scoped_load_rejects_invalid_port_or_column_demands(
+    tmp_path: Path,
+    port_columns: dict[str, Any],
+    message: str,
+) -> None:
+    data = _write(tmp_path, [{"id": 1, "drivers": [{"age": 30}]}])
+    cfg = {
+        "tables": [
+            _table("$[:]", "root", [_col("id", "$[:].id")]),
+            _table("$[:].drivers[:]", "drivers", [_col("age", "$[:].drivers[:].age")]),
+        ]
+    }
+
+    with pytest.raises(ValueError, match=message):
+        load_v2_api_source(str(data), cfg, port_columns=port_columns)
+
+
+def test_demand_scoped_load_rejects_non_set_port_columns_value(tmp_path: Path) -> None:
+    data = _write(tmp_path, [{"id": 1, "drivers": [{"age": 30}]}])
+    cfg = {
+        "tables": [
+            _table("$[:]", "root", [_col("id", "$[:].id")]),
+            _table("$[:].drivers[:]", "drivers", [_col("age", "$[:].drivers[:].age")]),
+        ]
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"port_columns\['drivers'\] must be None or a frozenset/set",
+    ):
+        load_v2_api_source(str(data), cfg, port_columns={"drivers": ["age"]})
 
 
 def test_no_emit_tables_raises(tmp_path: Path) -> None:
@@ -362,7 +571,7 @@ def test_derived_lazy_plan_keeps_snapshot_after_original_is_released(
         assert collected.to_dict(as_series=False) == expected
 
 
-def test_cache_probe_reads_each_parquet_once_and_collects_from_snapshot(
+def test_cache_probe_keeps_parquets_file_backed_and_collects_from_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -379,41 +588,130 @@ def test_cache_probe_reads_each_parquet_once_and_collects_from_snapshot(
         cache_dir / "root.parquet",
         cache_dir / "drivers.parquet",
     }
-    opens = dict.fromkeys(cache_paths, 0)
-    reads = dict.fromkeys(cache_paths, 0)
     scan_sources: list[Any] = []
-    real_open = Path.open
     real_read_bytes = Path.read_bytes
     real_scan_parquet = pl.scan_parquet
 
-    def _count_cache_opens(path: Path, *args: Any, **kwargs: Any) -> Any:
-        mode = args[0] if args else kwargs.get("mode", "r")
-        if path in opens and "r" in mode:
-            opens[path] += 1
-        return real_open(path, *args, **kwargs)
-
-    def _count_cache_reads(path: Path) -> bytes:
-        if path in reads:
-            reads[path] += 1
+    def _reject_parquet_read_bytes(path: Path) -> bytes:
+        if path.suffix == ".parquet":
+            pytest.fail(f"Parquet payload was materialised with read_bytes(): {path}")
         return real_read_bytes(path)
 
     def _capture_scan_source(source: Any, *args: Any, **kwargs: Any) -> pl.LazyFrame:
         scan_sources.append(source)
         return real_scan_parquet(source, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", _count_cache_opens)
-    monkeypatch.setattr(Path, "read_bytes", _count_cache_reads)
+    monkeypatch.setattr(Path, "read_bytes", _reject_parquet_read_bytes)
     monkeypatch.setattr("haute._json_shred.pl.scan_parquet", _capture_scan_source)
 
     frames = load_v2_api_source(str(data), cfg)
+    assert clear_json_cache(str(data), layer="working") is True
     for _ in range(2):
         assert frames["root"].collect().to_dict(as_series=False) == {"id": [1]}
         assert frames["drivers"].collect().to_dict(as_series=False) == {"age": [30, 40]}
 
-    assert opens == dict.fromkeys(cache_paths, 1)
-    assert reads == dict.fromkeys(cache_paths, 1)
     assert len(scan_sources) == len(cache_paths)
-    assert all(isinstance(source, BytesIO) for source in scan_sources)
+    assert all(isinstance(source, Path) for source in scan_sources)
+    assert all(source not in cache_paths for source in scan_sources)
+    assert all(".runtime-snapshots" in source.parts for source in scan_sources)
+
+
+def test_cache_probe_stream_copy_fallback_stays_file_backed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _write(tmp_path, [{"id": 1}, {"id": 2}])
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+    _build(data, cfg)
+    scan_sources: list[Any] = []
+    real_read_bytes = Path.read_bytes
+    real_scan_parquet = pl.scan_parquet
+
+    def _hard_link_unavailable(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("hard links unavailable")
+
+    def _reject_parquet_read_bytes(path: Path) -> bytes:
+        if path.suffix == ".parquet":
+            pytest.fail(f"Parquet payload was materialised with read_bytes(): {path}")
+        return real_read_bytes(path)
+
+    def _capture_scan_source(source: Any, *args: Any, **kwargs: Any) -> pl.LazyFrame:
+        scan_sources.append(source)
+        return real_scan_parquet(source, *args, **kwargs)
+
+    monkeypatch.setattr("haute._json_shred.os.link", _hard_link_unavailable)
+    monkeypatch.setattr(Path, "read_bytes", _reject_parquet_read_bytes)
+    monkeypatch.setattr("haute._json_shred.pl.scan_parquet", _capture_scan_source)
+
+    frame = load_v2_api_source(str(data), cfg)["root"]
+    assert clear_json_cache(str(data), layer="working") is True
+
+    assert frame.collect().to_dict(as_series=False) == {"id": [1, 2]}
+    assert len(scan_sources) == 1
+    assert isinstance(scan_sources[0], Path)
+    assert scan_sources[0].exists()
+    assert list(scan_sources[0].parent.glob("*.tmp")) == []
+
+
+def test_managed_executions_share_then_release_file_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _write(tmp_path, [{"id": 1}, {"id": 2}])
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+    _build(data, cfg)
+    scan_sources: list[Path] = []
+    real_scan_parquet = pl.scan_parquet
+
+    class _Context:
+        def __init__(self) -> None:
+            self.cleanups: list[Any] = []
+
+        def add_cleanup(self, callback: Any) -> None:
+            self.cleanups.append(callback)
+
+        def release(self) -> None:
+            for callback in reversed(self.cleanups):
+                callback()
+            self.cleanups.clear()
+
+    first_context = _Context()
+    second_context = _Context()
+    active_context = [first_context]
+
+    def _capture_scan_source(source: Any, *args: Any, **kwargs: Any) -> pl.LazyFrame:
+        assert isinstance(source, Path)
+        scan_sources.append(source)
+        return real_scan_parquet(source, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "haute._json_shred.current_execution_context",
+        lambda: active_context[0],
+    )
+    monkeypatch.setattr("haute._json_shred.pl.scan_parquet", _capture_scan_source)
+
+    first_frame = load_v2_api_source(str(data), cfg)["root"]
+    active_context[0] = second_context
+    second_frame = load_v2_api_source(str(data), cfg)["root"]
+
+    assert scan_sources[0] == scan_sources[1]
+    assert first_frame.collect().to_dict(as_series=False) == {"id": [1, 2]}
+    first_context.release()
+    assert scan_sources[0].exists()
+    assert second_frame.collect().to_dict(as_series=False) == {"id": [1, 2]}
+    second_context.release()
+    assert not scan_sources[0].exists()
+
+
+def test_validity_probe_releases_unowned_file_snapshot(tmp_path: Path) -> None:
+    data = _write(tmp_path, [{"id": 1}])
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+    _build(data, cfg)
+    cache_dir = _json_cache_dir(str(data), "working")
+
+    assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is True
+    snapshot_parent = cache_dir.parent / ".runtime-snapshots"
+    assert list(snapshot_parent.rglob("*.parquet")) == []
 
 
 def test_data_page_corrupt_working_cache_falls_through_to_committed(

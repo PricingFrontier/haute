@@ -65,11 +65,10 @@ def _polars(nid: str) -> GraphNode:
 
     Production ``projection_contract`` softens an *empty* POLARS node to a
     concrete passthrough — an empty transform is just ``return df``.  To model
-    the genuinely opaque case the planner cannot statically analyse, the node
-    must carry user code so ``_has_user_polars_code`` flips ``True`` and the
-    registered opaque contract takes effect.
+    a genuinely opaque case, use control-flow-dependent frame mutation rather
+    than the now-provable ``df = df`` identity program.
     """
-    return _node(nid, NodeType.POLARS, code="df = df  # opaque user transform")
+    return _node(nid, NodeType.POLARS, code="if True:\n    df = df")
 
 
 def _passthrough(nid: str) -> GraphNode:
@@ -299,12 +298,13 @@ class TestLinearChain:
 class TestDiamond:
     """Diamond = fan-out then fan-in.  Pins the union rule at the source."""
 
-    def test_simple_diamond_source_is_union_of_branches(self):
+    def test_unowned_diamond_fan_in_stays_full_width(self):
         """Source → (branch_a | branch_b) → sink.
 
-        Source's needed_cols = union of the two branches' contributions.
-        Branches are explicit passthroughs so their contribution is
-        exactly ``needed[branch]``.
+        A generic passthrough contract says which columns the sink needs, but
+        does not say which parent owns them. Broadcasting the same demand to
+        both parents can request columns that do not exist, so the ambiguity
+        must remain a visible full-width boundary.
         """
         nodes = [
             _source("src"),
@@ -327,13 +327,11 @@ class TestDiamond:
 
         needed = _needed_by_node(order, children_of, node_map)
 
-        # Every passthrough just carries the OUTPUT fields through.
         assert needed["out"] == {"x", "y", "z"}
         assert needed["sink"] == {"x", "y", "z"}
-        assert needed["a"] == {"x", "y", "z"}
-        assert needed["b"] == {"x", "y", "z"}
-        # src sees the union from a + b (which is the same set).
-        assert needed["src"] == {"x", "y", "z"}
+        assert needed["a"] is None
+        assert needed["b"] is None
+        assert needed["src"] is None
 
     def test_diamond_distinct_branch_needs_union_at_source(self):
         """Each branch consumes different columns; source gets the union.
@@ -1611,17 +1609,15 @@ class TestForwardPassReferenceAlgorithmBenchmark:
         order, _children_of, _node_map = _build_realistic_200_node_graph()
         assert len(order) >= 200, f"benchmark graph has only {len(order)} nodes"
 
-    def test_equivalence_on_200_node_graph(self):
-        """The forward pass must match the backward pass bit-for-bit on
+    def test_reference_equivalence_on_200_node_graph(self):
+        """The reference forward pass must match the reference backward pass on
         the benchmark graph — otherwise the speed comparison is between
         two algorithms that aren't solving the same problem.
         """
         order, children_of, node_map = _build_realistic_200_node_graph()
         backward = _reference_backward_pass(order, children_of, node_map)
         forward = _reference_forward_pass(order, children_of, node_map)
-        production = _needed_by_node(order, children_of, node_map)
         assert backward == forward
-        assert backward == production
 
     def test_forward_pass_reference_algorithm_reduces_contract_work(
         self,
@@ -1693,7 +1689,13 @@ class TestProductionComputeNeededColumnsBenchmark:
                 lambda: _needed_by_node(order, children_of, node_map),
             )
 
-        assert backward == production
+        # The reference algorithms predate edge-ownership hardening and
+        # broadcast generic fan-in demand. Production deliberately retains
+        # full-width boundaries at the unowned fan-ins instead.
+        assert backward != production
+        assert production["s1_merge"] is None
+        assert production["s2_agg_a0"] is None
+        assert production["src"] is None
         assert production_calls <= len(order)
         assert backward_calls >= production_calls * 2, (
             "production prepared projection planning did not cut contract lookups "

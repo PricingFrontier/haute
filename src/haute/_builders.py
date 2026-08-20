@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import polars as pl
 
@@ -169,6 +169,7 @@ class NodeBuildContext:
     source: str | None
     upstream_ids: list[str] | None = None
     required_output_columns: frozenset[str] | set[str] | None = None
+    required_output_columns_by_port: Mapping[str, frozenset[str] | None] | None = None
     reuse_loaded_model: bool = False
     execution_profile: str | None = None
     #: Per-incoming-edge source *port* names — ``edge.sourceHandle or
@@ -406,6 +407,9 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     def api_source_fn(
         _profile: str | None = ctx.execution_profile,
         _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+        _port_columns: Mapping[str, frozenset[str] | None] | None = (
+            ctx.required_output_columns_by_port
+        ),
         _config: dict[str, Any] = config,
         _node_id: str = ctx.node.id,
     ) -> _Frame | dict[str, _Frame]:
@@ -416,6 +420,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             profile=_profile,
             columns=projected.columns,
             validate_columns=projected.validate_columns,
+            port_columns=_port_columns,
         )
 
     return ctx.func_name, api_source_fn, True
@@ -900,6 +905,45 @@ def _build_modelling(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
 
 
+def _validated_model_score_source(
+    config: Mapping[str, Any],
+) -> tuple[Literal["", "run", "registered"], str, str]:
+    """Return model-source fields, rejecting half-configured source choices."""
+    from haute.errors import ConfigError
+
+    source_type = config.get("sourceType", "")
+    if not isinstance(source_type, str):
+        raise ConfigError(
+            "modelScore node has a non-string sourceType",
+            sourceType=source_type,
+        )
+    if source_type not in ("", "run", "registered"):
+        raise ConfigError(
+            "modelScore node has an unsupported sourceType",
+            sourceType=source_type,
+            supported_source_types=["run", "registered"],
+        )
+    validated_source_type = cast(Literal["", "run", "registered"], source_type)
+    raw_run_id = config.get("run_id", "")
+    raw_registered_model = config.get("registered_model", "")
+    run_id = raw_run_id if isinstance(raw_run_id, str) else ""
+    registered_model = raw_registered_model if isinstance(raw_registered_model, str) else ""
+    if source_type == "run" and not run_id:
+        raise ConfigError(
+            "modelScore node is misconfigured: sourceType='run' but run_id is empty",
+            sourceType=source_type,
+            missing_field="run_id",
+        )
+    if source_type == "registered" and not registered_model:
+        raise ConfigError(
+            "modelScore node is misconfigured: sourceType='registered' but "
+            "registered_model is empty",
+            sourceType=source_type,
+            missing_field="registered_model",
+        )
+    return validated_source_type, run_id, registered_model
+
+
 def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
     out = config.get("output_column", "prediction")
     produced = {out} if out else {"prediction"}
@@ -944,7 +988,7 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
         return produced, set(deploy_inputs) if deploy_inputs else None
 
     # Feature columns are only known after loading the model.
-    source_type = config.get("sourceType", "")
+    source_type, run_id, registered_model = _validated_model_score_source(config)
     if not source_type:
         # Distinguish two sub-cases cleanly:
         #
@@ -963,27 +1007,6 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
         if "output_column" in config:
             return produced, set()
         return produced, None
-
-    # Validate required fields per sourceType on the spot; a blank
-    # required field is a config bug, not a reason to silently fall
-    # back to opaque-column detection and confuse downstream nodes.
-    from haute.errors import ConfigError
-
-    run_id = config.get("run_id", "")
-    registered_model = config.get("registered_model", "")
-    if source_type == "run" and not run_id:
-        raise ConfigError(
-            "modelScore node is misconfigured: sourceType='run' but run_id is empty",
-            sourceType=source_type,
-            missing_field="run_id",
-        )
-    if source_type == "registered" and not registered_model:
-        raise ConfigError(
-            "modelScore node is misconfigured: sourceType='registered' but "
-            "registered_model is empty",
-            sourceType=source_type,
-            missing_field="registered_model",
-        )
 
     # With required config present, attempt the MLflow load.  Failures here
     # (run not found, artifact missing, MLflow down) propagate — the old
@@ -1034,18 +1057,13 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # Default to "" (not "run") — empty sourceType means the node is
     # unconfigured and should passthrough.  Codegen and score_from_config
     # default to "run" because they only execute for configured nodes.
-    source_type = config.get("sourceType", "")
-    _run_id = config.get("run_id", "")
+    source_type, _run_id, _registered_model = _validated_model_score_source(config)
     _artifact_path = config.get("artifact_path", "")
-    _registered_model = config.get("registered_model", "")
     _task = config.get("task", "regression")
 
-    # If no model source configured, passthrough
-    if (
-        not source_type
-        or (source_type == "run" and not _run_id)
-        or (source_type == "registered" and not _registered_model)
-    ):
+    # A genuinely untouched node remains a preview passthrough. Once a source
+    # type is selected, the validator above requires its identifying field.
+    if not source_type:
         return ctx.func_name, _passthrough_fn, False
 
     from haute._model_scorer import ModelScorer
@@ -1066,7 +1084,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         source_type=source_type,
         run_id=_run_id,
         artifact_path=_artifact_path,
-        registered_model=config.get("registered_model", ""),
+        registered_model=_registered_model,
         version=config.get("version", "latest"),
         task=_task,
         output_col=config.get("output_column", "prediction"),
@@ -1196,6 +1214,7 @@ def _build_node_fn(
     preamble_ns: dict[str, Any] | None = None,
     source: str | None = None,
     required_output_columns: frozenset[str] | set[str] | None = None,
+    required_output_columns_by_port: Mapping[str, frozenset[str] | None] | None = None,
     reuse_loaded_model: bool = False,
     execution_profile: str | None = None,
 ) -> tuple[str, Callable, bool]:
@@ -1233,6 +1252,7 @@ def _build_node_fn(
         preamble_ns=preamble_ns,
         source=source,
         required_output_columns=required_output_columns,
+        required_output_columns_by_port=required_output_columns_by_port,
         reuse_loaded_model=reuse_loaded_model,
         execution_profile=execution_profile,
     )

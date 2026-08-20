@@ -205,6 +205,8 @@ jobs:
     needs: backend-coverage-shard
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -235,6 +237,15 @@ jobs:
       - name: Enforce per-file critical coverage gates
         if: always() && steps.combine.outcome == 'success'
         run: uv run python scripts/check_critical_coverage.py --coverage-json .cache/coverage/backend.json
+
+      - name: Enforce 100% changed execution-code coverage
+        if: always() && steps.combine.outcome == 'success'
+        env:
+          HAUTE_COVERAGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: >
+          uv run python scripts/check_changed_coverage.py
+          --coverage-json .cache/coverage/backend.json
+          --base-ref "$HAUTE_COVERAGE_BASE"
 
   # Compatibility: the full suite (no coverage) on the supported version edges.
   backend-compat:

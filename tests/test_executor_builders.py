@@ -745,10 +745,12 @@ class TestBuildApiInput:
             profile=None,
             columns=None,
             validate_columns=None,
+            port_columns=None,
         ):
             captured["profile"] = profile
             captured["columns"] = columns
             captured["validate_columns"] = validate_columns
+            captured["port_columns"] = port_columns
             return pl.DataFrame({"quote_id": ["001"], "premium_raw": [10.5]}).lazy()
 
         monkeypatch.setattr(
@@ -779,6 +781,7 @@ class TestBuildApiInput:
 
         assert captured["columns"] == frozenset({"quote_id", "premium_raw"})
         assert captured["validate_columns"] == frozenset({"quote_id", "premium_raw", "unused"})
+        assert captured["port_columns"] is None
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_source_projection_avoids_ambiguous_rename_pushdown(
@@ -797,9 +800,11 @@ class TestBuildApiInput:
             profile=None,
             columns=None,
             validate_columns=None,
+            port_columns=None,
         ):
             captured["columns"] = columns
             captured["validate_columns"] = validate_columns
+            captured["port_columns"] = port_columns
             return pl.DataFrame({"a": [1], "b": [2]}).lazy()
 
         monkeypatch.setattr(
@@ -829,6 +834,7 @@ class TestBuildApiInput:
 
         assert captured["columns"] is None
         assert captured["validate_columns"] == frozenset()
+        assert captured["port_columns"] is None
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_source_projection_validates_stale_selected_columns(

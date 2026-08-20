@@ -31,6 +31,33 @@ For a focused preview/trace run with tighter local budgets:
 uv run python scripts/run_perf_suite.py --pytest-target tests/performance/test_preview_trace_perf.py --max-total-seconds 120 --max-test-seconds 30
 ```
 
+Run the execution-engine certification added for projection hardening with:
+
+```powershell
+uv run python scripts/run_perf_suite.py --output-dir .cache/perf/execution-engine-certification --pytest-target tests/performance/test_execution_engine_certification.py --pytest-target tests/performance/test_polars_scale_scenario.py --max-total-seconds 300 --max-test-seconds 120
+```
+
+That certificate is comparative rather than a machine-specific throughput
+claim. It retains structured evidence for all of these cases:
+
+- an isolated 50,000-row, 256-column Parquet control and four-column projected
+  scan, with semantic parity, an explicit physical `PROJECT 4/256 COLUMNS`
+  plan, and a bounded incremental-RSS ratio plus fixed sampler allowance;
+- a two-port cached API input where the selected port physically scans two
+  columns from a wide Parquet cache and its leased runtime snapshot disappears
+  when the execution context is released;
+- a 32 MiB source-signature control proving that the first observation performs
+  one complete content hash while unchanged warm observations use the native
+  revision proof at no more than 5% of the cold-hash median latency;
+- an uncached 20,000-row wide JSONL input projected to two fields, including
+  the minimum cooperative-checkpoint count and proof that no cache was created;
+- the generated join-to-modelling scenario, whose demand is derived from the
+  real target/weight/id/exclude menu configuration before planning.
+
+The certificate is valid only when the runner exits successfully and writes
+`perf-report.json`, `perf-report.md`, and `perf-junit.xml` containing every
+named scenario. Preserve that output directory with the change evidence.
+
 Run the cache-identity decision gates independently with:
 
 ```powershell

@@ -1321,6 +1321,89 @@ def test_execution_context_records_stage_metric_with_rss_delta() -> None:
     assert metric.elapsed_ms >= 0
 
 
+def test_stage_exit_sampler_failure_preserves_primary_error_and_restores_context() -> None:
+    from haute._execution_context import current_execution_context
+
+    samples = iter([100])
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: next(samples),
+    )
+    primary = RuntimeError("primary execution failure")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        with context.stage("collect", node_id="node-1"):
+            raise primary
+
+    assert exc_info.value is primary
+    assert current_execution_context() is None
+    assert any(
+        "Execution stage finalization failed: StopIteration" in note
+        for note in getattr(primary, "__notes__", ())
+    )
+
+
+def test_stage_exit_sampler_failure_without_primary_remains_loud_and_restores_context() -> None:
+    from haute._execution_context import current_execution_context
+
+    calls = 0
+
+    def sample_memory() -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 100
+        raise OSError("RSS sampling failed")
+
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=sample_memory,
+    )
+
+    with pytest.raises(OSError, match="RSS sampling failed"):
+        with context.stage("collect", node_id="node-1"):
+            pass
+
+    assert current_execution_context() is None
+
+
+def test_stage_exit_reports_every_internal_finalization_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stage cleanup is fail-loud and preserves later failures as notes."""
+    from haute import _execution_context as context_mod
+
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: 100,
+    )
+
+    class BrokenContextVar:
+        def set(self, value: object) -> object:
+            assert value is context
+            return object()
+
+        def reset(self, _token: object) -> None:
+            raise LookupError("context reset failed")
+
+    def fail_record(_metric: ExecutionStageMetric) -> None:
+        raise ValueError("metric recording failed")
+
+    monkeypatch.setattr(context_mod, "_CURRENT_EXECUTION_CONTEXT", BrokenContextVar())
+    monkeypatch.setattr(context.metrics, "record", fail_record)
+
+    with pytest.raises(RuntimeError, match="stage stack is unbalanced") as exc_info:
+        with context.stage("collect", node_id="node-1"):
+            context._active_stage_stack().clear()
+
+    notes = getattr(exc_info.value, "__notes__", ())
+    assert any("LookupError: context reset failed" in note for note in notes)
+    assert any("ValueError: metric recording failed" in note for note in notes)
+
+
 def test_execution_context_stage_tracks_peak_rss_from_checkpoints() -> None:
     samples = iter([100, 160, 120])
     context = ExecutionContext(
@@ -3906,12 +3989,19 @@ def test_deploy_score_graph_final_collect_uses_streaming_engine() -> None:
         memory_sampler=lambda: 1_000,
     )
 
+    class BackgroundQuery:
+        def fetch(self):
+            return pl.DataFrame({"score": [0.25]})
+
+        def cancel(self):
+            raise AssertionError("completed query must not be cancelled")
+
     class CollectingLazy:
         collect_kwargs = None
 
         def collect(self, **kwargs):
             self.collect_kwargs = kwargs
-            return pl.DataFrame({"score": [0.25]})
+            return BackgroundQuery()
 
     output_lf = CollectingLazy()
 
@@ -3929,7 +4019,7 @@ def test_deploy_score_graph_final_collect_uses_streaming_engine() -> None:
         )
 
     assert result["score"].to_list() == [0.25]
-    assert output_lf.collect_kwargs == {"engine": "streaming"}
+    assert output_lf.collect_kwargs == {"engine": "streaming", "background": True}
     assert any(metric.name == "deploy_collect" for metric in context.metrics.snapshot())
 
 
@@ -3989,7 +4079,7 @@ def test_deploy_score_graph_final_collect_preserves_execution_context_memory_err
             )
 
     assert exc_info.value is memory_error
-    assert output_lf.collect_kwargs == {"engine": "streaming"}
+    assert output_lf.collect_kwargs == {"engine": "streaming", "background": True}
     metrics = context.metrics.snapshot()
     assert [metric.name for metric in metrics] == ["deploy_collect"]
     assert metrics[0].node_id == "output"
@@ -4035,6 +4125,69 @@ def test_deploy_score_graph_creates_admitted_context_when_omitted(monkeypatch) -
     assert context.memory_limit_bytes == 96 * 1024 * 1024
     assert context.admission is not None
     assert context.admission.rss_at_admission_bytes == 13_000
+
+
+def test_deploy_score_graph_retain_admission_requires_caller_owned_context() -> None:
+    from haute.deploy._scorer import score_graph
+
+    with pytest.raises(ValueError, match="caller-owned execution_context"):
+        score_graph(
+            make_graph({"nodes": [], "edges": []}),
+            pl.DataFrame({"feature": [1]}),
+            input_node_ids=[],
+            output_node_id="output",
+            retain_admission_on_success=True,
+        )
+
+
+def test_deploy_score_graph_can_retain_admission_after_success() -> None:
+    from haute.deploy._scorer import score_graph
+
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "output",
+                    "data": {
+                        "label": "output",
+                        "nodeType": NodeType.OUTPUT.value,
+                        "config": make_output_config([]),
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    released: list[str] = []
+    context = ExecutionContext(
+        operation="deploy",
+        profile=ExecutionProfile.DEPLOY_LIVE,
+        memory_sampler=lambda: 1,
+        admission_release=lambda: released.append("released"),
+    )
+
+    with patch(
+        "haute.deploy._scorer.execute_lazy_graph",
+        return_value=(
+            {"output": pl.DataFrame({"score": [0.25]}).lazy()},
+            ["output"],
+            {},
+            {},
+        ),
+    ):
+        result = score_graph(
+            graph,
+            pl.DataFrame({"feature": [1]}),
+            input_node_ids=[],
+            output_node_id="output",
+            execution_context=context,
+            retain_admission_on_success=True,
+        )
+
+    assert result["score"].to_list() == [0.25]
+    assert released == []
+    context.release_admission()
+    assert released == ["released"]
 
 
 def test_admit_deploy_execution_rejects_negative_row_count() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from unittest.mock import patch
 
 import polars as pl
@@ -1845,6 +1846,42 @@ def json_api_input(tmp_path, monkeypatch):
 
 class TestJsonApiInputPortMetadata:
     """A v2 cache has no whole-node summary; each emitted table has its own."""
+
+    def test_planning_and_loading_share_one_unchanged_source_content_proof(
+        self,
+        json_api_input,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Planner metadata and runtime loading must not hash one raw file twice."""
+
+        import haute._json_shred as shred_mod
+        from haute._json_shred import load_v2_api_source
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        data_path, config, _cache_dir, _committed_dir = json_api_input
+        node = _make_source_node(node_type="apiInput", config=config)
+        shred_mod._clear_data_file_signature_memo()
+        real_hash_file = shred_mod._hash_file
+        raw_hashes = 0
+
+        def counting_hash_file(path):
+            nonlocal raw_hashes
+            if Path(path).resolve() == data_path.resolve():
+                raw_hashes += 1
+            return real_hash_file(path)
+
+        monkeypatch.setattr(shred_mod, "_hash_file", counting_hash_file)
+
+        metadata = _json_api_input_port_metadata(node, "policies")
+        frames = load_v2_api_source(
+            str(data_path),
+            config,
+            port_columns={"policies": {"policy_id"}},
+        )
+
+        assert metadata is not None and metadata.row_count == 2
+        assert frames["policies"].collect()["policy_id"].to_list() == [1, 2]
+        assert raw_hashes == 1
 
     def test_each_emitted_table_is_sized_from_its_own_parquet(self, json_api_input) -> None:
         from haute._ram_estimate import _json_api_input_port_metadata

@@ -138,8 +138,12 @@ columns to output paths, and passes the field frames to `_assemble_document`. Th
 validator parses every distinct active path once, sorts the parsed destinations, and
 uses adjacent comparisons for duplicate/prefix and array-prefix-chain conflicts
 (`O(n log n)`, not an `O(n²)` pair scan). It also rejects divergent emit prefixes
-within one source frame before any frame collection. Frames emitting at the same array prefix are
-planned by `_plan_cut` and `_execute_plan`; residual shared fields are full bag-
+within one source frame before any frame collection. `_assemble_document` resolves
+the lazy schemas before data materialisation, groups frames by their emit prefix, and
+collects the final plan for each emitting prefix exactly once. In particular, frames
+emitting at the same array prefix are not first collected individually and then read
+again for their join. They are planned by `_plan_cut` and `_execute_plan` before the
+single collection; residual shared fields are full bag-
 joined (fan-out is retained), cut/disconnected groups are diagonal-concatenated as
 partials, and the prefix-tree builder nests child arrays by ancestor values without
 joining siblings. Relation-key guards examine a row only when that row actually
@@ -150,9 +154,18 @@ empty-list elements already present inside arrays are retained.
 `render_output_document` applies that same pruning to the collected Polars shape.
 
 `assemble_output_from_config` uses the same assembler and constructs the final
-document frame with `infer_schema_length=None`. The assembled response is already
-bounded and materialised, so complete-schema inference preserves late non-null nested
-fields without another upstream read.
+document frame with `infer_schema_length=None`. OUTPUT is an inherent terminal
+materialisation boundary because its public result is a complete nested Python/JSON
+document. Every lazy collection therefore routes through the shared streaming helper;
+when an `ExecutionContext` is active it uses native-query cancellation polling, records
+the collection, and enforces admitted RSS limits. DataFrame-to-row conversion and the
+Python nesting loops checkpoint at a fixed row interval so cancellation and memory
+pressure remain observable after native collection. The assembler retains the one
+materialised row representation it needs, rather than also retaining a second
+`DataFrame.to_dicts()` copy. A standalone generated pipeline with no active admitted
+context still receives streaming Polars execution but does not acquire an implicit
+memory guarantee. Complete-schema inference preserves late non-null nested fields
+without another upstream read.
 
 **Build a structured-input cache** — `build_per_port_cache(data_path, v2_config, cache_dir)`:
 1. `validate_v2_schema(v2_config)` up front.
@@ -165,8 +178,9 @@ fields without another upstream read.
    *before* reading records.
 5. Still under the lock, build the shared `_EmittingTableSpec`s once
    (`table_is_emitting` plus parsed table/column paths); the walk and parquet frame
-   construction consume the same specs. The signature is shared for this logical
-   operation rather than rehashed by each consumer.
+   construction consume the same specs. The signature is shared by this logical
+   operation and, while its strong revision remains unchanged, by later planner and
+   loader operations in the same process.
 6. Create the unique sibling staging temp dir. It precedes the shred because
    parallel workers write their parts into it; a failure anywhere below removes
    the whole directory.
@@ -266,35 +280,69 @@ the skip/conservation accounting.
    shape values and are rejected or counted rather than stringified.
 5. Returns `{table_label: [row_dict, ...]}`.
 
-**Runtime load** — `load_v2_api_source(data_path, config)`:
+**Runtime load** — `load_v2_api_source(data_path, config, *, port_columns=None)`:
 1. Validate the v2 schema at this public boundary, then require at least one
    emit-true table and at least one selected column (the latter two raise
    `RuntimeError` with an actionable configuration message otherwise).
-2. Construct `_EmittingTableSpec`s once: parsed table position plus every selected
+2. Construct complete `_EmittingTableSpec`s once: parsed table position plus every selected
    column's name, leaf, declared type, and source array depth. Cache build, direct
    shred, strict frame construction, and ancestor broadcast all consume these specs.
+   `port_columns=None` selects every emitting port at full width. Otherwise it is a
+   non-empty mapping from emitting label to either `None` (that port at full width)
+   or a subset of its declared selected column names. An empty subset is the
+   row-cardinality-only demand and physically retains the first declared column as a
+   carrier because Polars cannot represent a non-zero-row, zero-column frame. Invalid
+   labels or columns fail before cache access. Projected specs retain schema order.
 3. Try `working/`, then `committed/`. Read each candidate manifest once. It must
    pass fingerprint/source validity; contain exactly one entry per emitting label;
    derive the expected filename from that label; and carry a strict size/SHA-256
    signature. Missing, duplicate, malformed, or unsigned entries invalidate
-   the candidate. Each compressed parquet is then read exactly once; size and
-   SHA-256 are verified over that exact payload, and the same bytes seed
-   `scan_parquet(BytesIO(payload))`. `LazyFrame.collect_schema()` must expose the
-   exact declared name-to-Polars-dtype mapping. Physical parquet column order is
-   irrelevant: an accepted lazy frame is projected into the current declared order.
+   the candidate. A full-bundle call opens every payload; a demand-scoped call
+   opens only requested payloads, because an unused payload is not observable in
+   that execution. `_snapshot_cache_artifact` first pins each requested path into
+   a private process-owned snapshot directory using a same-filesystem hard link.
+   Creating the link is atomic with respect to Haute's rename-based publisher: it
+   either captures the manifest's generation or a different generation whose
+   signature is then rejected. Filesystems without hard-link support use a
+   bounded streaming-copy fallback. Size and SHA-256 are verified from the pinned
+   artifact in fixed-size chunks; the complete compressed payload is never held in
+   a Python `bytes`/`BytesIO` object. Identical content reuses one process snapshot,
+   and `scan_parquet(snapshot_path)` remains a native file-backed scan. Before any
+   requested-column selection, `LazyFrame.collect_schema()` must expose the port's
+   complete exact declared name-to-Polars-dtype mapping. Physical parquet column
+   order is irrelevant: an accepted lazy frame is projected into requested-column
+   order as inherited from the current declaration. On collection Polars can read
+   the footer and selected column chunks without reading unrelated column payloads
+   into memory. Integrity validation still streams across the complete compressed
+   artifact once; this is storage I/O, not full-payload memory retention.
    An unusable candidate is logged and the next candidate is tried.
 
-   The in-memory compressed source pins the returned frame and derived lazy plans to
-   this generation across a later rebuild, mirror, or explicit clear. Decode and
-   projection remain lazy, but the full compressed file is read/copied up front and
-   retained while those plans live. The directory swap keeps disk bounded to one
-   generation; active-plan memory scales with their compressed source payloads.
+   The private snapshot path pins the returned frame and every derived lazy plan to
+   this generation across a later rebuild, mirror, or explicit clear. Runtime
+   snapshots are content-addressed within each process and reference-counted across
+   concurrent managed executions; the current `ExecutionContext` releases its paths
+   only after collection and all execution cleanup finish. A direct caller without a
+   managed context conservatively pins its paths until orderly process exit because
+   a public LazyFrame may outlive its original reference and Haute cannot safely
+   infer when all derived plans are gone. A hard-linked current generation consumes
+   no duplicate blocks; a replaced generation remains only until its last managed
+   execution releases it (or process exit for an unmanaged caller). The
+   streaming-copy fallback uses equivalent temporary disk space. Validation-only
+   probes take a transient reference and remove an otherwise-unowned snapshot as soon
+   as footer validation finishes. An ungraceful process termination may leave a
+   private snapshot directory for later operational cleanup, but never makes that
+   directory part of cache discovery or serving.
 4. If no cache can serve, `_shred_data_file` streams `_iter_records` into
-   `shred_to_buffers`, preserving skip accounting and root conservation, then
-   `_buffer_to_frame(...).lazy()` creates each in-memory frame. This path does not
-   write, refresh, delete, or promote either cache layer.
-5. Return a `{label: LazyFrame}` dict in schema order for every eligible-frame
-   count from one up — there is no bare-frame single-table special case, so a
+   `shred_to_buffers` with only the requested projected specs, preserving skip
+   accounting and root conservation for those tables, then
+   `_buffer_to_frame(...).lazy()` creates each requested in-memory frame. With an
+   active `ExecutionContext`, the Python record/row walk and buffer-to-series
+   conversion checkpoint before, after, and at a fixed work interval so cancellation
+   and admitted RSS limits remain observable while buffers grow. This path is still an explicitly materialising
+   fallback, not a constant-memory stream, and it does not write, refresh, delete,
+   or promote either cache layer.
+5. Return a `{label: LazyFrame}` dict in schema order for every requested frame
+   (or every eligible frame when `port_columns` is absent) — there is no bare-frame single-table special case, so a
    sole frame routes through the same per-edge `source_port` resolution as
    eight frames (see [execution-engine](../execution-engine/low-level.md)
    `_pick_source_frame`), and adding or removing a sibling frame never changes
@@ -406,8 +454,12 @@ incomplete-schema trade-off.
 
 **Edge-join execution** — `execute_edge_join(base, join, config,
 collect_eager=False)`: normalises both frames to `LazyFrame`, calls
-`base_lf.join(join_lf, **build_edge_join_kwargs(config))`, and only `.collect()`s
-if both original inputs were eager *and* `collect_eager` is set.
+`base_lf.join(join_lf, **build_edge_join_kwargs(config))`, and returns a concrete
+`DataFrame` only when both original inputs were eager and `collect_eager` is set. That eager
+compatibility path materialises through the shared `execution_collect` seam with
+Polars' order-compatible automatic engine. An active execution context records the
+boundary and polls the native query for cancellation and RSS enforcement; no
+production edge-join path calls bare Polars `.collect()`.
 `build_edge_join_kwargs` accepts exactly `inner`, `left`, `right`, `full`,
 `semi`, `anti`, and `cross`. `cross` rejects `on`, `leftOn`, and `rightOn`;
 every other mode requires either a non-empty `on` value or non-empty,
@@ -442,19 +494,34 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   raise on its own for the first case; a raw JSON int/bool successfully
   reinterprets as a days-since-epoch offset for the second) — both checked
   explicitly in `_buffer_to_frame` before the Polars build.
-- **Cache validity always re-hashes** the data file's content; there is no
-  `mtime_ns`-only short-circuit, so a same-size/same-mtime content rewrite is never
-  served as fresh. It also re-hashes every manifest-declared parquet before the
-  footer schema probe, so a footer-readable data-page corruption is rejected.
+- **Cache validity remains content-authoritative.** The data file's complete
+  SHA-256 is memoised only behind a strong native revision comprising file
+  identity, length, last-write value, and an unforgeable-by-normal-write change
+  token (`ctime_ns` on POSIX; `FILE_BASIC_INFO.ChangeTime` plus
+  `FILE_ID_INFO` on Windows). Size/mtime alone never authorise reuse, so an
+  in-place same-size rewrite followed by an mtime restore and an atomic
+  same-stat replacement both force a new hash. If the strong token cannot be
+  read, that observation re-hashes instead of falling back to a weaker gate.
+  Every manifest-declared parquet is still re-hashed before the footer schema
+  probe, so a footer-readable data-page corruption is rejected.
 - **The build lock is process-local**, keyed by the normcased resolved cache-dir
   path; concurrent builds of *different* caches never block each other.
   `_BUILD_LOCKS` weakly retains inactive identities, while the caller strongly owns
   its lock throughout table-spec construction, source signing, validation, staging,
   and publish. Cache directories are resolved from the selected project process CWD,
   not relative to the source data file.
-- **Source signatures are operation-scoped**: one logical load/build shares its
-  `(size, mtime, SHA-256)` result, while a separately initiated operation hashes
-  again. No `(size, mtime)`-only cross-operation shortcut exists.
+- **Source signatures use bounded process-wide proof reuse**: canonical paths
+  key at most 256 immutable signature entries; per-path single-flight prevents a
+  concurrent hashing herd. The strong revision is read before and after hashing
+  and the result is published only if it held. Revision movement fails the
+  signature operation, loader failure publishes nothing, least-recently-used
+  entries are evicted at the bound, and a forked child starts with an empty cache
+  and fresh locks. Callers receive independent signature mappings so mutation of
+  one result cannot poison later validity checks. When strong revision support is
+  unavailable, each call hashes and retains no cross-operation proof.
+  That conservative path emits a bounded once-per-path structured warning naming
+  `full_source_hash_per_operation`, so a platform capability problem remains
+  operationally visible instead of presenting only as unexplained preview latency.
 - **Inference accepts only expressible keys** through
   `_jsonpath.is_identifier_name`; non-ASCII/non-identifier keys, dots, and the
   reserved `$value` sentinel fail before a schema is returned. Config sidecars use
@@ -570,6 +637,10 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
   `quote_info`, innermost-key labelling, symmetric collision qualification
   (`a_items`/`b_items`), the numeric-suffix backstop, and the closure
   property that inferred output passes `validate_v2_schema` unchanged.
+- `tests/test_json_shred_runtime_snapshots.py` — process-local Parquet snapshot
+  ownership and failure-path coverage: inherited-PID isolation, reference and
+  process-pin transitions, cleanup-registration rollback, partial-copy cleanup,
+  missing-file release, and hard-link signature failure.
 - `tests/test_json_cache_routes.py` — API integration tests for the build/status/
   delete HTTP routes (404/422/504 shapes, progress reporting).
 - `tests/test_json_cache_integrity.py` — the Wave-2 build/validity/load rework end

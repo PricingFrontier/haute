@@ -7,6 +7,7 @@ from typing import Any
 
 import polars as pl
 
+from haute._polars_utils import execution_collect
 from haute._types import EDGE_JOIN_CONFIG_KEYS
 from haute.errors import ConfigError
 
@@ -320,7 +321,7 @@ def execute_edge_join(
         join_lf = join.lazy()
     result = base_lf.join(join_lf, **build_edge_join_kwargs(config))
     if collect_eager and not base_is_lazy and not join_is_lazy:
-        return result.collect()
+        return execution_collect(result)
     return result
 
 

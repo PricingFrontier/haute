@@ -19,10 +19,11 @@ On-disk layout in a cache directory (working/<hash>/ or committed/<hash>/):
   tables: [{label, parquet, row_count, column_count, columns,
   content_signature}, ...]}``.
 
-At runtime each compressed parquet is read exactly once, its signature is
-verified over those exact bytes, and Polars scans an in-memory compressed
-snapshot. LazyFrames and their clones therefore keep the selected generation
-even if the single on-disk generation is later rebuilt, mirrored, or cleared.
+At runtime each requested compressed parquet is pinned into a private,
+process-owned file snapshot, its signature is verified in bounded chunks, and
+Polars scans that stable path. LazyFrames and their clones therefore keep the
+selected generation even if the visible cache is later rebuilt, mirrored, or
+cleared, without retaining the complete compressed payload in Python memory.
 
 The per-frame schema for each parquet is also embedded in the parquet's
 footer key-value metadata (DUAL_CACHE.md §3) so each file is
@@ -32,14 +33,17 @@ schema-wrote-but-data-failed race.
 
 from __future__ import annotations
 
+import atexit
+import ctypes
 import hashlib
-import io
 import os
 import shutil
+import stat as stat_module
 import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import islice
@@ -67,6 +71,7 @@ from haute._api_input_schema import (
 from haute._api_input_schema import (
     sanitise_label_for_filesystem as _sanitise_label,
 )
+from haute._execution_context import ExecutionContext, current_execution_context
 from haute._jsonpath import is_identifier_name
 from haute._logging import get_logger
 
@@ -74,6 +79,32 @@ logger = get_logger(component="json_shred")
 
 
 _META_FILENAME = "meta.json"
+_SHRED_EXECUTION_CHECKPOINT_ROWS = 1_024
+
+
+@dataclass(slots=True)
+class _ShredExecutionProgress:
+    """Bound cancellation/RSS-check distance in Python shred materialisation."""
+
+    execution_context: ExecutionContext | None
+    work_since_checkpoint: int = 0
+
+    @classmethod
+    def current(cls) -> _ShredExecutionProgress:
+        return cls(current_execution_context())
+
+    def checkpoint(self, label: str) -> None:
+        if self.execution_context is not None:
+            self.execution_context.checkpoint(label=label)
+        self.work_since_checkpoint = 0
+
+    def advance(self, label: str) -> None:
+        if self.execution_context is None:
+            return
+        self.work_since_checkpoint += 1
+        if self.work_since_checkpoint >= _SHRED_EXECUTION_CHECKPOINT_ROWS:
+            self.checkpoint(label)
+
 
 # A JSON *scalar* array (e.g. ``coverages: ["TPFT", "comprehensive"]``)
 # becomes its own child table with a single ``value`` column — exactly how
@@ -259,25 +290,355 @@ class ShredSkipStats:
 # ---------------------------------------------------------------------------
 
 
-def _data_file_signature(data_path: Path) -> dict[str, Any]:
-    """Signature of the data file recorded into ``meta.json`` at build time.
+_DATA_FILE_SIGNATURE_MEMO_MAX_ENTRIES = 256
+_WINDOWS_EPOCH_OFFSET_100NS = 116_444_736_000_000_000
 
-    ``size`` + ``mtime_ns`` give a cheap stat-only freshness fast path;
-    ``sha256`` arbitrates when the mtime moved without a content change
-    (deploy rsync / docker COPY / ``touch``), so the committed-layer deploy
-    fallback isn't invalidated by a copy. Raises ``OSError`` if the file is
-    unreadable — the build cannot meaningfully record a signature then.
+
+@dataclass(frozen=True, slots=True)
+class _StrongFileRevision:
+    """A file generation token that detects changes hidden from size/mtime."""
+
+    file_identity: tuple[int, int | bytes]
+    size: int
+    mtime_ns: int
+    change_token: int
+
+
+@dataclass(frozen=True, slots=True)
+class _DataFileSignatureRecord:
+    """Immutable memo payload; callers receive a fresh mapping view."""
+
+    size: int
+    mtime_ns: int
+    sha256: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "size": self.size,
+            "mtime_ns": self.mtime_ns,
+            "sha256": self.sha256,
+        }
+
+
+class _WindowsFileBasicInfo(ctypes.Structure):
+    _fields_ = [
+        ("CreationTime", ctypes.c_int64),
+        ("LastAccessTime", ctypes.c_int64),
+        ("LastWriteTime", ctypes.c_int64),
+        ("ChangeTime", ctypes.c_int64),
+        ("FileAttributes", ctypes.c_uint32),
+    ]
+
+
+class _WindowsFileStandardInfo(ctypes.Structure):
+    _fields_ = [
+        ("AllocationSize", ctypes.c_int64),
+        ("EndOfFile", ctypes.c_int64),
+        ("NumberOfLinks", ctypes.c_uint32),
+        ("DeletePending", ctypes.c_ubyte),
+        ("Directory", ctypes.c_ubyte),
+    ]
+
+
+class _WindowsFileId128(ctypes.Structure):
+    _fields_ = [("Identifier", ctypes.c_ubyte * 16)]
+
+
+class _WindowsFileIdInfo(ctypes.Structure):
+    _fields_ = [
+        ("VolumeSerialNumber", ctypes.c_uint64),
+        ("FileId", _WindowsFileId128),
+    ]
+
+
+def _windows_strong_file_revision(path: Path) -> _StrongFileRevision | None:
+    """Read one Windows file identity/change token, or decline memoisation."""
+    windll_factory = getattr(ctypes, "WinDLL", None)
+    if windll_factory is None:
+        return None
+    try:
+        kernel32 = windll_factory("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+        ]
+        create_file.restype = ctypes.c_void_p
+        get_information = kernel32.GetFileInformationByHandleEx
+        get_information.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+        ]
+        get_information.restype = ctypes.c_int
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [ctypes.c_void_p]
+        close_handle.restype = ctypes.c_int
+
+        # Read attributes only; allow ordinary readers/writers and Haute's
+        # atomic publisher to coexist with this short-lived identity handle.
+        handle = create_file(
+            str(path),
+            0x80,  # FILE_READ_ATTRIBUTES
+            0x7,  # FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+            None,
+            3,  # OPEN_EXISTING
+            0x80,  # FILE_ATTRIBUTE_NORMAL
+            None,
+        )
+        if handle in (None, ctypes.c_void_p(-1).value):
+            return None
+        try:
+            basic = _WindowsFileBasicInfo()
+            standard = _WindowsFileStandardInfo()
+            file_id = _WindowsFileIdInfo()
+            queries = (
+                (0, basic),  # FileBasicInfo
+                (1, standard),  # FileStandardInfo
+                (18, file_id),  # FileIdInfo
+            )
+            for info_class, target in queries:
+                if not get_information(
+                    handle,
+                    info_class,
+                    ctypes.byref(target),
+                    ctypes.sizeof(target),
+                ):
+                    return None
+        finally:
+            close_handle(handle)
+    except (AttributeError, OSError, ValueError, ctypes.ArgumentError):
+        return None
+
+    identity = bytes(file_id.FileId.Identifier)
+    if standard.Directory or standard.EndOfFile < 0 or basic.ChangeTime <= 0 or not any(identity):
+        return None
+    return _StrongFileRevision(
+        file_identity=(int(file_id.VolumeSerialNumber), identity),
+        size=int(standard.EndOfFile),
+        mtime_ns=(int(basic.LastWriteTime) - _WINDOWS_EPOCH_OFFSET_100NS) * 100,
+        change_token=int(basic.ChangeTime),
+    )
+
+
+def _posix_strong_file_revision(path: Path) -> _StrongFileRevision | None:
+    """Read the POSIX inode/ctime generation gate, if the filesystem has one."""
+    observed = path.stat()
+    if (
+        not stat_module.S_ISREG(observed.st_mode)
+        or observed.st_ino <= 0
+        or observed.st_ctime_ns <= 0
+    ):
+        return None
+    return _StrongFileRevision(
+        file_identity=(int(observed.st_dev), int(observed.st_ino)),
+        size=int(observed.st_size),
+        mtime_ns=int(observed.st_mtime_ns),
+        change_token=int(observed.st_ctime_ns),
+    )
+
+
+def _strong_file_revision(path: Path) -> _StrongFileRevision | None:
+    """Return an OS-native revision safe for content-proof reuse.
+
+    ``None`` means that this observation must take the conservative full-hash
+    path. Missing POSIX paths still raise normally; a Windows native-query
+    failure falls through to the ordinary stat/hash path, which preserves the
+    source reader's existing error type.
     """
-    st = data_path.stat()
+    if os.name == "nt":
+        return _windows_strong_file_revision(path)
+    return _posix_strong_file_revision(path)
+
+
+def _uncached_data_file_signature(data_path: Path) -> _DataFileSignatureRecord:
+    """Hash without retaining a proof when no strong revision is available."""
+    observed = data_path.stat()
+    before = (
+        observed.st_dev,
+        observed.st_ino,
+        observed.st_size,
+        observed.st_mtime_ns,
+        observed.st_ctime_ns,
+    )
     digest = _hash_file(data_path)
-    final_st = data_path.stat()
-    if (st.st_size, st.st_mtime_ns) != (final_st.st_size, final_st.st_mtime_ns):
+    final = data_path.stat()
+    after = (
+        final.st_dev,
+        final.st_ino,
+        final.st_size,
+        final.st_mtime_ns,
+        final.st_ctime_ns,
+    )
+    if before != after:
         raise OSError(f"data file changed while its signature was computed: {data_path}")
-    return {
-        "size": final_st.st_size,
-        "mtime_ns": final_st.st_mtime_ns,
-        "sha256": digest,
-    }
+    return _DataFileSignatureRecord(
+        size=int(final.st_size),
+        mtime_ns=int(final.st_mtime_ns),
+        sha256=digest,
+    )
+
+
+def _revision_gated_data_file_signature(
+    data_path: Path,
+    revision: _StrongFileRevision,
+) -> _DataFileSignatureRecord:
+    """Hash one source generation and reject a moving native revision."""
+    digest = _hash_file(data_path)
+    if _strong_file_revision(data_path) != revision:
+        raise OSError(f"data file changed while its signature was computed: {data_path}")
+    return _DataFileSignatureRecord(
+        size=revision.size,
+        mtime_ns=revision.mtime_ns,
+        sha256=digest,
+    )
+
+
+class _DataFileSignatureLoadGate:
+    """Per-path single-flight state retained only within the cache bound."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.participants = 0
+
+
+class _DataFileSignatureMemo:
+    """Bounded LRU of content hashes admitted by a strong file revision."""
+
+    def __init__(self, *, max_entries: int = _DATA_FILE_SIGNATURE_MEMO_MAX_ENTRIES) -> None:
+        if isinstance(max_entries, bool) or not isinstance(max_entries, int) or max_entries <= 0:
+            raise ValueError("max_entries must be a positive integer")
+        self._max_entries = max_entries
+        self._process_id = os.getpid()
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[
+            str,
+            tuple[_StrongFileRevision, _DataFileSignatureRecord],
+        ] = OrderedDict()
+        self._load_gates: dict[str, _DataFileSignatureLoadGate] = {}
+        self._unavailable_warnings: OrderedDict[str, None] = OrderedDict()
+
+    def _ensure_current_process(self) -> None:
+        process_id = os.getpid()
+        if process_id == self._process_id:
+            return
+        # After fork there is one surviving thread. Replace, rather than
+        # acquire, inherited locks: another parent thread may have held them.
+        self._process_id = process_id
+        self._lock = threading.Lock()
+        self._entries = OrderedDict()
+        self._load_gates = {}
+        self._unavailable_warnings = OrderedDict()
+
+    def _warn_unavailable_once(self, key: str, path: Path) -> None:
+        with self._lock:
+            if key in self._unavailable_warnings:
+                self._unavailable_warnings.move_to_end(key)
+                return
+            self._unavailable_warnings[key] = None
+            while len(self._unavailable_warnings) > self._max_entries:
+                self._unavailable_warnings.popitem(last=False)
+        logger.warning(
+            "json_source_signature_revision_unavailable",
+            data_path=str(path),
+            action="full_source_hash_per_operation",
+        )
+
+    def get(self, data_path: Path) -> dict[str, Any]:
+        """Return a source signature, hashing once per unchanged generation."""
+        self._ensure_current_process()
+        resolved_path = data_path.expanduser().resolve()
+        key = os.path.normcase(str(resolved_path))
+        revision = _strong_file_revision(resolved_path)
+        if revision is None:
+            self._warn_unavailable_once(key, resolved_path)
+            return _uncached_data_file_signature(resolved_path).as_dict()
+
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is not None and entry[0] == revision:
+                self._entries.move_to_end(key)
+                return entry[1].as_dict()
+            load_gate = self._load_gates.setdefault(key, _DataFileSignatureLoadGate())
+            load_gate.participants += 1
+        try:
+            with load_gate.lock:
+                # A waiter must observe the revision again: the generation may
+                # have moved while another caller owned the flight.
+                current_revision = _strong_file_revision(resolved_path)
+                if current_revision is None:
+                    self._warn_unavailable_once(key, resolved_path)
+                    return _uncached_data_file_signature(resolved_path).as_dict()
+                with self._lock:
+                    entry = self._entries.get(key)
+                    if entry is not None and entry[0] == current_revision:
+                        self._entries.move_to_end(key)
+                        return entry[1].as_dict()
+
+                signature = _revision_gated_data_file_signature(
+                    resolved_path,
+                    current_revision,
+                )
+                with self._lock:
+                    self._entries[key] = (current_revision, signature)
+                    self._entries.move_to_end(key)
+                    while len(self._entries) > self._max_entries:
+                        evicted_key, _ = self._entries.popitem(last=False)
+                        evicted_gate = self._load_gates.get(evicted_key)
+                        if evicted_gate is not None and evicted_gate.participants == 0:
+                            del self._load_gates[evicted_key]
+                return signature.as_dict()
+        finally:
+            with self._lock:
+                load_gate.participants -= 1
+                if (
+                    load_gate.participants == 0
+                    and self._load_gates.get(key) is load_gate
+                    and key not in self._entries
+                ):
+                    del self._load_gates[key]
+
+    def __len__(self) -> int:
+        self._ensure_current_process()
+        with self._lock:
+            return len(self._entries)
+
+    def clear(self) -> None:
+        """Drop retained proofs without invalidating an active single flight."""
+        self._ensure_current_process()
+        with self._lock:
+            self._entries.clear()
+            self._unavailable_warnings.clear()
+            self._load_gates = {
+                key: load_gate
+                for key, load_gate in self._load_gates.items()
+                if load_gate.participants
+            }
+
+
+_DATA_FILE_SIGNATURE_MEMO = _DataFileSignatureMemo()
+
+
+def _clear_data_file_signature_memo() -> None:
+    """Test seam for isolating process-wide source-signature proofs."""
+    _DATA_FILE_SIGNATURE_MEMO.clear()
+
+
+def _data_file_signature(data_path: Path) -> dict[str, Any]:
+    """Return the size/mtime/SHA-256 identity recorded in cache metadata.
+
+    The complete content hash remains authoritative. It is reused only when
+    an OS-native identity/change token proves that the same file generation
+    is unchanged; unsupported filesystems take the conservative full-hash
+    path. Raises ``OSError`` for an unreadable or concurrently changing file.
+    """
+    return _DATA_FILE_SIGNATURE_MEMO.get(data_path)
 
 
 def _hash_file(path: Path) -> str:
@@ -329,15 +690,6 @@ def _file_content_matches(recorded: Any, path: Path) -> bool:
         return False
 
 
-def _payload_content_matches(recorded: Any, payload: bytes) -> bool:
-    """Return whether exact in-memory bytes match a strict signature."""
-    parts = _content_signature_parts(recorded)
-    if parts is None:
-        return False
-    size, digest = parts
-    return len(payload) == size and hashlib.sha256(payload).hexdigest() == digest
-
-
 def _data_file_matches(
     recorded: Any,
     data_path: Path,
@@ -352,14 +704,12 @@ def _data_file_matches(
     (a cheap pre-reject); otherwise the recorded content hash is the sole
     authority.
 
-    The content hash is verified ALWAYS, not skipped on an ``mtime_ns``
-    match: a byte-changing rewrite that happens to preserve both ``size``
-    and ``mtime_ns`` (a deliberate ``os.utime`` restore, or a same-length
-    edit on a filesystem whose mtime resolution the write didn't advance)
-    must NOT be served as fresh — that would silently return stale rating
-    rows. Correctness of the served data outweighs skipping one hash on the
-    validity path; the deploy-copy case (mtime moved, content identical)
-    still validates because the hash matches.
+    The recorded content hash is always compared with an observed content
+    proof, never replaced by an ``mtime_ns`` match. The proof may come from
+    the strong-revision memo above; a byte-changing rewrite that preserves
+    both ``size`` and ``mtime_ns`` changes that revision and forces a fresh
+    hash. The deploy-copy case (mtime moved, content identical) still
+    validates because the fresh hash matches.
     """
     if data_file_signature is None:
         try:
@@ -380,15 +730,211 @@ def _data_file_matches(
 # another schema's parquets; builds of different caches stay independent.
 # Process-local by design: the FastAPI routes are the only production
 # producer and run builds in threads of this process.
-_BUILD_LOCKS: WeakValueDictionary[str, threading.Lock] = WeakValueDictionary()
+_BUILD_LOCKS: WeakValueDictionary[str, threading.RLock] = WeakValueDictionary()
 _BUILD_LOCKS_GUARD = threading.Lock()
 _RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)  # pragma: no mutate
 
+# File-backed runtime snapshots live outside a cache generation so replacing or
+# clearing that generation cannot retarget an already-returned LazyFrame. One
+# content-addressed path is reference-counted across managed executions and
+# removed after their cleanup. Unmanaged direct callers pin it for the process:
+# a derived Polars plan can outlive the original LazyFrame, so there is no safe
+# Python-object lifetime at which to reclaim its source. Orderly process exit
+# removes every remaining private snapshot directory.
+_RUNTIME_SNAPSHOT_DIRNAME = ".runtime-snapshots"
+_RUNTIME_SNAPSHOT_PROCESS_ID = os.getpid()
+_RUNTIME_SNAPSHOT_PROCESS_TOKEN = f"{os.getpid()}-{uuid.uuid4().hex}"
+_RUNTIME_SNAPSHOT_DIRS: set[Path] = set()
+_RUNTIME_SNAPSHOT_REFERENCES: dict[Path, int] = {}
+_RUNTIME_SNAPSHOT_PROCESS_PINS: set[Path] = set()
+_RUNTIME_SNAPSHOT_LOCK = threading.Lock()
+_RUNTIME_SNAPSHOT_ATEXIT_REGISTERED = False
 
-def _build_lock_for(cache_dir: Path) -> threading.Lock:
+
+def _build_lock_for(cache_dir: Path) -> threading.RLock:
     key = os.path.normcase(str(cache_dir.resolve()))
     with _BUILD_LOCKS_GUARD:
-        return _BUILD_LOCKS.setdefault(key, threading.Lock())
+        return _BUILD_LOCKS.setdefault(key, threading.RLock())
+
+
+def _cleanup_runtime_snapshot_dirs() -> None:
+    """Remove every private parquet snapshot directory owned by this process."""
+    with _RUNTIME_SNAPSHOT_LOCK:
+        # A forked child inherits Python globals and atexit callbacks but must
+        # never remove the parent's still-live generation snapshots.
+        if os.getpid() != _RUNTIME_SNAPSHOT_PROCESS_ID:
+            return
+        snapshot_dirs = tuple(_RUNTIME_SNAPSHOT_DIRS)
+        _RUNTIME_SNAPSHOT_DIRS.clear()
+        _RUNTIME_SNAPSHOT_REFERENCES.clear()
+        _RUNTIME_SNAPSHOT_PROCESS_PINS.clear()
+    for snapshot_dir in snapshot_dirs:
+        shutil.rmtree(snapshot_dir, ignore_errors=True)
+    for parent in {snapshot_dir.parent for snapshot_dir in snapshot_dirs}:
+        try:
+            parent.rmdir()
+        except OSError:
+            # Another live process token, or a crash-left directory, still owns
+            # entries beneath the shared snapshot parent.
+            pass
+
+
+def _runtime_snapshot_dir(cache_dir: Path) -> Path:
+    """Return this process's private snapshot directory beside *cache_dir*."""
+    global _RUNTIME_SNAPSHOT_ATEXIT_REGISTERED
+    global _RUNTIME_SNAPSHOT_PROCESS_ID, _RUNTIME_SNAPSHOT_PROCESS_TOKEN
+
+    with _RUNTIME_SNAPSHOT_LOCK:
+        process_id = os.getpid()
+        if process_id != _RUNTIME_SNAPSHOT_PROCESS_ID:
+            # The child owns a copy of the set, so clearing it cannot affect the
+            # parent. The inherited atexit callback will now clean only child paths.
+            _RUNTIME_SNAPSHOT_PROCESS_ID = process_id
+            _RUNTIME_SNAPSHOT_PROCESS_TOKEN = f"{process_id}-{uuid.uuid4().hex}"
+            _RUNTIME_SNAPSHOT_DIRS.clear()
+            _RUNTIME_SNAPSHOT_REFERENCES.clear()
+            _RUNTIME_SNAPSHOT_PROCESS_PINS.clear()
+        snapshot_dir = (
+            cache_dir.parent / _RUNTIME_SNAPSHOT_DIRNAME / _RUNTIME_SNAPSHOT_PROCESS_TOKEN
+        )
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        _RUNTIME_SNAPSHOT_DIRS.add(snapshot_dir)
+        if not _RUNTIME_SNAPSHOT_ATEXIT_REGISTERED:
+            atexit.register(_cleanup_runtime_snapshot_dirs)
+            _RUNTIME_SNAPSHOT_ATEXIT_REGISTERED = True
+    return snapshot_dir
+
+
+def _stream_copy_with_signature(source: Path, target: Path) -> tuple[int, str]:
+    """Copy *source* to exclusive *target* with bounded memory and one hash pass."""
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with source.open("rb") as source_file, target.open("xb") as target_file:
+            for chunk in iter(lambda: source_file.read(1 << 20), b""):
+                target_file.write(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+    return size, digest.hexdigest()
+
+
+def _release_runtime_snapshot(snapshot_path: Path) -> None:
+    """Release one transient or execution-owned reference to *snapshot_path*."""
+    with _RUNTIME_SNAPSHOT_LOCK:
+        references = _RUNTIME_SNAPSHOT_REFERENCES.get(snapshot_path, 0)
+        if references <= 0:
+            raise RuntimeError(f"runtime parquet snapshot was released twice: {snapshot_path}")
+        if references > 1:
+            _RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = references - 1
+            return
+        del _RUNTIME_SNAPSHOT_REFERENCES[snapshot_path]
+        if snapshot_path in _RUNTIME_SNAPSHOT_PROCESS_PINS:
+            return
+        try:
+            snapshot_path.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            snapshot_path.parent.rmdir()
+        except OSError:
+            # Another content snapshot in this process directory is still live.
+            pass
+
+
+def _retain_runtime_snapshot(snapshot_path: Path) -> None:
+    """Convert a transient snapshot reference into its execution lifetime."""
+    execution_context = current_execution_context()
+    if execution_context is None:
+        # Outside a managed execution there is no sound lifetime boundary for
+        # arbitrary derived LazyFrames. Pin once for this process and consume the
+        # transient reference without deleting the content-addressed path.
+        with _RUNTIME_SNAPSHOT_LOCK:
+            references = _RUNTIME_SNAPSHOT_REFERENCES.get(snapshot_path, 0)
+            if references <= 0:
+                raise RuntimeError(
+                    f"runtime parquet snapshot has no transient owner: {snapshot_path}"
+                )
+            _RUNTIME_SNAPSHOT_PROCESS_PINS.add(snapshot_path)
+            if references == 1:
+                del _RUNTIME_SNAPSHOT_REFERENCES[snapshot_path]
+            else:
+                _RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = references - 1
+        return
+
+    # Keep the transient reference as this context's lease. The execution
+    # context releases resources only after its collection and cleanup finish.
+    try:
+        execution_context.add_cleanup(lambda: _release_runtime_snapshot(snapshot_path))
+    except BaseException:
+        _release_runtime_snapshot(snapshot_path)
+        raise
+
+
+def _snapshot_cache_artifact(
+    cache_dir: Path,
+    parquet_path: Path,
+    recorded_signature: Any,
+) -> Path | None:
+    """Pin and verify one cache artifact without materialising its payload.
+
+    A hard link captures one rename-published generation atomically and does not
+    duplicate its disk blocks. The link is hashed in bounded chunks, then moved
+    to a content-addressed private path that lazy Polars plans can safely retain.
+    Filesystems without hard-link support use an equivalently bounded copy while
+    holding the same-process build lock; the copied bytes are hashed as written.
+    ``None`` means the captured generation did not match its manifest signature.
+    """
+    expected = _content_signature_parts(recorded_signature)
+    assert expected is not None
+    expected_size, expected_digest = expected
+    snapshot_dir = _runtime_snapshot_dir(cache_dir)
+    candidate = snapshot_dir / f".{uuid.uuid4().hex}.parquet.tmp"
+
+    try:
+        os.link(parquet_path, candidate)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        logger.warning(
+            "json_shred_runtime_snapshot_copy_fallback",
+            cache_dir=str(cache_dir),
+            parquet_path=str(parquet_path),
+            error_type=type(exc).__name__,
+        )
+        # A regular Windows read handle blocks the rename-based publisher. This
+        # rare fallback is therefore serialized with same-process builders; the
+        # normal hard-link path holds no source handle while it is verified.
+        with _build_lock_for(cache_dir):
+            observed_size, observed_digest = _stream_copy_with_signature(
+                parquet_path,
+                candidate,
+            )
+    else:
+        try:
+            observed = _file_content_signature(candidate)
+        except BaseException:
+            candidate.unlink(missing_ok=True)
+            raise
+        observed_size = observed["size"]
+        observed_digest = observed["sha256"]
+
+    if (observed_size, observed_digest) != (expected_size, expected_digest):
+        candidate.unlink(missing_ok=True)
+        return None
+
+    snapshot_path = snapshot_dir / f"{expected_digest}-{expected_size}.parquet"
+    with _RUNTIME_SNAPSHOT_LOCK:
+        if snapshot_path.exists():
+            candidate.unlink(missing_ok=True)
+        else:
+            candidate.rename(snapshot_path)
+        _RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = (
+            _RUNTIME_SNAPSHOT_REFERENCES.get(snapshot_path, 0) + 1
+        )
+    return snapshot_path
 
 
 def _unique_build_tmp_dir(cache_dir: Path) -> Path:
@@ -876,6 +1422,8 @@ def shred_to_buffers(
     shape mismatched that table (W2 item 2.7); cache builds and direct runtime
     materialisation both pass one through :func:`_shred_data_file`.
     """
+    progress = _ShredExecutionProgress.current()
+    progress.checkpoint("json_shred_before_rows")
     table_specs = _emitting_table_specs(v2_config) if _table_specs is None else _table_specs
 
     # Each table's POSITION is its full ``(key, is_array)`` segment tuple: the
@@ -954,6 +1502,7 @@ def shred_to_buffers(
             if is_scalar_leaf or (type_token == "str" and not isinstance(resolved, (dict, list))):
                 resolved = _coerce_scalar(resolved, type_token)
             row[col_name] = resolved
+        progress.advance("json_shred_rows")
         return row
 
     def _emit_at(pos: tuple[PathSeg, ...], record: Any, ancestors: tuple[Any, ...]) -> None:
@@ -1012,7 +1561,9 @@ def shred_to_buffers(
 
     for record in records:
         _emit_at((), record, ())
+        progress.advance("json_shred_rows")
 
+    progress.checkpoint("json_shred_after_rows")
     return buffers
 
 
@@ -1494,6 +2045,9 @@ def _probe_cache_bundle(
     cache_dir: Path,
     table_specs: tuple[_EmittingTableSpec, ...],
     meta: dict[str, Any],
+    *,
+    complete_table_specs: tuple[_EmittingTableSpec, ...] | None = None,
+    retain_snapshots: bool,
 ) -> tuple[dict[str, pl.LazyFrame], _CacheProbeFailure | None]:  # pragma: no mutate
     """Load cache frames whose name→dtype mappings match current specs.
 
@@ -1502,55 +2056,68 @@ def _probe_cache_bundle(
     order, preserving that invariant without allowing missing/extra/renamed or
     differently typed columns through the fast path.
 
-    Each parquet is physically read exactly once. Its signature is verified
-    over that exact compressed payload and the same bytes are handed to Polars
-    via :class:`io.BytesIO`. This closes the hash-then-reopen race while keeping
-    parquet decoding and projection lazy. Polars retains the compressed source
-    in the logical plan, so the frame and its clones are independent of later
-    rebuilds, mirrors, or explicit cache deletion. Memory usage is bounded by
-    compressed sources belonging to live LazyFrames rather than an ever-growing
-    set of on-disk generations.
+    Each requested parquet is pinned to a private file-backed snapshot before
+    its signature is verified in bounded chunks. Polars receives that stable
+    path, so native Parquet projection remains lazy and an already-returned plan
+    is independent of later rebuilds, mirrors, or explicit cache deletion. The
+    complete compressed payload is never retained in Python memory.
     """
+    complete_specs = complete_table_specs or table_specs
     manifest_failure = _cache_manifest_structure_failure(
         meta,
-        expected_labels=tuple(spec.label for spec in table_specs),
+        expected_labels=tuple(spec.label for spec in complete_specs),
     )
     if manifest_failure is not None:
         return {}, manifest_failure
 
     bundle: dict[str, pl.LazyFrame] = {}
+    transient_snapshots: list[Path] = []
     manifest_entries = {entry["label"]: entry for entry in meta["tables"]}
-    for table_spec in table_specs:
-        expected_schema = _declared_frame_schema(table_spec)
-        entry = manifest_entries[table_spec.label]
-        signature_parts = _content_signature_parts(entry["content_signature"])
-        assert signature_parts is not None
-        parquet_path = cache_dir / f"{_sanitise_label(table_spec.label)}.parquet"
-        try:
-            payload = parquet_path.read_bytes()
-        except FileNotFoundError:
-            return bundle, _CacheProbeFailure(
-                "missing_frame",
-                label=table_spec.label,
-                expected_schema=expected_schema,
-            )
-        if not _payload_content_matches(entry["content_signature"], payload):
-            return bundle, _CacheProbeFailure(
-                "content_signature_mismatch",
-                label=table_spec.label,
-                expected_schema=expected_schema,
-            )
-        frame = pl.scan_parquet(io.BytesIO(payload))
-        actual_schema = frame.collect_schema()
-        if dict(actual_schema.items()) != dict(expected_schema.items()):
-            return bundle, _CacheProbeFailure(
-                "schema_mismatch",
-                label=table_spec.label,
-                expected_schema=expected_schema,
-                actual_schema=actual_schema,
-            )
-        bundle[table_spec.label] = frame.select(expected_schema.names())
-    return bundle, None
+    complete_specs_by_label = {spec.label: spec for spec in complete_specs}
+    try:
+        for table_spec in table_specs:
+            complete_spec = complete_specs_by_label[table_spec.label]
+            expected_schema = _declared_frame_schema(complete_spec)
+            entry = manifest_entries[table_spec.label]
+            signature_parts = _content_signature_parts(entry["content_signature"])
+            assert signature_parts is not None
+            parquet_path = cache_dir / f"{_sanitise_label(table_spec.label)}.parquet"
+            try:
+                snapshot_path = _snapshot_cache_artifact(
+                    cache_dir,
+                    parquet_path,
+                    entry["content_signature"],
+                )
+            except FileNotFoundError:
+                return bundle, _CacheProbeFailure(
+                    "missing_frame",
+                    label=table_spec.label,
+                    expected_schema=expected_schema,
+                )
+            if snapshot_path is None:
+                return bundle, _CacheProbeFailure(
+                    "content_signature_mismatch",
+                    label=table_spec.label,
+                    expected_schema=expected_schema,
+                )
+            transient_snapshots.append(snapshot_path)
+            frame = pl.scan_parquet(snapshot_path)
+            actual_schema = frame.collect_schema()
+            if dict(actual_schema.items()) != dict(expected_schema.items()):
+                return bundle, _CacheProbeFailure(
+                    "schema_mismatch",
+                    label=table_spec.label,
+                    expected_schema=expected_schema,
+                    actual_schema=actual_schema,
+                )
+            bundle[table_spec.label] = frame.select(_declared_frame_schema(table_spec).names())
+        if retain_snapshots:
+            while transient_snapshots:
+                _retain_runtime_snapshot(transient_snapshots.pop())
+        return bundle, None
+    finally:
+        for snapshot_path in transient_snapshots:
+            _release_runtime_snapshot(snapshot_path)
 
 
 def _buffer_to_frame(
@@ -1569,10 +2136,18 @@ def _buffer_to_frame(
     # column — rather than as an opaque 500. ``col_type`` is `str` at the
     # call site (from `_LeafSpec`); validate_v2_schema (B1) has already
     # guaranteed it's one of the five tokens, so the map lookup can't miss.
+    progress = _ShredExecutionProgress.current()
+    progress.checkpoint("json_shred_frame_before")
     series_list: list[pl.Series] = []
     for col_name, _leaf, col_type in col_specs:
         dtype = _POLARS_TYPE_MAP[cast(ColumnType, col_type)]
-        values = [row.get(col_name) for row in rows]
+        if progress.execution_context is None:
+            values = [row.get(col_name) for row in rows]
+        else:
+            values = []
+            for row in rows:
+                values.append(row.get(col_name))
+                progress.advance("json_shred_frame_values")
         # Polars strict-builds a bool into an int/float column SILENTLY
         # (True → 1/1.0), which would hide a genuine type mismatch — reject it
         # loudly instead. (bool is a subclass of int, so the strict build won't
@@ -1610,7 +2185,9 @@ def _buffer_to_frame(
                 column=col_name,
                 declared_type=col_type,
             ) from exc
-    return pl.DataFrame(series_list)
+    frame = pl.DataFrame(series_list)
+    progress.checkpoint("json_shred_frame_after")
+    return frame
 
 
 def _per_frame_metadata(label: str, col_specs: list[_LeafSpec]) -> dict[bytes, bytes]:
@@ -1822,9 +2399,9 @@ def build_per_port_cache(
     The build is **serialized** per cache directory (a concurrent build of
     the same cache waits) and **atomic**: one complete generation is written
     into a sibling staging directory and swapped into place only after every
-    parquet and ``meta.json`` is materialised. Runtime LazyFrames snapshot the
-    verified compressed bytes, so replacing this sole on-disk generation does
-    not change already-returned plans (W2 item 2.6).
+    parquet and ``meta.json`` is materialised. Runtime LazyFrames scan private,
+    generation-pinned file snapshots, so replacing this visible on-disk
+    generation does not change already-returned plans (W2 item 2.6).
     """
     dp = Path(data_path)
     cd = Path(cache_dir)
@@ -1975,8 +2552,8 @@ def load_per_port_cache(
     "Emitting" uses the shared :func:`table_is_emitting` predicate (emit and
     at least one selected column), exactly the set the build writes. Every
     label-derived artifact must exist, match its signature, and expose the
-    declared schema. The exact verified compressed bytes seed the returned
-    in-memory LazyFrames; a missing or mismatched member rejects the whole
+    declared schema. Exact verified, generation-pinned paths seed the returned
+    file-backed LazyFrames; a missing or mismatched member rejects the whole
     bundle and returns ``{}`` rather than serving a partial generation.
 
     Callers needing source-file freshness must additionally use
@@ -1996,6 +2573,7 @@ def load_per_port_cache(
             cd,
             table_specs,
             meta,
+            retain_snapshots=True,
         )
     except (OSError, pl.exceptions.PolarsError):
         return {}
@@ -2059,6 +2637,8 @@ def _read_matching_cache_meta(
 def load_v2_api_source(
     data_path: str,
     config: dict[str, Any],
+    *,
+    port_columns: Mapping[str, frozenset[str] | set[str] | None] | None = None,
 ) -> dict[str, pl.LazyFrame]:  # pragma: no mutate
     """Load a v2 apiInput as an emit-gated per-port frame bundle.
 
@@ -2084,7 +2664,10 @@ def load_v2_api_source(
     """
     from haute._json_flatten import _json_cache_dir
 
-    table_specs = _emitting_table_specs(config)
+    # Parse the complete config before considering a demand. Cache identity and
+    # every opened parquet remain governed by this full schema; the demand only
+    # controls which ports and columns are materialised for this caller.
+    complete_table_specs = _emitting_table_specs(config)
     tables = config["tables"]
     emit_true_tables = [t for t in tables if t.get("emit")]
     if not emit_true_tables:
@@ -2092,13 +2675,68 @@ def load_v2_api_source(
             "API Input has no emitting tables. Open the node, tick the 'emit' "
             "toggle on at least one table, then preview again.",
         )
-    emit_labels = [spec.label for spec in table_specs]
+    emit_labels = [spec.label for spec in complete_table_specs]
     if not emit_labels:
         labels = [t["label"] for t in emit_true_tables]
         raise RuntimeError(
             "API Input has emit-true tables but none has any selected columns. "
             f"Open the node and tick at least one column on the emitting "
             f"table(s): {labels}, then preview again.",
+        )
+
+    table_specs = complete_table_specs
+    if port_columns is not None:
+        if not isinstance(port_columns, Mapping) or not port_columns:
+            raise ValueError("port_columns must be a non-empty mapping")
+        complete_by_label = {spec.label: spec for spec in complete_table_specs}
+        projected_specs: list[_EmittingTableSpec] = []
+        for label, requested_columns in port_columns.items():
+            if label not in complete_by_label:
+                raise ValueError(f"port_columns requests unknown emitting port {label!r}")
+            if requested_columns is not None and not isinstance(
+                requested_columns,
+                (frozenset, set),
+            ):
+                raise ValueError(
+                    f"port_columns[{label!r}] must be None or a frozenset/set",
+                )
+            complete_spec = complete_by_label[label]
+            if requested_columns is None:
+                projected_specs.append(complete_spec)
+                continue
+            if any(not isinstance(column, str) or not column for column in requested_columns):
+                raise ValueError(
+                    f"port_columns[{label!r}] must contain non-empty string column names",
+                )
+            available = {name for name, _leaf, _type, _depth in complete_spec.columns}
+            missing = set(requested_columns) - available
+            if missing:
+                raise ValueError(
+                    f"port_columns[{label!r}] requests missing declared column(s): "
+                    f"{sorted(missing)!r}",
+                )
+            # Preserve config order, not demand-set iteration order. An empty
+            # logical demand is cardinality-only; one physical carrier keeps
+            # Polars from collapsing the frame to zero rows.
+            physical_columns = (
+                set(requested_columns) if requested_columns else {complete_spec.columns[0][0]}
+            )
+            projected_specs.append(
+                _EmittingTableSpec(
+                    label=complete_spec.label,
+                    segments=complete_spec.segments,
+                    columns=tuple(
+                        column for column in complete_spec.columns if column[0] in physical_columns
+                    ),
+                ),
+            )
+        # Preserve v2 schema order even when the caller supplied its mapping in
+        # a different order.
+        requested_by_label = {spec.label: spec for spec in projected_specs}
+        table_specs = tuple(
+            requested_by_label[spec.label]
+            for spec in complete_table_specs
+            if spec.label in requested_by_label
         )
     # Reuse one raw-data signature while probing both cache layers.
     data_file_sig = _data_file_signature(Path(data_path))
@@ -2122,6 +2760,8 @@ def load_v2_api_source(
                 cache_dir,
                 table_specs,
                 cache_meta,
+                complete_table_specs=complete_table_specs,
+                retain_snapshots=True,
             )
         except (OSError, pl.exceptions.PolarsError) as exc:
             logger.warning(
@@ -2153,7 +2793,7 @@ def load_v2_api_source(
                 ),
             )
             continue
-        return {label: bundle[label] for label in emit_labels}
+        return {table_spec.label: bundle[table_spec.label] for table_spec in table_specs}
 
     # Neither cache can serve the current post-schema shape. Shred the source
     # for this execution only; do not write, refresh, or promote cache state.
@@ -2196,13 +2836,14 @@ def is_per_port_cache_valid(
     order does not affect validity; accepted frames are projected into current
     editor order by :func:`_probe_cache_bundle` at load time.
 
-    The data-file check ALWAYS verifies the recorded content hash: ``size``
-    is only a cheap pre-reject (a size mismatch is stale without hashing),
-    there is no ``mtime_ns`` short-circuit that would serve a same-size,
-    same-mtime byte-changing rewrite as fresh (matching
+    The data-file check always compares the recorded content hash with an
+    observed content proof. An unchanged strong native revision may reuse a
+    prior full hash; ``mtime_ns`` alone cannot authorise that reuse, so a
+    same-size, same-mtime byte-changing rewrite remains stale (matching
     :func:`_data_file_matches`). The committed-layer deploy fallback still
-    survives file copies because the hash matches when only the mtime moved.
-    Metadata without a recorded source or per-parquet signature is invalid.
+    survives file copies because the fresh hash matches when only metadata
+    moved. Metadata without a recorded source or per-parquet signature is
+    invalid.
     """
     try:
         signature = (
@@ -2223,7 +2864,12 @@ def is_per_port_cache_valid(
     cd = Path(cache_dir)
     try:
         table_specs = _emitting_table_specs(v2_config)
-        _bundle, probe_failure = _probe_cache_bundle(cd, table_specs, cache_meta)
+        _bundle, probe_failure = _probe_cache_bundle(
+            cd,
+            table_specs,
+            cache_meta,
+            retain_snapshots=False,
+        )
     except (ApiInputSchemaError, OSError, pl.exceptions.PolarsError):
         return False
     return probe_failure is None

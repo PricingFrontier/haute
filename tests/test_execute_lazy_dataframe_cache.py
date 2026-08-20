@@ -30,7 +30,11 @@ def _graph() -> PipelineGraph:
     return PipelineGraph(
         nodes=[
             _node("source", NodeType.DATA_INPUT),
-            _node("target", NodeType.POLARS),
+            _node(
+                "target",
+                NodeType.POLARS,
+                {"code": "df = df.with_columns(y=pl.col('x') * 2)"},
+            ),
         ],
         edges=[_edge("source", "target")],
     )
@@ -40,8 +44,16 @@ def _chain_graph() -> PipelineGraph:
     return PipelineGraph(
         nodes=[
             _node("source", NodeType.DATA_INPUT),
-            _node("mid", NodeType.POLARS),
-            _node("target", NodeType.POLARS),
+            _node(
+                "mid",
+                NodeType.POLARS,
+                {"code": "df = df.with_columns(y=pl.col('x') * 2)"},
+            ),
+            _node(
+                "target",
+                NodeType.POLARS,
+                {"code": "df = df.with_columns(z=pl.col('y') + 1)"},
+            ),
         ],
         edges=[_edge("source", "mid"), _edge("mid", "target")],
     )
@@ -462,6 +474,50 @@ def test_execute_lazy_dataframe_cache_can_warm_broader_required_columns(
     }
 
 
+def test_cache_warm_demand_survives_runtime_projection_to_source(tmp_path: Path) -> None:
+    """A broader cache key must retain passthrough columns pruned by runtime demand."""
+
+    graph = _graph()
+    cache = execution.DataFrameExecutionCache(
+        root=tmp_path,
+        max_entries=4,
+        max_bytes=10_000_000,
+    )
+    cache_request = _cache_request_from_facade(
+        graph,
+        cache,
+        input_fingerprint="input:v1",
+        required_columns_by_node={"target": frozenset({"keep", "y"})},
+    )
+    calls: list[str] = []
+
+    def build_node(node: GraphNode, **_: Any):
+        calls.append(node.id)
+        if node.data.nodeType == NodeType.DATA_INPUT:
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {"x": [1, 2, 3], "keep": [10, 20, 30], "unused": [4, 5, 6]}
+                ).lazy(),
+                True,
+            )
+        return node.id, lambda input_lf: input_lf.with_columns(y=pl.col("x") * 2), False
+
+    execution.execute_lazy_graph(
+        graph,
+        build_node,
+        target_node_id="target",
+        source="batch",
+        required_columns_by_node={"target": frozenset({"y"})},
+        dataframe_cache_request=cache_request,
+    )
+
+    entry = cache.get(cache_request.keys_by_node["target"])
+    assert entry is not None
+    assert set(entry.columns) == {"keep", "y"}
+    assert calls == ["source", "target"]
+
+
 def test_execute_lazy_dataframe_cache_skips_broader_key_when_columns_missing(
     tmp_path: Path,
 ) -> None:
@@ -495,6 +551,77 @@ def test_execute_lazy_dataframe_cache_skips_broader_key_when_columns_missing(
         "x": [1, 2, 3],
         "y": [2, 4, 6],
     }
+
+
+def test_missing_cache_only_column_does_not_break_structural_checkpoint(
+    tmp_path: Path,
+) -> None:
+    graph = PipelineGraph(
+        nodes=[
+            _node("source", NodeType.DATA_INPUT),
+            _node("mid", NodeType.LIVE_SWITCH),
+            _node("left", NodeType.POLARS, {"code": "df = df.select('x')"}),
+            _node("right", NodeType.POLARS, {"code": "df = df.select('x')"}),
+            _node(
+                "sink",
+                NodeType.POLARS,
+                {"code": "df = left.join(right, on='x', how='inner')"},
+            ),
+        ],
+        edges=[
+            _edge("source", "mid"),
+            _edge("mid", "left"),
+            _edge("mid", "right"),
+            _edge("left", "sink"),
+            _edge("right", "sink"),
+        ],
+    )
+    cache = execution.DataFrameExecutionCache(
+        root=tmp_path / "cache",
+        max_entries=4,
+        max_bytes=10_000_000,
+    )
+    cache_request = _cache_request_from_facade(
+        graph,
+        cache,
+        input_fingerprint="input:v1",
+        node_id="mid",
+        target_node_id="sink",
+        required_columns_by_node={
+            "mid": frozenset({"missing_cache_column", "x"}),
+            "sink": frozenset({"x"}),
+        },
+    )
+
+    def build_node(node: GraphNode, **_: Any):
+        if node.id == "source":
+            return node.id, lambda: pl.DataFrame({"x": [1, 2, 3]}).lazy(), True
+        if node.id in {"mid", "left", "right"}:
+            return node.id, lambda input_lf: input_lf.select("x"), False
+        return (
+            node.id,
+            lambda left_lf, right_lf: left_lf.join(right_lf, on="x", how="inner"),
+            False,
+        )
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    outputs, *_ = execution.execute_lazy_graph(
+        graph,
+        build_node,
+        target_node_id="sink",
+        source="batch",
+        checkpoint_dir=checkpoint_dir,
+        required_columns_by_node={
+            "mid": frozenset({"x"}),
+            "sink": frozenset({"x"}),
+        },
+        dataframe_cache_request=cache_request,
+    )
+
+    assert cache.get(cache_request.keys_by_node["mid"]) is None
+    assert pl.read_parquet(checkpoint_dir / "mid.parquet").columns == ["x"]
+    assert outputs["sink"].collect().sort("x").to_dict(as_series=False) == {"x": [1, 2, 3]}
 
 
 def test_execute_lazy_dataframe_cache_oversized_artifact_skips_cache_write(

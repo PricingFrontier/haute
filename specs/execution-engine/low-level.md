@@ -11,8 +11,10 @@
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, strict-profile decisions, fan-in edge demands, materialisation/opaque boundaries, source-scan projection, and bounded strategy diagnostics. |
+| `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer and per-input backward column demand for the closed supported operation vocabulary. |
 | `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, deterministic request-local fault points, bounded opt-in terminal telemetry, cancellation-latency evidence, cleanup precedence, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
+| `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve fault, collect-count, and typed-error telemetry. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`; owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component. |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
@@ -34,8 +36,11 @@
   `fault_injector`, and optional bounded `telemetry_sink`. `stage(name,
   node_id=...)` is a context manager that times the block, samples RSS at entry/exit,
   records an `ExecutionStageMetric`, and raises `ExecutionMemoryLimitExceededError`
-  before entering the block if already over budget. `checkpoint(label=...)` is the
-  cheap variant used between statements (no stage timing) — both call
+  before entering the block if already over budget. Stage exit always restores the
+  context-local stage stack. If the body is already propagating an exception, an
+  exit-sampling or metric-recording failure is attached to that primary exception
+  instead of replacing it; without a primary exception the exit failure remains loud.
+  `checkpoint(label=...)` is the cheap variant used between statements (no stage timing) — both call
   `cancellation_token.throw_if_cancelled()` first. `_effective_rss_limit_bytes()` is
   `rss_limit_bytes` if set, else `memory_baseline_bytes + memory_limit_bytes`, else
   `memory_limit_bytes` alone, else unbounded.
@@ -43,9 +48,19 @@
   `OPTIMISER_SETUP`, `EXPLORE_ANALYSIS`, `AUTO_RANGE`, `DEPLOY_LIVE`, `DEPLOY_BATCH`,
   `CHUNKED_MAP_REDUCE`. Keys every default memory budget, adaptive-policy entry, and
   environment-variable pair in `_execution_admission.py`.
-- **`ProjectionPlan`** (`src/haute/projection.py`, frozen dataclass) — immutable
-  execution-strategy result: `needed_by_node`, per-parent `edge_demands`,
-  `materialisation_boundaries`, `opaque_boundaries`, and bounded diagnostics.
+- **`ProjectionEdgeKey` / `ProjectionPlan`** (`src/haute/projection.py`, frozen
+  dataclasses) — immutable execution-strategy identity and result. A key contains
+  the persisted edge id plus source, target, visible handles, and retained boundary
+  ports. `edge_demands` and edge diagnostics use that key, never a lossy
+  `(source_node_id, target_node_id)` pair. `ProjectionPlan.demand_for_edge()` is the
+  runtime lookup; pair-only lookup is diagnostic convenience and rejects ambiguity.
+  The plan also carries `needed_by_node`, materialisation/opaque boundaries, and
+  bounded diagnostics.
+- **`ColumnLineageAnalysis`** (`src/haute/_column_lineage.py`, frozen dataclass) —
+  the reusable result of parsing a Polars node's linear frame program. It reports an
+  exact output schema when proven, per-input backward demands when proven, a closed
+  rule/reason code, and the unsupported operation when the proof stops. The planner
+  uses the same result for one-input expressions, group-bys, and fan-in joins.
   `strategy_summary_payload()` reports projected/full-width/schema-derived/
   materialisation-boundary choices without shipping the full column sets.
 - **`ExecutionStrategyDiagnostic` / `ExecutionStrategyResult`** (`projection.py`) —
@@ -285,6 +300,34 @@ declares a stable public `error_code`, plus `ExecutionCancelledError` and
 `ExecutionMemoryLimitExceededError`, which always propagate. The preview route
 adapts either explicit mismatch to the same in-situ error response.
 
+Before `_build_funcs()` constructs a JSON `apiInput`, eager and lazy execution
+derive a per-source `{port_label: columns | None}` demand from the prepared
+lineage's complete edge keys and actual `sourceHandle` values. Only ports
+on relevant edges are requested. A concrete edge demand is used only when every
+demanded column belongs to that declared port; otherwise that port remains
+full-width and its unprojected boundary remains diagnostic. Multiple consumers
+of one port union their proven columns, while one opaque consumer makes that port
+full-width. Previewing an API-input source without a selected port requests the
+full bundle. Demand-scoped ancestors continue to report the complete declared
+schema through flat `columns` for a single port and through `frame_columns` for
+every configured multi-port frame; schema visibility never requires loading an
+unused parquet payload.
+
+The strategy planner's JSON footer estimator and the runtime loader both consult
+the JSON-shredding source-signature boundary. Their independently initiated calls
+share one process-wide SHA-256 proof only behind the same native identity/change
+revision; the planner therefore cannot introduce a second raw-source read before a
+cache hit. The first observation or any revision movement still performs the full
+content hash, and native-revision failure stays visible through the JSON component's
+structured conservative-fallback warning.
+
+An exact empty edge demand means that the consumer needs row cardinality but no
+user column (for example `select(pl.len())`). Polars cannot preserve non-zero row
+cardinality in a zero-column frame, so source, edge, and checkpoint projection
+retain exactly one deterministic schema-ordered carrier column. The carrier is a
+physical execution detail, not a logical demand: it is removed naturally by the
+consumer and must never broaden to the whole source or collapse the row count.
+
 **Sink/lazy execution (`execution.execute_lazy_graph` → `_execute_lazy._execute_lazy`).**
 Same graph preparation as the eager path, plus: optional seeding from a
 `DataFrameExecutionCacheRequest` (skips rebuilding any node whose entire downstream
@@ -306,6 +349,18 @@ checkpoint directory, the decision has no materialisation effect. `gc.collect()`
 `_malloc_trim()` run every
 `_GC_BATCH_INTERVAL` (3) checkpoints, not every one, since Polars/Arrow buffers are
 freed immediately on `del` and full GC only matters for cyclic Python garbage.
+
+When a dataframe-cache key names a broader concrete `required_columns` set than the
+immediate runtime request, backward projection is planned from their union. The cache
+key is therefore a physical materialisation demand, not only an identity check: source
+and intermediate projections must retain every passthrough dependency needed to write
+the declared artifact. A narrow runtime request may warm a broader cache entry, but it
+must never silently prune a cache-key column and then skip the cache write. If a column
+required only by that broader cache key is absent from the actual runtime schema, cache
+population is skipped and the cache-only demand is removed from both edge and structural
+checkpoint projections. A missing cache-only column must never fail otherwise-valid
+runtime execution; a missing runtime-required column still raises the typed contract
+mismatch at the first proven boundary.
 
 Checkpoint paths never interpolate an arbitrary node id. `_checkpoint_filename`
 preserves readable `<node_id>.parquet` names for the lower-case safe grammar (at
@@ -408,6 +463,57 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   caches for these are keyed `(node_id, frame_label)` instead of just `node_id` so
   two consumers of different frames from the same source don't collide on
   contract-check state.
+- **Polars lineage is structural, compositional, and fail-closed.** The analyser
+  accepts a plain sequence assigning the live frame to `df`, including an identity
+  program, with inert imports, docstrings, and scalar literal helpers. It turns each
+  supported call into an
+  operation with a forward schema transfer and a backward demand transfer. Literal
+  `select`/`select_seq`, `with_columns`, `rename`, `filter`, `fill_null`, row-only
+  slicing, `sort`, literal-subset `unique`, literal `explode`, closed
+  `group_by(...).agg(...)`, and supported literal-key joins can be composed in one
+  chain. Every expression or aggregate that Polars executes contributes its input
+  columns even if a later select omits its output. A select or aggregate establishes
+  an exact schema without requiring an upstream schema; rename and join collision
+  decisions use exact schemas and otherwise fail closed.
+- **Lineage inputs are incoming edges, not parent node ids.** Each input binding
+  carries its complete `ProjectionEdgeKey`, executable `edge_input_name`, and exact
+  schema when one is available. Exact API schemas are resolved per source handle;
+  exact structural Polars outputs propagate in topological order. This permits two
+  ports of one `apiInput` to join one another and permits several joins in one linear
+  transform without conflating their demands. Generic contracts that address only a
+  parent node id remain usable when that id identifies exactly one incoming edge;
+  duplicate-parent ambiguity is an observable boundary.
+- **Concrete registered contracts propagate exact single-input schemas.** In the
+  same topological forward pass, a non-opaque registered builder contract with one
+  exact incoming edge transfers `input columns ∪ produced columns` to the node's
+  exact output. This is the schema counterpart of the existing backward contract
+  algebra, which treats non-produced output columns as passthrough. It lets a
+  terminal identity preview (including `modelling`) turn an unseeded all-column
+  request into a concrete demand without claiming that any columns were pruned.
+  An `AllExceptColumns(required_columns, excluded_columns)` seed is resolved whenever
+  that exact output is available as
+  `(exact output - excluded_columns) ∪ required_columns`; the resolved seed is
+  unioned with any independent downstream demand and propagated through ordinary
+  edge/port algebra. This makes CatBoost's include/exclude feature menu a physical
+  source projection rather than a post-load dataframe drop. Without an exact output
+  schema the seed remains schema-dependent and conservative; the planner must not
+  guess that `required_columns` alone is the complete training input.
+  Declared annotations are not used as forward-schema evidence for arbitrary user
+  code; missing input schemas, opaque registered contracts, and multi-input nodes
+  remain unproven.
+- **Unowned fan-in never uses ordinary contract algebra.** After the dedicated
+  optimiser, edge-join, and compositional Polars fan-in rules have had an
+  opportunity to assign columns to individual incoming edges, any remaining node
+  with more than one distinct parent retains an unprojected streaming boundary.
+  A generic passthrough contract cannot be broadcast to every parent because its
+  output-column demand does not prove which parent owns each input column.
+- **Unsupported syntax stays visible.** Dynamic selectors/keys, dataframe-dependent
+  helper assignments, unregistered expression functions or string-argument methods,
+  branches/loops/functions, unsupported join options, schema-
+  dependent ownership without an exact schema, and operations without a registered
+  transfer return a structured unsupported lineage result. The planner retains the
+  full-width edge/node boundary and its diagnostic; neither planning nor the UI
+  silently treats it as projected.
 - **Per-edge input names, not per-source names.** `_build_funcs` derives each
   node's `source_names` per incoming edge via `edge_input_name(edge, source_node)`
   (`_graph_utils.py`) — an apiInput edge contributes its frame label, every other
@@ -454,11 +560,15 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   computation cost — cited in the code as keeping contract enforcement under a <5%
   overhead budget.
 - **Passthrough-runtime nodes skip output-contract checks.** A node builder-wired to
-  `_passthrough_fn` (an unconfigured `MODEL_SCORE`/`OPTIMISER_APPLY`, "drag onto
-  canvas, configure later") has a contract describing its *configured* shape, which
+  `_passthrough_fn` (a `MODEL_SCORE` with no source type selected, or an
+  unconfigured `OPTIMISER_APPLY`, "drag onto canvas, configure later") has a
+  contract describing its *configured* shape, which
   the stub doesn't yet produce; the output check is skipped for exactly this state so
   the unconfigured UX doesn't look broken, while input checks and any contract that
   becomes concrete once the node IS configured still apply.
+  Selecting `run` or `registered` is a configuration commitment: a missing `run_id`
+  or `registered_model` is a loud `ConfigError` in both contract planning and the
+  runtime builder, never an identity passthrough.
 - **`_compile_preamble` single-flight cache.** Keyed on `(preamble text, cwd,
   pipeline_dir, execution_fingerprint)`; a `_PreambleCell` per key is created under a
   tiny `_preamble_cells_guard` lock (never held during exec, so a hot cache hit never
@@ -532,11 +642,24 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   the wrong data; an unreadable or unmatched cache still yields "estimate unavailable."
   Without this, every group-by beneath an `apiInput` was refused for want of an estimate —
   which is the ordinary shape of aggregating a shredded child table per quote.
+- **Demand-scoped API loading does not weaken admission.** Materialisation
+  estimation remains based on the complete metadata width of every source port
+  that feeds the target, even when execution proves a narrower column projection.
+  This deliberately conservative estimate covers the loaded lineage without
+  counting unrelated sibling ports that execution no longer opens.
 - **Version-1 strategy diagnostics are strictly bounded.** Boundary/reason collections
   retain at most 32 entries, provenance at most 128, and remediation/messages at most
   512 characters with deterministic truncation. Missing/malformed required fields,
   unknown version-1 enums, and higher schema versions are invalid; callers may ignore
-  only additive fields within version 1.
+  only additive fields within version 1. When a plan contains more than one kind of
+  boundary, `blocking_node_id` and `blocking_operator` identify the first boundary of
+  the selected strategy kind: a `materialisation-boundary` diagnostic points at the
+  admitted materialisation rather than an earlier projection boundary, while
+  projection/full-width diagnostics point at the first unprojected boundary. The
+  bounded `boundaries` collection reports capped, total-counted detail in
+  topological order and, when truncated, retains the earliest representative of
+  every boundary kind present before filling the remaining capacity. A mixed plan
+  therefore cannot truncate away its only unprojected-boundary evidence.
 - **Group-by profile matrix is closed:**
 
   | Profile | Version-1 result |
@@ -687,11 +810,18 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
 
 ## Testing
 
-- `tests/performance/test_polars_scale_scenario.py` — bounded Polars join/training projection scale generation and CI-small execution-profile smoke contracts.
+- `tests/performance/test_polars_scale_scenario.py` — bounded Polars join/training projection scale generation, modelling-menu demand propagation, and CI-small execution-profile smoke contracts.
+- `tests/performance/test_execution_engine_certification.py` — isolated projected-versus-full wide-Parquet RSS comparison plus per-port API-input and direct-JSONL checkpoint certification evidence.
 - `tests/test_bounded_collect_contracts.py` — bounded execution modules route collection through the streaming helper rather than direct Polars `.collect()`.
 - `tests/test_builder_edge_cases.py` — builder edge cases for instance resolution, constants, outputs, live-switch/scenario expansion, banding, dispatch, and empty frames.
 - `tests/test_column_renames.py` — column-rename application for configured, empty, missing, and edge-name mappings.
 - `tests/test_compute_needed_columns.py` — topology, contract-algebra, and one-computation-per-node performance invariants for backward needed-column analysis.
+- `tests/test_column_lineage.py` — operation-level schema/demand transfer and
+  differential execution checks: running supported programs against projected
+  inputs must equal running the same programs against full-width inputs.
+- `tests/test_projection_lineage_integration.py` — edge-identity and API-port
+  integration of compositional lineage, terminal modelling schema propagation,
+  and fail-visible ambiguous/unsupported boundaries.
 - `tests/test_data_input_chunking.py` — Data Input provider snapshots and chunk-plan/runner execution, including unsupported chunk plans.
 - `tests/test_extract_column_refs.py` — extraction of referenced columns across empty/minimal, selected/excluded, and node-config shapes.
 - `tests/test_graph_input_identity.py` — edge-derived pipeline input-name derivation contract across source handles and graph edges.

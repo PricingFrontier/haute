@@ -51,21 +51,22 @@ def streaming_collect(
     *,
     execution_context: ExecutionContext | None = None,
 ) -> pl.DataFrame:
-    """Collect a LazyFrame once through Polars' streaming engine."""
-    metrics_context = execution_context or current_execution_context()
-    if metrics_context is not None:
-        metrics_context.fault_point("collect_before_native")
-        metrics_context.record_collect()
-    return lf.collect(engine="streaming")
+    """Collect once through streaming, with polling when a context is active."""
+    return execution_collect(
+        lf,
+        execution_context=execution_context,
+        engine="streaming",
+    )
 
 
-def cancellable_streaming_collect(
+def _cancellable_collect(
     lf: pl.LazyFrame,
     *,
     execution_context: ExecutionContext,
+    engine: Literal["auto", "streaming"],
     poll_seconds: float = 0.01,
 ) -> pl.DataFrame:
-    """Collect through Polars streaming while propagating native cancellation."""
+    """Collect in the background while propagating request cancellation."""
 
     if (
         isinstance(poll_seconds, bool)
@@ -75,16 +76,20 @@ def cancellable_streaming_collect(
     ):
         raise ValueError("poll_seconds must be a positive finite number")
 
-    execution_context.checkpoint(label="streaming_collect_before_native")
+    checkpoint_label = (
+        "streaming_collect_before_native" if engine == "streaming" else "auto_collect_before_native"
+    )
+    poll_label = "streaming_collect_poll" if engine == "streaming" else "auto_collect_poll"
+    execution_context.checkpoint(label=checkpoint_label)
     execution_context.fault_point("collect_before_native")
     execution_context.record_collect()
-    query = lf.collect(engine="streaming", background=True)
+    query = lf.collect(engine=engine, background=True)
     while True:
         result = query.fetch()
         if result is not None:
             return result
         try:
-            execution_context.checkpoint(label="streaming_collect_poll")
+            execution_context.checkpoint(label=poll_label)
         except BaseException:
             try:
                 query.cancel()
@@ -96,6 +101,42 @@ def cancellable_streaming_collect(
                 )
             raise
         time.sleep(poll_seconds)
+
+
+def cancellable_streaming_collect(
+    lf: pl.LazyFrame,
+    *,
+    execution_context: ExecutionContext,
+    poll_seconds: float = 0.01,
+) -> pl.DataFrame:
+    """Collect through Polars streaming while propagating native cancellation."""
+    return _cancellable_collect(
+        lf,
+        execution_context=execution_context,
+        engine="streaming",
+        poll_seconds=poll_seconds,
+    )
+
+
+def execution_collect(
+    lf: pl.LazyFrame,
+    *,
+    execution_context: ExecutionContext | None = None,
+    engine: Literal["auto", "streaming"] = "auto",
+    poll_seconds: float = 0.01,
+) -> pl.DataFrame:
+    """Collect with native cancellation whenever an execution context is active."""
+    if engine not in {"auto", "streaming"}:
+        raise ValueError("engine must be 'auto' or 'streaming'")
+    context = execution_context or current_execution_context()
+    if context is None:
+        return lf.collect(engine=engine)
+    return _cancellable_collect(
+        lf,
+        execution_context=context,
+        engine=engine,
+        poll_seconds=poll_seconds,
+    )
 
 
 def bounded_collect_batches(
@@ -152,9 +193,20 @@ def _streaming_sink_to_path(
     compression: Literal["lz4", "zstd"],
 ) -> None:
     if fmt == "csv":
-        lf.sink_csv(target)
+        sink_plan = lf.sink_csv(target, lazy=True, engine="streaming")
     else:
-        lf.sink_parquet(target, compression=compression)
+        sink_plan = lf.sink_parquet(
+            target,
+            compression=compression,
+            lazy=True,
+            engine="streaming",
+        )
+    if sink_plan is None:
+        raise RuntimeError("Polars did not return the requested lazy sink plan")
+    execution_collect(
+        sink_plan,
+        engine="streaming",
+    )
 
 
 def _eager_write_to_path(

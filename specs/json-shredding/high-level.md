@@ -65,7 +65,21 @@ probe can accept it. Caching is an optional performance prewarm: runtime first
 tries signed, readable, exact-schema `working/` then `committed/` parquets; when
 neither can serve, it applies the same parsed table specs, shredding, type checks,
 skip accounting, and conservation guards directly in memory without creating or
-refreshing cache files. Schema inference can sniff a v2 config from a data file
+refreshing cache files. Execution may supply a proven per-port column demand: the
+loader still validates the complete v2 config and cache manifest, but opens only
+the requested port payloads, validates each loaded payload against its complete
+declared schema, and projects it to the requested columns. Cache payloads remain
+file-backed: runtime pins each requested artifact into a private process-owned
+snapshot, verifies its signature in bounded chunks, and gives Polars that stable
+path so Parquet projection can read only the selected column data. Haute never
+retains the complete compressed Parquet payload as a Python byte buffer. The
+snapshot normally uses a same-filesystem hard link (with a bounded streaming-copy
+fallback where links are unavailable), is deduplicated by content within the
+process, and is leased for the managed execution lifetime so an already-returned
+lazy plan survives a cache rebuild or clear. A direct caller outside a managed
+execution retains its snapshot until process exit because Haute cannot observe the
+lifetime of every derived Polars plan. A cache miss shreds only the requested tables
+and columns. Calls without a proven demand retain the complete bundle. Schema inference can sniff a v2 config from a data file
 directly, sampling optionally, widening column types across every record seen and
 naming collision-free bare leaf keys as their own column names. Inferred table
 labels are readable identifiers derived from the source key names — the root
@@ -170,19 +184,26 @@ unaccounted discrepancy as a shred bug, not something to serve silently.
 
 **Cache freshness and integrity are proven by content hashes.** A build records the
 data file's size, mtime, and full SHA-256, plus each emitted parquet's size and full
-SHA-256 after writing it. Public validity re-hashes the source and every candidate
-artifact: a readable footer does not prove its data pages are intact. Runtime goes
-further to close the hash-then-reopen race: it reads each compressed parquet exactly
-once, verifies size/SHA-256 over that exact payload, and gives those same bytes to
-Polars as an in-memory lazy scan. A rewrite that preserves size and mtime, or a
-damaged data page beneath an unchanged footer, is therefore never served.
+SHA-256 after writing it. Public validity compares the source's content identity and
+re-hashes every candidate artifact: a readable footer does not prove its data pages
+are intact. The source SHA-256 may be reused across operations only while a strong,
+OS-native revision token proves that the same file generation is unchanged. The
+first observation and every revision change re-hash the complete source; a platform
+or filesystem that cannot provide a strong token gets the conservative always-hash
+path. Runtime goes further to close the hash-then-reopen race: it atomically pins each requested
+artifact to a private file-backed snapshot, verifies size/SHA-256 from that exact
+snapshot in bounded chunks, and gives its stable path to Polars. A rewrite that
+preserves size and mtime, or a damaged data page beneath an unchanged footer, is
+therefore never served, while the complete payload is never retained in memory.
 
-The compressed byte snapshot also pins a returned LazyFrame (including derived
-plans) to the generation it selected, even if the sole on-disk cache generation is
-later rebuilt, mirrored, or explicitly cleared. Parquet decode and projection remain
-lazy, but the full compressed source is read and copied into memory up front and is
-retained while its lazy plans remain live. Disk use stays bounded to one generation;
-memory use scales with the compressed artifacts referenced by active plans.
+The private file snapshot also pins a returned LazyFrame (including derived plans)
+to the generation it selected, even if the visible cache generation is later
+rebuilt, mirrored, or explicitly cleared. Parquet decode and projection remain lazy,
+so collection reads only demanded column chunks. Same-filesystem hard links avoid
+duplicating current-generation disk blocks; replaced generations and the bounded-copy
+fallback occupy temporary disk until the owning managed execution ends. For an
+unmanaged direct caller they remain until orderly process exit because arbitrary
+derived plans can outlive their original Python LazyFrame reference.
 
 Save-time promotion first requires a well-formed v2 mode/schema fingerprint, a
 recorded source signature that still matches the data file, and intact signed working
@@ -201,10 +222,14 @@ the process working directory selected for the project; callers must not assume
 they are relative to the source file. The reader-visibility limitation of this
 replacement is documented in the low-level specification.
 
-Within one logical raw-file load or cache-build operation, the source signature
-(size, mtime, and SHA-256) is computed once and shared by its consumers. A separate
-operation recomputes the signature, so same-size/same-mtime rewrites remain
-detectable.
+Source signatures are process-memoised by canonical path in a bounded,
+single-flight cache. A cache hit requires the same strong native file identity,
+length, last-write value, and change token that surrounded the original complete
+SHA-256 pass. This shares one content proof between planning, loading, and later
+previews without trusting size/mtime alone. A changed token, an atomic replacement,
+a forked process, or a file that changes during hashing cannot reuse the proof;
+native-token failure disables reuse for that observation rather than weakening the
+freshness contract.
 
 **Silent numeric/date coercion is rejected even though the underlying columnar
 library would allow it.** Polars will silently coerce a Python `bool` into a numeric
@@ -221,6 +246,9 @@ strict build and raises a specific, column-named error instead.
   so both paths share identical cache-fast-path and direct-shred behaviour — see
   [execution-engine](../execution-engine/high-level.md) and
   [codegen](../codegen/high-level.md).
+- Demand-scoped execution is an optional argument to that shared loader, not a
+  second executor-only codec. Generated/deploy code that does not pass a demand
+  continues to validate and return every emitting frame.
 - The execution engine's projection planner consumes the same edge-join
   demand-narrowing rule as runtime join construction —
   see [execution-engine](../execution-engine/high-level.md).
@@ -269,6 +297,10 @@ strict build and raises a specific, column-named error instead.
   is not a runtime error: the loader tries the next layer, then shreds the raw
   source directly. Raw-file decode, missing-file, and declared-type failures stay
   loud and specific; the direct path never replaces them with a cache prompt.
+- A demand naming a non-emitting/unknown port, an empty column set, or a column
+  outside that port's declared selected schema is rejected before cache access.
+  Planner uncertainty is represented by a full-width demand, never by dropping an
+  unproven column.
 - `edgeJoin` node misconfiguration (ambiguous/missing base or join role, unsupported
   join strategy, keys on `cross`, missing/conflicting key forms, or mismatched key
   counts) raises `ConfigError` before any join runs.

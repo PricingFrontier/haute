@@ -248,8 +248,8 @@ reason = "Submodels owns document revision semantics; server API consumes revisi
 [[shared_file]]
 path = "src/haute/_polars_utils.py"
 primary = "io-layer"
-consumers = ["explore-eda"]
-reason = "The I/O layer owns profiled Polars materialisation primitives; Explore consumes native cancellable streaming collection for background analysis."
+consumers = ["execution-engine", "explore-eda"]
+reason = "The I/O layer owns profiled Polars materialisation primitives; execution and Explore consume native cancellable collection and sink seams."
 
 [[shared_file]]
 path = "src/haute/_registry.py"

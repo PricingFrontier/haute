@@ -13,7 +13,7 @@
 | `src/haute/_polars_io_schema.py` | Cached index over the committed Polars callable schema, live introspection of the installed Polars, and the intersection of the two. |
 | `src/haute/_polars_io_arguments.json` | Generated Polars callable signature data checked against the pinned Polars version. |
 | `src/haute/_polars_dtypes.py` | Struct-capable dtype JSON codec used by registry schema arguments. |
-| `src/haute/_polars_utils.py` | Streaming and cancellable streaming collect, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
+| `src/haute/_polars_utils.py` | Shared context-aware automatic/streaming collection, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
 | `src/haute/_file_ops.py` | Atomic byte/text writers used for pointer and metadata publication. |
 | `src/haute/_path_resolution.py` | Shared runtime path containment/resolution owned by [sandbox-security](../sandbox-security/low-level.md) and consumed by I/O. |
 | `src/haute/_path_case_audit.py` | Cross-platform case-ambiguity warnings for user-facing paths. |
@@ -135,6 +135,12 @@ Direct mode is not a general compatibility path. It is valid only for a file-bac
 Parquet scan, which already has the lazy, schema-bearing execution shape that a snapshot
 would duplicate.
 
+Legacy flat-file source projection treats an explicit empty `columns` iterable as a
+row-cardinality-only request. `_select_columns()` validates against the complete lazy
+schema and retains its first schema-ordered column as a physical carrier; selecting no
+columns would make Polars report zero rows. Non-empty requests retain their exact existing
+behaviour, and `columns=None` remains full-width.
+
 ### SQLite builder
 
 1. `resolve_connection_uri()` resolves either an environment reference or raw safe URI.
@@ -158,12 +164,22 @@ generated pipeline/runtime seam.
 
 ### Streaming collection
 
-`streaming_collect()` performs one native streaming collect and propagates native failures
-unchanged. `cancellable_streaming_collect()` starts one native streaming background query,
-polls `InProcessQuery.fetch()` at a validated positive interval, and checkpoints between
-polls. A checkpoint failure cancels the native query before propagating; query `fetch()`
-failures propagate unchanged, and a best-effort cancellation failure cannot mask the
-checkpoint failure. Neither helper has an eager or non-streaming fallback.
+`execution_collect()` is the one context-aware collection seam. With no active context it
+performs one native collect using the requested automatic or streaming engine. With an
+active context it starts one native background query, polls `InProcessQuery.fetch()` at a
+validated positive interval, and checkpoints between polls. A checkpoint failure cancels
+the native query before propagating; query `fetch()` failures propagate unchanged, and a
+best-effort cancellation failure cannot mask the checkpoint failure. `streaming_collect()`
+and `cancellable_streaming_collect()` both select the streaming engine through that seam;
+the former discovers the current context while the latter requires one explicitly. There
+is no eager or engine-fallback retry.
+
+`bounded_sink()` constructs Polars' native sink as a lazy streaming query and materialises
+that query through the same context-aware seam. Long Parquet/CSV checkpoint and cache
+writes can therefore observe cancellation and RSS limits while native execution is in
+flight. The sink still writes to an atomic temporary path; cancellation or any native
+failure removes the temporary artifact and never publishes a partial destination. There
+is no eager dataframe or collect-then-write fallback.
 
 ## Edge cases and invariants
 

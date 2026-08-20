@@ -186,10 +186,11 @@ if [[ "$RUN_BACKEND" == true ]]; then
     mkdir -p "$(dirname "$PYTHON_COVERAGE_JSON")"
     rm -f "$PYTHON_COVERAGE_JSON"
     if uv run pytest tests/ -q -n "$PYTEST_WORKERS" --timeout=60 --timeout-method=signal --cov=src/haute --cov-branch --cov-report=term-missing --cov-report="json:${PYTHON_COVERAGE_JSON}" --cov-fail-under=90 &&
-      uv run python scripts/check_critical_coverage.py --coverage-json "$PYTHON_COVERAGE_JSON"; then
-      pass "Python tests (global + critical coverage gates)"
+      uv run python scripts/check_critical_coverage.py --coverage-json "$PYTHON_COVERAGE_JSON" &&
+      uv run python scripts/check_changed_coverage.py --coverage-json "$PYTHON_COVERAGE_JSON"; then
+      pass "Python tests (global + critical + changed-code coverage gates)"
     else
-      fail "Python tests or critical coverage"
+      fail "Python tests or coverage gates"
     fi
 
     if [[ "$RUN_PERF" == true ]]; then

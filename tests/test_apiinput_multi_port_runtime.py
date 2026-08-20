@@ -748,6 +748,359 @@ def test_multi_port_target_still_collected_when_it_is_the_target(isolated_root) 
     assert all(isinstance(v, pl.DataFrame) for v in api_out.values())
 
 
+def test_group_by_preview_loads_only_proven_api_port_columns(
+    isolated_root,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._json_shred as json_shred
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+    graph = PipelineGraph(
+        nodes=[
+            _api_input_node("api", config),
+            GraphNode(
+                id="claims_agg",
+                data=NodeData(
+                    label="claims_agg",
+                    nodeType=NodeType.POLARS,
+                    config={
+                        "contract": "opaque",
+                        "code": (
+                            "df = drivers\n"
+                            "df = df.group_by('age_band').agg("
+                            "pl.len().alias('driver_count'))"
+                        ),
+                    },
+                ),
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                id="e_d",
+                source="api",
+                target="claims_agg",
+                sourceHandle="drivers",
+            ),
+        ],
+    )
+    observed_demands: list[dict[str, frozenset[str] | None] | None] = []
+    real_load = json_shred.load_v2_api_source
+
+    def _capture_load(*args: Any, **kwargs: Any):
+        observed_demands.append(kwargs.get("port_columns"))
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(json_shred, "load_v2_api_source", _capture_load)
+
+    results = execute_graph(
+        graph,
+        target_node_id="claims_agg",
+        target_preview_only=True,
+        include_schema_metadata=True,
+    )
+
+    assert results["claims_agg"].status == "ok", results["claims_agg"].error
+    assert observed_demands == [{"drivers": frozenset({"age_band"})}]
+    assert set(results["api"].frame_columns) == {"policies", "drivers"}
+    assert {column.name for column in results["api"].frame_columns["drivers"]} == {
+        "driver_id",
+        "age_band",
+    }
+
+
+def test_cardinality_only_preview_reads_one_carrier_without_losing_rows(
+    isolated_root,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._json_shred as json_shred
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+    graph = PipelineGraph(
+        nodes=[
+            _api_input_node("api", config),
+            GraphNode(
+                id="driver_count",
+                data=NodeData(
+                    label="driver_count",
+                    nodeType=NodeType.POLARS,
+                    config={
+                        "contract": "opaque",
+                        "code": "df = drivers.select(pl.len().alias('driver_count'))",
+                    },
+                ),
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                id="e_d",
+                source="api",
+                target="driver_count",
+                sourceHandle="drivers",
+            ),
+        ],
+    )
+    observed_demands: list[dict[str, frozenset[str] | None] | None] = []
+    real_load = json_shred.load_v2_api_source
+
+    def _capture_load(*args: Any, **kwargs: Any):
+        observed_demands.append(kwargs.get("port_columns"))
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(json_shred, "load_v2_api_source", _capture_load)
+
+    results = execute_graph(
+        graph,
+        target_node_id="driver_count",
+        target_preview_only=True,
+        include_schema_metadata=True,
+    )
+
+    assert results["driver_count"].status == "ok", results["driver_count"].error
+    assert observed_demands == [{"drivers": frozenset()}]
+    assert results["driver_count"].preview == [{"driver_count": 3}]
+
+
+def test_join_select_preview_loads_only_columns_proven_for_each_api_port(
+    isolated_root,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A closed aggregate/join/select fan-in must stay narrow at both ports."""
+    import haute._json_shred as json_shred
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    config["tables"][1]["columns"].insert(
+        0,
+        {
+            "name": "policy_id",
+            "path": "$[:].policy_id",
+            "type": "int",
+            "selected": True,
+        },
+    )
+    _build_cache_for(isolated_root, data_path, config)
+    graph = PipelineGraph(
+        nodes=[
+            _api_input_node("api", config),
+            GraphNode(
+                id="drivers_agg",
+                data=NodeData(
+                    label="drivers_agg",
+                    nodeType=NodeType.POLARS,
+                    config={
+                        "contract": "opaque",
+                        "code": (
+                            "df = drivers\n"
+                            "df = df.group_by('policy_id').agg("
+                            "pl.len().alias('driver_count'))"
+                        ),
+                    },
+                ),
+            ),
+            GraphNode(
+                id="features",
+                data=NodeData(
+                    label="features",
+                    nodeType=NodeType.POLARS,
+                    config={
+                        "contract": "opaque",
+                        "code": (
+                            "df = policies\n"
+                            "df = drivers_agg.join(policies, on='policy_id')"
+                            ".select(['policy_id', 'driver_count'])"
+                        ),
+                    },
+                ),
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                id="e_drivers",
+                source="api",
+                target="drivers_agg",
+                sourceHandle="drivers",
+            ),
+            GraphEdge(
+                id="e_policies",
+                source="api",
+                target="features",
+                sourceHandle="policies",
+            ),
+            GraphEdge(id="e_agg", source="drivers_agg", target="features"),
+        ],
+    )
+    observed_demands: list[dict[str, frozenset[str] | None] | None] = []
+    real_load = json_shred.load_v2_api_source
+
+    def _capture_load(*args: Any, **kwargs: Any):
+        observed_demands.append(kwargs.get("port_columns"))
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(json_shred, "load_v2_api_source", _capture_load)
+
+    results = execute_graph(
+        graph,
+        target_node_id="features",
+        target_preview_only=True,
+        include_schema_metadata=True,
+    )
+
+    assert results["features"].status == "ok", results["features"].error
+    assert observed_demands == [
+        {
+            "drivers": frozenset({"policy_id"}),
+            "policies": frozenset({"policy_id"}),
+        }
+    ]
+    assert results["features"].row_count == 2
+    assert {column.name for column in results["features"].columns} == {
+        "policy_id",
+        "driver_count",
+    }
+
+
+def test_two_ports_from_one_api_source_join_directly_without_demand_collision(
+    isolated_root,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parallel edges sharing source/target retain independent port demands."""
+    import haute._json_shred as json_shred
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    config["tables"][1]["columns"].insert(
+        0,
+        {
+            "name": "policy_id",
+            "path": "$[:].policy_id",
+            "type": "int",
+            "selected": True,
+        },
+    )
+    _build_cache_for(isolated_root, data_path, config)
+    graph = PipelineGraph(
+        nodes=[
+            _api_input_node("api", config),
+            GraphNode(
+                id="joined",
+                data=NodeData(
+                    label="joined",
+                    nodeType=NodeType.POLARS,
+                    config={
+                        "contract": "opaque",
+                        "code": (
+                            "df = policies.join(drivers, on='policy_id')"
+                            ".select(['policy_id', 'age_band'])"
+                        ),
+                    },
+                ),
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                id="e_policies",
+                source="api",
+                target="joined",
+                sourceHandle="policies",
+            ),
+            GraphEdge(
+                id="e_drivers",
+                source="api",
+                target="joined",
+                sourceHandle="drivers",
+            ),
+        ],
+    )
+    observed_demands: list[dict[str, frozenset[str] | None] | None] = []
+    real_load = json_shred.load_v2_api_source
+
+    def _capture_load(*args: Any, **kwargs: Any):
+        observed_demands.append(kwargs.get("port_columns"))
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(json_shred, "load_v2_api_source", _capture_load)
+
+    results = execute_graph(
+        graph,
+        target_node_id="joined",
+        target_preview_only=True,
+        include_schema_metadata=True,
+    )
+
+    assert results["joined"].status == "ok", results["joined"].error
+    assert observed_demands == [
+        {
+            "policies": frozenset({"policy_id"}),
+            "drivers": frozenset({"policy_id", "age_band"}),
+        }
+    ]
+    assert results["joined"].row_count == 3
+    assert {column.name for column in results["joined"].columns} == {
+        "policy_id",
+        "age_band",
+    }
+
+
+def test_demand_scoped_single_port_ancestor_keeps_full_declared_flat_schema(
+    isolated_root,
+) -> None:
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    multi_port = _multi_port_config(data_path)
+    config = {**multi_port, "tables": [multi_port["tables"][1]]}
+    _build_cache_for(isolated_root, data_path, config)
+    graph = PipelineGraph(
+        nodes=[
+            _api_input_node("api", config),
+            GraphNode(
+                id="drivers_by_age",
+                data=NodeData(
+                    label="drivers_by_age",
+                    nodeType=NodeType.POLARS,
+                    config={
+                        "contract": "opaque",
+                        "code": (
+                            "df = drivers\n"
+                            "df = df.group_by('age_band').agg("
+                            "pl.len().alias('driver_count'))"
+                        ),
+                    },
+                ),
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                id="e_d",
+                source="api",
+                target="drivers_by_age",
+                sourceHandle="drivers",
+            ),
+        ],
+    )
+
+    results = execute_graph(
+        graph,
+        target_node_id="drivers_by_age",
+        target_preview_only=True,
+        include_schema_metadata=True,
+    )
+
+    assert results["drivers_by_age"].status == "ok"
+    assert results["api"].frame_columns == {}
+    assert {column.name for column in results["api"].columns} == {
+        "driver_id",
+        "age_band",
+    }
+
+
 def test_multi_port_ancestor_node_frame_columns_via_route(isolated_root) -> None:
     """ANCESTOR per-frame columns: previewing a target whose multi-port
     apiInput is an UPSTREAM ANCESTOR (not the target) still surfaces the

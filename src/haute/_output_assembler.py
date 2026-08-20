@@ -23,13 +23,18 @@ Vocabulary (kept to tables / fields / join-constraints throughout):
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import polars as pl
 
+from haute._execution_context import ExecutionContext, current_execution_context
 from haute._jsonpath import _ParsedPath, parse_path
+from haute._polars_utils import execution_collect
 from haute.errors import HauteError
+
+_OUTPUT_ASSEMBLY_CHECKPOINT_ROWS = 1_024
 
 
 class OutputMappingSchemaError(HauteError):
@@ -325,11 +330,18 @@ def _own_subpath(parsed: _ParsedPath) -> list[str]:
     return [seg.name for seg in parsed.segments[last_array + 1 :]]
 
 
-def _group_rows(rows: list[dict[str, Any]], keys: list[str]) -> list[list[dict[str, Any]]]:
+def _group_rows(
+    rows: list[dict[str, Any]],
+    keys: list[str],
+    *,
+    on_row: Callable[[], None] | None = None,
+) -> list[list[dict[str, Any]]]:
     """Group rows by their values at *keys* (an object's identity), order-preserving."""
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     order: list[tuple[Any, ...]] = []
     for r in rows:
+        if on_row is not None:
+            on_row()
         k = tuple(r.get(key) for key in keys)
         if k not in groups:
             groups[k] = []
@@ -339,16 +351,21 @@ def _group_rows(rows: list[dict[str, Any]], keys: list[str]) -> list[list[dict[s
 
 
 def _index_rows(
-    rows: list[dict[str, Any]], keys: tuple[str, ...]
+    rows: list[dict[str, Any]],
+    keys: tuple[str, ...],
+    *,
+    on_row: Callable[[], None] | None = None,
 ) -> dict[tuple[Any, ...], list[dict[str, Any]]]:
     """Index rows by *keys*, preserving the source order within every bucket."""
     index: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     for row in rows:
+        if on_row is not None:
+            on_row()
         index.setdefault(tuple(row.get(key) for key in keys), []).append(row)
     return index
 
 
-def _prune(value: Any) -> Any:
+def _prune(value: Any, *, on_value: Callable[[], None] | None = None) -> Any:
     """Recursively drop absent structure (the Q1 null-prune + empty-collection rule).
 
     An **empty collection carries no data**, so it is omitted (Nick's ruling,
@@ -362,10 +379,12 @@ def _prune(value: Any) -> Any:
       dropped array element (a co-located leftover that carried nothing). This
       supersedes the older PATH_NOTATION §3 "singular zero-row is ``{}``".
     """
+    if on_value is not None:
+        on_value()
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for k, v in value.items():
-            pv = _prune(v)
+            pv = _prune(v, on_value=on_value)
             if pv is None:
                 continue
             if isinstance(pv, (list, dict)) and not pv:
@@ -375,12 +394,69 @@ def _prune(value: Any) -> Any:
     if isinstance(value, list):
         kept: list[Any] = []
         for v in value:
-            pv = _prune(v)
+            pv = _prune(v, on_value=on_value)
             if isinstance(pv, dict) and not pv:
                 continue  # drop an empty-object leftover element
             kept.append(pv)
         return kept
     return value
+
+
+@dataclass(slots=True)
+class _OutputAssemblyProgress:
+    """Bound the distance between cancellation and RSS checks in Python assembly."""
+
+    execution_context: ExecutionContext | None
+    rows_since_checkpoint: int = 0
+
+    def checkpoint(self, label: str) -> None:
+        if self.execution_context is not None:
+            self.execution_context.checkpoint(label=label)
+        self.rows_since_checkpoint = 0
+
+    def advance(self, label: str) -> None:
+        if self.execution_context is None:
+            return
+        self.rows_since_checkpoint += 1
+        if self.rows_since_checkpoint >= _OUTPUT_ASSEMBLY_CHECKPOINT_ROWS:
+            self.checkpoint(label)
+
+
+def _collect_output_frame(
+    frame: pl.LazyFrame,
+    execution_context: ExecutionContext | None,
+) -> pl.DataFrame:
+    """Materialise one terminal OUTPUT plan through the shared execution seam."""
+    return execution_collect(
+        frame,
+        execution_context=execution_context,
+        engine="streaming",
+    )
+
+
+def _rows_from_dataframe(
+    frame: pl.DataFrame,
+    *,
+    progress: _OutputAssemblyProgress,
+    marker_errors: dict[str, tuple[str, str]],
+    label: str = "output_assembly_rows",
+) -> list[dict[str, Any]]:
+    """Convert once to the retained row form while checking internal null markers."""
+    progress.checkpoint(label)
+    rows: list[dict[str, Any]] = []
+    for row in frame.iter_rows(named=True):
+        for marker, (port, key) in marker_errors.items():
+            if row.pop(marker):
+                raise OutputNestingKeyError(
+                    "a parent-to-child nesting key cannot be null",
+                    frame=port,
+                    output_path=key,
+                    key=key,
+                )
+        rows.append(row)
+        progress.advance(label)
+    progress.checkpoint(label)
+    return rows
 
 
 def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
@@ -401,12 +477,14 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
     arithmetically meaningless). This is the default, swappable serialiser;
     running it on a single frame renders that frame's own JSON view.
     """
+    execution_context = current_execution_context()
+    progress = _OutputAssemblyProgress(execution_context)
+    progress.checkpoint("output_assembly_schema")
     port_paths: dict[str, dict[str, _ParsedPath]] = {}
-    rows_by_port: dict[str, list[dict[str, Any]]] = {}
-    for port, lf in field_frames.items():
-        df = lf.collect()
-        port_paths[port] = {c: _parse_output_path(c) for c in df.columns}
-        rows_by_port[port] = df.to_dicts()
+    for port, frame in field_frames.items():
+        columns = frame.collect_schema().names()
+        port_paths[port] = {column: _parse_output_path(column) for column in columns}
+    progress.checkpoint("output_assembly_schema")
 
     all_paths: dict[str, _ParsedPath] = {c: p for pp in port_paths.values() for c, p in pp.items()}
     emit_prefix: dict[str, tuple[str, ...]] = {
@@ -430,8 +508,11 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
                 carries[n].update(port_paths[port])
 
     # A parent object can only nest a child under values it emits at this level
-    # and the child subtree also carries.  Null is not an identity: accepting it
+    # and the child subtree also carries. Null is not an identity: accepting it
     # would co-locate unrelated partial rows under a fabricated ``None`` key.
+    # Record each required non-null check now, while the schemas still distinguish
+    # a key that is absent from one frame from a key whose value is genuinely null.
+    nonnull_keys_by_port: dict[str, set[str]] = {port: set() for port in field_frames}
     for parent in nodes:
         parent_own = {c for c, parsed in all_paths.items() if _array_prefix(parsed) == parent}
         for child in (n for n in nodes if len(n) == len(parent) + 1 and n[: len(parent)] == parent):
@@ -443,15 +524,51 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
                 p for p, pref in emit_prefix.items() if pref[: len(child)] == child
             )
             for port in parent_ports + child_ports:
-                for row in rows_by_port[port]:
-                    for key in relation_keys:
-                        if key in row and row[key] is None:
-                            raise OutputNestingKeyError(
-                                "a parent-to-child nesting key cannot be null",
-                                frame=port,
-                                output_path=key,
-                                key=key,
-                            )
+                nonnull_keys_by_port[port].update(
+                    key for key in relation_keys if key in port_paths[port]
+                )
+
+    # Attach private boolean markers before same-level joins. They retain the
+    # originating frame for a null-key error without collecting every source once
+    # for validation and then evaluating those same lazy sources again for the join.
+    marker_errors_by_port: dict[str, dict[str, tuple[str, str]]] = {}
+    planned_frames: dict[str, pl.LazyFrame] = {}
+    marker_index = 0
+    for port, frame in field_frames.items():
+        marker_errors: dict[str, tuple[str, str]] = {}
+        marker_exprs: list[pl.Expr] = []
+        for key in sorted(nonnull_keys_by_port[port]):
+            marker = f"__haute_output_null_key_{marker_index}"
+            marker_index += 1
+            marker_errors[marker] = (port, key)
+            marker_exprs.append(pl.col(key).is_null().alias(marker))
+        marker_errors_by_port[port] = marker_errors
+        planned_frames[port] = frame.with_columns(marker_exprs) if marker_exprs else frame
+
+    # Materialise the final plan for every emitting level exactly once. A group of
+    # same-level sources is joined while it is still lazy, so no member is re-read.
+    rows_by_prefix: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    emitting_prefixes = list(dict.fromkeys(emit_prefix.values()))
+    for prefix in emitting_prefixes:
+        port_list = ports_at[prefix]
+        if len(port_list) == 1:
+            output_plan = planned_frames[port_list[0]]
+        else:
+            incidence = {port: frozenset(port_paths[port]) for port in port_list}
+            output_plan = _execute_plan(
+                {port: planned_frames[port] for port in port_list},
+                _plan_cut(incidence),
+            )
+        marker_errors = {
+            marker: error
+            for port in port_list
+            for marker, error in marker_errors_by_port[port].items()
+        }
+        rows_by_prefix[prefix] = _rows_from_dataframe(
+            _collect_output_frame(output_plan, execution_context),
+            progress=progress,
+            marker_errors=marker_errors,
+        )
 
     def children_of(prefix: tuple[str, ...]) -> list[tuple[str, ...]]:
         return sorted(n for n in nodes if len(n) == len(prefix) + 1 and n[: len(prefix)] == prefix)
@@ -469,22 +586,15 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
             # No frame emits here: synthesise this level from the ancestor keys its
             # descendants carry (a common parent key under which a cyclic core's
             # objects nest, with no table of its own — the triangle's K).
-            level_rows = [
-                r
-                for port, pref in emit_prefix.items()
-                if pref[: len(prefix)] == prefix and len(pref) > len(prefix)
-                for r in rows_by_port[port]
-            ]
-        elif len(port_list) == 1:
-            level_rows = rows_by_port[port_list[0]]
+            level_rows = []
+            for emitted_prefix in emitting_prefixes:
+                if emitted_prefix[: len(prefix)] == prefix and len(emitted_prefix) > len(prefix):
+                    descendant_rows = rows_by_prefix[emitted_prefix]
+                    level_rows.extend(descendant_rows)
+                    for _ in descendant_rows:
+                        progress.advance("output_assembly_build")
         else:
-            # Several frames at one level: same-level constraints may form a cyclic
-            # core → plan the cut and bag-join the honoured remainder (§4.1–4.4).
-            incidence = {p: frozenset(port_paths[p]) for p in port_list}
-            plan = _plan_cut(incidence)
-            level_rows = (
-                _execute_plan({p: field_frames[p] for p in port_list}, plan).collect().to_dicts()
-            )
+            level_rows = rows_by_prefix[prefix]
         level_rows_cache[prefix] = level_rows
         return level_rows
 
@@ -494,7 +604,15 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
         keys = tuple(sorted(scope))
         cache_key = (prefix, keys)
         if cache_key not in indexes:
-            indexes[cache_key] = _index_rows(level_rows_for(prefix), keys)
+            index_source = level_rows_for(prefix)
+            if execution_context is None:
+                indexes[cache_key] = _index_rows(index_source, keys)
+            else:
+                indexes[cache_key] = _index_rows(
+                    index_source,
+                    keys,
+                    on_row=lambda: progress.advance("output_assembly_build"),
+                )
         return indexes[cache_key].get(tuple(scope[key] for key in keys), [])
 
     def build(prefix: tuple[str, ...], scope: dict[str, Any]) -> list[dict[str, Any]]:
@@ -502,7 +620,17 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
 
         own = [c for c, p in all_paths.items() if _array_prefix(p) == prefix]
         objects: list[dict[str, Any]] = []
-        for grp in _group_rows(rows, own):
+        grouped_rows = _group_rows(
+            rows,
+            own,
+            on_row=(
+                (lambda: progress.advance("output_assembly_build"))
+                if execution_context is not None
+                else None
+            ),
+        )
+        for grp in grouped_rows:
+            progress.advance("output_assembly_build")
             obj: dict[str, Any] = {}
             for c in own:
                 _set_nested(obj, _own_subpath(all_paths[c]), grp[0].get(c))
@@ -515,7 +643,16 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
             objects.append(obj)
         return objects
 
-    document: list[Any] = _prune(build((), {}))
+    progress.checkpoint("output_assembly_build")
+    document: list[Any] = _prune(
+        build((), {}),
+        on_value=(
+            (lambda: progress.advance("output_assembly_build"))
+            if execution_context is not None
+            else None
+        ),
+    )
+    progress.checkpoint("output_assembly_build")
     return document
 
 
@@ -722,5 +859,21 @@ def render_output_document(df: pl.DataFrame) -> list[Any]:
     so the rendered JSON equals the assembled document — equality "up to empty
     collections". For a flat OUTPUT (no nesting, no nulls) this is a no-op.
     """
-    document: list[Any] = _prune(df.to_dicts())
+    progress = _OutputAssemblyProgress(current_execution_context())
+    rows = _rows_from_dataframe(
+        df,
+        progress=progress,
+        marker_errors={},
+        label="output_render_rows",
+    )
+    progress.checkpoint("output_render_prune")
+    document: list[Any] = _prune(
+        rows,
+        on_value=(
+            (lambda: progress.advance("output_render_prune"))
+            if progress.execution_context is not None
+            else None
+        ),
+    )
+    progress.checkpoint("output_render_prune")
     return document

@@ -51,17 +51,32 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
             operation="deploy_pyfunc_predict",
             row_count=len(model_input),
         )
-        input_df = pl.from_pandas(model_input)
-        result = score_graph(
-            graph=self._graph,
-            input_df=input_df,
-            input_node_ids=self._input_node_ids,
-            output_node_id=self._output_node_id,
-            artifact_paths=self._artifact_paths,
-            output_fields=self._output_fields,
-            execution_context=execution_context,
-        )
-        return result.to_pandas()
+        preserve_primary_error = False
+        try:
+            with execution_context.stage("deploy_from_pandas"):
+                input_df = pl.from_pandas(model_input)
+            execution_context.checkpoint(label="after_deploy_from_pandas")
+            result = score_graph(
+                graph=self._graph,
+                input_df=input_df,
+                input_node_ids=self._input_node_ids,
+                output_node_id=self._output_node_id,
+                artifact_paths=self._artifact_paths,
+                output_fields=self._output_fields,
+                execution_context=execution_context,
+                retain_admission_on_success=True,
+            )
+            with execution_context.stage("deploy_to_pandas"):
+                pandas_result = result.to_pandas()
+            execution_context.checkpoint(label="after_deploy_to_pandas")
+            return pandas_result
+        except BaseException:
+            preserve_primary_error = True
+            raise
+        finally:
+            execution_context.release_admission(
+                preserve_primary_error=preserve_primary_error,
+            )
 
 
 set_model(HauteModel())
