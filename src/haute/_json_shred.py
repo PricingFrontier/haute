@@ -71,6 +71,7 @@ from haute._api_input_schema import (
 from haute._api_input_schema import (
     sanitise_label_for_filesystem as _sanitise_label,
 )
+from haute._env import int_env
 from haute._execution_context import ExecutionContext, current_execution_context
 from haute._jsonpath import is_identifier_name
 from haute._logging import get_logger
@@ -291,6 +292,7 @@ class ShredSkipStats:
 
 
 _DATA_FILE_SIGNATURE_MEMO_MAX_ENTRIES = 256
+_NATIVE_REVISION_SCHEMA_VERSION = 1
 _WINDOWS_EPOCH_OFFSET_100NS = 116_444_736_000_000_000
 
 
@@ -304,6 +306,100 @@ class _StrongFileRevision:
     change_token: int
 
 
+def _native_revision_record(revision: _StrongFileRevision) -> dict[str, Any]:
+    """Return the strict JSON representation persisted beside a source hash."""
+
+    volume_or_device, file_id = revision.file_identity
+    if isinstance(file_id, bytes):
+        kind = "windows_usn_v1"
+        identity: list[int | str] = [volume_or_device, file_id.hex()]
+    else:
+        kind = "posix_ctime_v1"
+        identity = [volume_or_device, file_id]
+    return {
+        "schema_version": _NATIVE_REVISION_SCHEMA_VERSION,
+        "kind": kind,
+        "file_identity": identity,
+        "size": revision.size,
+        "mtime_ns": revision.mtime_ns,
+        "change_token": revision.change_token,
+    }
+
+
+def _parse_native_revision_record(value: Any) -> _StrongFileRevision | None:
+    """Parse one persisted native revision, rejecting partial/weaker shapes."""
+
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version",
+        "kind",
+        "file_identity",
+        "size",
+        "mtime_ns",
+        "change_token",
+    }:
+        return None
+    if value.get("schema_version") != _NATIVE_REVISION_SCHEMA_VERSION:
+        return None
+    kind = value.get("kind")
+    identity = value.get("file_identity")
+    size = value.get("size")
+    mtime_ns = value.get("mtime_ns")
+    change_token = value.get("change_token")
+    if (
+        not isinstance(identity, list)
+        or len(identity) != 2
+        or type(identity[0]) is not int
+        or identity[0] < 0
+        or type(size) is not int
+        or size < 0
+        or type(mtime_ns) is not int
+        or type(change_token) is not int
+        or change_token <= 0
+    ):
+        return None
+    if kind == "posix_ctime_v1":
+        if type(identity[1]) is not int or identity[1] <= 0:
+            return None
+        file_identity: tuple[int, int | bytes] = (identity[0], identity[1])
+    elif kind == "windows_usn_v1":
+        if not isinstance(identity[1], str) or len(identity[1]) != 32:
+            return None
+        try:
+            file_id = bytes.fromhex(identity[1])
+        except ValueError:
+            return None
+        if not any(file_id):
+            return None
+        file_identity = (identity[0], file_id)
+    else:
+        return None
+    return _StrongFileRevision(
+        file_identity=file_identity,
+        size=size,
+        mtime_ns=mtime_ns,
+        change_token=change_token,
+    )
+
+
+def _persisted_source_proof_digest(
+    *,
+    size: int,
+    mtime_ns: int,
+    sha256: str,
+    native_revision: _StrongFileRevision,
+) -> str:
+    """Bind a persisted source signature to its native revision."""
+
+    payload = {
+        "schema_version": _NATIVE_REVISION_SCHEMA_VERSION,
+        "size": size,
+        "mtime_ns": mtime_ns,
+        "sha256": sha256,
+        "native_revision": _native_revision_record(native_revision),
+    }
+    return hashlib.sha256(orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class _DataFileSignatureRecord:
     """Immutable memo payload; callers receive a fresh mapping view."""
@@ -311,13 +407,30 @@ class _DataFileSignatureRecord:
     size: int
     mtime_ns: int
     sha256: str
+    native_revision: _StrongFileRevision | None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "size": self.size,
             "mtime_ns": self.mtime_ns,
             "sha256": self.sha256,
+            "native_revision": (
+                None
+                if self.native_revision is None
+                else _native_revision_record(self.native_revision)
+            ),
         }
+        payload["native_revision_proof_sha256"] = (
+            None
+            if self.native_revision is None
+            else _persisted_source_proof_digest(
+                size=self.size,
+                mtime_ns=self.mtime_ns,
+                sha256=self.sha256,
+                native_revision=self.native_revision,
+            )
+        )
+        return payload
 
 
 class _WindowsFileBasicInfo(ctypes.Structure):
@@ -351,8 +464,19 @@ class _WindowsFileIdInfo(ctypes.Structure):
     ]
 
 
+class _WindowsReadFileUsnData(ctypes.Structure):
+    _fields_ = [
+        ("MinMajorVersion", ctypes.c_uint16),
+        ("MaxMajorVersion", ctypes.c_uint16),
+    ]
+
+
+_FSCTL_READ_FILE_USN_DATA = 0x000900EB
+_WINDOWS_USN_OUTPUT_BUFFER_SIZE = 4_096
+
+
 def _windows_strong_file_revision(path: Path) -> _StrongFileRevision | None:
-    """Read one Windows file identity/change token, or decline memoisation."""
+    """Read one Windows file identity/USN token, or decline memoisation."""
     windll_factory = getattr(ctypes, "WinDLL", None)
     if windll_factory is None:
         return None
@@ -380,9 +504,21 @@ def _windows_strong_file_revision(path: Path) -> _StrongFileRevision | None:
         close_handle = kernel32.CloseHandle
         close_handle.argtypes = [ctypes.c_void_p]
         close_handle.restype = ctypes.c_int
+        device_io_control = kernel32.DeviceIoControl
+        device_io_control.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_void_p,
+        ]
+        device_io_control.restype = ctypes.c_int
 
-        # Read attributes only; allow ordinary readers/writers and Haute's
-        # atomic publisher to coexist with this short-lived identity handle.
+        # Read attributes only; the file-level USN query does not require a
+        # data-read handle. Sharing remains fully permissive for the publisher.
         handle = create_file(
             str(path),
             0x80,  # FILE_READ_ATTRIBUTES
@@ -411,19 +547,49 @@ def _windows_strong_file_revision(path: Path) -> _StrongFileRevision | None:
                     ctypes.sizeof(target),
                 ):
                     return None
+            usn_input = _WindowsReadFileUsnData(2, 3)
+            usn_buffer = (ctypes.c_ubyte * _WINDOWS_USN_OUTPUT_BUFFER_SIZE)()
+            returned = ctypes.c_uint32()
+            if not device_io_control(
+                handle,
+                _FSCTL_READ_FILE_USN_DATA,
+                ctypes.byref(usn_input),
+                ctypes.sizeof(usn_input),
+                ctypes.byref(usn_buffer),
+                ctypes.sizeof(usn_buffer),
+                ctypes.byref(returned),
+                None,
+            ):
+                return None
+            returned_length = int(returned.value)
+            if returned_length < 8 or returned_length > ctypes.sizeof(usn_buffer):
+                return None
+            record = bytes(usn_buffer[:returned_length])
+            record_length = int.from_bytes(record[:4], "little")
+            major_version = int.from_bytes(record[4:6], "little")
+            usn_offset = 24 if major_version == 2 else 40 if major_version == 3 else None
+            if (
+                usn_offset is None
+                or record_length < usn_offset + 8
+                or record_length > returned_length
+            ):
+                return None
+            usn = int.from_bytes(record[usn_offset : usn_offset + 8], "little", signed=True)
+            if usn <= 0:
+                return None
         finally:
             close_handle(handle)
     except (AttributeError, OSError, ValueError, ctypes.ArgumentError):
         return None
 
     identity = bytes(file_id.FileId.Identifier)
-    if standard.Directory or standard.EndOfFile < 0 or basic.ChangeTime <= 0 or not any(identity):
+    if standard.Directory or standard.EndOfFile < 0 or not any(identity):
         return None
     return _StrongFileRevision(
         file_identity=(int(file_id.VolumeSerialNumber), identity),
         size=int(standard.EndOfFile),
         mtime_ns=(int(basic.LastWriteTime) - _WINDOWS_EPOCH_OFFSET_100NS) * 100,
-        change_token=int(basic.ChangeTime),
+        change_token=usn,
     )
 
 
@@ -482,6 +648,7 @@ def _uncached_data_file_signature(data_path: Path) -> _DataFileSignatureRecord:
         size=int(final.st_size),
         mtime_ns=int(final.st_mtime_ns),
         sha256=digest,
+        native_revision=None,
     )
 
 
@@ -497,7 +664,150 @@ def _revision_gated_data_file_signature(
         size=revision.size,
         mtime_ns=revision.mtime_ns,
         sha256=digest,
+        native_revision=revision,
     )
+
+
+def _persisted_data_file_signature(
+    data_path: Path,
+    revision: _StrongFileRevision,
+) -> _DataFileSignatureRecord | None:
+    """Load an agreeing cache-build proof for the exact current generation."""
+
+    from haute._json_flatten import _json_cache_dir
+
+    candidates: list[_DataFileSignatureRecord] = []
+    matching_record_invalid = False
+    matching_paths: list[str] = []
+    for layer in ("working", "committed"):
+        meta_path = _json_cache_dir(data_path, layer) / _META_FILENAME
+        try:
+            meta = orjson.loads(meta_path.read_bytes())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict) or meta.get("schema_mode") != "v2":
+            continue
+        recorded = meta.get("data_file")
+        if not isinstance(recorded, dict):
+            continue
+        persisted_revision = _parse_native_revision_record(recorded.get("native_revision"))
+        if persisted_revision != revision:
+            continue
+        matching_paths.append(str(meta_path))
+        parts = _content_signature_parts(recorded)
+        recorded_mtime_ns = recorded.get("mtime_ns")
+        proof_digest = recorded.get("native_revision_proof_sha256")
+        if (
+            parts is None
+            or type(recorded_mtime_ns) is not int
+            or parts[0] != revision.size
+            or recorded_mtime_ns != revision.mtime_ns
+            or not isinstance(proof_digest, str)
+            or proof_digest
+            != _persisted_source_proof_digest(
+                size=parts[0],
+                mtime_ns=recorded_mtime_ns,
+                sha256=parts[1],
+                native_revision=revision,
+            )
+        ):
+            matching_record_invalid = True
+            continue
+        candidates.append(
+            _DataFileSignatureRecord(
+                size=parts[0],
+                mtime_ns=recorded_mtime_ns,
+                sha256=parts[1],
+                native_revision=revision,
+            )
+        )
+
+    if (
+        matching_record_invalid
+        or not candidates
+        or any(candidate != candidates[0] for candidate in candidates[1:])
+    ):
+        if matching_paths:
+            logger.warning(
+                "json_source_persisted_proof_rejected",
+                data_path=str(data_path),
+                matching_meta_paths=matching_paths,
+                reason=(
+                    "invalid_matching_signature"
+                    if matching_record_invalid
+                    else "conflicting_matching_signatures"
+                ),
+                action="full_source_hash",
+            )
+        return None
+    if _strong_file_revision(data_path) != revision:
+        return None
+    return candidates[0]
+
+
+def _upgrade_legacy_persisted_source_proofs(
+    data_path: Path,
+    signature: _DataFileSignatureRecord,
+    revision: _StrongFileRevision,
+) -> None:
+    """Atomically bind matching legacy manifests to one freshly hashed revision."""
+
+    from haute._json_flatten import _json_cache_dir
+
+    source_parts = (signature.size, signature.sha256)
+    source_payload = signature.as_dict()
+    for layer in ("working", "committed"):
+        cache_dir = _json_cache_dir(data_path, layer)
+        meta_path = cache_dir / _META_FILENAME
+        with _build_lock_for(cache_dir):
+            try:
+                meta = orjson.loads(meta_path.read_bytes())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(meta, dict) or meta.get("schema_mode") != "v2":
+                continue
+            recorded = meta.get("data_file")
+            if (
+                not isinstance(recorded, dict)
+                or _content_signature_parts(recorded) != source_parts
+                or recorded == source_payload
+            ):
+                continue
+            # Do not publish a proof after the source generation that justified
+            # it has moved. The already-computed signature remains valid for the
+            # caller's observation, but a future process must hash again.
+            if _strong_file_revision(data_path) != revision:
+                return
+            upgraded_meta = {**meta, "data_file": source_payload}
+            temp_path = cache_dir / f".{_META_FILENAME}.{uuid.uuid4().hex}.tmp"
+            try:
+                temp_path.write_bytes(orjson.dumps(upgraded_meta))
+                os.replace(temp_path, meta_path)
+            except OSError as exc:
+                logger.warning(
+                    "json_source_persisted_proof_upgrade_failed",
+                    data_path=str(data_path),
+                    cache_dir=str(cache_dir),
+                    error=str(exc),
+                    action="retain_full_hash_result",
+                )
+            else:
+                logger.info(
+                    "json_source_persisted_proof_upgraded",
+                    data_path=str(data_path),
+                    cache_dir=str(cache_dir),
+                )
+            finally:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning(
+                        "json_source_persisted_proof_temp_cleanup_failed",
+                        data_path=str(data_path),
+                        cache_dir=str(cache_dir),
+                        temp_path=str(temp_path),
+                        error=str(exc),
+                    )
 
 
 class _DataFileSignatureLoadGate:
@@ -581,10 +891,17 @@ class _DataFileSignatureMemo:
                         self._entries.move_to_end(key)
                         return entry[1].as_dict()
 
-                signature = _revision_gated_data_file_signature(
-                    resolved_path,
-                    current_revision,
-                )
+                signature = _persisted_data_file_signature(resolved_path, current_revision)
+                if signature is None:
+                    signature = _revision_gated_data_file_signature(
+                        resolved_path,
+                        current_revision,
+                    )
+                    _upgrade_legacy_persisted_source_proofs(
+                        resolved_path,
+                        signature,
+                        current_revision,
+                    )
                 with self._lock:
                     self._entries[key] = (current_revision, signature)
                     self._entries.move_to_end(key)
@@ -633,10 +950,11 @@ def _clear_data_file_signature_memo() -> None:
 def _data_file_signature(data_path: Path) -> dict[str, Any]:
     """Return the size/mtime/SHA-256 identity recorded in cache metadata.
 
-    The complete content hash remains authoritative. It is reused only when
-    an OS-native identity/change token proves that the same file generation
-    is unchanged; unsupported filesystems take the conservative full-hash
-    path. Raises ``OSError`` for an unreadable or concurrently changing file.
+    The complete content hash remains authoritative. It is reused from memory
+    or cache-build metadata only when an OS-native identity/change token proves
+    that the same file generation is unchanged; unsupported filesystems take
+    the conservative full-hash path. Raises ``OSError`` for an unreadable or
+    concurrently changing file.
     """
     return _DATA_FILE_SIGNATURE_MEMO.get(data_path)
 
@@ -735,13 +1053,15 @@ _BUILD_LOCKS_GUARD = threading.Lock()
 _RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)  # pragma: no mutate
 
 # File-backed runtime snapshots live outside a cache generation so replacing or
-# clearing that generation cannot retarget an already-returned LazyFrame. One
-# content-addressed path is reference-counted across managed executions and
-# removed after their cleanup. Unmanaged direct callers pin it for the process:
+# clearing that generation cannot retarget an already-returned LazyFrame. Repeated
+# access to one artifact generation can share a private path across managed
+# executions. Its verification-cache pin is independently bounded; unmanaged direct
+# callers pin it for the process:
 # a derived Polars plan can outlive the original LazyFrame, so there is no safe
 # Python-object lifetime at which to reclaim its source. Orderly process exit
 # removes every remaining private snapshot directory.
 _RUNTIME_SNAPSHOT_DIRNAME = ".runtime-snapshots"
+_RUNTIME_SNAPSHOT_DIGEST_PREFIX_HEX = 32
 _RUNTIME_SNAPSHOT_PROCESS_ID = os.getpid()
 _RUNTIME_SNAPSHOT_PROCESS_TOKEN = f"{os.getpid()}-{uuid.uuid4().hex}"
 _RUNTIME_SNAPSHOT_DIRS: set[Path] = set()
@@ -749,6 +1069,177 @@ _RUNTIME_SNAPSHOT_REFERENCES: dict[Path, int] = {}
 _RUNTIME_SNAPSHOT_PROCESS_PINS: set[Path] = set()
 _RUNTIME_SNAPSHOT_LOCK = threading.Lock()
 _RUNTIME_SNAPSHOT_ATEXIT_REGISTERED = False
+RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES = int_env("HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES", 64)
+RUNTIME_SNAPSHOT_CACHE_MAX_BYTES = int_env(
+    "HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_BYTES", 512 * 1024 * 1024
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedRuntimeSnapshot:
+    revision: _StrongFileRevision
+    snapshot_path: Path
+    size: int
+
+
+class _VerifiedRuntimeSnapshotLoadGate:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.participants = 0
+
+
+class _VerifiedRuntimeSnapshotCache:
+    """Bounded, fork-safe LRU of already verified private parquet snapshots."""
+
+    def __init__(self, max_entries: int, max_bytes: int) -> None:
+        for name, value in (("max_entries", max_entries), ("max_bytes", max_bytes)):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        self._max_entries = max_entries
+        self._max_bytes = max_bytes
+        self._process_id = os.getpid()
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[tuple[str, int, str], _VerifiedRuntimeSnapshot] = OrderedDict()
+        self._path_counts: dict[Path, int] = {}
+        self._path_sizes: dict[Path, int] = {}
+        self._bytes = 0
+        self._gates: dict[tuple[str, int, str], _VerifiedRuntimeSnapshotLoadGate] = {}
+        self._warnings: OrderedDict[str, None] = OrderedDict()
+
+    def _ensure_current_process(self) -> None:
+        if os.getpid() == self._process_id:
+            return
+        # Do not acquire an inherited lock after fork: a vanished parent thread
+        # may have owned it. These are child-local copies of all bookkeeping.
+        self._process_id = os.getpid()
+        self._lock = threading.Lock()
+        self._entries = OrderedDict()
+        self._path_counts = {}
+        self._path_sizes = {}
+        self._bytes = 0
+        self._gates = {}
+        self._warnings = OrderedDict()
+
+    def reset_after_fork(self) -> None:
+        """Forget inherited state without touching parent-owned files."""
+        self._ensure_current_process()
+        with self._lock:
+            self._entries.clear()
+            self._path_counts.clear()
+            self._path_sizes.clear()
+            self._bytes = 0
+            self._gates = {key: gate for key, gate in self._gates.items() if gate.participants}
+            self._warnings.clear()
+
+    def warn_revision_unavailable_once(self, path_key: str, path: Path) -> None:
+        self._ensure_current_process()
+        with self._lock:
+            if path_key in self._warnings:
+                self._warnings.move_to_end(path_key)
+                return
+            self._warnings[path_key] = None
+            while len(self._warnings) > self._max_entries:
+                self._warnings.popitem(last=False)
+        logger.warning(
+            "json_cache_artifact_revision_unavailable",
+            parquet_path=str(path),
+            action="full_artifact_hash_per_operation",
+        )
+
+    def begin(self, key: tuple[str, int, str]) -> _VerifiedRuntimeSnapshotLoadGate:
+        self._ensure_current_process()
+        with self._lock:
+            gate = self._gates.setdefault(key, _VerifiedRuntimeSnapshotLoadGate())
+            gate.participants += 1
+            return gate
+
+    def finish(self, key: tuple[str, int, str], gate: _VerifiedRuntimeSnapshotLoadGate) -> None:
+        self._ensure_current_process()
+        with self._lock:
+            gate.participants -= 1
+            if gate.participants == 0 and self._gates.get(key) is gate and key not in self._entries:
+                del self._gates[key]
+
+    def _drop_entry_locked(self, key: tuple[str, int, str]) -> list[Path]:
+        entry = self._entries.pop(key)
+        path = entry.snapshot_path
+        count = self._path_counts[path] - 1
+        if count:
+            self._path_counts[path] = count
+            return []
+        del self._path_counts[path]
+        self._bytes -= self._path_sizes.pop(path)
+        return [path]
+
+    def get(
+        self, key: tuple[str, int, str], revision: _StrongFileRevision
+    ) -> tuple[Path | None, list[Path]]:
+        self._ensure_current_process()
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None, []
+            if entry.revision != revision or not entry.snapshot_path.exists():
+                return None, self._drop_entry_locked(key)
+            self._entries.move_to_end(key)
+            return entry.snapshot_path, []
+
+    def store(
+        self,
+        key: tuple[str, int, str],
+        revision: _StrongFileRevision,
+        snapshot_path: Path,
+        size: int,
+    ) -> tuple[bool, list[Path]]:
+        """Pin a verified snapshot if it fits, returning cache-pin evictions."""
+        self._ensure_current_process()
+        if size > self._max_bytes:
+            return False, []
+        evicted: list[Path] = []
+        with self._lock:
+            if key in self._entries:
+                evicted.extend(self._drop_entry_locked(key))
+            self._entries[key] = _VerifiedRuntimeSnapshot(revision, snapshot_path, size)
+            self._entries.move_to_end(key)
+            if snapshot_path in self._path_counts:
+                self._path_counts[snapshot_path] += 1
+            else:
+                self._path_counts[snapshot_path] = 1
+                self._path_sizes[snapshot_path] = size
+                self._bytes += size
+            while len(self._entries) > self._max_entries or self._bytes > self._max_bytes:
+                old_key = next(iter(self._entries))
+                evicted.extend(self._drop_entry_locked(old_key))
+            self._gates = {
+                gate_key: gate
+                for gate_key, gate in self._gates.items()
+                if gate.participants or gate_key in self._entries
+            }
+            retained = key in self._entries
+        return retained, evicted
+
+    def is_pinned(self, snapshot_path: Path) -> bool:
+        self._ensure_current_process()
+        with self._lock:
+            return snapshot_path in self._path_counts
+
+    def clear(self) -> None:
+        self.reset_after_fork()
+
+    def stats(self) -> dict[str, int]:
+        self._ensure_current_process()
+        with self._lock:
+            return {
+                "entries": len(self._entries),
+                "bytes": self._bytes,
+                "inflight": sum(gate.participants > 0 for gate in self._gates.values()),
+            }
+
+
+_VERIFIED_RUNTIME_SNAPSHOT_CACHE = _VerifiedRuntimeSnapshotCache(
+    RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES,
+    RUNTIME_SNAPSHOT_CACHE_MAX_BYTES,
+)
 
 
 def _build_lock_for(cache_dir: Path) -> threading.RLock:
@@ -768,6 +1259,7 @@ def _cleanup_runtime_snapshot_dirs() -> None:
         _RUNTIME_SNAPSHOT_DIRS.clear()
         _RUNTIME_SNAPSHOT_REFERENCES.clear()
         _RUNTIME_SNAPSHOT_PROCESS_PINS.clear()
+        _VERIFIED_RUNTIME_SNAPSHOT_CACHE.clear()
     for snapshot_dir in snapshot_dirs:
         shutil.rmtree(snapshot_dir, ignore_errors=True)
     for parent in {snapshot_dir.parent for snapshot_dir in snapshot_dirs}:
@@ -782,18 +1274,20 @@ def _cleanup_runtime_snapshot_dirs() -> None:
 def _runtime_snapshot_dir(cache_dir: Path) -> Path:
     """Return this process's private snapshot directory beside *cache_dir*."""
     global _RUNTIME_SNAPSHOT_ATEXIT_REGISTERED
-    global _RUNTIME_SNAPSHOT_PROCESS_ID, _RUNTIME_SNAPSHOT_PROCESS_TOKEN
+    global _RUNTIME_SNAPSHOT_PROCESS_ID, _RUNTIME_SNAPSHOT_PROCESS_TOKEN, _RUNTIME_SNAPSHOT_LOCK
+
+    # This check deliberately precedes acquiring the lock. A forked child can
+    # inherit a lock held by a parent thread which no longer exists in the child.
+    if os.getpid() != _RUNTIME_SNAPSHOT_PROCESS_ID:
+        _RUNTIME_SNAPSHOT_PROCESS_ID = os.getpid()
+        _RUNTIME_SNAPSHOT_PROCESS_TOKEN = f"{os.getpid()}-{uuid.uuid4().hex}"
+        _RUNTIME_SNAPSHOT_LOCK = threading.Lock()
+        _RUNTIME_SNAPSHOT_DIRS.clear()
+        _RUNTIME_SNAPSHOT_REFERENCES.clear()
+        _RUNTIME_SNAPSHOT_PROCESS_PINS.clear()
+        _VERIFIED_RUNTIME_SNAPSHOT_CACHE.reset_after_fork()
 
     with _RUNTIME_SNAPSHOT_LOCK:
-        process_id = os.getpid()
-        if process_id != _RUNTIME_SNAPSHOT_PROCESS_ID:
-            # The child owns a copy of the set, so clearing it cannot affect the
-            # parent. The inherited atexit callback will now clean only child paths.
-            _RUNTIME_SNAPSHOT_PROCESS_ID = process_id
-            _RUNTIME_SNAPSHOT_PROCESS_TOKEN = f"{process_id}-{uuid.uuid4().hex}"
-            _RUNTIME_SNAPSHOT_DIRS.clear()
-            _RUNTIME_SNAPSHOT_REFERENCES.clear()
-            _RUNTIME_SNAPSHOT_PROCESS_PINS.clear()
         snapshot_dir = (
             cache_dir.parent / _RUNTIME_SNAPSHOT_DIRNAME / _RUNTIME_SNAPSHOT_PROCESS_TOKEN
         )
@@ -831,7 +1325,10 @@ def _release_runtime_snapshot(snapshot_path: Path) -> None:
             _RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = references - 1
             return
         del _RUNTIME_SNAPSHOT_REFERENCES[snapshot_path]
-        if snapshot_path in _RUNTIME_SNAPSHOT_PROCESS_PINS:
+        if (
+            snapshot_path in _RUNTIME_SNAPSHOT_PROCESS_PINS
+            or _VERIFIED_RUNTIME_SNAPSHOT_CACHE.is_pinned(snapshot_path)
+        ):
             return
         try:
             snapshot_path.unlink()
@@ -841,6 +1338,25 @@ def _release_runtime_snapshot(snapshot_path: Path) -> None:
             snapshot_path.parent.rmdir()
         except OSError:
             # Another content snapshot in this process directory is still live.
+            pass
+
+
+def _remove_unpinned_runtime_snapshot(snapshot_path: Path) -> None:
+    """Drop an evicted cache pin once no execution/process lease remains."""
+    with _RUNTIME_SNAPSHOT_LOCK:
+        if (
+            _RUNTIME_SNAPSHOT_REFERENCES.get(snapshot_path, 0) > 0
+            or snapshot_path in _RUNTIME_SNAPSHOT_PROCESS_PINS
+            or _VERIFIED_RUNTIME_SNAPSHOT_CACHE.is_pinned(snapshot_path)
+        ):
+            return
+        try:
+            snapshot_path.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            snapshot_path.parent.rmdir()
+        except OSError:
             pass
 
 
@@ -873,6 +1389,132 @@ def _retain_runtime_snapshot(snapshot_path: Path) -> None:
         raise
 
 
+def _capture_runtime_snapshot(
+    cache_dir: Path,
+    parquet_path: Path,
+    snapshot_dir: Path,
+    expected_size: int,
+    expected_digest: str,
+    cache_key: tuple[str, int, str] | None,
+    source_revision: _StrongFileRevision | None = None,
+) -> Path | None:
+    """Capture and verify one generation, retaining it only when proof permits."""
+    # A stale-entry eviction can remove the now-empty process directory after
+    # `_runtime_snapshot_dir` returned it for this operation.
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    candidate = snapshot_dir / f".{uuid.uuid4().hex}.parquet.tmp"
+    copied = False
+    captured_revision: _StrongFileRevision | None = None
+    try:
+        try:
+            os.link(parquet_path, candidate)
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            copied = True
+            logger.warning(
+                "json_shred_runtime_snapshot_copy_fallback",
+                cache_dir=str(cache_dir),
+                parquet_path=str(parquet_path),
+                error_type=type(exc).__name__,
+            )
+            # A regular Windows read handle blocks the rename-based publisher.
+            # This fallback is serialized with same-process builders.
+            with _build_lock_for(cache_dir):
+                observed_size, observed_digest = _stream_copy_with_signature(
+                    parquet_path, candidate
+                )
+        else:
+            # Linking itself may change inode metadata. Observe the captured
+            # generation only after the link exists, then prove that revision
+            # survived the complete verification hash below.
+            captured_revision = _strong_file_revision(candidate)
+            observed = _file_content_signature(candidate)
+            observed_size = observed["size"]
+            observed_digest = observed["sha256"]
+
+        if (observed_size, observed_digest) != (expected_size, expected_digest):
+            candidate.unlink(missing_ok=True)
+            return None
+
+        cacheable_revision: _StrongFileRevision | None = None
+        if cache_key is not None and source_revision is not None:
+            if copied:
+                # Copying captures bytes rather than identity, so require the
+                # visible generation to be unchanged over the copy interval.
+                visible_after = _strong_file_revision(parquet_path)
+                if visible_after == source_revision:
+                    cacheable_revision = source_revision
+            else:
+                captured_after = _strong_file_revision(candidate)
+                if captured_after != captured_revision:
+                    candidate.unlink(missing_ok=True)
+                    return None
+                cacheable_revision = captured_after
+
+        # The complete digest remains in the cache key and was verified above.
+        # A fixed 128-bit filename address stays shorter than the temporary name,
+        # avoiding a rename-only failure at the legacy Windows path boundary.
+        snapshot_path = snapshot_dir / (
+            f"{expected_digest[:_RUNTIME_SNAPSHOT_DIGEST_PREFIX_HEX]}.parquet"
+        )
+        # Publication, cache pinning, and the first execution lease are one
+        # runtime-lock transaction. This establishes runtime-lock -> cache-lock
+        # ordering and prevents another key's eviction from unlinking the file
+        # between its cache admission and returned lease.
+        with _RUNTIME_SNAPSHOT_LOCK:
+            if snapshot_path.exists():
+                if candidate.samefile(snapshot_path):
+                    candidate.unlink(missing_ok=True)
+                else:
+                    # A content-address collision can be an independently
+                    # captured inode (for example two source paths with equal
+                    # bytes). Never substitute that file for the generation
+                    # verified above: a later in-place edit through its source
+                    # link must not corrupt this lease or its cached proof.
+                    # Keep the collision name no longer than the already
+                    # created candidate. Deep project paths can otherwise
+                    # cross legacy Windows path-length handling during rename.
+                    snapshot_path = snapshot_dir / f"{uuid.uuid4().hex}.parquet"
+                    candidate.rename(snapshot_path)
+            else:
+                candidate.rename(snapshot_path)
+            if cacheable_revision is not None:
+                # The visible path must still name the stable captured inode at
+                # admission time; a publisher race merely makes this call
+                # transient rather than authorising reuse.
+                visible_after = _strong_file_revision(parquet_path)
+                if copied:
+                    if visible_after != cacheable_revision:
+                        cacheable_revision = None
+                elif (
+                    visible_after is None
+                    or visible_after.file_identity != cacheable_revision.file_identity
+                    or visible_after.size != cacheable_revision.size
+                ):
+                    cacheable_revision = None
+                else:
+                    # The snapshot's native change token proves its own bytes
+                    # were stable during hashing; the visible path's token is
+                    # the generation gate for later cache hits.
+                    cacheable_revision = visible_after
+            evicted: list[Path] = []
+            if cacheable_revision is not None:
+                assert cache_key is not None
+                _retained, evicted = _VERIFIED_RUNTIME_SNAPSHOT_CACHE.store(
+                    cache_key, cacheable_revision, snapshot_path, expected_size
+                )
+            _RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = (
+                _RUNTIME_SNAPSHOT_REFERENCES.get(snapshot_path, 0) + 1
+            )
+        for evicted_path in evicted:
+            _remove_unpinned_runtime_snapshot(evicted_path)
+        return snapshot_path
+    except BaseException:
+        candidate.unlink(missing_ok=True)
+        raise
+
+
 def _snapshot_cache_artifact(
     cache_dir: Path,
     parquet_path: Path,
@@ -887,54 +1529,54 @@ def _snapshot_cache_artifact(
     holding the same-process build lock; the copied bytes are hashed as written.
     ``None`` means the captured generation did not match its manifest signature.
     """
+    # Establishing the private directory first also performs the fork reset
+    # before touching cache-owned synchronization state.
+    snapshot_dir = _runtime_snapshot_dir(cache_dir)
     expected = _content_signature_parts(recorded_signature)
     assert expected is not None
     expected_size, expected_digest = expected
-    snapshot_dir = _runtime_snapshot_dir(cache_dir)
-    candidate = snapshot_dir / f".{uuid.uuid4().hex}.parquet.tmp"
+    visible_path = parquet_path.expanduser().resolve()
+    path_key = os.path.normcase(str(visible_path))
+    initial_revision = _strong_file_revision(visible_path)
+    if initial_revision is None:
+        _VERIFIED_RUNTIME_SNAPSHOT_CACHE.warn_revision_unavailable_once(path_key, visible_path)
+        return _capture_runtime_snapshot(
+            cache_dir, visible_path, snapshot_dir, expected_size, expected_digest, None
+        )
 
+    key = (path_key, expected_size, expected_digest)
+    gate = _VERIFIED_RUNTIME_SNAPSHOT_CACHE.begin(key)
     try:
-        os.link(parquet_path, candidate)
-    except FileNotFoundError:
-        raise
-    except OSError as exc:
-        logger.warning(
-            "json_shred_runtime_snapshot_copy_fallback",
-            cache_dir=str(cache_dir),
-            parquet_path=str(parquet_path),
-            error_type=type(exc).__name__,
-        )
-        # A regular Windows read handle blocks the rename-based publisher. This
-        # rare fallback is therefore serialized with same-process builders; the
-        # normal hard-link path holds no source handle while it is verified.
-        with _build_lock_for(cache_dir):
-            observed_size, observed_digest = _stream_copy_with_signature(
-                parquet_path,
-                candidate,
+        with gate.lock:
+            current_revision = _strong_file_revision(visible_path)
+            if current_revision is None:
+                _VERIFIED_RUNTIME_SNAPSHOT_CACHE.warn_revision_unavailable_once(
+                    path_key, visible_path
+                )
+                return _capture_runtime_snapshot(
+                    cache_dir, visible_path, snapshot_dir, expected_size, expected_digest, None
+                )
+            # Take the execution lease while the cache pin is still observed,
+            # so a concurrent LRU eviction cannot unlink a just-hit snapshot.
+            with _RUNTIME_SNAPSHOT_LOCK:
+                hit, evicted = _VERIFIED_RUNTIME_SNAPSHOT_CACHE.get(key, current_revision)
+                if hit is not None:
+                    _RUNTIME_SNAPSHOT_REFERENCES[hit] = _RUNTIME_SNAPSHOT_REFERENCES.get(hit, 0) + 1
+            for evicted_path in evicted:
+                _remove_unpinned_runtime_snapshot(evicted_path)
+            if hit is not None:
+                return hit
+            return _capture_runtime_snapshot(
+                cache_dir,
+                visible_path,
+                snapshot_dir,
+                expected_size,
+                expected_digest,
+                key,
+                current_revision,
             )
-    else:
-        try:
-            observed = _file_content_signature(candidate)
-        except BaseException:
-            candidate.unlink(missing_ok=True)
-            raise
-        observed_size = observed["size"]
-        observed_digest = observed["sha256"]
-
-    if (observed_size, observed_digest) != (expected_size, expected_digest):
-        candidate.unlink(missing_ok=True)
-        return None
-
-    snapshot_path = snapshot_dir / f"{expected_digest}-{expected_size}.parquet"
-    with _RUNTIME_SNAPSHOT_LOCK:
-        if snapshot_path.exists():
-            candidate.unlink(missing_ok=True)
-        else:
-            candidate.rename(snapshot_path)
-        _RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = (
-            _RUNTIME_SNAPSHOT_REFERENCES.get(snapshot_path, 0) + 1
-        )
-    return snapshot_path
+    finally:
+        _VERIFIED_RUNTIME_SNAPSHOT_CACHE.finish(key, gate)
 
 
 def _unique_build_tmp_dir(cache_dir: Path) -> Path:
@@ -2088,7 +2730,13 @@ def _probe_cache_bundle(
                     parquet_path,
                     entry["content_signature"],
                 )
-            except FileNotFoundError:
+            except FileNotFoundError as exc:
+                logger.warning(
+                    "json_cache_snapshot_source_missing",
+                    cache_dir=str(cache_dir),
+                    parquet_path=str(parquet_path),
+                    error=str(exc),
+                )
                 return bundle, _CacheProbeFailure(
                     "missing_frame",
                     label=table_spec.label,

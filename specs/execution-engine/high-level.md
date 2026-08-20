@@ -292,6 +292,15 @@ running heavy work in a child process the parent can kill on timeout or memory l
   algorithm. This removes duplicate and repeat multi-gigabyte source reads without
   weakening same-size/same-mtime rewrite detection; non-JSON runtime files retain their
   separately versioned runtime-file identity contract.
+  A cache build persists the strong revision that surrounded its complete source hash,
+  allowing a fresh server process to reuse that proof on an exact native-revision match;
+  missing, conflicting, or unsupported proof records force the full read.
+  Cached JSON Parquet generations use the same principle at their file-backed boundary:
+  one completely verified private snapshot can serve later cache misses only behind an
+  unchanged strong artifact revision and strict process entry/byte bounds.
+  A full preview-cache hit also reuses the immutable strategy result that produced the
+  cached frame, so it retains projection warnings and provenance without repeating
+  footer estimation. Any miss or cache extension plans afresh before materialisation.
 - **Parquet checkpointing only at structural fan-in/fan-out/join-feeder points.**
   Polars duplicates the upstream plan for every downstream branch of a lazy frame
   (a known upstream limitation — pola-rs/polars#24206); checkpointing *every* node

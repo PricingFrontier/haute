@@ -1847,12 +1847,79 @@ def json_api_input(tmp_path, monkeypatch):
 class TestJsonApiInputPortMetadata:
     """A v2 cache has no whole-node summary; each emitted table has its own."""
 
+    def test_group_by_boundary_batch_reuses_one_graph_and_port_metadata_index(
+        self,
+        json_api_input,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One strategy request must not reopen the same source metadata per boundary."""
+
+        import haute._ram_estimate as ram_estimate_mod
+        from haute.execution import _estimate_group_by_boundaries
+
+        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        source = _make_source_node(node_id="quote_in", node_type="apiInput", config=config)
+        first = _make_transform_node(node_id="agg1")
+        second = _make_transform_node(node_id="agg2")
+        graph = PipelineGraph(
+            nodes=[source, first, second],
+            edges=[
+                GraphEdge(
+                    id="e1",
+                    source=source.id,
+                    target=first.id,
+                    sourceHandle="policies",
+                ),
+                GraphEdge(id="e2", source=first.id, target=second.id),
+            ],
+        )
+        real_port_metadata = ram_estimate_mod._json_api_input_port_metadata
+        metadata_calls = 0
+
+        def counting_port_metadata(node, port):
+            nonlocal metadata_calls
+            metadata_calls += 1
+            return real_port_metadata(node, port)
+
+        monkeypatch.setattr(
+            ram_estimate_mod,
+            "_json_api_input_port_metadata",
+            counting_port_metadata,
+        )
+
+        estimate = _estimate_group_by_boundaries(graph, [first.id, second.id], source="live")
+
+        assert estimate.state is MaterialisationEstimateState.AVAILABLE
+        assert metadata_calls == 1
+
+    def test_group_by_boundary_batch_stops_after_first_unavailable_estimate(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An unusable first boundary must not probe unrelated later sources."""
+
+        import haute.execution as execution_mod
+        from haute.execution import _estimate_group_by_boundaries
+
+        graph = PipelineGraph(nodes=[], edges=[])
+
+        def estimates(*_args, **_kwargs):
+            yield "first", MaterialisationEstimate.unavailable("metadata_missing")
+            raise AssertionError("later boundary should not be estimated")
+
+        monkeypatch.setattr(execution_mod, "estimate_materialisation_boundaries", estimates)
+
+        estimate = _estimate_group_by_boundaries(graph, ["first", "later"], source="live")
+
+        assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
+        assert estimate.unavailable_reason == "first:metadata_missing"
+
     def test_planning_and_loading_share_one_unchanged_source_content_proof(
         self,
         json_api_input,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Planner metadata and runtime loading must not hash one raw file twice."""
+        """Planner metadata and loading reuse the persisted cache-build source proof."""
 
         import haute._json_shred as shred_mod
         from haute._json_shred import load_v2_api_source
@@ -1881,7 +1948,7 @@ class TestJsonApiInputPortMetadata:
 
         assert metadata is not None and metadata.row_count == 2
         assert frames["policies"].collect()["policy_id"].to_list() == [1, 2]
-        assert raw_hashes == 1
+        assert raw_hashes == 0
 
     def test_each_emitted_table_is_sized_from_its_own_parquet(self, json_api_input) -> None:
         from haute._ram_estimate import _json_api_input_port_metadata

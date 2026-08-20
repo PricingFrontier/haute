@@ -116,7 +116,8 @@
 - **`MaterialisationEstimate`** (`_ram_estimate.py`, frozen dataclass) — explicit
   `available|unavailable` state with `estimated_peak_bytes`. Available requires a
   non-negative integer (zero is a legitimate empty-input estimate); unavailable
-  requires `None` and a reason. One estimate memoises metadata/schema lookups,
+  requires `None` and a reason. One strategy request shares a single graph index
+  across all of its materialisation boundaries, memoises metadata/schema lookups,
   accounts conservatively for variable-width columns, and lets unexpected failures
   propagate.
 - **Available RAM** (`_host_memory.available_ram_bytes`) — tries the platform
@@ -244,7 +245,14 @@ without unrelated graph state changing the key. There is no separate preview-pro
 cache suffix.
 
 The resulting key addresses `_preview_cache` (an `LRUCache`, one entry per unique
-lineage request). On a full hit, cached `eager_outputs`/`errors`/`timings` are served directly.
+lineage request). Runtime identity is computed before strategy planning so a full hit
+does not repeat graph projection or source/footer estimation. Every retained entry
+therefore carries the immutable `ExecutionStrategyResult` that produced it; a full hit
+installs that result on the new `ExecutionContext`, preserving the same visible bounded
+diagnostic and provenance without re-planning. The current context still reports its
+own admission metrics, while the cached diagnostic describes the execution that created
+the cached data. A miss or partial extension always plans against the current context
+before any execution. On a full hit, cached `eager_outputs`/`errors`/`timings` are served directly.
 On a partial hit (same graph, new target needs more materialised nodes), calls
 `_eager_execute()` for only the newly-needed portion and merges into the cached entry
 — fresh outputs win over stale cached ones for any overlapping node id, and a node

@@ -34,6 +34,7 @@ from typing import Any
 import orjson
 import polars as pl
 import pytest
+import structlog
 from fastapi.testclient import TestClient
 
 from haute._json_flatten import (
@@ -630,6 +631,71 @@ class TestDataFileSignatureValidity:
             as_series=False,
         ) == {"a": [1]}
         assert not committed_dir.with_name(committed_dir.name + ".tmp").exists()
+
+    @pytest.mark.parametrize(
+        ("failure_mode", "expected_reason"),
+        [
+            ("source_moved", "source_identity_changed_during_copy"),
+            ("probe_raised", "OSError: staged probe failed"),
+        ],
+    )
+    def test_save_surfaces_precise_staged_revalidation_failure(
+        self,
+        isolated_cwd: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        failure_mode: str,
+        expected_reason: str,
+    ) -> None:
+        import haute._json_shred as shred_mod
+
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"a": 1, "b": 2}])
+        cfg_a = _root_cfg(_col("a", "$[:].a"))
+        cfg_b = _root_cfg(_col("b", "$[:].b"))
+        working_dir = _json_cache_dir(str(data), "working")
+        committed_dir = _json_cache_dir(str(data), "committed")
+        build_per_port_cache(data, cfg_a, working_dir)
+        _mark_working_consulted(str(data))
+        assert mirror_cache_to_committed(str(data), cfg_a) is True
+        committed_meta = (committed_dir / "meta.json").read_bytes()
+        build_per_port_cache(data, cfg_b, working_dir)
+
+        if failure_mode == "source_moved":
+            real_match = shred_mod._cache_meta_matches_config_and_source
+            match_calls = 0
+
+            def moving_source(*args: Any, **kwargs: Any) -> bool:
+                nonlocal match_calls
+                match_calls += 1
+                return real_match(*args, **kwargs) if match_calls == 1 else False
+
+            monkeypatch.setattr(
+                shred_mod,
+                "_cache_meta_matches_config_and_source",
+                moving_source,
+            )
+        else:
+            real_probe = shred_mod._probe_cache_bundle
+            probe_calls = 0
+
+            def failing_staged_probe(*args: Any, **kwargs: Any) -> Any:
+                nonlocal probe_calls
+                probe_calls += 1
+                if probe_calls == 2:
+                    raise OSError("staged probe failed")
+                return real_probe(*args, **kwargs)
+
+            monkeypatch.setattr(shred_mod, "_probe_cache_bundle", failing_staged_probe)
+
+        with structlog.testing.capture_logs() as logs:
+            assert mirror_cache_to_committed(str(data), cfg_b) is False
+
+        assert (committed_dir / "meta.json").read_bytes() == committed_meta
+        assert any(
+            record.get("event") == "json_cache_staged_mirror_invalid_not_published"
+            and record.get("reason") == expected_reason
+            for record in logs
+        )
 
 
 # ---------------------------------------------------------------------------

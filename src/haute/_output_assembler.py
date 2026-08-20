@@ -697,19 +697,24 @@ def _execute_plan(
         pending = members[1:]
 
         while pending:
-            # A connected group always has a next table overlapping the fold;
-            # pending[0] is a defensive cross-join for the disconnected case.
-            pick = next(
-                (m for m in pending if residue.get(m, frozenset()) & acc_fields),
-                pending[0],
-            )
+            # `_merge_groups` returns connected components, so every partial
+            # fold must have another member that overlaps its accumulated
+            # fields. A Cartesian fallback would hide a corrupt plan and could
+            # amplify rows catastrophically at this materialisation boundary.
+            try:
+                pick = next(m for m in pending if residue.get(m, frozenset()) & acc_fields)
+            except StopIteration:
+                raise RuntimeError("output assembly join plan is disconnected") from None
             pending.remove(pick)
             keys = sorted(residue.get(pick, frozenset()) & acc_fields)
             nxt = field_frames[pick]
-            if keys:
-                acc = acc.join(nxt, on=keys, how="full", coalesce=True)
-            else:
-                acc = acc.join(nxt, how="cross")
+            acc = acc.join(
+                nxt,
+                on=keys,
+                how="full",
+                coalesce=True,
+                maintain_order="left_right",
+            )
             acc_fields |= set(residue.get(pick, frozenset()))
 
         group_frames.append(acc)

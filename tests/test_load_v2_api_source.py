@@ -18,6 +18,7 @@ import orjson
 import polars as pl
 import pytest
 
+import haute._json_shred as shred_mod
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_flatten import _json_cache_dir, clear_json_cache
 from haute._json_shred import (
@@ -700,6 +701,8 @@ def test_managed_executions_share_then_release_file_snapshot(
     assert scan_sources[0].exists()
     assert second_frame.collect().to_dict(as_series=False) == {"id": [1, 2]}
     second_context.release()
+    assert scan_sources[0].exists()
+    shred_mod._cleanup_runtime_snapshot_dirs()
     assert not scan_sources[0].exists()
 
 
@@ -711,6 +714,8 @@ def test_validity_probe_releases_unowned_file_snapshot(tmp_path: Path) -> None:
 
     assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is True
     snapshot_parent = cache_dir.parent / ".runtime-snapshots"
+    assert list(snapshot_parent.rglob("*.parquet"))
+    shred_mod._cleanup_runtime_snapshot_dirs()
     assert list(snapshot_parent.rglob("*.parquet")) == []
 
 

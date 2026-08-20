@@ -57,7 +57,7 @@ from haute._path_resolution import _infer_project_root, resolve_runtime_file_pat
 from haute._ram_estimate import (
     MaterialisationEstimate,
     MaterialisationEstimateState,
-    estimate_materialisation_boundary,
+    estimate_materialisation_boundaries,
 )
 from haute._stat_gated_cache import StatGatedCache, artifact_cache_key
 from haute._types import (
@@ -318,8 +318,8 @@ def _estimate_group_by_boundaries(
     """Return the conservative peak across every declared group-by boundary."""
     peak_bytes = 0
     assumptions: list[str] = []
-    for node_id in node_ids:
-        estimate = estimate_materialisation_boundary(graph, node_id, source=source)
+    estimates = estimate_materialisation_boundaries(graph, node_ids, source=source)
+    for node_id, estimate in estimates:
         if estimate.state is MaterialisationEstimateState.UNAVAILABLE:
             reason = estimate.unavailable_reason or "unknown"
             return MaterialisationEstimate.unavailable(f"{node_id}:{reason}")

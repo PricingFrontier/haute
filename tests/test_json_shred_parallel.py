@@ -800,6 +800,21 @@ def test_parallel_missing_source_remains_file_not_found(tmp_path: Path) -> None:
     assert str(parallel_exc.value) == str(serial_exc.value)
 
 
+def test_chunk_error_without_recorded_failure_fails_loudly() -> None:
+    """The parent must reject an internally inconsistent successful envelope."""
+    result = _ChunkResult(
+        index=0,
+        record_count=0,
+        skipped_records=0,
+        skipped_rows_by_table={},
+        row_counts={},
+        part_paths={},
+    )
+
+    with pytest.raises(RuntimeError, match="chunk has no recorded failure"):
+        _raise_chunk_error(result)
+
+
 def test_worker_does_not_disguise_process_control_signals(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

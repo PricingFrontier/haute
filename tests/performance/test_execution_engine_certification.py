@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import statistics
@@ -38,6 +39,12 @@ _DIRECT_JSONL_UNUSED_COLUMNS = 63
 _SIGNATURE_SOURCE_BYTES = 32 * 1024 * 1024
 _SIGNATURE_WARM_SAMPLES = 9
 _MAX_SIGNATURE_WARM_FRACTION = 0.05
+_ARTIFACT_PROOF_BYTES = 32 * 1024 * 1024
+_ARTIFACT_WARM_SAMPLES = 9
+_MAX_ARTIFACT_WARM_FRACTION = 0.05
+_PREVIEW_HIT_WARM_SAMPLES = 9
+_MAX_PREVIEW_HIT_WARM_FRACTION = 0.50
+_OPTIMISATION_MATERIALITY_FRACTION = 0.20
 
 
 def _write_wide_parquet(path: Path) -> list[str]:
@@ -267,6 +274,107 @@ def test_unchanged_source_signature_reuses_one_complete_content_proof(
     )
 
 
+def test_unchanged_cached_artifact_reuses_one_complete_content_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Certify bounded verified-snapshot reuse against a full-hash control."""
+
+    import haute._json_shred as shred_mod
+
+    cache_dir = tmp_path / "cache"
+    artifact_path = tmp_path / "artifact.parquet"
+    block = bytes(range(256)) * 4_096
+    expected_digest = hashlib.sha256()
+    with artifact_path.open("wb") as stream:
+        for _ in range(_ARTIFACT_PROOF_BYTES // len(block)):
+            stream.write(block)
+            expected_digest.update(block)
+    recorded_signature = {
+        "size": _ARTIFACT_PROOF_BYTES,
+        "sha256": expected_digest.hexdigest(),
+    }
+    assert artifact_path.stat().st_size == _ARTIFACT_PROOF_BYTES
+    assert shred_mod._strong_file_revision(artifact_path) is not None
+
+    shred_mod._cleanup_runtime_snapshot_dirs()
+    real_signature = shred_mod._file_content_signature
+    artifact_hashes = 0
+
+    def counting_signature(path: Path) -> dict[str, Any]:
+        nonlocal artifact_hashes
+        artifact_hashes += 1
+        return real_signature(path)
+
+    monkeypatch.setattr(shred_mod, "_file_content_signature", counting_signature)
+    cold_started = time.perf_counter_ns()
+    cold_snapshot = shred_mod._snapshot_cache_artifact(
+        cache_dir,
+        artifact_path,
+        recorded_signature,
+    )
+    cold_ns = time.perf_counter_ns() - cold_started
+    assert cold_snapshot is not None
+    shred_mod._release_runtime_snapshot(cold_snapshot)
+
+    warm_ns: list[int] = []
+    for _ in range(_ARTIFACT_WARM_SAMPLES):
+        started = time.perf_counter_ns()
+        warm_snapshot = shred_mod._snapshot_cache_artifact(
+            cache_dir,
+            artifact_path,
+            recorded_signature,
+        )
+        warm_ns.append(time.perf_counter_ns() - started)
+        assert warm_snapshot == cold_snapshot
+        shred_mod._release_runtime_snapshot(warm_snapshot)
+
+    warm_median_ns = int(statistics.median(warm_ns))
+    cache_stats = shred_mod._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()
+    assert artifact_hashes == 1
+    assert cache_stats == {
+        "entries": 1,
+        "bytes": _ARTIFACT_PROOF_BYTES,
+        "inflight": 0,
+    }
+    assert warm_median_ns <= cold_ns * _MAX_ARTIFACT_WARM_FRACTION
+    assert cold_snapshot.exists()
+    shred_mod._cleanup_runtime_snapshot_dirs()
+    assert not cold_snapshot.exists()
+
+    request.node.user_properties.append(
+        (
+            "haute_perf_evidence",
+            {
+                "scenario": "execution_engine_cached_artifact_proof_reuse",
+                "scale": "ci-32mib-artifact",
+                "execution_profiles": [ExecutionProfile.PREVIEW_EAGER.value],
+                "input": {
+                    "artifact_bytes": _ARTIFACT_PROOF_BYTES,
+                    "warm_samples": _ARTIFACT_WARM_SAMPLES,
+                },
+                "cold_full_hash_ns": cold_ns,
+                "warm_revision_hit_median_ns": warm_median_ns,
+                "speedup": cold_ns / warm_median_ns if warm_median_ns else None,
+                "warm_fraction": warm_median_ns / cold_ns if cold_ns else None,
+                "warm_fraction_contract": _MAX_ARTIFACT_WARM_FRACTION,
+                "verified_snapshot_cache": cache_stats,
+                "product_metrics": {
+                    "artifact_hashes": artifact_hashes,
+                    "n_collects": 0,
+                    "n_checkpoints": 0,
+                    "chunk_count": 0,
+                    "output_bytes": 0,
+                    "temp_disk_peak_bytes": _ARTIFACT_PROOF_BYTES,
+                },
+                "admission": {"state": "not_required", "detail": None},
+                "payload_bytes": 0,
+            },
+        )
+    )
+
+
 def test_cached_json_target_preview_uses_one_authoritative_source_proof(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -339,6 +447,12 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
     generic_hashes = 0
     real_source_hash = shred_mod._hash_file
     real_generic_hash = execution_mod.content_hash
+    import haute.projection as projection_mod
+
+    real_execution_prepare = execution_mod.prepare_graph
+    real_projection_prepare = projection_mod.prepare_graph
+    prepare_calls = 0
+    prepare_elapsed_ns = 0
 
     def counting_source_hash(path: Path) -> str:
         nonlocal source_hashes
@@ -352,8 +466,22 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
             generic_hashes += 1
         return real_generic_hash(path)
 
+    def timed_prepare(prepare):
+        def wrapped(*args: Any, **kwargs: Any):
+            nonlocal prepare_calls, prepare_elapsed_ns
+            started = time.perf_counter_ns()
+            try:
+                return prepare(*args, **kwargs)
+            finally:
+                prepare_calls += 1
+                prepare_elapsed_ns += time.perf_counter_ns() - started
+
+        return wrapped
+
     monkeypatch.setattr(shred_mod, "_hash_file", counting_source_hash)
     monkeypatch.setattr(execution_mod, "content_hash", counting_generic_hash)
+    monkeypatch.setattr(execution_mod, "prepare_graph", timed_prepare(real_execution_prepare))
+    monkeypatch.setattr(projection_mod, "prepare_graph", timed_prepare(real_projection_prepare))
     headroom_bytes = 64 * 1024 * 1024
     context = ExecutionContext(
         operation="perf_json_source_proof_target_preview",
@@ -385,8 +513,14 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
         {"amount": 10, "premium_total": 10},
         {"amount": 20, "premium_total": 16},
     ]
-    assert source_hashes == 1
+    assert source_hashes == 0
     assert generic_hashes == 0
+    assert prepare_calls == 3
+    # Even treating every preparation call as removable gives the candidate
+    # its most favourable possible comparison. It still must clear the same
+    # 20% end-to-end materiality gate as every other engine optimisation.
+    maximum_prepare_fraction = prepare_elapsed_ns / elapsed_ns
+    assert maximum_prepare_fraction < _OPTIMISATION_MATERIALITY_FRACTION
 
     request.node.user_properties.append(
         (
@@ -401,8 +535,16 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
                 },
                 "elapsed_ns": elapsed_ns,
                 "source_sha256_hashes": source_hashes,
+                "persisted_cache_build_source_proof_reused": True,
                 "generic_runtime_xxhash_calls": generic_hashes,
                 "execution_profile": ExecutionProfile.PREVIEW_EAGER.value,
+                "request_local_graph_preparation": {
+                    "calls": prepare_calls,
+                    "elapsed_ns": prepare_elapsed_ns,
+                    "maximum_theoretical_fraction": maximum_prepare_fraction,
+                    "materiality_gate": _OPTIMISATION_MATERIALITY_FRACTION,
+                    "decision": "no_change",
+                },
                 "product_metrics": {
                     "n_collects": metrics["n_collects"],
                     "n_checkpoints": metrics["n_checkpoints"],
@@ -412,6 +554,140 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
                 },
                 "admission": {"state": "direct_context", "detail": None},
                 "payload_bytes": len(orjson.dumps(result["aggregate"].preview)),
+            },
+        )
+    )
+
+
+def test_preview_cache_hit_reuses_strategy_without_planning_or_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Certify that a complete preview hit is lookup/serialization work only."""
+
+    import haute._json_shred as shred_mod
+    import haute.execution as execution_mod
+    import haute.executor as executor_mod
+
+    monkeypatch.chdir(tmp_path)
+    source_path = tmp_path / "preview-hit.json"
+    source_path.write_bytes(orjson.dumps([{"amount": 10}, {"amount": 20}]))
+    config = {
+        "tables": [
+            _table(
+                "$[:]",
+                "root",
+                [_column("amount", "$[:].amount")],
+            )
+        ]
+    }
+    build_per_port_cache(source_path, config, _json_cache_dir(source_path, "working"))
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="api",
+                data=NodeData(
+                    label="api",
+                    nodeType=NodeType.API_INPUT,
+                    config={"path": str(source_path), **config},
+                ),
+            )
+        ],
+        edges=[],
+    )
+    shred_mod._clear_data_file_signature_memo()
+    execution_mod._runtime_path_fingerprint_cache.clear()
+    _preview_cache.clear()
+    real_plan = executor_mod.execution_facade.plan_execution_strategy
+    plan_calls = 0
+
+    def counting_plan(*args: Any, **kwargs: Any):
+        nonlocal plan_calls
+        plan_calls += 1
+        return real_plan(*args, **kwargs)
+
+    monkeypatch.setattr(
+        executor_mod.execution_facade,
+        "plan_execution_strategy",
+        counting_plan,
+    )
+
+    cold_context = ExecutionContext(
+        operation="perf_preview_cache_cold",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        telemetry_enabled=False,
+    )
+    cold_started = time.perf_counter_ns()
+    cold_result = execute_graph(
+        graph,
+        target_node_id="api",
+        target_preview_only=True,
+        requested_preview_columns=["amount"],
+        port_label="root",
+        execution_context=cold_context,
+    )
+    cold_ns = time.perf_counter_ns() - cold_started
+    producing_strategy = cold_context.projection_plan
+    assert producing_strategy is not None
+    cold_metrics = cold_context.metrics_payload(status="completed")
+    cold_context.release_admission()
+
+    warm_ns: list[int] = []
+    for sample in range(_PREVIEW_HIT_WARM_SAMPLES):
+        context = ExecutionContext(
+            operation=f"perf_preview_cache_hit_{sample}",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            telemetry_enabled=False,
+        )
+        started = time.perf_counter_ns()
+        warm_result = execute_graph(
+            graph,
+            target_node_id="api",
+            target_preview_only=True,
+            requested_preview_columns=["amount"],
+            port_label="root",
+            execution_context=context,
+        )
+        warm_ns.append(time.perf_counter_ns() - started)
+        assert context.projection_plan is producing_strategy
+        context.release_admission()
+
+    warm_median_ns = int(statistics.median(warm_ns))
+    assert cold_result["api"].preview == [{"amount": 10}, {"amount": 20}]
+    assert warm_result["api"].preview == cold_result["api"].preview
+    assert plan_calls == 1
+    assert warm_median_ns <= cold_ns * _MAX_PREVIEW_HIT_WARM_FRACTION
+
+    request.node.user_properties.append(
+        (
+            "haute_perf_evidence",
+            {
+                "scenario": "execution_engine_preview_hit_strategy_reuse",
+                "scale": "ci-small-cached-json",
+                "execution_profiles": [ExecutionProfile.PREVIEW_EAGER.value],
+                "input": {
+                    "rows": 2,
+                    "warm_samples": _PREVIEW_HIT_WARM_SAMPLES,
+                },
+                "cold_preview_ns": cold_ns,
+                "warm_hit_median_ns": warm_median_ns,
+                "speedup": cold_ns / warm_median_ns if warm_median_ns else None,
+                "warm_fraction": warm_median_ns / cold_ns if cold_ns else None,
+                "warm_fraction_contract": _MAX_PREVIEW_HIT_WARM_FRACTION,
+                "strategy_planner_calls": plan_calls,
+                "product_metrics": {
+                    "n_collects": cold_metrics["n_collects"],
+                    "n_checkpoints": cold_metrics["n_checkpoints"],
+                    "chunk_count": cold_metrics["chunk_count"],
+                    "output_bytes": 0,
+                    "temp_disk_peak_bytes": sum(
+                        path.stat().st_size
+                        for path in _json_cache_dir(source_path, "working").glob("*.parquet")
+                    ),
+                },
+                "admission": {"state": "direct_context", "detail": None},
+                "payload_bytes": len(orjson.dumps(warm_result["api"].preview)),
             },
         )
     )
@@ -511,6 +787,10 @@ def test_cached_api_port_projection_is_physical_and_snapshot_bounded(
     assert result.shape == (_API_ROWS, 2)
     metrics = context.metrics_payload(status="completed")
     context.release_admission()
+    assert snapshots[0].exists()
+    import haute._json_shred as shred_mod
+
+    shred_mod._cleanup_runtime_snapshot_dirs()
     assert not snapshots[0].exists()
 
     request.node.user_properties.append(
@@ -530,7 +810,8 @@ def test_cached_api_port_projection_is_physical_and_snapshot_bounded(
                 "cache_tables": cache_summary["tables"],
                 "optimized_plan": explain,
                 "snapshot_count_before_release": len(snapshots),
-                "snapshot_released": not snapshots[0].exists(),
+                "snapshot_retained_by_bounded_verification_cache": True,
+                "snapshot_released_on_cache_cleanup": not snapshots[0].exists(),
                 "product_metrics": {
                     "n_collects": metrics["n_collects"],
                     "n_checkpoints": metrics["n_checkpoints"],

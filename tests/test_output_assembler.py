@@ -1312,6 +1312,31 @@ def test_execute_plan_picks_fold_order_by_shared_field_intersection() -> None:
     )
 
 
+def test_execute_plan_rejects_a_disconnected_merge_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A corrupt plan must fail instead of silently Cartesian-joining rows."""
+    frames = {
+        "A": pl.LazyFrame({"left_key": [1]}),
+        "B": pl.LazyFrame({"right_key": [2]}),
+    }
+    plan = _CutPlan(
+        cores=(),
+        cuts=frozenset(),
+        merge_residue={
+            "A": frozenset({"left_key"}),
+            "B": frozenset({"right_key"}),
+        },
+    )
+    monkeypatch.setattr(
+        "haute._output_assembler._merge_groups",
+        lambda _residue: [frozenset({"A", "B"})],
+    )
+
+    with pytest.raises(RuntimeError, match="join plan is disconnected"):
+        _execute_plan(frames, plan)
+
+
 # Prefix-tree serialisation — a synthesised intermediate level (no frame emits
 # there) that carries its OWN key must gather ONLY the descendants it is a STRICT
 # prefix of: `pref[:len(prefix)] == prefix AND len(pref) > len(prefix)`. Three

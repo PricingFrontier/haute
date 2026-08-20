@@ -24,7 +24,7 @@ the workload needs and compares the two.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -47,6 +47,7 @@ __all__ = [
     "MaterialisationEstimate",
     "MaterialisationEstimateState",
     "estimate_gpu_vram_bytes",
+    "estimate_materialisation_boundaries",
     "estimate_materialisation_boundary",
     "estimate_safe_training_rows",
     "RamEstimate",
@@ -1115,6 +1116,49 @@ def estimate_materialisation_boundary(
     boundary when that assumption is unsuitable.
     """
     estimate_index = _EstimateGraphIndex.build(graph, source)
+    return _estimate_materialisation_boundary_from_index(
+        graph,
+        target_node_id,
+        source=source,
+        estimate_index=estimate_index,
+    )
+
+
+def estimate_materialisation_boundaries(
+    graph: PipelineGraph,
+    target_node_ids: Iterable[str],
+    *,
+    source: str = "live",
+) -> Iterator[tuple[str, MaterialisationEstimate]]:
+    """Yield boundary estimates through one request-local metadata index.
+
+    Results stay lazy so a caller that cannot proceed after an unavailable
+    boundary does not probe unrelated later sources. Iterating more than one
+    result still shares all graph, schema, and source-metadata memoisation.
+    """
+
+    estimate_index = _EstimateGraphIndex.build(graph, source)
+    for target_node_id in target_node_ids:
+        yield (
+            target_node_id,
+            _estimate_materialisation_boundary_from_index(
+                graph,
+                target_node_id,
+                source=source,
+                estimate_index=estimate_index,
+            ),
+        )
+
+
+def _estimate_materialisation_boundary_from_index(
+    graph: PipelineGraph,
+    target_node_id: str,
+    *,
+    source: str,
+    estimate_index: _EstimateGraphIndex,
+) -> MaterialisationEstimate:
+    """Estimate one boundary using an already prepared request-local index."""
+
     source_metadata = _detailed_ancestor_source_metadata(
         graph,
         target_node_id,

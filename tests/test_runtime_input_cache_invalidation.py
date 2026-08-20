@@ -97,6 +97,28 @@ def _parquet_input_node(nid: str, path: Path):
     return _source_node(nid, str(path))
 
 
+def test_json_source_runtime_fingerprint_preserves_non_file_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Directories stay on the generic path; source proofs apply only to files."""
+    import haute.execution as execution_mod
+
+    expected = {"kind": "directory"}
+    calls: list[Path] = []
+
+    def generic_fingerprint(path: Path) -> dict[str, str]:
+        calls.append(path)
+        return expected
+
+    monkeypatch.setattr(execution_mod, "_runtime_path_fingerprint", generic_fingerprint)
+
+    actual = execution_mod._json_source_runtime_path_fingerprint(tmp_path)
+
+    assert actual is expected
+    assert calls == [tmp_path.resolve()]
+
+
 def test_graph_input_fingerprint_uses_canonical_json(monkeypatch, tmp_path: Path) -> None:
     from haute import _cache, execution
 
@@ -636,7 +658,7 @@ class TestStatGatedFingerprintMemo:
         tmp_path,
         monkeypatch,
     ):
-        """Planning, identity, and loading must share one SHA-256 source read."""
+        """Planning, identity, and loading must reuse the cache-build SHA-256 proof."""
         import haute._json_shred as shred_mod
         import haute.execution as execution_mod
 
@@ -671,7 +693,7 @@ class TestStatGatedFingerprintMemo:
         result = execute_graph(graph, target_node_id="aggregate")
 
         assert result["aggregate"].preview == [{"amount": 10, "rows": 1}]
-        assert source_hashes == 1
+        assert source_hashes == 0
         assert generic_hashes == 0
 
     def test_json_same_stat_byte_rewrite_invalidates_preview_identity(

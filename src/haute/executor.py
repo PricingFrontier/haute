@@ -943,16 +943,25 @@ def execute_graph(
         target_node_id,
         requested_preview_columns,
     )
-    execution_facade.plan_execution_strategy(
-        execution_facade.ProjectionRequest(
-            graph=graph,
-            target_node_id=target_node_id,
-            profile=execution_context.profile,
-            required_columns_by_node=preview_required_columns or None,
-            source=source,
-        ),
-        execution_context=execution_context,
-    )
+
+    def _plan_current_request() -> None:
+        execution_facade.plan_execution_strategy(
+            execution_facade.ProjectionRequest(
+                graph=graph,
+                target_node_id=target_node_id,
+                profile=execution_context.profile,
+                required_columns_by_node=preview_required_columns or None,
+                source=source,
+            ),
+            execution_context=execution_context,
+        )
+
+    def _current_execution_strategy() -> execution_facade.ExecutionStrategyResult:
+        strategy = execution_context.projection_plan
+        if not isinstance(strategy, execution_facade.ExecutionStrategyResult):
+            raise RuntimeError("preview execution completed without an execution strategy")
+        return strategy
+
     preview_materialize_node_ids: frozenset[str] | None = (
         frozenset({target_node_id}) if target_preview_only and target_node_id is not None else None
     )
@@ -1018,6 +1027,10 @@ def execute_graph(
         if cache_satisfies_request:
             # Full cache hit — all required nodes already materialised
             with execution_context.stage("preview_cache_hit"):
+                cached_strategy = cached.get("execution_strategy")
+                if not isinstance(cached_strategy, execution_facade.ExecutionStrategyResult):
+                    raise RuntimeError("preview cache entry is missing its execution strategy")
+                execution_context.projection_plan = cached_strategy
                 logger.debug(
                     "preview_cache_hit",
                     fingerprint=fp[:8],
@@ -1041,6 +1054,7 @@ def execute_graph(
                 target=target_node_id,
                 cached_nodes=len(prev_outputs),
             )
+            _plan_current_request()
             with execution_context.stage("preview_cache_extend"):
                 (
                     raw_outputs,
@@ -1098,6 +1112,7 @@ def execute_graph(
                     "available_columns": merged_avail,
                     "output_columns": merged_output_cols,
                     "frame_columns": merged_frame_cols,
+                    "execution_strategy": _current_execution_strategy(),
                 },
             )
             if preview_store_retained:
@@ -1126,6 +1141,7 @@ def execute_graph(
             target=target_node_id,
             prev_fingerprint=(_preview_cache.most_recent_key or "")[:8],
         )
+        _plan_current_request()
         with execution_context.stage("preview_cache_miss"):
             (
                 raw_outputs,
@@ -1162,6 +1178,7 @@ def execute_graph(
                 "available_columns": avail_cols,
                 "output_columns": output_cols,
                 "frame_columns": frame_cols,
+                "execution_strategy": _current_execution_strategy(),
             },
         )
         # Pin this entry through result serialisation so it cannot be

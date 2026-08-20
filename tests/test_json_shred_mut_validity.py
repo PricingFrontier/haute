@@ -20,9 +20,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import orjson
 import pytest
+import structlog
 
 from haute._api_input_schema import ApiInputSchemaError
+from haute._json_flatten import _json_cache_dir
 from haute._json_shred import (
     _DATA_FILE_SIGNATURE_MEMO,
     _clear_data_file_signature_memo,
@@ -33,7 +36,14 @@ from haute._json_shred import (
     _file_content_matches,
     _file_content_signature,
     _hash_file,
+    _native_revision_record,
+    _parse_native_revision_record,
+    _persisted_data_file_signature,
+    _persisted_source_proof_digest,
+    _strong_file_revision,
+    _StrongFileRevision,
     _v2_fingerprint,
+    build_per_port_cache,
 )
 
 
@@ -253,9 +263,11 @@ def test_data_file_signature_memo_is_bounded_lru(
 ) -> None:
     import haute._json_shred as shred_mod
 
-    paths = [tmp_path / f"{index}.json" for index in range(3)]
-    for index, path in enumerate(paths):
+    paths: list[Path] = []
+    for index in range(3):
+        path = tmp_path / f"{index}.json"
         path.write_bytes(f"[{index}]".encode())
+        paths.append(path)
     real_hash_file = shred_mod._hash_file
     hashes: list[Path] = []
 
@@ -299,6 +311,453 @@ def test_data_file_signature_memo_discards_entries_after_pid_change(
 
     assert hashes == 2
     assert len(memo) == 1
+
+
+def _durable_proof_config() -> dict[str, Any]:
+    return {
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "root",
+                "emit": True,
+                "row_id_column": None,
+                "columns": [
+                    {
+                        "name": "id",
+                        "path": "$[:].id",
+                        "type": "int",
+                        "selected": True,
+                        "levels": None,
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def _build_durable_proof(path: Path) -> Path:
+    cache_dir = _json_cache_dir(path, "working")
+    build_per_port_cache(path, _durable_proof_config(), cache_dir)
+    return cache_dir
+
+
+def _downgrade_to_legacy_source_signature(path: Path) -> Path:
+    cache_dir = _build_durable_proof(path)
+    meta_path = path.parent / cache_dir.relative_to(path.parent) / "meta.json"
+    meta = orjson.loads(meta_path.read_bytes())
+    del meta["data_file"]["native_revision"]
+    del meta["data_file"]["native_revision_proof_sha256"]
+    meta_path.write_bytes(orjson.dumps(meta))
+    return meta_path
+
+
+def test_data_file_signature_reuses_persisted_build_proof_after_process_state_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh server must not reread an unchanged multi-gigabyte JSON source."""
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "data.json"
+    path.write_bytes(b'[{"id":1}]')
+    if _strong_file_revision(path) is None:
+        pytest.skip("filesystem has no strong native file revision")
+    _build_durable_proof(path)
+    _clear_data_file_signature_memo()
+    import haute._json_shred as shred_mod
+
+    real_hash_file = shred_mod._hash_file
+    hashes = 0
+
+    def counting_hash_file(candidate: Path) -> str:
+        nonlocal hashes
+        hashes += 1
+        return real_hash_file(candidate)
+
+    monkeypatch.setattr(shred_mod, "_hash_file", counting_hash_file)
+
+    signature = _data_file_signature(path)
+
+    assert signature["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert hashes == 0
+
+
+def test_legacy_manifest_is_upgraded_after_one_safe_full_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._json_shred as shred_mod
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "data.json"
+    path.write_bytes(b'[{"id":1}]')
+    if _strong_file_revision(path) is None:
+        pytest.skip("filesystem has no strong native file revision")
+    meta_path = tmp_path / _downgrade_to_legacy_source_signature(path).relative_to(tmp_path)
+    _clear_data_file_signature_memo()
+    real_hash_file = shred_mod._hash_file
+    hashes = 0
+
+    def counting_hash_file(candidate: Path) -> str:
+        nonlocal hashes
+        hashes += 1
+        return real_hash_file(candidate)
+
+    monkeypatch.setattr(shred_mod, "_hash_file", counting_hash_file)
+
+    first = _data_file_signature(path)
+    upgraded = orjson.loads(meta_path.read_bytes())["data_file"]
+    _clear_data_file_signature_memo()
+    second = _data_file_signature(path)
+
+    assert hashes == 1
+    assert second == first
+    assert _parse_native_revision_record(upgraded["native_revision"]) is not None
+    assert isinstance(upgraded["native_revision_proof_sha256"], str)
+
+
+def test_legacy_manifest_with_different_content_proof_is_not_upgraded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "data.json"
+    path.write_bytes(b'[{"id":1}]')
+    if _strong_file_revision(path) is None:
+        pytest.skip("filesystem has no strong native file revision")
+    meta_path = tmp_path / _downgrade_to_legacy_source_signature(path).relative_to(tmp_path)
+    meta = orjson.loads(meta_path.read_bytes())
+    meta["data_file"]["sha256"] = "0" * 64
+    meta_path.write_bytes(orjson.dumps(meta))
+    _clear_data_file_signature_memo()
+
+    _data_file_signature(path)
+
+    unchanged = orjson.loads(meta_path.read_bytes())["data_file"]
+    assert unchanged["sha256"] == "0" * 64
+    assert "native_revision" not in unchanged
+    assert "native_revision_proof_sha256" not in unchanged
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        [],
+        {"schema_mode": "v1"},
+        {"schema_mode": "v2", "data_file": []},
+    ],
+)
+def test_source_proof_reuse_and_upgrade_ignore_non_v2_or_non_mapping_manifests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, meta: Any
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "data.json"
+    path.write_bytes(b'[{"id":1}]')
+    if _strong_file_revision(path) is None:
+        pytest.skip("filesystem has no strong native file revision")
+    cache_dir = tmp_path / _json_cache_dir(path, "working").relative_to(tmp_path)
+    cache_dir.mkdir(parents=True)
+    meta_path = cache_dir / "meta.json"
+    meta_path.write_bytes(orjson.dumps(meta))
+
+    signature = _data_file_signature(path)
+
+    assert signature["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert orjson.loads(meta_path.read_bytes()) == meta
+
+
+def test_legacy_manifest_is_not_upgraded_after_revision_moves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._json_shred as shred_mod
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "data.json"
+    path.write_bytes(b'[{"id":1}]')
+    revision = _strong_file_revision(path)
+    if revision is None:
+        pytest.skip("filesystem has no strong native file revision")
+    meta_path = _downgrade_to_legacy_source_signature(path)
+    _clear_data_file_signature_memo()
+    changed = _StrongFileRevision(
+        revision.file_identity,
+        revision.size,
+        revision.mtime_ns,
+        revision.change_token + 1,
+    )
+    observations = iter((revision, revision, revision, changed))
+    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: next(observations))
+
+    signature = _data_file_signature(path)
+
+    assert signature["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert "native_revision" not in orjson.loads(meta_path.read_bytes())["data_file"]
+
+
+def test_legacy_manifest_upgrade_failure_is_visible_and_keeps_full_hash_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._json_shred as shred_mod
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "data.json"
+    path.write_bytes(b'[{"id":1}]')
+    if _strong_file_revision(path) is None:
+        pytest.skip("filesystem has no strong native file revision")
+    meta_path = _downgrade_to_legacy_source_signature(path)
+    _clear_data_file_signature_memo()
+    monkeypatch.setattr(
+        shred_mod.os,
+        "replace",
+        lambda _source, _destination: (_ for _ in ()).throw(OSError("read only")),
+    )
+
+    with structlog.testing.capture_logs() as logs:
+        signature = _data_file_signature(path)
+
+    assert signature["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert "native_revision" not in orjson.loads(meta_path.read_bytes())["data_file"]
+    assert any(
+        record.get("event") == "json_source_persisted_proof_upgrade_failed"
+        and record.get("cache_dir") == str(meta_path.parent)
+        for record in logs
+    )
+
+
+def test_legacy_manifest_upgrade_temp_cleanup_failure_is_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._json_shred as shred_mod
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "data.json"
+    path.write_bytes(b'[{"id":1}]')
+    if _strong_file_revision(path) is None:
+        pytest.skip("filesystem has no strong native file revision")
+    meta_path = _downgrade_to_legacy_source_signature(path)
+    _clear_data_file_signature_memo()
+    real_unlink = Path.unlink
+
+    def fail_meta_temp_cleanup(candidate: Path, *, missing_ok: bool = False) -> None:
+        if candidate.name.startswith(".meta.json.") and candidate.name.endswith(".tmp"):
+            raise OSError("cleanup denied")
+        real_unlink(candidate, missing_ok=missing_ok)
+
+    monkeypatch.setattr(
+        shred_mod.os,
+        "replace",
+        lambda _source, _destination: (_ for _ in ()).throw(OSError("read only")),
+    )
+    monkeypatch.setattr(Path, "unlink", fail_meta_temp_cleanup)
+
+    with structlog.testing.capture_logs() as logs:
+        signature = _data_file_signature(path)
+
+    assert signature["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert any(
+        record.get("event") == "json_source_persisted_proof_temp_cleanup_failed"
+        and record.get("error") == "cleanup denied"
+        for record in logs
+    )
+    for candidate in meta_path.parent.glob(".meta.json.*.tmp"):
+        real_unlink(candidate, missing_ok=True)
+
+
+@pytest.mark.parametrize(
+    "revision",
+    [
+        _StrongFileRevision((7, 11), 13, 17, 19),
+        _StrongFileRevision((23, b"x" * 16), 29, 31, 37),
+    ],
+)
+def test_native_revision_record_round_trips_both_platform_shapes(
+    revision: _StrongFileRevision,
+) -> None:
+    assert _parse_native_revision_record(_native_revision_record(revision)) == revision
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", 2),
+        ("kind", "unknown"),
+        ("file_identity", "not-a-list"),
+        ("file_identity", [1]),
+        ("file_identity", [True, 2]),
+        ("file_identity", [-1, 2]),
+        ("file_identity", [1, True]),
+        ("file_identity", [1, 0]),
+        ("size", True),
+        ("size", -1),
+        ("mtime_ns", True),
+        ("change_token", True),
+        ("change_token", 0),
+    ],
+)
+def test_native_revision_record_rejects_malformed_common_or_posix_fields(
+    field: str, value: Any
+) -> None:
+    record = _native_revision_record(_StrongFileRevision((1, 2), 3, 4, 5))
+    record[field] = value
+    assert _parse_native_revision_record(record) is None
+
+
+@pytest.mark.parametrize(
+    "file_id",
+    [2, "short", "z" * 32, "0" * 32],
+)
+def test_native_revision_record_rejects_malformed_windows_file_id(file_id: Any) -> None:
+    record = _native_revision_record(_StrongFileRevision((1, b"x" * 16), 3, 4, 5))
+    record["file_identity"][1] = file_id
+    assert _parse_native_revision_record(record) is None
+
+
+def test_native_revision_record_rejects_non_mapping_and_non_exact_shape() -> None:
+    record = _native_revision_record(_StrongFileRevision((1, 2), 3, 4, 5))
+    with_extra = {**record, "unexpected": True}
+    without_size = {key: value for key, value in record.items() if key != "size"}
+
+    assert _parse_native_revision_record(None) is None
+    assert _parse_native_revision_record(with_extra) is None
+    assert _parse_native_revision_record(without_size) is None
+
+
+def test_persisted_build_proof_does_not_mask_same_stat_source_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._json_shred as shred_mod
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "data.json"
+    original = b'[{"id":1}]'
+    replacement = b'[{"id":2}]'
+    path.write_bytes(original)
+    if _strong_file_revision(path) is None:
+        pytest.skip("filesystem has no strong native file revision")
+    _build_durable_proof(path)
+    original_stat = path.stat()
+    _clear_data_file_signature_memo()
+    path.write_bytes(replacement)
+    os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    real_hash_file = shred_mod._hash_file
+    hashes = 0
+
+    def counting_hash_file(candidate: Path) -> str:
+        nonlocal hashes
+        hashes += 1
+        return real_hash_file(candidate)
+
+    monkeypatch.setattr(shred_mod, "_hash_file", counting_hash_file)
+
+    signature = _data_file_signature(path)
+
+    assert hashes == 1
+    assert signature["sha256"] == hashlib.sha256(replacement).hexdigest()
+
+
+def test_conflicting_matching_persisted_proofs_fail_closed_to_full_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._json_shred as shred_mod
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "data.json"
+    path.write_bytes(b'[{"id":1}]')
+    if _strong_file_revision(path) is None:
+        pytest.skip("filesystem has no strong native file revision")
+    working_dir = _build_durable_proof(path)
+    working_meta = orjson.loads((working_dir / "meta.json").read_bytes())
+    committed_dir = tmp_path / _json_cache_dir(path, "committed").relative_to(tmp_path)
+    committed_dir.mkdir(parents=True)
+    conflicting_meta = orjson.loads(orjson.dumps(working_meta))
+    conflicting_meta["data_file"]["sha256"] = "0" * 64
+    current_revision = _parse_native_revision_record(
+        conflicting_meta["data_file"]["native_revision"]
+    )
+    assert current_revision is not None
+    conflicting_meta["data_file"]["native_revision_proof_sha256"] = _persisted_source_proof_digest(
+        size=conflicting_meta["data_file"]["size"],
+        mtime_ns=conflicting_meta["data_file"]["mtime_ns"],
+        sha256=conflicting_meta["data_file"]["sha256"],
+        native_revision=current_revision,
+    )
+    (committed_dir / "meta.json").write_bytes(orjson.dumps(conflicting_meta))
+    _clear_data_file_signature_memo()
+    real_hash_file = shred_mod._hash_file
+    hashes = 0
+
+    def counting_hash_file(candidate: Path) -> str:
+        nonlocal hashes
+        hashes += 1
+        return real_hash_file(candidate)
+
+    monkeypatch.setattr(shred_mod, "_hash_file", counting_hash_file)
+    with structlog.testing.capture_logs() as logs:
+        signature = _data_file_signature(path)
+
+    assert hashes == 1
+    assert signature["sha256"] == working_meta["data_file"]["sha256"]
+    assert any(
+        record.get("event") == "json_source_persisted_proof_rejected"
+        and record.get("reason") == "conflicting_matching_signatures"
+        for record in logs
+    )
+
+
+def test_invalid_matching_persisted_proof_fails_closed_to_full_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._json_shred as shred_mod
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "data.json"
+    path.write_bytes(b'[{"id":1}]')
+    if _strong_file_revision(path) is None:
+        pytest.skip("filesystem has no strong native file revision")
+    working_dir = tmp_path / _build_durable_proof(path).relative_to(tmp_path)
+    meta_path = working_dir / "meta.json"
+    meta = orjson.loads(meta_path.read_bytes())
+    meta["data_file"]["size"] += 1
+    meta_path.write_bytes(orjson.dumps(meta))
+    _clear_data_file_signature_memo()
+    real_hash_file = shred_mod._hash_file
+    hashes = 0
+
+    def counting_hash_file(candidate: Path) -> str:
+        nonlocal hashes
+        hashes += 1
+        return real_hash_file(candidate)
+
+    monkeypatch.setattr(shred_mod, "_hash_file", counting_hash_file)
+    with structlog.testing.capture_logs() as logs:
+        _data_file_signature(path)
+
+    assert hashes == 1
+    assert any(
+        record.get("event") == "json_source_persisted_proof_rejected"
+        and record.get("reason") == "invalid_matching_signature"
+        for record in logs
+    )
+
+
+def test_persisted_proof_rejects_source_revision_movement_after_metadata_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._json_shred as shred_mod
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "data.json"
+    path.write_bytes(b'[{"id":1}]')
+    revision = _strong_file_revision(path)
+    if revision is None:
+        pytest.skip("filesystem has no strong native file revision")
+    _build_durable_proof(path)
+    changed = _StrongFileRevision(
+        revision.file_identity,
+        revision.size,
+        revision.mtime_ns,
+        revision.change_token + 1,
+    )
+    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: changed)
+
+    assert _persisted_data_file_signature(path, revision) is None
 
 
 @pytest.mark.parametrize("max_entries", [0, -1, True, 1.5, "2"])
@@ -385,6 +844,11 @@ def _windows_kernel32(
     size: int = 4,
     change_time: int = 10,
     file_id: bytes = b"x" * 16,
+    usn: int = 11,
+    usn_major: int = 2,
+    usn_record_length: int | None = None,
+    usn_returned_length: int | None = None,
+    fail_usn: bool = False,
 ) -> tuple[SimpleNamespace, list[object]]:
     closed: list[object] = []
 
@@ -405,10 +869,40 @@ def _windows_kernel32(
             info.FileId.Identifier[:] = file_id
         return 1
 
+    def device_io_control(
+        _handle: object,
+        _code: int,
+        _input: object,
+        _input_size: int,
+        output: object,
+        _output_size: int,
+        returned: object,
+        _overlapped: object,
+    ) -> int:
+        if fail_usn:
+            return 0
+        usn_offset = 24 if usn_major == 2 else 40 if usn_major == 3 else 24
+        record_length = usn_record_length if usn_record_length is not None else usn_offset + 8
+        buffer = ctypes.cast(output, ctypes.POINTER(ctypes.c_ubyte * 4096)).contents
+        for index in range(len(buffer)):
+            buffer[index] = 0
+        for index, value in enumerate(record_length.to_bytes(4, "little", signed=False)):
+            buffer[index] = value
+        for index, value in enumerate(usn_major.to_bytes(2, "little", signed=False)):
+            buffer[4 + index] = value
+        if usn_offset + 8 <= len(buffer):
+            for index, value in enumerate(usn.to_bytes(8, "little", signed=True)):
+                buffer[usn_offset + index] = value
+        ctypes.cast(returned, ctypes.POINTER(ctypes.c_uint32)).contents.value = (
+            usn_returned_length if usn_returned_length is not None else record_length
+        )
+        return 1
+
     return (
         SimpleNamespace(
             CreateFileW=_NativeCallable(lambda *_args: handle),
             GetFileInformationByHandleEx=_NativeCallable(get_information),
+            DeviceIoControl=_NativeCallable(device_io_control),
             CloseHandle=_NativeCallable(lambda value: closed.append(value) or 1),
         ),
         closed,
@@ -467,13 +961,11 @@ def test_windows_strong_file_revision_declines_native_setup_failures(
 
 
 @pytest.mark.parametrize(
-    ("directory", "size", "change_time", "file_id"),
+    ("directory", "size", "file_id"),
     [
-        (1, 4, 10, b"x" * 16),
-        (0, -1, 10, b"x" * 16),
-        (0, 4, 0, b"x" * 16),
-        (0, 4, -1, b"x" * 16),
-        (0, 4, 10, b"\0" * 16),
+        (1, 4, b"x" * 16),
+        (0, -1, b"x" * 16),
+        (0, 4, b"\0" * 16),
     ],
 )
 def test_windows_strong_file_revision_rejects_invalid_native_results(
@@ -481,7 +973,6 @@ def test_windows_strong_file_revision_rejects_invalid_native_results(
     monkeypatch: pytest.MonkeyPatch,
     directory: int,
     size: int,
-    change_time: int,
     file_id: bytes,
 ) -> None:
     import haute._json_shred as shred_mod
@@ -490,7 +981,6 @@ def test_windows_strong_file_revision_rejects_invalid_native_results(
         shred_mod,
         directory=directory,
         size=size,
-        change_time=change_time,
         file_id=file_id,
     )
     monkeypatch.setattr(
@@ -516,7 +1006,32 @@ def test_windows_strong_file_revision_returns_native_revision(
     assert revision.file_identity == (7, b"x" * 16)
     assert revision.size == 4
     assert revision.mtime_ns == 200
-    assert revision.change_token == 10
+    assert revision.change_token == 11
+    assert closed == [1]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"fail_usn": True},
+        {"usn_major": 1},
+        {"usn": 0},
+        {"usn": -1},
+        {"usn_record_length": 4},
+        {"usn_record_length": 32, "usn_returned_length": 8},
+    ],
+)
+def test_windows_strong_file_revision_rejects_unavailable_or_malformed_usn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any]
+) -> None:
+    import haute._json_shred as shred_mod
+
+    kernel32, closed = _windows_kernel32(shred_mod, **kwargs)
+    monkeypatch.setattr(
+        shred_mod.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False
+    )
+
+    assert shred_mod._windows_strong_file_revision(tmp_path / "data.json") is None
     assert closed == [1]
 
 
@@ -559,9 +1074,11 @@ def test_unavailable_revision_warnings_are_once_per_bounded_retained_path(
 ) -> None:
     import haute._json_shred as shred_mod
 
-    paths = [tmp_path / f"{index}.json" for index in range(3)]
-    for path in paths:
+    paths: list[Path] = []
+    for index in range(3):
+        path = tmp_path / f"{index}.json"
         path.write_bytes(b"[1]")
+        paths.append(path)
     warnings: list[tuple[str, dict[str, object]]] = []
     memo = _DataFileSignatureMemo(max_entries=2)
     monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: None)
@@ -623,9 +1140,12 @@ def test_eviction_retains_active_stale_generation_gate_until_completion(
 ) -> None:
     import haute._json_shred as shred_mod
 
-    first, second, third = (tmp_path / name for name in ("first.json", "second.json", "third.json"))
-    for path in (first, second, third):
-        path.write_bytes(b"[1]")
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    third = tmp_path / "third.json"
+    first.write_bytes(b"[1]")
+    second.write_bytes(b"[1]")
+    third.write_bytes(b"[1]")
     first_revision = shred_mod._posix_strong_file_revision(first)
     second_revision = shred_mod._posix_strong_file_revision(second)
     third_revision = shred_mod._posix_strong_file_revision(third)

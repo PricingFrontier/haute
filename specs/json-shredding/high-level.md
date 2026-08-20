@@ -74,12 +74,14 @@ snapshot, verifies its signature in bounded chunks, and gives Polars that stable
 path so Parquet projection can read only the selected column data. Haute never
 retains the complete compressed Parquet payload as a Python byte buffer. The
 snapshot normally uses a same-filesystem hard link (with a bounded streaming-copy
-fallback where links are unavailable), is deduplicated by content within the
-process, and is leased for the managed execution lifetime so an already-returned
-lazy plan survives a cache rebuild or clear. A direct caller outside a managed
-execution retains its snapshot until process exit because Haute cannot observe the
-lifetime of every derived Polars plan. A cache miss shreds only the requested tables
-and columns. Calls without a proven demand retain the complete bundle. Schema inference can sniff a v2 config from a data file
+fallback where links are unavailable), reuses a verified snapshot for repeated
+access to the same artifact generation, and is leased for the managed execution
+lifetime so an already-returned lazy plan survives a cache rebuild or clear.
+Independent mutable artifacts remain separate even when their current bytes are
+identical. A direct caller outside a managed execution retains its snapshot until
+process exit because Haute cannot observe the lifetime of every derived Polars
+plan. A cache miss shreds only the requested tables and columns. Calls without a
+proven demand retain the complete bundle. Schema inference can sniff a v2 config from a data file
 directly, sampling optionally, widening column types across every record seen and
 naming collision-free bare leaf keys as their own column names. Inferred table
 labels are readable identifiers derived from the source key names — the root
@@ -134,7 +136,9 @@ editor rows are inactive and ignored consistently.
 Assembly returns a top-level list of objects:
 sibling array branches are nested independently (never cross-multiplied),
 same-level frames use a deterministic cut plan and bag semantics, unmatched
-partials survive, and null-valued/empty-collection object fields are pruned
+partials survive, and same-level joins retain deterministic source-row order
+(the sorted left source first, followed by unmatched rows from later sources).
+Null-valued/empty-collection object fields are pruned
 from the rendered document (null or empty-list elements already inside arrays
 remain array elements). A relation key is checked only in frames that actually
 carry that key: a missing column in another mapping frame is absence, not a null.
@@ -185,12 +189,28 @@ unaccounted discrepancy as a shred bug, not something to serve silently.
 **Cache freshness and integrity are proven by content hashes.** A build records the
 data file's size, mtime, and full SHA-256, plus each emitted parquet's size and full
 SHA-256 after writing it. Public validity compares the source's content identity and
-re-hashes every candidate artifact: a readable footer does not prove its data pages
-are intact. The source SHA-256 may be reused across operations only while a strong,
-OS-native revision token proves that the same file generation is unchanged. The
-first observation and every revision change re-hash the complete source; a platform
-or filesystem that cannot provide a strong token gets the conservative always-hash
-path. Runtime goes further to close the hash-then-reopen race: it atomically pins each requested
+proves every candidate artifact: a readable footer does not prove its data pages are
+intact. The first observation of an artifact generation is pinned and completely
+hashed. Haute may retain that verified private snapshot in a process-local cache with
+strict entry and logical-byte bounds; a later operation may reuse it only when the
+visible artifact has the same strong native file identity and change revision and the
+private snapshot still exists. Revision movement, replacement, eviction, a fork, or
+native-revision unavailability forces a new pin and full hash, so visible corruption
+cannot be hidden by an older snapshot. The source SHA-256 may be reused across
+operations only while a strong, OS-native revision token proves that the same file
+generation is unchanged. A successful cache build stores the exact native revision
+that surrounded its full source hash beside that hash, with a digest binding those
+fields against accidental manifest drift. After a restart, Haute may seed its
+bounded process memo from working/committed metadata only when the current revision
+matches that persisted revision exactly and every matching candidate agrees on the
+signature. Old metadata, conflicting proofs, a revision change, or a platform or
+filesystem that cannot provide a strong token forces a complete source hash.
+After that complete hash, Haute may atomically upgrade a live legacy manifest with
+the new revision-bound proof only when the manifest's recorded size and SHA-256
+match the freshly observed source. A failed upgrade is logged and leaves serving on
+the already-safe full-hash path; it never turns a metadata write into a weaker
+validity decision.
+Runtime goes further to close the hash-then-reopen race: it atomically pins each requested
 artifact to a private file-backed snapshot, verifies size/SHA-256 from that exact
 snapshot in bounded chunks, and gives its stable path to Polars. A rewrite that
 preserves size and mtime, or a damaged data page beneath an unchanged footer, is
@@ -200,10 +220,13 @@ The private file snapshot also pins a returned LazyFrame (including derived plan
 to the generation it selected, even if the visible cache generation is later
 rebuilt, mirrored, or explicitly cleared. Parquet decode and projection remain lazy,
 so collection reads only demanded column chunks. Same-filesystem hard links avoid
-duplicating current-generation disk blocks; replaced generations and the bounded-copy
-fallback occupy temporary disk until the owning managed execution ends. For an
-unmanaged direct caller they remain until orderly process exit because arbitrary
-derived plans can outlive their original Python LazyFrame reference.
+duplicating current-generation disk blocks. A managed execution releases its lease
+when execution cleanup finishes; a bounded verification-cache pin may keep an idle
+snapshot available until LRU eviction, explicit cleanup, fork reset, or process exit.
+Active leases survive cache eviction. Replaced generations and the bounded-copy
+fallback occupy temporary disk while any such pin remains. For an unmanaged direct
+caller they remain until orderly process exit because arbitrary derived plans can
+outlive their original Python LazyFrame reference.
 
 Save-time promotion first requires a well-formed v2 mode/schema fingerprint, a
 recorded source signature that still matches the data file, and intact signed working
@@ -222,14 +245,15 @@ the process working directory selected for the project; callers must not assume
 they are relative to the source file. The reader-visibility limitation of this
 replacement is documented in the low-level specification.
 
-Source signatures are process-memoised by canonical path in a bounded,
-single-flight cache. A cache hit requires the same strong native file identity,
-length, last-write value, and change token that surrounded the original complete
-SHA-256 pass. This shares one content proof between runtime cache identity, planning,
-loading, and later previews without trusting size/mtime alone. A changed token, an atomic replacement,
-a forked process, or a file that changes during hashing cannot reuse the proof;
-native-token failure disables reuse for that observation rather than weakening the
-freshness contract.
+Source signatures are memoised by canonical path in a bounded, single-flight process
+cache. A memory or persisted-metadata hit requires the same strong native file
+identity, length, last-write value, and change token that surrounded the original
+complete SHA-256 pass. This shares one content proof between cache construction,
+runtime cache identity, planning, loading, later previews, and fresh server processes
+without trusting size/mtime alone. A changed token, an atomic replacement, conflicting
+metadata, or a file that changes during hashing cannot reuse the proof; native-token
+failure disables reuse for that observation rather than weakening the freshness
+contract.
 
 **Silent numeric/date coercion is rejected even though the underlying columnar
 library would allow it.** Polars will silently coerce a Python `bool` into a numeric

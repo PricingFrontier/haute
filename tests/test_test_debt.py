@@ -280,6 +280,35 @@ _EXPECTED_DEBT_IDS = {
     # ::TestCommittedSnapshotMatchesPinnedPolars
     # ::test_no_interface_drift_against_installed_polars.
     "ba1f02fb9964cdf3",
+    # Verified JSON source/artifact proofs depend on a native filesystem
+    # revision token (POSIX ctime or Windows USN), and one identity test also
+    # needs hard-link support. Filesystems without those primitives must take
+    # the deliberately conservative full-hash/copy path, so these tests skip
+    # only the unavailable native fast-path assertion. Platform-independent
+    # mocked witnesses in the same modules exercise every fallback, race, and
+    # invalidation branch; Linux CI and capable Windows/NTFS hosts run the real
+    # primitive assertions. See test_json_shred_mut_validity.py and
+    # test_json_shred_runtime_snapshots.py.
+    "0a5df3350d69e1f5",
+    "0c7b2cb3effd87e0",
+    "0ce7f0f48d149323",
+    "0f0d9227e7f4a5ed",
+    "1cc729c443a4270f",
+    "20ec083bffcea5c5",
+    "2c28fda4eed70866",
+    "3f6505dcbcfac128",
+    "513ab2404561fc80",
+    "525220876e76a500",
+    "7108885c10fdca44",
+    "7e926940549a4f58",
+    "7f618766970d6aa2",
+    "894e7f67b861b301",
+    "91878a6ff56e4c56",
+    "bd96cc6f51a39c67",
+    "bd9cf15e416714c0",
+    "c424c3f1d2cfe91a",
+    "cc655b332f19c3a3",
+    "fc936795d5ac2cdf",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

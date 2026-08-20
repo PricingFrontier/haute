@@ -44,15 +44,24 @@ claim. It retains structured evidence for all of these cases:
   scan, with semantic parity, an explicit physical `PROJECT 4/256 COLUMNS`
   plan, and a bounded incremental-RSS ratio plus fixed sampler allowance;
 - a two-port cached API input where the selected port physically scans two
-  columns from a wide Parquet cache and its leased runtime snapshot disappears
-  when the execution context is released;
+  columns from a wide Parquet cache; releasing the execution lease leaves only
+  the bounded verification-cache pin, and explicit cache cleanup removes it;
 - a 32 MiB source-signature control proving that the first observation performs
   one complete content hash while unchanged warm observations use the native
   revision proof at no more than 5% of the cold-hash median latency;
+- a 32 MiB cached-Parquet artifact control proving that one fully verified,
+  private snapshot is reused behind the unchanged native revision, within the
+  configured entry/byte bounds, at no more than 5% of cold-hash latency;
 - a small cached JSON apiInput through a downstream Polars `group_by`, proving
   target-only preview strategy estimation, cache-key construction, and runtime
-  loading share one SHA-256 raw-source proof and make no generic runtime xxHash
-  call;
+  loading reuse the cache-build SHA-256 proof after clearing process state and make
+  neither a new source hash nor a generic runtime xxHash call; the same run records
+  the deliberately favourable upper bound for removing
+  all repeated request-local graph preparation and rejects that candidate unless
+  it clears the common 20% end-to-end materiality gate;
+- repeated complete preview-cache hits proving the producing strategy is reused
+  with one planner invocation total and a warm median no greater than 50% of
+  the cold materialising request;
 - an uncached 20,000-row wide JSONL input projected to two fields, including
   the minimum cooperative-checkpoint count and proof that no cache was created;
 - the generated join-to-modelling scenario, whose demand is derived from the

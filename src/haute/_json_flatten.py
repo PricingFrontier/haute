@@ -351,6 +351,7 @@ def mirror_cache_to_committed(
             raise
         staged_meta = _read_cache_meta_lenient(tmp_dir)
         staged_valid = False
+        staged_failure_reason = "staged_manifest_changed_during_copy"
         try:
             if staged_meta == working_meta:
                 _staged_bundle, probe_failure = _probe_cache_bundle(
@@ -367,8 +368,13 @@ def mirror_cache_to_committed(
                     v2_config,
                     data_path=data_path,
                 )
-        except (OSError, pl.exceptions.PolarsError):
+                if probe_failure is not None:
+                    staged_failure_reason = probe_failure.reason
+                elif not staged_valid:
+                    staged_failure_reason = "source_identity_changed_during_copy"
+        except (OSError, pl.exceptions.PolarsError) as exc:
             staged_valid = False
+            staged_failure_reason = f"{type(exc).__name__}: {exc}"
         if not staged_valid:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             logger.warning(
@@ -376,6 +382,7 @@ def mirror_cache_to_committed(
                 data_path=str(data_path),
                 working_dir=str(working_dir),
                 committed_dir=str(committed_dir),
+                reason=staged_failure_reason,
             )
             return False
         _swap_dir_into_place(tmp_dir, committed_dir)

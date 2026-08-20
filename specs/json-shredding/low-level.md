@@ -145,7 +145,11 @@ emitting at the same array prefix are not first collected individually and then 
 again for their join. They are planned by `_plan_cut` and `_execute_plan` before the
 single collection; residual shared fields are full bag-
 joined (fan-out is retained), cut/disconnected groups are diagonal-concatenated as
-partials, and the prefix-tree builder nests child arrays by ancestor values without
+partials, and joins preserve the deterministic sorted-member left-to-right row order
+(`maintain_order="left_right"`) under both automatic and streaming Polars execution.
+Every fold member must overlap the accumulated connected component; a violated plan
+invariant fails loudly instead of falling back to an unbounded Cartesian join.
+The prefix-tree builder nests child arrays by ancestor values without
 joining siblings. Relation-key guards examine a row only when that row actually
 contains the key; an absent column in another mapping frame is not a null. A present
 null component raises `OutputNestingKeyError`. `_prune` removes null-valued object fields and empty collection
@@ -175,12 +179,17 @@ without another upstream read.
    in-memory schema and on-disk data file, return the existing `meta.json` payload
    without rebuilding.
 4. Still under the lock, record the data-file signature (`_data_file_signature`)
-   *before* reading records.
+   *before* reading records. When a strong native revision is available, the
+   signature includes its strict versioned representation and a SHA-256 binding of
+   the signature to that revision so the completed proof can survive a process
+   restart without trusting an accidentally altered manifest field.
 5. Still under the lock, build the shared `_EmittingTableSpec`s once
    (`table_is_emitting` plus parsed table/column paths); the walk and parquet frame
    construction consume the same specs. The signature is shared by this logical
    operation and, while its strong revision remains unchanged, by later planner and
-   loader operations in the same process.
+   loader operations. A later process can seed the same bounded memo from a live
+   working/committed manifest only when its current native revision matches the
+   persisted revision exactly and all matching manifests agree on the signature.
 6. Create the unique sibling staging temp dir. It precedes the shred because
    parallel workers write their parts into it; a failure anywhere below removes
    the whole directory.
@@ -304,10 +313,26 @@ the skip/conservation accounting.
    Creating the link is atomic with respect to Haute's rename-based publisher: it
    either captures the manifest's generation or a different generation whose
    signature is then rejected. Filesystems without hard-link support use a
-   bounded streaming-copy fallback. Size and SHA-256 are verified from the pinned
-   artifact in fixed-size chunks; the complete compressed payload is never held in
-   a Python `bytes`/`BytesIO` object. Identical content reuses one process snapshot,
-   and `scan_parquet(snapshot_path)` remains a native file-backed scan. Before any
+   bounded streaming-copy fallback. The first observation of a visible artifact
+   generation verifies size and SHA-256 from the pinned artifact in fixed-size chunks;
+   the complete compressed payload is never held in a Python `bytes`/`BytesIO` object.
+   The verified snapshot may remain in a process-local LRU bounded by
+   `HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES` and
+   `HAUTE_JSON_RUNTIME_SNAPSHOT_CACHE_MAX_BYTES`. A later probe acquires that snapshot
+   without hashing only when the current visible path has the exact strong native
+   identity/change revision captured after verification and the private file still
+   exists. Revision movement, atomic replacement, cache eviction, fork reset, or an
+   unavailable strong revision takes the full capture/hash path. Cache eviction removes
+   only the cache's pin; an active execution lease or unmanaged process pin keeps its
+   snapshot alive until its existing lifetime boundary. Repeated access to the same
+   artifact generation reuses one process snapshot; independently mutable artifacts
+   remain separate even when their current bytes are identical. Private snapshot
+   filenames use a fixed 128-bit SHA-256 prefix so deeply nested Windows project paths
+   do not cross the legacy path limit. The cache key and content
+   verification still use the complete SHA-256; any truncated-name collision is
+   detected by file identity and published under a short UUID fallback instead of
+   substituting one artifact for another.
+   `scan_parquet(snapshot_path)` remains a native file-backed scan. Before any
    requested-column selection, `LazyFrame.collect_schema()` must expose the port's
    complete exact declared name-to-Polars-dtype mapping. Physical parquet column
    order is irrelevant: an accepted lazy frame is projected into requested-column
@@ -318,18 +343,20 @@ the skip/conservation accounting.
    An unusable candidate is logged and the next candidate is tried.
 
    The private snapshot path pins the returned frame and every derived lazy plan to
-   this generation across a later rebuild, mirror, or explicit clear. Runtime
-   snapshots are content-addressed within each process and reference-counted across
-   concurrent managed executions; the current `ExecutionContext` releases its paths
-   only after collection and all execution cleanup finish. A direct caller without a
-   managed context conservatively pins its paths until orderly process exit because
-   a public LazyFrame may outlive its original reference and Haute cannot safely
-   infer when all derived plans are gone. A hard-linked current generation consumes
-   no duplicate blocks; a replaced generation remains only until its last managed
-   execution releases it (or process exit for an unmanaged caller). The
-   streaming-copy fallback uses equivalent temporary disk space. Validation-only
-   probes take a transient reference and remove an otherwise-unowned snapshot as soon
-   as footer validation finishes. An ungraceful process termination may leave a
+   this generation across a later rebuild, mirror, or explicit clear. Repeated access
+   to the same artifact generation may share one stable private path, reference-counted
+   across concurrent managed executions; the current `ExecutionContext` releases its
+   lease only after collection and all execution cleanup finish. The bounded LRU may
+   retain its independent verification pin until eviction or explicit cleanup. A
+   direct caller without a managed context conservatively pins its paths until orderly
+   process exit because a public LazyFrame may outlive its original reference and
+   Haute cannot safely infer when all derived plans are gone. A hard-linked current
+   generation consumes no duplicate blocks; a replaced generation remains only while
+   an execution, process, or bounded-cache pin owns it. The streaming-copy fallback
+   uses equivalent temporary disk space. Validation-only probes release their
+   transient references immediately after footer validation; an admitted verification
+   cache entry may retain the proven generation within the same bounds. An ungraceful
+   process termination may leave a
    private snapshot directory for later operational cleanup, but never makes that
    directory part of cache discovery or serving.
 4. If no cache can serve, `_shred_data_file` streams `_iter_records` into
@@ -365,8 +392,10 @@ the skip/conservation accounting.
    `copytree` into a `.tmp` sibling. Before publish, the staged `meta.json` must equal
    the captured working manifest and every staged parquet must still match that
    manifest's signature; a concurrently changed/mixed copy is removed and committed
-   remains untouched. A valid stage is published with `_swap_dir_into_place` (shared
-   with build).
+   remains untouched. The rejection warning identifies whether the manifest changed,
+   an artifact probe failed, the source identity moved, or the probe itself raised;
+   these states are never collapsed into an unexplained generic failure. A valid
+   stage is published with `_swap_dir_into_place` (shared with build).
 
 **Staged publish** — `_swap_dir_into_place(tmp_dir, live_dir)`:
 renames the current `live_dir` aside to a unique `.build-old-<uuid>` name, renames
@@ -497,13 +526,19 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
 - **Cache validity remains content-authoritative.** The data file's complete
   SHA-256 is memoised only behind a strong native revision comprising file
   identity, length, last-write value, and an unforgeable-by-normal-write change
-  token (`ctime_ns` on POSIX; `FILE_BASIC_INFO.ChangeTime` plus
-  `FILE_ID_INFO` on Windows). Size/mtime alone never authorise reuse, so an
+  token (`ctime_ns` on POSIX; the file USN read with
+  `FSCTL_READ_FILE_USN_DATA` plus `FILE_ID_INFO` on Windows). A Windows volume
+  that cannot supply a supported USN record takes the full-hash path; Haute does
+  not substitute the weaker `FILE_BASIC_INFO.ChangeTime`. Size/mtime alone never
+  authorise reuse, so an
   in-place same-size rewrite followed by an mtime restore and an atomic
   same-stat replacement both force a new hash. If the strong token cannot be
   read, that observation re-hashes instead of falling back to a weaker gate.
-  Every manifest-declared parquet is still re-hashed before the footer schema
-  probe, so a footer-readable data-page corruption is rejected.
+  Every manifest-declared parquet generation is completely hashed before its first
+  footer schema probe. Reuse of that proof requires the same strong native revision
+  and the still-private verified snapshot; otherwise it is re-hashed. A
+  footer-readable data-page corruption is therefore rejected rather than masked by
+  size/mtime or by a stale retained snapshot.
 - **The build lock is process-local**, keyed by the normcased resolved cache-dir
   path; concurrent builds of *different* caches never block each other.
   `_BUILD_LOCKS` weakly retains inactive identities, while the caller strongly owns
@@ -513,12 +548,21 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
 - **Source signatures use bounded process-wide proof reuse**: canonical paths
   key at most 256 immutable signature entries; per-path single-flight prevents a
   concurrent hashing herd. The strong revision is read before and after hashing
-  and the result is published only if it held. Revision movement fails the
-  signature operation, loader failure publishes nothing, least-recently-used
-  entries are evicted at the bound, and a forked child starts with an empty cache
-  and fresh locks. Callers receive independent signature mappings so mutation of
-  one result cannot poison later validity checks. When strong revision support is
-  unavailable, each call hashes and retains no cross-operation proof.
+  and the result is published only if it held. A cache manifest stores that revision
+  as `data_file.native_revision` (`posix_ctime_v1` with device/inode/ctime, or
+  `windows_usn_v1` with volume/file ID/USN). After a process restart or fork, an
+  exact current-revision match may seed the memo without rereading the source only
+  when its `native_revision_proof_sha256` validates and every matching live manifest
+  supplies the same strict size/mtime/SHA-256 record. Missing, old, malformed, or
+  conflicting records fall through to a complete hash. Once that hash succeeds,
+  each live legacy v2 manifest whose recorded size/SHA-256 agrees is upgraded by an
+  atomic `meta.json` replacement with the current revision-bound proof. A mismatch
+  is not changed; a write failure is logged and does not fail or weaken the proven
+  read. Revision movement fails the signature operation, loader failure publishes
+  nothing, and least-recently-used entries are evicted at the bound.
+  Callers receive independent signature mappings so mutation of one result cannot
+  poison later validity checks. When strong revision support is unavailable, each
+  call hashes and retains no cross-operation proof.
   That conservative path emits a bounded once-per-path structured warning naming
   `full_source_hash_per_operation`, so a platform capability problem remains
   operationally visible instead of presenting only as unexplained preview latency.

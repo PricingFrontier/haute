@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 
 import polars as pl
@@ -656,12 +657,15 @@ def test_automatic_group_by_estimate_targets_the_boundary_node(
 
     estimated_nodes: list[str] = []
 
-    def estimate(_graph, node_id: str, *, source: str) -> MaterialisationEstimate:
-        estimated_nodes.append(node_id)
+    def estimate(
+        _graph, node_ids: Iterable[str], *, source: str
+    ) -> Iterable[tuple[str, MaterialisationEstimate]]:
         assert source == "live"
-        return MaterialisationEstimate.available(0)
+        requested = list(node_ids)
+        estimated_nodes.extend(requested)
+        return [(node_id, MaterialisationEstimate.available(0)) for node_id in requested]
 
-    monkeypatch.setattr(execution, "estimate_materialisation_boundary", estimate)
+    monkeypatch.setattr(execution, "estimate_materialisation_boundaries", estimate)
 
     result = plan_execution_strategy(
         ProjectionRequest(
