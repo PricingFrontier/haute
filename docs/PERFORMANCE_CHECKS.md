@@ -251,3 +251,7 @@ uv run python scripts/memory_smoke.py -- uv run pytest tests/performance/test_pr
 
 The wrapped command output is mirrored to stderr, and the wrapper emits
 JSON to stdout so CI or local scripts can parse the memory summary directly.
+When the wrapper observes RSS for the child PID, that exact sample series owns
+the reported child peak. POSIX `RUSAGE_CHILDREN` is a process-wide high-water
+mark and is used only when no live child sample was available; this prevents an
+earlier high-memory child from being attributed to a later command.

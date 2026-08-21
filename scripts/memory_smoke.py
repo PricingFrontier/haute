@@ -256,9 +256,10 @@ def run_smoke(
             child_resource_peak_before,
             sampler.child_peak_rss_bytes(),
         )
-        child_peak_rss = max(child_rss_samples, default=child_resource_peak)
-        if child_resource_peak is not None and child_peak_rss is not None:
-            child_peak_rss = max(child_peak_rss, child_resource_peak)
+        # RUSAGE_CHILDREN is a sticky, process-global high-water mark. Once we
+        # have PID-specific samples, combining it can attribute an earlier
+        # child's peak to this command. Retain it only as a no-sample fallback.
+        child_peak_rss = max(child_rss_samples) if child_rss_samples else child_resource_peak
 
         if enable_tracemalloc:
             python_current, python_peak = tracemalloc.get_traced_memory()

@@ -85,6 +85,56 @@ def test_memory_metrics_can_be_supplied_by_sampler() -> None:
     assert summary["python_peak_tracemalloc_bytes"] is None
 
 
+class StickyChildPeakSampler:
+    def __init__(self) -> None:
+        self.parent_rss = iter([100, 120])
+        self.resource_peak = iter([700, 900])
+
+    def process_rss_bytes(self, pid: int) -> int | None:
+        if pid == os.getpid():
+            return next(self.parent_rss)
+        return 200
+
+    def process_peak_rss_bytes(self) -> int | None:
+        return 256
+
+    def child_peak_rss_bytes(self) -> int | None:
+        return next(self.resource_peak)
+
+
+def test_live_child_samples_are_not_contaminated_by_sticky_resource_peak() -> None:
+    summary = memory_smoke.run_smoke(
+        command=_python_command("import time; time.sleep(0.02)"),
+        enable_tracemalloc=False,
+        poll_interval_seconds=0.001,
+        sampler=StickyChildPeakSampler(),
+        child_output=None,
+    )
+
+    assert summary["child_rss_sample_count"] >= 1
+    assert summary["child_peak_rss_bytes"] == 200
+
+
+class NoLiveChildPeakSampler(StickyChildPeakSampler):
+    def process_rss_bytes(self, pid: int) -> int | None:
+        return next(self.parent_rss) if pid == os.getpid() else None
+
+
+def test_resource_peak_is_retained_when_no_live_child_sample_exists() -> None:
+    sampler = NoLiveChildPeakSampler()
+
+    summary = memory_smoke.run_smoke(
+        command=_python_command("pass"),
+        enable_tracemalloc=False,
+        poll_interval_seconds=0.001,
+        sampler=sampler,
+        child_output=None,
+    )
+
+    assert summary["child_rss_sample_count"] == 0
+    assert summary["child_peak_rss_bytes"] == 900
+
+
 def test_poll_interval_must_be_positive() -> None:
     with pytest.raises(SystemExit) as exc_info:
         memory_smoke._parse_args(["--poll-interval", "0", "--", *_python_command("pass")])

@@ -122,12 +122,15 @@
   target separately, so a reviewer can act without reading the scanner's
   implementation. The Playwright CI retry allowance is pinned to exactly 2 by a
   direct assertion against `frontend/playwright.config.ts`.
-- **Performance report schema 3** contains top-level `environment`, `workload`,
+- **Performance report schema 4** contains top-level `environment`, `workload`,
   `resources`, and `wall_time` records plus per-test bounded evidence.
   Unavailable numeric counters are JSON `null`; reported pytest phase time plus
   runner overhead must equal total time within the recorded tolerance. The
   deterministic CI-small Polars scenario records every `ExecutionProfile`,
-  while 1m/10m inputs remain opt-in.
+  while 1m/10m inputs remain opt-in. Child peak RSS uses live samples from the
+  exact child PID whenever any were observed. The process-global, sticky
+  `RUSAGE_CHILDREN` high-water mark is only a no-sample fallback, so a previous
+  child cannot contaminate a later scenario's measurement.
 - **Playwright configuration** uses a single worker and `fullyParallel: false`;
   Chromium is the normal project and Firefox is restricted to `@smoke` tests.
   CI retries twice, recording traces on first retry and screenshots/video on
