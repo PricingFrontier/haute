@@ -14,6 +14,12 @@ import pytest
 import haute._json_shred as shred
 
 
+def _windows_lock_error(winerror: int) -> OSError:
+    error = OSError(5, "busy")
+    error.winerror = winerror  # type: ignore[attr-defined]
+    return error
+
+
 def test_open_cache_lock_file_uses_private_binary_descriptor_and_closes_on_wrap_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -174,11 +180,22 @@ def test_file_lock_timeout_at_deadline_does_not_sleep_again(
     assert sleeps == [0.01]
 
 
+def test_file_lock_posix_treats_permission_denied_as_contention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fcntl = SimpleNamespace(LOCK_EX=1, LOCK_NB=2, LOCK_UN=4)
+    fcntl.flock = lambda *_args: (_ for _ in ()).throw(OSError(13, "busy"))
+    monkeypatch.setattr(shred.os, "name", "posix")
+    monkeypatch.setitem(sys.modules, "fcntl", fcntl)
+
+    assert shred._acquire_file_lock(SimpleNamespace(fileno=lambda: 43), blocking=False) is False
+
+
 @pytest.mark.parametrize(
     "error",
     [
-        OSError(13, "busy", None, 33),
-        OSError(13, "busy", None, 36),
+        _windows_lock_error(33),
+        _windows_lock_error(36),
         OSError(11, "busy"),
         OSError(13, "busy"),
         OSError(36, "busy"),
@@ -207,6 +224,24 @@ def test_file_lock_windows_contention_errors_are_retried_until_deadline(
     assert calls == [(44, 9, 1), (44, 9, 1)]
     assert seeks == [(0,), (0,)]
     assert sleeps == [0.01]
+
+
+def test_file_lock_windows_timeout_stops_after_overshooting_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: list[int] = []
+    msvcrt = SimpleNamespace(LK_NBLCK=9, LK_UNLCK=10)
+    msvcrt.locking = lambda *_args: attempts.append(1) or (_ for _ in ()).throw(OSError(11, "busy"))
+    monkeypatch.setattr(shred.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "msvcrt", msvcrt)
+    monkeypatch.setattr(shred.time, "monotonic", iter((2.0, 2.02)).__next__)
+    sleeps: list[float] = []
+    monkeypatch.setattr(shred.time, "sleep", sleeps.append)
+    handle = SimpleNamespace(fileno=lambda: 44, seek=lambda *_args: None)
+
+    assert shred._acquire_file_lock(handle, timeout_seconds=0.01) is False
+    assert attempts == [1]
+    assert sleeps == []
 
 
 def test_file_lock_windows_propagates_unexpected_error(monkeypatch: pytest.MonkeyPatch) -> None:

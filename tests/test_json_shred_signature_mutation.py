@@ -156,6 +156,76 @@ def test_persisted_proof_ignores_complete_records_from_other_schema_modes(
     assert seen == ["working", "committed"]
 
 
+@pytest.mark.parametrize("schema_mode", ["v1", "v3"])
+def test_persisted_proof_never_admits_an_other_schema_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: tuple[Path, shred_mod._StrongFileRevision],
+    schema_mode: str,
+) -> None:
+    path, revision = source
+    _dirs, _seen = _layers(tmp_path, monkeypatch)
+    working_meta = tmp_path / "working" / "meta.json"
+    working_meta.write_bytes(
+        orjson.dumps({"schema_mode": schema_mode, "data_file": _proof(revision)})
+    )
+    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+
+    assert shred_mod._persisted_data_file_signature(path, revision) is None
+
+
+def test_persisted_proof_compares_large_equal_sizes_by_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "data.json"
+    path.write_bytes(b"[]")
+    revision = shred_mod._StrongFileRevision((1, 2), 1000, 4, 5)
+    _dirs, _seen = _layers(tmp_path, monkeypatch)
+    proof = shred_mod._DataFileSignatureRecord(1000, 4, "a" * 64, revision).as_dict()
+    working_meta = tmp_path / "working" / "meta.json"
+    working_meta.write_bytes(orjson.dumps(_meta(proof)))
+    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+
+    assert shred_mod._persisted_data_file_signature(
+        path, revision
+    ) == shred_mod._DataFileSignatureRecord(1000, 4, "a" * 64, revision)
+
+
+def test_persisted_proof_rejects_a_lexically_lower_incorrect_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: tuple[Path, shred_mod._StrongFileRevision],
+) -> None:
+    path, revision = source
+    _dirs, _seen = _layers(tmp_path, monkeypatch)
+    proof = {**_proof(revision), "native_revision_proof_sha256": ""}
+    working_meta = tmp_path / "working" / "meta.json"
+    working_meta.write_bytes(orjson.dumps(_meta(proof)))
+    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+
+    assert shred_mod._persisted_data_file_signature(path, revision) is None
+
+
+def test_persisted_proof_accepts_identical_independent_layer_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: tuple[Path, shred_mod._StrongFileRevision],
+) -> None:
+    path, revision = source
+    _dirs, _seen = _layers(tmp_path, monkeypatch)
+    encoded = orjson.dumps(_meta(_proof(revision)))
+    working_meta = tmp_path / "working" / "meta.json"
+    committed_meta = tmp_path / "committed" / "meta.json"
+    working_meta.write_bytes(encoded)
+    committed_meta.write_bytes(encoded)
+    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+
+    assert shred_mod._persisted_data_file_signature(
+        path, revision
+    ) == shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, revision)
+
+
 @pytest.mark.parametrize(
     "working_data_file",
     [

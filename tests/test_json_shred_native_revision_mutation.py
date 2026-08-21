@@ -167,6 +167,8 @@ def _kernel32(
     record_length: int | None = None,
     major_version: int = 2,
     usn: int = 11,
+    usn_record_offset: int | None = None,
+    usn_trailer_byte: int = 0,
     raises: BaseException | None = None,
 ) -> tuple[SimpleNamespace, dict[str, Any]]:
     calls: dict[str, Any] = {"close": []}
@@ -202,12 +204,21 @@ def _kernel32(
             raise raises
         if fail_usn:
             return 0
-        offset = 24 if major_version == 2 else 40 if major_version == 3 else 24
+        offset = (
+            usn_record_offset
+            if usn_record_offset is not None
+            else 24
+            if major_version == 2
+            else 40
+            if major_version == 3
+            else 24
+        )
         length = record_length if record_length is not None else offset + 8
         output = ctypes.cast(args[4], ctypes.POINTER(ctypes.c_ubyte * 4096)).contents
         output[:4] = length.to_bytes(4, "little")
         output[4:6] = major_version.to_bytes(2, "little")
         output[offset : offset + 8] = usn.to_bytes(8, "little", signed=True)
+        output[offset + 8] = usn_trailer_byte
         ctypes.cast(args[6], ctypes.POINTER(ctypes.c_uint32)).contents.value = (
             returned_length if returned_length is not None else length
         )
@@ -272,6 +283,59 @@ def test_windows_strong_file_revision_queries_native_token_and_closes_handle(
     ):
         assert getattr(kernel32, callable_name).argtypes is not None
         assert getattr(kernel32, callable_name).restype is not None
+
+
+def test_windows_strong_file_revision_accepts_padded_v3_record_and_exact_usn_slice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kernel32, _calls = _kernel32(
+        record_length=64,
+        returned_length=64,
+        major_version=3,
+        usn=1,
+        usn_trailer_byte=0x7F,
+    )
+    monkeypatch.setattr(
+        shred_mod.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False
+    )
+
+    revision = shred_mod._windows_strong_file_revision(tmp_path / "data.json")
+
+    assert revision is not None
+    assert revision.change_token == 1
+
+
+def test_windows_strong_file_revision_subtracts_epochs_before_scaling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timestamp = shred_mod._WINDOWS_EPOCH_OFFSET_100NS + 123
+    kernel32, _calls = _kernel32(timestamp=timestamp)
+    monkeypatch.setattr(
+        shred_mod.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False
+    )
+
+    revision = shred_mod._windows_strong_file_revision(tmp_path / "data.json")
+
+    assert revision is not None
+    assert revision.mtime_ns == timestamp * 100
+
+
+@pytest.mark.parametrize("major_version", [0, 4])
+def test_windows_strong_file_revision_rejects_unsupported_version_with_valid_v3_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, major_version: int
+) -> None:
+    kernel32, calls = _kernel32(
+        major_version=major_version,
+        usn_record_offset=40,
+        record_length=48,
+        returned_length=48,
+    )
+    monkeypatch.setattr(
+        shred_mod.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False
+    )
+
+    assert shred_mod._windows_strong_file_revision(tmp_path / "data.json") is None
+    assert calls["close"] == [99]
 
 
 @pytest.mark.parametrize(
