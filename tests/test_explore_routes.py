@@ -1377,44 +1377,90 @@ def test_superseded_explore_job_cannot_select_its_prepared_generation(
     body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
     first_prepared = threading.Event()
     release_first = threading.Event()
-    prepared = []
-    prepared_lock = threading.Lock()
+    timeout_seconds = 30.0
+    publications = []
+    publications_lock = threading.Lock()
+    from haute._execution_context import ExecutionAdmission, ExecutionContext
     from haute.routes import _explore_service as service_mod
 
     original_dispatch = service_mod.run_isolated_worker
 
+    def create_unreserved_context(*, operation, profile, job_id, cancellation_token):
+        # This test exercises publication ordering, not host-specific admission
+        # capacity. Give both workers deterministic admitted headroom so the
+        # same latest-wins race is exercised on small and large CI hosts.
+        headroom = 1 << 30
+        admission = ExecutionAdmission(
+            operation=operation,
+            profile=profile,
+            memory_limit_bytes=headroom,
+            rss_at_admission_bytes=0,
+            rss_limit_bytes=headroom,
+            headroom_bytes=headroom,
+            config_key="test_explore_publication_supersession",
+        )
+        return ExecutionContext(
+            operation=operation,
+            profile=profile,
+            job_id=job_id,
+            cancellation_token=cancellation_token,
+            memory_limit_bytes=headroom,
+            memory_baseline_bytes=0,
+            rss_limit_bytes=headroom,
+            admission=admission,
+        )
+
     def prepare_with_first_job_gated(*args, **kwargs):
         publication = args[2]
-        with prepared_lock:
-            prepared.append(publication)
-            call_number = len(prepared)
+        with publications_lock:
+            publications.append(publication)
+            call_number = len(publications)
+        outcome = original_dispatch(*args, **kwargs)
         if call_number == 1:
+            # Gate after the child has prepared and validated its private
+            # staging generation, immediately before the parent can publish it.
+            assert publication.staging_path.exists()
             first_prepared.set()
-            assert release_first.wait(timeout=5.0)
-        return original_dispatch(*args, **kwargs)
+            assert release_first.wait(timeout=timeout_seconds)
+        return outcome
 
     monkeypatch.setattr(
         service_mod,
         "run_isolated_worker",
         prepare_with_first_job_gated,
     )
+    monkeypatch.setattr(
+        service_mod,
+        "create_admitted_execution_context",
+        create_unreserved_context,
+    )
 
     first = client.post("/api/explore/run", json=body).json()
-    assert first_prepared.wait(timeout=5.0)
+    assert first_prepared.wait(timeout=timeout_seconds)
     second = client.post("/api/explore/run", json=body).json()
-    release_first.set()
-    first_completed = _poll_explore(client, first["job_id"], timeout=5.0)
+    try:
+        second_completed = _poll_explore(client, second["job_id"], timeout=timeout_seconds)
+        assert second_completed["status"] == "completed"
+    finally:
+        release_first.set()
+    first_completed = _poll_explore(client, first["job_id"], timeout=timeout_seconds)
     assert first_completed["status"] == "superseded"
-    _poll_explore(client, second["job_id"], timeout=5.0)
-    worker_name = f"haute-explore-{first['job_id']}"
-    for thread in threading.enumerate():
-        if thread.name == worker_name:
-            thread.join(timeout=5.0)
-            assert not thread.is_alive()
-            break
+    for job_id in (first["job_id"], second["job_id"]):
+        worker_name = f"haute-explore-{job_id}"
+        for thread in threading.enumerate():
+            if thread.name == worker_name:
+                thread.join(timeout=timeout_seconds)
+                assert not thread.is_alive()
+                break
 
-    assert len(prepared) == 1
-    assert not prepared[0].staging_path.exists()
+    assert len(publications) == 2
+    first_publication, second_publication = publications
+    assert not first_publication.staging_path.exists()
+    assert not first_publication.final_path.exists()
+    assert second_publication.final_path.exists()
+    pointer_path = second_publication.final_path.parent.parent / "current.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    assert pointer["generation_id"] == second_publication.generation_id
 
 
 def test_explore_rejects_node_without_exactly_one_parent(
