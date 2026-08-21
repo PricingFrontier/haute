@@ -10,14 +10,14 @@ from typing import Any
 
 import pytest
 
-import haute._json_shred as shred_mod
+from haute._json_shred import _source_proof
 
 
 @pytest.mark.parametrize(
     ("revision", "expected"),
     [
         (
-            shred_mod._StrongFileRevision((7, 11), 13, 17, 19),
+            _source_proof._StrongFileRevision((7, 11), 13, 17, 19),
             {
                 "schema_version": 1,
                 "kind": "posix_ctime_v1",
@@ -28,7 +28,7 @@ import haute._json_shred as shred_mod
             },
         ),
         (
-            shred_mod._StrongFileRevision((23, bytes(range(16))), 29, 31, 37),
+            _source_proof._StrongFileRevision((23, bytes(range(16))), 29, 31, 37),
             {
                 "schema_version": 1,
                 "kind": "windows_usn_v1",
@@ -41,12 +41,12 @@ import haute._json_shred as shred_mod
     ],
 )
 def test_native_revision_record_has_exact_platform_shape_and_round_trips(
-    revision: shred_mod._StrongFileRevision, expected: dict[str, Any]
+    revision: _source_proof._StrongFileRevision, expected: dict[str, Any]
 ) -> None:
-    record = shred_mod._native_revision_record(revision)
+    record = _source_proof._native_revision_record(revision)
 
     assert record == expected
-    assert shred_mod._parse_native_revision_record(record) == revision
+    assert _source_proof._parse_native_revision_record(record) == revision
 
 
 @pytest.mark.parametrize(
@@ -80,29 +80,33 @@ def test_native_revision_record_has_exact_platform_shape_and_round_trips(
 def test_parse_native_revision_record_rejects_invalid_common_and_posix_values(
     mutate: Any,
 ) -> None:
-    record = shred_mod._native_revision_record(shred_mod._StrongFileRevision((1, 2), 3, 4, 5))
+    record = _source_proof._native_revision_record(
+        _source_proof._StrongFileRevision((1, 2), 3, 4, 5)
+    )
     mutate(record)
 
-    assert shred_mod._parse_native_revision_record(record) is None
+    assert _source_proof._parse_native_revision_record(record) is None
 
 
 @pytest.mark.parametrize("file_id", [2, "short", "z" * 32, "0" * 32])
 def test_parse_native_revision_record_rejects_invalid_windows_id(file_id: Any) -> None:
-    record = shred_mod._native_revision_record(
-        shred_mod._StrongFileRevision((1, b"x" * 16), 3, 4, 5)
+    record = _source_proof._native_revision_record(
+        _source_proof._StrongFileRevision((1, b"x" * 16), 3, 4, 5)
     )
     record["file_identity"][1] = file_id
 
-    assert shred_mod._parse_native_revision_record(record) is None
+    assert _source_proof._parse_native_revision_record(record) is None
 
 
 def test_parse_native_revision_record_requires_exact_mapping() -> None:
-    record = shred_mod._native_revision_record(shred_mod._StrongFileRevision((1, 2), 3, 4, 5))
+    record = _source_proof._native_revision_record(
+        _source_proof._StrongFileRevision((1, 2), 3, 4, 5)
+    )
 
-    assert shred_mod._parse_native_revision_record(None) is None
-    assert shred_mod._parse_native_revision_record({**record, "extra": None}) is None
+    assert _source_proof._parse_native_revision_record(None) is None
+    assert _source_proof._parse_native_revision_record({**record, "extra": None}) is None
     assert (
-        shred_mod._parse_native_revision_record(
+        _source_proof._parse_native_revision_record(
             {key: value for key, value in record.items() if key != "size"}
         )
         is None
@@ -120,7 +124,7 @@ def test_posix_strong_file_revision_maps_exact_stat_fields() -> None:
     )
     path = SimpleNamespace(stat=lambda: observed)
 
-    assert shred_mod._posix_strong_file_revision(path) == shred_mod._StrongFileRevision(
+    assert _source_proof._posix_strong_file_revision(path) == _source_proof._StrongFileRevision(
         (0, 1), 0, 17, 1
     )
 
@@ -140,7 +144,7 @@ def test_posix_strong_file_revision_rejects_inadequate_identity(
 ) -> None:
     path = SimpleNamespace(stat=lambda: observed)
 
-    assert shred_mod._posix_strong_file_revision(path) is None
+    assert _source_proof._posix_strong_file_revision(path) is None
 
 
 class _NativeCallable:
@@ -186,14 +190,18 @@ def _kernel32(
         if info_class == fail_query:
             return 0
         if info_class == 0:
-            value = ctypes.cast(target, ctypes.POINTER(shred_mod._WindowsFileBasicInfo)).contents
-            value.LastWriteTime = shred_mod._WINDOWS_EPOCH_OFFSET_100NS + timestamp
+            value = ctypes.cast(
+                target, ctypes.POINTER(_source_proof._WindowsFileBasicInfo)
+            ).contents
+            value.LastWriteTime = _source_proof._WINDOWS_EPOCH_OFFSET_100NS + timestamp
         elif info_class == 1:
-            value = ctypes.cast(target, ctypes.POINTER(shred_mod._WindowsFileStandardInfo)).contents
+            value = ctypes.cast(
+                target, ctypes.POINTER(_source_proof._WindowsFileStandardInfo)
+            ).contents
             value.EndOfFile = size
             value.Directory = directory
         else:
-            value = ctypes.cast(target, ctypes.POINTER(shred_mod._WindowsFileIdInfo)).contents
+            value = ctypes.cast(target, ctypes.POINTER(_source_proof._WindowsFileIdInfo)).contents
             value.VolumeSerialNumber = volume
             value.FileId.Identifier[:] = file_id
         return 1
@@ -253,27 +261,29 @@ def test_windows_strong_file_revision_queries_native_token_and_closes_handle(
         calls.setdefault("windll", []).append((args, kwargs))
         return kernel32
 
-    monkeypatch.setattr(shred_mod.ctypes, "WinDLL", windll, raising=False)
+    monkeypatch.setattr(ctypes, "WinDLL", windll, raising=False)
 
-    revision = shred_mod._windows_strong_file_revision(tmp_path / "data.json")
+    revision = _source_proof._windows_strong_file_revision(tmp_path / "data.json")
 
-    assert revision == shred_mod._StrongFileRevision(
+    assert revision == _source_proof._StrongFileRevision(
         (0, bytes(range(16))), 0, 123_456_700, 0x0123_4567_89AB_CDEF
     )
     assert calls["windll"] == [(("kernel32",), {"use_last_error": True})]
     assert calls["create"] == (str(tmp_path / "data.json"), 0x80, 0x7, None, 3, 0x80, None)
     assert calls["queries"] == [
-        (0, ctypes.sizeof(shred_mod._WindowsFileBasicInfo)),
-        (1, ctypes.sizeof(shred_mod._WindowsFileStandardInfo)),
-        (18, ctypes.sizeof(shred_mod._WindowsFileIdInfo)),
+        (0, ctypes.sizeof(_source_proof._WindowsFileBasicInfo)),
+        (1, ctypes.sizeof(_source_proof._WindowsFileStandardInfo)),
+        (18, ctypes.sizeof(_source_proof._WindowsFileIdInfo)),
     ]
     device = calls["device"]
-    assert device[1] == shred_mod._FSCTL_READ_FILE_USN_DATA
-    usn_input = ctypes.cast(device[2], ctypes.POINTER(shred_mod._WindowsReadFileUsnData)).contents
+    assert device[1] == _source_proof._FSCTL_READ_FILE_USN_DATA
+    usn_input = ctypes.cast(
+        device[2], ctypes.POINTER(_source_proof._WindowsReadFileUsnData)
+    ).contents
     assert usn_input.MinMajorVersion == 2
     assert usn_input.MaxMajorVersion == 3
-    assert device[3] == ctypes.sizeof(shred_mod._WindowsReadFileUsnData)
-    assert device[5] == shred_mod._WINDOWS_USN_OUTPUT_BUFFER_SIZE
+    assert device[3] == ctypes.sizeof(_source_proof._WindowsReadFileUsnData)
+    assert device[5] == _source_proof._WINDOWS_USN_OUTPUT_BUFFER_SIZE
     assert calls["close"] == [99]
     for callable_name in (
         "CreateFileW",
@@ -295,11 +305,9 @@ def test_windows_strong_file_revision_accepts_padded_v3_record_and_exact_usn_sli
         usn=1,
         usn_trailer_byte=0x7F,
     )
-    monkeypatch.setattr(
-        shred_mod.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False
-    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False)
 
-    revision = shred_mod._windows_strong_file_revision(tmp_path / "data.json")
+    revision = _source_proof._windows_strong_file_revision(tmp_path / "data.json")
 
     assert revision is not None
     assert revision.change_token == 1
@@ -308,13 +316,11 @@ def test_windows_strong_file_revision_accepts_padded_v3_record_and_exact_usn_sli
 def test_windows_strong_file_revision_subtracts_epochs_before_scaling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    timestamp = shred_mod._WINDOWS_EPOCH_OFFSET_100NS + 123
+    timestamp = _source_proof._WINDOWS_EPOCH_OFFSET_100NS + 123
     kernel32, _calls = _kernel32(timestamp=timestamp)
-    monkeypatch.setattr(
-        shred_mod.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False
-    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False)
 
-    revision = shred_mod._windows_strong_file_revision(tmp_path / "data.json")
+    revision = _source_proof._windows_strong_file_revision(tmp_path / "data.json")
 
     assert revision is not None
     assert revision.mtime_ns == timestamp * 100
@@ -330,11 +336,9 @@ def test_windows_strong_file_revision_rejects_unsupported_version_with_valid_v3_
         record_length=48,
         returned_length=48,
     )
-    monkeypatch.setattr(
-        shred_mod.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False
-    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False)
 
-    assert shred_mod._windows_strong_file_revision(tmp_path / "data.json") is None
+    assert _source_proof._windows_strong_file_revision(tmp_path / "data.json") is None
     assert calls["close"] == [99]
 
 
@@ -366,11 +370,9 @@ def test_windows_strong_file_revision_declines_invalid_native_results(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any]
 ) -> None:
     kernel32, calls = _kernel32(**kwargs)
-    monkeypatch.setattr(
-        shred_mod.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False
-    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False)
 
-    assert shred_mod._windows_strong_file_revision(tmp_path / "data.json") is None
+    assert _source_proof._windows_strong_file_revision(tmp_path / "data.json") is None
     invalid_handle = kwargs.get("handle", 99) in (None, ctypes.c_void_p(-1).value)
     expected_closes = [] if invalid_handle or "raises" in kwargs else [99]
     assert calls["close"] == expected_closes

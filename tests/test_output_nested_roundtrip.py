@@ -28,7 +28,7 @@ import polars as pl
 import pytest
 
 from haute._json_flatten import _json_cache_dir
-from haute._json_shred import build_per_port_cache
+from haute._json_shred._cache import build_per_port_cache
 from haute._output_assembler import _prune, render_output_document
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph

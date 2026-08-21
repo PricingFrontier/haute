@@ -25,20 +25,20 @@ import polars as pl
 import pytest
 import structlog
 
-import haute._json_shred as shred_mod
 from haute._api_input_schema import ApiInputSchemaError
-from haute._json_shred import (
+from haute._json_shred import _cache, _publication, _shred, _source_proof
+from haute._json_shred._cache import (
     _cache_manifest_failure,
     _cache_manifest_structure_failure,
     _cache_meta_matches_config_and_source,
     _CacheProbeFailure,
-    _data_file_signature,
-    _v2_fingerprint,
     build_per_port_cache,
     is_per_port_cache_valid,
     load_v2_api_source,
     read_per_port_cache_meta,
 )
+from haute._json_shred._shred import _v2_fingerprint
+from haute._json_shred._source_proof import _data_file_signature
 
 # ---------------------------------------------------------------------------
 # Config / data helpers (mirror tests/test_load_v2_api_source.py)
@@ -88,16 +88,16 @@ def test_build_lock_registry_releases_inactive_cache_directories(tmp_path: Path)
     import weakref
 
     cache_dir = tmp_path / "one-off-cache"
-    lock = shred_mod._build_lock_for(cache_dir)
+    lock = _publication._build_lock_for(cache_dir)
     key = os.path.normcase(str(cache_dir.resolve()))
     reference = weakref.ref(lock)
-    assert shred_mod._BUILD_LOCKS[key] is lock
+    assert _publication._BUILD_LOCKS[key] is lock
 
     del lock
     gc.collect()
 
     assert reference() is None
-    assert key not in shred_mod._BUILD_LOCKS
+    assert key not in _publication._BUILD_LOCKS
 
 
 def test_manifest_structure_rejects_bad_labels_and_label_sets() -> None:
@@ -150,11 +150,11 @@ def test_cache_bundle_rejects_a_non_plain_parquet_artifact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
-    specs = shred_mod._emitting_table_specs(config)
+    specs = _shred._emitting_table_specs(config)
     (tmp_path / "root.parquet").mkdir()
-    monkeypatch.setattr(shred_mod, "_cache_manifest_failure", lambda *_a, **_k: None)
+    monkeypatch.setattr(_cache, "_cache_manifest_failure", lambda *_a, **_k: None)
 
-    failure = shred_mod._cache_bundle_failure_in_place(tmp_path, specs, {"tables": []})
+    failure = _cache._cache_bundle_failure_in_place(tmp_path, specs, {"tables": []})
 
     assert failure == _CacheProbeFailure("non_plain_frame", label="root")
 
@@ -164,14 +164,14 @@ def test_cache_meta_requires_exact_fingerprint_and_handles_bad_config(
 ) -> None:
     data = _write(tmp_path, [{"id": 1}])
     meta = {"schema_mode": "v2", "schema_fingerprint": "middle", "data_file": {}}
-    monkeypatch.setattr(shred_mod, "_v2_fingerprint", lambda _config: "middle")
-    monkeypatch.setattr(shred_mod, "_data_file_matches", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(_shred, "_v2_fingerprint", lambda _config: "middle")
+    monkeypatch.setattr(_source_proof, "_data_file_matches", lambda *_args, **_kwargs: True)
     assert _cache_meta_matches_config_and_source(meta, {}, data_path=data) is True
     for fingerprint in ("lower", "upper"):
         meta["schema_fingerprint"] = fingerprint
         assert _cache_meta_matches_config_and_source(meta, {}, data_path=data) is False
     monkeypatch.setattr(
-        shred_mod,
+        _shred,
         "_v2_fingerprint",
         lambda _config: (_ for _ in ()).throw(ApiInputSchemaError("bad config")),
     )
@@ -190,7 +190,7 @@ def test_validity_reuses_supplied_signature_and_handles_stat_failure(
     def unexpected_signature(_path: Path) -> dict[str, Any]:
         raise AssertionError("precomputed signature should be reused")
 
-    monkeypatch.setattr(shred_mod, "_data_file_signature", unexpected_signature)
+    monkeypatch.setattr(_source_proof, "_data_file_signature", unexpected_signature)
     assert (
         is_per_port_cache_valid(
             cache_dir,
@@ -201,7 +201,7 @@ def test_validity_reuses_supplied_signature_and_handles_stat_failure(
         is True
     )
     monkeypatch.setattr(
-        shred_mod,
+        _source_proof,
         "_data_file_signature",
         lambda _path: (_ for _ in ()).throw(OSError("unreadable")),
     )

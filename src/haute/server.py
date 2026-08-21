@@ -39,7 +39,7 @@ from haute._interactive_workers import (
     shutdown_interactive_worker_pool,
     start_interactive_worker_pool,
 )
-from haute._json_shred import recover_json_runtime_storage
+from haute._json_shred._runtime_storage import recover_json_runtime_storage
 from haute._local_security import (
     SESSION_TOKEN_COOKIE,
     TRUSTED_HOSTS_ENV,

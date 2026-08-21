@@ -377,7 +377,7 @@ def _make_api_source_v2(
     caching remains an explicit, optional prewarm action.
     """
     from haute._api_input_schema import validate_v2_schema
-    from haute._json_shred import load_v2_api_source
+    from haute._json_shred._cache import load_v2_api_source
 
     # Validate at build time so a malformed config fails before any data is
     # fetched. The emit-state checks, optional cache resolution, direct-shred

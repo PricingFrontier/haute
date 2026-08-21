@@ -5,7 +5,16 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_api_input_schema.py` | V2 apiInput schema codec: `TypedDict` shapes, extension recognition, canonical table and column path semantics, filesystem label sanitisation, and fail-loud validation. |
-| `src/haute/_json_shred.py` | v2 per-frame structured-input shred: JSON/JSONL/XML record decoding, single-pass record walk, buffer→parquet build, cache validity/load, schema inference from data. |
+| `src/haute/_json_shred/__init__.py` | Package docstring only: names the concern layout; deliberately exports nothing. |
+| `src/haute/_json_shred/` | v2 per-frame structured-input engine, decomposed by concern into the submodules below; consumers import each concern module directly (there are no aggregating re-exports). |
+| `src/haute/_json_shred/_records.py` | Streaming JSON/JSONL/XML record iteration, the shared bounded record limit, byte-range tiling with its parallelism policy, and the parallel-worker failure transport. |
+| `src/haute/_json_shred/_shred.py` | Table specs, leaf resolution, the single-pass record walk, and root-conservation accounting. |
+| `src/haute/_json_shred/_writer.py` | Aggregate-bounded Parquet row-group emission for cache artifacts and leased runtime spill bundles, plus parallel chunk execution. |
+| `src/haute/_json_shred/_publication.py` | Cross-process cache publication: the per-generation OS file lock, staging-path minting/validation, atomic swap, and crash recovery. |
+| `src/haute/_json_shred/_source_proof.py` | Strong native file revisions (Windows USN/file-id, POSIX stat) and SHA-256 content signatures with persisted-proof reuse and rebinding. |
+| `src/haute/_json_shred/_runtime_storage.py` | Process-owned runtime storage: the disk budget, spill-directory leases, and verified parquet snapshots with their bounded cache. |
+| `src/haute/_json_shred/_inference.py` | v2 schema inference from data: bounded sampling, type widening, and deterministic column naming. |
+| `src/haute/_json_shred/_cache.py` | Per-port cache lifecycle (prepare/commit/discard/build, manifest and bundle validation, load) and the runtime apiInput source loader. |
 | `src/haute/_json_flatten.py` | Dual-layer (`working/`/`committed/`) cache-directory infrastructure for structured apiInput sources: process-CWD-rooted path resolution, delete, save-time promotion, and preview-cache fingerprint contribution. |
 | `src/haute/_json_safe.py` | Recursively converts Python/pipeline values into JSON-safe representations for API responses and preview rows. |
 | `src/haute/_jsonpath.py` | The shared canonical array-outer JSON path parser and writer used by both INPUT and OUTPUT path addressing. |
@@ -41,7 +50,7 @@ Submodel graph expansion and boundary rewiring are owned by
   validation, contracts, projection demand, and assembly. Every consumer uses
   `is_active_mapping_entry` rather than duplicating a weaker enabled-only test.
 
-**`_json_shred.py`**
+**`_json_shred/` package**
 
 - `ShredSkipStats` — dataclass with `skipped_records: int` and
   `skipped_rows_by_table: dict[str, int]`. `.total` sums both; `.as_meta()` returns
@@ -645,7 +654,7 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
 
 ## Error handling
 
-- `haute._api_input_schema.ApiInputSchemaError` — raised by `_json_shred.py` for
+- `haute._api_input_schema.ApiInputSchemaError` — raised by the `_json_shred/` package for
   every schema/data-shape problem: malformed v2 config passed to
   `_v2_fingerprint`/`shred_to_buffers`/`build_per_port_cache` (via
   `validate_v2_schema`, including wrong-typed `emit`/`selected` and invalid
@@ -689,7 +698,7 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
 - `tests/test_apiinput_flat_output_dry_run.py` verifies flat API-input-to-output graph execution and dry-run route responses.
 - `tests/test_output_nested_roundtrip.py` verifies nested output round-trips and deploy-scorer rendering.
 
-Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
+Shred / inference / cache lifecycle (the `_json_shred/` package, `_json_flatten.py`):
 
 - `tests/test_json_shred_properties.py` — Hypothesis property tests: exactly one
   root row per record, one scalar-array child row per element, order-independent

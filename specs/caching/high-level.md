@@ -92,7 +92,7 @@ window.
   lineage requests and own temporary execution-cache roots.
 - [IO layer](../io-layer/high-level.md) consumes canonical identity helpers and owns
   `_source_cache.py`.
-- Deploy scoring and modelling feature contracts instantiate `StatGatedCache`; `_cache.py`
+- Deploy scoring and modelling feature contracts instantiate `StatGatedCache`; `src/haute/_cache.py`
   instantiates the utility-file hash cache.
 - Execution currently has a separate `StatGatedCache` instance for runtime-path
   fingerprints; the shared class supplies its bound and single-flight behaviour.

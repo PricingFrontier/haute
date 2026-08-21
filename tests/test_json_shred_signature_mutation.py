@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
@@ -11,18 +12,18 @@ import pytest
 import structlog
 
 import haute._json_flatten as flatten_mod
-import haute._json_shred as shred_mod
+from haute._json_shred import _publication, _runtime_storage, _source_proof
 
 
 @pytest.fixture
-def source(tmp_path: Path) -> tuple[Path, shred_mod._StrongFileRevision]:
+def source(tmp_path: Path) -> tuple[Path, _source_proof._StrongFileRevision]:
     path = tmp_path / "data.json"
     path.write_bytes(b"[1]")
-    return path, shred_mod._StrongFileRevision((1, 2), 3, 4, 5)
+    return path, _source_proof._StrongFileRevision((1, 2), 3, 4, 5)
 
 
-def _proof(revision: shred_mod._StrongFileRevision, digest: str = "a" * 64) -> dict[str, Any]:
-    return shred_mod._DataFileSignatureRecord(3, 4, digest, revision).as_dict()
+def _proof(revision: _source_proof._StrongFileRevision, digest: str = "a" * 64) -> dict[str, Any]:
+    return _source_proof._DataFileSignatureRecord(3, 4, digest, revision).as_dict()
 
 
 def _meta(proof: dict[str, Any]) -> dict[str, Any]:
@@ -47,7 +48,7 @@ def _layers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, 
 def test_persisted_proof_falls_through_bad_working_layer_in_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
     working: bytes | None,
 ) -> None:
     path, revision = source
@@ -58,11 +59,11 @@ def test_persisted_proof_falls_through_bad_working_layer_in_order(
         working_meta.write_bytes(working)
     expected = _proof(revision)
     committed_meta.write_bytes(orjson.dumps(_meta(expected)))
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
 
-    assert shred_mod._persisted_data_file_signature(
+    assert _source_proof._persisted_data_file_signature(
         path, revision
-    ) == shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, revision)
+    ) == _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, revision)
     assert seen == ["working", "committed"]
 
 
@@ -79,7 +80,7 @@ def test_persisted_proof_falls_through_bad_working_layer_in_order(
 def test_persisted_matching_proof_rejections_are_fail_closed_and_auditable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
     working: Any,
     reason: str,
 ) -> None:
@@ -89,10 +90,10 @@ def test_persisted_matching_proof_rejections_are_fail_closed_and_auditable(
     committed_meta = tmp_path / "committed" / "meta.json"
     working_meta.write_bytes(orjson.dumps(_meta(working(revision))))
     committed_meta.write_bytes(orjson.dumps(_meta(_proof(revision))))
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
 
     with structlog.testing.capture_logs() as logs:
-        assert shred_mod._persisted_data_file_signature(path, revision) is None
+        assert _source_proof._persisted_data_file_signature(path, revision) is None
 
     assert seen == ["working", "committed"]
     assert [
@@ -118,27 +119,27 @@ def test_persisted_matching_proof_rejections_are_fail_closed_and_auditable(
 def test_persisted_proof_returns_exact_record_only_if_revision_stays_put(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
 ) -> None:
     path, revision = source
     dirs, _ = _layers(tmp_path, monkeypatch)
     proof = _proof(revision)
     working_meta = tmp_path / "working" / "meta.json"
     working_meta.write_bytes(orjson.dumps(_meta(proof)))
-    moved = shred_mod._StrongFileRevision((1, 2), 3, 4, 6)
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: moved)
-    assert shred_mod._persisted_data_file_signature(path, revision) is None
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
-    assert shred_mod._persisted_data_file_signature(
+    moved = _source_proof._StrongFileRevision((1, 2), 3, 4, 6)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: moved)
+    assert _source_proof._persisted_data_file_signature(path, revision) is None
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
+    assert _source_proof._persisted_data_file_signature(
         path, revision
-    ) == shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, revision)
+    ) == _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, revision)
 
 
 @pytest.mark.parametrize("schema_mode", ["v1", "v3"])
 def test_persisted_proof_ignores_complete_records_from_other_schema_modes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
     schema_mode: str,
 ) -> None:
     path, revision = source
@@ -148,11 +149,11 @@ def test_persisted_proof_ignores_complete_records_from_other_schema_modes(
     committed_meta = tmp_path / "committed" / "meta.json"
     working_meta.write_bytes(orjson.dumps({"schema_mode": schema_mode, "data_file": expected}))
     committed_meta.write_bytes(orjson.dumps(_meta(expected)))
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
 
-    assert shred_mod._persisted_data_file_signature(
+    assert _source_proof._persisted_data_file_signature(
         path, revision
-    ) == shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, revision)
+    ) == _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, revision)
     assert seen == ["working", "committed"]
 
 
@@ -160,7 +161,7 @@ def test_persisted_proof_ignores_complete_records_from_other_schema_modes(
 def test_persisted_proof_never_admits_an_other_schema_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
     schema_mode: str,
 ) -> None:
     path, revision = source
@@ -169,9 +170,9 @@ def test_persisted_proof_never_admits_an_other_schema_record(
     working_meta.write_bytes(
         orjson.dumps({"schema_mode": schema_mode, "data_file": _proof(revision)})
     )
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
 
-    assert shred_mod._persisted_data_file_signature(path, revision) is None
+    assert _source_proof._persisted_data_file_signature(path, revision) is None
 
 
 def test_persisted_proof_compares_large_equal_sizes_by_value(
@@ -180,37 +181,37 @@ def test_persisted_proof_compares_large_equal_sizes_by_value(
 ) -> None:
     path = tmp_path / "data.json"
     path.write_bytes(b"[]")
-    revision = shred_mod._StrongFileRevision((1, 2), 1000, 4, 5)
+    revision = _source_proof._StrongFileRevision((1, 2), 1000, 4, 5)
     _dirs, _seen = _layers(tmp_path, monkeypatch)
-    proof = shred_mod._DataFileSignatureRecord(1000, 4, "a" * 64, revision).as_dict()
+    proof = _source_proof._DataFileSignatureRecord(1000, 4, "a" * 64, revision).as_dict()
     working_meta = tmp_path / "working" / "meta.json"
     working_meta.write_bytes(orjson.dumps(_meta(proof)))
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
 
-    assert shred_mod._persisted_data_file_signature(
+    assert _source_proof._persisted_data_file_signature(
         path, revision
-    ) == shred_mod._DataFileSignatureRecord(1000, 4, "a" * 64, revision)
+    ) == _source_proof._DataFileSignatureRecord(1000, 4, "a" * 64, revision)
 
 
 def test_persisted_proof_rejects_a_lexically_lower_incorrect_digest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
 ) -> None:
     path, revision = source
     _dirs, _seen = _layers(tmp_path, monkeypatch)
     proof = {**_proof(revision), "native_revision_proof_sha256": ""}
     working_meta = tmp_path / "working" / "meta.json"
     working_meta.write_bytes(orjson.dumps(_meta(proof)))
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
 
-    assert shred_mod._persisted_data_file_signature(path, revision) is None
+    assert _source_proof._persisted_data_file_signature(path, revision) is None
 
 
 def test_persisted_proof_accepts_identical_independent_layer_records(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
 ) -> None:
     path, revision = source
     _dirs, _seen = _layers(tmp_path, monkeypatch)
@@ -219,11 +220,11 @@ def test_persisted_proof_accepts_identical_independent_layer_records(
     committed_meta = tmp_path / "committed" / "meta.json"
     working_meta.write_bytes(encoded)
     committed_meta.write_bytes(encoded)
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
 
-    assert shred_mod._persisted_data_file_signature(
+    assert _source_proof._persisted_data_file_signature(
         path, revision
-    ) == shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, revision)
+    ) == _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, revision)
 
 
 @pytest.mark.parametrize(
@@ -231,7 +232,7 @@ def test_persisted_proof_accepts_identical_independent_layer_records(
     [
         [],
         pytest.param(
-            lambda: _proof(shred_mod._StrongFileRevision((1, 2), 3, 4, 6)),
+            lambda: _proof(_source_proof._StrongFileRevision((1, 2), 3, 4, 6)),
             id="different-native-revision",
         ),
     ],
@@ -239,7 +240,7 @@ def test_persisted_proof_accepts_identical_independent_layer_records(
 def test_persisted_proof_skips_independent_nonmatching_records_without_stopping(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
     working_data_file: Any,
 ) -> None:
     path, revision = source
@@ -250,11 +251,11 @@ def test_persisted_proof_skips_independent_nonmatching_records_without_stopping(
     working_meta.write_bytes(orjson.dumps(_meta(working_record)))
     expected = _proof(revision)
     committed_meta.write_bytes(orjson.dumps(_meta(expected)))
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
 
-    assert shred_mod._persisted_data_file_signature(
+    assert _source_proof._persisted_data_file_signature(
         path, revision
-    ) == shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, revision)
+    ) == _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, revision)
     assert seen == ["working", "committed"]
 
 
@@ -269,7 +270,7 @@ def test_persisted_proof_skips_independent_nonmatching_records_without_stopping(
             id="invalid-content-parts",
         ),
         pytest.param(
-            lambda revision: shred_mod._DataFileSignatureRecord(
+            lambda revision: _source_proof._DataFileSignatureRecord(
                 revision.size - 1,
                 revision.mtime_ns,
                 "a" * 64,
@@ -278,7 +279,7 @@ def test_persisted_proof_skips_independent_nonmatching_records_without_stopping(
             id="size-below-native-revision",
         ),
         pytest.param(
-            lambda revision: shred_mod._DataFileSignatureRecord(
+            lambda revision: _source_proof._DataFileSignatureRecord(
                 revision.size + 1,
                 revision.mtime_ns,
                 "a" * 64,
@@ -287,7 +288,7 @@ def test_persisted_proof_skips_independent_nonmatching_records_without_stopping(
             id="size-above-native-revision",
         ),
         pytest.param(
-            lambda revision: shred_mod._DataFileSignatureRecord(
+            lambda revision: _source_proof._DataFileSignatureRecord(
                 revision.size,
                 revision.mtime_ns - 1,
                 "a" * 64,
@@ -296,7 +297,7 @@ def test_persisted_proof_skips_independent_nonmatching_records_without_stopping(
             id="mtime-below-native-revision",
         ),
         pytest.param(
-            lambda revision: shred_mod._DataFileSignatureRecord(
+            lambda revision: _source_proof._DataFileSignatureRecord(
                 revision.size,
                 revision.mtime_ns + 1,
                 "a" * 64,
@@ -316,16 +317,16 @@ def test_persisted_proof_skips_independent_nonmatching_records_without_stopping(
 def test_persisted_proof_rejects_each_matching_record_defect_in_isolation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
     invalid_record: Any,
 ) -> None:
     path, revision = source
     dirs, _ = _layers(tmp_path, monkeypatch)
     working_meta = tmp_path / "working" / "meta.json"
     working_meta.write_bytes(orjson.dumps(_meta(invalid_record(revision))))
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
 
-    assert shred_mod._persisted_data_file_signature(path, revision) is None
+    assert _source_proof._persisted_data_file_signature(path, revision) is None
 
 
 @pytest.mark.parametrize(
@@ -340,7 +341,7 @@ def test_persisted_proof_rejects_each_matching_record_defect_in_isolation(
 def test_legacy_upgrade_skips_independent_bad_layers_and_writes_exact_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
     bad_working: bytes | None,
 ) -> None:
     path, revision = source
@@ -351,10 +352,10 @@ def test_legacy_upgrade_skips_independent_bad_layers_and_writes_exact_payload(
         working_meta.write_bytes(bad_working)
     legacy = {"schema_mode": "v2", "data_file": {"size": 3, "sha256": "a" * 64}}
     committed_meta.write_bytes(orjson.dumps(legacy))
-    signature = shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, revision)
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+    signature = _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
 
-    shred_mod._rebind_persisted_source_proofs(path, signature, revision)
+    _source_proof._rebind_persisted_source_proofs(path, signature, revision)
 
     assert seen == ["working", "committed"]
     assert (working_meta.read_bytes() if working_meta.exists() else None) == bad_working
@@ -367,32 +368,30 @@ def test_legacy_upgrade_skips_independent_bad_layers_and_writes_exact_payload(
 def test_legacy_upgrade_current_payload_is_untouched_and_movement_stops_later_layers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
 ) -> None:
     path, revision = source
     dirs, _ = _layers(tmp_path, monkeypatch)
-    signature = shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, revision)
+    signature = _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, revision)
     current = _meta(signature.as_dict())
     working_meta = tmp_path / "working" / "meta.json"
     committed_meta = tmp_path / "committed" / "meta.json"
     working_meta.write_bytes(orjson.dumps(current))
     committed_meta.write_bytes(orjson.dumps(current))
-    real_replace = shred_mod.os.replace
-    monkeypatch.setattr(
-        shred_mod.os, "replace", lambda *_args: pytest.fail("current proof rewritten")
-    )
+    real_replace = os.replace
+    monkeypatch.setattr(os, "replace", lambda *_args: pytest.fail("current proof rewritten"))
     with structlog.testing.capture_logs() as current_logs:
-        shred_mod._rebind_persisted_source_proofs(path, signature, revision)
+        _source_proof._rebind_persisted_source_proofs(path, signature, revision)
     assert current_logs == []
 
     legacy = {"schema_mode": "v2", "data_file": {"size": 3, "sha256": "a" * 64}}
     working_meta.write_bytes(orjson.dumps(legacy))
     committed_meta.write_bytes(orjson.dumps(legacy))
-    moved = shred_mod._StrongFileRevision((1, 2), 3, 4, 6)
+    moved = _source_proof._StrongFileRevision((1, 2), 3, 4, 6)
     observations = iter((revision, moved))
-    monkeypatch.setattr(shred_mod.os, "replace", real_replace)
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: next(observations))
-    shred_mod._rebind_persisted_source_proofs(path, signature, revision)
+    monkeypatch.setattr(os, "replace", real_replace)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: next(observations))
+    _source_proof._rebind_persisted_source_proofs(path, signature, revision)
     assert (
         orjson.loads((dirs["working"] / "meta.json").read_bytes())["data_file"]
         == signature.as_dict()
@@ -404,7 +403,7 @@ def test_legacy_upgrade_current_payload_is_untouched_and_movement_stops_later_la
 def test_legacy_upgrade_never_rewrites_other_schema_modes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
     schema_mode: str,
 ) -> None:
     path, revision = source
@@ -415,11 +414,11 @@ def test_legacy_upgrade_never_rewrites_other_schema_modes(
     }
     meta_path = tmp_path / "working" / "meta.json"
     meta_path.write_bytes(orjson.dumps(legacy))
-    signature = shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, revision)
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+    signature = _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
 
     with structlog.testing.capture_logs() as logs:
-        shred_mod._rebind_persisted_source_proofs(path, signature, revision)
+        _source_proof._rebind_persisted_source_proofs(path, signature, revision)
 
     assert orjson.loads(meta_path.read_bytes()) == legacy
     assert logs == []
@@ -428,7 +427,7 @@ def test_legacy_upgrade_never_rewrites_other_schema_modes(
 def test_legacy_upgrade_success_does_not_report_missing_temp_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
 ) -> None:
     path, revision = source
     dirs, _ = _layers(tmp_path, monkeypatch)
@@ -436,11 +435,11 @@ def test_legacy_upgrade_success_does_not_report_missing_temp_cleanup(
     meta_path.write_bytes(
         orjson.dumps({"schema_mode": "v2", "data_file": {"size": 3, "sha256": "a" * 64}})
     )
-    signature = shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, revision)
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
+    signature = _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
 
     with structlog.testing.capture_logs() as logs:
-        shred_mod._rebind_persisted_source_proofs(path, signature, revision)
+        _source_proof._rebind_persisted_source_proofs(path, signature, revision)
 
     assert [entry["event"] for entry in logs] == ["json_source_persisted_proof_upgraded"]
     assert orjson.loads(meta_path.read_bytes())["data_file"] == signature.as_dict()
@@ -449,18 +448,16 @@ def test_legacy_upgrade_success_does_not_report_missing_temp_cleanup(
 def test_legacy_upgrade_write_and_cleanup_failures_are_visible(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    source: tuple[Path, shred_mod._StrongFileRevision],
+    source: tuple[Path, _source_proof._StrongFileRevision],
 ) -> None:
     path, revision = source
     dirs, _ = _layers(tmp_path, monkeypatch)
     legacy = {"schema_mode": "v2", "data_file": {"size": 3, "sha256": "a" * 64}}
     meta_path = tmp_path / "working" / "meta.json"
     meta_path.write_bytes(orjson.dumps(legacy))
-    signature = shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, revision)
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
-    monkeypatch.setattr(
-        shred_mod.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("readonly"))
-    )
+    signature = _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
+    monkeypatch.setattr(os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("readonly")))
     real_unlink = Path.unlink
     temp_paths: list[Path] = []
 
@@ -472,7 +469,7 @@ def test_legacy_upgrade_write_and_cleanup_failures_are_visible(
 
     monkeypatch.setattr(Path, "unlink", deny_cleanup)
     with structlog.testing.capture_logs() as logs:
-        shred_mod._rebind_persisted_source_proofs(path, signature, revision)
+        _source_proof._rebind_persisted_source_proofs(path, signature, revision)
     assert orjson.loads(meta_path.read_bytes()) == legacy
     assert [(entry["event"], entry.get("action")) for entry in logs] == [
         ("json_source_persisted_proof_upgrade_failed", "retain_full_hash_result"),
@@ -491,18 +488,18 @@ def test_signature_memo_cached_hits_lru_unavailable_and_gate_cleanup(
         path.write_bytes(b"[1]")
         paths.append(path)
     revisions = {
-        path.resolve(): shred_mod._StrongFileRevision((1, index), 3, 4, 5)
+        path.resolve(): _source_proof._StrongFileRevision((1, index), 3, 4, 5)
         for index, path in enumerate(paths, 1)
     }
-    memo = shred_mod._DataFileSignatureMemo(max_entries=2)
+    memo = _source_proof._DataFileSignatureMemo(max_entries=2)
     calls: list[Path] = []
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda path: revisions[path])
-    monkeypatch.setattr(shred_mod, "_persisted_data_file_signature", lambda _p, _r: None)
-    monkeypatch.setattr(shred_mod, "_rebind_persisted_source_proofs", lambda *_a: None)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda path: revisions[path])
+    monkeypatch.setattr(_source_proof, "_persisted_data_file_signature", lambda _p, _r: None)
+    monkeypatch.setattr(_source_proof, "_rebind_persisted_source_proofs", lambda *_a: None)
     monkeypatch.setattr(
-        shred_mod,
+        _source_proof,
         "_revision_gated_data_file_signature",
-        lambda p, r: calls.append(p) or shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, r),
+        lambda p, r: calls.append(p) or _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, r),
     )
     memo.get(paths[0], rebind_persisted_proofs=False)
     memo.get(paths[1])
@@ -510,11 +507,11 @@ def test_signature_memo_cached_hits_lru_unavailable_and_gate_cleanup(
     memo.get(paths[2])
     assert calls == [path.resolve() for path in (paths[0], paths[1], paths[2])]
     assert list(memo._entries) == [str(paths[0].resolve()).lower(), str(paths[2].resolve()).lower()]
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _p: None)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _p: None)
     monkeypatch.setattr(
-        shred_mod,
+        _source_proof,
         "_uncached_data_file_signature",
-        lambda _p: shred_mod._DataFileSignatureRecord(3, 4, "u" * 64, None),
+        lambda _p: _source_proof._DataFileSignatureRecord(3, 4, "u" * 64, None),
     )
     assert memo.get(paths[1], rebind_persisted_proofs=False)["sha256"] == "u" * 64
     assert len(memo) == 2
@@ -525,29 +522,29 @@ def test_signature_memo_default_upgrades_and_equal_fresh_revisions_hit(
 ) -> None:
     path = tmp_path / "data.json"
     path.write_bytes(b"[1]")
-    revision = shred_mod._StrongFileRevision((1, 2), 3, 4, 5)
-    memo = shred_mod._DataFileSignatureMemo(max_entries=1)
-    upgrades: list[tuple[Path, shred_mod._StrongFileRevision]] = []
+    revision = _source_proof._StrongFileRevision((1, 2), 3, 4, 5)
+    memo = _source_proof._DataFileSignatureMemo(max_entries=1)
+    upgrades: list[tuple[Path, _source_proof._StrongFileRevision]] = []
     hashes = 0
 
-    def fresh_revision(_path: Path) -> shred_mod._StrongFileRevision:
-        return shred_mod._StrongFileRevision(
+    def fresh_revision(_path: Path) -> _source_proof._StrongFileRevision:
+        return _source_proof._StrongFileRevision(
             revision.file_identity,
             revision.size,
             revision.mtime_ns,
             revision.change_token,
         )
 
-    def hash_once(_path: Path, current: shred_mod._StrongFileRevision):
+    def hash_once(_path: Path, current: _source_proof._StrongFileRevision):
         nonlocal hashes
         hashes += 1
-        return shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, current)
+        return _source_proof._DataFileSignatureRecord(3, 4, "a" * 64, current)
 
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", fresh_revision)
-    monkeypatch.setattr(shred_mod, "_persisted_data_file_signature", lambda *_args: None)
-    monkeypatch.setattr(shred_mod, "_revision_gated_data_file_signature", hash_once)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", fresh_revision)
+    monkeypatch.setattr(_source_proof, "_persisted_data_file_signature", lambda *_args: None)
+    monkeypatch.setattr(_source_proof, "_revision_gated_data_file_signature", hash_once)
     monkeypatch.setattr(
-        shred_mod,
+        _source_proof,
         "_rebind_persisted_source_proofs",
         lambda source_path, _signature, current: upgrades.append((source_path, current)),
     )
@@ -565,16 +562,16 @@ def test_signature_memo_failed_flight_cleans_only_zero_participant_gate(
 ) -> None:
     path = tmp_path / "data.json"
     path.write_bytes(b"[1]")
-    revision = shred_mod._StrongFileRevision((1, 2), 3, 4, 5)
-    memo = shred_mod._DataFileSignatureMemo(max_entries=1)
+    revision = _source_proof._StrongFileRevision((1, 2), 3, 4, 5)
+    memo = _source_proof._DataFileSignatureMemo(max_entries=1)
     key = str(path.resolve()).lower()
-    gate = shred_mod._DataFileSignatureLoadGate()
+    gate = _source_proof._DataFileSignatureLoadGate()
     gate.participants = participants
     memo._load_gates[key] = gate
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _p: revision)
-    monkeypatch.setattr(shred_mod, "_persisted_data_file_signature", lambda _p, _r: None)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _p: revision)
+    monkeypatch.setattr(_source_proof, "_persisted_data_file_signature", lambda _p, _r: None)
     monkeypatch.setattr(
-        shred_mod,
+        _source_proof,
         "_revision_gated_data_file_signature",
         lambda *_args: (_ for _ in ()).throw(OSError("hash failed")),
     )
@@ -594,28 +591,28 @@ def test_signature_memo_eviction_keeps_only_active_old_gate(
     new.write_bytes(b"[]")
     old_key, new_key = str(old.resolve()).lower(), str(new.resolve()).lower()
     old_revision, new_revision = (
-        shred_mod._StrongFileRevision((1, 1), 2, 3, 4),
-        shred_mod._StrongFileRevision((1, 2), 2, 3, 4),
+        _source_proof._StrongFileRevision((1, 1), 2, 3, 4),
+        _source_proof._StrongFileRevision((1, 2), 2, 3, 4),
     )
-    memo = shred_mod._DataFileSignatureMemo(max_entries=1)
+    memo = _source_proof._DataFileSignatureMemo(max_entries=1)
     memo._entries[old_key] = (
         old_revision,
-        shred_mod._DataFileSignatureRecord(2, 3, "a" * 64, old_revision),
+        _source_proof._DataFileSignatureRecord(2, 3, "a" * 64, old_revision),
     )
-    gate = shred_mod._DataFileSignatureLoadGate()
+    gate = _source_proof._DataFileSignatureLoadGate()
     gate.participants = int(active)
     memo._load_gates[old_key] = gate
     monkeypatch.setattr(
-        shred_mod,
+        _source_proof,
         "_strong_file_revision",
         lambda p: new_revision if p == new.resolve() else old_revision,
     )
-    monkeypatch.setattr(shred_mod, "_persisted_data_file_signature", lambda _p, _r: None)
-    monkeypatch.setattr(shred_mod, "_rebind_persisted_source_proofs", lambda *_a: None)
+    monkeypatch.setattr(_source_proof, "_persisted_data_file_signature", lambda _p, _r: None)
+    monkeypatch.setattr(_source_proof, "_rebind_persisted_source_proofs", lambda *_a: None)
     monkeypatch.setattr(
-        shred_mod,
+        _source_proof,
         "_revision_gated_data_file_signature",
-        lambda _p, r: shred_mod._DataFileSignatureRecord(2, 3, "b" * 64, r),
+        lambda _p, r: _source_proof._DataFileSignatureRecord(2, 3, "b" * 64, r),
     )
     memo.get(new)
     assert (old_key in memo._load_gates) is retained and new_key in memo._entries
@@ -644,8 +641,8 @@ def test_runtime_owner_record_rejects_one_invalid_field_at_a_time(
 ) -> None:
     owner = tmp_path / "owner"
     owner.mkdir()
-    (owner / shred_mod._RUNTIME_OWNER_META_FILENAME).write_bytes(orjson.dumps(payload))
-    assert shred_mod._runtime_owner_record(owner) is None
+    (owner / _runtime_storage._RUNTIME_OWNER_META_FILENAME).write_bytes(orjson.dumps(payload))
+    assert _runtime_storage._runtime_owner_record(owner) is None
 
 
 def test_runtime_owner_record_accepts_exact_boundary_values_and_empty_removal_is_safe(
@@ -653,14 +650,14 @@ def test_runtime_owner_record_accepts_exact_boundary_values_and_empty_removal_is
 ) -> None:
     owner = tmp_path / "owner"
     owner.mkdir()
-    meta = owner / shred_mod._RUNTIME_OWNER_META_FILENAME
+    meta = owner / _runtime_storage._RUNTIME_OWNER_META_FILENAME
     meta.write_bytes(orjson.dumps({"format_version": 1, "pid": 1, "created_at": 0.0}))
-    assert shred_mod._runtime_owner_record(owner) == (1, 0.0)
-    shred_mod._remove_empty_runtime_owner_dir(owner)
+    assert _runtime_storage._runtime_owner_record(owner) == (1, 0.0)
+    _runtime_storage._remove_empty_runtime_owner_dir(owner)
     assert not owner.exists()
     owner.mkdir()
     (owner / "!payload").write_bytes(b"keep")
-    shred_mod._remove_empty_runtime_owner_dir(owner)
+    _runtime_storage._remove_empty_runtime_owner_dir(owner)
     assert (owner / "!payload").read_bytes() == b"keep"
 
 
@@ -684,19 +681,21 @@ def test_runtime_budget_boundaries_and_transaction_order(
         yield
 
     measurements = iter((before, after))
-    monkeypatch.setattr(shred_mod, "_build_lock_for", lock)
+    monkeypatch.setattr(_publication, "_build_lock_for", lock)
     monkeypatch.setattr(
-        shred_mod, "_recover_runtime_storage_once", lambda _root: events.append("recover")
+        _runtime_storage, "_recover_runtime_storage_once", lambda _root: events.append("recover")
     )
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_runtime_storage_usage_bytes",
         lambda _root: events.append("measure") or next(measurements),
     )
-    monkeypatch.setattr(shred_mod, "int_env", lambda *_args: 10)
-    manager = shred_mod._runtime_disk_budget_transaction(tmp_path, allow_existing_excess=allow)
+    monkeypatch.setattr(_runtime_storage, "int_env", lambda *_args: 10)
+    manager = _runtime_storage._runtime_disk_budget_transaction(
+        tmp_path, allow_existing_excess=allow
+    )
     if raises:
-        with pytest.raises(shred_mod.JsonRuntimeDiskBudgetExceededError):
+        with pytest.raises(_runtime_storage.JsonRuntimeDiskBudgetExceededError):
             with manager:
                 events.append("yield")
     else:
@@ -712,11 +711,11 @@ def test_runtime_budget_boundaries_and_transaction_order(
 def test_runtime_budget_default_rejects_preexisting_excess(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(shred_mod, "_build_lock_for", lambda _path: nullcontext())
-    monkeypatch.setattr(shred_mod, "_recover_runtime_storage_once", lambda _root: None)
-    monkeypatch.setattr(shred_mod, "_runtime_storage_usage_bytes", lambda _root: 11)
-    monkeypatch.setattr(shred_mod, "int_env", lambda *_args: 10)
+    monkeypatch.setattr(_publication, "_build_lock_for", lambda _path: nullcontext())
+    monkeypatch.setattr(_runtime_storage, "_recover_runtime_storage_once", lambda _root: None)
+    monkeypatch.setattr(_runtime_storage, "_runtime_storage_usage_bytes", lambda _root: 11)
+    monkeypatch.setattr(_runtime_storage, "int_env", lambda *_args: 10)
 
-    with pytest.raises(shred_mod.JsonRuntimeDiskBudgetExceededError):
-        with shred_mod._runtime_disk_budget_transaction(tmp_path):
+    with pytest.raises(_runtime_storage.JsonRuntimeDiskBudgetExceededError):
+        with _runtime_storage._runtime_disk_budget_transaction(tmp_path):
             pytest.fail("an over-budget transaction must not yield")

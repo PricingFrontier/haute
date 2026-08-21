@@ -258,7 +258,14 @@ paths = [
     "src/haute/_interactive_workers.py",
     "src/haute/_io.py",
     "src/haute/_json_flatten.py",
-    "src/haute/_json_shred.py",
+    "src/haute/_json_shred/_cache.py",
+    "src/haute/_json_shred/_inference.py",
+    "src/haute/_json_shred/_publication.py",
+    "src/haute/_json_shred/_records.py",
+    "src/haute/_json_shred/_runtime_storage.py",
+    "src/haute/_json_shred/_shred.py",
+    "src/haute/_json_shred/_source_proof.py",
+    "src/haute/_json_shred/_writer.py",
     "src/haute/_node_apply.py",
     "src/haute/_native_memory_limit.py",
     "src/haute/_output_assembler.py",
@@ -292,10 +299,45 @@ min_branch_coverage = 85.0
 rationale = "JSON flattening normalises user-uploaded datasets and schema inference."
 
 [[tool.haute.critical_coverage.files]]
-path = "src/haute/_json_shred.py"
+path = "src/haute/_json_shred/_records.py"
 min_statement_coverage = 90.0
 min_branch_coverage = 85.0
-rationale = "Per-port v2 shred + schema inference normalises user-uploaded JSON into the pricing cache (the successor to the v1 _json_flatten_schema codec, whose 98/95 gate it replaces)."
+rationale = "Streaming JSON/JSONL/XML record decoding bounds every structured-input read. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_shred.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "The single-pass v2 shred walk emits every cached pricing row. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_writer.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "Bounded Parquet emission is the memory boundary for cache artifacts and spills. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_publication.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "Cross-process cache publication must never expose a partial generation. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_source_proof.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "Source content proofs decide cache identity and reuse. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_runtime_storage.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "Runtime snapshots and the disk budget own process-local storage safety. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_inference.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "Schema inference from data seeds the v2 apiInput configuration. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_cache.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "The per-port cache lifecycle and apiInput loader serve every structured source. (Split from the former single-module gate; same thresholds pending a remeasure.)"
 
 [[tool.haute.critical_coverage.files]]
 path = "src/haute/_model_scorer.py"

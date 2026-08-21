@@ -24,12 +24,12 @@ import orjson
 import pytest
 
 from haute._api_input_schema import ApiInputSchemaError
-from haute._json_shred import (
+from haute._json_shred._cache import (
     build_per_port_cache,
-    infer_v2_schema_from_data,
     load_per_port_cache,
     read_per_port_cache_meta,
 )
+from haute._json_shred._inference import infer_v2_schema_from_data
 
 
 def _write(tmp_path: Path, records: list[dict[str, Any]]) -> Path:

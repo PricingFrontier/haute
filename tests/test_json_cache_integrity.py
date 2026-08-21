@@ -47,7 +47,7 @@ from haute._json_flatten import (
     clear_json_cache,
     mirror_cache_to_committed,
 )
-from haute._json_shred import (
+from haute._json_shred._cache import (
     SourceChangedDuringCacheBuildError,
     build_per_port_cache,
     commit_prepared_per_port_cache,
@@ -55,11 +55,11 @@ from haute._json_shred import (
     is_per_port_cache_valid,
     load_per_port_cache,
     load_v2_api_source,
-    per_port_cache_publication_lock,
     prepare_per_port_cache,
     read_per_port_cache_meta,
-    shred_to_buffers,
 )
+from haute._json_shred._publication import per_port_cache_publication_lock
+from haute._json_shred._shred import shred_to_buffers
 from haute._worker_isolation import IsolatedWorkerStoppedError
 from haute.routes._isolated_worker_async import WorkerCancellationGate
 
@@ -130,32 +130,30 @@ class TestParentOwnedCachePublication:
     def test_prepare_detects_source_change_manifest_failure_and_cleanup_note(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import haute._json_shred as shred_module
+        from haute._json_shred import _cache, _writer
 
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
         cfg = _root_cfg(_col("id", "$[:].id"))
         cache_dir = tmp_path / "cache"
         staging = cache_dir.with_name(f"{cache_dir.name}.build-tmp-{'2' * 32}")
-        original_stream = shred_module._write_tables_streaming
+        original_stream = _writer._write_tables_streaming
 
         def mutate_source(*args: object, **kwargs: object) -> tuple[list[dict[str, Any]], Any]:
             result = original_stream(*args, **kwargs)
             _write_json(data, [{"id": 2}])
             return result
 
-        monkeypatch.setattr(shred_module, "_write_tables_streaming", mutate_source)
+        monkeypatch.setattr(_writer, "_write_tables_streaming", mutate_source)
         with pytest.raises(SourceChangedDuringCacheBuildError, match="changed while"):
             prepare_per_port_cache(data, cfg, cache_dir, staging_dir=staging)
         assert not staging.exists()
 
-        monkeypatch.setattr(shred_module, "_write_tables_streaming", original_stream)
+        monkeypatch.setattr(_writer, "_write_tables_streaming", original_stream)
         monkeypatch.setattr(
-            shred_module,
+            _cache,
             "_cache_manifest_failure",
-            lambda *_args, **_kwargs: shred_module._CacheProbeFailure(
-                "missing_frame", label="root"
-            ),
+            lambda *_args, **_kwargs: _cache._CacheProbeFailure("missing_frame", label="root"),
         )
         with pytest.raises(
             RuntimeError, match="prepared cache manifest failed validation: missing_frame"
@@ -164,12 +162,12 @@ class TestParentOwnedCachePublication:
         assert not staging.exists()
 
         monkeypatch.setattr(
-            shred_module,
+            _writer,
             "_write_tables_streaming",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("primary build failure")),
         )
         monkeypatch.setattr(
-            shred_module,
+            _cache,
             "_remove_prepared_staging",
             lambda _path: (_ for _ in ()).throw(OSError("cleanup denied")),
         )
@@ -181,7 +179,7 @@ class TestParentOwnedCachePublication:
     def test_prepared_envelope_rejects_noop_and_staging_state_mismatches(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import haute._json_shred as shred_module
+        from haute._json_shred import _cache
 
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
@@ -193,28 +191,28 @@ class TestParentOwnedCachePublication:
             noop = prepare_per_port_cache(data, cfg, cache_dir, staging_dir=staging)
             assert noop.no_op
             with pytest.raises(ValueError, match="must not name a staging directory"):
-                shred_module._validate_prepared_cache(replace(noop, staging_dir=str(staging)), cfg)
+                _cache._validate_prepared_cache(replace(noop, staging_dir=str(staging)), cfg)
 
             with monkeypatch.context() as scoped:
                 scoped.setattr(
-                    shred_module,
+                    _cache,
                     "_cache_is_valid_under_external_lock",
                     lambda *_a, **_k: False,
                 )
                 with pytest.raises(RuntimeError, match="generation changed before publication"):
-                    shred_module._validate_prepared_cache(noop, cfg)
+                    _cache._validate_prepared_cache(noop, cfg)
 
             with pytest.raises(RuntimeError, match="summary does not match"):
-                shred_module._validate_prepared_cache(replace(noop, summary={}), cfg)
+                _cache._validate_prepared_cache(replace(noop, summary={}), cfg)
 
             non_noop = replace(noop, no_op=False)
             with pytest.raises(ValueError, match="omitted its staging directory"):
-                shred_module._validate_prepared_cache(non_noop, cfg)
+                _cache._validate_prepared_cache(non_noop, cfg)
 
     def test_prepared_staging_validation_rejects_metadata_artifacts_and_bundle_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import haute._json_shred as shred_module
+        from haute._json_shred import _cache
 
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
@@ -229,7 +227,7 @@ class TestParentOwnedCachePublication:
             staging, envelope = prepared("4")
             try:
                 with pytest.raises(RuntimeError, match="metadata does not match"):
-                    shred_module._validate_prepared_cache(replace(envelope, summary={}), cfg)
+                    _cache._validate_prepared_cache(replace(envelope, summary={}), cfg)
             finally:
                 discard_prepared_per_port_cache(envelope)
 
@@ -238,7 +236,7 @@ class TestParentOwnedCachePublication:
             _write_json(extra, [])
             try:
                 with pytest.raises(RuntimeError, match="unexpected or missing artifacts"):
-                    shred_module._validate_prepared_cache(envelope, cfg)
+                    _cache._validate_prepared_cache(envelope, cfg)
             finally:
                 extra.unlink()
                 discard_prepared_per_port_cache(envelope)
@@ -255,25 +253,25 @@ class TestParentOwnedCachePublication:
             monkeypatch.setattr(Path, "lstat", non_plain)
             try:
                 with pytest.raises(RuntimeError, match="artifact is not a plain regular file"):
-                    shred_module._validate_prepared_cache(envelope, cfg)
+                    _cache._validate_prepared_cache(envelope, cfg)
             finally:
                 monkeypatch.setattr(Path, "lstat", original_lstat)
                 discard_prepared_per_port_cache(envelope)
 
             staging, envelope = prepared("7")
             monkeypatch.setattr(
-                shred_module,
+                _cache,
                 "_cache_bundle_failure_in_place",
-                lambda *_a, **_k: shred_module._CacheProbeFailure("schema_mismatch", label="root"),
+                lambda *_a, **_k: _cache._CacheProbeFailure("schema_mismatch", label="root"),
             )
             try:
                 with pytest.raises(RuntimeError, match="failed validation: schema_mismatch"):
-                    shred_module._validate_prepared_cache(envelope, cfg)
+                    _cache._validate_prepared_cache(envelope, cfg)
             finally:
                 discard_prepared_per_port_cache(envelope)
 
     def test_commit_and_parent_cleanup_require_the_build_lock(self, tmp_path: Path) -> None:
-        import haute._json_shred as shred_module
+        from haute._json_shred import _cache
 
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
@@ -286,18 +284,18 @@ class TestParentOwnedCachePublication:
         with pytest.raises(RuntimeError, match="publication requires the parent-owned build lock"):
             commit_prepared_per_port_cache(envelope, cfg)
         with pytest.raises(RuntimeError, match="cleanup requires the parent-owned build lock"):
-            shred_module.discard_per_port_cache_staging(cache_dir, staging)
+            _cache.discard_per_port_cache_staging(cache_dir, staging)
         assert staging.exists()
 
         with per_port_cache_publication_lock(cache_dir):
-            shred_module.discard_per_port_cache_staging(cache_dir, staging)
+            _cache.discard_per_port_cache_staging(cache_dir, staging)
         assert not staging.exists()
 
     def test_prepared_validation_rejects_wrong_type_fingerprint_and_missing_staging(
         self, tmp_path: Path
     ) -> None:
         """Prepared envelopes are capability-like: their config and private generation agree."""
-        import haute._json_shred as shred_module
+        from haute._json_shred import _cache
 
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
@@ -308,14 +306,14 @@ class TestParentOwnedCachePublication:
             prepared = prepare_per_port_cache(data, cfg, cache_dir, staging_dir=staging)
             try:
                 with pytest.raises(TypeError, match="PreparedPerPortCacheBuild"):
-                    shred_module._validate_prepared_cache(object(), cfg)
+                    _cache._validate_prepared_cache(object(), cfg)
                 with pytest.raises(ValueError, match="schema fingerprint"):
-                    shred_module._validate_prepared_cache(
+                    _cache._validate_prepared_cache(
                         replace(prepared, schema_fingerprint="different"), cfg
                     )
-                shred_module._remove_prepared_staging(staging)
+                _cache._remove_prepared_staging(staging)
                 with pytest.raises(FileNotFoundError):
-                    shred_module._validate_prepared_cache(prepared, cfg)
+                    _cache._validate_prepared_cache(prepared, cfg)
             finally:
                 # The tested missing directory is already safely absent.
                 discard_prepared_per_port_cache(prepared)
@@ -323,7 +321,7 @@ class TestParentOwnedCachePublication:
     def test_prepare_rejects_existing_staging_and_build_cleans_staging_after_prepare_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import haute._json_shred as shred_module
+        from haute._json_shred import _cache
 
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
@@ -331,11 +329,9 @@ class TestParentOwnedCachePublication:
         cache_dir = tmp_path / "cache"
         staging = cache_dir.with_name(f"{cache_dir.name}.build-tmp-{'1' * 32}")
         staging.mkdir()
-        monkeypatch.setattr(
-            shred_module, "_cache_is_valid_under_external_lock", lambda *_a, **_k: False
-        )
+        monkeypatch.setattr(_cache, "_cache_is_valid_under_external_lock", lambda *_a, **_k: False)
         with pytest.raises(FileExistsError, match="already exists"):
-            shred_module.prepare_per_port_cache(data, cfg, cache_dir, staging_dir=staging)
+            _cache.prepare_per_port_cache(data, cfg, cache_dir, staging_dir=staging)
         staging.rmdir()
 
         seen: list[Path] = []
@@ -346,7 +342,7 @@ class TestParentOwnedCachePublication:
             seen.append(path)
             raise RuntimeError("prepare failed")
 
-        monkeypatch.setattr(shred_module, "prepare_per_port_cache", fail_prepare)
+        monkeypatch.setattr(_cache, "prepare_per_port_cache", fail_prepare)
         with pytest.raises(RuntimeError, match="prepare failed"):
             build_per_port_cache(data, cfg, cache_dir)
         assert seen and not seen[0].exists()
@@ -356,7 +352,7 @@ class TestParentOwnedCachePublication:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        import haute._json_shred as shred_module
+        from haute._json_shred import _cache
 
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
@@ -366,12 +362,12 @@ class TestParentOwnedCachePublication:
         staging = cache_dir.with_name(f"{cache_dir.name}.build-tmp-{'f' * 32}")
 
         monkeypatch.setattr(
-            shred_module,
+            _cache,
             "_cache_is_valid_under_external_lock",
             lambda *_args, **_kwargs: True,
         )
         monkeypatch.setattr(
-            shred_module,
+            _cache,
             "_read_per_port_cache_meta_unlocked",
             lambda _cache_dir: None,
         )
@@ -625,7 +621,7 @@ class TestDataFileSignatureValidity:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A rebuild reuses its one raw-data signature for the stale check."""
-        import haute._json_shred as shred_mod
+        from haute._json_shred import _source_proof
 
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
@@ -638,7 +634,7 @@ class TestDataFileSignatureValidity:
         os.utime(data, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
 
         raw_hashes = 0
-        real_hash_file = shred_mod._hash_file
+        real_hash_file = _source_proof._hash_file
 
         def counting_hash_file(path: Path) -> str:
             nonlocal raw_hashes
@@ -646,7 +642,7 @@ class TestDataFileSignatureValidity:
                 raw_hashes += 1
             return real_hash_file(path)
 
-        monkeypatch.setattr(shred_mod, "_hash_file", counting_hash_file)
+        monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
         build_per_port_cache(data, cfg, cache_dir)
 
         assert raw_hashes == 1
@@ -658,7 +654,7 @@ class TestDataFileSignatureValidity:
     ) -> None:
         """A status poll may need content-hash arbitration after an mtime-only
         drift, but that large-file hash must not run on the async route thread."""
-        import haute._json_shred as shred_mod
+        from haute._json_shred import _source_proof
         from haute.routes.json_cache import post_json_cache_status
         from haute.schemas import JsonCacheBuildRequest
 
@@ -673,13 +669,13 @@ class TestDataFileSignatureValidity:
 
         route_thread = threading.current_thread()
         hash_threads: list[threading.Thread] = []
-        real_hash_file = shred_mod._hash_file
+        real_hash_file = _source_proof._hash_file
 
         def _tracking_hash_file(path: Path) -> str:
             hash_threads.append(threading.current_thread())
             return real_hash_file(path)
 
-        monkeypatch.setattr(shred_mod, "_hash_file", _tracking_hash_file)
+        monkeypatch.setattr(_source_proof, "_hash_file", _tracking_hash_file)
 
         status = await post_json_cache_status(
             JsonCacheBuildRequest(path="data.json", volatile_schema=cfg)
@@ -1018,7 +1014,7 @@ class TestDataFileSignatureValidity:
         failure_mode: str,
         expected_reason: str,
     ) -> None:
-        import haute._json_shred as shred_mod
+        from haute._json_shred import _cache
 
         data = isolated_cwd / "data.json"
         _write_json(data, [{"a": 1, "b": 2}])
@@ -1033,7 +1029,7 @@ class TestDataFileSignatureValidity:
         build_per_port_cache(data, cfg_b, working_dir)
 
         if failure_mode == "source_moved":
-            real_match = shred_mod._cache_meta_matches_config_and_source
+            real_match = _cache._cache_meta_matches_config_and_source
             match_calls = 0
 
             def moving_source(*args: Any, **kwargs: Any) -> bool:
@@ -1042,12 +1038,12 @@ class TestDataFileSignatureValidity:
                 return real_match(*args, **kwargs) if match_calls == 1 else False
 
             monkeypatch.setattr(
-                shred_mod,
+                _cache,
                 "_cache_meta_matches_config_and_source",
                 moving_source,
             )
         else:
-            real_probe = shred_mod._probe_cache_bundle
+            real_probe = _cache._probe_cache_bundle
             probe_calls = 0
 
             def failing_staged_probe(*args: Any, **kwargs: Any) -> Any:
@@ -1057,7 +1053,7 @@ class TestDataFileSignatureValidity:
                     raise OSError("staged probe failed")
                 return real_probe(*args, **kwargs)
 
-            monkeypatch.setattr(shred_mod, "_probe_cache_bundle", failing_staged_probe)
+            monkeypatch.setattr(_cache, "_probe_cache_bundle", failing_staged_probe)
 
         with structlog.testing.capture_logs() as logs:
             assert mirror_cache_to_committed(str(data), cfg_b) is False
@@ -1091,7 +1087,7 @@ class TestSharedEmittingPredicate:
         }
 
     def test_predicate_truth_table(self) -> None:
-        from haute._json_shred import table_is_emitting
+        from haute._json_shred._shred import table_is_emitting
 
         sel = _col("a", "$[:].a")
         unsel = _col("a", "$[:].a", selected=False)
@@ -1232,7 +1228,7 @@ class TestAtomicSerializedBuild:
     ) -> None:
         """A first-ever build that crashes during row-group flush must not
         leave a partial cache directory behind."""
-        import haute._json_shred as shred_mod
+        from haute._json_shred import _writer
 
         data = tmp_path / "data.json"
         _write_json(data, [{"a": 1, "b": 2}])
@@ -1244,20 +1240,20 @@ class TestAtomicSerializedBuild:
         }
         cache_dir = tmp_path / "cache"
 
-        real_flush = shred_mod._BoundedParquetRowGroupWriter.flush
+        real_flush = _writer._BoundedParquetRowGroupWriter.flush
 
         def _explode_after_flush(writer: Any) -> None:
             real_flush(writer)
             raise OSError("disk full")
 
         monkeypatch.setattr(
-            shred_mod._BoundedParquetRowGroupWriter,
+            _writer._BoundedParquetRowGroupWriter,
             "flush",
             _explode_after_flush,
         )
         with pytest.raises(OSError, match="disk full"):
             build_per_port_cache(data, cfg, cache_dir)
-        monkeypatch.setattr(shred_mod._BoundedParquetRowGroupWriter, "flush", real_flush)
+        monkeypatch.setattr(_writer._BoundedParquetRowGroupWriter, "flush", real_flush)
 
         assert not (cache_dir / "meta.json").exists()
         leftover = list(cache_dir.glob("*.parquet")) if cache_dir.exists() else []
@@ -1273,7 +1269,7 @@ class TestAtomicSerializedBuild:
         """Two simultaneous builds of the same data file (different schemas)
         must not interleave their write phases — that's how one schema's meta
         gets stamped onto another schema's parquets."""
-        import haute._json_shred as shred_mod
+        from haute._json_shred import _writer
 
         data = tmp_path / "data.json"
         _write_json(data, [{"a": i, "b": i} for i in range(50)])
@@ -1281,7 +1277,7 @@ class TestAtomicSerializedBuild:
         cfg_b = {"tables": [_table("$[:]", "portb", [_col("b", "$[:].b")])]}
         cache_dir = tmp_path / "cache"
 
-        real_flush = shred_mod._BoundedParquetRowGroupWriter.flush
+        real_flush = _writer._BoundedParquetRowGroupWriter.flush
         gate = threading.Lock()
         inside = 0
         max_inside = 0
@@ -1299,7 +1295,7 @@ class TestAtomicSerializedBuild:
                     inside -= 1
 
         monkeypatch.setattr(
-            shred_mod._BoundedParquetRowGroupWriter,
+            _writer._BoundedParquetRowGroupWriter,
             "flush",
             _tracking_flush,
         )
@@ -1328,7 +1324,7 @@ class TestAtomicSerializedBuild:
 
         # Whoever finished last, the directory must be coherent: meta's
         # fingerprint matches a schema whose parquets are all present.
-        from haute._json_shred import _v2_fingerprint
+        from haute._json_shred._shred import _v2_fingerprint
 
         meta = read_per_port_cache_meta(cache_dir)
         assert meta is not None
@@ -1378,7 +1374,7 @@ class TestAtomicSerializedBuild:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """If tmp→live fails, the previous cache is restored before re-raising."""
-        from haute._json_shred import _swap_dir_into_place
+        from haute._json_shred._publication import _swap_dir_into_place
 
         live = tmp_path / "cache"
         live.mkdir()
@@ -1406,7 +1402,7 @@ class TestAtomicSerializedBuild:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """If live→backup fails, the UUID staging directory is still removed."""
-        from haute._json_shred import _swap_dir_into_place
+        from haute._json_shred._publication import _swap_dir_into_place
 
         live = tmp_path / "cache"
         live.mkdir()
@@ -1436,7 +1432,7 @@ class TestAtomicSerializedBuild:
     ) -> None:
         """A cache race must continue to committed/direct, never return a
         partial bundle or restore a hard dependency on parquet."""
-        import haute._json_shred as shred_mod
+        from haute._json_shred import _cache
 
         data = isolated_cwd / "data.json"
         _write_json(data, [{"id": 1}])
@@ -1444,7 +1440,7 @@ class TestAtomicSerializedBuild:
         cache_dir = _json_cache_dir(str(data), "working")
         build_per_port_cache(data, cfg, cache_dir)
 
-        real_probe_cache_bundle = shred_mod._probe_cache_bundle
+        real_probe_cache_bundle = _cache._probe_cache_bundle
         removed = False
 
         def _probe_after_remove(
@@ -1466,7 +1462,7 @@ class TestAtomicSerializedBuild:
             )
 
         monkeypatch.setattr(
-            shred_mod,
+            _cache,
             "_probe_cache_bundle",
             _probe_after_remove,
         )
@@ -1484,8 +1480,8 @@ class TestAtomicSerializedBuild:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Windows can transiently deny directory renames while handles settle."""
-        import haute._json_shred as shred_mod
-        from haute._json_shred import _swap_dir_into_place
+        from haute._json_shred import _publication
+        from haute._json_shred._publication import _swap_dir_into_place
 
         live = tmp_path / "cache"
         tmp = tmp_path / "cache.build-tmp-any"
@@ -1503,7 +1499,7 @@ class TestAtomicSerializedBuild:
             return real_rename(self, target)
 
         monkeypatch.setattr(Path, "rename", _flaky_rename)
-        monkeypatch.setattr(shred_mod, "_RENAME_RETRY_DELAYS_SECONDS", (0.0,))
+        monkeypatch.setattr(_publication, "_RENAME_RETRY_DELAYS_SECONDS", (0.0,))
 
         _swap_dir_into_place(tmp, live)
 
@@ -1515,7 +1511,7 @@ class TestAtomicSerializedBuild:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The serialization is per cache directory, not a global bottleneck."""
-        import haute._json_shred as shred_mod
+        from haute._json_shred import _writer
 
         data_a = tmp_path / "a.json"
         data_b = tmp_path / "b.json"
@@ -1523,7 +1519,7 @@ class TestAtomicSerializedBuild:
         _write_json(data_b, [{"a": 2}])
         cfg = _root_cfg(_col("a", "$[:].a"))
 
-        real_flush = shred_mod._BoundedParquetRowGroupWriter.flush
+        real_flush = _writer._BoundedParquetRowGroupWriter.flush
         first_inside = threading.Event()
         second_inside = threading.Event()
         overlapped: list[bool] = []
@@ -1537,7 +1533,7 @@ class TestAtomicSerializedBuild:
             real_flush(writer)
 
         monkeypatch.setattr(
-            shred_mod._BoundedParquetRowGroupWriter,
+            _writer._BoundedParquetRowGroupWriter,
             "flush",
             _waiting_flush,
         )

@@ -12,7 +12,7 @@ import pytest
 
 import haute._api_input_schema as api_input_schema
 from haute._api_input_schema import validate_v2_schema
-from haute._json_shred import infer_v2_schema_from_data
+from haute._json_shred._inference import infer_v2_schema_from_data
 
 
 def _write(tmp_path: Path, record: dict[str, Any], name: str = "data.json") -> Path:

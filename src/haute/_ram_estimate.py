@@ -496,20 +496,24 @@ def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSource
     execution rather than silently sizing a boundary from the wrong data.
     """
 
+    from haute._api_input_schema import sanitise_label_for_filesystem as _sanitise_label
     from haute._json_flatten import _json_cache_dir
-    from haute._json_shred import (
-        _build_lock_for,
+    from haute._json_shred._cache import (
         _cache_manifest_structure_failure,
-        _data_file_signature,
-        _declared_frame_schema,
-        _emitting_table_specs,
         _read_matching_cache_meta_unlocked,
         _read_per_port_cache_meta_unlocked,
+    )
+    from haute._json_shred._publication import _build_lock_for
+    from haute._json_shred._runtime_storage import (
         _release_runtime_snapshot,
-        _sanitise_label,
         _snapshot_cache_artifact_locked,
+    )
+    from haute._json_shred._shred import (
+        _declared_frame_schema,
+        _emitting_table_specs,
         _v2_fingerprint,
     )
+    from haute._json_shred._source_proof import _data_file_signature
 
     config = dict(node.data.config)
     raw_path = config.get("path", "")

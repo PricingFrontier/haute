@@ -20,7 +20,7 @@ Current targets (budgets + rationale are owned by [`targets.json`](targets.json)
 - `cosmic-ray.registry.toml`: [src/haute/_registry.py](../src/haute/_registry.py)
 - `cosmic-ray.output-assembler.toml`: [src/haute/_output_assembler.py](../src/haute/_output_assembler.py)
 - `cosmic-ray.jsonpath.toml`: [src/haute/_jsonpath.py](../src/haute/_jsonpath.py)
-- `cosmic-ray.json-shred.toml`: [src/haute/_json_shred.py](../src/haute/_json_shred.py)
+- `cosmic-ray.json-shred.toml`: [src/haute/_json_shred/](../src/haute/_json_shred/) (the complete package)
 - `cosmic-ray.json-cache.toml`: [src/haute/routes/json_cache.py](../src/haute/routes/json_cache.py)
 - `cosmic-ray.executor.toml`: [src/haute/executor.py](../src/haute/executor.py)
 

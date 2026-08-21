@@ -19,13 +19,13 @@ from typing import Any
 
 import pytest
 
+from haute._api_input_schema import _RESERVED_LEAF as _SCALAR_VALUE_LEAF
 from haute._api_input_schema import ApiInputSchemaError
-from haute._json_shred import (
-    _SCALAR_VALUE_LEAF,
-    ShredSkipStats,
+from haute._json_shred._inference import _reject_unexpressible_key
+from haute._json_shred._records import ShredSkipStats
+from haute._json_shred._shred import (
     _buffer_to_frame,
     _reject_reserved_leaf_collision,
-    _reject_unexpressible_key,
     _resolve_leaf,
     shred_to_buffers,
 )
@@ -446,3 +446,32 @@ def test_reject_unexpressible_key_rejects_non_identifier() -> None:
 
 def test_reject_unexpressible_key_allows_identifier() -> None:
     _reject_unexpressible_key("_id2")
+
+
+def test_shred_without_stats_still_skips_unmatched_child_rows() -> None:
+    """The walk's row-skip accounting is optional; a stats-free shred takes the
+    skip path without a collector and still emits the surviving rows."""
+    config = {
+        "tables": [
+            {
+                "label": "items",
+                "path": "$[:].items[:]",
+                "emit": True,
+                "columns": [
+                    {
+                        "name": "value",
+                        "path": "$[:].items[:].value",
+                        "type": "int",
+                        "selected": True,
+                    }
+                ],
+            }
+        ]
+    }
+    buffers = shred_to_buffers(
+        iter([{"items": [{"value": 1}, "not-an-object"]}]),
+        config,
+        stats=None,
+    )
+
+    assert [row["value"] for row in buffers["items"]] == [1]

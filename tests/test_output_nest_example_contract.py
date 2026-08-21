@@ -56,7 +56,7 @@ from typing import Any
 
 import polars as pl
 
-from haute._json_shred import shred_to_buffers
+from haute._json_shred._shred import shred_to_buffers
 from haute._output_assembler import assemble_output_from_mapping
 from haute.parser import parse_pipeline_file
 

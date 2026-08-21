@@ -1731,7 +1731,7 @@ def _declared_api_input_frame_schema_items(
         list,
     ):
         return {}
-    from haute._json_shred import _declared_frame_schema, _emitting_table_specs
+    from haute._json_shred._shred import _declared_frame_schema, _emitting_table_specs
 
     declared: dict[str, list[tuple[str, str]]] = {}
     for table_spec in _emitting_table_specs(node.data.config):

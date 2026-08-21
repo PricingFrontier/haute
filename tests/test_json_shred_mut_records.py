@@ -14,11 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from haute._json_shred import (
-    ShredSkipStats,
-    _iter_records,
-    _iter_records_for_inference,
-)
+from haute._json_shred._records import ShredSkipStats, _iter_records, _iter_records_for_inference
 
 
 # ---------------------------------------------------------------------------

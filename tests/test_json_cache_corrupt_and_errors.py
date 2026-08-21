@@ -290,7 +290,7 @@ def test_inferred_string_widening_builds_mixed_json_scalars(
     assert build.json()["columns"] == {"quote_info.code": "String"}
 
     from haute._json_flatten import _json_cache_dir
-    from haute._json_shred import load_per_port_cache
+    from haute._json_shred._cache import load_per_port_cache
 
     frames = load_per_port_cache(_json_cache_dir(data_path, "working"), config)
     assert frames["quote_info"].collect()["code"].to_list() == ["100", "A1", "true"]

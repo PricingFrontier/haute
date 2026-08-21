@@ -27,11 +27,8 @@ from pathlib import Path
 import orjson
 import pytest
 
-from haute._json_shred import (
-    _iter_sampled_json_array_records,
-    _read_root_array_value,
-    infer_v2_schema_from_data,
-)
+from haute._json_shred._inference import infer_v2_schema_from_data
+from haute._json_shred._records import _iter_sampled_json_array_records, _read_root_array_value
 
 
 # --------------------------------------------------------------------------- #
@@ -410,3 +407,19 @@ def test_infer_schema_streams_sampled_root_array(tmp_path: Path) -> None:
     # full scan widens to float
     schema_full = infer_v2_schema_from_data(p, sample_size=10)
     assert schema_full["tables"][0]["columns"][0]["type"] == "float"
+
+
+def test_sampled_non_array_root_falls_back_to_the_full_reader(tmp_path) -> None:
+    """A non-array root defers to ``_iter_records`` under the same sample cap."""
+    records = _sample(tmp_path, b'{"id": 1}', 5, name="object.json")
+
+    assert records == [{"id": 1}]
+
+
+def test_sampled_reader_yields_nothing_for_an_empty_file(tmp_path) -> None:
+    assert _sample(tmp_path, b"", 5, name="empty.json") == []
+
+
+def test_sampled_array_rejects_truncated_input_between_records(tmp_path) -> None:
+    with pytest.raises(orjson.JSONDecodeError, match="unexpected end of data"):
+        _sample(tmp_path, b'[{"id": 1},', 5, name="truncated.json")

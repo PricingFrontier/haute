@@ -18,13 +18,13 @@ import polars as pl
 import pytest
 
 from haute._api_input_schema import ApiInputSchemaError
-from haute._json_shred import (
-    _read_root_array_value,
-    _resolve_leaf,
+from haute._json_shred._cache import (
     build_per_port_cache,
     is_per_port_cache_valid,
     load_per_port_cache,
 )
+from haute._json_shred._records import _read_root_array_value
+from haute._json_shred._shred import _resolve_leaf
 
 
 def _col(name: str, path: str, *, selected: bool = True) -> dict[str, Any]:

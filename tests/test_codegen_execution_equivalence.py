@@ -37,7 +37,7 @@ from haute._builders import _build_node_fn
 from haute._config_io import collect_node_configs, config_path_for_node
 from haute._execute_lazy import _execute_lazy
 from haute._json_flatten import _json_cache_dir
-from haute._json_shred import build_per_port_cache
+from haute._json_shred._cache import build_per_port_cache
 from haute._model_scorer import _scenario_ctx
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph

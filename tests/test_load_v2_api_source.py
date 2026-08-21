@@ -18,11 +18,11 @@ import orjson
 import polars as pl
 import pytest
 
-import haute._json_shred as shred_mod
 from haute._api_input_schema import ApiInputSchemaError
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._json_flatten import _json_cache_dir, clear_json_cache
-from haute._json_shred import (
+from haute._json_shred import _runtime_storage
+from haute._json_shred._cache import (
     build_per_port_cache,
     is_per_port_cache_valid,
     load_per_port_cache,
@@ -366,7 +366,7 @@ def test_cache_snapshot_vanishing_during_probe_falls_back_to_source(
     _build(data, cfg)
 
     monkeypatch.setattr(
-        "haute._json_shred._snapshot_cache_artifact",
+        "haute._json_shred._runtime_storage._snapshot_cache_artifact",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("vanished")),
     )
 
@@ -562,7 +562,7 @@ def test_valid_cache_fast_path_does_not_reshred_json(
     def _unexpected_reshred(*_args: Any, **_kwargs: Any) -> Any:
         pytest.fail("a valid parquet cache must not re-shred the JSON source")
 
-    monkeypatch.setattr("haute._json_shred._iter_records", _unexpected_reshred)
+    monkeypatch.setattr("haute._json_shred._records._iter_records", _unexpected_reshred)
 
     frame = load_v2_api_source(str(data), cfg)["root"]
 
@@ -671,7 +671,7 @@ def test_cache_probe_keeps_parquets_file_backed_and_collects_from_snapshot(
         return real_scan_parquet(source, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_bytes", _reject_parquet_read_bytes)
-    monkeypatch.setattr("haute._json_shred.pl.scan_parquet", _capture_scan_source)
+    monkeypatch.setattr("haute._json_shred._cache.pl.scan_parquet", _capture_scan_source)
 
     frames = load_v2_api_source(str(data), cfg)
     assert clear_json_cache(str(data), layer="working") is True
@@ -708,9 +708,9 @@ def test_cache_probe_stream_copy_fallback_stays_file_backed(
         scan_sources.append(source)
         return real_scan_parquet(source, *args, **kwargs)
 
-    monkeypatch.setattr("haute._json_shred.os.link", _hard_link_unavailable)
+    monkeypatch.setattr("haute._json_shred._runtime_storage.os.link", _hard_link_unavailable)
     monkeypatch.setattr(Path, "read_bytes", _reject_parquet_read_bytes)
-    monkeypatch.setattr("haute._json_shred.pl.scan_parquet", _capture_scan_source)
+    monkeypatch.setattr("haute._json_shred._cache.pl.scan_parquet", _capture_scan_source)
 
     frame = load_v2_api_source(str(data), cfg)["root"]
     assert clear_json_cache(str(data), layer="working") is True
@@ -757,10 +757,14 @@ def test_managed_executions_share_then_release_file_snapshot(
         return real_scan_parquet(source, *args, **kwargs)
 
     monkeypatch.setattr(
-        "haute._json_shred.current_execution_context",
+        "haute._json_shred._cache.current_execution_context",
         lambda: active_context[0],
     )
-    monkeypatch.setattr("haute._json_shred.pl.scan_parquet", _capture_scan_source)
+    monkeypatch.setattr(
+        "haute._json_shred._runtime_storage.current_execution_context",
+        lambda: active_context[0],
+    )
+    monkeypatch.setattr("haute._json_shred._cache.pl.scan_parquet", _capture_scan_source)
 
     first_frame = load_v2_api_source(str(data), cfg)["root"]
     active_context[0] = second_context
@@ -773,7 +777,7 @@ def test_managed_executions_share_then_release_file_snapshot(
     assert second_frame.collect().to_dict(as_series=False) == {"id": [1, 2]}
     second_context.release()
     assert scan_sources[0].exists()
-    shred_mod._cleanup_runtime_snapshot_dirs()
+    _runtime_storage._cleanup_runtime_snapshot_dirs()
     assert not scan_sources[0].exists()
 
 
@@ -786,7 +790,7 @@ def test_validity_probe_releases_unowned_file_snapshot(tmp_path: Path) -> None:
     assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is True
     snapshot_parent = cache_dir.parent / ".runtime-snapshots"
     assert list(snapshot_parent.rglob("*.parquet"))
-    shred_mod._cleanup_runtime_snapshot_dirs()
+    _runtime_storage._cleanup_runtime_snapshot_dirs()
     assert list(snapshot_parent.rglob("*.parquet")) == []
 
 
@@ -807,7 +811,7 @@ def test_data_page_corrupt_working_cache_falls_through_to_committed(
     def _unexpected_reshred(*_args: Any, **_kwargs: Any) -> Any:
         pytest.fail("the valid committed cache should serve after rejecting working")
 
-    monkeypatch.setattr("haute._json_shred._iter_records", _unexpected_reshred)
+    monkeypatch.setattr("haute._json_shred._records._iter_records", _unexpected_reshred)
 
     frame = load_v2_api_source(str(data), cfg)["root"].collect()
 
@@ -912,7 +916,7 @@ def test_stale_working_cache_falls_through_to_valid_committed_cache(
     def _unexpected_reshred(*_args: Any, **_kwargs: Any) -> Any:
         pytest.fail("the valid committed cache should serve after stale working")
 
-    monkeypatch.setattr("haute._json_shred._iter_records", _unexpected_reshred)
+    monkeypatch.setattr("haute._json_shred._records._iter_records", _unexpected_reshred)
 
     frame = load_v2_api_source(str(data), current_cfg)["root"].collect()
     assert frame.to_dict(as_series=False) == {"quote_id": [13]}
@@ -968,7 +972,7 @@ def test_unusable_working_cache_falls_through_to_valid_committed(
     def _unexpected_reshred(*_args: Any, **_kwargs: Any) -> Any:
         pytest.fail("the valid committed cache should serve after rejecting working")
 
-    monkeypatch.setattr("haute._json_shred._iter_records", _unexpected_reshred)
+    monkeypatch.setattr("haute._json_shred._records._iter_records", _unexpected_reshred)
     context = ExecutionContext(
         operation="preview",
         profile=ExecutionProfile.PREVIEW_EAGER,
@@ -1050,7 +1054,7 @@ def test_column_order_only_change_reuses_cache_and_projects_current_order(
     def _unexpected_reshred(*_args: Any, **_kwargs: Any) -> Any:
         pytest.fail("an order-only schema edit should reuse the existing cache")
 
-    monkeypatch.setattr("haute._json_shred._iter_records", _unexpected_reshred)
+    monkeypatch.setattr("haute._json_shred._records._iter_records", _unexpected_reshred)
 
     build_per_port_cache(str(data), cfg, cache_dir)
     frame = load_v2_api_source(str(data), cfg)["root"].collect()
@@ -1092,7 +1096,7 @@ def test_unreadable_cache_candidate_is_logged_before_direct_fallback(
     _refresh_content_signature(cache_dir, "root")
     warnings: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(
-        "haute._json_shred.logger.warning",
+        "haute._json_shred._cache.logger.warning",
         lambda event, **fields: warnings.append((event, fields)),
     )
     context = ExecutionContext(
@@ -1153,7 +1157,7 @@ def test_uncached_direct_shred_logs_every_skipped_record_and_child_row(
     def _capture_warning(event: str, **fields: Any) -> None:
         warnings.append((event, fields))
 
-    monkeypatch.setattr("haute._json_shred.logger.warning", _capture_warning)
+    monkeypatch.setattr("haute._json_shred._cache.logger.warning", _capture_warning)
 
     frame = load_v2_api_source(str(data), cfg)["items"].collect()
 
@@ -1234,7 +1238,7 @@ def test_uncached_declared_type_mismatch_names_column_and_type(
     cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     info_events: list[str] = []
     monkeypatch.setattr(
-        "haute._json_shred.logger.info",
+        "haute._json_shred._cache.logger.info",
         lambda event, **_fields: info_events.append(event),
     )
 
@@ -1334,7 +1338,7 @@ def test_permission_denied_working_meta_falls_through_to_committed(
     def _unexpected_reshred(*_args: Any, **_kwargs: Any) -> Any:
         pytest.fail("a valid committed cache must serve when working meta is unreadable")
 
-    monkeypatch.setattr("haute._json_shred._iter_records", _unexpected_reshred)
+    monkeypatch.setattr("haute._json_shred._records._iter_records", _unexpected_reshred)
 
     frame = load_v2_api_source(str(data), cfg)["root"].collect()
 
@@ -1410,7 +1414,7 @@ def test_cache_validity_without_plausible_metadata_does_not_hash_source(
         raise AssertionError("implausible cache metadata must not require a source hash")
 
     monkeypatch.setattr(
-        "haute._json_shred._data_file_signature",
+        "haute._json_shred._source_proof._data_file_signature",
         unexpected_source_proof,
     )
 
@@ -1431,7 +1435,7 @@ def test_is_per_port_cache_valid_rejects_non_string_label_on_emitting_table(
     bad["tables"][0]["label"] = 123
     # Force the fingerprint to match the built cache so the label arm is the
     # deciding check, not the fingerprint.
-    from haute._json_shred import _v2_fingerprint
+    from haute._json_shred._shred import _v2_fingerprint
 
     if _v2_fingerprint(bad) != _v2_fingerprint(good):
         meta_path = cache_dir / "meta.json"

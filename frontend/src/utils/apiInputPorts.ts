@@ -63,7 +63,7 @@ function emitTables(config: ConfigLike): Array<Record<string, unknown>> {
       !!t &&
       typeof t === "object" &&
       (t as { emit?: unknown }).emit === true &&
-      // Mirror the backend runtime (`_json_shred.load_v2_api_source`): a table
+      // Mirror the backend runtime (`_json_shred._cache.load_v2_api_source`): a table
       // is a frame only if it ALSO has at least one selected column. An
       // emit-true table with no selected columns is NOT emitted at runtime, so
       // rendering a bindable Handle for it would let an edge bind to a frame the
@@ -76,7 +76,7 @@ function emitTables(config: ConfigLike): Array<Record<string, unknown>> {
 /**
  * Whether an apiInput config contains a table that contributes a runtime
  * frame. This shares the exact eligibility path used for rendered handles and
- * mirrors backend `_json_shred.table_is_emitting`.
+ * mirrors backend `_json_shred._shred.table_is_emitting`.
  */
 export function apiInputHasEmittingTable(config: ConfigLike): boolean {
   return emitTables(config).length > 0

@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._json_shred import load_v2_api_source
+from haute._json_shred._cache import load_v2_api_source
 from haute._polars_utils import execution_collect
 
 

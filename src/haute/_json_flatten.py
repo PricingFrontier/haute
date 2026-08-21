@@ -21,7 +21,7 @@ The on-disk layout is:
   per-frame parquets and a ``meta.json`` with ``{schema_mode,
   schema_fingerprint, tables}``; every table entry carries its parquet's
   size/SHA-256 content signature — written by
-  :func:`haute._json_shred.build_per_port_cache`.
+  :func:`haute._json_shred._cache.build_per_port_cache`.
 """
 
 from __future__ import annotations
@@ -133,7 +133,7 @@ def _read_cache_meta_lenient(cache_dir: Path) -> dict[str, object] | None:
     we intend to *serve*. Mirroring instead needs to preserve a healthy
     committed layer when working metadata is bad, and repair a corrupt
     committed layer from healthy working state. Both cases degrade to stale
-    exactly like :func:`haute._json_shred.is_per_port_cache_valid` (F307).
+    exactly like :func:`haute._json_shred._cache.is_per_port_cache_valid` (F307).
     """
     if not cache_dir.exists():
         return None
@@ -219,7 +219,7 @@ def clear_json_cache(
 
     Returns True if anything was deleted.
     """
-    from haute._json_shred import _build_lock_for
+    from haute._json_shred._publication import _build_lock_for
 
     cache_dir = _json_cache_dir(data_path, layer)
     with _build_lock_for(cache_dir):
@@ -258,15 +258,17 @@ def mirror_cache_to_committed(
     import polars as pl
 
     from haute._api_input_schema import ApiInputSchemaError
-    from haute._json_shred import (
-        _build_lock_for,
+    from haute._json_shred._cache import (
         _cache_manifest_files_match,
         _cache_meta_matches_config_and_source,
-        _emitting_table_specs,
         _probe_cache_bundle,
+    )
+    from haute._json_shred._publication import (
+        _build_lock_for,
         _swap_dir_into_place,
         _unique_build_tmp_dir,
     )
+    from haute._json_shred._shred import _emitting_table_specs
 
     if not _is_working_consulted(data_path):
         # Stale on-disk working/ from a previous session; or no cache ever.

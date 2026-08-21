@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import atexit
+import os
 import threading
+import uuid
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +14,7 @@ from typing import Any
 import orjson
 import pytest
 
-import haute._json_shred as shred_mod
+from haute._json_shred import _records, _runtime_storage, _shred, _writer
 
 
 class _CheckpointContext:
@@ -23,14 +26,14 @@ class _CheckpointContext:
 
 
 def test_execution_progress_checkpoints_at_the_exact_unit_threshold() -> None:
-    assert shred_mod._SHRED_EXECUTION_CHECKPOINT_ROWS == 1_024
+    assert _records._SHRED_EXECUTION_CHECKPOINT_ROWS == 1_024
 
-    no_context = shred_mod._ShredExecutionProgress(None, work_since_checkpoint=17)
+    no_context = _records._ShredExecutionProgress(None, work_since_checkpoint=17)
     no_context.advance("ignored")
     assert no_context.work_since_checkpoint == 17
 
     context = _CheckpointContext()
-    progress = shred_mod._ShredExecutionProgress(context)
+    progress = _records._ShredExecutionProgress(context)
     for _ in range(1_023):
         progress.advance("json_shred_record")
     assert context.labels == []
@@ -53,43 +56,43 @@ def test_runtime_storage_recovery_is_once_per_pid_and_root(
     current_pid = 100
     recovered: list[Path] = []
     root = tmp_path / "cache-root"
-    monkeypatch.setattr(shred_mod.os, "getpid", lambda: current_pid)
-    monkeypatch.setattr(shred_mod, "_RUNTIME_STORAGE_RECOVERY_PROCESS_ID", 100)
-    monkeypatch.setattr(shred_mod, "_RUNTIME_STORAGE_RECOVERED_ROOTS", set())
+    monkeypatch.setattr(os, "getpid", lambda: current_pid)
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_STORAGE_RECOVERY_PROCESS_ID", 100)
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_STORAGE_RECOVERED_ROOTS", set())
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "recover_json_runtime_storage",
         lambda cache_root: recovered.append(cache_root),
     )
 
-    shred_mod._recover_runtime_storage_once(root)
-    shred_mod._recover_runtime_storage_once(root)
+    _runtime_storage._recover_runtime_storage_once(root)
+    _runtime_storage._recover_runtime_storage_once(root)
     current_pid = 99
-    shred_mod._recover_runtime_storage_once(root)
+    _runtime_storage._recover_runtime_storage_once(root)
     current_pid = 101
-    shred_mod._recover_runtime_storage_once(root)
+    _runtime_storage._recover_runtime_storage_once(root)
 
     assert recovered == [root, root, root]
-    assert shred_mod._RUNTIME_STORAGE_RECOVERY_PROCESS_ID == 101
-    assert shred_mod._RUNTIME_STORAGE_RECOVERED_ROOTS == {root}
+    assert _runtime_storage._RUNTIME_STORAGE_RECOVERY_PROCESS_ID == 101
+    assert _runtime_storage._RUNTIME_STORAGE_RECOVERED_ROOTS == {root}
 
 
 @pytest.fixture
 def isolated_direct_spill_state(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     registrations: list[Any] = []
-    monkeypatch.setattr(shred_mod, "_DIRECT_SPILL_PROCESS_ID", 100)
-    monkeypatch.setattr(shred_mod, "_DIRECT_SPILL_PROCESS_TOKEN", "owner-100")
-    monkeypatch.setattr(shred_mod, "_DIRECT_SPILL_DIRS", set())
-    monkeypatch.setattr(shred_mod, "_DIRECT_SPILL_LOCK", threading.Lock())
-    monkeypatch.setattr(shred_mod, "_DIRECT_SPILL_ATEXIT_REGISTERED", False)
-    monkeypatch.setattr(shred_mod.os, "getpid", lambda: 100)
+    monkeypatch.setattr(_runtime_storage, "_DIRECT_SPILL_PROCESS_ID", 100)
+    monkeypatch.setattr(_runtime_storage, "_DIRECT_SPILL_PROCESS_TOKEN", "owner-100")
+    monkeypatch.setattr(_runtime_storage, "_DIRECT_SPILL_DIRS", set())
+    monkeypatch.setattr(_runtime_storage, "_DIRECT_SPILL_LOCK", threading.Lock())
+    monkeypatch.setattr(_runtime_storage, "_DIRECT_SPILL_ATEXIT_REGISTERED", False)
+    monkeypatch.setattr(os, "getpid", lambda: 100)
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_runtime_disk_budget_transaction",
         lambda *_args, **_kwargs: nullcontext(),
     )
-    monkeypatch.setattr(shred_mod, "_ensure_runtime_owner_metadata", lambda _owner: None)
-    monkeypatch.setattr(shred_mod.atexit, "register", registrations.append)
+    monkeypatch.setattr(_runtime_storage, "_ensure_runtime_owner_metadata", lambda _owner: None)
+    monkeypatch.setattr(atexit, "register", registrations.append)
     return registrations
 
 
@@ -99,19 +102,19 @@ def test_new_direct_spill_dir_tracks_owner_dirs_and_registers_once(
     isolated_direct_spill_state: list[Any],
 ) -> None:
     uuids = iter(("first", "second"))
-    monkeypatch.setattr(shred_mod.uuid, "uuid4", lambda: SimpleNamespace(hex=next(uuids)))
+    monkeypatch.setattr(uuid, "uuid4", lambda: SimpleNamespace(hex=next(uuids)))
     cache_dir = tmp_path / ".haute_cache" / "committed" / "artifact"
 
-    first = shred_mod._new_direct_spill_dir(cache_dir)
-    second = shred_mod._new_direct_spill_dir(cache_dir)
+    first = _runtime_storage._new_direct_spill_dir(cache_dir)
+    second = _runtime_storage._new_direct_spill_dir(cache_dir)
 
-    owner = tmp_path / ".haute_cache" / shred_mod._DIRECT_SPILL_DIRNAME / "owner-100"
+    owner = tmp_path / ".haute_cache" / _runtime_storage._DIRECT_SPILL_DIRNAME / "owner-100"
     assert first == owner / "first"
     assert second == owner / "second"
     assert first.is_dir() and second.is_dir()
-    assert shred_mod._DIRECT_SPILL_DIRS == {first, second}
-    assert shred_mod._DIRECT_SPILL_PROCESS_TOKEN == "owner-100"
-    assert isolated_direct_spill_state == [shred_mod._cleanup_direct_spill_dirs]
+    assert _runtime_storage._DIRECT_SPILL_DIRS == {first, second}
+    assert _runtime_storage._DIRECT_SPILL_PROCESS_TOKEN == "owner-100"
+    assert isolated_direct_spill_state == [_runtime_storage._cleanup_direct_spill_dirs]
 
 
 def test_new_direct_spill_dir_rejects_an_exact_child_collision(
@@ -120,23 +123,27 @@ def test_new_direct_spill_dir_rejects_an_exact_child_collision(
     isolated_direct_spill_state: list[Any],
 ) -> None:
     monkeypatch.setattr(
-        shred_mod.uuid,
+        uuid,
         "uuid4",
         lambda: SimpleNamespace(hex="collision"),
     )
     cache_dir = tmp_path / ".haute_cache" / "working" / "artifact"
     collision = (
-        tmp_path / ".haute_cache" / shred_mod._DIRECT_SPILL_DIRNAME / "owner-100" / "collision"
+        tmp_path
+        / ".haute_cache"
+        / _runtime_storage._DIRECT_SPILL_DIRNAME
+        / "owner-100"
+        / "collision"
     )
     collision.mkdir(parents=True)
     marker = collision / "pre-existing"
     marker.write_bytes(b"not owned by this allocation")
 
     with pytest.raises(FileExistsError):
-        shred_mod._new_direct_spill_dir(cache_dir)
+        _runtime_storage._new_direct_spill_dir(cache_dir)
 
     assert marker.read_bytes() == b"not owned by this allocation"
-    assert shred_mod._DIRECT_SPILL_DIRS == set()
+    assert _runtime_storage._DIRECT_SPILL_DIRS == set()
     assert isolated_direct_spill_state == []
 
 
@@ -148,28 +155,31 @@ def test_new_direct_spill_dir_resets_inherited_ownership_for_any_pid_change(
     changed_pid: int,
 ) -> None:
     inherited = tmp_path / "inherited"
-    shred_mod._DIRECT_SPILL_DIRS.add(inherited)
-    monkeypatch.setattr(shred_mod.os, "getpid", lambda: changed_pid)
+    _runtime_storage._DIRECT_SPILL_DIRS.add(inherited)
+    monkeypatch.setattr(os, "getpid", lambda: changed_pid)
     monkeypatch.setattr(
-        shred_mod.uuid,
+        uuid,
         "uuid4",
         lambda: SimpleNamespace(hex="new-owner"),
     )
 
-    created = shred_mod._new_direct_spill_dir(tmp_path / ".haute_cache" / "cache")
+    created = _runtime_storage._new_direct_spill_dir(tmp_path / ".haute_cache" / "cache")
 
     expected_owner = (
-        tmp_path / ".haute_cache" / shred_mod._DIRECT_SPILL_DIRNAME / f"{changed_pid}-new-owner"
+        tmp_path
+        / ".haute_cache"
+        / _runtime_storage._DIRECT_SPILL_DIRNAME
+        / f"{changed_pid}-new-owner"
     )
     assert created == expected_owner / "new-owner"
-    assert shred_mod._DIRECT_SPILL_PROCESS_ID == changed_pid
-    assert shred_mod._DIRECT_SPILL_PROCESS_TOKEN == f"{changed_pid}-new-owner"
-    assert shred_mod._DIRECT_SPILL_DIRS == {created}
-    assert isolated_direct_spill_state == [shred_mod._cleanup_direct_spill_dirs]
+    assert _runtime_storage._DIRECT_SPILL_PROCESS_ID == changed_pid
+    assert _runtime_storage._DIRECT_SPILL_PROCESS_TOKEN == f"{changed_pid}-new-owner"
+    assert _runtime_storage._DIRECT_SPILL_DIRS == {created}
+    assert isolated_direct_spill_state == [_runtime_storage._cleanup_direct_spill_dirs]
 
 
 def _bare_writer(*, max_rows: int, max_bytes: int) -> Any:
-    writer = object.__new__(shred_mod._BoundedParquetRowGroupWriter)
+    writer = object.__new__(_writer._BoundedParquetRowGroupWriter)
     writer.buffers = {"table": []}
     writer.row_counts = {"table": 0}
     writer.buffered_rows = 0
@@ -230,12 +240,12 @@ def test_shred_chunk_returns_a_zeroed_failure_envelope(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
-        shred_mod,
+        _shred,
         "_emitting_table_specs",
         lambda _config: (_ for _ in ()).throw(ValueError("bad table config")),
     )
 
-    result = shred_mod._shred_chunk((str(tmp_path / "input.jsonl"), 4, 9, 7, {}, str(tmp_path)))
+    result = _writer._shred_chunk((str(tmp_path / "input.jsonl"), 4, 9, 7, {}, str(tmp_path)))
 
     assert result.index == 7
     assert result.record_count == 0
@@ -249,7 +259,7 @@ def test_shred_chunk_returns_a_zeroed_failure_envelope(
 
 
 def test_runtime_storage_errors_expose_exact_public_fields_and_messages() -> None:
-    budget_error = shred_mod.JsonRuntimeDiskBudgetExceededError(used_bytes=0, budget_bytes=1)
+    budget_error = _runtime_storage.JsonRuntimeDiskBudgetExceededError(used_bytes=0, budget_bytes=1)
     assert budget_error.used_bytes == 0
     assert budget_error.budget_bytes == 1
     assert (
@@ -258,7 +268,9 @@ def test_runtime_storage_errors_expose_exact_public_fields_and_messages() -> Non
     )
 
     path = Path("runtime-entry")
-    integrity_error = shred_mod.JsonRuntimeStorageIntegrityError(path=path, reason="unreadable")
+    integrity_error = _runtime_storage.JsonRuntimeStorageIntegrityError(
+        path=path, reason="unreadable"
+    )
     assert integrity_error.path == path
     assert integrity_error.reason == "unreadable"
     assert (

@@ -21,14 +21,14 @@ from typing import Any
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from haute._json_shred import (
-    ShredSkipStats,
+from haute._json_shred._inference import (
     _assemble_inference_schema,
     _infer_records,
     _InferenceState,
     infer_v2_schema_from_data,
-    shred_to_buffers,
 )
+from haute._json_shred._records import ShredSkipStats
+from haute._json_shred._shred import shred_to_buffers
 
 # JSON scalars hypothesis can round-trip safely (no NaN/inf).
 _scalars = st.one_of(

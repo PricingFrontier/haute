@@ -176,7 +176,7 @@ _V2_AMOUNT_TABLES = {
 
 def _export_and_cache_amount(data: Path, amount: int) -> None:
     """Write data.json with one record and (re)build its working-layer cache."""
-    from haute._json_shred import build_per_port_cache
+    from haute._json_shred._cache import build_per_port_cache
 
     data.write_text(json.dumps([{"amount": amount}]), encoding="utf-8")
     build_per_port_cache(str(data), _V2_AMOUNT_TABLES, _json_cache_dir(str(data), "working"))
@@ -659,8 +659,8 @@ class TestStatGatedFingerprintMemo:
         monkeypatch,
     ):
         """Planning, identity, and loading must reuse the cache-build SHA-256 proof."""
-        import haute._json_shred as shred_mod
         import haute.execution as execution_mod
+        from haute._json_shred import _source_proof
 
         monkeypatch.chdir(tmp_path)
         data = tmp_path / "data.json"
@@ -668,11 +668,11 @@ class TestStatGatedFingerprintMemo:
         graph = _json_api_input_group_by_graph(data)
         resolved = data.resolve()
 
-        shred_mod._clear_data_file_signature_memo()
+        _source_proof._clear_data_file_signature_memo()
         execution_mod._runtime_path_fingerprint_cache.clear()
         source_hashes = 0
         generic_hashes = 0
-        real_source_hash = shred_mod._hash_file
+        real_source_hash = _source_proof._hash_file
         real_generic_hash = execution_mod.content_hash
 
         def counting_source_hash(path: Path) -> str:
@@ -687,7 +687,7 @@ class TestStatGatedFingerprintMemo:
                 generic_hashes += 1
             return real_generic_hash(path)
 
-        monkeypatch.setattr(shred_mod, "_hash_file", counting_source_hash)
+        monkeypatch.setattr(_source_proof, "_hash_file", counting_source_hash)
         monkeypatch.setattr(execution_mod, "content_hash", counting_generic_hash)
 
         result = execute_graph(graph, target_node_id="aggregate")
@@ -702,14 +702,14 @@ class TestStatGatedFingerprintMemo:
         monkeypatch,
     ):
         """The strong JSON revision, not size/mtime, gates cached previews."""
-        import haute._json_shred as shred_mod
         import haute.execution as execution_mod
+        from haute._json_shred import _source_proof
 
         monkeypatch.chdir(tmp_path)
         data = tmp_path / "data.json"
         _export_and_cache_amount(data, 10)
         graph = _json_api_input_graph(data)
-        shred_mod._clear_data_file_signature_memo()
+        _source_proof._clear_data_file_signature_memo()
         execution_mod._runtime_path_fingerprint_cache.clear()
 
         first = execute_graph(graph, target_node_id="t")
