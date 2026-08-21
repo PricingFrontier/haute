@@ -213,7 +213,10 @@
    is `max(1, ceil(pending / cap))`, and no plan may require more than GitHub
    Actions' 256-job matrix limit. The cap is calibrated to retain timeout and
    artifact-upload headroom; it must not be weakened by silently overpacking a
-   target. The merge job's `!cancelled()` status
+   target. The JSON shred target uses at most 20 mutants per shard against its
+   90-second expanded witness ceiling, and the shard job has a 40-minute hard
+   limit so the 30-minute worst-case test budget still leaves setup and artifact
+   headroom. The merge job's `!cancelled()` status
    condition ensures dependency failures do not skip it, and it fails explicitly
    when planning or a required shard was unsuccessful. Plan and merge artifacts
    retain each target's rationale beside the threshold and observed

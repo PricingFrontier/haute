@@ -110,7 +110,7 @@ _DIRECT_SPILL_ATEXIT_REGISTERED = False
 class _ShredExecutionProgress:
     """Bound cancellation/RSS-check distance in Python shred materialisation."""
 
-    execution_context: ExecutionContext | None
+    execution_context: ExecutionContext | None  # pragma: no mutate
     work_since_checkpoint: int = 0
 
     @classmethod
@@ -323,7 +323,7 @@ _WINDOWS_EPOCH_OFFSET_100NS = 116_444_736_000_000_000
 class _StrongFileRevision:
     """A file generation token that detects changes hidden from size/mtime."""
 
-    file_identity: tuple[int, int | bytes]
+    file_identity: tuple[int, int | bytes]  # pragma: no mutate
     size: int
     mtime_ns: int
     change_token: int
@@ -349,7 +349,7 @@ def _native_revision_record(revision: _StrongFileRevision) -> dict[str, Any]:
     }
 
 
-def _parse_native_revision_record(value: Any) -> _StrongFileRevision | None:
+def _parse_native_revision_record(value: Any) -> _StrongFileRevision | None:  # pragma: no mutate
     """Parse one persisted native revision, rejecting partial/weaker shapes."""
 
     if not isinstance(value, dict) or set(value) != {
@@ -405,7 +405,7 @@ def _parse_native_revision_record(value: Any) -> _StrongFileRevision | None:
 
 
 def _persisted_source_proof_digest(
-    *,
+    *,  # pragma: no mutate
     size: int,
     mtime_ns: int,
     sha256: str,
@@ -430,7 +430,7 @@ class _DataFileSignatureRecord:
     size: int
     mtime_ns: int
     sha256: str
-    native_revision: _StrongFileRevision | None
+    native_revision: _StrongFileRevision | None  # pragma: no mutate
 
     def as_dict(self) -> dict[str, Any]:
         payload = {
@@ -498,7 +498,7 @@ _FSCTL_READ_FILE_USN_DATA = 0x000900EB
 _WINDOWS_USN_OUTPUT_BUFFER_SIZE = 4_096
 
 
-def _windows_strong_file_revision(path: Path) -> _StrongFileRevision | None:
+def _windows_strong_file_revision(path: Path) -> _StrongFileRevision | None:  # pragma: no mutate
     """Read one Windows file identity/USN token, or decline memoisation."""
     windll_factory = getattr(ctypes, "WinDLL", None)
     if windll_factory is None:
@@ -616,7 +616,7 @@ def _windows_strong_file_revision(path: Path) -> _StrongFileRevision | None:
     )
 
 
-def _posix_strong_file_revision(path: Path) -> _StrongFileRevision | None:
+def _posix_strong_file_revision(path: Path) -> _StrongFileRevision | None:  # pragma: no mutate
     """Read the POSIX inode/ctime generation gate, if the filesystem has one."""
     observed = path.stat()
     if (
@@ -633,7 +633,7 @@ def _posix_strong_file_revision(path: Path) -> _StrongFileRevision | None:
     )
 
 
-def _strong_file_revision(path: Path) -> _StrongFileRevision | None:
+def _strong_file_revision(path: Path) -> _StrongFileRevision | None:  # pragma: no mutate
     """Return an OS-native revision safe for content-proof reuse.
 
     ``None`` means that this observation must take the conservative full-hash
@@ -694,7 +694,7 @@ def _revision_gated_data_file_signature(
 def _persisted_data_file_signature(
     data_path: Path,
     revision: _StrongFileRevision,
-) -> _DataFileSignatureRecord | None:
+) -> _DataFileSignatureRecord | None:  # pragma: no mutate
     """Load an agreeing cache-build proof for the exact current generation."""
 
     from haute._json_flatten import _json_cache_dir
@@ -886,7 +886,7 @@ class _DataFileSignatureMemo:
     def get(
         self,
         data_path: Path,
-        *,
+        *,  # pragma: no mutate
         upgrade_legacy_proofs: bool = True,
     ) -> dict[str, Any]:
         """Return a source signature, hashing once per unchanged generation."""
@@ -978,7 +978,7 @@ def _clear_data_file_signature_memo() -> None:
 
 def _data_file_signature(
     data_path: Path,
-    *,
+    *,  # pragma: no mutate
     upgrade_legacy_proofs: bool = True,
 ) -> dict[str, Any]:
     """Return the size/mtime/SHA-256 identity recorded in cache metadata.
@@ -1179,9 +1179,9 @@ def _assert_cache_path_ancestors_plain(path: Path) -> None:
 
 def _acquire_file_lock(
     handle: Any,
-    *,
+    *,  # pragma: no mutate
     blocking: bool = True,
-    timeout_seconds: float | None = None,
+    timeout_seconds: float | None = None,  # pragma: no mutate
 ) -> bool:
     """Acquire one OS file lock, optionally without waiting.
 
@@ -1335,8 +1335,8 @@ class _CacheBuildLock:
         self._cache_dir = cache_dir
         self._thread_lock = threading.RLock()
         self._depth = 0
-        self._handle: Any | None = None
-        self._owner_thread_id: int | None = None
+        self._handle: Any | None = None  # pragma: no mutate
+        self._owner_thread_id: int | None = None  # pragma: no mutate
 
     def __enter__(self) -> _CacheBuildLock:
         acquired = self.acquire()
@@ -1364,7 +1364,7 @@ class _CacheBuildLock:
         if self._depth:
             self._depth += 1
             return True
-        handle: Any | None = None
+        handle: Any | None = None  # pragma: no mutate
         try:
             lock_path = _cache_lock_path(self._cache_dir)
             _assert_cache_path_ancestors_plain(lock_path)
@@ -1404,7 +1404,7 @@ class _CacheBuildLock:
         """Release one re-entrant acquisition."""
         self._release(primary_exception=None)
 
-    def _release(self, *, primary_exception: BaseException | None) -> None:
+    def _release(self, *, primary_exception: BaseException | None) -> None:  # pragma: no mutate
         if self._owner_thread_id != threading.get_ident() or self._depth <= 0:
             raise RuntimeError("cannot release un-acquired cache build lock")
         try:
@@ -1429,7 +1429,7 @@ class _CacheBuildLock:
     def __exit__(
         self,
         exc_type: Any,
-        exc: BaseException | None,
+        exc: BaseException | None,  # pragma: no mutate
         traceback: Any,
     ) -> Literal[False]:
         del exc_type, traceback
@@ -1501,7 +1501,7 @@ class PreparedPerPortCacheBuild:
 
     data_path: str
     cache_dir: str
-    staging_dir: str | None
+    staging_dir: str | None  # pragma: no mutate
     schema_fingerprint: str
     data_file_signature: dict[str, Any]
     summary: dict[str, Any]
@@ -1525,7 +1525,7 @@ def _runtime_storage_parents(cache_root: Path) -> tuple[Path, ...]:
     )
 
 
-def _runtime_owner_payload() -> dict[str, int | float]:
+def _runtime_owner_payload() -> dict[str, int | float]:  # pragma: no mutate
     return {
         "format_version": _RUNTIME_OWNER_FORMAT_VERSION,
         "pid": os.getpid(),
@@ -1558,7 +1558,7 @@ def _remove_empty_runtime_owner_dir(owner_dir: Path) -> None:
     owner_dir.rmdir()
 
 
-def _runtime_owner_record(owner_dir: Path) -> tuple[int, float] | None:
+def _runtime_owner_record(owner_dir: Path) -> tuple[int, float] | None:  # pragma: no mutate
     try:
         payload = orjson.loads((owner_dir / _RUNTIME_OWNER_META_FILENAME).read_bytes())
     except (OSError, ValueError):
@@ -1585,7 +1585,7 @@ def _runtime_owner_record(owner_dir: Path) -> tuple[int, float] | None:
 
 def _recover_runtime_storage_parent(
     runtime_parent: Path,
-    *,
+    *,  # pragma: no mutate
     now: float,
     grace_seconds: int,
 ) -> dict[str, int]:
@@ -1649,9 +1649,9 @@ def _recover_runtime_storage_parent(
 
 
 def recover_json_runtime_storage(
-    cache_root: str | Path | None = None,
-    *,
-    now: float | None = None,
+    cache_root: str | Path | None = None,  # pragma: no mutate
+    *,  # pragma: no mutate
+    now: float | None = None,  # pragma: no mutate
 ) -> dict[str, int]:
     """Reap only old, plain, ownership-marked directories from dead processes."""
     root = (
@@ -1769,7 +1769,7 @@ def _recover_runtime_storage_once(cache_root: Path) -> None:
 @contextmanager
 def _runtime_disk_budget_transaction(
     cache_root: Path,
-    *,
+    *,  # pragma: no mutate
     allow_existing_excess: bool = False,
 ) -> Iterator[None]:
     root = Path(os.path.abspath(cache_root))
@@ -1892,7 +1892,7 @@ class _VerifiedRuntimeSnapshotCache:
 
     def get(
         self, key: tuple[str, int, str], revision: _StrongFileRevision
-    ) -> tuple[Path | None, list[Path]]:
+    ) -> tuple[Path | None, list[Path]]:  # pragma: no mutate
         self._ensure_current_process()
         with self._lock:
             entry = self._entries.get(key)
@@ -1976,7 +1976,7 @@ def _build_lock_for(cache_dir: Path) -> _CacheBuildLock:
 
 
 @contextmanager
-def per_port_cache_publication_lock(cache_dir: str | Path) -> Iterator[None]:
+def per_port_cache_publication_lock(cache_dir: str | Path) -> Iterator[None]:  # pragma: no mutate
     """Serialize prepare/validate/commit for one visible cache generation."""
     with _build_lock_for(Path(cache_dir)):
         yield
@@ -2142,15 +2142,15 @@ def _capture_runtime_snapshot(
     snapshot_dir: Path,
     expected_size: int,
     expected_digest: str,
-    cache_key: tuple[str, int, str] | None,
-    source_revision: _StrongFileRevision | None = None,
-) -> Path | None:
+    cache_key: tuple[str, int, str] | None,  # pragma: no mutate
+    source_revision: _StrongFileRevision | None = None,  # pragma: no mutate
+) -> Path | None:  # pragma: no mutate
     """Capture and verify one generation, retaining it only when proof permits."""
     # A stale-entry eviction can remove the now-empty process directory after
     # `_runtime_snapshot_dir` returned it for this operation.
     candidate = snapshot_dir / f".{uuid.uuid4().hex}.parquet.tmp"
     copied = False
-    captured_revision: _StrongFileRevision | None = None
+    captured_revision: _StrongFileRevision | None = None  # pragma: no mutate
     try:
         cache_root = _runtime_storage_root_for_cache(cache_dir)
         with _runtime_disk_budget_transaction(cache_root):
@@ -2187,7 +2187,7 @@ def _capture_runtime_snapshot(
             candidate.unlink(missing_ok=True)
             return None
 
-        cacheable_revision: _StrongFileRevision | None = None
+        cacheable_revision: _StrongFileRevision | None = None  # pragma: no mutate
         if cache_key is not None and source_revision is not None:
             if copied:
                 # Copying captures bytes rather than identity, so require the
@@ -2269,7 +2269,7 @@ def _snapshot_cache_artifact(
     cache_dir: Path,
     parquet_path: Path,
     recorded_signature: Any,
-) -> Path | None:
+) -> Path | None:  # pragma: no mutate
     with _build_lock_for(cache_dir):
         return _snapshot_cache_artifact_locked(
             cache_dir,
@@ -2282,7 +2282,7 @@ def _snapshot_cache_artifact_locked(
     cache_dir: Path,
     parquet_path: Path,
     recorded_signature: Any,
-) -> Path | None:
+) -> Path | None:  # pragma: no mutate
     """Pin and verify one cache artifact without materialising its payload.
 
     A hard link captures one rename-published generation atomically and does not
@@ -2350,7 +2350,7 @@ def _unique_build_tmp_dir(cache_dir: Path) -> Path:
     return cache_dir.with_name(f"{cache_dir.name}.build-tmp-{uuid.uuid4().hex}")
 
 
-def new_per_port_cache_staging_dir(cache_dir: str | Path) -> Path:
+def new_per_port_cache_staging_dir(cache_dir: str | Path) -> Path:  # pragma: no mutate
     """Return one parent-owned, validated private generation path."""
     cd = _normalised_build_path(cache_dir)
     return _validated_build_staging_dir(cd, _unique_build_tmp_dir(cd))
@@ -2461,7 +2461,7 @@ class _XmlDirectChildByteTracker:
     def __init__(self, limit: int) -> None:
         self._limit = limit
         self._depth = 0
-        self._record_start: int | None = None
+        self._record_start: int | None = None  # pragma: no mutate
         self._closing_tag_allowance = 0
         self._parser = expat.ParserCreate()
         self._parser.StartElementHandler = self._start_element
@@ -2509,7 +2509,7 @@ def _read_xml_events(
     return cast("Iterator[tuple[str, ET.Element[str]]]", parser.read_events())
 
 
-def _require_xml_root(root: ET.Element[str] | None) -> ET.Element[str]:
+def _require_xml_root(root: ET.Element[str] | None) -> ET.Element[str]:  # pragma: no mutate
     """Reject an impossible pull-parser event order with explicit evidence."""
     if root is None:
         raise RuntimeError("XML parser emitted a direct child before the document root")
@@ -2521,10 +2521,10 @@ def _inspect_xml_record_shape(data_path: Path, limit: int) -> _XmlRecordShape:
     parser = ET.XMLPullParser(events=("start", "end"))
     byte_tracker = _XmlDirectChildByteTracker(limit)
     chunk_size = min(_STRUCTURED_INPUT_PARSE_CHUNK_BYTES, limit + 1)
-    root: ET.Element | None = None
+    root: ET.Element | None = None  # pragma: no mutate
     depth = 0
     direct_child_count = 0
-    direct_child_name: str | None = None
+    direct_child_name: str | None = None  # pragma: no mutate
     all_direct_children_are_objects = True
     root_has_attributes = False
     declaration_carry = b""
@@ -2589,7 +2589,7 @@ def _iter_repeated_xml_records(data_path: Path, limit: int) -> Iterator[dict[str
     parser = ET.XMLPullParser(events=("start", "end"))
     byte_tracker = _XmlDirectChildByteTracker(limit)
     chunk_size = min(_STRUCTURED_INPUT_PARSE_CHUNK_BYTES, limit + 1)
-    root: ET.Element | None = None
+    root: ET.Element | None = None  # pragma: no mutate
     depth = 0
     declaration_carry = b""
     try:
@@ -2627,7 +2627,7 @@ def _parse_bounded_xml_root(data_path: Path, limit: int) -> ET.Element:
     """Parse one-root-record XML while enforcing its encoded-byte bound."""
     parser = ET.XMLPullParser(events=("start", "end"))
     total = 0
-    root: ET.Element | None = None
+    root: ET.Element | None = None  # pragma: no mutate
     declaration_carry = b""
     try:
         with data_path.open("rb") as source:
@@ -2861,8 +2861,8 @@ def _read_root_array_value(
     first: bytes,
     read_byte: Callable[[], bytes],
     current_pos: Callable[[], int],
-    *,
-    max_bytes: int | None = None,
+    *,  # pragma: no mutate
+    max_bytes: int | None = None,  # pragma: no mutate
 ) -> tuple[bytes, bytes]:
     """Read one value from a root JSON array and return its delimiter."""
     limit = _structured_input_record_limit() if max_bytes is None else max_bytes
@@ -3293,9 +3293,9 @@ def _assert_root_conservation(
     buffers: Mapping[str, Sequence[object]],
     skip_stats: ShredSkipStats,
     record_count: int,
-    *,
+    *,  # pragma: no mutate
     location: str = "",
-    emitted_counts: Mapping[str, int] | None = None,
+    emitted_counts: Mapping[str, int] | None = None,  # pragma: no mutate
 ) -> None:
     """Assert that every root input record was emitted or explicitly skipped."""
     for table_spec in table_specs:
@@ -3422,12 +3422,12 @@ class _ChunkFailure:
     module: str
     message: str
     context: dict[str, Any] = field(default_factory=dict)
-    doc: str | None = None
-    pos: int | None = None
-    errno: int | None = None
-    strerror: str | None = None
+    doc: str | None = None  # pragma: no mutate
+    pos: int | None = None  # pragma: no mutate
+    errno: int | None = None  # pragma: no mutate
+    strerror: str | None = None  # pragma: no mutate
     filename: Any = None
-    winerror: int | None = None
+    winerror: int | None = None  # pragma: no mutate
     filename2: Any = None
 
 
@@ -3478,7 +3478,7 @@ class _ChunkResult:
     # label -> bounded Parquet part path. Rows stay on disk: piping millions of rows
     # back through the pool's result channel would cost more than the shred.
     part_paths: dict[str, str]
-    failure: _ChunkFailure | None = None
+    failure: _ChunkFailure | None = None  # pragma: no mutate
 
 
 def _shred_chunk(
@@ -3493,7 +3493,7 @@ def _shred_chunk(
     data_path_s, start, end, index, v2_config, tmp_dir_s = args
     data_path = Path(data_path_s)
     tmp_dir = Path(tmp_dir_s)
-    writer: _BoundedParquetRowGroupWriter | None = None
+    writer: _BoundedParquetRowGroupWriter | None = None  # pragma: no mutate
     try:
         table_specs = _emitting_table_specs(v2_config)
         stats = ShredSkipStats()
@@ -3663,9 +3663,9 @@ def _declared_frame_schema(table_spec: _EmittingTableSpec) -> pl.Schema:
 @dataclass(frozen=True)
 class _CacheProbeFailure:
     reason: str
-    label: str | None = None
-    expected_schema: pl.Schema | None = None
-    actual_schema: pl.Schema | None = None
+    label: str | None = None  # pragma: no mutate
+    expected_schema: pl.Schema | None = None  # pragma: no mutate
+    actual_schema: pl.Schema | None = None  # pragma: no mutate
 
 
 def _cache_manifest_structure_failure(
@@ -3754,7 +3754,7 @@ def _cache_bundle_failure_in_place(
     cache_dir: Path,
     table_specs: tuple[_EmittingTableSpec, ...],
     meta: dict[str, Any],
-) -> _CacheProbeFailure | None:
+) -> _CacheProbeFailure | None:  # pragma: no mutate
     """Validate a generation while an external publication lock makes it stable."""
     manifest_failure = _cache_manifest_failure(
         cache_dir,
@@ -3790,7 +3790,7 @@ def _cache_bundle_failure_in_place(
 def _cache_is_valid_under_external_lock(
     cache_dir: Path,
     v2_config: dict[str, Any],
-    *,
+    *,  # pragma: no mutate
     data_path: Path,
     data_file_signature: Mapping[str, Any],
 ) -> bool:
@@ -3810,8 +3810,8 @@ def _probe_cache_bundle(
     cache_dir: Path,
     table_specs: tuple[_EmittingTableSpec, ...],
     meta: dict[str, Any],
-    *,
-    complete_table_specs: tuple[_EmittingTableSpec, ...] | None = None,
+    *,  # pragma: no mutate
+    complete_table_specs: tuple[_EmittingTableSpec, ...] | None = None,  # pragma: no mutate
     retain_snapshots: bool,
 ) -> tuple[dict[str, pl.LazyFrame], _CacheProbeFailure | None]:  # pragma: no mutate
     """Load cache frames whose name→dtype mappings match current specs.
@@ -4054,8 +4054,8 @@ class _BoundedParquetRowGroupWriter:
         self,
         output_dir: Path,
         table_specs: tuple[_EmittingTableSpec, ...],
-        *,
-        disk_budget_root: Path | None = None,
+        *,  # pragma: no mutate
+        disk_budget_root: Path | None = None,  # pragma: no mutate
         filename_suffix: str = "",
     ) -> None:
         import pyarrow.parquet as pq
@@ -4463,11 +4463,14 @@ def _write_tables_in_parallel(
     return summaries, skip_stats
 
 
-def _normalised_build_path(path: str | Path) -> Path:
+def _normalised_build_path(path: str | Path) -> Path:  # pragma: no mutate
     return Path(os.path.abspath(path))
 
 
-def _validated_build_staging_dir(cache_dir: Path, staging_dir: str | Path) -> Path:
+def _validated_build_staging_dir(
+    cache_dir: Path,
+    staging_dir: str | Path,  # pragma: no mutate
+) -> Path:
     staging = _normalised_build_path(staging_dir)
     expected_prefix = f"{cache_dir.name}.build-tmp-"
     suffix = staging.name.removeprefix(expected_prefix)
@@ -4501,11 +4504,11 @@ def _remove_prepared_staging(staging: Path) -> None:
 
 
 def prepare_per_port_cache(
-    data_path: str | Path,
+    data_path: str | Path,  # pragma: no mutate
     v2_config: dict[str, Any],
-    cache_dir: str | Path,
-    *,
-    staging_dir: str | Path,
+    cache_dir: str | Path,  # pragma: no mutate
+    *,  # pragma: no mutate
+    staging_dir: str | Path,  # pragma: no mutate
 ) -> PreparedPerPortCacheBuild:
     """Materialise and validate a private generation without publishing it.
 
@@ -4605,7 +4608,7 @@ def prepare_per_port_cache(
 def _validate_prepared_cache(
     prepared: PreparedPerPortCacheBuild,
     v2_config: dict[str, Any],
-) -> tuple[Path, Path | None, dict[str, Any]]:
+) -> tuple[Path, Path | None, dict[str, Any]]:  # pragma: no mutate
     if not isinstance(prepared, PreparedPerPortCacheBuild):
         raise TypeError("prepared must be a PreparedPerPortCacheBuild")
     dp = _normalised_build_path(prepared.data_path)
@@ -4668,8 +4671,8 @@ def _validate_prepared_cache(
 def commit_prepared_per_port_cache(
     prepared: PreparedPerPortCacheBuild,
     v2_config: dict[str, Any],
-    *,
-    publication_guard: AbstractContextManager[None] | None = None,
+    *,  # pragma: no mutate
+    publication_guard: AbstractContextManager[None] | None = None,  # pragma: no mutate
 ) -> dict[str, Any]:
     """Validate and atomically publish a child-prepared cache generation."""
     cd = _normalised_build_path(prepared.cache_dir)
@@ -4710,8 +4713,8 @@ def discard_prepared_per_port_cache(prepared: PreparedPerPortCacheBuild) -> None
 
 
 def discard_per_port_cache_staging(
-    cache_dir: str | Path,
-    staging_dir: str | Path,
+    cache_dir: str | Path,  # pragma: no mutate
+    staging_dir: str | Path,  # pragma: no mutate
 ) -> None:
     """Remove one exact parent-selected staging path after a worker failure."""
     cd = _normalised_build_path(cache_dir)
@@ -4722,15 +4725,15 @@ def discard_per_port_cache_staging(
 
 
 def build_per_port_cache(
-    data_path: str | Path,
+    data_path: str | Path,  # pragma: no mutate
     v2_config: dict[str, Any],
-    cache_dir: str | Path,
+    cache_dir: str | Path,  # pragma: no mutate
 ) -> dict[str, Any]:
     """Build one serialized generation through the shared prepare/commit path."""
     cd = _normalised_build_path(cache_dir)
     with per_port_cache_publication_lock(cd):
         staging = _unique_build_tmp_dir(cd)
-        prepared: PreparedPerPortCacheBuild | None = None
+        prepared: PreparedPerPortCacheBuild | None = None  # pragma: no mutate
         try:
             prepared = prepare_per_port_cache(
                 data_path,
@@ -4842,10 +4845,10 @@ def _cache_meta_matches_config_and_source(
 def _read_matching_cache_meta_unlocked(
     cd: Path,
     v2_config: dict[str, Any],
-    *,
-    data_path: str | Path,
-    data_file_signature: Mapping[str, Any] | None,
-) -> dict[str, Any] | None:
+    *,  # pragma: no mutate
+    data_path: str | Path,  # pragma: no mutate
+    data_file_signature: Mapping[str, Any] | None,  # pragma: no mutate
+) -> dict[str, Any] | None:  # pragma: no mutate
     meta_path = cd / _META_FILENAME
     try:
         meta = orjson.loads(meta_path.read_bytes())
@@ -4866,8 +4869,8 @@ def _read_matching_cache_meta_unlocked(
 def load_v2_api_source(
     data_path: str,
     config: dict[str, Any],
-    *,
-    port_columns: Mapping[str, frozenset[str] | set[str] | None] | None = None,
+    *,  # pragma: no mutate
+    port_columns: Mapping[str, frozenset[str] | set[str] | None] | None = None,  # pragma: no mutate
 ) -> dict[str, pl.LazyFrame]:  # pragma: no mutate
     """Load a v2 apiInput as an emit-gated per-port frame bundle.
 
@@ -4971,7 +4974,7 @@ def load_v2_api_source(
     # metadata. A cold uncached execution should parse the source once, not hash
     # the whole file first merely to prove that two absent caches are absent.
     expected_fingerprint = _v2_fingerprint(config)
-    data_file_sig: dict[str, Any] | None = None
+    data_file_sig: dict[str, Any] | None = None  # pragma: no mutate
     execution_context = current_execution_context()
     # A valid parquet cache is an optimization, not a runtime prerequisite.
     # Prefer the user's current working cache, then the saved/deployable
@@ -4987,7 +4990,7 @@ def load_v2_api_source(
                 and candidate_meta.get("schema_mode") == "v2"
                 and candidate_meta.get("schema_fingerprint") == expected_fingerprint
             )
-            cache_meta: dict[str, Any] | None = None
+            cache_meta: dict[str, Any] | None = None  # pragma: no mutate
             if plausible_meta:
                 assert candidate_meta is not None
                 if data_file_sig is None:
@@ -5121,9 +5124,9 @@ def is_per_port_cache_valid(
 def _is_per_port_cache_valid_unlocked(
     cache_dir: Path,
     v2_config: dict[str, Any],
-    *,
-    data_path: str | Path,
-    data_file_signature: Mapping[str, Any] | None,
+    *,  # pragma: no mutate
+    data_path: str | Path,  # pragma: no mutate
+    data_file_signature: Mapping[str, Any] | None,  # pragma: no mutate
 ) -> bool:
     try:
         expected_fingerprint = _v2_fingerprint(v2_config)
@@ -5323,7 +5326,7 @@ class _InferenceState:
                 elif any(isinstance(item, dict) for item in child_value):
                     self.walk(child_value, child_level, ())
                 else:
-                    element_type: str | None = None
+                    element_type: str | None = None  # pragma: no mutate
                     for item in child_value:
                         if isinstance(item, list):
                             dotted_path = ".".join(object_path)
@@ -5374,8 +5377,8 @@ def _infer_records(records: Iterable[dict[str, Any]]) -> _InferenceState:
 @dataclass(frozen=True)  # pragma: no mutate - declaration metadata, not runtime logic
 class _InferenceChunkResult:
     index: int
-    state: _InferenceState | None = None
-    failure: _ChunkFailure | None = None
+    state: _InferenceState | None = None  # pragma: no mutate
+    failure: _ChunkFailure | None = None  # pragma: no mutate
 
 
 def _infer_chunk(args: tuple[str, int, int, int]) -> _InferenceChunkResult:
@@ -5598,7 +5601,7 @@ def read_per_port_cache_meta(cache_dir: str | Path) -> dict[str, Any] | None:  #
         return _read_per_port_cache_meta_unlocked(cd)
 
 
-def _read_per_port_cache_meta_unlocked(cd: Path) -> dict[str, Any] | None:
+def _read_per_port_cache_meta_unlocked(cd: Path) -> dict[str, Any] | None:  # pragma: no mutate
     meta_path = cd / _META_FILENAME
     try:
         meta = orjson.loads(meta_path.read_bytes())

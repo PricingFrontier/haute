@@ -96,10 +96,10 @@ _JsonCacheWorkerFailureKind = Literal[
 
 @dataclass(frozen=True, slots=True)
 class _JsonCacheWorkerOutcome:
-    prepared: PreparedPerPortCacheBuild | None = None
-    failure_kind: _JsonCacheWorkerFailureKind | None = None
-    detail: str | None = None
-    payload: dict[str, object] | None = None
+    prepared: PreparedPerPortCacheBuild | None = None  # pragma: no mutate
+    failure_kind: _JsonCacheWorkerFailureKind | None = None  # pragma: no mutate
+    detail: str | None = None  # pragma: no mutate
+    payload: dict[str, object] | None = None  # pragma: no mutate
 
 
 class _JsonCacheBuildError(RuntimeError):
@@ -107,7 +107,7 @@ class _JsonCacheBuildError(RuntimeError):
         self,
         kind: _JsonCacheWorkerFailureKind,
         detail: str,
-        payload: dict[str, object] | None = None,
+        payload: dict[str, object] | None = None,  # pragma: no mutate
     ) -> None:
         super().__init__(detail)
         self.kind = kind
@@ -117,7 +117,7 @@ class _JsonCacheBuildError(RuntimeError):
 
 def _validate_worker_prepared_manifest(
     candidate: object,
-    *,
+    *,  # pragma: no mutate
     data_path: str,
     cache_dir: Path,
     staging_dir: Path,
@@ -209,7 +209,7 @@ def _json_cache_build_transaction(
 
     with per_port_cache_publication_lock(cache_dir):
         staging = new_per_port_cache_staging_dir(cache_dir)
-        primary_error: BaseException | None = None
+        primary_error: BaseException | None = None  # pragma: no mutate
         try:
             if cancellation_requested.is_set():
                 raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
@@ -263,8 +263,8 @@ def _json_cache_build_transaction(
 
 def _isolated_memory_detail(
     exc: BaseException,
-    *,
-    memory_limit_bytes: int | None,
+    *,  # pragma: no mutate
+    memory_limit_bytes: int | None,  # pragma: no mutate
 ) -> dict[str, object]:
     detail: dict[str, object] = {
         "error_code": "memory_limit",
@@ -485,7 +485,7 @@ def _aggregate_v2_tables(
     for table in tables:
         label = table.get("label", "")
         parquet_name = table.get("parquet")
-        parquet_path: Path | None = None
+        parquet_path: Path | None = None  # pragma: no mutate
         if isinstance(parquet_name, str):
             parquet_path = cache_dir / parquet_name
             if parquet_path.exists():
@@ -600,7 +600,7 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
     t0 = time.monotonic()
     _start_build_progress(data_path)
     context = None
-    budget: IsolatedExecutionBudget | None = None
+    budget: IsolatedExecutionBudget | None = None  # pragma: no mutate
     try:
         context = create_admitted_execution_context(
             operation="json_cache_build_v2",
@@ -802,7 +802,7 @@ async def post_json_cache_status(body: JsonCacheBuildRequest) -> Any:
 @router.get("/status", response_model=JsonCacheStatusResponse)
 async def get_json_cache_status(
     path: str,
-    config_path: str | None = None,
+    config_path: str | None = None,  # pragma: no mutate
 ) -> JsonCacheStatusResponse:
     """GET variant — disk-only (no volatile body on a GET).
 

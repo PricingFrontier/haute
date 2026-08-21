@@ -215,6 +215,7 @@ def test_mutation_gate_runs_and_fails_when_plan_fails() -> None:
         (REPO_ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8")
     )
     gate = workflow["jobs"]["mutation"]
+    assert workflow["jobs"]["shard"]["timeout-minutes"] == 40
 
     assert set(gate["needs"]) == {"plan", "shard"}
     condition = re.sub(r"\s+", "", gate["if"])

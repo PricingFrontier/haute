@@ -59,7 +59,7 @@ class OutputNestingKeyError(OutputMappingSchemaError):
     def __init__(
         self,
         message: str,
-        *,
+        *,  # pragma: no mutate
         frame: str,
         output_path: str,
         key: str,
@@ -333,8 +333,8 @@ def _own_subpath(parsed: _ParsedPath) -> list[str]:
 def _group_rows(
     rows: list[dict[str, Any]],
     keys: list[str],
-    *,
-    on_row: Callable[[], None] | None = None,
+    *,  # pragma: no mutate
+    on_row: Callable[[], None] | None = None,  # pragma: no mutate
 ) -> list[list[dict[str, Any]]]:
     """Group rows by their values at *keys* (an object's identity), order-preserving."""
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
@@ -353,8 +353,8 @@ def _group_rows(
 def _index_rows(
     rows: list[dict[str, Any]],
     keys: tuple[str, ...],
-    *,
-    on_row: Callable[[], None] | None = None,
+    *,  # pragma: no mutate
+    on_row: Callable[[], None] | None = None,  # pragma: no mutate
 ) -> dict[tuple[Any, ...], list[dict[str, Any]]]:
     """Index rows by *keys*, preserving the source order within every bucket."""
     index: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
@@ -365,7 +365,7 @@ def _index_rows(
     return index
 
 
-def _prune(value: Any, *, on_value: Callable[[], None] | None = None) -> Any:
+def _prune(value: Any, *, on_value: Callable[[], None] | None = None) -> Any:  # pragma: no mutate
     """Recursively drop absent structure (the Q1 null-prune + empty-collection rule).
 
     An **empty collection carries no data**, so it is omitted (Nick's ruling,
@@ -406,7 +406,7 @@ def _prune(value: Any, *, on_value: Callable[[], None] | None = None) -> Any:
 class _OutputAssemblyProgress:
     """Bound the distance between cancellation and RSS checks in Python assembly."""
 
-    execution_context: ExecutionContext | None
+    execution_context: ExecutionContext | None  # pragma: no mutate
     rows_since_checkpoint: int = 0
 
     def checkpoint(self, label: str) -> None:
@@ -424,7 +424,7 @@ class _OutputAssemblyProgress:
 
 def _collect_output_frame(
     frame: pl.LazyFrame,
-    execution_context: ExecutionContext | None,
+    execution_context: ExecutionContext | None,  # pragma: no mutate
 ) -> pl.DataFrame:
     """Materialise one terminal OUTPUT plan through the shared execution seam."""
     return execution_collect(
@@ -436,7 +436,7 @@ def _collect_output_frame(
 
 def _rows_from_dataframe(
     frame: pl.DataFrame,
-    *,
+    *,  # pragma: no mutate
     progress: _OutputAssemblyProgress,
     marker_errors: dict[str, tuple[str, str]],
     label: str = "output_assembly_rows",

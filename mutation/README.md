@@ -71,11 +71,14 @@ verified end to end against real targets (unsharded == sharded survival on
 Every target explicitly declares a positive-integer `max_pending_per_shard` in
 [`targets.json`](targets.json). The planner counts executable (pending) mutants
 only and creates `max(1, ceil(pending / cap))` shards for each target. Current
-caps are 80 for every target except `json-shred`, which is capped at 48: production
-evidence showed 80 `json-shred` mutants consuming about 29 minutes, so 48 keeps
-material timeout and artifact-upload headroom. These are target calibrations,
-not a universal throughput claim. The planner rejects a total plan above GitHub
-Actions' 256-job matrix limit instead of silently overpacking shards.
+caps are 80 for every target except `json-shred`, which is capped at 20. The
+expanded 1,030-test JSON/cache/runtime witness baseline measures 70.7 seconds
+locally; a 90-second per-mutant ceiling and at most 20 mutants therefore bound
+the test portion of a worst-case shard to 30 minutes. The workflow allows 40
+minutes so checkout, environment setup, and artifact upload retain explicit
+headroom. These are target calibrations, not a universal throughput claim. The
+planner rejects a total plan above GitHub Actions' 256-job matrix limit instead
+of silently overpacking shards.
 
 Run a target sharded locally (each shard sequential, exactly as CI runs it):
 
@@ -95,12 +98,13 @@ uv run python scripts/run_mutation_suite.py \
 > a shard is always sequential.
 
 Timeouts are target-specific upper bounds for one witness-suite invocation.
-Most targets use 30 seconds. `json-shred` uses 45 seconds because its maintained
-563-test baseline runs immediately below 30 seconds on an unloaded local worker.
-`json-cache` uses 60 seconds because its process-isolation and publication witness
-suite measures just above 30 seconds locally. The extra target-specific headroom
-prevents normal hosted-runner variance from classifying a passing plan-stage
-baseline as a mutant timeout before sharding begins.
+Most targets use 30 seconds. `json-shred` uses 90 seconds because its maintained
+1,030-test streaming, publication, recovery, and lifecycle baseline measures
+70.7 seconds on an unloaded local worker. `json-cache` uses 60 seconds because
+its process-isolation and publication witness suite measures just above 30
+seconds locally. The extra target-specific headroom prevents normal hosted-runner
+variance from classifying a passing plan-stage baseline as a mutant timeout
+before sharding begins.
 
 Current CI ratchet:
 

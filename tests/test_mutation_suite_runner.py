@@ -67,7 +67,7 @@ def test_threshold_config_owns_all_default_mutation_targets() -> None:
         "registry": 80,
         "output-assembler": 80,
         "jsonpath": 80,
-        "json-shred": 48,
+        "json-shred": 20,
         "json-cache": 80,
         "executor": 80,
     }
@@ -149,7 +149,7 @@ def test_mutation_runner_dry_run_writes_manifest_without_cosmic_ray(tmp_path) ->
     assert manifest["mode"] == "full"
     assert {
         target["name"]: target["max_pending_per_shard"] for target in manifest["selected_targets"]
-    }["json-shred"] == 48
+    }["json-shred"] == 20
     assert {target["name"] for target in manifest["selected_targets"]} == {
         "job-store",
         "path-resolution",
