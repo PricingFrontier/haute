@@ -258,7 +258,9 @@ def test_parent_rss_watchdog_applies_limit_to_per_request_growth(
                 affinity_key="lineage",
                 timeout_seconds=5,
                 memory_growth_limit_bytes=50,
-                require_memory_limit=True,
+                # Native-cap enforcement has its own contract tests. This case
+                # isolates the cross-platform parent RSS watchdog.
+                require_memory_limit=False,
             )
     finally:
         pool.close()

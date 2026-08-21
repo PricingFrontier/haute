@@ -492,7 +492,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   user work (Linux cgroup v2 where delegated, otherwise `RLIMIT_AS`; Windows Job
   Object) and rejects an unsupported host. Parent RSS observation is a secondary
   watchdog, not a substitute for a kernel cap. `best_effort` is an explicit
-  compatibility opt-out and never reports hard enforcement.
+  compatibility opt-out and never reports hard enforcement. macOS has no dependable
+  per-process hard-memory primitive for this contract, so workloads there must select
+  `best_effort` explicitly; Haute never silently relabels RSS sampling as a hard cap.
 - **A worker result remains inside the hard-cap window until transport is complete.**
   One-shot workers synchronously serialize and flush their bounded result channel before
   exiting; the parent joins the process before accepting that payload. Warm workers keep

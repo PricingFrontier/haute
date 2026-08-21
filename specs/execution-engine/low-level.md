@@ -491,6 +491,11 @@ worker and cleaned after exit. Cancellation or
 timeout terminates, escalates to kill, joins, and verifies death; a surviving child is
 `IsolatedWorkerTerminationError`, never reported as successful cancellation.
 
+macOS exposes resource-limit symbols but does not provide a dependable hard
+per-process memory ceiling for this contract. Required mode therefore rejects it;
+macOS callers and cross-platform transport tests must opt into `best_effort`
+explicitly, retaining RSS supervision without claiming native enforcement.
+
 The active native lease exposes only its bounded backend kind within the worker's
 execution context. Code that may create descendants can do so only under an aggregate
 `cgroup` or Windows Job Object lease. `RLIMIT_AS`, an unavailable best-effort lease,

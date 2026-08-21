@@ -189,9 +189,9 @@ def test_windows_probes_fail_closed_or_preserve_liveness(monkeypatch: pytest.Mon
         GetExitCodeProcess = _Callable(lambda *_args: 1)
 
     monkeypatch.setattr(memory_mod.ctypes, "WinDLL", lambda *_args, **_kw: Kernel(), raising=False)
-    monkeypatch.setattr(memory_mod.ctypes, "get_last_error", lambda: 87)
+    monkeypatch.setattr(memory_mod.ctypes, "get_last_error", lambda: 87, raising=False)
     assert memory_mod._windows_process_is_alive(1) is False
-    monkeypatch.setattr(memory_mod.ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(memory_mod.ctypes, "get_last_error", lambda: 5, raising=False)
     assert memory_mod._windows_process_is_alive(1) is True
 
 

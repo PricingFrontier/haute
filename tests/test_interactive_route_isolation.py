@@ -34,6 +34,9 @@ def test_preview_and_trace_execute_through_spawn_worker(
 
     monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
     monkeypatch.setenv("HAUTE_INTERACTIVE_WORKER_COUNT", "1")
+    # This cross-platform route test exercises process transport, not native
+    # cap availability. macOS requires the explicit compatibility policy.
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
     shutdown_interactive_worker_pool()
 
     try:
