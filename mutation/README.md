@@ -68,9 +68,14 @@ equivalence is covered by `tests/test_mutation_sharding.py` (database level) and
 verified end to end against real targets (unsharded == sharded survival on
 `path-resolution` and `json-cache`, both matching their documented budgets).
 
-The planner targets at most 80 pending mutants per shard without a per-target
-cap. It rejects a plan above GitHub Actions' 256-job matrix limit instead of
-silently overpacking shards until they hit the 30-minute job timeout.
+Every target explicitly declares a positive-integer `max_pending_per_shard` in
+[`targets.json`](targets.json). The planner counts executable (pending) mutants
+only and creates `max(1, ceil(pending / cap))` shards for each target. Current
+caps are 80 for every target except `json-shred`, which is capped at 48: production
+evidence showed 80 `json-shred` mutants consuming about 29 minutes, so 48 keeps
+material timeout and artifact-upload headroom. These are target calibrations,
+not a universal throughput claim. The planner rejects a total plan above GitHub
+Actions' 256-job matrix limit instead of silently overpacking shards.
 
 Run a target sharded locally (each shard sequential, exactly as CI runs it):
 
@@ -100,14 +105,14 @@ baseline as a mutant timeout before sharding begins.
 Current CI ratchet:
 
 - mutation target configs are owned by the `mutation/cosmic-ray*.toml` files
-- target rationale and survival budgets are owned in [`targets.json`](targets.json)
+- target rationale, survival budgets, and target-calibrated shard caps are owned in [`targets.json`](targets.json)
 - PR CI selects and runs the touched target subset for configured high-risk modules
 - the mutation workflow runs as three jobs — `plan` builds the shared Cosmic Ray
   work order once and emits a `(target, shard)` matrix; parallel `shard` jobs each
   execute a disjoint mutant slice sequentially; the `mutation` gate job merges the
   shard sessions and checks total survival against the per-target thresholds.
-  Sharding keeps every job well under its wall-clock, which is what makes the
-  baseline per-mutant timeout robust.
+  Target-calibrated shard caps retain wall-clock and artifact-upload headroom,
+  which is what makes the baseline per-mutant timeout robust.
 - the scheduled/manual run covers the full configured target set; PR runs cover
   the touched subset. Both upload the plan, per-shard/per-target logs, HTML,
   rates, and session dumps

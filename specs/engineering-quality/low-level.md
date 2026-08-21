@@ -113,9 +113,12 @@
   `tests/docs_accuracy_baseline.txt` contains every accepted current record
   exactly once in sorted order.
 - **Mutation target** in `mutation/targets.json` selects a Cosmic Ray config,
-  witness test command, survivor budget, and rationale.
-  `scripts/run_mutation_suite.py` rejects malformed target metadata and carries
-  the rationale into plan and aggregate result artifacts.
+  witness test command, survivor budget, rationale, and required positive-integer
+  `max_pending_per_shard`. The cap is calibrated per target to retain CI
+  timeout and artifact-upload headroom, rather than assuming one global workload
+  fits every target. `scripts/run_mutation_suite.py` rejects malformed target
+  metadata and carries the rationale and cap into plan and aggregate result
+  artifacts.
 - **Test-health summary** — the backend AST scanner includes
   `pytest.mark.flaky` in its exact fingerprint budget (zero at present). The
   generated Markdown groups live site counts by signal and lists each mutation
@@ -205,10 +208,12 @@
    repeated captures prove stable system-font or native-control differences.
 6. Mutation CI calls `scripts/run_mutation_suite.py --phase plan`, executes
    each isolated target/shard, downloads all artifacts, and calls `--phase merge`
-   to enforce total survivor budgets. Planning derives enough shards to keep each
-   shard at no more than 80 pending mutants; it does not cap a large target into
-   overfull shards. A plan requiring more than GitHub Actions' 256-job matrix
-   limit fails explicitly before matrix expansion. The merge job's `!cancelled()` status
+   to enforce total survivor budgets. Planning uses each target's required
+   `max_pending_per_shard` cap: pending means executable mutants only, shard count
+   is `max(1, ceil(pending / cap))`, and no plan may require more than GitHub
+   Actions' 256-job matrix limit. The cap is calibrated to retain timeout and
+   artifact-upload headroom; it must not be weakened by silently overpacking a
+   target. The merge job's `!cancelled()` status
    condition ensures dependency failures do not skip it, and it fails explicitly
    when planning or a required shard was unsuccessful. Plan and merge artifacts
    retain each target's rationale beside the threshold and observed

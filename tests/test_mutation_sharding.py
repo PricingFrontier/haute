@@ -135,12 +135,46 @@ def test_pending_partition_excludes_pragma_results_and_stays_balanced(tmp_path: 
 
 
 def test_shard_count_scales_with_pending() -> None:
-    assert _shard_count_for_pending(0) == 1
-    assert _shard_count_for_pending(80) == 1
-    assert _shard_count_for_pending(81) == 2
-    assert _shard_count_for_pending(766) == 10  # ceil(766 / 80)
-    assert _shard_count_for_pending(4_941) == 62
-    assert _shard_count_for_pending(10_000) == 125
+    assert _shard_count_for_pending(0, 80) == 1
+    assert _shard_count_for_pending(80, 80) == 1
+    assert _shard_count_for_pending(81, 80) == 2
+    assert _shard_count_for_pending(766, 80) == 10  # ceil(766 / 80)
+    assert _shard_count_for_pending(4_941, 48) == 103
+    assert _shard_count_for_pending(10_000, 80) == 125
+    assert _shard_count_for_pending(10**100, 3) == ((10**100 + 2) // 3)
+
+
+@pytest.mark.parametrize("pending", [-1, True, 1.5])
+def test_shard_count_rejects_invalid_pending(pending: object) -> None:
+    with pytest.raises(ValueError, match="pending must be a non-negative integer"):
+        _shard_count_for_pending(pending, 80)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("cap", [0, -1, True, 1.5])
+def test_shard_count_rejects_invalid_cap(cap: object) -> None:
+    with pytest.raises(ValueError, match="max_pending_per_shard must be a positive integer"):
+        _shard_count_for_pending(80, cap)  # type: ignore[arg-type]
+
+
+def test_current_target_plan_stays_within_matrix_capacity() -> None:
+    pending_and_caps = (
+        (435, 80),
+        (93, 80),
+        (87, 80),
+        (616, 80),
+        (68, 80),
+        (4_941, 48),
+        (413, 80),
+        (1_576, 80),
+    )
+
+    shard_count = sum(
+        _shard_count_for_pending(pending, max_pending_per_shard)
+        for pending, max_pending_per_shard in pending_and_caps
+    )
+
+    assert shard_count == 148
+    _validate_shard_matrix_capacity(shard_count)
 
 
 def test_shard_matrix_capacity_fails_before_github_expansion() -> None:

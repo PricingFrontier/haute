@@ -61,24 +61,40 @@ def test_threshold_config_owns_all_default_mutation_targets() -> None:
         "json-cache": 11.0,
         "executor": 15.0,
     }
+    assert {target.name: target.max_pending_per_shard for target in targets} == {
+        "job-store": 80,
+        "path-resolution": 80,
+        "registry": 80,
+        "output-assembler": 80,
+        "jsonpath": 80,
+        "json-shred": 48,
+        "json-cache": 80,
+        "executor": 80,
+    }
 
 
 def test_mutation_target_config_rejects_malformed_entries(tmp_path: Path) -> None:
     base = {
-        "schema_version": 1,
+        "schema_version": 2,
         "targets": [
             {
                 "name": "example",
                 "config": "mutation/cosmic-ray.registry.toml",
                 "max_survival_rate": 0.0,
                 "rationale": "example",
+                "max_pending_per_shard": 80,
             }
         ],
     }
     cases = (
-        ("wrong-schema", {"schema_version": 2}, "schema_version 1"),
+        ("wrong-schema", {"schema_version": 1}, "schema_version 2"),
         ("missing-rationale", {"rationale": None}, "must define rationale"),
         ("bad-rate", {"max_survival_rate": 250}, "between 0 and 100"),
+        ("missing-cap", {"max_pending_per_shard": None}, "positive integer"),
+        ("bool-cap", {"max_pending_per_shard": True}, "positive integer"),
+        ("float-cap", {"max_pending_per_shard": 80.0}, "positive integer"),
+        ("zero-cap", {"max_pending_per_shard": 0}, "positive integer"),
+        ("negative-cap", {"max_pending_per_shard": -1}, "positive integer"),
     )
     for name, change, expected in cases:
         payload = json.loads(json.dumps(base))
@@ -131,6 +147,9 @@ def test_mutation_runner_dry_run_writes_manifest_without_cosmic_ray(tmp_path) ->
     assert exit_code == 0
     manifest = json.loads((tmp_path / "dry" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["mode"] == "full"
+    assert {
+        target["name"]: target["max_pending_per_shard"] for target in manifest["selected_targets"]
+    }["json-shred"] == 48
     assert {target["name"] for target in manifest["selected_targets"]} == {
         "job-store",
         "path-resolution",

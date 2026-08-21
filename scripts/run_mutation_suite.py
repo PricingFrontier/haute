@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 import shlex
 import shutil
@@ -23,16 +22,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TARGET_CONFIG = "mutation/targets.json"
 PYTHON_PLACEHOLDER = "__HAUTE_PYTHON__"
 
-# Sharding calibration. A Cosmic Ray session is init'd once, then split into
-# disjoint mutant slices that run as independent CI matrix jobs; the merge job
-# recombines the per-shard result sessions. The number of shards for a target is
-# derived from its pending-mutant count so every shard stays well under the job
-# wall-clock (the timeout robustness fix) without over-provisioning runners for
-# small targets. Each shard executes its mutants one at a time, so ~80 mutants
-# keeps a shard to roughly 10-20 minutes even on a slow runner, comfortably
-# inside the 30-minute shard-job timeout. GitHub caps one matrix at 256 jobs;
-# fail planning rather than silently overfilling shards when that limit binds.
-MUTANTS_PER_SHARD = 80
+# Sharding caps are target calibration, declared in mutation/targets.json. A
+# Cosmic Ray session is init'd once, split into disjoint pending-mutant slices,
+# and recombined by the merge job. Each cap retains timeout and artifact-upload
+# headroom for that target; GitHub caps one matrix at 256 jobs.
 MAX_MATRIX_SHARDS = 256
 
 
@@ -42,6 +35,7 @@ class MutationTargetSpec:
     config_path: Path
     fail_over: float
     rationale: str
+    max_pending_per_shard: int
 
 
 @dataclass(frozen=True)
@@ -52,6 +46,7 @@ class MutationTarget:
     test_paths: tuple[Path, ...]
     fail_over: float
     rationale: str
+    max_pending_per_shard: int
 
 
 @dataclass(frozen=True)
@@ -174,8 +169,8 @@ def _load_target_specs(target_config: Path) -> list[MutationTargetSpec]:
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Invalid JSON in {target_config}: {exc}") from exc
 
-    if payload.get("schema_version") != 1:
-        raise SystemExit(f"Mutation target config must use schema_version 1: {target_config}")
+    if payload.get("schema_version") != 2:
+        raise SystemExit(f"Mutation target config must use schema_version 2: {target_config}")
     raw_targets = payload.get("targets")
     if not isinstance(raw_targets, list) or not raw_targets:
         raise SystemExit(
@@ -191,6 +186,7 @@ def _load_target_specs(target_config: Path) -> list[MutationTargetSpec]:
         config = raw_target.get("config")
         fail_over = raw_target.get("max_survival_rate")
         rationale = raw_target.get("rationale")
+        max_pending_per_shard = raw_target.get("max_pending_per_shard")
         if not isinstance(name, str) or not name:
             raise SystemExit(f"Mutation target entry {index} must define name: {target_config}")
         if not isinstance(config, str) or not config:
@@ -201,6 +197,16 @@ def _load_target_specs(target_config: Path) -> list[MutationTargetSpec]:
             raise SystemExit(f"Mutation target {name} max_survival_rate must be between 0 and 100")
         if not isinstance(rationale, str) or not rationale:
             raise SystemExit(f"Mutation target {name} must define rationale: {target_config}")
+        if isinstance(max_pending_per_shard, bool) or not isinstance(max_pending_per_shard, int):
+            raise SystemExit(
+                f"Mutation target {name} max_pending_per_shard must be a positive integer: "
+                f"{target_config}"
+            )
+        if max_pending_per_shard <= 0:
+            raise SystemExit(
+                f"Mutation target {name} max_pending_per_shard must be a positive integer: "
+                f"{target_config}"
+            )
 
         config_path = _resolve_repo_path(config)
         if not config_path.exists():
@@ -211,6 +217,7 @@ def _load_target_specs(target_config: Path) -> list[MutationTargetSpec]:
                 config_path=config_path,
                 fail_over=float(fail_over),
                 rationale=rationale,
+                max_pending_per_shard=max_pending_per_shard,
             )
         )
 
@@ -280,6 +287,7 @@ def _load_target(
         test_paths=_extract_test_paths(test_command),
         fail_over=fail_over,
         rationale=spec.rationale,
+        max_pending_per_shard=spec.max_pending_per_shard,
     )
 
 
@@ -357,6 +365,7 @@ def _target_summary(target: MutationTarget) -> dict[str, object]:
         "tests": [_relative_path(path) for path in target.test_paths],
         "fail_over": target.fail_over,
         "rationale": target.rationale,
+        "max_pending_per_shard": target.max_pending_per_shard,
     }
 
 
@@ -392,7 +401,8 @@ def _print_target_list(targets: list[MutationTarget]) -> None:
     for target in targets:
         print(
             f"{target.name}\t{_relative_path(target.config_path)}\t"
-            f"{_relative_path(target.module_path)}\tfail-over={target.fail_over:g}"
+            f"{_relative_path(target.module_path)}\tfail-over={target.fail_over:g}\t"
+            f"max-pending-per-shard={target.max_pending_per_shard}"
         )
 
 
@@ -578,11 +588,17 @@ def _partition_pending_job_ids(session_file: Path, count: int) -> list[list[str]
     return _partition_job_ids(_pending_job_ids(session_file), count)
 
 
-def _shard_count_for_pending(pending: int) -> int:
-    """Shard count for a target, sized so each shard stays well under wall-clock."""
-    if pending <= MUTANTS_PER_SHARD:
-        return 1
-    return math.ceil(pending / MUTANTS_PER_SHARD)
+def _shard_count_for_pending(pending: int, max_pending_per_shard: int) -> int:
+    """Return the minimum one shard count for executable mutants at this target's cap."""
+    if isinstance(pending, bool) or not isinstance(pending, int) or pending < 0:
+        raise ValueError("pending must be a non-negative integer")
+    if (
+        isinstance(max_pending_per_shard, bool)
+        or not isinstance(max_pending_per_shard, int)
+        or max_pending_per_shard <= 0
+    ):
+        raise ValueError("max_pending_per_shard must be a positive integer")
+    return max(1, (pending + max_pending_per_shard - 1) // max_pending_per_shard)
 
 
 def _validate_shard_matrix_capacity(shard_count: int) -> None:
@@ -786,6 +802,7 @@ def _write_target_summary(
         "status": "failed" if failures else "passed",
         "fail_over": target.fail_over,
         "rationale": target.rationale,
+        "max_pending_per_shard": target.max_pending_per_shard,
         "survival_rate": survival_rate,
         "failures": failures,
         "stages": [stage.__dict__ for stage in stages],
@@ -909,7 +926,7 @@ def _phase_plan(
 
         num_pending = len(_pending_job_ids(session_file))
         num_items = len(_all_job_ids(session_file))
-        shard_count = _shard_count_for_pending(num_pending)
+        shard_count = _shard_count_for_pending(num_pending, target.max_pending_per_shard)
         meta = {
             "name": target.name,
             "config": _relative_path(target.config_path),
@@ -917,6 +934,7 @@ def _phase_plan(
             "shard_count": shard_count,
             "num_work_items": num_items,
             "num_pending": num_pending,
+            "max_pending_per_shard": target.max_pending_per_shard,
             "fail_over": target.fail_over,
             "rationale": target.rationale,
         }
