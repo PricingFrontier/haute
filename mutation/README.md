@@ -87,10 +87,11 @@ uv run python scripts/run_mutation_suite.py \
 
 Timeouts are target-specific upper bounds for one witness-suite invocation.
 Most targets use 30 seconds. `json-shred` uses 45 seconds because its maintained
-563-test baseline runs immediately below 30 seconds on an unloaded local worker
-and can cross that boundary under normal hosted-runner variance; the extra
-headroom prevents the plan-stage baseline from being classified as a mutant
-timeout before sharding begins.
+563-test baseline runs immediately below 30 seconds on an unloaded local worker.
+`json-cache` uses 60 seconds because its process-isolation and publication witness
+suite measures just above 30 seconds locally. The extra target-specific headroom
+prevents normal hosted-runner variance from classifying a passing plan-stage
+baseline as a mutant timeout before sharding begins.
 
 Current CI ratchet:
 
