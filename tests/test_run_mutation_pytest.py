@@ -23,6 +23,16 @@ def test_absolute_test_target_preserves_selector_and_non_test_arguments(tmp_path
         run_mutation_pytest._absolute_test_target("tests/../pyproject.toml", repo_root=tmp_path)
 
 
+def test_absolute_test_target_does_not_normalise_backslashes_inside_parameter_id(
+    tmp_path: Path,
+) -> None:
+    target = r"tests\test_example.py::test_case[value\n\x00]"
+
+    assert run_mutation_pytest._absolute_test_target(target, repo_root=tmp_path) == (
+        str(tmp_path / "tests" / "test_example.py") + r"::test_case[value\n\x00]"
+    )
+
+
 def test_test_targets_file_expands_comments_and_preserves_order(tmp_path: Path) -> None:
     manifest = tmp_path / "tests" / "mutation" / "targets.txt"
     manifest.parent.mkdir(parents=True)
@@ -82,7 +92,6 @@ def test_run_uses_repo_configuration_and_removes_relative_runtime_state(
         observed["arguments"] = arguments
         cache_dir = working_dir / ".haute_cache"
         cache_dir.mkdir()
-        (cache_dir / "marker").write_text("isolated", encoding="utf-8")
         return 7
 
     monkeypatch.setattr(run_mutation_pytest.pytest, "main", fake_pytest_main)
@@ -94,16 +103,17 @@ def test_run_uses_repo_configuration_and_removes_relative_runtime_state(
 
     working_dir = observed["working_dir"]
     assert isinstance(working_dir, Path)
+    isolation_root = working_dir.parent
     assert exit_code == 7
     assert Path.cwd() == original_cwd
-    assert not working_dir.exists()
+    assert not isolation_root.exists()
     assert observed["arguments"] == [
         "-c",
         str(repo_root / "pyproject.toml"),
         "--rootdir",
         str(repo_root),
         "--basetemp",
-        str(working_dir / "pytest"),
+        str(isolation_root / "pytest"),
         str(repo_root / "tests" / "test_example.py") + "::test_case",
         "-q",
     ]
@@ -118,7 +128,7 @@ def test_run_restores_cwd_and_removes_state_when_pytest_raises(
     def raise_from_pytest(_arguments: list[str]) -> int:
         nonlocal observed_working_dir
         observed_working_dir = Path.cwd()
-        (observed_working_dir / "relative-state").write_text("temporary", encoding="utf-8")
+        (observed_working_dir / "relative-state").mkdir()
         raise RuntimeError("pytest failed unexpectedly")
 
     monkeypatch.setattr(run_mutation_pytest.pytest, "main", raise_from_pytest)

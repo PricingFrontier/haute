@@ -55,6 +55,7 @@
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the committed sanitisation-parity fixture when deliberately requested. |
 | `scripts/run_frontend_e2e_server.py` | Generates the isolated browser fixture, then starts and readiness-signals its dedicated-port backend and Vite proxy for Playwright. |
 | `scripts/run_assistant_evaluation.py` | Fail-closed credentialed assistant qualification command: loads a closed candidate/matrix/scenario set, invokes an explicit live runner repeatedly, writes a redacted atomic report, and succeeds only for an already-qualified configuration that still meets every threshold. |
+| `scripts/run_mutation_pytest.py` | Runs a mutation witness command from a fresh synthetic project while retaining repository pytest configuration and placing pytest inputs in a sibling temporary boundary, so relative Haute runtime state cannot leak between mutants or alter path-confinement semantics. |
 | `scripts/run_mutation_suite.py` | Implements mutation target selection, work planning, shard execution, merge, and survival-threshold reporting. |
 | `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes schema-3 workload, environment, resource, wall-time, and per-test evidence artifacts. |
 | `scripts/spec_corpus_inventory.py` | Builds the exact working-tree specification inventory and content fingerprint, validates complete per-file review coverage, and derives component/governance/roadmap line and coverage totals for reproducible semantic-review claims. |
@@ -390,7 +391,7 @@ are never retained in the report artifact.
   reload, exact named API-input `sourceHandle`, and an Edge Join retained and
   highlighted in a downstream trace. Private React state is not an oracle.
 - `tests/test_check_critical_coverage.py`, `tests/test_check_changed_coverage.py`,
-  `tests/test_mutation_suite_runner.py`,
+  `tests/test_mutation_suite_runner.py`, `tests/test_run_mutation_pytest.py`,
   `tests/test_mutation_sharding.py`, `tests/test_run_perf_suite.py`,
   `tests/test_perf_suite_script.py`,
   `tests/test_memory_smoke_script.py`, `tests/test_frontend_bundle_budget_ci.py`,

@@ -97,8 +97,9 @@ def test_validate_prepared_rejects_changed_fingerprint_by_both_lexical_direction
 def test_validate_prepared_requires_exact_artifact_set_and_plain_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    data, cache, _unused, config = _source(tmp_path), tmp_path / "cache", None, _config()
-    staging = cache.with_name(f"cache.build-tmp-{'b' * 32}")
+    data, config = _source(tmp_path), _config()
+    cache = tmp_path / "cache"
+    staging = tmp_path / f"cache.build-tmp-{'b' * 32}"
     staging.mkdir()
     prepared = _prepared(data, cache, staging, config)
     monkeypatch.setattr(shred, "_data_file_signature", lambda _path: prepared.data_file_signature)

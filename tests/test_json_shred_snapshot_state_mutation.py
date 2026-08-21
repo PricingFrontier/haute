@@ -281,7 +281,8 @@ def test_runtime_snapshot_dir_registers_atexit_once_and_cleans_owner_on_budget_e
 def test_capture_mismatch_removes_candidate(
     tmp_path: Path, snapshot_state: None, expected_size: int, expected_digest: str
 ) -> None:
-    source, directory = tmp_path / "source.parquet", tmp_path / "snapshots"
+    source = tmp_path / "source.parquet"
+    directory = tmp_path / "snapshots"
     source.write_bytes(b"data")
     assert (
         shred._capture_runtime_snapshot(
@@ -295,7 +296,8 @@ def test_capture_mismatch_removes_candidate(
 def test_capture_copy_fallback_logs_exact_fields_and_only_caches_stable_visible_revision(
     tmp_path: Path, snapshot_state: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source, directory = tmp_path / "source.parquet", tmp_path / "snapshots"
+    source = tmp_path / "source.parquet"
+    directory = tmp_path / "snapshots"
     payload = b"copy-data"
     source.write_bytes(payload)
     revision = shred._StrongFileRevision((1, 2), len(payload), 1, 1)
@@ -339,7 +341,8 @@ def test_capture_copy_fallback_rejects_cache_when_visible_identity_or_size_moves
     monkeypatch: pytest.MonkeyPatch,
     moved_size: int,
 ) -> None:
-    source, directory = tmp_path / "source.parquet", tmp_path / "snapshots"
+    source = tmp_path / "source.parquet"
+    directory = tmp_path / "snapshots"
     payload = b"copy-race"
     source.write_bytes(payload)
     revision = shred._StrongFileRevision((1, 2), len(payload), 1, 1)
@@ -363,7 +366,8 @@ def test_capture_hardlink_rejects_cache_when_visible_size_moves_both_directions(
     monkeypatch: pytest.MonkeyPatch,
     moved_size: int,
 ) -> None:
-    source, directory = tmp_path / "source.parquet", tmp_path / "snapshots"
+    source = tmp_path / "source.parquet"
+    directory = tmp_path / "snapshots"
     payload = b"copy-race"
     source.write_bytes(payload)
     captured = shred._StrongFileRevision((1, 2), len(payload), 1, 1)
@@ -392,7 +396,8 @@ def test_capture_hardlink_rejects_cache_when_visible_size_moves_both_directions(
 def test_capture_hardlink_collision_and_reference_increment_are_exact(
     tmp_path: Path, snapshot_state: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source, directory = tmp_path / "source.parquet", tmp_path / "snapshots"
+    source = tmp_path / "source.parquet"
+    directory = tmp_path / "snapshots"
     payload = b"content"
     source.write_bytes(payload)
     digest = hashlib.sha256(payload).hexdigest()
@@ -402,7 +407,9 @@ def test_capture_hardlink_collision_and_reference_increment_are_exact(
         lambda *_args: (_ for _ in ()).throw(AssertionError("hardlink must not copy")),
     )
     directory.mkdir()
-    named = directory / f"{digest[: shred._RUNTIME_SNAPSHOT_DIGEST_PREFIX_HEX]}.parquet"
+    named = (
+        tmp_path / "snapshots" / f"{digest[: shred._RUNTIME_SNAPSHOT_DIGEST_PREFIX_HEX]}.parquet"
+    )
     named.write_bytes(b"different")
     snapshot = shred._capture_runtime_snapshot(
         tmp_path / "cache", source, directory, len(payload), digest, None

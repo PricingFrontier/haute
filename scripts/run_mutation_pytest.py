@@ -23,12 +23,12 @@ TEST_TARGETS_FILE_OPTION = "--test-targets-file"
 
 def _absolute_test_target(argument: str, *, repo_root: Path = REPO_ROOT) -> str:
     """Resolve a pytest ``tests/...`` target without changing other arguments."""
-    normalized = argument.replace("\\", "/")
-    if normalized != "tests" and not normalized.startswith("tests/"):
+    path_argument, separator, selector = argument.partition("::")
+    normalized_path = path_argument.replace("\\", "/")
+    if normalized_path != "tests" and not normalized_path.startswith("tests/"):
         return argument
-    path, separator, selector = normalized.partition("::")
     tests_root = (repo_root / "tests").resolve()
-    resolved = (repo_root / path).resolve()
+    resolved = (repo_root / normalized_path).resolve()
     try:
         resolved.relative_to(tests_root)
     except ValueError as exc:
@@ -104,7 +104,10 @@ def run(arguments: Sequence[str], *, repo_root: Path = REPO_ROOT) -> int:
     """Run pytest with repository configuration and isolated relative state."""
     expanded_arguments = _expand_test_target_files(arguments, repo_root=repo_root)
     original_cwd = Path.cwd()
-    with tempfile.TemporaryDirectory(prefix="haute-mutation-") as working_dir:
+    with tempfile.TemporaryDirectory(prefix="haute-mutation-") as isolation_dir:
+        isolation_root = Path(isolation_dir)
+        working_dir = isolation_root / "project"
+        working_dir.mkdir()
         try:
             os.chdir(working_dir)
             return int(
@@ -112,7 +115,10 @@ def run(arguments: Sequence[str], *, repo_root: Path = REPO_ROOT) -> int:
                     _pytest_arguments(
                         expanded_arguments,
                         repo_root=repo_root,
-                        basetemp=Path(working_dir) / "pytest",
+                        # Match a real project: pytest's temporary files must
+                        # be outside the project boundary, while Haute's
+                        # relative runtime/cache state stays inside it.
+                        basetemp=isolation_root / "pytest",
                     )
                 )
             )

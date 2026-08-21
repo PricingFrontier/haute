@@ -719,9 +719,17 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
   non-poisoning.
 - `tests/test_json_shred_mut_*.py` (`parser`, `shred`, `validity`, `records`,
   `infer`, `lifecycle`, `rename_retry`, `stragglers`) and
-  `tests/test_json_shred_mutation_witnesses.py` — targeted mutation-testing witness
-  suites; each pins one specific branch/condition so a mutation-testing run can't
-  silently survive a change to it.
+  `tests/test_json_shred_mutation_witnesses.py`,
+  `tests/test_json_shred_lock_mutation.py`,
+  `tests/test_json_shred_native_revision_mutation.py`,
+  `tests/test_json_shred_publication_mutation.py`,
+  `tests/test_json_shred_runtime_control_mutation.py`,
+  `tests/test_json_shred_signature_mutation.py`,
+  `tests/test_json_shred_snapshot_state_mutation.py`, and
+  `tests/test_json_shred_stream_mutation.py` — targeted mutation-testing witness
+  suites; each pins specific observable branches, boundary values, failure
+  evidence, and state transitions so a mutation-testing run cannot silently
+  survive a change to them.
 - `tests/test_inference_identifier_labels.py` — focused mutation witnesses for
   inferred table-label derivation, symmetric collision qualification,
   deterministic suffixing, case-only collisions, and validation closure.
@@ -774,7 +782,9 @@ V2 schema codec and OUTPUT shape:
   error suites own v2 recognition, canonical parse/write behaviour, label/
   column/type/row-ID invariants, structured schema errors, and ancestor-column
   rules.
-- `tests/test_output_assembler.py` owns mapping validation, deterministic cyclic
+- `tests/test_output_assembler.py` and
+  `tests/test_output_assembler_mutation_witnesses.py` own mapping validation,
+  focused mutation boundaries, deterministic cyclic
   cuts, bag fan-out, unmatched partials, sibling-array non-explosion, pruning,
   rendering, exact assembled shapes, one-parse-per-distinct-path validation,
   incomplete editor rows, and multi-frame relation keys absent from a

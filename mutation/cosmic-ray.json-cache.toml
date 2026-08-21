@@ -2,7 +2,7 @@
 module-path = "src/haute/routes/json_cache.py"
 timeout = 60.0
 excluded-modules = []
-test-command = "__HAUTE_PYTHON__ scripts/run_mutation_pytest.py tests/test_json_cache_mut_witnesses.py tests/test_json_cache_routes.py tests/test_json_cache_integrity.py tests/test_json_cache_corrupt_and_errors.py tests/test_json_cache_coverage_uplift.py -q -x"
+test-command = "__HAUTE_PYTHON__ scripts/run_mutation_pytest.py --test-targets-file tests/mutation/json_cache_targets.txt -q -x"
 
 [cosmic-ray.distributor]
 name = "local"

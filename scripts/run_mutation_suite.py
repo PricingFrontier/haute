@@ -708,14 +708,11 @@ def _exec_session(
 ) -> list[MutationStageResult]:
     """Execute this session's pending mutants, one at a time.
 
-    A shard runs its mutants sequentially in the real working tree. This is
-    deliberate: the witness suites are not pure functions of their inputs — the
-    stateful ones (cache/route/durability) resolve the project root, cwd, and
-    server state from the working tree, so they cannot be run in a copied tree
-    (they misbehave) and interfere with each other if run concurrently in the
-    shared tree. Either way concurrency corrupts the survival count. The
-    parallelism that makes the suite fast is therefore *sharding across separate
-    runners*, not per-runner concurrency; within a shard, execution stays
+    A shard runs its mutants sequentially against one mutated source tree and
+    one result session. The test-command gives each invocation a private
+    synthetic project/cache directory, but Cosmic Ray's mutation and session
+    state itself cannot be shared by concurrent executors. Parallelism therefore
+    happens across independent CI runners; within a shard, execution stays
     sequential so every outcome is deterministic and matches an unsharded run.
     """
     return [

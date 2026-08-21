@@ -82,6 +82,10 @@ def test_threshold_config_owns_all_default_mutation_targets() -> None:
     assert REPO_ROOT / "tests" / "mutation" / "json_shred_targets.txt" in json_shred.test_paths
     assert REPO_ROOT / "tests" / "test_json_shred_parallel.py" in json_shred.test_paths
     assert REPO_ROOT / "tests" / "test_json_cache_integrity.py" in json_shred.test_paths
+    json_cache = next(target for target in targets if target.name == "json-cache")
+    assert REPO_ROOT / "tests" / "mutation" / "json_cache_targets.txt" in json_cache.test_paths
+    assert REPO_ROOT / "tests" / "test_json_cache_routes.py" in json_cache.test_paths
+    assert REPO_ROOT / "tests" / "test_json_cache_integrity.py" in json_cache.test_paths
 
 
 def test_test_target_manifest_validation_fails_closed(
