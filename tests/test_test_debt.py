@@ -1029,8 +1029,8 @@ def _load_summary_mutation_targets() -> list[dict[str, object]]:
         payload = json.loads(_MUTATION_TARGETS_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid mutation target JSON: {exc}") from exc
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-        raise ValueError("Mutation targets must use schema_version 1")
+    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+        raise ValueError("Mutation targets must use schema_version 2")
     targets = payload.get("targets")
     if not isinstance(targets, list):
         raise ValueError("Mutation targets must define targets as a list")
@@ -1038,11 +1038,19 @@ def _load_summary_mutation_targets() -> list[dict[str, object]]:
     for raw in targets:
         if not isinstance(raw, dict):
             raise ValueError("Mutation target must be an object")
-        name, rate = raw.get("name"), raw.get("max_survival_rate")
+        name = raw.get("name")
+        rate = raw.get("max_survival_rate")
+        max_pending_per_shard = raw.get("max_pending_per_shard")
         if not isinstance(name, str) or not name:
             raise ValueError("Mutation target requires a non-empty name")
         if isinstance(rate, bool) or not isinstance(rate, int | float) or not 0 <= rate <= 100:
             raise ValueError(f"Mutation target {name} has invalid max_survival_rate")
+        if (
+            isinstance(max_pending_per_shard, bool)
+            or not isinstance(max_pending_per_shard, int)
+            or max_pending_per_shard <= 0
+        ):
+            raise ValueError(f"Mutation target {name} has invalid max_pending_per_shard")
         result.append({"name": name, "rate": float(rate)})
     return sorted(result, key=lambda target: str(target["name"]))
 
