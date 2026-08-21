@@ -2,7 +2,7 @@
 module-path = "src/haute/executor.py"
 timeout = 30.0
 excluded-modules = []
-test-command = "__HAUTE_PYTHON__ -m pytest tests/test_executor_mut_witnesses.py tests/test_executor_critical_edges.py tests/test_executor_edge_cases.py tests/test_executor_builders.py tests/test_executor.py tests/test_preview_cache_byte_awareness.py tests/test_preview_cache_hint.py tests/test_preview_cache_regressions.py tests/test_graph_fingerprint_cached.py tests/test_model_score_executor.py tests/test_builder_edge_cases.py tests/test_chunk_runner.py tests/test_streaming_chunk_size_threading.py tests/test_runtime_input_cache_invalidation.py tests/test_graph_shape_contracts.py tests/test_trace_integration.py tests/test_sink.py tests/test_data_io_nodes.py -q -x"
+test-command = "__HAUTE_PYTHON__ scripts/run_mutation_pytest.py tests/test_executor_mut_witnesses.py tests/test_executor_critical_edges.py tests/test_executor_edge_cases.py tests/test_executor_builders.py tests/test_executor.py tests/test_preview_cache_byte_awareness.py tests/test_preview_cache_hint.py tests/test_preview_cache_regressions.py tests/test_graph_fingerprint_cached.py tests/test_model_score_executor.py tests/test_builder_edge_cases.py tests/test_chunk_runner.py tests/test_streaming_chunk_size_threading.py tests/test_runtime_input_cache_invalidation.py tests/test_graph_shape_contracts.py tests/test_trace_integration.py tests/test_sink.py tests/test_data_io_nodes.py -q -x"
 
 [cosmic-ray.distributor]
 name = "local"

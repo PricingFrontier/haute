@@ -2,7 +2,7 @@
 module-path = "src/haute/routes/_job_store.py"
 timeout = 30.0
 excluded-modules = []
-test-command = "__HAUTE_PYTHON__ -m pytest tests/test_job_store.py -q -x"
+test-command = "__HAUTE_PYTHON__ scripts/run_mutation_pytest.py tests/test_job_store.py -q -x"
 
 [cosmic-ray.distributor]
 name = "local"

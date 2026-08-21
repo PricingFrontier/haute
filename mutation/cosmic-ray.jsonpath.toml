@@ -2,7 +2,7 @@
 module-path = "src/haute/_jsonpath.py"
 timeout = 30.0
 excluded-modules = []
-test-command = "__HAUTE_PYTHON__ -m pytest tests/test_output_assembler.py tests/test_v2_object_nesting_inference.py tests/test_jsonpath_canonical.py -q -x"
+test-command = "__HAUTE_PYTHON__ scripts/run_mutation_pytest.py tests/test_output_assembler.py tests/test_v2_object_nesting_inference.py tests/test_jsonpath_canonical.py -q -x"
 
 [cosmic-ray.distributor]
 name = "local"

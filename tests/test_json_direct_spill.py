@@ -543,6 +543,36 @@ def test_direct_spill_creation_notes_staging_cleanup_failure(
     original_rmtree(cache_root)
 
 
+def test_direct_spill_creation_tolerates_staging_cleanup_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_root = tmp_path / "runtime-root"
+
+    @contextmanager
+    def fail_after_creation(*_args: Any, **_kwargs: Any):
+        yield
+        raise ValueError("budget commit failed")
+
+    original_rmtree = shred_mod.shutil.rmtree
+
+    def remove_then_report_missing(path: Path, *args: Any, **kwargs: Any) -> None:
+        original_rmtree(path, *args, **kwargs)
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(shred_mod, "_runtime_storage_root_for_cache", lambda _path: cache_root)
+    monkeypatch.setattr(shred_mod, "_runtime_disk_budget_transaction", fail_after_creation)
+    monkeypatch.setattr(shred_mod.shutil, "rmtree", remove_then_report_missing)
+
+    with pytest.raises(ValueError, match="budget commit failed") as raised:
+        shred_mod._new_direct_spill_dir(tmp_path / "cache")
+
+    assert not getattr(raised.value, "__notes__", [])
+    owner_dir = cache_root / shred_mod._DIRECT_SPILL_DIRNAME / shred_mod._DIRECT_SPILL_PROCESS_TOKEN
+    assert not owner_dir.exists()
+    original_rmtree(cache_root)
+
+
 def test_direct_spill_constructor_notes_writer_cleanup_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

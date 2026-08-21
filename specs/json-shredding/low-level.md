@@ -393,6 +393,9 @@ the skip/conservation accounting.
    Checkpoints run during parsing,
    emission, conversion, and flush. Runtime spill files live outside `working/` and
    `committed/`; this path never writes, refreshes, deletes, or promotes cache state.
+   Each spill allocation claims its UUID-named child with an exclusive directory
+   create. A name collision fails closed and leaves the pre-existing entry untouched;
+   rollback removes a spill child only after this allocation successfully created it.
    Orderly-exit cleanup reports residue through structured warnings; cleanup failures
    during a primary build error are attached as exception notes rather than hidden.
    A managed `ExecutionContext` owns the spill lease until collection/cleanup; an
@@ -607,7 +610,11 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   `windows_usn_v1` with volume/file ID/USN). After a process restart or fork, an
   exact current-revision match may seed the memo without rereading the source only
   when its `native_revision_proof_sha256` validates and every matching live manifest
-  supplies the same strict size/mtime/SHA-256 record. Missing, old, malformed, or
+  supplies the same strict size/mtime/SHA-256 record. The persisted native-revision
+  record is a closed shape: `schema_version` is exactly the integer `1` (not a bool
+  or numerically equal float), integer identity/size/time fields use their declared
+  bounds, and Windows file IDs are exact non-zero 128-bit hexadecimal values.
+  Missing, old, malformed, or
   conflicting records fall through to a complete hash. Once that hash succeeds,
   each live legacy v2 manifest whose recorded size/SHA-256 agrees is upgraded by an
   atomic `meta.json` replacement with the current revision-bound proof. A mismatch

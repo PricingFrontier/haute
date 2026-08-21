@@ -2,7 +2,7 @@
 module-path = "src/haute/_path_resolution.py"
 timeout = 30.0
 excluded-modules = []
-test-command = "__HAUTE_PYTHON__ -m pytest tests/test_path_resolution.py tests/test_path_resolution_properties.py -q -x"
+test-command = "__HAUTE_PYTHON__ scripts/run_mutation_pytest.py tests/test_path_resolution.py tests/test_path_resolution_properties.py -q -x"
 
 [cosmic-ray.distributor]
 name = "local"

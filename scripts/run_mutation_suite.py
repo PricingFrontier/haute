@@ -21,6 +21,7 @@ COSMIC_RAY_PACKAGE = "cosmic-ray==8.4.6"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TARGET_CONFIG = "mutation/targets.json"
 PYTHON_PLACEHOLDER = "__HAUTE_PYTHON__"
+TEST_TARGETS_FILE_OPTION = "--test-targets-file"
 
 # Sharding caps are target calibration, declared in mutation/targets.json. A
 # Cosmic Ray session is init'd once, split into disjoint pending-mutant slices,
@@ -154,10 +155,51 @@ def _extract_test_paths(test_command: str) -> tuple[Path, ...]:
         raise SystemExit(f"Could not parse test-command {test_command!r}: {exc}") from exc
 
     test_paths: set[Path] = set()
-    for token in tokens:
+    expanded_tokens: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token != TEST_TARGETS_FILE_OPTION:
+            expanded_tokens.append(token)
+            index += 1
+            continue
+        if index + 1 >= len(tokens):
+            raise SystemExit(f"{TEST_TARGETS_FILE_OPTION} requires a path in {test_command!r}")
+        manifest_path = _resolve_repo_path(tokens[index + 1])
+        try:
+            manifest_path.relative_to(REPO_ROOT)
+            lines = manifest_path.read_text(encoding="utf-8").splitlines()
+        except (ValueError, OSError) as exc:
+            raise SystemExit(
+                f"Cannot read repository test-targets file {manifest_path}: {exc}"
+            ) from exc
+        manifest_targets = [
+            line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if not manifest_targets:
+            raise SystemExit(f"Test-targets file is empty: {manifest_path}")
+        if len(set(manifest_targets)) != len(manifest_targets):
+            raise SystemExit(f"Test-targets file contains duplicate entries: {manifest_path}")
+        for manifest_target in manifest_targets:
+            normalized = manifest_target.replace("\\", "/")
+            if normalized != "tests" and not normalized.startswith("tests/"):
+                raise SystemExit(f"Test-targets file contains a non-test target: {manifest_target}")
+        test_paths.add(manifest_path)
+        expanded_tokens.extend(manifest_targets)
+        index += 2
+
+    tests_root = (REPO_ROOT / "tests").resolve()
+    for token in expanded_tokens:
         normalized = token.replace("\\", "/")
         if normalized.startswith("tests/") or normalized == "tests":
-            test_paths.add(_resolve_repo_path(normalized))
+            path = _resolve_repo_path(normalized.partition("::")[0])
+            try:
+                path.relative_to(tests_root)
+            except ValueError as exc:
+                raise SystemExit(
+                    f"Test target escapes the repository tests directory: {token}"
+                ) from exc
+            test_paths.add(path)
     return tuple(sorted(test_paths, key=_relative_path))
 
 
@@ -339,6 +381,7 @@ def _select_targets_for_changed_files(
         (REPO_ROOT / ".github" / "workflows" / "mutation.yml").resolve(),
         (REPO_ROOT / "mutation" / "README.md").resolve(),
         (REPO_ROOT / DEFAULT_TARGET_CONFIG).resolve(),
+        (REPO_ROOT / "scripts" / "run_mutation_pytest.py").resolve(),
     }
     if any(path in global_gate_paths for path in normalized_changed):
         return targets

@@ -4,6 +4,12 @@ This repo uses Cosmic Ray for bounded mutation-testing runs against high-value m
 The checked-in Cosmic Ray config is treated as a template; the runner materialises
 it with the current project Python interpreter so the mutated test runs execute
 inside the active Haute environment instead of the isolated `uvx` tool env.
+Each invocation goes through `scripts/run_mutation_pytest.py`, which keeps test
+modules and pytest configuration rooted at the repository but gives relative
+runtime state a fresh disposable working directory. This prevents one mutant's
+`.haute_cache` generations from warming, slowing, or otherwise influencing the
+next mutant. The script is guarded for Windows `spawn`, so multiprocessing tests
+re-import it without recursively starting pytest.
 
 Current targets (budgets + rationale are owned by [`targets.json`](targets.json)):
 
@@ -72,13 +78,17 @@ Every target explicitly declares a positive-integer `max_pending_per_shard` in
 [`targets.json`](targets.json). The planner counts executable (pending) mutants
 only and creates `max(1, ceil(pending / cap))` shards for each target. Current
 caps are 80 for every target except `json-shred`, which is capped at 20. The
-expanded 1,030-test JSON/cache/runtime witness baseline measures 70.7 seconds
-locally; a 90-second per-mutant ceiling and at most 20 mutants therefore bound
-the test portion of a worst-case shard to 30 minutes. The workflow allows 40
-minutes so checkout, environment setup, and artifact upload retain explicit
-headroom. These are target calibrations, not a universal throughput claim. The
-planner rejects a total plan above GitHub Actions' 256-job matrix limit instead
-of silently overpacking shards.
+JSON/cache/runtime command currently collects 1,047 tests. The isolated command
+measures 58.8 seconds in pytest and 62.0 seconds end to end on the Windows
+development baseline. Its 90-second
+per-mutant ceiling and at most 20 mutants bound the test portion of a worst-case
+shard to 30 minutes. The workflow allows 40 minutes so checkout, environment
+setup, and artifact upload retain explicit headroom. The plan-stage baseline
+runs the exact materialised command on the current hosted runner and fails
+closed before scheduling shards if that calibration no longer has headroom;
+local wall time is platform-dependent because this suite deliberately exercises
+native process spawning. The planner rejects a total plan above GitHub Actions'
+256-job matrix limit instead of silently overpacking shards.
 
 Run a target sharded locally (each shard sequential, exactly as CI runs it):
 
@@ -98,13 +108,13 @@ uv run python scripts/run_mutation_suite.py \
 > a shard is always sequential.
 
 Timeouts are target-specific upper bounds for one witness-suite invocation.
-Most targets use 30 seconds. `json-shred` uses 90 seconds because its maintained
-1,030-test streaming, publication, recovery, and lifecycle baseline measures
-70.7 seconds on an unloaded local worker. `json-cache` uses 60 seconds because
-its process-isolation and publication witness suite measures just above 30
-seconds locally. The extra target-specific headroom prevents normal hosted-runner
-variance from classifying a passing plan-stage baseline as a mutant timeout
-before sharding begins.
+Most targets use 30 seconds. `json-shred` uses 90 seconds for its maintained
+1,047-test streaming, publication, recovery, and lifecycle command.
+`json-cache` uses 60 seconds for its process-isolation and publication witness
+suite. The exact command is measured again during every plan; the extra
+target-specific headroom prevents normal hosted-runner variance from classifying
+a passing baseline as a mutant timeout, while an actual calibration regression
+stops before any shard work is dispatched.
 
 Current CI ratchet:
 

@@ -27,7 +27,7 @@
       "config": "mutation/cosmic-ray.output-assembler.toml",
       "max_pending_per_shard": 80,
       "max_survival_rate": 10.0,
-      "rationale": "The OUTPUT assembler is the schema-determined cut planner and serialiser behind the {frames + field-map} to JSON boundary. Its witness command includes unit, nested round-trip, documented nesting, and v2 inference contracts. The measured local survivor rate is 8.60% against the unchanged 10% ceiling after syntax-only annotation and keyword-marker exclusions; executable planner and assembly behavior remains in scope."
+      "rationale": "The OUTPUT assembler is the schema-determined cut planner and serialiser behind the {frames + field-map} to JSON boundary. Its witness command includes unit, nested round-trip, documented nesting, v2 inference, and exact checkpoint-boundary contracts. The measured local survivor rate is 9.09% against the unchanged 10% ceiling after syntax-only annotation and keyword-marker exclusions; executable planner and assembly behavior remains in scope."
     },
     {
       "name": "jsonpath",
@@ -41,7 +41,7 @@
       "config": "mutation/cosmic-ray.json-shred.toml",
       "max_pending_per_shard": 20,
       "max_survival_rate": 5.0,
-      "rationale": "The structured-input engine is the load-bearing JSON/JSONL/XML decomposition, bounded-spill, cache-publication, source-proof, cross-process-lock, and runtime-snapshot boundary. Its maintained 1,030-test mutation command now exercises parser conservation, multi-port loading, direct spill limits, atomic prepare/commit/discard, recovery, concurrent locking, source invalidation, process ownership, and adversarial cleanup paths. The 5% ceiling remains unchanged as the module grows. Only syntax-only postponed annotations and keyword-only markers are excluded with reviewed pragmas; executable expressions and branch decisions remain mutation-tested."
+      "rationale": "The structured-input engine is the load-bearing JSON/JSONL/XML decomposition, bounded-spill, cache-publication, source-proof, cross-process-lock, and runtime-snapshot boundary. Its maintained 1,047-test mutation command exercises parser conservation, multi-port loading, native source revisions, direct spill limits, atomic prepare/commit/discard, recovery, concurrent locking, source invalidation, process ownership, and adversarial cleanup paths. Broad tests with no unique kills in the latest complete run remain in normal CI but are excluded from the per-mutant command; demonstrated parallel killers and fast deterministic pool witnesses stay included. The isolated Windows baseline is 58.8 seconds in pytest and 62.0 seconds end to end under the unchanged 90-second ceiling. The 5% survival ceiling remains unchanged as the module grows. Only proven-equivalent selection and syntax-only postponed annotations are excluded with reviewed pragmas; executable expressions and branch decisions remain mutation-tested."
     },
     {
       "name": "json-cache",

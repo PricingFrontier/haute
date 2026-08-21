@@ -297,7 +297,9 @@ class TestOutputGluingInvariantUnderObjectNesting:
         ]
 
 
-_DATA_MODEL_EXAMPLE = Path("tests/fixtures/output_assembler/data_model_example.json")
+_DATA_MODEL_EXAMPLE = (
+    Path(__file__).resolve().parent / "fixtures" / "output_assembler" / "data_model_example.json"
+)
 
 
 def _embed_objects(records: list[dict]) -> list[dict]:

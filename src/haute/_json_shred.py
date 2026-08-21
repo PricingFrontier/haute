@@ -335,7 +335,8 @@ def _native_revision_record(revision: _StrongFileRevision) -> dict[str, Any]:
     volume_or_device, file_id = revision.file_identity
     if isinstance(file_id, bytes):
         kind = "windows_usn_v1"
-        identity: list[int | str] = [volume_or_device, file_id.hex()]
+        identity: list[int | str]  # pragma: no mutate
+        identity = [volume_or_device, file_id.hex()]
     else:
         kind = "posix_ctime_v1"
         identity = [volume_or_device, file_id]
@@ -361,7 +362,8 @@ def _parse_native_revision_record(value: Any) -> _StrongFileRevision | None:  # 
         "change_token",
     }:
         return None
-    if value.get("schema_version") != _NATIVE_REVISION_SCHEMA_VERSION:
+    schema_version = value.get("schema_version")
+    if type(schema_version) is not int or schema_version != _NATIVE_REVISION_SCHEMA_VERSION:
         return None
     kind = value.get("kind")
     identity = value.get("file_identity")
@@ -383,7 +385,8 @@ def _parse_native_revision_record(value: Any) -> _StrongFileRevision | None:  # 
     if kind == "posix_ctime_v1":
         if type(identity[1]) is not int or identity[1] <= 0:
             return None
-        file_identity: tuple[int, int | bytes] = (identity[0], identity[1])
+        file_identity: tuple[int, int | bytes]  # pragma: no mutate
+        file_identity = (identity[0], identity[1])
     elif kind == "windows_usn_v1":
         if not isinstance(identity[1], str) or len(identity[1]) != 32:
             return None
@@ -765,7 +768,7 @@ def _persisted_data_file_signature(
         return None
     if _strong_file_revision(data_path) != revision:
         return None
-    return candidates[0]
+    return candidates[0]  # pragma: no mutate - candidates are proven value-identical above
 
 
 def _upgrade_legacy_persisted_source_proofs(
@@ -4007,18 +4010,21 @@ def _new_direct_spill_dir(cache_dir: Path) -> Path:
     with _DIRECT_SPILL_LOCK:
         owner_dir = cache_root / _DIRECT_SPILL_DIRNAME / _DIRECT_SPILL_PROCESS_TOKEN
         spill_dir = owner_dir / uuid.uuid4().hex
+        spill_created = False
         try:
             with _runtime_disk_budget_transaction(cache_root):
                 owner_dir.mkdir(parents=True, exist_ok=True)
                 _ensure_runtime_owner_metadata(owner_dir)
                 spill_dir.mkdir(exist_ok=False)
+                spill_created = True
         except BaseException as exc:
-            try:
-                shutil.rmtree(spill_dir)
-            except FileNotFoundError:
-                pass
-            except OSError as cleanup_exc:
-                exc.add_note(f"direct spill staging cleanup failed: {cleanup_exc}")
+            if spill_created:
+                try:
+                    shutil.rmtree(spill_dir)
+                except FileNotFoundError:
+                    pass
+                except OSError as cleanup_exc:
+                    exc.add_note(f"direct spill staging cleanup failed: {cleanup_exc}")
             try:
                 _remove_empty_runtime_owner_dir(owner_dir)
             except OSError as cleanup_exc:
