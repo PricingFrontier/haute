@@ -265,15 +265,23 @@ logger.info("pipeline_parsed", file=str(path), node_count=len(graph.nodes))
 
 ## 25. Background Job Pattern
 
-Long-running operations (model training, optimisation solving) use a consistent pattern across route modules:
+Long-running operations use a consistent lifecycle across route modules:
 
 - **Job store**: `_jobs: dict[str, dict[str, Any]] = {}` at module level, keyed by a hex job ID from `os.urandom`.
 - **TTL eviction**: `_evict_stale_jobs()` called at the start of the submit endpoint. Jobs older than `_JOB_TTL_SECONDS` (24h) are removed.
-- **Thread dispatch**: The submit endpoint starts a `threading.Thread(target=_background_fn, daemon=True)` and returns `{"status": "started", "job_id": ...}` immediately.
+- **Killable compute dispatch**: Heavy data execution must run in a supervised isolated
+  worker with native memory enforcement. A route may use a thin thread only for job-state
+  orchestration or compatibility I/O that does not retain the heavy computation; a timeout
+  or cancellation must terminate and join the compute worker before the route publishes a
+  terminal state.
 - **Status polling**: A GET endpoint returns the job's current status, progress, and elapsed time. The result is included when status is `"completed"`.
-- **Thin closures**: The thread target should be a thin dispatcher. Extract the actual work into module-level functions (e.g. `_solve_online`, `_solve_ratebook`) with explicit typed parameters so they are testable and readable.
+- **Thin dispatchers**: Thread or process entrypoints remain thin. Extract the actual work
+  into module-level functions (e.g. `_solve_online`, `_solve_ratebook`) with explicit typed,
+  serialisable parameters so they are testable and compatible with spawn-based workers.
 
-New route modules that add background jobs must follow this same structure. See `routes/modelling.py` and `routes/optimiser.py` as reference implementations.
+New route modules that add background jobs must follow this lifecycle and must classify
+whether their work is heavy enough to require isolated execution. See the execution-engine,
+background-jobs, and server-api specs for the isolation and publication contracts.
 
 ## 26. Fix It If You See It
 
@@ -565,7 +573,7 @@ Engineering Standards
 - [ ] Tests are deterministic, fast, focused, and independent
 - [ ] No circular imports; import direction flows downward
 - [ ] Logging uses structlog, not `print`; correct levels; structured context
-- [ ] Background jobs follow the standard pattern (§25): job store, TTL eviction, thread dispatch, status polling
+- [ ] Background jobs follow the standard pattern (§25): job store, TTL eviction, killable compute dispatch where heavy, status polling
 - [ ] Pre-existing lint/type/test failures in touched areas are fixed (§26)
 - [ ] New entries in aligned lookup tables match existing column alignment
 

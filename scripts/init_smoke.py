@@ -8,13 +8,15 @@ Proves the end-user install path end to end, on the OS it runs on:
 2. Install the wheel into a fresh venv with fresh dependency resolution
    (``uv pip install <wheel>`` resolves against the published floor/cap
    specifiers, not the repo lockfile — exactly what an end user gets).
-3. ``haute init`` in an empty scratch directory outside the repo.
-4. ``haute serve`` headless from the scratch project root; the server must
+3. Verify the installed wheel's ``python -m haute`` package entry point and
+   its generated ``haute`` console entry point.
+4. ``haute init`` in an empty scratch directory outside the repo.
+5. ``haute serve`` headless from the scratch project root; the server must
    fall back to the packaged static frontend (no dev frontend present).
-5. Bootstrap the canonical local-session cookie, drive the file-listing
+6. Bootstrap the canonical local-session cookie, drive the file-listing
    endpoint (AGENTS ``/api/files`` recipe), and confirm auth rejects
    pre-bootstrap calls.
-6. Terminate the server and require a clean exit.
+7. Terminate the server and require a clean exit.
 
 Stdlib-only; shells out to ``uv`` (and transitively ``npm`` for the frontend
 build). Run directly (``python scripts/init_smoke.py``) or via
@@ -163,6 +165,12 @@ def _install_into_fresh_venv(wheel: Path, venv_dir: Path) -> Path:
         ["uv", "pip", "install", "--python", str(venv_python), str(wheel)],
         cwd=REPO_ROOT,
         timeout=INSTALL_TIMEOUT_SECONDS,
+    )
+    _run_step(
+        "python -m haute entry point",
+        [str(venv_python), "-m", "haute", "--version"],
+        cwd=REPO_ROOT,
+        timeout=INIT_TIMEOUT_SECONDS,
     )
     haute_exe = _venv_bin(venv_dir, "haute")
     if not haute_exe.exists():

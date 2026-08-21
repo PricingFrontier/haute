@@ -415,7 +415,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
         ),
         CacheConsumer.RUNTIME_GRAPH_INPUT: _consumer_contract(
             CacheConsumer.RUNTIME_GRAPH_INPUT,
-            version=2,
+            version=3,
             fields=(
                 "source",
                 "sources",

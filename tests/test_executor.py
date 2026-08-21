@@ -8,7 +8,7 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
-from haute._execution_context import ExecutionProfile
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._user_exec import _exec_user_code
 from haute.errors import ExecutionError, LiveSwitchScenarioError
 from haute.executor import (
@@ -2462,6 +2462,21 @@ class TestPreviewCachePartialHit:
             "haute.executor.execution_facade.preview_lineage_cache_key",
             lambda *_args, **_kwargs: "partial-hit-regression",
         )
+        import haute.executor as executor_mod
+
+        real_plan = executor_mod.execution_facade.plan_execution_strategy
+        plan_calls = 0
+
+        def counting_plan(*args, **kwargs):
+            nonlocal plan_calls
+            plan_calls += 1
+            return real_plan(*args, **kwargs)
+
+        monkeypatch.setattr(
+            executor_mod.execution_facade,
+            "plan_execution_strategy",
+            counting_plan,
+        )
 
         # First call: only up to "mid"
         results1 = execute_graph(graph, target_node_id="mid")
@@ -2476,6 +2491,7 @@ class TestPreviewCachePartialHit:
         # The merged cache should also still contain "mid" and "src"
         assert "mid" in results2
         assert results2["mid"].status == "ok"
+        assert plan_calls == 2, "a partial extension must plan against the current request"
 
         _preview_cache.clear()
 
@@ -2503,7 +2519,7 @@ class TestPreviewCachePartialHit:
         assert "preview_cols=('premium',)" in projected_port
         assert "preview_port='quotes'" in projected_port
 
-    def test_full_cache_hit_returns_instantly(self, tmp_path):
+    def test_full_cache_hit_reuses_producing_strategy_without_replanning(self, tmp_path):
         """When the target node is already in the cached outputs, no
         re-execution should happen.
 
@@ -2512,6 +2528,7 @@ class TestPreviewCachePartialHit:
         """
         from unittest.mock import patch
 
+        import haute.executor as executor_mod
         from haute.executor import _preview_cache
 
         _preview_cache.clear()
@@ -2526,16 +2543,92 @@ class TestPreviewCachePartialHit:
             }
         )
 
-        # Populate cache
-        execute_graph(graph, target_node_id="src")
+        first_context = ExecutionContext(
+            operation="preview-test",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            telemetry_enabled=False,
+            memory_sampler=lambda: None,
+        )
+        second_context = ExecutionContext(
+            operation="preview-test",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            telemetry_enabled=False,
+            memory_sampler=lambda: None,
+        )
 
-        # Second call — should hit cache, no _eager_execute call
-        with patch("haute.executor._eager_execute") as mock_exec:
-            results = execute_graph(graph, target_node_id="src")
+        # Populate the cache once. The second request must reuse both the
+        # materialised frame and the immutable strategy that produced it.
+        with patch.object(
+            executor_mod.execution_facade,
+            "plan_execution_strategy",
+            wraps=executor_mod.execution_facade.plan_execution_strategy,
+        ) as mock_plan:
+            execute_graph(graph, target_node_id="src", execution_context=first_context)
+            assert mock_plan.call_count == 1
+            producing_strategy = first_context.projection_plan
+            assert producing_strategy is not None
+
+            with patch("haute.executor._eager_execute") as mock_exec:
+                results = execute_graph(
+                    graph,
+                    target_node_id="src",
+                    execution_context=second_context,
+                )
+            assert mock_plan.call_count == 1
             mock_exec.assert_not_called()
+
         assert results["src"].status == "ok"
+        assert second_context.projection_plan is producing_strategy
+        assert (
+            second_context.metrics_payload()["execution_strategy"]
+            == first_context.metrics_payload()["execution_strategy"]
+        )
 
         _preview_cache.clear()
+
+    def test_full_cache_hit_rejects_entry_without_producing_strategy(self, tmp_path):
+        """A malformed cache entry must not lose projection provenance silently."""
+        from haute.executor import _preview_cache
+
+        _preview_cache.clear()
+        p = tmp_path / "d.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(p)
+        graph = _g({"nodes": [_ready_source_node("src", str(p))], "edges": []})
+
+        execute_graph(graph, target_node_id="src")
+        cache_key = _preview_cache.most_recent_key
+        assert cache_key is not None
+        cached = _preview_cache.get(cache_key)
+        assert cached is not None
+        cached["execution_strategy"] = None
+
+        with pytest.raises(RuntimeError, match="missing its execution strategy"):
+            execute_graph(graph, target_node_id="src")
+
+        _preview_cache.clear()
+
+    def test_cache_miss_rejects_planner_without_an_execution_strategy(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The executor must not cache results with missing projection provenance."""
+        import haute.executor as executor_mod
+
+        executor_mod._preview_cache.clear()
+        p = tmp_path / "d.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(p)
+        graph = _g({"nodes": [_ready_source_node("src", str(p))], "edges": []})
+        monkeypatch.setattr(
+            executor_mod.execution_facade,
+            "plan_execution_strategy",
+            lambda *_args, **_kwargs: None,
+        )
+
+        with pytest.raises(RuntimeError, match="without an execution strategy"):
+            execute_graph(graph, target_node_id="src")
+
+        executor_mod._preview_cache.clear()
 
 
 class TestRequestedPreviewProjection:

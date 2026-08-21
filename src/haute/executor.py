@@ -16,11 +16,13 @@ import ast as _ast
 import ctypes
 import functools
 import gc
+import hashlib
 import importlib as _importlib
 import inspect
 import os
 import shutil
 import signal
+import stat as stat_module
 import subprocess
 import sys
 import tempfile
@@ -28,6 +30,8 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
+from contextlib import AbstractContextManager, nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -175,6 +179,64 @@ class DataOutputDurabilityError(RuntimeError):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedDataOutput:
+    """Pickle-safe file-stage manifest or completed transactional result."""
+
+    response: WriteOutputResponse
+    project_root: str
+    display_path: str
+    final_path: str | None  # pragma: no mutate
+    staging_path: str | None  # pragma: no mutate
+    overwrite: bool
+    size_bytes: int | None = None  # pragma: no mutate
+    sha256: str | None = None  # pragma: no mutate
+    transactional: bool = False
+
+
+def validate_prepared_data_output_identity(
+    prepared: PreparedDataOutput,
+    *,  # pragma: no mutate
+    project_root: str | Path,  # pragma: no mutate
+    display_path: str,
+    final_path: str | Path | None,  # pragma: no mutate
+    staging_path: str | Path | None,  # pragma: no mutate
+    overwrite: bool,
+    transactional: bool,
+) -> None:
+    """Require a worker manifest to match the parent's selected destination.
+
+    This deliberately compares the serialized path fields before constructing
+    ``Path`` instances from worker-controlled values. The parent has already
+    canonicalised its own paths; a differing child manifest is invalid rather
+    than an alternative destination to validate or clean up.
+    """
+    if not isinstance(prepared, PreparedDataOutput):
+        raise TypeError("prepared must be a PreparedDataOutput")
+
+    expected_root = str(Path(project_root).resolve())
+    expected_final = None if final_path is None else str(Path(final_path).resolve())
+    expected_staging = None if staging_path is None else str(Path(staging_path).resolve())
+    expected_fields = (
+        ("project_root", expected_root),
+        ("display_path", display_path),
+        ("final_path", expected_final),
+        ("staging_path", expected_staging),
+    )
+    for field, expected in expected_fields:
+        actual = getattr(prepared, field)
+        if expected is None:
+            if actual is not None:
+                raise ValueError(f"prepared output {field} does not match the parent request")
+        elif not isinstance(actual, str) or actual != expected:
+            raise ValueError(f"prepared output {field} does not match the parent request")
+
+    for field, expected_flag in (("overwrite", overwrite), ("transactional", transactional)):
+        actual = getattr(prepared, field)
+        if type(actual) is not bool or actual is not expected_flag:
+            raise ValueError(f"prepared output {field} does not match the parent request")
+
+
 _IS_WINDOWS = os.name == "nt"
 _WINDOWS_OUTPUT_SYNC_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
 
@@ -312,8 +374,8 @@ def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
         import traceback as _tb
         from pathlib import Path as _Path
 
-        source_line: int | None = None
-        source_file: str | None = None
+        source_line: int | None = None  # pragma: no mutate
+        source_file: str | None = None  # pragma: no mutate
 
         # SyntaxError carries .filename and .lineno directly
         if isinstance(exc, SyntaxError) and exc.filename:
@@ -364,7 +426,7 @@ class _PreambleCell:
     __slots__ = ("ns",)
 
     def __init__(self) -> None:
-        self.ns: dict[str, Any] | None = None
+        self.ns: dict[str, Any] | None = None  # pragma: no mutate
 
 
 # Guards cell creation only — held for a cache lookup / tiny allocation,
@@ -425,7 +487,7 @@ def _compile_preamble_into_cell(
 
 def _compile_preamble(
     preamble: str,
-    *,
+    *,  # pragma: no mutate
     force_refresh: bool = True,
     pipeline_dir: str | Path | None = None,  # pragma: no mutate
     memo: GraphFingerprintMemo | None = None,  # pragma: no mutate
@@ -477,7 +539,7 @@ def _compile_preamble(
 
     # Normalise pipeline_dir to a string at the boundary so lru_cache's
     # argument-hashing treats ``Path("/x")`` and ``"/x"`` identically.
-    pipeline_dir_str: str | None = None
+    pipeline_dir_str: str | None = None  # pragma: no mutate
     if pipeline_dir is not None:
         pipeline_dir_str = str(Path(pipeline_dir).resolve())
 
@@ -708,7 +770,7 @@ def _preview_projection_cache_suffix(
     graph: PipelineGraph,
     target_node_id: str | None,  # pragma: no mutate
     requested_preview_columns: list[str] | None,  # pragma: no mutate
-    *,
+    *,  # pragma: no mutate
     target_preview_only: bool = False,
     initial_column_limit: int | None = None,  # pragma: no mutate
     port_label: str | None = None,  # pragma: no mutate
@@ -734,7 +796,7 @@ def _preview_projection_cache_suffix(
 
 
 def _cache_has_required_materialization(
-    *,
+    *,  # pragma: no mutate
     graph: PipelineGraph,
     target_node_id: str | None,  # pragma: no mutate
     requested_preview_columns: list[str] | None,  # pragma: no mutate
@@ -861,7 +923,7 @@ def execute_graph(
     max_preview_rows: int = _MAX_PREVIEW_ROWS,
     source: str = "live",
     enforce_contracts: bool = True,  # pragma: no mutate
-    *,
+    *,  # pragma: no mutate
     target_preview_only: bool = False,
     requested_preview_columns: list[str] | None = None,  # pragma: no mutate
     include_schema_metadata: bool = False,
@@ -943,17 +1005,26 @@ def execute_graph(
         target_node_id,
         requested_preview_columns,
     )
-    execution_facade.plan_execution_strategy(
-        execution_facade.ProjectionRequest(
-            graph=graph,
-            target_node_id=target_node_id,
-            profile=execution_context.profile,
-            required_columns_by_node=preview_required_columns or None,
-            source=source,
-        ),
-        execution_context=execution_context,
-    )
-    preview_materialize_node_ids: frozenset[str] | None = (
+
+    def _plan_current_request() -> None:
+        execution_facade.plan_execution_strategy(
+            execution_facade.ProjectionRequest(
+                graph=graph,
+                target_node_id=target_node_id,
+                profile=execution_context.profile,
+                required_columns_by_node=preview_required_columns or None,
+                source=source,
+            ),
+            execution_context=execution_context,
+        )
+
+    def _current_execution_strategy() -> execution_facade.ExecutionStrategyResult:
+        strategy = execution_context.projection_plan
+        if not isinstance(strategy, execution_facade.ExecutionStrategyResult):
+            raise RuntimeError("preview execution completed without an execution strategy")
+        return strategy
+
+    preview_materialize_node_ids: frozenset[str] | None = (  # pragma: no mutate
         frozenset({target_node_id}) if target_preview_only and target_node_id is not None else None
     )
     preview_initial_column_limit = (
@@ -961,7 +1032,7 @@ def execute_graph(
         if target_preview_only and target_node_id is not None and requested_preview_columns is None
         else None
     )
-    preview_materialize_column_limits: dict[str, int] | None = (
+    preview_materialize_column_limits: dict[str, int] | None = (  # pragma: no mutate
         {target_node_id: preview_initial_column_limit}
         if target_node_id is not None and preview_initial_column_limit is not None
         else None
@@ -1018,6 +1089,10 @@ def execute_graph(
         if cache_satisfies_request:
             # Full cache hit — all required nodes already materialised
             with execution_context.stage("preview_cache_hit"):
+                cached_strategy = cached.get("execution_strategy")
+                if not isinstance(cached_strategy, execution_facade.ExecutionStrategyResult):
+                    raise RuntimeError("preview cache entry is missing its execution strategy")
+                execution_context.projection_plan = cached_strategy
                 logger.debug(
                     "preview_cache_hit",
                     fingerprint=fp[:8],
@@ -1041,6 +1116,7 @@ def execute_graph(
                 target=target_node_id,
                 cached_nodes=len(prev_outputs),
             )
+            _plan_current_request()
             with execution_context.stage("preview_cache_extend"):
                 (
                     raw_outputs,
@@ -1098,6 +1174,7 @@ def execute_graph(
                     "available_columns": merged_avail,
                     "output_columns": merged_output_cols,
                     "frame_columns": merged_frame_cols,
+                    "execution_strategy": _current_execution_strategy(),
                 },
             )
             if preview_store_retained:
@@ -1126,6 +1203,7 @@ def execute_graph(
             target=target_node_id,
             prev_fingerprint=(_preview_cache.most_recent_key or "")[:8],
         )
+        _plan_current_request()
         with execution_context.stage("preview_cache_miss"):
             (
                 raw_outputs,
@@ -1162,6 +1240,7 @@ def execute_graph(
                 "available_columns": avail_cols,
                 "output_columns": output_cols,
                 "frame_columns": frame_cols,
+                "execution_strategy": _current_execution_strategy(),
             },
         )
         # Pin this entry through result serialisation so it cannot be
@@ -1440,7 +1519,7 @@ def _eager_execute(
     for multi-frame emitters, populated whether or not the producer was
     materialised (a lazy ancestor's schema comes from ``collect_schema()``).
     """
-    preamble_error: str | None = None
+    preamble_error: str | None = None  # pragma: no mutate
     try:
         preamble_ns = _compile_preamble(
             graph.preamble or "",
@@ -1508,7 +1587,7 @@ def _resolve_batch_scenario(graph: PipelineGraph) -> str | None:  # pragma: no m
     Raises ``ValueError`` if multiple live_switch nodes define different
     non-live scenario names (ambiguous routing).
     """
-    batch_scenario: str | None = None
+    batch_scenario: str | None = None  # pragma: no mutate
     for node in graph.nodes:
         if node.data.nodeType != NodeType.LIVE_SWITCH:
             continue
@@ -1528,7 +1607,7 @@ def _resolve_batch_scenario(graph: PipelineGraph) -> str | None:  # pragma: no m
 def _contain_output_path(
     graph: PipelineGraph,
     resolved_path: str,
-    *,
+    *,  # pragma: no mutate
     project_root: str | Path,  # pragma: no mutate
 ) -> Path:
     """Containment + pipeline-dir anchoring for an already-normalised output path."""
@@ -1554,7 +1633,7 @@ def _contain_output_path(
 def _validate_output_publish_paths(
     final_path: Path,
     staging_path: Path,
-    *,
+    *,  # pragma: no mutate
     project_root: str | Path,  # pragma: no mutate
 ) -> None:
     """Validate both sides of an atomic output publish against the project root.
@@ -1578,9 +1657,58 @@ def _validate_output_publish_paths(
         raise ValueError("Data output path resolves outside the project root")
 
 
+def new_data_output_staging_path(final_path: str | Path) -> Path:  # pragma: no mutate
+    """Mint one parent-owned sibling path while preserving the writer suffix."""
+    final = Path(final_path)
+    return final.with_name(f".{final.stem}.haute-stage-{uuid.uuid4().hex}{final.suffix}")
+
+
+def _validate_output_staging_identity(final_path: Path, staging_path: Path) -> None:
+    expected_prefix = f".{final_path.stem}.haute-stage-"
+    name_without_suffix = (
+        staging_path.name[: -len(final_path.suffix)] if final_path.suffix else staging_path.name
+    )
+    token = name_without_suffix.removeprefix(expected_prefix)
+    if (
+        not name_without_suffix.startswith(expected_prefix)
+        or len(token) != 32
+        or any(character not in "0123456789abcdef" for character in token)
+    ):
+        raise ValueError("Data output staging path is not an exact private generation")
+
+
+def _output_artifact_signature(path: Path) -> tuple[int, str]:
+    initial = path.stat()
+    digest = hashlib.sha256()
+    with path.open("rb") as artifact:
+        for chunk in iter(lambda: artifact.read(1 << 20), b""):
+            digest.update(chunk)
+    final = path.stat()
+    if (initial.st_dev, initial.st_ino, initial.st_size, initial.st_mtime_ns) != (
+        final.st_dev,
+        final.st_ino,
+        final.st_size,
+        final.st_mtime_ns,
+    ):
+        raise OSError(f"Data output staging artifact changed while it was signed: {path}")
+    return int(final.st_size), digest.hexdigest()
+
+
+def _validate_plain_output_artifact(path: Path) -> None:
+    observed = path.lstat()
+    if (
+        not stat_module.S_ISREG(observed.st_mode)
+        or stat_module.S_ISLNK(observed.st_mode)
+        or bool(getattr(observed, "st_file_attributes", 0) & 0x400)
+    ):
+        raise RuntimeError("Data output staging artifact is not a plain regular file")
+    if observed.st_nlink != 1:
+        raise RuntimeError("Data output staging artifact must not be hard-linked")
+
+
 def _cleanup_output_staging_path(
     staging_path: Path,
-    *,
+    *,  # pragma: no mutate
     project_root: str | Path,  # pragma: no mutate
 ) -> None:
     """Remove a failed staging artefact without following a swapped path outside the project."""
@@ -1640,7 +1768,7 @@ def _publish_output_create_only(
     staging_path: Path,
     final_path: Path,
     display_path: str,
-    *,
+    *,  # pragma: no mutate
     project_root: str | Path,  # pragma: no mutate
 ) -> None:
     """Publish a staged artifact without replacing an existing destination."""
@@ -1688,7 +1816,7 @@ def _output_row_count_scan_kwargs(
 def resolve_data_output_path(
     graph: PipelineGraph,
     config: Mapping[str, Any],
-    *,
+    *,  # pragma: no mutate
     project_root: str | Path | None = None,  # pragma: no mutate
 ) -> tuple[Path | None, str]:  # pragma: no mutate
     """Resolve a dataOutput node's write target.
@@ -1728,17 +1856,18 @@ def resolve_data_output_path(
     return _contain_output_path(graph, path, project_root=root), path
 
 
-def write_data_output(
+def prepare_data_output(
     graph: PipelineGraph,
     output_node_id: str,
     source: str = "live",
-    *,
+    *,  # pragma: no mutate
     execution_context: ExecutionContext | None = None,  # pragma: no mutate
     streaming_chunk_size: int | None = None,  # pragma: no mutate
     project_root: str | Path | None = None,  # pragma: no mutate
     overwrite: bool = False,  # pragma: no mutate
-) -> WriteOutputResponse:
-    """Execute the pipeline up to a Data Output and publish its target.
+    staging_path: str | Path | None = None,  # pragma: no mutate
+) -> PreparedDataOutput:
+    """Execute a Data Output, leaving file publication to the parent caller.
 
     Output writes are batch-only — they always run with a non-``"live"`` source
     so that model scoring uses the disk-batched path, keeping memory bounded.
@@ -1750,8 +1879,9 @@ def write_data_output(
     sink the plan in streaming mode, the sink fails loudly instead of
     broadening to an eager collect.
 
-    This is called on-demand (not during normal run/preview).
-    Returns a ``WriteOutputResponse`` with row count and output path.
+    File outputs are fully written, synced, and signed at an exact sibling
+    staging path but remain invisible. Database/lakehouse writers retain their
+    native transactional commit and return a transactional manifest.
     """
     output_node = graph.node_map.get(output_node_id)
     if output_node is None:
@@ -1781,7 +1911,7 @@ def write_data_output(
             profile=ExecutionProfile.LAZY_SINK,
         )
 
-    required_columns_by_node: dict[str, frozenset[str]] | None = None
+    required_columns_by_node: dict[str, frozenset[str]] | None = None  # pragma: no mutate
     if selected_columns:
         if isinstance(selected_columns, str | bytes):
             raise ValueError("Data Output selected_columns must be a list of column names")
@@ -1792,11 +1922,21 @@ def write_data_output(
             selected_seed.add(column)
         required_columns_by_node = {output_node_id: frozenset(selected_seed)}
 
-    staging_out: Path | None = None
+    staging_out: Path | None = None  # pragma: no mutate
     if out is not None:
         out.parent.mkdir(parents=True, exist_ok=True)
         if is_file_target:
-            staging_out = out.with_name(f".{out.stem}.haute-stage-{uuid.uuid4().hex}{out.suffix}")
+            staging_out = (
+                new_data_output_staging_path(out)
+                if staging_path is None
+                else Path(staging_path).resolve()
+            )
+            _validate_output_publish_paths(out, staging_out, project_root=root)
+            _validate_output_staging_identity(out, staging_out)
+            if staging_out.exists() or staging_out.is_symlink():
+                raise FileExistsError(f"Data output staging path already exists: {staging_out}")
+    if staging_path is not None and staging_out is None:
+        raise ValueError("Only atomic file outputs accept a staging path")
 
     # Sinks are never used in live serving — model scoring must use the
     # disk-batched path (any scenario != "live").  But the scenario name
@@ -1820,6 +1960,7 @@ def write_data_output(
     # The directory (and all checkpoint files) is cleaned up in finally.
     tmp_dir = tempfile.mkdtemp(prefix="haute_sink_")
     checkpoint_path = Path(tmp_dir)
+    retain_staging = False
 
     try:
         # Sink path: use cached preamble (no GUI edits expected during
@@ -1876,7 +2017,7 @@ def write_data_output(
         except Exception:
             logger.debug("explain_failed", path=path)
 
-        data_output_rows: int | None = None
+        data_output_rows: int | None = None  # pragma: no mutate
 
         def _write(frame: pl.LazyFrame) -> None:
             nonlocal data_output_rows
@@ -1933,7 +2074,9 @@ def write_data_output(
                     execution_context=execution_context,
                 ).item()
         execution_context.checkpoint(label="after_output_row_count", node_id=output_node_id)
-        execution_context.checkpoint(label="before_output_publish", node_id=output_node_id)
+        execution_context.checkpoint(label="before_output_manifest", node_id=output_node_id)
+        size_bytes: int | None = None  # pragma: no mutate
+        sha256: str | None = None  # pragma: no mutate
         if staging_out is not None:
             if out is None:  # pragma: no mutate - staging implies a file target
                 raise RuntimeError("Data output staging resolved no final target")
@@ -1943,26 +2086,14 @@ def write_data_output(
                 project_root=root,
             )
             _sync_output_artifact(staging_out)
-            if overwrite:
-                os.replace(staging_out, out)
-            else:
-                _publish_output_create_only(
-                    staging_out,
-                    out,
-                    path,
-                    project_root=root,
-                )
-            try:
-                _sync_output_directory(out.parent)
-            except OSError as exc:
-                raise DataOutputDurabilityError(path) from exc
-        logger.info("data_output_written", path=path, format=config["format"])
+            _validate_plain_output_artifact(staging_out)
+            size_bytes, sha256 = _output_artifact_signature(staging_out)
 
         execution_context.fault_point(
             "response_shaping",
             node_id=output_node_id,
         )
-        return WriteOutputResponse(
+        response = WriteOutputResponse(
             status="ok",
             message=f"Wrote {row_count:,} rows to {path}",
             row_count=row_count,
@@ -1976,10 +2107,164 @@ def write_data_output(
                 else None
             ),
         )
+        prepared = PreparedDataOutput(
+            response=response,
+            project_root=str(root),
+            display_path=path,
+            final_path=None if out is None else str(out),
+            staging_path=None if staging_out is None else str(staging_out),
+            overwrite=overwrite,
+            size_bytes=size_bytes,
+            sha256=sha256,
+            transactional=staging_out is None,
+        )
+        retain_staging = staging_out is not None
+        return prepared
     finally:
-        if staging_out is not None:
+        if staging_out is not None and not retain_staging:
             _cleanup_output_staging_path(
                 staging_out,
                 project_root=root,
             )
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _prepared_output_paths(prepared: PreparedDataOutput) -> tuple[Path, Path, Path]:
+    if not isinstance(prepared, PreparedDataOutput):
+        raise TypeError("prepared must be a PreparedDataOutput")
+    if prepared.transactional:
+        raise ValueError("transactional output does not have a staged file")
+    if prepared.final_path is None or prepared.staging_path is None:
+        raise ValueError("prepared file output omitted its final or staging path")
+    root = Path(prepared.project_root).resolve()
+    final = Path(prepared.final_path)
+    staging = Path(prepared.staging_path)
+    _validate_output_publish_paths(final, staging, project_root=root)
+    _validate_output_staging_identity(final, staging)
+    return root, final, staging
+
+
+def commit_prepared_data_output(
+    prepared: PreparedDataOutput,
+    *,  # pragma: no mutate
+    publication_guard: AbstractContextManager[None] | None = None,  # pragma: no mutate
+) -> WriteOutputResponse:
+    """Validate a worker manifest and publish its staged file atomically."""
+    if not isinstance(prepared, PreparedDataOutput):
+        raise TypeError("prepared must be a PreparedDataOutput")
+    response = WriteOutputResponse.model_validate(prepared.response.model_dump(mode="python"))
+    if response.path != prepared.display_path:
+        raise ValueError("prepared output response does not match its destination")
+    if prepared.transactional:
+        if (
+            prepared.staging_path is not None
+            or prepared.size_bytes is not None
+            or prepared.sha256 is not None
+        ):
+            raise ValueError("transactional output carried an unexpected file manifest")
+        with publication_guard or nullcontext():
+            logger.info("data_output_written", path=prepared.display_path, format=response.format)
+            return response
+
+    root, final, staging = _prepared_output_paths(prepared)
+    if (
+        isinstance(prepared.size_bytes, bool)
+        or not isinstance(prepared.size_bytes, int)
+        or prepared.size_bytes < 0
+        or not isinstance(prepared.sha256, str)
+        or len(prepared.sha256) != 64
+        or any(character not in "0123456789abcdef" for character in prepared.sha256)
+    ):
+        raise ValueError("prepared output contains an invalid content signature")
+    _validate_plain_output_artifact(staging)
+    observed_size, observed_sha256 = _output_artifact_signature(staging)
+    if (observed_size, observed_sha256) != (prepared.size_bytes, prepared.sha256):
+        raise RuntimeError("prepared output content signature does not match its staging artifact")
+    _validate_output_publish_paths(final, staging, project_root=root)
+    _sync_output_artifact(staging)
+    with publication_guard or nullcontext():
+        if final.exists() and not prepared.overwrite:
+            raise DataOutputDestinationExistsError(prepared.display_path)
+        if prepared.overwrite:
+            os.replace(staging, final)
+        else:
+            _publish_output_create_only(
+                staging,
+                final,
+                prepared.display_path,
+                project_root=root,
+            )
+        try:
+            _sync_output_directory(final.parent)
+        except OSError as exc:
+            raise DataOutputDurabilityError(prepared.display_path) from exc
+    logger.info("data_output_written", path=prepared.display_path, format=response.format)
+    return response
+
+
+def discard_prepared_data_output(prepared: PreparedDataOutput) -> None:
+    """Remove only the exact unpublished plain staging file in *prepared*."""
+    if prepared.transactional or prepared.staging_path is None:
+        return
+    _root, _final, staging = _prepared_output_paths(prepared)
+    try:
+        _validate_plain_output_artifact(staging)
+    except FileNotFoundError:
+        return
+    staging.unlink()
+
+
+def discard_data_output_staging_path(
+    final_path: str | Path,  # pragma: no mutate
+    staging_path: str | Path,  # pragma: no mutate
+    *,  # pragma: no mutate
+    project_root: str | Path,  # pragma: no mutate
+) -> None:
+    """Clean the exact parent-selected file stage after a worker dies."""
+    root = Path(project_root).resolve()
+    final = Path(final_path)
+    staging = Path(staging_path)
+    _validate_output_publish_paths(final, staging, project_root=root)
+    _validate_output_staging_identity(final, staging)
+    try:
+        _validate_plain_output_artifact(staging)
+    except FileNotFoundError:
+        return
+    staging.unlink()
+
+
+def write_data_output(
+    graph: PipelineGraph,
+    output_node_id: str,
+    source: str = "live",
+    *,  # pragma: no mutate
+    execution_context: ExecutionContext | None = None,  # pragma: no mutate
+    streaming_chunk_size: int | None = None,  # pragma: no mutate
+    project_root: str | Path | None = None,  # pragma: no mutate
+    overwrite: bool = False,
+) -> WriteOutputResponse:
+    """Compatibility entry point using the same prepare/parent-commit contract."""
+    prepared: PreparedDataOutput | None = None  # pragma: no mutate
+    primary_error: BaseException | None = None  # pragma: no mutate
+    try:
+        prepared = prepare_data_output(
+            graph,
+            output_node_id,
+            source,
+            execution_context=execution_context,
+            streaming_chunk_size=streaming_chunk_size,
+            project_root=project_root,
+            overwrite=overwrite,
+        )
+        return commit_prepared_data_output(prepared)
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        if prepared is not None:
+            try:
+                discard_prepared_data_output(prepared)
+            except BaseException as cleanup_exc:
+                if primary_error is None:
+                    raise
+                primary_error.add_note(f"Data output staging cleanup failed: {cleanup_exc}")

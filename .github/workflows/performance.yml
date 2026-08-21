@@ -2,22 +2,35 @@ name: Performance
 
 on:
   workflow_dispatch:
+    inputs:
+      scale:
+        description: Polars execution scale
+        required: true
+        default: ci
+        type: choice
+        options: [ci, 1m, 10m]
   schedule:
+    # Weekly production-shaped certification and a distinct monthly stress run.
     - cron: "17 3 * * 1"
+    - cron: "43 2 1 * *"
 
 permissions:
   contents: read
+  actions: read
 
-# A manual dispatch should not cancel a scheduled run (or vice versa); the
-# event name in the group keeps them distinct.
+# Manual, weekly, and monthly certifications are independent records. Include
+# their selected scale/cron so a long monthly stress run cannot be cancelled by
+# a weekly run that happens to start on the same date.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.event.schedule || inputs.scale || 'default' }}
   cancel-in-progress: true
 
 jobs:
   python-perf:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
+    env:
+      HAUTE_POLARS_PERF_SCALE: ${{ github.event_name == 'workflow_dispatch' && inputs.scale || github.event.schedule == '43 2 1 * *' && '10m' || '1m' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -27,21 +40,108 @@ jobs:
 
       - run: uv sync --group dev --locked
 
+      - name: Restore scale-specific performance baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: .perf-baseline
+          key: perf-baseline-${{ runner.os }}-${{ env.HAUTE_POLARS_PERF_SCALE }}-${{ github.run_id }}
+          restore-keys: |
+            perf-baseline-${{ runner.os }}-${{ env.HAUTE_POLARS_PERF_SCALE }}-
+
       - name: Python performance lane
-        run: >
-          uv run python scripts/run_perf_suite.py
-          --output-dir .perf-artifacts
-          --max-total-seconds 360
-          --max-test-seconds 120
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          baseline_args=()
+          mkdir -p .perf-baseline
+          if [[ ! -f .perf-baseline/perf-report.json ]]; then
+            mkdir -p .perf-prior
+            if ! gh run list --workflow performance.yml --branch "$GITHUB_REF_NAME" --status success --json databaseId --limit 100 --jq '.[].databaseId' > .perf-prior/run-ids.txt; then
+              echo "Could not query retained performance baselines" >&2
+              exit 1
+            fi
+            mapfile -t prior_run_ids < .perf-prior/run-ids.txt
+            for prior_run_id in "${prior_run_ids[@]}"; do
+              prior_dir=".perf-prior/$prior_run_id"
+              mkdir -p "$prior_dir"
+              if gh run download "$prior_run_id" --name "python-performance-$HAUTE_POLARS_PERF_SCALE" --dir "$prior_dir"; then
+                if [[ ! -f "$prior_dir/perf-report.json" ]]; then
+                  echo "Downloaded performance artifact lacks perf-report.json" >&2
+                  exit 1
+                fi
+                cp "$prior_dir/perf-report.json" .perf-baseline/perf-report.json
+                break
+              fi
+            done
+          fi
+          if [[ -f .perf-baseline/perf-report.json ]]; then
+            baseline_args=(--baseline-report .perf-baseline/perf-report.json)
+          fi
+          uv run python scripts/run_perf_suite.py \
+            --output-dir .perf-artifacts \
+            --polars-scale "$HAUTE_POLARS_PERF_SCALE" \
+            --max-total-seconds 3600 \
+            --max-test-seconds 1800 \
+            "${baseline_args[@]}"
+
+      - name: Save scale-specific performance baseline
+        if: success()
+        run: |
+          mkdir -p .perf-baseline
+          cp .perf-artifacts/perf-report.json .perf-baseline/perf-report.json
+
+      - name: Cache scale-specific performance baseline
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: .perf-baseline
+          key: perf-baseline-${{ runner.os }}-${{ env.HAUTE_POLARS_PERF_SCALE }}-${{ github.run_id }}
 
       - name: Upload performance artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: python-performance-${{ github.run_id }}
+          name: python-performance-${{ env.HAUTE_POLARS_PERF_SCALE }}
           path: .perf-artifacts
 
+  execution-engine-platform:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Kill, restart, spill, cache, and memory enforcement certification
+        run: >
+          uv run pytest
+          tests/test_process_memory.py
+          tests/test_native_memory_limit.py
+          tests/test_worker_isolation.py
+          tests/test_interactive_worker_pool.py
+          tests/test_interactive_route_isolation.py
+          tests/test_json_direct_spill.py
+          tests/test_json_cache_cross_process.py
+          tests/test_json_runtime_storage.py
+          -q
+
+      - name: Fresh-process restart and cache-proof certification
+        run: >
+          uv run pytest
+          tests/performance/test_execution_engine_certification.py::test_fresh_process_restart_reuses_cache_proof_and_safe_telemetry
+          -m perf
+          -q
+
   frontend-performance:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 3 * * 1'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:

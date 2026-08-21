@@ -25,6 +25,7 @@ from haute._types import (
 )
 from haute.errors import ContractMismatchError, ProjectionImpossibleError
 from haute.projection import compute_prepared_plan
+from tests._projection_helpers import pair_value
 from tests.conftest import make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -885,8 +886,8 @@ class TestProjectionImpossibleDiagnostics:
             strict_projection=True,
         )
 
-        assert plan.edge_demands[("left", "join")] == {"quote_id", "left_value"}
-        assert plan.edge_demands[("right", "join")] == {"quote_id", "right_value"}
+        assert pair_value(plan.edge_demands, "left", "join") == {"quote_id", "left_value"}
+        assert pair_value(plan.edge_demands, "right", "join") == {"quote_id", "right_value"}
 
     def test_lazy_execution_required_seed_enables_strict_projection(self, tmp_path):
         nodes = [
@@ -1021,6 +1022,39 @@ def _wide_build_fn(node: GraphNode, source_names=None, **kwargs):
 
 class TestCheckpointProjection:
     """Integration tests for checkpoint projection in _execute_lazy."""
+
+    def test_cardinality_only_fanout_checkpoint_retains_one_carrier(self, tmp_path):
+        nodes = [
+            _source_node("src"),
+            _node("mid", NodeType.LIVE_SWITCH),
+            _transform_node("left", code="df = df.select(pl.len().alias('row_count'))"),
+            _transform_node("right", code="df = df.select(pl.len().alias('row_count'))"),
+        ]
+        graph = PipelineGraph(
+            nodes=nodes,
+            edges=[_e("src", "mid"), _e("mid", "left"), _e("mid", "right")],
+        )
+
+        def build_fn(node, **_kwargs):
+            if node.id == "src":
+                return (
+                    node.id,
+                    lambda: pl.DataFrame({"a": [1, 2, 3], "wide": [4, 5, 6]}).lazy(),
+                    True,
+                )
+            if node.id == "mid":
+                return node.id, lambda frame: frame, False
+            return (
+                node.id,
+                lambda frame: frame.select(pl.len().alias("row_count")),
+                False,
+            )
+
+        outputs, *_ = _execute_lazy(graph, build_fn, checkpoint_dir=tmp_path)
+
+        assert pl.read_parquet(tmp_path / "mid.parquet").columns == ["a"]
+        assert outputs["left"].collect().item() == 3
+        assert outputs["right"].collect().item() == 3
 
     def test_projection_drops_unneeded_columns(self, tmp_path):
         """Checkpoint parquet only contains columns needed downstream.
@@ -1366,3 +1400,47 @@ class TestCheckpointProjection:
 
         with pytest.raises(ContractMismatchError, match="missing"):
             _execute_lazy(g, build_fn, checkpoint_dir=tmp_path)
+
+    def test_checkpoint_rejects_a_builder_that_omits_its_declared_output(self, tmp_path):
+        """A produced column is validated where the structural checkpoint writes it."""
+        nodes = [
+            _source_node("src"),
+            _banding_node(
+                "mid",
+                factors=[{"column": "a", "outputColumn": "band"}],
+            ),
+            _transform_node("left", code="df = mid.select(['band'])"),
+            _transform_node("right", code="df = mid.select(['band'])"),
+            _transform_node("sink", code="df = left.join(right, on='band')"),
+        ]
+        edges = [
+            _e("src", "mid"),
+            _e("mid", "left"),
+            _e("mid", "right"),
+            _e("left", "sink"),
+            _e("right", "sink"),
+        ]
+        graph = PipelineGraph(nodes=nodes, edges=edges)
+
+        def build_fn(node, **_kwargs):
+            if node.id == "src":
+                return node.id, lambda: pl.LazyFrame({"a": [1, 2]}), True
+            if node.id == "mid":
+                # Deliberately violate the registered banding contract so the
+                # checkpoint's runtime-schema assertion is the observer.
+                return node.id, lambda frame: frame, False
+            if node.id in {"left", "right"}:
+                return node.id, lambda frame: frame.select("band"), False
+            return node.id, lambda left, right: left.join(right, on="band"), False
+
+        with pytest.raises(
+            ContractMismatchError,
+            match="Checkpoint projection references columns missing",
+        ):
+            _execute_lazy(
+                graph,
+                build_fn,
+                target_node_id="sink",
+                checkpoint_dir=tmp_path,
+                required_columns_by_node={"sink": {"band"}},
+            )

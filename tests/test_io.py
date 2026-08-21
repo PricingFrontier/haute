@@ -182,6 +182,37 @@ class TestReadSourceProjectionAndSchema:
         assert lf.collect_schema().names() == ["a", "c"]
         assert "PROJECT 2/3 COLUMNS" in lf.explain()
 
+    def test_empty_projection_retains_one_carrier_and_row_cardinality(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "wide.parquet"
+        pl.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}).write_parquet(path)
+
+        lf = read_source(path, columns=[])
+
+        assert lf.collect_schema().names() == ["a"]
+        assert "PROJECT 1/2 COLUMNS" in lf.explain()
+        assert lf.select(pl.len().alias("row_count")).collect().item() == 3
+
+    def test_bounded_csv_empty_projection_uses_a_declared_validation_carrier(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "wide.csv"
+        path.write_text("a,b\n1,4\n2,5\n3,6\n", encoding="utf-8")
+
+        lf = read_source(
+            path,
+            profile=ExecutionProfile.AUTO_RANGE,
+            columns=[],
+            validate_columns=["b"],
+            schema_overrides={"b": "Int64"},
+        )
+
+        assert lf.collect_schema().names() == ["b"]
+        assert lf.select(pl.len().alias("row_count")).collect().item() == 3
+
     def test_csv_schema_overrides_are_applied(self, tmp_path: Path) -> None:
         path = tmp_path / "quoted.csv"
         path.write_text("quote_id,premium\n001,10.5\n002,11.5\n", encoding="utf-8")

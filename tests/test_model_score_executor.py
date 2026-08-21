@@ -9,6 +9,7 @@ import polars as pl
 import pytest
 
 from haute._mlflow_io import ScoringModel, _artifact_cache_path
+from haute.errors import ConfigError
 from haute.executor import _build_node_fn, execute_graph
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from tests.conftest import (
@@ -194,30 +195,26 @@ class TestModelScorePassthrough:
         assert "x1" in cols
         assert "prediction" not in cols
 
-    def test_run_without_run_id_passthrough(self, sample_data):
-        """sourceType=run without run_id is a passthrough."""
+    def test_run_without_run_id_fails_loudly(self, sample_data):
+        """Choosing a run source requires the run identifier."""
         graph = _make_model_score_graph(
             data_path=sample_data,
             source_type="run",
             run_id="",
         )
-        results = execute_graph(graph, target_node_id="score", row_limit=100)
-        assert results["score"].status == "ok"
-        cols = [c.name for c in results["score"].columns]
-        assert "prediction" not in cols
+        with pytest.raises(ConfigError, match="run_id is empty"):
+            execute_graph(graph, target_node_id="score", row_limit=100)
 
-    def test_registered_without_model_passthrough(self, sample_data):
-        """sourceType=registered without registered_model is a passthrough."""
+    def test_registered_without_model_fails_loudly(self, sample_data):
+        """Choosing a registered source requires the model name."""
         graph = _make_model_score_graph(
             data_path=sample_data,
             source_type="registered",
             registered_model="",
             run_id="",
         )
-        results = execute_graph(graph, target_node_id="score", row_limit=100)
-        assert results["score"].status == "ok"
-        cols = [c.name for c in results["score"].columns]
-        assert "prediction" not in cols
+        with pytest.raises(ConfigError, match="registered_model is empty"):
+            execute_graph(graph, target_node_id="score", row_limit=100)
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +300,28 @@ class TestModelScorePostProcessing:
 
 
 class TestBuildNodeFnModelScore:
+    def test_build_node_fn_rejects_non_string_source_type(self):
+        node = GraphNode(
+            id="ms1",
+            data=NodeData(label="scorer", nodeType="modelScore", config={"sourceType": 1}),
+        )
+
+        with pytest.raises(ConfigError, match="non-string sourceType"):
+            _build_node_fn(node, source_names=["upstream"])
+
+    def test_build_node_fn_rejects_unknown_source_type(self):
+        node = GraphNode(
+            id="ms1",
+            data=NodeData(
+                label="scorer",
+                nodeType="modelScore",
+                config={"sourceType": "warehouse"},
+            ),
+        )
+
+        with pytest.raises(ConfigError, match="unsupported sourceType"):
+            _build_node_fn(node, source_names=["upstream"])
+
     def test_build_node_fn_returns_passthrough_no_config(self):
         """_build_node_fn returns passthrough for empty modelScore config."""
         node = GraphNode(
@@ -316,6 +335,29 @@ class TestBuildNodeFnModelScore:
         lf = pl.DataFrame({"a": [1]}).lazy()
         result = fn(lf)
         assert result.collect().to_dicts() == [{"a": 1}]
+
+    @pytest.mark.parametrize(
+        ("config", "message"),
+        [
+            ({"sourceType": "run", "run_id": ""}, "run_id is empty"),
+            (
+                {"sourceType": "registered", "registered_model": ""},
+                "registered_model is empty",
+            ),
+        ],
+    )
+    def test_build_node_fn_rejects_half_configured_source(
+        self,
+        config: dict[str, str],
+        message: str,
+    ) -> None:
+        node = GraphNode(
+            id="ms1",
+            data=NodeData(label="scorer", nodeType="modelScore", config=config),
+        )
+
+        with pytest.raises(ConfigError, match=message):
+            _build_node_fn(node, source_names=["upstream"])
 
     def test_build_node_fn_returns_scoring_fn(self):
         """_build_node_fn returns a scoring function when config is present."""

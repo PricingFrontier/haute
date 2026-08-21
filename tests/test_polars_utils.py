@@ -17,10 +17,12 @@ from haute._execution_context import (
 from haute._polars_utils import (
     BOUNDED_MEMORY_EXEMPT_PROFILES,
     _malloc_trim,
+    _streaming_sink_to_path,
     atomic_write,
     bounded_collect_batches,
     bounded_sink,
     cancellable_streaming_collect,
+    execution_collect,
     is_bounded_execution_profile,
     normalise_execution_profile,
     read_parquet_metadata,
@@ -60,6 +62,25 @@ def test_streaming_collect_uses_polars_streaming_engine() -> None:
     assert captured == {"engine": "streaming"}
 
 
+def test_execution_collect_rejects_unknown_engine() -> None:
+    with pytest.raises(ValueError, match="engine must be 'auto' or 'streaming'"):
+        execution_collect(pl.LazyFrame({"x": [1]}), engine="gpu")  # type: ignore[arg-type]
+
+
+def test_streaming_sink_requires_polars_to_return_a_lazy_plan(tmp_path: Path) -> None:
+    class MissingPlan:
+        def sink_csv(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    with pytest.raises(RuntimeError, match="did not return the requested lazy sink plan"):
+        _streaming_sink_to_path(  # type: ignore[arg-type]
+            MissingPlan(),
+            tmp_path / "out.csv",
+            fmt="csv",
+            compression="zstd",
+        )
+
+
 def test_temporary_streaming_chunk_size_restores_default_auto_state() -> None:
     """A scoped chunk size must not leak when Polars started in auto mode."""
     saved_config = pl.Config.save()
@@ -94,14 +115,49 @@ def test_streaming_collect_records_collect_metric_on_active_context_stage() -> N
     assert metric.to_summary().to_dict()["n_collects"] == 1
 
 
+def test_streaming_collect_uses_cancellable_background_query_with_active_context() -> None:
+    class Query:
+        def fetch(self) -> pl.DataFrame:
+            return pl.DataFrame({"x": [1]})
+
+        def cancel(self) -> None:
+            raise AssertionError("completed query must not be cancelled")
+
+    captured: dict[str, object] = {}
+
+    class Lazy:
+        def collect(self, **kwargs: object) -> Query:
+            captured.update(kwargs)
+            return Query()
+
+    context = ExecutionContext(
+        operation="sink",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_sampler=lambda: 1,
+    )
+
+    result = streaming_collect(
+        Lazy(),  # type: ignore[arg-type]
+        execution_context=context,
+    )
+
+    assert result.to_dict(as_series=False) == {"x": [1]}
+    assert captured == {"engine": "streaming", "background": True}
+
+
 def test_streaming_collect_fault_point_runs_immediately_before_native_collect() -> None:
     timeline: list[str] = []
 
-    class Lazy:
-        def collect(self, *, engine: str) -> pl.DataFrame:
-            assert engine == "streaming"
-            timeline.append("native")
+    class Query:
+        def fetch(self) -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
+
+    class Lazy:
+        def collect(self, *, engine: str, background: bool) -> Query:
+            assert engine == "streaming"
+            assert background is True
+            timeline.append("native")
+            return Query()
 
     context = ExecutionContext(
         operation="sink",
@@ -114,7 +170,11 @@ def test_streaming_collect_fault_point_runs_immediately_before_native_collect() 
         execution_context=context,
     )
 
-    assert timeline == ["collect_before_native", "native"]
+    assert timeline == [
+        "streaming_collect_before_native",
+        "collect_before_native",
+        "native",
+    ]
 
 
 def test_streaming_collect_fault_prevents_native_operation() -> None:
@@ -465,8 +525,99 @@ def test_bounded_sink_emits_fault_points_around_native_sink(tmp_path: Path) -> N
     with context.stage("sink"):
         bounded_sink(pl.LazyFrame({"x": [1]}), out)
 
-    assert points == ["sink_before_native", "sink_after_native"]
+    assert points[:3] == [
+        "sink_before_native",
+        "streaming_collect_before_native",
+        "collect_before_native",
+    ]
+    assert set(points[3:-1]) <= {"streaming_collect_poll"}
+    assert points[-1] == "sink_after_native"
     assert out.exists()
+
+
+def test_bounded_sink_materialises_a_lazy_sink_as_a_background_query(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    sink_target: Path | None = None
+
+    class Query:
+        def fetch(self) -> pl.DataFrame:
+            assert sink_target is not None
+            # ``sink_target`` is the tmp_path-derived path passed to bounded_sink.
+            sink_target.write_bytes(b"completed")  # write-sandbox: deliberate
+            return pl.DataFrame()
+
+        def cancel(self) -> None:
+            raise AssertionError("completed sink must not be cancelled")
+
+    class SinkPlan:
+        def collect(self, **kwargs: object) -> Query:
+            captured["collect"] = kwargs
+            return Query()
+
+    def fake_sink(_lf: pl.LazyFrame, path: str | Path, **kwargs: object) -> SinkPlan:
+        nonlocal sink_target
+        sink_target = Path(path)
+        captured["sink"] = kwargs
+        return SinkPlan()
+
+    context = ExecutionContext(
+        operation="sink",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_sampler=lambda: 1,
+    )
+    out = tmp_path / "out.parquet"
+
+    with (
+        patch.object(pl.LazyFrame, "sink_parquet", autospec=True, side_effect=fake_sink),
+        context.stage("sink"),
+    ):
+        bounded_sink(pl.LazyFrame({"x": [1]}), out)
+
+    assert captured["sink"] == {
+        "compression": "zstd",
+        "lazy": True,
+        "engine": "streaming",
+    }
+    assert captured["collect"] == {"engine": "streaming", "background": True}
+    assert out.read_bytes() == b"completed"
+
+
+def test_bounded_sink_cancels_native_query_and_does_not_publish_partial_file(
+    tmp_path: Path,
+) -> None:
+    context = ExecutionContext(
+        operation="sink",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_sampler=lambda: 1,
+    )
+    cancelled = False
+
+    class Query:
+        def fetch(self) -> None:
+            context.cancellation_token.cancel()
+            return None
+
+        def cancel(self) -> None:
+            nonlocal cancelled
+            cancelled = True
+
+    class SinkPlan:
+        def collect(self, **_kwargs: object) -> Query:
+            return Query()
+
+    out = tmp_path / "cancelled.parquet"
+    with (
+        patch.object(pl.LazyFrame, "sink_parquet", return_value=SinkPlan()),
+        context.stage("sink"),
+        pytest.raises(ExecutionCancelledError),
+    ):
+        bounded_sink(pl.LazyFrame({"x": [1]}), out)
+
+    assert cancelled is True
+    assert not out.exists()
+    assert not out.with_suffix(".parquet.tmp").exists()
 
 
 # ---------------------------------------------------------------------------

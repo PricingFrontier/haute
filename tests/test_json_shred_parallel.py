@@ -179,6 +179,32 @@ def test_parallel_eligibility_pins_suffix_size_boundary_and_stat_failure(
     assert _should_shred_in_parallel(tmp_path / "missing.jsonl") is False
 
 
+@pytest.mark.parametrize(
+    ("backend", "expected"),
+    [
+        ("cgroup", True),
+        ("windows_job", True),
+        ("rlimit", False),
+        (None, False),
+    ],
+)
+def test_managed_parallel_shred_requires_descendant_wide_native_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str | None,
+    expected: bool,
+) -> None:
+    from haute import _json_shred
+
+    source = tmp_path / "data.jsonl"
+    source.write_bytes(b"{}\n")
+    monkeypatch.setattr(_json_shred, "_PARALLEL_MIN_BYTES", 1)
+    monkeypatch.setattr(_json_shred, "current_execution_context", lambda: object())
+    monkeypatch.setattr(_json_shred, "current_native_memory_backend", lambda: backend)
+
+    assert _json_shred._should_shred_in_parallel(source) is expected
+
+
 def test_root_conservation_counts_emitted_and_skipped_rows() -> None:
     child = _EmittingTableSpec("child", (("items", True),), ())
     root = _EmittingTableSpec("root", (), ())
@@ -477,7 +503,7 @@ def test_parallel_build_matches_serial_build_exactly(
 
     # Serial and parallel emit identical artifacts BY DESIGN, so only this
     # witness distinguishes a dispatch regression from a working parallel path.
-    monkeypatch.setattr(_json_shred, "_shred_data_file", reject_serial_shred)
+    monkeypatch.setattr(_json_shred, "_write_tables_streaming", reject_serial_shred)
     parallel_src = _write_jsonl(tmp_path / "parallel.jsonl", records)
     parallel_summary, parallel_frames = _build(parallel_src, tmp_path / "parallel_cache")
 
@@ -800,6 +826,21 @@ def test_parallel_missing_source_remains_file_not_found(tmp_path: Path) -> None:
     assert str(parallel_exc.value) == str(serial_exc.value)
 
 
+def test_chunk_error_without_recorded_failure_fails_loudly() -> None:
+    """The parent must reject an internally inconsistent successful envelope."""
+    result = _ChunkResult(
+        index=0,
+        record_count=0,
+        skipped_records=0,
+        skipped_rows_by_table={},
+        row_counts={},
+        part_paths={},
+    )
+
+    with pytest.raises(RuntimeError, match="chunk has no recorded failure"):
+        _raise_chunk_error(result)
+
+
 def test_worker_does_not_disguise_process_control_signals(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -820,6 +861,203 @@ def test_worker_does_not_disguise_process_control_signals(
 
     with pytest.raises(WorkerStop):
         _shred_chunk((str(src), 0, src.stat().st_size, 0, schema, str(tmp_path)))
+
+
+def test_shred_chunk_writes_a_bounded_part_and_preserves_root_conservation(tmp_path: Path) -> None:
+    src = _write_jsonl(tmp_path / "data.jsonl", [{"id": 1}, {"id": 2}])
+    schema = {
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "root",
+                "emit": True,
+                "row_id_column": None,
+                "columns": [
+                    {
+                        "name": "id",
+                        "path": "$[:].id",
+                        "type": "int",
+                        "status": "Confirmed",
+                        "selected": True,
+                        "levels": None,
+                    }
+                ],
+            }
+        ]
+    }
+
+    result = _shred_chunk((str(src), 0, src.stat().st_size, 7, schema, str(tmp_path)))
+
+    assert result.failure is None
+    assert result.index == 7
+    assert result.record_count == 2
+    assert result.row_counts == {"root": 2}
+    assert Path(result.part_paths["root"]).is_file()
+
+
+def test_shred_chunk_reports_constructor_and_cleanup_failures_without_a_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A constructor failure has no writer to close; later failures retain cleanup evidence."""
+    schema = {"tables": []}
+    captured: list[BaseException] = []
+
+    def fail_constructor(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("writer construction failed")
+
+    monkeypatch.setattr(_json_shred, "_BoundedParquetRowGroupWriter", fail_constructor)
+    failed = _shred_chunk(("missing", 0, 1, 0, schema, str(tmp_path)))
+    assert failed.failure is not None
+    assert failed.failure.message == "writer construction failed"
+
+    class ClosingWriter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.row_counts: dict[str, int] = {}
+            self.paths: dict[str, Path] = {}
+
+        def emit(self, *_args: object) -> None:
+            raise AssertionError("records are forced to fail before emission")
+
+        def close(self) -> None:
+            raise OSError("close failed")
+
+    def capture_failure(exc: BaseException) -> _ChunkFailure:
+        captured.append(exc)
+        return _ChunkFailure("RuntimeError", "builtins", str(exc))
+
+    monkeypatch.setattr(_json_shred, "_BoundedParquetRowGroupWriter", ClosingWriter)
+    monkeypatch.setattr(
+        _json_shred,
+        "_iter_range_records",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("primary failed")),
+    )
+    monkeypatch.setattr(_json_shred, "_failure_from_exception", capture_failure)
+    failed = _shred_chunk(("data", 0, 1, 0, schema, str(tmp_path)))
+
+    assert failed.failure is not None
+    assert failed.failure.message == "primary failed"
+    assert captured[0].__notes__ == ["bounded chunk writer cleanup failed: close failed"]
+
+
+def _install_static_parallel_results(
+    monkeypatch: pytest.MonkeyPatch,
+    results: list[_ChunkResult],
+) -> None:
+    class StaticPool:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def map(self, _function: object, tasks: object):
+            assert len(list(tasks)) == len(results)
+            return iter(results)
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            assert wait and cancel_futures
+
+    monkeypatch.setattr("concurrent.futures.ProcessPoolExecutor", StaticPool)
+
+
+def test_parallel_assembly_rejects_missing_part_and_preserves_cleanup_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = {
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "root",
+                "emit": True,
+                "row_id_column": None,
+                "columns": [
+                    {
+                        "name": "id",
+                        "path": "$[:].id",
+                        "type": "int",
+                        "status": "Confirmed",
+                        "selected": True,
+                        "levels": None,
+                    }
+                ],
+            }
+        ]
+    }
+    specs = _json_shred._emitting_table_specs(config)
+    result = _ChunkResult(
+        index=3,
+        record_count=1,
+        skipped_records=0,
+        skipped_rows_by_table={},
+        row_counts={"root": 1},
+        part_paths={},
+    )
+    _install_static_parallel_results(monkeypatch, [result])
+
+    class FailingCloseWriter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.row_counts = {"root": 0}
+
+        def close(self) -> None:
+            raise OSError("assembly close failed")
+
+    monkeypatch.setattr(_json_shred, "_BoundedParquetRowGroupWriter", FailingCloseWriter)
+    staging = tmp_path / "staging"
+    staging.mkdir()
+
+    with pytest.raises(RuntimeError, match="wrote no part") as exc_info:
+        _json_shred._write_tables_in_parallel(
+            tmp_path / "source.jsonl", config, specs, staging, [(0, 1)]
+        )
+
+    assert exc_info.value.__notes__ == [
+        "bounded parallel writer cleanup failed: assembly close failed"
+    ]
+
+
+def test_parallel_assembly_rejects_worker_row_count_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = {
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "root",
+                "emit": True,
+                "row_id_column": None,
+                "columns": [
+                    {
+                        "name": "id",
+                        "path": "$[:].id",
+                        "type": "int",
+                        "status": "Confirmed",
+                        "selected": True,
+                        "levels": None,
+                    }
+                ],
+            }
+        ]
+    }
+    specs = _json_shred._emitting_table_specs(config)
+    part = tmp_path / "root.part.parquet"
+    pl.DataFrame({"id": [1]}).write_parquet(part)
+    result = _ChunkResult(
+        index=0,
+        record_count=1,
+        skipped_records=0,
+        skipped_rows_by_table={},
+        row_counts={"root": 2},
+        part_paths={"root": str(part)},
+    )
+    _install_static_parallel_results(monkeypatch, [result])
+    staging = tmp_path / "staging"
+    staging.mkdir()
+
+    with pytest.raises(RuntimeError, match="row-count mismatch"):
+        _json_shred._write_tables_in_parallel(
+            tmp_path / "source.jsonl", config, specs, staging, [(0, 1)]
+        )
+
+    assert not part.exists()
 
 
 def test_failed_parallel_build_leaves_no_staging_directory(

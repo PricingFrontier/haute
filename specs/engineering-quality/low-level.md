@@ -40,6 +40,7 @@
 | `frontend/scripts/check-critical-coverage.mjs` | Reads Vitest coverage summary and enforces `frontend/package.json` critical entries. |
 | `frontend/scripts/check-ui-dependencies.mjs` | Audits UI dependency constraints used by the frontend bundle check. |
 | `scripts/check_critical_coverage.py` | Enforces configured backend per-file statement/branch coverage floors from coverage JSON. |
+| `scripts/check_changed_coverage.py` | Intersects a Git new-file-line diff with Coverage.py format-3 statement and branch-arc evidence, enforcing 100% changed executable coverage for the configured execution-critical source surface. |
 | `scripts/check_dependency_audit.py` | Stdlib-only fail-closed advisory-policy orchestrator/parser: exports the exact locked Python graph, runs pinned `pip-audit` and full-tree `npm audit`, validates report schemas, gives npm meta-findings a topology-independent transitive identity, and subtracts only current exact accepted-risk entries. |
 | `security/accepted-risks.toml` | Versioned exact advisory acceptance registry. Entries require ecosystem/package/advisory identity, owner, exposure, compensating control, approval date, and non-expired review date; stale, duplicate, malformed, mismatched, or unused entries fail the audit. |
 | `scripts/core_test_files.txt` | Curated core test-subset manifest and its selection/refresh rationale for canary/dependency lanes. |
@@ -54,6 +55,7 @@
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the committed sanitisation-parity fixture when deliberately requested. |
 | `scripts/run_frontend_e2e_server.py` | Generates the isolated browser fixture, then starts and readiness-signals its dedicated-port backend and Vite proxy for Playwright. |
 | `scripts/run_assistant_evaluation.py` | Fail-closed credentialed assistant qualification command: loads a closed candidate/matrix/scenario set, invokes an explicit live runner repeatedly, writes a redacted atomic report, and succeeds only for an already-qualified configuration that still meets every threshold. |
+| `scripts/run_mutation_pytest.py` | Runs a mutation witness command from a fresh synthetic project while retaining repository pytest configuration and placing pytest inputs in a sibling temporary boundary, so relative Haute runtime state cannot leak between mutants or alter path-confinement semantics. |
 | `scripts/run_mutation_suite.py` | Implements mutation target selection, work planning, shard execution, merge, and survival-threshold reporting. |
 | `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes schema-3 workload, environment, resource, wall-time, and per-test evidence artifacts. |
 | `scripts/spec_corpus_inventory.py` | Builds the exact working-tree specification inventory and content fingerprint, validates complete per-file review coverage, and derives component/governance/roadmap line and coverage totals for reproducible semantic-review claims. |
@@ -72,6 +74,7 @@
 | `tests/test_assistant_example_portfolio.py` | Ordinary specialist evidence for the packaged assistant portfolio: source parity, trace/dry-run, real training/scoring and optimisation/apply, deployment preflight, and adversarial rejection. |
 | `tests/fixtures/` | Checked-in input, golden, expected-contract, UI-contract, and data fixtures consumed by active tests. |
 | `tests/performance/` | `perf`-marked benchmark-style tests excluded from ordinary pytest and run by the performance harness, including the rating miss-guard evidence matrix (`test_rating_miss_guard_perf.py`). |
+| `tests/performance/test_execution_engine_certification.py` | Reproducible execution-engine certification scenarios for isolated wide-Parquet projection memory, modelling-menu demand, per-port API-input projection, and checkpoint-bounded direct JSONL shredding. |
 | `tests/test-health-summary.md` | Deterministic generated inventory of backend/frontend skip/xfail/flaky debt, browser retry budget, and mutation-survivor thresholds. Ordinary tests reject drift from the live scanners. |
 | `tests/docs_accuracy_baseline.txt` | Sorted one-line TSV ratchet of current per-document accuracy violations; resolved entries are deleted and additions require explicit review. |
 | `frontend/src/__tests__/` | Frontend application-level unit, contract, regression, adversarial, and bundle/coverage gate tests. |
@@ -93,6 +96,13 @@
 - **Backend critical-coverage entry** in `pyproject.toml` has a source `path`,
   minimum statement/branch percentages, and rationale. The coverage JSON path
   is `.cache/coverage/backend.json`.
+- **Changed-code coverage configuration** in `pyproject.toml` names the exact
+  execution-critical source paths governed by the gate and fixes both changed
+  statement and changed branch coverage at 100%. A branch arc is in scope when
+  either positive source-code endpoint is a changed new-file line. The checker
+  unions the merge-base-to-HEAD diff, current tracked worktree changes, and
+  untracked configured source files so local and clean-CI runs apply the same
+  executable-line contract.
 - **Frontend critical-coverage entry** in `frontend/package.json` has a source
   glob-like `pattern` and thresholds for statements, branches, functions, and
   lines; the summary artifact is `coverage/coverage-summary.json`. This sits
@@ -104,21 +114,27 @@
   `tests/docs_accuracy_baseline.txt` contains every accepted current record
   exactly once in sorted order.
 - **Mutation target** in `mutation/targets.json` selects a Cosmic Ray config,
-  witness test command, survivor budget, and rationale.
-  `scripts/run_mutation_suite.py` rejects malformed target metadata and carries
-  the rationale into plan and aggregate result artifacts.
+  witness test command, survivor budget, rationale, and required positive-integer
+  `max_pending_per_shard`. The cap is calibrated per target to retain CI
+  timeout and artifact-upload headroom, rather than assuming one global workload
+  fits every target. `scripts/run_mutation_suite.py` rejects malformed target
+  metadata and carries the rationale and cap into plan and aggregate result
+  artifacts.
 - **Test-health summary** — the backend AST scanner includes
   `pytest.mark.flaky` in its exact fingerprint budget (zero at present). The
   generated Markdown groups live site counts by signal and lists each mutation
   target separately, so a reviewer can act without reading the scanner's
   implementation. The Playwright CI retry allowance is pinned to exactly 2 by a
   direct assertion against `frontend/playwright.config.ts`.
-- **Performance report schema 3** contains top-level `environment`, `workload`,
+- **Performance report schema 4** contains top-level `environment`, `workload`,
   `resources`, and `wall_time` records plus per-test bounded evidence.
   Unavailable numeric counters are JSON `null`; reported pytest phase time plus
   runner overhead must equal total time within the recorded tolerance. The
   deterministic CI-small Polars scenario records every `ExecutionProfile`,
-  while 1m/10m inputs remain opt-in.
+  while 1m/10m inputs remain opt-in. Child peak RSS uses live samples from the
+  exact child PID whenever any were observed. The process-global, sticky
+  `RUSAGE_CHILDREN` high-water mark is only a no-sample fallback, so a previous
+  child cannot contaminate a later scenario's measurement.
 - **Playwright configuration** uses a single worker and `fullyParallel: false`;
   Chromium is the normal project and Firefox is restricted to `@smoke` tests.
   CI retries twice, recording traces on first retry and screenshots/video on
@@ -147,7 +163,11 @@
    CI runs Ruff, mypy, and `HAUTE_BUILD_FRONTEND=1 uv build`.
 3. Backend coverage runs the full test corpus in two pytest-split shards. The
    gate combines the coverage files, enforces the global 90% floor, writes JSON,
-   then invokes `scripts/check_critical_coverage.py` for per-file floors.
+   invokes `scripts/check_critical_coverage.py` for per-file floors, then invokes
+   `scripts/check_changed_coverage.py` against the pull-request base SHA (or the
+   preceding main revision for a push). The coverage-gate checkout contains the
+   required history; an unreadable base revision is a gate failure rather than an
+   empty-diff pass.
 4. Compatibility, optional-dependency, platform, package, init, and mutation
    configuration smoke lanes run their named commands. The 3.14 probe is
    explicitly allowed to fail without blocking the workflow result.
@@ -189,7 +209,15 @@
    repeated captures prove stable system-font or native-control differences.
 6. Mutation CI calls `scripts/run_mutation_suite.py --phase plan`, executes
    each isolated target/shard, downloads all artifacts, and calls `--phase merge`
-   to enforce total survivor budgets. The merge job's `!cancelled()` status
+   to enforce total survivor budgets. Planning uses each target's required
+   `max_pending_per_shard` cap: pending means executable mutants only, shard count
+   is `max(1, ceil(pending / cap))`, and no plan may require more than GitHub
+   Actions' 256-job matrix limit. The cap is calibrated to retain timeout and
+   artifact-upload headroom; it must not be weakened by silently overpacking a
+   target. The JSON shred target uses at most 20 mutants per shard against its
+   90-second expanded witness ceiling, and the shard job has a 40-minute hard
+   limit so the 30-minute worst-case test budget still leaves setup and artifact
+   headroom. The merge job's `!cancelled()` status
    condition ensures dependency failures do not skip it, and it fails explicitly
    when planning or a required shard was unsuccessful. Plan and merge artifacts
    retain each target's rationale beside the threshold and observed
@@ -212,6 +240,11 @@
 - Coverage data uses relative paths so artifacts from separate runner checkout
   paths can be combined correctly. Shards disable the immediate fail-under
   check; only the combine gate is authoritative.
+- Changed-code coverage normalises Windows/POSIX separators and Git rename paths,
+  ignores deletions and changed non-executable lines, treats every executable line
+  in an untracked configured Python file as new, and fails if a changed configured
+  source file is absent from the branch-enabled coverage artifact. A diff containing
+  no changed executable target is a reported no-op, not fabricated 100% evidence.
 - The dependency-floor job deliberately re-resolves at `lowest-direct` and uses
   `--frozen` thereafter; it must not silently re-lock at the normal highest
   resolution. The scheduled dependency job instead tests a fresh
@@ -287,9 +320,10 @@
 - Pytest's strict settings fail unknown markers/configuration and unexpected
   xpasses. `pytest-timeout` arguments in CI stop overlong tests rather than
   leaving a job indefinitely running.
-- `scripts/check_critical_coverage.py` reports missing/under-threshold entries;
+- `scripts/check_critical_coverage.py` reports missing/under-threshold entries and
+  `scripts/check_changed_coverage.py` reports exact missing changed lines/arcs;
   frontend `check-critical-coverage.mjs` does the corresponding validation for
-  the coverage summary. Both are explicit gate commands after test execution.
+  the coverage summary. These are explicit gate commands after test execution.
 - Playwright retains configured failure diagnostics, while CI uploads browser,
   mutation, coverage, and performance artifacts only from their named workflow
   steps (usually with `if: always()`).
@@ -356,7 +390,8 @@ are never retained in the report artifact.
   split topology/config after reload, two joins on one branch after a second
   reload, exact named API-input `sourceHandle`, and an Edge Join retained and
   highlighted in a downstream trace. Private React state is not an oracle.
-- `tests/test_check_critical_coverage.py`, `tests/test_mutation_suite_runner.py`,
+- `tests/test_check_critical_coverage.py`, `tests/test_check_changed_coverage.py`,
+  `tests/test_mutation_suite_runner.py`, `tests/test_run_mutation_pytest.py`,
   `tests/test_mutation_sharding.py`, `tests/test_run_perf_suite.py`,
   `tests/test_perf_suite_script.py`,
   `tests/test_memory_smoke_script.py`, `tests/test_frontend_bundle_budget_ci.py`,

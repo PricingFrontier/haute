@@ -109,7 +109,7 @@ def test_report_artifacts_include_summary_and_slowest_tests(tmp_path) -> None:
     payload = json.loads((tmp_path / "perf-report.json").read_text(encoding="utf-8"))
     markdown = (tmp_path / "perf-report.md").read_text(encoding="utf-8")
     assert payload["summary"]["collected"] == 2
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert payload["scenario"]["polars_scale"] == "1m"
     assert payload["rss"]["peak_rss_bytes"] == 123_456
     assert payload["summary"]["slowest"][0]["nodeid"] == "tests/test_perf.py::test_slow"
@@ -117,6 +117,8 @@ def test_report_artifacts_include_summary_and_slowest_tests(tmp_path) -> None:
     assert "Polars scale: 1m" in markdown
     assert "Independent peak RSS: 123,456 bytes" in markdown
     assert "Scenario Evidence" in markdown
+    assert "Historical Comparison" in markdown
+    assert "Thresholds:" in markdown
     assert '"physical_width": 6' in markdown
 
 

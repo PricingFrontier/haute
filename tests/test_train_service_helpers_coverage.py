@@ -270,6 +270,19 @@ class TestTrainingRequiredColumnsByNode:
     def test_returns_none_without_target(self) -> None:
         assert _training_required_columns_by_node("n", {"algorithm": "catboost"}) is None
 
+    def test_glm_demand_omits_dormant_excluded_terms(self) -> None:
+        demand = _training_required_columns_by_node(
+            "n",
+            {
+                "algorithm": "glm",
+                "target": "target",
+                "terms": {"age": {}, "region": {}},
+                "exclude": ["age"],
+            },
+        )
+
+        assert demand == {"n": frozenset({"target", "region"})}
+
 
 class TestTrainingFeatureSelection:
     @pytest.mark.parametrize(
@@ -359,6 +372,22 @@ class TestTrainingFeatureSelection:
         assert diagnostic.mode == "glm_terms"
         assert diagnostic.features.items == ["feature_b", "feature_a"]
         assert diagnostic.excluded_columns.items[-1].reason == "not_in_formula"
+
+        dormant = _build_training_feature_selection(
+            {
+                "algorithm": "glm",
+                "target": "target",
+                "terms": {"feature_a": {}, "feature_b": {}},
+                "exclude": ["feature_a"],
+            },
+            ["feature_b", "target", "feature_a", "unused"],
+        )
+        assert dormant.features.items == ["feature_b"]
+        assert [(item.column, item.reason) for item in dormant.excluded_columns.items] == [
+            ("target", "target"),
+            ("feature_a", "configured_exclusion"),
+            ("unused", "not_in_formula"),
+        ]
 
         with pytest.raises(ValueError, match="Configured feature column.*missing"):
             _build_training_feature_selection(

@@ -14,7 +14,11 @@ from haute._dataframe_execution_cache import (
     DATAFRAME_EXECUTION_CACHE_VERSION,
     DEFAULT_DATAFRAME_EXECUTION_CACHE_MAX_BYTES,
 )
-from haute._execution_context import ExecutionProfile
+from haute._execution_context import (
+    ExecutionCacheProofMissReason,
+    ExecutionContext,
+    ExecutionProfile,
+)
 from haute._hashing import content_hash_bytes
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.execution import (
@@ -603,6 +607,40 @@ def test_materialize_lazy_frame_with_cache_reuses_cached_artifact(tmp_path: Path
 
     assert second.collect().to_dict(as_series=False) == {"x": [1, 2, 3]}
     assert cache.stats()["entries"] == 1
+
+
+def test_dataframe_cache_records_lookup_proof_hit_and_miss(tmp_path: Path) -> None:
+    cache = DataFrameExecutionCache(root=tmp_path, max_entries=4, max_bytes=10_000_000)
+    key = dataframe_execution_cache_key(
+        _graph(),
+        node_id="target",
+        namespace="unit",
+        source="batch",
+        profile=ExecutionProfile.LAZY_SINK,
+        input_fingerprint="input:v1",
+    )
+    context = ExecutionContext(operation="explore", profile=ExecutionProfile.LAZY_SINK)
+
+    with context.stage("cache"):
+        first = materialize_lazy_frame_with_cache(
+            pl.DataFrame({"x": [1, 2]}).lazy(),
+            cache=cache,
+            key=key,
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+        assert first.collect().height == 2
+        second = materialize_lazy_frame_with_cache(
+            pl.DataFrame({"x": [99]}).lazy().select("missing"),
+            cache=cache,
+            key=key,
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+        assert second.collect().height == 2
+
+    evidence = context.metrics_payload(status="completed")["cache_proof"]
+    assert evidence["hits"] == 1
+    assert evidence["misses"] == 1
+    assert evidence["miss_reason_counts"]["proof_unavailable"] == 1
 
 
 def test_materialize_does_not_serve_stale_artifact_after_handle_rewire(
@@ -1222,6 +1260,132 @@ def test_dataframe_execution_cache_corrupt_artifact_evicts_and_returns_none(
     entry.path.write_bytes(b"not a parquet file")
     assert cache.get(key) is None
     assert cache.stats()["entries"] == 0
+
+
+def test_dataframe_execution_cache_scan_reports_invalid_artifact_proof(
+    tmp_path: Path,
+) -> None:
+    cache = DataFrameExecutionCache(root=tmp_path, max_entries=4, max_bytes=10_000_000)
+    key = dataframe_execution_cache_key(
+        _graph(),
+        node_id="target",
+        namespace="unit",
+        source="batch",
+        profile=ExecutionProfile.LAZY_SINK,
+        input_fingerprint="input:v1",
+    )
+    scan = materialize_lazy_frame_with_cache(
+        pl.DataFrame({"x": [1]}).lazy(),
+        cache=cache,
+        key=key,
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    del scan
+    gc.collect()
+    entry = cache.get(key)
+    assert entry is not None
+    artifact_path = tmp_path / entry.path.relative_to(tmp_path)
+    artifact_path.write_bytes(b"not parquet")
+
+    cached, reason = cache.scan_with_proof(key)
+
+    assert cached is None
+    assert reason is ExecutionCacheProofMissReason.ARTIFACT_INTEGRITY_SCHEMA_FAILURE
+    assert cache.get(key) is None
+
+
+def test_dataframe_execution_cache_scan_reports_reopen_failure_and_evicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = DataFrameExecutionCache(root=tmp_path, max_entries=4, max_bytes=10_000_000)
+    key = dataframe_execution_cache_key(
+        _graph(),
+        node_id="target",
+        namespace="unit",
+        source="batch",
+        profile=ExecutionProfile.LAZY_SINK,
+        input_fingerprint="input:v1",
+    )
+    scan = materialize_lazy_frame_with_cache(
+        pl.DataFrame({"x": [1]}).lazy(),
+        cache=cache,
+        key=key,
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    del scan
+    gc.collect()
+    assert cache.get(key) is not None
+    real_scan_parquet = pl.scan_parquet
+    calls = 0
+
+    def fail_second_scan(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return real_scan_parquet(*args, **kwargs)
+        raise OSError("artifact became unreadable")
+
+    monkeypatch.setattr(pl, "scan_parquet", fail_second_scan)
+
+    cached, reason = cache.scan_with_proof(key)
+
+    assert cached is None
+    assert reason is ExecutionCacheProofMissReason.UNREADABLE_ARTIFACT
+    assert cache.get(key) is None
+
+
+def test_dataframe_execution_cache_reopen_failure_preserves_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = DataFrameExecutionCache(root=tmp_path, max_entries=4, max_bytes=10_000_000)
+    key = dataframe_execution_cache_key(
+        _graph(),
+        node_id="target",
+        namespace="unit",
+        source="batch",
+        profile=ExecutionProfile.LAZY_SINK,
+        input_fingerprint="input:v1",
+    )
+    first_scan = materialize_lazy_frame_with_cache(
+        pl.DataFrame({"x": [1]}).lazy(),
+        cache=cache,
+        key=key,
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    del first_scan
+    gc.collect()
+    first_entry = cache.get(key)
+    assert first_entry is not None
+
+    def replace_then_fail(_self, cache_key, entry):
+        cache._release_scan(cache_key, entry.path)
+        replacement_path = tmp_path / "replacement.parquet"
+        pl.DataFrame({"x": [2]}).write_parquet(replacement_path)
+        cache.store_artifact(
+            key,
+            replacement_path,
+            {
+                "row_count": 1,
+                "column_count": 1,
+                "columns": {"x": "Int64"},
+                "size_bytes": replacement_path.stat().st_size,
+                "uncompressed_size_bytes": replacement_path.stat().st_size,
+            },
+        )
+        raise OSError("old artifact vanished")
+
+    monkeypatch.setattr(DataFrameExecutionCache, "_open_scan", replace_then_fail)
+
+    cached, reason = cache.scan_with_proof(key)
+
+    assert cached is None
+    assert reason is ExecutionCacheProofMissReason.UNREADABLE_ARTIFACT
+    replacement = cache.get(key)
+    assert replacement is not None
+    assert replacement is not first_entry
+    assert replacement.path.name == "replacement.parquet"
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ from haute._logging import get_logger
 from haute._polars_utils import (
     is_bounded_execution_profile,
     normalise_execution_profile,
+    projected_or_carrier_columns,
 )
 from haute._validation_error import HauteValidationError
 from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
@@ -197,7 +198,14 @@ def _select_columns(
             missing=sorted(missing),
             available=schema_columns,
         )
-    return lf.select([column for column in schema_columns if column in requested])
+    # When selected_columns are being validated, the carrier comes from those
+    # so a later declarative selection cannot discard it.
+    selected = projected_or_carrier_columns(
+        schema_columns,
+        requested,
+        carrier_candidates=validation_requested,
+    )
+    return lf.select(selected)
 
 
 def _csv_header_columns(path: str) -> list[str]:
@@ -275,7 +283,11 @@ def _validate_csv_declared_schema_for_profile(
             )
 
     if _is_bounded_csv_profile(profile):
-        required = list(columns) if columns is not None else header
+        if columns == ():
+            carrier_candidates = set(validate_columns or header)
+            required = [next(column for column in header if column in carrier_candidates)]
+        else:
+            required = list(columns) if columns is not None else header
         missing_required = sorted(
             set(required) - set(schema_overrides or {}),
         )

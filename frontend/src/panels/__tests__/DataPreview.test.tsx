@@ -189,6 +189,85 @@ describe("DataPreview", () => {
     expect(screen.queryByText(/Boundaries:/)).not.toBeInTheDocument()
   })
 
+  it("keeps an admitted materialisation-only boundary silent unless memory pressure is reported", () => {
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      execution_strategy: {
+        schema_version: 1,
+        status: "boundary",
+        strategy: "materialisation-boundary",
+        profile: "preview_eager",
+        boundedness: "unbounded",
+        reason_code: "group_by_materialisation_admitted",
+        detail_state: "available",
+        boundaries: {
+          state: "available",
+          total_count: 1,
+          items: [
+            { topological_rank: 1, node_id: "claims_agg", operator: "group_by", boundary_kind: "materialisation-boundary" },
+          ],
+        },
+        reasons: { state: "available", total_count: 0, items: [] },
+        provenance: { state: "available", total_count: 0, items: [] },
+        blocking_node_id: "claims_agg",
+        blocking_operator: "group_by",
+        remediation: "Keep the admitted boundary within its reported memory headroom.",
+        estimated_peak_bytes: 126_233_883,
+        headroom_bytes: 4_294_967_296,
+      },
+    })
+    const { rerender } = render(<DataPreview data={makePreview({ execution_metrics: metrics })} />)
+
+    expect(screen.queryByLabelText("Preview execution warning details")).not.toBeInTheDocument()
+    expect(screen.queryByText("Column projection was limited")).not.toBeInTheDocument()
+
+    rerender(
+      <DataPreview data={makePreview({
+        execution_metrics: makeExecutionMetricsFixture({
+          execution_strategy: metrics.execution_strategy,
+        }),
+      })} />,
+    )
+    fireEvent.click(screen.getByLabelText("Preview execution warning details"))
+    expect(screen.getByText("Preview memory pressure")).toBeInTheDocument()
+  })
+
+  it("keeps an unprojected source visible in an admitted materialisation plan", () => {
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      execution_strategy: {
+        schema_version: 1,
+        status: "boundary",
+        strategy: "materialisation-boundary",
+        profile: "preview_eager",
+        boundedness: "unbounded",
+        reason_code: "group_by_materialisation_admitted",
+        detail_state: "available",
+        boundaries: {
+          state: "available",
+          total_count: 2,
+          items: [
+            { topological_rank: 0, node_id: "Quote_Input_1", operator: "apiInput", boundary_kind: "unprojected-streaming-boundary" },
+            { topological_rank: 1, node_id: "claims_agg", operator: "group_by", boundary_kind: "materialisation-boundary" },
+          ],
+        },
+        reasons: { state: "available", total_count: 0, items: [] },
+        provenance: { state: "available", total_count: 0, items: [] },
+        blocking_node_id: "claims_agg",
+        blocking_operator: "group_by",
+        remediation: "Keep the admitted boundary within its reported memory headroom.",
+        estimated_peak_bytes: 126_233_883,
+        headroom_bytes: 4_294_967_296,
+      },
+    })
+    render(<DataPreview data={makePreview({ execution_metrics: metrics })} />)
+
+    fireEvent.click(screen.getByLabelText("Preview execution warning details"))
+    expect(screen.getByText("Column projection was limited")).toBeInTheDocument()
+    expect(screen.getByText(/Quote_Input_1/)).toBeInTheDocument()
+    expect(screen.queryByText(/Keep the admitted boundary/)).not.toBeInTheDocument()
+  })
+
   it("surfaces a rejected execution strategy as an actionable preview error", () => {
     const metrics = makeExecutionMetricsFixture({
       memory_pressure_events: [],

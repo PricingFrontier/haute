@@ -22,8 +22,10 @@ from typing import Any
 import pytest
 
 from haute._api_input_schema import ApiInputSchemaError
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._json_shred import (
     _SCALAR_VALUE_LEAF,
+    _buffer_to_frame,
     build_per_port_cache,
     infer_v2_schema_from_data,
     read_per_port_cache_meta,
@@ -111,6 +113,52 @@ def test_shred_accepts_lone_value_leaf_scalar_table() -> None:
     }
     buffers = shred_to_buffers([{"tags": ["a", "b"]}], config)
     assert buffers["tags"] == [{"value": "a"}, {"value": "b"}]
+
+
+def test_shred_loop_checkpoints_active_execution_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("haute._json_shred._SHRED_EXECUTION_CHECKPOINT_ROWS", 2)
+    points: list[str] = []
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: 1,
+        fault_injector=lambda point: points.append(point.name),
+    )
+    config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id", "int")])]}
+
+    with context.stage("api_input"):
+        buffers = shred_to_buffers([{"id": 1}, {"id": 2}, {"id": 3}], config)
+
+    assert buffers["root"] == [{"id": 1}, {"id": 2}, {"id": 3}]
+    assert points[0] == "json_shred_before_rows"
+    assert "json_shred_rows" in points
+    assert points[-1] == "json_shred_after_rows"
+
+
+def test_shred_frame_conversion_checkpoints_active_execution_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("haute._json_shred._SHRED_EXECUTION_CHECKPOINT_ROWS", 2)
+    points: list[str] = []
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: 1,
+        fault_injector=lambda point: points.append(point.name),
+    )
+
+    with context.stage("api_input"):
+        frame = _buffer_to_frame(
+            [{"id": 1}, {"id": 2}, {"id": 3}],
+            [("id", "$[:].id", "int")],
+        )
+
+    assert frame["id"].to_list() == [1, 2, 3]
+    assert points[0] == "json_shred_frame_before"
+    assert "json_shred_frame_values" in points
+    assert points[-1] == "json_shred_frame_after"
 
 
 # ─── F103 — empty array must not poison a later concrete element type ─

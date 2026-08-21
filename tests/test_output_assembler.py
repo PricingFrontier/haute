@@ -17,6 +17,7 @@ from dataclasses import FrozenInstanceError
 import polars as pl
 import pytest
 
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._jsonpath import _Seg
 from haute._node_apply import assemble_output_from_config
 from haute._output_assembler import (
@@ -29,11 +30,13 @@ from haute._output_assembler import (
     _gyo_residue,
     _index_rows,
     _merge_groups,
+    _OutputAssemblyProgress,
     _parse_output_path,
     _plan_cut,
     _prune,
     assemble_output_from_mapping,
     is_active_mapping_entry,
+    render_output_document,
     validate_v2_output_mapping,
 )
 from haute.errors import HauteError
@@ -846,6 +849,70 @@ def test_validate_rejects_divergent_array_branches_before_frame_collection() -> 
         assemble_output_from_mapping({"p": CollectSpy()}, mapping)  # type: ignore[arg-type]
 
 
+def test_same_level_output_frames_are_materialised_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same lazy sources must not be collected once raw and again for their join."""
+    original_collect = pl.LazyFrame.collect
+    collect_calls = 0
+
+    def counted_collect(self: pl.LazyFrame, *args: object, **kwargs: object) -> pl.DataFrame:
+        nonlocal collect_calls
+        collect_calls += 1
+        return original_collect(self, *args, **kwargs)
+
+    monkeypatch.setattr(pl.LazyFrame, "collect", counted_collect)
+    result = _assemble_document(
+        {
+            "left": pl.LazyFrame({"$[:].id": [1], "$[:].a": ["left"]}),
+            "right": pl.LazyFrame({"$[:].id": [1], "$[:].b": ["right"]}),
+        }
+    )
+
+    assert result == [{"id": 1, "a": "left", "b": "right"}]
+    assert collect_calls == 1
+
+
+def test_output_materialisation_uses_active_execution_context() -> None:
+    """Terminal assembly remains observable and cancellable after Polars collection."""
+    fault_points: list[str] = []
+    context = ExecutionContext(
+        operation="test_output_assembly",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: 1,
+        fault_injector=lambda point: fault_points.append(point.name),
+    )
+
+    with context.stage("output_assembly"):
+        result = _assemble_document({"port": pl.LazyFrame({"$[:].value": [1, 2]})})
+
+    summary = context.metrics.summary(
+        operation=context.operation,
+        profile=context.profile,
+    )
+    assert result == [{"value": 1}, {"value": 2}]
+    assert summary.n_collects == 1
+    assert "output_assembly_rows" in fault_points
+    assert "output_assembly_build" in fault_points
+
+
+def test_output_rendering_checkpoints_python_materialisation() -> None:
+    fault_points: list[str] = []
+    context = ExecutionContext(
+        operation="test_output_render",
+        profile=ExecutionProfile.DEPLOY_BATCH,
+        memory_sampler=lambda: 1,
+        fault_injector=lambda point: fault_points.append(point.name),
+    )
+
+    with context.stage("output_render"):
+        result = render_output_document(pl.DataFrame({"value": [1, 2]}))
+
+    assert result == [{"value": 1}, {"value": 2}]
+    assert "output_render_rows" in fault_points
+    assert "output_render_prune" in fault_points
+
+
 def test_validate_rejects_divergent_array_branches_in_descending_order() -> None:
     mapping = [
         _entry("p", "right_id", "$[:].right[:].id"),
@@ -1035,6 +1102,53 @@ def test_assemble_indexes_child_rows_once_per_relation_key(monkeypatch: pytest.M
     assert seen == [(("$[:].id",), 2), (("$[:].id",), 2)]
 
 
+def test_index_rows_calls_callback_for_every_row() -> None:
+    calls: list[None] = []
+
+    indexed = _index_rows(
+        [{"id": 1, "value": "a"}, {"id": 1, "value": "b"}],
+        ("id",),
+        on_row=lambda: calls.append(None),
+    )
+
+    assert indexed == {(1,): [{"id": 1, "value": "a"}, {"id": 1, "value": "b"}]}
+    assert len(calls) == 2
+
+
+def test_output_assembly_progress_checkpoints_at_threshold() -> None:
+    class Context:
+        def __init__(self) -> None:
+            self.labels: list[str] = []
+
+        def checkpoint(self, *, label: str) -> None:
+            self.labels.append(label)
+
+    context = Context()
+    progress = _OutputAssemblyProgress(context)  # type: ignore[arg-type]
+    progress.rows_since_checkpoint = 1_023
+
+    progress.advance("output_assembly_build")
+
+    assert context.labels == ["output_assembly_build"]
+    assert progress.rows_since_checkpoint == 0
+
+
+def test_assemble_document_with_context_indexes_scoped_rows() -> None:
+    context = ExecutionContext(
+        operation="output_assembly",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
+    frames = {
+        "parent": pl.LazyFrame({"$[:].id": [1]}),
+        "child": pl.LazyFrame({"$[:].id": [1], "$[:].items[:].value": ["x"]}),
+    }
+
+    with context.stage("assemble"):
+        result = _assemble_document(frames)
+
+    assert result == [{"id": 1, "items": [{"value": "x"}]}]
+
+
 # ─── Incomplete (half-built) mapping rows ─────────────────────────
 #
 # A row whose source_column or output_path is still blank (e.g. a manually
@@ -1196,6 +1310,31 @@ def test_execute_plan_picks_fold_order_by_shared_field_intersection() -> None:
     assert _objects(_execute_plan(frames, plan)) == Counter(
         [_obj(A="p", B="q", mB=9), _obj(A="p2")]
     )
+
+
+def test_execute_plan_rejects_a_disconnected_merge_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A corrupt plan must fail instead of silently Cartesian-joining rows."""
+    frames = {
+        "A": pl.LazyFrame({"left_key": [1]}),
+        "B": pl.LazyFrame({"right_key": [2]}),
+    }
+    plan = _CutPlan(
+        cores=(),
+        cuts=frozenset(),
+        merge_residue={
+            "A": frozenset({"left_key"}),
+            "B": frozenset({"right_key"}),
+        },
+    )
+    monkeypatch.setattr(
+        "haute._output_assembler._merge_groups",
+        lambda _residue: [frozenset({"A", "B"})],
+    )
+
+    with pytest.raises(RuntimeError, match="join plan is disconnected"):
+        _execute_plan(frames, plan)
 
 
 # Prefix-tree serialisation — a synthesised intermediate level (no frame emits

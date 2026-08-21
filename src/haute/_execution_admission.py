@@ -223,6 +223,108 @@ class ExecutionBudget:
 
 
 @dataclass(frozen=True, slots=True)
+class IsolatedExecutionBudget:
+    """Pickle-safe admitted budget used to construct a child-local context."""
+
+    operation: str
+    profile: ExecutionProfile
+    memory_limit_bytes: int
+    config_key: str
+    budget_policy: str
+    process_rss_limit_bytes: int | None = None
+    available_ram_bytes: int | None = None
+    os_reserve_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.memory_limit_bytes, int)
+            or isinstance(self.memory_limit_bytes, bool)
+            or self.memory_limit_bytes <= 0
+        ):
+            raise ValueError("isolated memory_limit_bytes must be a positive integer")
+        if self.process_rss_limit_bytes is not None and (
+            not isinstance(self.process_rss_limit_bytes, int)
+            or isinstance(self.process_rss_limit_bytes, bool)
+            or self.process_rss_limit_bytes <= 0
+        ):
+            raise ValueError("isolated process_rss_limit_bytes must be positive or None")
+
+
+def isolated_execution_budget(context: ExecutionContext) -> IsolatedExecutionBudget:
+    """Extract plain immutable budget evidence from a parent-owned admission."""
+    admission = context.admission
+    if admission is None or not admission.admitted:
+        raise ValueError("isolated execution requires an admitted parent context")
+    effective_headroom = admission.headroom_bytes
+    if (
+        not isinstance(effective_headroom, int)
+        or isinstance(effective_headroom, bool)
+        or effective_headroom <= 0
+    ):
+        raise ValueError("isolated execution requires positive admitted memory headroom")
+    return IsolatedExecutionBudget(
+        operation=context.operation,
+        profile=context.profile,
+        memory_limit_bytes=effective_headroom,
+        config_key=admission.config_key,
+        budget_policy=admission.budget_policy,
+        process_rss_limit_bytes=admission.process_rss_limit_bytes,
+        available_ram_bytes=admission.available_ram_bytes,
+        os_reserve_bytes=admission.os_reserve_bytes,
+    )
+
+
+def create_isolated_execution_context(
+    budget: IsolatedExecutionBudget,
+) -> ExecutionContext:
+    """Construct a worker-local limited context without double-reserving admission."""
+    if not isinstance(budget, IsolatedExecutionBudget):
+        raise TypeError("budget must be an IsolatedExecutionBudget")
+    rss_at_start = current_rss_bytes()
+    if rss_at_start is None:
+        raise ExecutionAdmissionError(
+            budget.operation,
+            profile=budget.profile,
+            memory_limit_bytes=budget.memory_limit_bytes,
+            rss_at_admission_bytes=None,
+            reason="memory_sampler_unavailable",
+        )
+    rss_limit_bytes = rss_at_start + budget.memory_limit_bytes
+    if budget.process_rss_limit_bytes is not None:
+        if rss_at_start >= budget.process_rss_limit_bytes:
+            raise ExecutionAdmissionError(
+                budget.operation,
+                profile=budget.profile,
+                memory_limit_bytes=budget.memory_limit_bytes,
+                rss_at_admission_bytes=rss_at_start,
+                process_rss_limit_bytes=budget.process_rss_limit_bytes,
+                reason="process_rss_limit_exceeded",
+            )
+        rss_limit_bytes = min(rss_limit_bytes, budget.process_rss_limit_bytes)
+    admission = ExecutionAdmission(
+        operation=budget.operation,
+        profile=budget.profile,
+        memory_limit_bytes=budget.memory_limit_bytes,
+        rss_at_admission_bytes=rss_at_start,
+        rss_limit_bytes=rss_limit_bytes,
+        process_rss_limit_bytes=budget.process_rss_limit_bytes,
+        headroom_bytes=rss_limit_bytes - rss_at_start,
+        config_key=budget.config_key,
+        budget_policy=budget.budget_policy,
+        available_ram_bytes=budget.available_ram_bytes,
+        os_reserve_bytes=budget.os_reserve_bytes,
+    )
+    return ExecutionContext(
+        operation=budget.operation,
+        profile=budget.profile,
+        memory_limit_bytes=budget.memory_limit_bytes,
+        memory_baseline_bytes=rss_at_start,
+        rss_limit_bytes=rss_limit_bytes,
+        admission=admission,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class _ResolvedMemoryLimit:
     memory_limit_bytes: int
     config_key: str
@@ -411,7 +513,7 @@ def create_admitted_execution_context(
         )
     if (
         budget.process_rss_limit_bytes is not None
-        and rss_at_admission > budget.process_rss_limit_bytes
+        and rss_at_admission >= budget.process_rss_limit_bytes
     ):
         raise ExecutionAdmissionError(
             operation,

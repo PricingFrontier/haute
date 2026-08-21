@@ -18,6 +18,7 @@ import polars as pl
 import haute.execution as execution_facade
 import haute.projection as projection_planner
 from haute._builders import _passthrough_fn
+from haute._column_lineage import analyze_polars_lineage
 from haute._config_io import is_windows_reserved_filename
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import (
@@ -41,7 +42,12 @@ from haute._graph_utils import (
 )
 from haute._logging import get_logger
 from haute._path_resolution import runtime_project_root_scoped
-from haute._polars_utils import _malloc_trim, bounded_sink, streaming_collect
+from haute._polars_utils import (
+    _malloc_trim,
+    bounded_sink,
+    projected_or_carrier_columns,
+    streaming_collect,
+)
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -535,30 +541,39 @@ def _assert_simple_join_key_dtypes_compatible(
 
 def _runtime_join_demands(
     node: GraphNode,
-    input_ids: list[str],
+    incoming_edges: list[GraphEdge],
     input_lfs: list[_Frame],
     projection: set[str] | frozenset[str] | None,
-    existing_edge_demands: Mapping[tuple[str, str], set[str] | frozenset[str] | None],
-) -> dict[str, set[str]]:
+    existing_edge_demands: Mapping[
+        projection_planner.ProjectionEdgeKey,
+        set[str] | frozenset[str] | None,
+    ],
+    node_map: Mapping[str, GraphNode],
+) -> dict[projection_planner.ProjectionEdgeKey, set[str]]:
     """Resolve a safe join projection from lazy parent schemas."""
-    if projection is None or len(input_ids) != 2:
+    if projection is None or len(incoming_edges) < 2:
         return {}
-    if any(existing_edge_demands.get((parent_id, node.id)) is not None for parent_id in input_ids):
+    if any(
+        existing_edge_demands.get(projection_planner.ProjectionEdgeKey.from_edge(edge)) is not None
+        for edge in incoming_edges
+    ):
         return {}
 
-    frame_by_parent = dict(zip(input_ids, input_lfs, strict=True))
-
-    def schema_names(parent_id: str) -> set[str]:
-        frame = frame_by_parent[parent_id]
+    schema_by_key: dict[projection_planner.ProjectionEdgeKey, set[str]] = {}
+    for edge, frame in zip(incoming_edges, input_lfs, strict=True):
         lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
-        return set(lazy_frame.collect_schema().names())
+        schema_by_key[projection_planner.ProjectionEdgeKey.from_edge(edge)] = set(
+            lazy_frame.collect_schema().names()
+        )
+
+    input_ids = [edge.source for edge in incoming_edges]
 
     left_keys: set[str]
     right_keys: set[str]
     if node.data.nodeType is NodeType.EDGE_JOIN:
         base_index, join_index = resolve_edge_join_role_indices(node.data.config, input_ids)
-        left_parent = input_ids[base_index]
-        right_parent = input_ids[join_index]
+        left_edge = incoming_edges[base_index]
+        right_edge = incoming_edges[join_index]
         base_keys, join_keys = edge_join_key_columns_by_role(node.data.config)
         left_keys = set(base_keys)
         right_keys = set(join_keys)
@@ -566,34 +581,69 @@ def _runtime_join_demands(
         how = str(kwargs["how"])
         suffix = str(kwargs["suffix"])
     elif node.data.nodeType is NodeType.POLARS:
-        joins = projection_planner.simple_join_calls_for_parent_inputs(node, input_ids)
-        if len(joins) != 1:
+        # Preserve the engine's typed missing-key/dtype diagnostics before
+        # asking lineage analysis for an optimisation.  This validator is a
+        # no-op for port-distinct edges that share one source node; those are
+        # still handled by the edge/name-aware analysis below and by Polars'
+        # authoritative runtime validation.
+        _assert_simple_join_key_dtypes_compatible(node, input_ids, input_lfs)
+        by_name: dict[str, GraphEdge] = {}
+        schemas: dict[str, frozenset[str]] = {}
+        for edge in incoming_edges:
+            try:
+                name = edge_input_name(edge, node_map[edge.source])
+            except (KeyError, ValueError):
+                return {}
+            if name in by_name:
+                return {}
+            by_name[name] = edge
+            schemas[name] = frozenset(
+                schema_by_key[projection_planner.ProjectionEdgeKey.from_edge(edge)]
+            )
+        raw_mapping = node.data.config.get("inputMapping")
+        if raw_mapping:
+            if not isinstance(raw_mapping, Mapping):
+                return {}
+            for alias, current_name in raw_mapping.items():
+                if (
+                    not isinstance(alias, str)
+                    or not alias
+                    or not isinstance(current_name, str)
+                    or current_name not in by_name
+                    or (alias in by_name and by_name[alias] != by_name[current_name])
+                ):
+                    return {}
+                by_name[alias] = by_name[current_name]
+                schemas[alias] = schemas[current_name]
+        code = node.data.config.get("code")
+        if not isinstance(code, str):
             return {}
-        join = joins[0]
-        if {join.left_parent, join.right_parent} != set(input_ids):
+        analysis = analyze_polars_lineage(code, schemas, projection)
+        if not analysis.supported:
             return {}
-        left_parent = join.left_parent
-        right_parent = join.right_parent
-        left_keys = {left_key for left_key, _right_key in join.key_pairs}
-        right_keys = {right_key for _left_key, right_key in join.key_pairs}
-        how = join.how
-        suffix = join.suffix
+        demands: dict[projection_planner.ProjectionEdgeKey, set[str]] = {}
+        for input_name, columns in analysis.demands_by_input.items():
+            edge_key = projection_planner.ProjectionEdgeKey.from_edge(by_name[input_name])
+            demands.setdefault(edge_key, set()).update(columns)
+        return demands
     else:
         return {}
 
+    left_key = projection_planner.ProjectionEdgeKey.from_edge(left_edge)
+    right_key = projection_planner.ProjectionEdgeKey.from_edge(right_edge)
     routed = narrow_join_parent_demand(
         projection,
         left_keys=left_keys,
         right_keys=right_keys,
-        left_schema=schema_names(left_parent),
-        right_schema=schema_names(right_parent),
+        left_schema=schema_by_key[left_key],
+        right_schema=schema_by_key[right_key],
         how=how,
         suffix=suffix,
     )
     if routed is None:
         return {}
     left_demand, right_demand = routed
-    return {left_parent: left_demand, right_parent: right_demand}
+    return {left_key: left_demand, right_key: right_demand}
 
 
 def _runtime_projectable_source_ids(
@@ -726,6 +776,10 @@ def _execute_lazy(
         required_columns_by_node,
         order,
     )
+    planning_required_columns: dict[
+        str,
+        set[str] | projection_planner.AllExceptColumns,
+    ] = dict(normalised_required_columns)
     strict_contract_resolution = _strict_contract_resolution(
         execution_context.profile if execution_context is not None else None
     )
@@ -795,6 +849,10 @@ def _execute_lazy(
             )
             if merged_demand is not None:
                 cache_required_columns[node_id] = merged_demand
+        # Cache materialisation is part of this physical execution, not merely
+        # an identity check.  Plan from the union so a narrower immediate
+        # request cannot prune passthrough dependencies needed by the artifact.
+        planning_required_columns = cache_required_columns
         cache_policy = execution_facade.dataframe_lazy_execution_policy(
             target_node_id=target_node_id,
             source_by_node=node_source_overrides,
@@ -904,7 +962,7 @@ def _execute_lazy(
                 graph=graph,
                 target_node_id=target_node_id,
                 profile=strategy_profile,
-                required_columns_by_node=normalised_required_columns,
+                required_columns_by_node=planning_required_columns,
                 source=source,
             ),
             execution_context=execution_context,
@@ -915,14 +973,36 @@ def _execute_lazy(
             children_of,
             node_map,
             profile=strategy_profile,
-            required_columns_by_node=normalised_required_columns,
+            required_columns_by_node=planning_required_columns,
             execution_context=execution_context,
             schema_only=schema_only,
+            relevant_edges=relevant_edges,
         )
     public_projection_plan = public_strategy_result.projection_plan
     projection_plan = public_projection_plan
     needed_cols = projection_plan.needed_by_node
     edge_demands = projection_plan.edge_demands
+    cache_broadens_projection = planning_required_columns != normalised_required_columns
+    runtime_projection_plan = (
+        projection_planner.compute_prepared_plan(
+            order,
+            children_of,
+            node_map,
+            normalised_required_columns,
+            strict_projection=_strict_projection_for_context(
+                execution_context,
+                normalised_required_columns,
+            ),
+            relevant_edges=relevant_edges,
+        )
+        if cache_broadens_projection
+        else projection_plan
+    )
+    api_port_columns_by_node = projection_planner.api_input_port_columns_by_node(
+        node_map,
+        relevant_edges,
+        projection_plan,
+    )
 
     # Full parent lookup from ALL edges for instance resolution
     all_parents = graph.parents_of
@@ -953,6 +1033,14 @@ def _execute_lazy(
             needed_cols,
             preserve_eager_model_score_inputs=False,
         )
+        if cache_broadens_projection:
+            # Source builders cannot validate a best-effort cache-only demand
+            # before their lazy schema exists.  Keep their scans lazy and broad;
+            # the first edge projection below intersects cache-only columns with
+            # the actual schema, so Parquet/NDJSON pushdown still occurs.
+            for node_id in order:
+                if not parents_of.get(node_id):
+                    builder_needed_cols[node_id] = None
         build_order = [
             node_id
             for node_id in order
@@ -972,6 +1060,7 @@ def _execute_lazy(
             source=source,
             source_by_node=node_source_overrides,
             required_output_columns_by_node=builder_needed_cols,
+            required_output_columns_by_port_by_node=api_port_columns_by_node,
             execution_profile=(
                 execution_context.profile if execution_context is not None else None
             ),
@@ -1031,17 +1120,19 @@ def _execute_lazy(
         return frozenset(_schema_names_of(frame))
 
     def _apply_edge_projection(
-        child_id: str,
-        parent_id: str,
+        edge: GraphEdge,
         frame: _Frame,
         *,
         runtime_demand: set[str] | None = None,
     ) -> tuple[_Frame, frozenset[str] | None]:
+        child_id = edge.target
+        parent_id = edge.source
+        edge_key = projection_planner.ProjectionEdgeKey.from_edge(edge)
         demand: set[str] | frozenset[str] | None = runtime_demand
-        if demand is None and (parent_id, child_id) not in edge_demands:
+        if demand is None and edge_key not in edge_demands:
             return frame, None
         if demand is None:
-            demand = edge_demands[(parent_id, child_id)]
+            demand = edge_demands[edge_key]
         if demand is None:
             return frame, None
 
@@ -1049,31 +1140,50 @@ def _execute_lazy(
         schema_cols = _schema_names_of(lazy_frame)
         schema_set = set(schema_cols)
         missing = demand - schema_set
-        if missing:
+        runtime_required = (
+            set(demand)
+            if runtime_demand is not None
+            else set(runtime_projection_plan.demand_for_edge(edge) or ())
+        )
+        runtime_missing = missing & runtime_required
+        if runtime_missing:
             raise ContractMismatchError(
-                "Columns required by a fan-in projection contract are "
-                "missing from the parent frame.",
+                "Columns required by a projection contract are missing from the parent frame.",
                 node_id=child_id,
                 parent_id=parent_id,
-                missing=sorted(missing),
+                missing=sorted(runtime_missing),
                 required_columns=sorted(demand),
                 parent_columns=sorted(schema_set),
             )
+        if missing:
+            # A cache key may deliberately be broader than this call's runtime
+            # demand.  Cache population is an optimisation: an unavailable
+            # cache-only column makes that artifact ineligible, but must not
+            # fail an otherwise valid execution.  The materialisation gate will
+            # observe the same missing column and skip the cache write.
+            logger.warning(
+                "dataframe_execution_cache_projection_column_missing",
+                node_id=child_id,
+                parent_id=parent_id,
+                missing=sorted(missing),
+            )
+            demand = set(demand) - missing
 
-        ordered = [column for column in schema_cols if column in demand]
+        ordered = projected_or_carrier_columns(schema_cols, demand)
         return lazy_frame.select(ordered), frozenset(ordered)
 
     def _runtime_join_edge_demands(
         child_id: str,
-        input_ids: list[str],
+        incoming_edges: list[GraphEdge],
         input_lfs: list[_Frame],
-    ) -> dict[str, set[str]]:
+    ) -> dict[projection_planner.ProjectionEdgeKey, set[str]]:
         return _runtime_join_demands(
             node_map[child_id],
-            input_ids,
+            incoming_edges,
             input_lfs,
             needed_cols.get(child_id),
             edge_demands,
+            node_map,
         )
 
     def _build_lazy_node(nid: str) -> tuple[_Frame, bool, GraphNode]:
@@ -1132,7 +1242,7 @@ def _execute_lazy(
             projected_input_columns: list[frozenset[str] | None] = []
             runtime_edge_demands = _runtime_join_edge_demands(
                 nid,
-                input_ids,
+                incoming_edges,
                 input_lfs,
             )
             if (
@@ -1142,12 +1252,12 @@ def _execute_lazy(
             ):
                 public_projection_plan = projection_planner.with_runtime_inferred_streaming_edges(
                     public_projection_plan,
-                    child_id=nid,
-                    demands_by_parent=runtime_edge_demands,
+                    demands_by_edge=runtime_edge_demands,
                     resolved_parent_ids=_runtime_projectable_source_ids(
-                        runtime_edge_demands,
+                        (key.source for key in runtime_edge_demands),
                         node_map,
                     ),
+                    relevant_edges=relevant_edges,
                 )
                 previous_diagnostic = public_strategy_result.diagnostic
                 public_strategy_result = projection_planner.build_execution_strategy_result(
@@ -1156,19 +1266,24 @@ def _execute_lazy(
                     order=order,
                     children_of=children_of,
                     node_map=node_map,
-                    has_projection_seed=bool(normalised_required_columns),
-                    required_columns_by_node=normalised_required_columns,
+                    has_projection_seed=bool(planning_required_columns),
+                    required_columns_by_node=planning_required_columns,
                     estimated_peak_bytes=previous_diagnostic.estimated_peak_bytes,
+                    raw_estimated_peak_bytes=(previous_diagnostic.raw_estimated_peak_bytes),
+                    estimate_calibration_factor_basis_points=(
+                        previous_diagnostic.estimate_calibration_factor_basis_points
+                    ),
+                    estimate_admission_basis=previous_diagnostic.estimate_admission_basis,
                     headroom_bytes=previous_diagnostic.headroom_bytes,
                     assumptions=previous_diagnostic.assumptions,
                 )
                 execution_context.projection_plan = public_strategy_result
-            for input_id, input_lf in zip(input_ids, input_lfs, strict=True):
+            for incoming_edge, input_lf in zip(incoming_edges, input_lfs, strict=True):
+                edge_key = projection_planner.ProjectionEdgeKey.from_edge(incoming_edge)
                 projected_lf, projected_cols = _apply_edge_projection(
-                    nid,
-                    input_id,
+                    incoming_edge,
                     input_lf,
-                    runtime_demand=runtime_edge_demands.get(input_id),
+                    runtime_demand=runtime_edge_demands.get(edge_key),
                 )
                 projected_input_lfs.append(projected_lf)
                 projected_input_columns.append(projected_cols)
@@ -1391,17 +1506,28 @@ def _execute_lazy(
                 schema_cols = sink_lf.collect_schema().names()
                 schema_set = set(schema_cols)
                 missing = projection - schema_set
-                if missing:
+                runtime_projection = runtime_projection_plan.needed_by_node.get(nid)
+                runtime_required = set(runtime_projection or ())
+                runtime_missing = missing & runtime_required
+                if runtime_missing:
                     raise ContractMismatchError(
                         "Checkpoint projection references columns missing "
                         "from the node output schema.",
                         node_id=nid,
                         node_type=node.data.nodeType.value,
-                        missing=sorted(missing),
-                        required_columns=sorted(projection),
+                        missing=sorted(runtime_missing),
+                        required_columns=sorted(runtime_required),
                         output_columns=sorted(schema_set),
                     )
-                valid = [c for c in schema_cols if c in projection]
+                cache_only_missing = missing - runtime_missing
+                if cache_only_missing:
+                    logger.warning(
+                        "dataframe_execution_cache_checkpoint_column_missing",
+                        node_id=nid,
+                        missing=sorted(cache_only_missing),
+                    )
+                effective_projection = set(projection) - cache_only_missing
+                valid = projected_or_carrier_columns(schema_cols, effective_projection)
                 if valid and len(valid) < len(schema_cols):
                     logger.info(
                         "checkpoint_projection",
@@ -1460,6 +1586,11 @@ def _build_funcs(
     source: str = "live",
     source_by_node: Mapping[str, str] | None = None,
     required_output_columns_by_node: Mapping[str, frozenset[str] | set[str] | None] | None = None,
+    required_output_columns_by_port_by_node: Mapping[
+        str,
+        Mapping[str, frozenset[str] | None],
+    ]
+    | None = None,
     reuse_loaded_model_by_node: Mapping[str, bool] | None = None,
     execution_profile: ExecutionProfile | None = None,
 ) -> dict[str, tuple[Callable, bool]]:
@@ -1528,6 +1659,11 @@ def _build_funcs(
                 if required_output_columns_by_node is not None
                 else None
             ),
+            required_output_columns_by_port=(
+                required_output_columns_by_port_by_node.get(nid)
+                if required_output_columns_by_port_by_node is not None
+                else None
+            ),
             reuse_loaded_model=(
                 bool(reuse_loaded_model_by_node.get(nid))
                 if reuse_loaded_model_by_node is not None
@@ -1584,6 +1720,24 @@ class EagerResult(NamedTuple):
     # so per-frame columns are available WITHOUT collecting the ancestor.
     # Empty for single-frame nodes (their schema is in ``output_columns``).
     frame_columns: dict[tuple[str, str], list[tuple[str, str]]]
+
+
+def _declared_api_input_frame_schema_items(
+    node: GraphNode,
+) -> dict[str, list[tuple[str, str]]]:
+    """Return all declared emitting-port schemas without opening payloads."""
+    if node.data.nodeType is not NodeType.API_INPUT or not isinstance(
+        node.data.config.get("tables"),
+        list,
+    ):
+        return {}
+    from haute._json_shred import _declared_frame_schema, _emitting_table_specs
+
+    declared: dict[str, list[tuple[str, str]]] = {}
+    for table_spec in _emitting_table_specs(node.data.config):
+        schema = _declared_frame_schema(table_spec)
+        declared[table_spec.label] = [(name, str(schema[name])) for name in schema.names()]
+    return declared
 
 
 @runtime_project_root_scoped
@@ -1708,8 +1862,9 @@ def _execute_eager_core(
             frame_key = (edge.source, edge.sourceHandle)
             frame_fanout_count[frame_key] = frame_fanout_count.get(frame_key, 0) + 1
 
-    projection_plan: projection_planner.ProjectionPlan | None = (
-        projection_planner.compute_prepared_plan(
+    context_strategy = execution_context.projection_plan if execution_context is not None else None
+    if normalised_required_columns:
+        projection_plan = projection_planner.compute_prepared_plan(
             order,
             children_of,
             node_map,
@@ -1718,10 +1873,10 @@ def _execute_eager_core(
                 execution_context,
                 normalised_required_columns,
             ),
+            relevant_edges=relevant_edges,
         )
-        if normalised_required_columns
-        else None
-    )
+    else:
+        projection_plan = None
     needed_cols: Mapping[str, frozenset[str] | None] = (
         projection_plan.needed_by_node if projection_plan is not None else {}
     )
@@ -1729,6 +1884,24 @@ def _execute_eager_core(
         node_map,
         needed_cols,
         preserve_eager_model_score_inputs=True,
+    )
+    # Public strategy planning also runs for an unseeded first-click preview.
+    # Reuse that proof only at the API port-loading seam: applying its complete
+    # node demands as eager output projections would change established output
+    # and schema-reporting semantics for unrelated nodes.
+    port_projection_plan = (
+        context_strategy.projection_plan
+        if isinstance(context_strategy, projection_planner.ExecutionStrategyResult)
+        else projection_plan
+    )
+    api_port_columns_by_node = (
+        projection_planner.api_input_port_columns_by_node(
+            node_map,
+            relevant_edges,
+            port_projection_plan,
+        )
+        if port_projection_plan is not None
+        else {}
     )
 
     funcs = _build_funcs(
@@ -1744,6 +1917,7 @@ def _execute_eager_core(
         preamble_ns=preamble_ns,
         source=source,
         required_output_columns_by_node=builder_needed_cols,
+        required_output_columns_by_port_by_node=api_port_columns_by_node,
         execution_profile=execution_context.profile if execution_context is not None else None,
     )
 
@@ -1923,19 +2097,28 @@ def _execute_eager_core(
 
                 runtime_edge_demands = _runtime_join_demands(
                     node,
-                    input_ids,
+                    incoming_edges_for_node,
                     input_lfs,
                     needed_cols.get(nid),
                     projection_plan.edge_demands if projection_plan is not None else {},
+                    node_map,
                 )
                 if runtime_edge_demands:
                     projected_inputs: list[pl.LazyFrame] = []
-                    for input_id, input_lf in zip(input_ids, input_lfs, strict=True):
-                        demand = runtime_edge_demands[input_id]
-                        schema_names = input_lf.collect_schema().names()
-                        projected_inputs.append(
-                            input_lf.select([column for column in schema_names if column in demand])
+                    for incoming_edge, input_lf in zip(
+                        incoming_edges_for_node,
+                        input_lfs,
+                        strict=True,
+                    ):
+                        demand = runtime_edge_demands.get(
+                            projection_planner.ProjectionEdgeKey.from_edge(incoming_edge)
                         )
+                        if demand is None:
+                            projected_inputs.append(input_lf)
+                            continue
+                        schema_names = input_lf.collect_schema().names()
+                        selected = projected_or_carrier_columns(schema_names, demand)
+                        projected_inputs.append(input_lf.select(selected))
                     input_lfs = projected_inputs
 
                     current_strategy = (
@@ -1948,12 +2131,12 @@ def _execute_eager_core(
                         assert execution_context is not None
                         refined_plan = projection_planner.with_runtime_inferred_streaming_edges(
                             current_strategy.projection_plan,
-                            child_id=nid,
-                            demands_by_parent=runtime_edge_demands,
+                            demands_by_edge=runtime_edge_demands,
                             resolved_parent_ids=_runtime_projectable_source_ids(
-                                runtime_edge_demands,
+                                (key.source for key in runtime_edge_demands),
                                 node_map,
                             ),
+                            relevant_edges=relevant_edges,
                         )
                         previous_diagnostic = current_strategy.diagnostic
                         execution_context.projection_plan = (
@@ -1966,6 +2149,15 @@ def _execute_eager_core(
                                 has_projection_seed=bool(normalised_required_columns),
                                 required_columns_by_node=normalised_required_columns,
                                 estimated_peak_bytes=(previous_diagnostic.estimated_peak_bytes),
+                                raw_estimated_peak_bytes=(
+                                    previous_diagnostic.raw_estimated_peak_bytes
+                                ),
+                                estimate_calibration_factor_basis_points=(
+                                    previous_diagnostic.estimate_calibration_factor_basis_points
+                                ),
+                                estimate_admission_basis=(
+                                    previous_diagnostic.estimate_admission_basis
+                                ),
                                 headroom_bytes=previous_diagnostic.headroom_bytes,
                                 assumptions=previous_diagnostic.assumptions,
                             )
@@ -2028,6 +2220,16 @@ def _execute_eager_core(
             # `test_bounded_collect_contracts` enforces that bounded
             # modules never call ``.collect()`` directly.
             if isinstance(result, dict):
+                declared_frame_schemas = _declared_api_input_frame_schema_items(node)
+                is_multi_frame_producer = (
+                    len(declared_frame_schemas) > 1 if declared_frame_schemas else len(result) > 1
+                )
+                if is_multi_frame_producer and declared_frame_schemas:
+                    # Loading is demand-scoped, but editor/schema metadata is
+                    # a config contract. Surface every declared port without
+                    # opening or collecting the unused parquet payloads.
+                    for port_label, schema_items in declared_frame_schemas.items():
+                        frame_schema_cache[(nid, port_label)] = schema_items
                 # Gate the per-frame collect on the SAME materialize test
                 # every other node uses (see ``should_materialize`` below
                 # for single-frame nodes). A multi-frame ANCESTOR of a
@@ -2078,7 +2280,7 @@ def _execute_eager_core(
                     # preview schema remains in ``columns``.
                     for port_label, port_df in materialised.items():
                         column_cache[(nid, port_label)] = frozenset(port_df.columns)
-                        if len(materialised) > 1:
+                        if is_multi_frame_producer and not declared_frame_schemas:
                             port_schema = port_df.schema
                             frame_schema_cache[(nid, port_label)] = [
                                 (name, str(port_schema[name])) for name in port_df.columns
@@ -2089,9 +2291,9 @@ def _execute_eager_core(
                             output_width=sum(frame.width for frame in materialised.values()),
                         )
                     eager_outputs[nid] = materialised
-                    if len(materialised) == 1:
-                        only_frame = next(iter(materialised.values()))
-                        only_schema = [
+                    if not is_multi_frame_producer and len(materialised) == 1:
+                        only_port, only_frame = next(iter(materialised.items()))
+                        only_schema = declared_frame_schemas.get(only_port) or [
                             (name, str(only_frame.schema[name])) for name in only_frame.columns
                         ]
                         available_columns[nid] = only_schema
@@ -2108,15 +2310,15 @@ def _execute_eager_core(
                         lazy_ports[port_label] = port_lf
                         port_schema = port_lf.collect_schema()
                         column_cache[(nid, port_label)] = frozenset(port_schema.names())
-                        if len(capped_ports) > 1:
+                        if is_multi_frame_producer and not declared_frame_schemas:
                             frame_schema_cache[(nid, port_label)] = [
                                 (name, str(port_schema[name])) for name in port_schema.names()
                             ]
                     runtime_outputs[nid] = lazy_ports
-                    if len(lazy_ports) == 1:
-                        only_lazy_frame = next(iter(lazy_ports.values()))
+                    if not is_multi_frame_producer and len(lazy_ports) == 1:
+                        only_port, only_lazy_frame = next(iter(lazy_ports.items()))
                         only_frame_schema = only_lazy_frame.collect_schema()
-                        only_schema = [
+                        only_schema = declared_frame_schemas.get(only_port) or [
                             (name, str(only_frame_schema[name]))
                             for name in only_frame_schema.names()
                         ]

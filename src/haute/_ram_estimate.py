@@ -12,9 +12,11 @@ memory footprint from parquet metadata alone:
 4. If the estimate exceeds available RAM, calculate a safe row limit.
 
 This replaces the previous probe-based approach which ran a 1 000-row
-sample through the pipeline.  The probe was fragile: inner joins with
-no key overlap in small samples produced zero rows, breaking the
-estimate.  Metadata is always available and always accurate.
+sample through the pipeline. The probe was fragile: inner joins with no
+key overlap in small samples produced zero rows, breaking the estimate.
+When source metadata, projected width, or row-cardinality evidence is not
+provable, the estimator returns an explicit unavailable result rather than
+manufacturing a number.
 
 Host-side observation (what the machine has: available RAM/VRAM, cgroup
 headroom) lives in :mod:`haute._host_memory`; this module estimates what
@@ -24,30 +26,39 @@ the workload needs and compares the two.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 import polars as pl
 
-from haute._api_input_schema import is_json_api_input_path
-from haute._edge_join import build_edge_join_kwargs, edge_join_key_columns_by_role
-from haute._graph_utils import build_parents_of
+from haute._api_input_schema import ApiInputSchemaError, is_json_api_input_path
+from haute._cardinality import join_cardinality_upper_bound
+from haute._column_lineage import RowCardinalityAnalysis, analyze_polars_cardinality
+from haute._edge_join import (
+    build_edge_join_kwargs,
+    edge_join_key_columns_by_role,
+    resolve_edge_join_role_indices,
+)
+from haute._graph_utils import build_parents_of, edge_input_name
 from haute._host_memory import available_ram_bytes, require_positive_available_ram
 from haute._logging import get_logger
 from haute._polars_utils import read_parquet_metadata
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
+from haute.errors import ConfigError
+from haute.projection import ProjectionEdgeKey
 
 logger = get_logger(component="ram_estimate")
 
 __all__ = [
     "MaterialisationEstimate",
+    "MaterialisationEstimateBasis",
     "MaterialisationEstimateState",
     "estimate_gpu_vram_bytes",
-    "estimate_materialisation_boundary",
+    "estimate_materialisation_boundaries",
     "estimate_safe_training_rows",
     "RamEstimate",
 ]
@@ -58,6 +69,14 @@ class MaterialisationEstimateState(StrEnum):
 
     AVAILABLE = "available"
     UNAVAILABLE = "unavailable"
+
+
+class MaterialisationEstimateBasis(StrEnum):
+    """Evidence used for a materialisation estimate's width."""
+
+    PROVIDED = "provided"
+    PROJECTED_COLUMNS = "projected_columns"
+    COMPLETE_WIDTH_FALLBACK = "complete_width_fallback"
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,8 +91,11 @@ class MaterialisationEstimate:
     estimated_peak_bytes: int | None
     assumptions: tuple[str, ...] = ()
     unavailable_reason: str | None = None
+    basis: MaterialisationEstimateBasis = MaterialisationEstimateBasis.PROVIDED
 
     def __post_init__(self) -> None:
+        if not isinstance(self.basis, MaterialisationEstimateBasis):
+            raise TypeError("materialisation estimate basis must be a MaterialisationEstimateBasis")
         if self.state is MaterialisationEstimateState.AVAILABLE:
             if (
                 not isinstance(self.estimated_peak_bytes, int)
@@ -94,11 +116,13 @@ class MaterialisationEstimate:
         estimated_peak_bytes: int,
         *,
         assumptions: Iterable[str] = (),
+        basis: MaterialisationEstimateBasis = MaterialisationEstimateBasis.PROVIDED,
     ) -> MaterialisationEstimate:
         return cls(
             state=MaterialisationEstimateState.AVAILABLE,
             estimated_peak_bytes=estimated_peak_bytes,
             assumptions=tuple(str(item) for item in assumptions),
+            basis=basis,
         )
 
     @classmethod
@@ -174,6 +198,69 @@ class _ResolvedTargetColumns(NamedTuple):
     width_columns: Mapping[str, str]
 
 
+@dataclass(frozen=True, slots=True)
+class _ResolvedRowCardinality:
+    """One graph node's finite output/peak row proof, or a blocking reason."""
+
+    output_rows: int | None
+    peak_rows: int | None
+    evidence: tuple[str, ...] = ()
+    unavailable_reason: str | None = None
+    blocking_node_id: str | None = None
+
+    @property
+    def available(self) -> bool:
+        return self.output_rows is not None and self.peak_rows is not None
+
+    @classmethod
+    def proven(
+        cls,
+        output_rows: int,
+        peak_rows: int,
+        evidence: Iterable[str],
+    ) -> _ResolvedRowCardinality:
+        if (
+            not isinstance(output_rows, int)
+            or isinstance(output_rows, bool)
+            or output_rows < 0
+            or not isinstance(peak_rows, int)
+            or isinstance(peak_rows, bool)
+            or peak_rows < output_rows
+        ):
+            raise ValueError("row-cardinality proof requires finite non-negative bounds")
+        return cls(
+            output_rows=output_rows,
+            peak_rows=peak_rows,
+            evidence=_bounded_cardinality_evidence(evidence),
+        )
+
+    @classmethod
+    def unavailable(
+        cls,
+        node_id: str,
+        reason: str,
+    ) -> _ResolvedRowCardinality:
+        return cls(
+            output_rows=None,
+            peak_rows=None,
+            unavailable_reason=reason,
+            blocking_node_id=node_id,
+        )
+
+
+_MAX_CARDINALITY_EVIDENCE_ITEMS = 64
+
+
+def _bounded_cardinality_evidence(items: Iterable[str]) -> tuple[str, ...]:
+    """Deduplicate and cap planner evidence without hiding truncation."""
+
+    unique = tuple(dict.fromkeys(str(item) for item in items if str(item)))
+    if len(unique) <= _MAX_CARDINALITY_EVIDENCE_ITEMS:
+        return unique
+    retained = unique[: _MAX_CARDINALITY_EVIDENCE_ITEMS - 1]
+    return retained + (f"cardinality_evidence_truncated={len(unique) - len(retained)}",)
+
+
 @dataclass(slots=True)
 class _EstimateGraphIndex:
     """Per-estimate graph indexes and memoized metadata/schema results."""
@@ -187,6 +274,8 @@ class _EstimateGraphIndex:
     columns_by_target: dict[tuple[str, str | None], _ResolvedTargetColumns | None]
     resolving_targets: set[tuple[str, str | None]]
     port_metadata: dict[tuple[str, str], _DetailedSourceMetadata | None]
+    cardinality_by_target: dict[tuple[str, str | None], _ResolvedRowCardinality]
+    resolving_cardinality: set[tuple[str, str | None]]
 
     @classmethod
     def build(cls, graph: PipelineGraph, source: str) -> _EstimateGraphIndex:
@@ -204,6 +293,8 @@ class _EstimateGraphIndex:
             columns_by_target={},
             resolving_targets=set(),
             port_metadata={},
+            cardinality_by_target={},
+            resolving_cardinality=set(),
         )
 
     def source_metadata(self, node: GraphNode) -> _DetailedSourceMetadata | None:
@@ -266,6 +357,26 @@ class _EstimateGraphIndex:
             return resolved
         finally:
             self.resolving_targets.remove(key)
+
+    def resolve_cardinality(
+        self,
+        target_node_id: str,
+        port: str | None = None,
+    ) -> _ResolvedRowCardinality:
+        """Return a memoised finite row bound for one node/arrival port."""
+
+        key = (target_node_id, port)
+        if key in self.cardinality_by_target:
+            return self.cardinality_by_target[key]
+        if key in self.resolving_cardinality:
+            raise RuntimeError("cycle encountered while resolving RAM-estimate cardinality")
+        self.resolving_cardinality.add(key)
+        try:
+            resolved = _resolve_row_cardinality_from_index(self, target_node_id, port)
+            self.cardinality_by_target[key] = resolved
+            return resolved
+        finally:
+            self.resolving_cardinality.remove(key)
 
 
 # Bytes per column for the analytical estimate.  Training features are
@@ -387,9 +498,17 @@ def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSource
 
     from haute._json_flatten import _json_cache_dir
     from haute._json_shred import (
+        _build_lock_for,
+        _cache_manifest_structure_failure,
         _data_file_signature,
-        _read_matching_cache_meta,
+        _declared_frame_schema,
+        _emitting_table_specs,
+        _read_matching_cache_meta_unlocked,
+        _read_per_port_cache_meta_unlocked,
+        _release_runtime_snapshot,
         _sanitise_label,
+        _snapshot_cache_artifact_locked,
+        _v2_fingerprint,
     )
 
     config = dict(node.data.config)
@@ -400,27 +519,64 @@ def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSource
     try:
         if not data_path.exists():
             return None
-        signature = _data_file_signature(data_path)
+        complete_specs = _emitting_table_specs(config)
+        specs_by_label = {spec.label: spec for spec in complete_specs}
+        port_spec = specs_by_label.get(port)
+        if port_spec is None:
+            return None
+        expected_labels = tuple(spec.label for spec in complete_specs)
+        expected_fingerprint = _v2_fingerprint(config)
+        signature: Mapping[str, Any] | None = None
         for layer in ("working", "committed"):
             cache_dir = _json_cache_dir(data_path, layer)
-            if (
-                _read_matching_cache_meta(
+            with _build_lock_for(cache_dir):
+                candidate_meta = _read_per_port_cache_meta_unlocked(cache_dir)
+                if (
+                    candidate_meta is None
+                    or candidate_meta.get("schema_mode") != "v2"
+                    or candidate_meta.get("schema_fingerprint") != expected_fingerprint
+                ):
+                    continue
+                if signature is None:
+                    signature = _data_file_signature(data_path)
+                meta = _read_matching_cache_meta_unlocked(
                     cache_dir,
                     config,
                     data_path=data_path,
                     data_file_signature=signature,
                 )
-                is None
-            ):
-                continue
-            parquet_path = cache_dir / f"{_sanitise_label(port)}.parquet"
-            if not parquet_path.exists():
-                continue
-            return _source_scoped_metadata(
-                _detailed_parquet_metadata(str(parquet_path)),
-                node.id,
-            )
-    except (OSError, TypeError, ValueError) as exc:
+                if meta is None or _cache_manifest_structure_failure(
+                    meta,
+                    expected_labels=expected_labels,
+                ):
+                    continue
+                entries = {entry["label"]: entry for entry in meta["tables"]}
+                parquet_path = cache_dir / f"{_sanitise_label(port)}.parquet"
+                snapshot_path = _snapshot_cache_artifact_locked(
+                    cache_dir,
+                    parquet_path,
+                    entries[port]["content_signature"],
+                )
+                if snapshot_path is None:
+                    continue
+                try:
+                    actual_schema = pl.scan_parquet(snapshot_path).collect_schema()
+                    expected_schema = _declared_frame_schema(port_spec)
+                    if dict(actual_schema.items()) != dict(expected_schema.items()):
+                        continue
+                    return _source_scoped_metadata(
+                        _detailed_parquet_metadata(str(snapshot_path)),
+                        node.id,
+                    )
+                finally:
+                    _release_runtime_snapshot(snapshot_path)
+    except (
+        ApiInputSchemaError,
+        OSError,
+        TypeError,
+        ValueError,
+        pl.exceptions.PolarsError,
+    ) as exc:
         logger.warning(
             "api_input_port_metadata_failed",
             node_id=node.id,
@@ -526,6 +682,362 @@ def _feeding_ports(
     return tuple(sorted(ports))
 
 
+def _cardinality_from_analysis(
+    node_id: str,
+    analysis: RowCardinalityAnalysis,
+    input_results: Iterable[_ResolvedRowCardinality],
+    *,
+    prior_evidence: Iterable[str] = (),
+) -> _ResolvedRowCardinality:
+    """Combine one local AST proof with already-proven parent bounds."""
+
+    if not analysis.supported:
+        return _ResolvedRowCardinality.unavailable(node_id, analysis.reason)
+    assert analysis.output_upper_bound is not None
+    assert analysis.peak_upper_bound is not None
+    parents = tuple(input_results)
+    parent_peak = max((result.peak_rows or 0 for result in parents), default=0)
+    return _ResolvedRowCardinality.proven(
+        analysis.output_upper_bound,
+        max(parent_peak, analysis.peak_upper_bound),
+        (
+            *(item for result in parents for item in result.evidence),
+            *prior_evidence,
+            *(f"node={node_id}:{item}" for item in analysis.evidence),
+        ),
+    )
+
+
+def _named_cardinality_inputs(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    edge_results: Sequence[tuple[GraphEdge, _ResolvedRowCardinality]],
+    *,
+    alias_first_as_df: bool = False,
+) -> Mapping[str, _ResolvedRowCardinality] | None:
+    """Mirror runtime edge/inputMapping names for AST cardinality analysis."""
+
+    by_name: dict[str, tuple[str, _ResolvedRowCardinality]] = {}
+    for edge, result in edge_results:
+        try:
+            name = edge_input_name(edge, index.node_map[edge.source])
+        except (KeyError, ValueError):
+            return None
+        previous = by_name.get(name)
+        if previous is not None and previous[0] != edge.id:
+            return None
+        by_name[name] = (edge.id, result)
+
+    raw_mapping = node.data.config.get("inputMapping")
+    if raw_mapping:
+        if not isinstance(raw_mapping, Mapping):
+            return None
+        for alias, current_name in raw_mapping.items():
+            if (
+                not isinstance(alias, str)
+                or not alias
+                or not isinstance(current_name, str)
+                or current_name not in by_name
+            ):
+                return None
+            current = by_name[current_name]
+            existing = by_name.get(alias)
+            if existing is not None and existing[0] != current[0]:
+                return None
+            by_name[alias] = current
+
+    if alias_first_as_df:
+        if not edge_results:
+            return None
+        first_edge, first_result = edge_results[0]
+        existing = by_name.get("df")
+        if existing is not None and existing[0] != first_edge.id:
+            return None
+        by_name["df"] = (first_edge.id, first_result)
+
+    return MappingProxyType({name: result for name, (_edge_id, result) in by_name.items()})
+
+
+def _passthrough_cardinality(
+    node_id: str,
+    parents: Sequence[_ResolvedRowCardinality],
+    selected_index: int = 0,
+    *,
+    evidence: str = "row_cardinality_preserved",
+) -> _ResolvedRowCardinality:
+    if not parents or selected_index < 0 or selected_index >= len(parents):
+        return _ResolvedRowCardinality.unavailable(node_id, "input_cardinality_unavailable")
+    selected = parents[selected_index]
+    assert selected.output_rows is not None and selected.peak_rows is not None
+    return _ResolvedRowCardinality.proven(
+        selected.output_rows,
+        max(result.peak_rows or 0 for result in parents),
+        (
+            *(item for result in parents for item in result.evidence),
+            f"node={node_id}:{evidence}",
+            f"node={node_id}:cardinality_output_upper_bound={selected.output_rows}",
+        ),
+    )
+
+
+def _resolve_row_cardinality_from_index(
+    index: _EstimateGraphIndex,
+    target_node_id: str,
+    port: str | None,
+) -> _ResolvedRowCardinality:
+    """Prove one graph node's output and peak row bounds without executing it."""
+
+    node = index.node_map.get(target_node_id)
+    if node is None:
+        return _ResolvedRowCardinality.unavailable(target_node_id, "node_missing")
+    node_type = node.data.nodeType
+
+    if node_type in {NodeType.API_INPUT, NodeType.DATA_INPUT}:
+        metadata = index.source_metadata(node)
+        if metadata is None and node_type is NodeType.API_INPUT and port is not None:
+            metadata = index.api_input_port_metadata(node, port)
+        if metadata is None:
+            return _ResolvedRowCardinality.unavailable(
+                target_node_id,
+                "source_row_count_unavailable",
+            )
+        base = _ResolvedRowCardinality.proven(
+            metadata.row_count,
+            metadata.row_count,
+            (f"source={target_node_id}:row_count={metadata.row_count}",),
+        )
+        code = node.data.config.get("code")
+        if node_type is NodeType.DATA_INPUT and isinstance(code, str) and code.strip():
+            analysis = analyze_polars_cardinality(code, {"df": metadata.row_count})
+            return _cardinality_from_analysis(target_node_id, analysis, (base,))
+        return base
+
+    if node_type is NodeType.CONSTANT:
+        return _ResolvedRowCardinality.proven(
+            1,
+            1,
+            (f"source={target_node_id}:constant_row_count=1",),
+        )
+
+    incoming_edges = tuple(
+        edge
+        for edge in index.pruned_edges
+        if edge.target == target_node_id and edge.source in index.node_map
+    )
+    edge_results = tuple(
+        (edge, index.resolve_cardinality(edge.source, edge.sourceHandle)) for edge in incoming_edges
+    )
+    for _edge, result in edge_results:
+        if not result.available:
+            return result
+    parents = tuple(result for _edge, result in edge_results)
+
+    if node_type is NodeType.EDGE_JOIN:
+        if len(edge_results) != 2:
+            return _ResolvedRowCardinality.unavailable(target_node_id, "invalid_join_arity")
+        source_ids = [edge.source for edge, _result in edge_results]
+        target_handles = [edge.targetHandle for edge, _result in edge_results]
+        try:
+            left_index, right_index = resolve_edge_join_role_indices(
+                node.data.config,
+                source_ids,
+                target_handles,
+            )
+            kwargs = build_edge_join_kwargs(node.data.config)
+            left = parents[left_index]
+            right = parents[right_index]
+            assert left.output_rows is not None and right.output_rows is not None
+            bound = join_cardinality_upper_bound(
+                left.output_rows,
+                right.output_rows,
+                how=str(kwargs["how"]),
+                validate=cast(str | None, kwargs.get("validate")),
+            )
+        except (ConfigError, TypeError, ValueError):
+            return _ResolvedRowCardinality.unavailable(target_node_id, "invalid_join_config")
+        return _ResolvedRowCardinality.proven(
+            bound.max_rows,
+            max(*(result.peak_rows or 0 for result in parents), bound.max_rows),
+            (
+                *(item for result in parents for item in result.evidence),
+                *(f"node={target_node_id}:{item}" for item in bound.evidence),
+            ),
+        )
+
+    if node_type is NodeType.POLARS:
+        bindings = _named_cardinality_inputs(index, node, edge_results)
+        if not bindings:
+            return _ResolvedRowCardinality.unavailable(
+                target_node_id,
+                "invalid_input_name_binding",
+            )
+        code = node.data.config.get("code")
+        if not isinstance(code, str) or not code.strip():
+            return _ResolvedRowCardinality.unavailable(target_node_id, "empty_code")
+        analysis = analyze_polars_cardinality(
+            code,
+            {name: cast(int, result.output_rows) for name, result in bindings.items()},
+        )
+        return _cardinality_from_analysis(target_node_id, analysis, parents)
+
+    if node_type is NodeType.SCENARIO_EXPANDER:
+        if len(parents) != 1:
+            return _ResolvedRowCardinality.unavailable(
+                target_node_id,
+                "invalid_input_cardinality",
+            )
+        from haute._node_apply import _DEFAULT_SCENARIO_STEPS
+
+        raw_steps = node.data.config.get("steps")
+        try:
+            steps = int(raw_steps) if raw_steps is not None else _DEFAULT_SCENARIO_STEPS
+        except (TypeError, ValueError, OverflowError):
+            return _ResolvedRowCardinality.unavailable(target_node_id, "invalid_scenario_steps")
+        if steps < 1:
+            return _ResolvedRowCardinality.unavailable(target_node_id, "invalid_scenario_steps")
+        parent = parents[0]
+        assert parent.output_rows is not None and parent.peak_rows is not None
+        expanded_rows = parent.output_rows * steps
+        expanded = _ResolvedRowCardinality.proven(
+            expanded_rows,
+            max(parent.peak_rows, expanded_rows),
+            (
+                *parent.evidence,
+                f"node={target_node_id}:scenario_steps={steps}",
+                f"node={target_node_id}:cardinality_output_upper_bound={expanded_rows}",
+            ),
+        )
+        code = node.data.config.get("code")
+        if isinstance(code, str) and code.strip():
+            analysis = analyze_polars_cardinality(code, {"df": expanded_rows})
+            return _cardinality_from_analysis(target_node_id, analysis, (expanded,))
+        return expanded
+
+    if node_type in {NodeType.RATING_STEP, NodeType.EXPLORE}:
+        if len(parents) != 1:
+            return _ResolvedRowCardinality.unavailable(
+                target_node_id,
+                "invalid_input_cardinality",
+            )
+        code = node.data.config.get("code")
+        if isinstance(code, str) and code.strip():
+            assert parents[0].output_rows is not None
+            analysis = analyze_polars_cardinality(code, {"df": parents[0].output_rows})
+            return _cardinality_from_analysis(target_node_id, analysis, parents)
+        return _passthrough_cardinality(target_node_id, parents)
+
+    if node_type is NodeType.MODEL_SCORE:
+        if not parents:
+            return _ResolvedRowCardinality.unavailable(
+                target_node_id,
+                "input_cardinality_unavailable",
+            )
+        code = node.data.config.get("code")
+        if isinstance(code, str) and code.strip():
+            bindings = _named_cardinality_inputs(
+                index,
+                node,
+                edge_results,
+                alias_first_as_df=True,
+            )
+            if not bindings:
+                return _ResolvedRowCardinality.unavailable(
+                    target_node_id,
+                    "invalid_input_name_binding",
+                )
+            analysis = analyze_polars_cardinality(
+                code,
+                {name: cast(int, result.output_rows) for name, result in bindings.items()},
+            )
+            return _cardinality_from_analysis(target_node_id, analysis, parents)
+        return _passthrough_cardinality(target_node_id, parents)
+
+    if node_type is NodeType.OPTIMISER:
+        if not parents:
+            return _ResolvedRowCardinality.unavailable(
+                target_node_id,
+                "input_cardinality_unavailable",
+            )
+        selected_index = 0
+        data_input_id = node.data.config.get("data_input")
+        if isinstance(data_input_id, str) and data_input_id:
+            matching = [
+                index
+                for index, (edge, _result) in enumerate(edge_results)
+                if edge.source == data_input_id
+            ]
+            if len(matching) != 1:
+                return _ResolvedRowCardinality.unavailable(
+                    target_node_id,
+                    "invalid_optimiser_input",
+                )
+            selected_index = matching[0]
+        return _passthrough_cardinality(target_node_id, parents, selected_index)
+
+    if node_type is NodeType.OPTIMISER_APPLY:
+        if not parents:
+            return _ResolvedRowCardinality.unavailable(
+                target_node_id,
+                "input_cardinality_unavailable",
+            )
+        output_rows = max(cast(int, result.output_rows) for result in parents)
+        return _ResolvedRowCardinality.proven(
+            output_rows,
+            max(cast(int, result.peak_rows) for result in parents),
+            (
+                *(item for result in parents for item in result.evidence),
+                f"node={target_node_id}:one_connected_input_selected",
+                f"node={target_node_id}:cardinality_output_upper_bound={output_rows}",
+            ),
+        )
+
+    if node_type is NodeType.EXTERNAL_FILE:
+        if not parents:
+            return _ResolvedRowCardinality.unavailable(
+                target_node_id,
+                "external_object_row_cardinality_unknown",
+            )
+        code = node.data.config.get("code")
+        if isinstance(code, str) and code.strip():
+            bindings = _named_cardinality_inputs(
+                index,
+                node,
+                edge_results,
+                alias_first_as_df=True,
+            )
+            if not bindings:
+                return _ResolvedRowCardinality.unavailable(
+                    target_node_id,
+                    "invalid_input_name_binding",
+                )
+            analysis = analyze_polars_cardinality(
+                code,
+                {name: cast(int, result.output_rows) for name, result in bindings.items()},
+            )
+            return _cardinality_from_analysis(target_node_id, analysis, parents)
+        return _passthrough_cardinality(target_node_id, parents)
+
+    if node_type in {
+        NodeType.BANDING,
+        NodeType.DATA_OUTPUT,
+        NodeType.LIVE_SWITCH,
+        NodeType.MODELLING,
+        NodeType.SUBMODEL,
+        NodeType.SUBMODEL_PORT,
+    }:
+        if len(parents) != 1:
+            return _ResolvedRowCardinality.unavailable(
+                target_node_id,
+                "invalid_input_cardinality",
+            )
+        return _passthrough_cardinality(target_node_id, parents)
+
+    return _ResolvedRowCardinality.unavailable(
+        target_node_id,
+        "row_semantics_unsupported",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Estimation
 # ---------------------------------------------------------------------------
@@ -564,10 +1076,31 @@ def _estimate_peak_bytes(
     base_bytes_per_row: float | None = None,
 ) -> int:
     """Estimate peak RAM for the full training lifecycle."""
-    raw_bytes_per_row = (
-        n_cols * _BYTES_PER_COL if base_bytes_per_row is None else base_bytes_per_row
-    )
-    return int(n_rows * raw_bytes_per_row * _OVERHEAD_MULTIPLIER)
+    if not isinstance(n_rows, int) or isinstance(n_rows, bool) or n_rows < 0:
+        raise ValueError("n_rows must be a non-negative integer")
+    if not isinstance(n_cols, int) or isinstance(n_cols, bool) or n_cols < 0:
+        raise ValueError("n_cols must be a non-negative integer")
+    if base_bytes_per_row is None:
+        width_numerator = n_cols * _BYTES_PER_COL
+        width_denominator = 1
+    else:
+        if (
+            not isinstance(base_bytes_per_row, (int, float))
+            or isinstance(base_bytes_per_row, bool)
+            or not math.isfinite(base_bytes_per_row)
+            or base_bytes_per_row < 0
+        ):
+            raise ValueError("base_bytes_per_row must be a finite non-negative number")
+        width_numerator, width_denominator = float(base_bytes_per_row).as_integer_ratio()
+    overhead_numerator, overhead_denominator = _OVERHEAD_MULTIPLIER.as_integer_ratio()
+    # Width probes can produce fractional per-row averages. Admission is a
+    # safety boundary, so truncating even one fractional byte is the wrong
+    # direction—and the absolute error can grow at extreme join cardinality.
+    # Integer rational arithmetic also prevents a repeated join product from
+    # overflowing IEEE-754 before Python can form the estimate.
+    numerator = n_rows * width_numerator * overhead_numerator
+    denominator = width_denominator * overhead_denominator
+    return (numerator + denominator - 1) // denominator
 
 
 class RamEstimate(NamedTuple):
@@ -932,7 +1465,7 @@ def estimate_safe_training_rows(
 ) -> RamEstimate:
     """Estimate whether the full pipeline fits in RAM for training.
 
-    1. Row count from source parquet metadata (source-aware).
+    1. Row count from the graph's proven target-cardinality upper bound.
     2. Column count resolved from the lazy plan at the training node
        (captures joins and transforms), minus excluded features.
     3. Peak memory estimate using the empirical 3× multiplier.
@@ -945,7 +1478,7 @@ def estimate_safe_training_rows(
     # with admission's.
     available = require_positive_available_ram(available_ram_bytes())
 
-    # ── 1. Source metadata for row count ──────────────────────────────
+    # ── 1. Source metadata and target row-cardinality proof ───────────
     estimate_index = _EstimateGraphIndex.build(graph, source)
     source_metadata = _detailed_ancestor_source_metadata(
         graph,
@@ -953,15 +1486,15 @@ def estimate_safe_training_rows(
         source,
         _index=estimate_index,
     )
-    total_rows = source_metadata.row_count
     source_cols = source_metadata.column_count
-
-    if total_rows is None:
+    cardinality = estimate_index.resolve_cardinality(target_node_id)
+    if not cardinality.available:
         logger.info(
-            "source_metadata_unavailable",
-            total_rows=total_rows,
+            "target_cardinality_unavailable",
             target=target_node_id,
             source=source,
+            blocking_node_id=cardinality.blocking_node_id,
+            reason=cardinality.unavailable_reason,
         )
         return RamEstimate(
             safe_row_limit=None,
@@ -973,6 +1506,8 @@ def estimate_safe_training_rows(
             warning=None,
             probe_columns=0,
         )
+    assert cardinality.output_rows is not None
+    total_rows = cardinality.output_rows
 
     # ── 2. Column count at the training node ─────────────────────────
     # Walk backwards through the graph from the target and resolve the
@@ -1100,50 +1635,175 @@ def estimate_safe_training_rows(
     )
 
 
-def estimate_materialisation_boundary(
+def estimate_materialisation_boundaries(
+    graph: PipelineGraph,
+    target_node_ids: Iterable[str],
+    *,
+    source: str = "live",
+    edge_demands: Mapping[ProjectionEdgeKey, frozenset[str] | None] | None = None,
+) -> Iterator[tuple[str, MaterialisationEstimate]]:
+    """Yield boundary estimates through one request-local metadata index.
+
+    Results stay lazy so a caller that cannot proceed after an unavailable
+    boundary does not probe unrelated later sources. Iterating more than one
+    result still shares all graph, schema, and source-metadata memoisation.
+    """
+
+    estimate_index = _EstimateGraphIndex.build(graph, source)
+    for target_node_id in target_node_ids:
+        yield (
+            target_node_id,
+            _estimate_materialisation_boundary_from_index(
+                graph,
+                target_node_id,
+                source=source,
+                estimate_index=estimate_index,
+                edge_demands=edge_demands,
+            ),
+        )
+
+
+def _estimate_materialisation_boundary_from_index(
     graph: PipelineGraph,
     target_node_id: str,
     *,
-    source: str = "live",
+    source: str,
+    estimate_index: _EstimateGraphIndex,
+    edge_demands: Mapping[ProjectionEdgeKey, frozenset[str] | None] | None,
 ) -> MaterialisationEstimate:
-    """Estimate the conservative peak of a full frame boundary.
+    """Estimate one boundary using an already prepared request-local index."""
 
-    The V1 estimator deliberately returns unavailable when source row or target
-    width metadata cannot be established.  It never converts an unknown value
-    to zero.  Join cardinality is not inferred from keys in V1, so the stated
-    assumption remains visible to diagnostics and callers can reject the
-    boundary when that assumption is unsuitable.
-    """
-    estimate_index = _EstimateGraphIndex.build(graph, source)
     source_metadata = _detailed_ancestor_source_metadata(
         graph,
         target_node_id,
         source,
         _index=estimate_index,
     )
-    total_rows = source_metadata.row_count
-    if total_rows is None:
-        return MaterialisationEstimate.unavailable("source_row_count_unavailable")
+    cardinality = estimate_index.resolve_cardinality(target_node_id)
+    if not cardinality.available:
+        assert cardinality.unavailable_reason is not None
+        if cardinality.unavailable_reason == "source_row_count_unavailable":
+            return MaterialisationEstimate.unavailable("source_row_count_unavailable")
+        blocking_node_id = cardinality.blocking_node_id or target_node_id
+        return MaterialisationEstimate.unavailable(
+            f"row_cardinality_unavailable:{blocking_node_id}:{cardinality.unavailable_reason}"
+        )
+    assert cardinality.output_rows is not None and cardinality.peak_rows is not None
+    total_rows = cardinality.peak_rows
+    cardinality_assumptions = cardinality.evidence + (
+        f"cardinality_output_upper_bound={cardinality.output_rows}",
+        f"cardinality_peak_upper_bound={cardinality.peak_rows}",
+    )
+    incoming_edges = tuple(
+        edge
+        for edge in estimate_index.pruned_edges
+        if edge.target == target_node_id and edge.source in estimate_index.node_map
+    )
+    resolved_inputs = tuple(
+        (
+            edge,
+            estimate_index.resolve_columns(edge.source, edge.sourceHandle),
+        )
+        for edge in incoming_edges
+    )
     if total_rows == 0:
+        exact_zero_width_proof = (
+            bool(incoming_edges)
+            and edge_demands is not None
+            and all(
+                ProjectionEdgeKey.from_edge(edge) in edge_demands
+                and edge_demands[ProjectionEdgeKey.from_edge(edge)] is not None
+                and resolved is not None
+                and bool(resolved.columns)
+                and cast(
+                    frozenset[str],
+                    edge_demands[ProjectionEdgeKey.from_edge(edge)],
+                ).issubset(resolved.columns)
+                for edge, resolved in resolved_inputs
+            )
+        )
         return MaterialisationEstimate.available(
             0,
-            assumptions=("known-empty ancestor source",),
+            assumptions=cardinality_assumptions,
+            basis=(
+                MaterialisationEstimateBasis.PROJECTED_COLUMNS
+                if exact_zero_width_proof
+                else MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK
+            ),
         )
 
-    resolved_columns = _resolve_target_columns(
-        graph,
-        target_node_id,
-        source,
-        _index=estimate_index,
-    )
-    if resolved_columns is not None and resolved_columns.columns:
+    if not incoming_edges:
+        resolved_columns = _resolve_target_columns(
+            graph,
+            target_node_id,
+            source,
+            _index=estimate_index,
+        )
+        if resolved_columns is None or not resolved_columns.columns:
+            return MaterialisationEstimate.unavailable("target_schema_unavailable")
         column_names = resolved_columns.columns
         width_column_names = tuple(
             resolved_columns.width_columns.get(column, column) for column in column_names
         )
         n_columns = len(column_names)
+        basis = MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK
+        projection_assumptions: tuple[str, ...] = ()
     else:
-        return MaterialisationEstimate.unavailable("target_schema_unavailable")
+        exact_demands = edge_demands is not None and all(
+            ProjectionEdgeKey.from_edge(edge) in edge_demands
+            and edge_demands[ProjectionEdgeKey.from_edge(edge)] is not None
+            for edge in incoming_edges
+        )
+        fallback_reason: str | None = None
+        if exact_demands:
+            for edge, resolved in resolved_inputs:
+                assert edge_demands is not None
+                demand = edge_demands[ProjectionEdgeKey.from_edge(edge)]
+                if resolved is None or not resolved.columns:
+                    fallback_reason = "complete_schema_unavailable"
+                    break
+                assert demand is not None
+                if not demand.issubset(resolved.columns):
+                    fallback_reason = "demanded_column_unmapped"
+                    break
+
+        if exact_demands and fallback_reason is None:
+            selected: list[tuple[str, str]] = []
+            carriers = 0
+            for edge, resolved in resolved_inputs:
+                assert edge_demands is not None and resolved is not None
+                demand = edge_demands[ProjectionEdgeKey.from_edge(edge)]
+                assert demand is not None
+                names = tuple(column for column in resolved.columns if column in demand)
+                if not names:
+                    names = (resolved.columns[0],)
+                    carriers += 1
+                selected.extend((name, resolved.width_columns.get(name, name)) for name in names)
+            column_names = tuple(name for name, _width in selected)
+            width_column_names = tuple(width for _name, width in selected)
+            n_columns = len(selected)
+            basis = MaterialisationEstimateBasis.PROJECTED_COLUMNS
+            projection_assumptions = (f"projected_column_count={n_columns}",) + (
+                (f"cardinality_carrier_columns={carriers}",) if carriers else ()
+            )
+        else:
+            if any(resolved is None or not resolved.columns for _edge, resolved in resolved_inputs):
+                return MaterialisationEstimate.unavailable("target_schema_unavailable")
+            complete: list[tuple[str, str]] = []
+            for _edge, resolved in resolved_inputs:
+                assert resolved is not None
+                complete.extend(
+                    (name, resolved.width_columns.get(name, name)) for name in resolved.columns
+                )
+            column_names = tuple(name for name, _width in complete)
+            width_column_names = tuple(width for _name, width in complete)
+            n_columns = len(complete)
+            basis = MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK
+            projection_assumptions = (
+                (f"projection_fallback_reason={fallback_reason}",)
+                if fallback_reason == "demanded_column_unmapped"
+                else ()
+            )
 
     base_bytes_per_row = _estimate_base_bytes_per_row(
         n_columns,
@@ -1158,8 +1818,9 @@ def estimate_materialisation_boundary(
             base_bytes_per_row=base_bytes_per_row,
         ),
         assumptions=(
-            "ancestor source row count is the boundary row-count basis",
-            "join cardinality is not expanded without source statistics",
+            *cardinality_assumptions,
             f"full-boundary overhead multiplier={_OVERHEAD_MULTIPLIER:g}",
-        ),
+        )
+        + projection_assumptions,
+        basis=basis,
     )

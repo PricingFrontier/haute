@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from haute._api_input_schema import is_json_api_input_path
 from haute._cache import (
     CACHE_CONFIG_FIELD_CLASSIFICATIONS,
     CacheConsumer,
@@ -48,6 +49,7 @@ from haute._dataframe_execution_cache import (
     dataframe_execution_policy_fingerprint,
     materialize_lazy_frame_with_cache,
 )
+from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
@@ -55,8 +57,9 @@ from haute._json_flatten import cache_state_signature_for_graph
 from haute._path_resolution import _infer_project_root, resolve_runtime_file_path
 from haute._ram_estimate import (
     MaterialisationEstimate,
+    MaterialisationEstimateBasis,
     MaterialisationEstimateState,
-    estimate_materialisation_boundary,
+    estimate_materialisation_boundaries,
 )
 from haute._stat_gated_cache import StatGatedCache, artifact_cache_key
 from haute._types import (
@@ -87,6 +90,7 @@ from haute.projection import (
     ratebook_factor_required_columns,
     source_scan_projection,
     strict_projection_required,
+    with_api_input_port_projection_boundaries,
     with_materialisation_boundaries,
 )
 
@@ -264,6 +268,12 @@ def plan_execution_strategy(
             request.profile,
             required_columns_by_node,
         ),
+        relevant_edges=prepared.relevant_edges,
+    )
+    projection_plan = with_api_input_port_projection_boundaries(
+        projection_plan,
+        prepared.node_map,
+        prepared.relevant_edges,
     )
     group_by_operators = group_by_operators_by_node(prepared.order, prepared.node_map)
     resolved_estimate: MaterialisationEstimate | None
@@ -273,6 +283,7 @@ def plan_execution_strategy(
                 request.graph,
                 group_by_operators,
                 source=request.source,
+                projection_plan=projection_plan,
             )
         elif materialisation_estimate is None:
             resolved_estimate = MaterialisationEstimate.unavailable(
@@ -306,19 +317,32 @@ def _estimate_group_by_boundaries(
     node_ids: Iterable[str],
     *,
     source: str,
+    projection_plan: ProjectionPlan | None = None,
 ) -> MaterialisationEstimate:
     """Return the conservative peak across every declared group-by boundary."""
     peak_bytes = 0
     assumptions: list[str] = []
-    for node_id in node_ids:
-        estimate = estimate_materialisation_boundary(graph, node_id, source=source)
+    basis = MaterialisationEstimateBasis.PROJECTED_COLUMNS
+    estimates = estimate_materialisation_boundaries(
+        graph,
+        node_ids,
+        source=source,
+        edge_demands=(projection_plan.edge_demands if projection_plan is not None else None),
+    )
+    for node_id, estimate in estimates:
         if estimate.state is MaterialisationEstimateState.UNAVAILABLE:
             reason = estimate.unavailable_reason or "unknown"
             return MaterialisationEstimate.unavailable(f"{node_id}:{reason}")
         assert estimate.estimated_peak_bytes is not None
         peak_bytes = max(peak_bytes, estimate.estimated_peak_bytes)
+        if estimate.basis is not MaterialisationEstimateBasis.PROJECTED_COLUMNS:
+            basis = MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK
         assumptions.extend(f"{node_id}: {item}" for item in estimate.assumptions)
-    return MaterialisationEstimate.available(peak_bytes, assumptions=assumptions)
+    return MaterialisationEstimate.available(
+        peak_bytes,
+        assumptions=assumptions,
+        basis=basis,
+    )
 
 
 def plan_prepared_execution_strategy(
@@ -331,6 +355,7 @@ def plan_prepared_execution_strategy(
     execution_context: ExecutionContext | None = None,
     materialisation_estimate: MaterialisationEstimate | None = None,
     schema_only: bool = False,
+    relevant_edges: Iterable[GraphEdge] | None = None,
 ) -> ExecutionStrategyResult:
     """Plan projection/streaming strategy for an already prepared graph.
 
@@ -338,8 +363,10 @@ def plan_prepared_execution_strategy(
     collects a frame or invokes a sink. The group-by admission gate below
     bounds peak memory *during materialisation*; schema resolution
     materialises nothing, so under that declaration the gate is not evaluated
-    and no materialisation boundary is inserted.
+    and no materialisation boundary is inserted. When supplied, prepared
+    ``relevant_edges`` retain API-input port identity for projection diagnostics.
     """
+    prepared_relevant_edges = tuple(relevant_edges) if relevant_edges is not None else None
     required_columns_by_node = normalise_required_columns_by_node(
         required_columns_by_node,
         order,
@@ -350,7 +377,14 @@ def plan_prepared_execution_strategy(
         dict(node_map),
         required_columns_by_node=required_columns_by_node,
         strict_projection=strict_projection_required(profile, required_columns_by_node),
+        relevant_edges=prepared_relevant_edges,
     )
+    if prepared_relevant_edges is not None:
+        projection_plan = with_api_input_port_projection_boundaries(
+            projection_plan,
+            node_map,
+            prepared_relevant_edges,
+        )
     group_by_operators = group_by_operators_by_node(order, node_map)
     result = _finalise_execution_strategy(
         projection_plan,
@@ -445,6 +479,9 @@ def _finalise_execution_strategy(
     reason_code: str | None = None
     remediation: str | None = None
     estimated_peak_bytes: int | None = None
+    raw_estimated_peak_bytes: int | None = None
+    estimate_calibration_factor_basis_points: int | None = None
+    estimate_admission_basis: str | None = None
     headroom_bytes: int | None = None
     assumptions: tuple[str, ...] = ()
 
@@ -497,8 +534,12 @@ def _finalise_execution_strategy(
                     else "no materialisation estimate was requested"
                 ),
             )
-        estimated_peak_bytes = materialisation_estimate.estimated_peak_bytes
-        assert estimated_peak_bytes is not None
+        raw_estimated_peak_bytes = materialisation_estimate.estimated_peak_bytes
+        assert raw_estimated_peak_bytes is not None
+        calibrated = calibrate_materialisation_bytes(profile, raw_estimated_peak_bytes)
+        estimated_peak_bytes = calibrated.calibrated_bytes
+        estimate_calibration_factor_basis_points = calibrated.factor_basis_points
+        estimate_admission_basis = materialisation_estimate.basis.value
         if estimated_peak_bytes > headroom_bytes:
             raise _group_by_rejection(
                 node_id=node_id,
@@ -515,7 +556,16 @@ def _finalise_execution_strategy(
         strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
         reason_code = "group_by_materialisation_admitted"
         remediation = "Keep the admitted boundary within its reported memory headroom."
-        assumptions = materialisation_estimate.assumptions
+        assumptions = (
+            *materialisation_estimate.assumptions,
+            f"raw_estimated_peak_bytes={raw_estimated_peak_bytes}",
+            f"calibrated_estimated_peak_bytes={estimated_peak_bytes}",
+            (
+                "estimate_calibration_factor_basis_points="
+                f"{estimate_calibration_factor_basis_points}"
+            ),
+            f"estimate_admission_basis={estimate_admission_basis}",
+        )
 
     return build_execution_strategy_result(
         projection_plan,
@@ -530,6 +580,9 @@ def _finalise_execution_strategy(
         boundary_operators=group_by_operators,
         remediation=remediation,
         estimated_peak_bytes=estimated_peak_bytes,
+        raw_estimated_peak_bytes=raw_estimated_peak_bytes,
+        estimate_calibration_factor_basis_points=(estimate_calibration_factor_basis_points),
+        estimate_admission_basis=estimate_admission_basis,
         headroom_bytes=headroom_bytes,
         assumptions=assumptions,
     )
@@ -656,6 +709,48 @@ def _stat_gated_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
     )
 
 
+def _json_source_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
+    """Return runtime identity from the JSON cache's authoritative source proof.
+
+    The JSON strategy estimator and loader already require the exact SHA-256
+    signature maintained by ``_json_shred``. Reusing that record here prevents
+    preview/trace identity from streaming the same source a second time through
+    the generic xxHash boundary. Missing paths and non-files preserve the generic
+    payload and error semantics.
+    """
+    resolved = path.resolve()
+    if not resolved.is_file():
+        return _runtime_path_fingerprint(resolved)
+
+    from haute._json_shred import _data_file_signature
+
+    signature = _data_file_signature(resolved)
+    return {
+        "path": str(resolved),
+        "exists": True,
+        "is_file": True,
+        "size": signature["size"],
+        "mtime_ns": signature["mtime_ns"],
+        "hash_algo": "sha256",
+        "content_hash": signature["sha256"],
+    }
+
+
+def _runtime_file_fingerprint(
+    node: GraphNode,
+    path_field: str,
+    path: Path,
+) -> Mapping[str, object]:
+    """Return the versioned content identity for one node runtime file."""
+    if (
+        node.data.nodeType == NodeType.API_INPUT
+        and path_field == "path"
+        and is_json_api_input_path(str(path))
+    ):
+        return _json_source_runtime_path_fingerprint(path)
+    return _stat_gated_runtime_path_fingerprint(path)
+
+
 def dataframe_paths_input_fingerprint(paths: Mapping[str, str]) -> Mapping[str, object]:
     """Return stable file-state fingerprints for named external path inputs."""
 
@@ -765,7 +860,7 @@ def _runtime_input_fingerprint_entry(
 ) -> Mapping[str, object]:
     config = node.data.config
     files = {
-        path_field: _stat_gated_runtime_path_fingerprint(path)
+        path_field: _runtime_file_fingerprint(node, path_field, path)
         for path_field, path in _runtime_file_signature_paths(graph, node).items()
     }
     return checked_cache_identity_record(

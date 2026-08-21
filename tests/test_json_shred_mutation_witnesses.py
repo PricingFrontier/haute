@@ -11,8 +11,12 @@ the route/integration suites, not here.
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+from pathlib import Path
+
 import pytest
 
+import haute._json_shred as shred_module
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import (
     _SCALAR_VALUE_LEAF,
@@ -25,6 +29,63 @@ from haute._json_shred import (
     _widen_type,
     table_is_emitting,
 )
+
+
+def test_json_shred_resource_defaults_are_explicit_contracts() -> None:
+    assert shred_module._SHRED_EXECUTION_CHECKPOINT_ROWS == 1_024
+    assert shred_module._DIRECT_SPILL_MAX_ROWS_DEFAULT == 10_000
+    assert shred_module._DIRECT_SPILL_MAX_BYTES_DEFAULT == 16 * 1024 * 1024
+    assert shred_module._STRUCTURED_INPUT_MAX_RECORD_BYTES_DEFAULT == 64 * 1024 * 1024
+    assert shred_module._STRUCTURED_INPUT_PARSE_CHUNK_BYTES == 64 * 1024
+    assert shred_module._DATA_FILE_SIGNATURE_MEMO_MAX_ENTRIES == 256
+    assert shred_module._NATIVE_REVISION_SCHEMA_VERSION == 1
+    assert shred_module._WINDOWS_EPOCH_OFFSET_100NS == 116_444_736_000_000_000
+    assert shred_module._FSCTL_READ_FILE_USN_DATA == 0x000900EB
+    assert shred_module._WINDOWS_USN_OUTPUT_BUFFER_SIZE == 4_096
+    assert shred_module._RUNTIME_SNAPSHOT_DIGEST_PREFIX_HEX == 32
+    assert shred_module._RUNTIME_OWNER_FORMAT_VERSION == 1
+    assert shred_module._RUNTIME_STORAGE_BUDGET_DEFAULT_BYTES == 4 * 1024 * 1024 * 1024
+    assert shred_module._RUNTIME_STORAGE_ORPHAN_GRACE_DEFAULT_SECONDS == 60 * 60
+    assert shred_module.RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES == 64
+    assert shred_module.RUNTIME_SNAPSHOT_CACHE_MAX_BYTES == 512 * 1024 * 1024
+
+
+def test_json_shred_internal_value_objects_preserve_mutability_contracts() -> None:
+    progress = shred_module._ShredExecutionProgress(None)
+    assert not hasattr(progress, "__dict__")
+    progress.work_since_checkpoint = 1
+    assert progress.work_since_checkpoint == 1
+
+    revision = shred_module._StrongFileRevision((1, 2), 3, 4, 5)
+    signature_record = shred_module._DataFileSignatureRecord(1, 2, "digest", None)
+    prepared = shred_module.PreparedPerPortCacheBuild(
+        data_path="data.json",
+        cache_dir="cache",
+        staging_dir=None,
+        schema_fingerprint="schema",
+        data_file_signature={},
+        summary={},
+    )
+    snapshot = shred_module._VerifiedRuntimeSnapshot(revision, Path("snapshot.parquet"), 7)
+    xml_shape = shred_module._XmlRecordShape(repeated_object_children=True)
+    probe_failure = shred_module._CacheProbeFailure(reason="invalid")
+
+    for value, field, replacement in (
+        (revision, "size", 99),
+        (signature_record, "sha256", "changed"),
+        (prepared, "no_op", True),
+        (snapshot, "size", 99),
+        (xml_shape, "repeated_object_children", False),
+        (probe_failure, "reason", "changed"),
+    ):
+        with pytest.raises(FrozenInstanceError):
+            setattr(value, field, replacement)
+
+    for value in (revision, signature_record, prepared, snapshot, xml_shape):
+        assert not hasattr(value, "__dict__")
+
+    assert prepared.no_op is False
+
 
 # ─── _scalar_to_str — JSON-style booleans ──────────────────────────
 

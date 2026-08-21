@@ -172,30 +172,23 @@ describe("ModellingConfig", () => {
       expect(weightSelect).toBeTruthy()
     })
 
-    it("renders task toggle with regression active by default", () => {
+    it("does not render a separate task selector", () => {
       renderConfig()
-      const regressionBtn = screen.getByRole("button", { name: "regression" })
-      const classificationBtn = screen.getByRole("button", { name: "classification" })
-      expect(regressionBtn).toBeTruthy()
-      expect(classificationBtn).toBeTruthy()
-    })
-
-    it("switching task to classification calls onUpdate with new task, metrics, and clears loss", () => {
-      const { props } = renderConfig()
-      fireEvent.click(screen.getByRole("button", { name: "classification" }))
-      // Should call onUpdate once with merged object
-      expect(props.onUpdate).toHaveBeenCalledWith({
-        task: "classification",
-        metrics: ["auc", "logloss"],
-        loss_function: null,
-      })
+      expect(screen.queryByText("Task")).toBeNull()
+      expect(screen.queryByRole("button", { name: "regression" })).toBeNull()
+      expect(screen.queryByRole("button", { name: "classification" })).toBeNull()
     })
 
     it("feature count shows correct number (excludes target and weight)", () => {
       renderConfig({ activePane: "features" })
       // 4 columns total. Target=loss_ratio excluded, weight="" so not excluded.
       // Feature columns: age, region, exposure = 3 of 4
-      expect(screen.getAllByRole("button", { name: "Exclude" })).toHaveLength(3)
+      expect(
+        screen.getAllByRole("button", {
+          name: /is included; click to exclude$/,
+        }),
+      ).toHaveLength(3)
+      expect(screen.getByText("3 of 3 included")).toBeInTheDocument()
     })
 
     it("feature count adjusts when weight is set", () => {
@@ -204,15 +197,23 @@ describe("ModellingConfig", () => {
         config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", weight: "exposure" },
       })
       // Target=loss_ratio, weight=exposure both excluded. Features: age, region = 2 of 4
-      expect(screen.getAllByRole("button", { name: "Exclude" })).toHaveLength(2)
+      expect(
+        screen.getAllByRole("button", {
+          name: /is included; click to exclude$/,
+        }),
+      ).toHaveLength(2)
+      expect(screen.getByText("2 of 2 included")).toBeInTheDocument()
     })
 
     it("exclude column toggles work", () => {
       vi.spyOn(window, "confirm").mockReturnValue(true)
       const { props } = renderConfig({ activePane: "features" })
-      // Find the feature row span for "age" (not <option> elements)
-      const ageSpan = screen.getAllByText("age").find(el => el.tagName === "SPAN")!
-      fireEvent.click(within(ageSpan.closest("div")!).getByRole("button", { name: "Exclude" }))
+      fireEvent.click(
+        within(screen.getByRole("group", { name: "age feature" })).getByRole(
+          "button",
+          { name: "age is included; click to exclude" },
+        ),
+      )
       expect(props.onUpdate).toHaveBeenCalledWith({ exclude: ["age"] })
     })
 
@@ -221,9 +222,12 @@ describe("ModellingConfig", () => {
         activePane: "features",
         config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", exclude: ["age"] },
       })
-      // Find the feature row span for "age" (not <option> elements)
-      const ageSpan = screen.getAllByText("age").find(el => el.tagName === "SPAN")!
-      fireEvent.click(within(ageSpan.closest("div")!).getByRole("button", { name: "Include" }))
+      fireEvent.click(
+        within(screen.getByRole("group", { name: "age feature" })).getByRole(
+          "button",
+          { name: "age is excluded; click to include" },
+        ),
+      )
       // Should remove "age" from exclusion list
       expect(props.onUpdate).toHaveBeenCalledWith({ exclude: [] })
     })
@@ -261,27 +265,12 @@ describe("ModellingConfig", () => {
       })
     })
 
-    it("loss function shows regression losses as toggle buttons for regression task", () => {
+    it("shows every supported loss in one picker", () => {
       renderConfig()
-      // RMSE/MAE appear as both loss and metric buttons
-      expect(screen.getAllByRole("button", { name: "RMSE" }).length).toBeGreaterThanOrEqual(1)
-      expect(screen.getAllByRole("button", { name: "MAE" }).length).toBeGreaterThanOrEqual(1)
-      // Poisson/Tweedie are loss-only
-      expect(screen.getByRole("button", { name: "Poisson" })).toBeTruthy()
-      expect(screen.getByRole("button", { name: "Tweedie" })).toBeTruthy()
-      // Should NOT contain classification losses
-      expect(screen.queryByRole("button", { name: "CrossEntropy" })).toBeNull()
-    })
-
-    it("loss function shows classification losses when task=classification", () => {
-      renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "classification", algorithm: "catboost" },
-      })
-      // Logloss appears as both loss and metric button
-      expect(screen.getAllByRole("button", { name: "Logloss" }).length).toBeGreaterThanOrEqual(1)
-      expect(screen.getByRole("button", { name: "CrossEntropy" })).toBeTruthy()
-      // Should NOT contain regression-only losses
-      expect(screen.queryByRole("button", { name: "Poisson" })).toBeNull()
+      const losses = within(screen.getByRole("group", { name: "Loss functions" }))
+      for (const loss of ["RMSE", "MAE", "Poisson", "Tweedie", "Logloss", "CrossEntropy"]) {
+        expect(losses.getByRole("button", { name: loss })).toBeTruthy()
+      }
     })
 
     it("Tweedie variance power slider only visible when loss_function=Tweedie", () => {
@@ -305,6 +294,8 @@ describe("ModellingConfig", () => {
         </GraphProvider>,
       )
       expect(screen.getByText(/Variance power/)).toBeTruthy()
+      expect(screen.getByRole("slider")).toHaveValue("1.5")
+      expect(screen.queryByRole("button", { name: /Set variance power/ })).toBeNull()
     })
   })
 
@@ -449,20 +440,19 @@ describe("ModellingConfig", () => {
       expect(screen.getByText("Entity column")).toBeTruthy()
     })
 
-    it("metrics checkboxes for regression render correctly", () => {
+    it("shows all metrics and disables classification metrics for a regression loss", () => {
       renderConfig({ activePane: "target" })
-      // Regression metrics (display labels)
-      expect(screen.getByRole("button", { name: "Gini" })).toBeTruthy()
-      expect(screen.getByRole("button", { name: "R²" })).toBeTruthy()
-      // RMSE and MAE appear twice (loss function + metric) — check both exist
-      expect(screen.getAllByRole("button", { name: "RMSE" }).length).toBeGreaterThanOrEqual(2)
-      expect(screen.getAllByRole("button", { name: "MAE" }).length).toBeGreaterThanOrEqual(2)
+      const metricButtons = within(screen.getByRole("group", { name: "Metrics" }))
+      expect(metricButtons.getByRole("button", { name: "Gini" })).toBeEnabled()
+      expect(metricButtons.getByRole("button", { name: "R²" })).toBeEnabled()
+      expect(metricButtons.getByRole("button", { name: "AUC" })).toBeDisabled()
+      expect(metricButtons.getByRole("button", { name: "Logloss" })).toBeDisabled()
     })
 
     it("clicking a metric button toggles it", () => {
       const { props } = renderConfig({
         activePane: "target",
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", metrics: ["gini", "rmse"] },
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "RMSE", metrics: ["gini", "rmse"] },
       })
       // Click "MSE" metric to add it (only appears once — not a loss function)
       fireEvent.click(screen.getByRole("button", { name: "MSE" }))
@@ -472,23 +462,30 @@ describe("ModellingConfig", () => {
     it("clicking a selected metric removes it", () => {
       const { props } = renderConfig({
         activePane: "target",
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", metrics: ["gini", "rmse"] },
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "RMSE", metrics: ["gini", "rmse"] },
       })
       // Click "Gini" to remove it (only appears once — not a loss function)
       fireEvent.click(screen.getByRole("button", { name: "Gini" }))
       expect(props.onUpdate).toHaveBeenCalledWith("metrics", ["rmse"])
     })
 
-    it("classification task shows classification metrics", () => {
+    it("shows all metrics and disables regression metrics for a classification loss", () => {
       renderConfig({
         activePane: "target",
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "classification", algorithm: "catboost" },
+        config: {
+          _nodeId: "node_1",
+          target: "loss_ratio",
+          task: "classification",
+          algorithm: "catboost",
+          loss_function: "Logloss",
+          metrics: ["auc", "logloss"],
+        },
       })
-      expect(screen.getByRole("button", { name: "AUC" })).toBeTruthy()
-      // Logloss appears twice (loss function + metric)
-      expect(screen.getAllByRole("button", { name: "Logloss" }).length).toBeGreaterThanOrEqual(2)
-      // Regression-only metrics should NOT be visible
-      expect(screen.queryByRole("button", { name: "Gini" })).toBeNull()
+      const metricButtons = within(screen.getByRole("group", { name: "Metrics" }))
+      expect(metricButtons.getByRole("button", { name: "AUC" })).toBeEnabled()
+      expect(metricButtons.getByRole("button", { name: "Logloss" })).toBeEnabled()
+      expect(metricButtons.getByRole("button", { name: "Gini" })).toBeDisabled()
+      expect(metricButtons.getByRole("button", { name: "RMSE" })).toBeDisabled()
     })
   })
 
@@ -1210,25 +1207,32 @@ describe("ModellingConfig", () => {
   })
 
   // ═════════════════════════════════════════════════════════════════
-  // Task switching updates metrics
+  // Loss selection derives task and metrics
   // ═════════════════════════════════════════════════════════════════
 
-  describe("Task switching metrics", () => {
-    it("switching to classification sets classification metrics", () => {
+  describe("Loss-derived task and metrics", () => {
+    it("selecting Logloss sets classification task and metrics", () => {
       const { props } = renderConfig()
-      fireEvent.click(screen.getByRole("button", { name: "classification" }))
+      fireEvent.click(within(screen.getByRole("group", { name: "Loss functions" })).getByRole("button", { name: "Logloss" }))
       expect(props.onUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({ task: "classification", metrics: ["auc", "logloss"] }),
+        expect.objectContaining({ loss_function: "Logloss", task: "classification", metrics: ["auc", "logloss"] }),
       )
     })
 
-    it("switching back to regression sets regression metrics", () => {
+    it("selecting RMSE sets regression task and metrics", () => {
       const { props } = renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "classification", algorithm: "catboost", metrics: ["auc", "logloss"] },
+        config: {
+          _nodeId: "node_1",
+          target: "loss_ratio",
+          task: "classification",
+          algorithm: "catboost",
+          loss_function: "Logloss",
+          metrics: ["auc", "logloss"],
+        },
       })
-      fireEvent.click(screen.getByRole("button", { name: "regression" }))
+      fireEvent.click(within(screen.getByRole("group", { name: "Loss functions" })).getByRole("button", { name: "RMSE" }))
       expect(props.onUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({ task: "regression", metrics: ["gini", "rmse"] }),
+        expect.objectContaining({ loss_function: "RMSE", task: "regression", metrics: ["gini", "rmse"] }),
       )
     })
   })
@@ -1243,6 +1247,7 @@ describe("ModellingConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Poisson" }))
       expect(props.onUpdate).toHaveBeenCalledWith({
         loss_function: "Poisson",
+        task: "regression",
         metrics: ["gini", "poisson_deviance"],
       })
     })
@@ -1252,7 +1257,9 @@ describe("ModellingConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Tweedie" }))
       expect(props.onUpdate).toHaveBeenCalledWith({
         loss_function: "Tweedie",
+        task: "regression",
         metrics: ["gini", "tweedie_deviance"],
+        variance_power: 1.5,
       })
     })
 
@@ -1271,6 +1278,7 @@ describe("ModellingConfig", () => {
       fireEvent.click(rmseButtons[0])
       expect(props.onUpdate).toHaveBeenCalledWith({
         loss_function: "RMSE",
+        task: "regression",
         metrics: ["gini", "rmse"],
       })
     })
@@ -1288,6 +1296,7 @@ describe("ModellingConfig", () => {
       fireEvent.click(maeButtons[0])
       expect(props.onUpdate).toHaveBeenCalledWith({
         loss_function: "MAE",
+        task: "regression",
         metrics: ["gini", "rmse"],
       })
     })
@@ -1338,8 +1347,12 @@ describe("ModellingConfig", () => {
       const { props } = renderConfig({
         config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", exclude: ["age"] },
       })
-      const regionSpan = screen.getAllByText("region").find(el => el.tagName === "SPAN")!
-      fireEvent.click(within(regionSpan.closest("div")!).getByRole("button", { name: "Exclude" }))
+      fireEvent.click(
+        within(screen.getByRole("group", { name: "region feature" })).getByRole(
+          "button",
+          { name: "region is included; click to exclude" },
+        ),
+      )
       expect(props.onUpdate).toHaveBeenCalledWith({ exclude: ["age", "region"] })
     })
 
@@ -1347,8 +1360,12 @@ describe("ModellingConfig", () => {
       const { props } = renderConfig({
         config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", exclude: ["age", "region"] },
       })
-      const regionSpan = screen.getAllByText("region").find(el => el.tagName === "SPAN")!
-      fireEvent.click(within(regionSpan.closest("div")!).getByRole("button", { name: "Include" }))
+      fireEvent.click(
+        within(screen.getByRole("group", { name: "region feature" })).getByRole(
+          "button",
+          { name: "region is excluded; click to include" },
+        ),
+      )
       expect(props.onUpdate).toHaveBeenCalledWith({ exclude: ["age"] })
     })
   })

@@ -9,20 +9,53 @@ be driven directly with crafted inputs.
 
 from __future__ import annotations
 
+import os
 import types
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import polars as pl
 import pytest
 
+import haute.executor as executor_module
 from haute.executor import (
     PREVIEW_MAX_CELLS,
+    PreparedDataOutput,
     _cache_has_required_materialization,
     _contain_output_path,
     _is_dangerous_preamble_binding,
     _pipeline_dir,
     _preview_row_limit_for_width,
 )
+
+
+def test_executor_resource_defaults_are_explicit_contracts() -> None:
+    assert executor_module._MAX_PREVIEW_ROWS == 10_000
+    assert executor_module.PREVIEW_CACHE_MAX_BYTES == 64 * 1024 * 1024
+    assert PREVIEW_MAX_CELLS == 50_000
+    assert executor_module.PREVIEW_INITIAL_COLUMN_LIMIT == 200
+    assert executor_module._preview_cache._max_size == 8
+    assert executor_module._WINDOWS_OUTPUT_SYNC_RETRY_DELAYS == (0.05, 0.1, 0.2, 0.4, 0.8)
+
+
+def test_executor_platform_flag_matches_the_runtime() -> None:
+    assert executor_module._IS_WINDOWS is (os.name == "nt")
+
+
+def test_prepared_output_is_frozen_slotted_and_non_transactional_by_default() -> None:
+    prepared = PreparedDataOutput(
+        response=object(),  # type: ignore[arg-type]
+        project_root="root",
+        display_path="output.parquet",
+        final_path=None,
+        staging_path=None,
+        overwrite=False,
+    )
+    assert prepared.transactional is False
+    assert not hasattr(prepared, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        prepared.transactional = True  # type: ignore[misc]
+
 
 # ── L150: ``p = Path.cwd() / p`` is a path-join, not arithmetic ───────
 

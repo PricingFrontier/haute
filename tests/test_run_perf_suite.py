@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -124,7 +125,7 @@ def test_build_report_records_artifact_ready_summary() -> None:
         command=["pytest", "-m", "perf"],
     )
 
-    assert report["schema_version"] == 3
+    assert report["schema_version"] == 4
     assert report["scenario"] == {"polars_scale": "ci"}
     assert report["rss"]["peak_rss_bytes"] is None
     assert set(report["environment"]) == {
@@ -133,7 +134,10 @@ def test_build_report_records_artifact_ready_summary() -> None:
         "haute",
         "polars",
         "pytest",
+        "compatibility",
     }
+    assert report["historical_comparison"]["status"] == "not_requested"
+    assert report["historical_comparison"]["thresholds"]["min_test_baseline_seconds"] == 0.10
     assert report["budgets"] == {"max_total_seconds": 60.0, "max_test_seconds": 5.0}
     assert report["summary"]["outcomes"] == {"passed": 1, "xfailed": 1}
     assert report["summary"]["slowest"][0]["nodeid"] == "tests/test_perf.py::test_fast"
@@ -235,3 +239,131 @@ def test_process_rss_monitor_records_independent_peak() -> None:
     assert envelope.sampler == "independent_process_rss_poll"
     assert envelope.peak_rss_bytes == 30
     assert envelope.sample_count >= 3
+
+
+def test_historical_comparison_handles_pass_regression_noise_and_incompatibility() -> None:
+    budgets = run_perf_suite.PerfBudgets(10, 5)
+    current = run_perf_suite._build_report(
+        exit_code=0,
+        collected_count=2,
+        total_seconds=1.3,
+        results=[
+            run_perf_suite.PerfTestResult("a", "passed", 0.2, "call"),
+            run_perf_suite.PerfTestResult("tiny", "passed", 0.01, "call"),
+        ],
+        budgets=budgets,
+        command=["pytest"],
+        rss=run_perf_suite.PerfRssEnvelope("x", 130, 1, 0.1),
+    )
+    baseline = json.loads(json.dumps(current))
+    baseline["summary"]["total_seconds"] = 1.0
+    baseline["rss"]["peak_rss_bytes"] = 100
+    baseline["tests"][0]["duration_seconds"] = 0.1
+    comparison, violations = run_perf_suite._historical_comparison(current, baseline)
+    assert comparison["status"] == "compared"
+    assert any("total_seconds" in violation for violation in violations)
+    assert any("peak_rss_bytes" in violation for violation in violations)
+    assert any("test:a" in violation for violation in violations)
+    assert not any("tiny" in item["name"] for item in comparison["comparisons"])
+    baseline["scenario"]["polars_scale"] = "1m"
+    comparison, violations = run_perf_suite._historical_comparison(current, baseline)
+    assert comparison["status"] == "incompatible"
+    assert comparison["reasons"] == ["polars_scale_mismatch"]
+    assert not violations
+
+
+def test_baseline_validation_and_regression_thresholds(tmp_path: Path) -> None:
+    import pytest
+
+    path = tmp_path / "bad.json"
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="schema_version"):
+        run_perf_suite._load_baseline_report(path)
+    for value in (True, float("nan"), float("inf"), -1):
+        with pytest.raises(ValueError):
+            run_perf_suite._nonnegative_float(value)
+    with pytest.raises(SystemExit):
+        run_perf_suite._parse_args(["--max-total-regression-fraction", "-1"])
+
+
+def test_historical_comparison_skips_suite_metrics_for_changed_test_identity() -> None:
+    budgets = run_perf_suite.PerfBudgets(10, 5)
+    baseline = run_perf_suite._build_report(
+        exit_code=0,
+        collected_count=1,
+        total_seconds=1.0,
+        results=[run_perf_suite.PerfTestResult("same", "passed", 0.2, "call")],
+        budgets=budgets,
+        command=["pytest"],
+        rss=run_perf_suite.PerfRssEnvelope("x", 100, 1, 0.1),
+    )
+    current = run_perf_suite._build_report(
+        exit_code=0,
+        collected_count=2,
+        total_seconds=9.0,
+        results=[
+            run_perf_suite.PerfTestResult("same", "passed", 0.21, "call"),
+            run_perf_suite.PerfTestResult("added", "passed", 0.2, "call"),
+        ],
+        budgets=budgets,
+        command=["pytest"],
+        rss=run_perf_suite.PerfRssEnvelope("x", 999, 1, 0.1),
+    )
+    comparison, violations = run_perf_suite._historical_comparison(current, baseline)
+    assert comparison["suite_metrics_status"] == "skipped_test_identity_mismatch"
+    assert [item["name"] for item in comparison["comparisons"]] == ["test:same"]
+    assert not violations
+
+
+def test_baseline_loader_rejects_closed_schema_violations(tmp_path: Path) -> None:
+    import pytest
+
+    budgets = run_perf_suite.PerfBudgets(10, 5)
+    report = run_perf_suite._build_report(
+        exit_code=0,
+        collected_count=1,
+        total_seconds=1.0,
+        results=[run_perf_suite.PerfTestResult("one", "passed", 0.2, "call")],
+        budgets=budgets,
+        command=["pytest"],
+        rss=run_perf_suite.PerfRssEnvelope("x", 100, 1, 0.1),
+    )
+    valid_path = tmp_path / "valid.json"
+    valid_path.write_text(json.dumps(report), encoding="utf-8")
+    assert run_perf_suite._load_baseline_report(valid_path) == report
+
+    malformed_reports: list[tuple[str, dict[str, object]]] = []
+    for field, value in (("generated_at", ""), ("schema_version", 3)):
+        malformed = json.loads(json.dumps(report))
+        malformed[field] = value
+        malformed_reports.append((field, malformed))
+
+    collected_mismatch = json.loads(json.dumps(report))
+    collected_mismatch["summary"]["collected"] = 2
+    malformed_reports.append(("collected", collected_mismatch))
+
+    outcome_shape = json.loads(json.dumps(report))
+    outcome_shape["summary"]["outcomes"]["skipped"] = 0
+    malformed_reports.append(("outcomes", outcome_shape))
+
+    slowest_mismatch = json.loads(json.dumps(report))
+    slowest_mismatch["summary"]["slowest"] = []
+    malformed_reports.append(("slowest", slowest_mismatch))
+
+    wall_time_mismatch = json.loads(json.dumps(report))
+    wall_time_mismatch["wall_time"]["total_seconds"] = 0.5
+    malformed_reports.append(("wall_time", wall_time_mismatch))
+
+    invalid_test_record = json.loads(json.dumps(report))
+    invalid_test_record["tests"][0]["evidence"] = []
+    malformed_reports.append(("test_record", invalid_test_record))
+
+    missing_rss_sample = json.loads(json.dumps(report))
+    missing_rss_sample["rss"]["sample_count"] = 0
+    malformed_reports.append(("rss", missing_rss_sample))
+
+    for name, malformed in malformed_reports:
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(malformed), encoding="utf-8")
+        with pytest.raises(ValueError):
+            run_perf_suite._load_baseline_report(path)

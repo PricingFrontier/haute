@@ -38,6 +38,7 @@ from haute.routes._optimiser_service import (
     _optimiser_solve_required_columns_by_node,
 )
 from haute.routes.optimiser import _build_artifact_payload
+from tests._projection_helpers import pair_value
 from tests.conftest import build_test_input_snapshot, make_edge, make_graph
 from tests.optimiser_fixtures import frontier_result as _frontier_result
 from tests.optimiser_fixtures import poll_frontier_until_done as _poll_frontier_until_done
@@ -4273,7 +4274,8 @@ class TestEstimateRoute:
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
         assert status["status"] == "contract_error"
-        assert "Source projection references columns missing" in status["error_detail"]
+        assert "required by a projection contract are missing" in status["error_detail"]
+        assert "expected_margin" in status["error_detail"]
         assert "expected_margin" in status["error_detail"]
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
@@ -4485,10 +4487,10 @@ class TestEstimateRoute:
             )
         )
 
-        assert projection.edge_demands[("scored", "opt")] == frozenset(
+        assert pair_value(projection.edge_demands, "scored", "opt") == frozenset(
             {"quote_ref", "expected_margin"}
         )
-        assert projection.edge_demands[("banding", "opt")] == frozenset(
+        assert pair_value(projection.edge_demands, "banding", "opt") == frozenset(
             {"quote_ref", "territory", "channel", "age_band"}
         )
 

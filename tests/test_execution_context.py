@@ -4,18 +4,23 @@ import json
 import threading
 import time
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import polars as pl
 import pytest
 
 from haute._execution_admission import (
     ExecutionAdmissionError,
+    IsolatedExecutionBudget,
     create_admitted_execution_context,
+    create_isolated_execution_context,
     execution_budget_for_profile,
+    isolated_execution_budget,
 )
 from haute._execution_context import (
     ExecutionAdmission,
+    ExecutionCacheProofMissReason,
     ExecutionCancellationToken,
     ExecutionCancelledError,
     ExecutionContext,
@@ -1033,6 +1038,13 @@ def test_execution_telemetry_is_bounded_redacted_and_emitted_once_per_terminal_s
     context.record_bytes_read(1_024)
     context.record_bytes_written(512)
     context.record_chunk()
+    context.record_column_widths(
+        node_id="source",
+        requested_width=2,
+        physically_scanned_width=3,
+    )
+    context.record_cache_proof_miss(ExecutionCacheProofMissReason.PROOF_UNAVAILABLE)
+    context.record_cache_direct_fallback()
 
     terminal_reason = "bounded_reason_" + ("x" * 256)
     context.metrics_payload(status="completed", terminal_reason=terminal_reason)
@@ -1042,7 +1054,7 @@ def test_execution_telemetry_is_bounded_redacted_and_emitted_once_per_terminal_s
     event = events[0]
     assert event.schema_version == 1
     assert event.event == "execution_terminal"
-    assert len(event.attributes) <= 32
+    assert len(event.attributes) <= 48
     assert all(
         not isinstance(value, str) or len(value) <= 128 for value in event.attributes.values()
     )
@@ -1050,6 +1062,15 @@ def test_execution_telemetry_is_bounded_redacted_and_emitted_once_per_terminal_s
     assert event.attributes["bytes_read"] == 1_024
     assert event.attributes["bytes_written"] == 512
     assert event.attributes["chunk_count"] == 1
+    assert "rss_start_bytes" in event.attributes
+    assert "strategy_status" in event.attributes
+    assert "admission_headroom_bytes" in event.attributes
+    assert "column_widths_state" in event.attributes
+    assert event.attributes["requested_column_width_total"] == 2
+    assert event.attributes["physically_scanned_column_width_total"] == 3
+    assert event.attributes["cache_proof_misses"] == 1
+    assert event.attributes["cache_miss_proof_unavailable"] == 1
+    assert event.attributes["cache_direct_fallbacks"] == 1
     serialised = json.dumps(event.to_dict())
     assert "secret-operation" not in serialised
     assert "secret-job" not in serialised
@@ -1097,10 +1118,10 @@ def test_execution_telemetry_environment_is_parsed_once_across_default_contexts(
 
 
 def test_bounded_telemetry_attributes_rejects_overflow_instead_of_slicing() -> None:
-    attributes = {f"key_{index}": index for index in range(32)}
+    attributes = {f"key_{index}": index for index in range(48)}
     assert _bounded_telemetry_attributes(attributes) == attributes
-    with pytest.raises(ValueError, match="32"):
-        _bounded_telemetry_attributes({**attributes, "overflow": 33})
+    with pytest.raises(ValueError, match="48"):
+        _bounded_telemetry_attributes({**attributes, "overflow": 49})
 
 
 def test_telemetry_attribute_failure_does_not_change_metrics_payload() -> None:
@@ -1321,6 +1342,89 @@ def test_execution_context_records_stage_metric_with_rss_delta() -> None:
     assert metric.elapsed_ms >= 0
 
 
+def test_stage_exit_sampler_failure_preserves_primary_error_and_restores_context() -> None:
+    from haute._execution_context import current_execution_context
+
+    samples = iter([100])
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: next(samples),
+    )
+    primary = RuntimeError("primary execution failure")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        with context.stage("collect", node_id="node-1"):
+            raise primary
+
+    assert exc_info.value is primary
+    assert current_execution_context() is None
+    assert any(
+        "Execution stage finalization failed: StopIteration" in note
+        for note in getattr(primary, "__notes__", ())
+    )
+
+
+def test_stage_exit_sampler_failure_without_primary_remains_loud_and_restores_context() -> None:
+    from haute._execution_context import current_execution_context
+
+    calls = 0
+
+    def sample_memory() -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 100
+        raise OSError("RSS sampling failed")
+
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=sample_memory,
+    )
+
+    with pytest.raises(OSError, match="RSS sampling failed"):
+        with context.stage("collect", node_id="node-1"):
+            pass
+
+    assert current_execution_context() is None
+
+
+def test_stage_exit_reports_every_internal_finalization_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stage cleanup is fail-loud and preserves later failures as notes."""
+    from haute import _execution_context as context_mod
+
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: 100,
+    )
+
+    class BrokenContextVar:
+        def set(self, value: object) -> object:
+            assert value is context
+            return object()
+
+        def reset(self, _token: object) -> None:
+            raise LookupError("context reset failed")
+
+    def fail_record(_metric: ExecutionStageMetric) -> None:
+        raise ValueError("metric recording failed")
+
+    monkeypatch.setattr(context_mod, "_CURRENT_EXECUTION_CONTEXT", BrokenContextVar())
+    monkeypatch.setattr(context.metrics, "record", fail_record)
+
+    with pytest.raises(RuntimeError, match="stage stack is unbalanced") as exc_info:
+        with context.stage("collect", node_id="node-1"):
+            context._active_stage_stack().clear()
+
+    notes = getattr(exc_info.value, "__notes__", ())
+    assert any("LookupError: context reset failed" in note for note in notes)
+    assert any("ValueError: metric recording failed" in note for note in notes)
+
+
 def test_execution_context_stage_tracks_peak_rss_from_checkpoints() -> None:
     samples = iter([100, 160, 120])
     context = ExecutionContext(
@@ -1527,6 +1631,7 @@ def test_execution_context_memory_pressure_events_survive_memory_failure() -> No
 def test_execution_metrics_payload_includes_projection_diagnostics() -> None:
     from haute.projection import (
         ProjectionDiagnostics,
+        ProjectionEdgeKey,
         ProjectionPlan,
         ProjectionReason,
     )
@@ -1535,9 +1640,10 @@ def test_execution_metrics_payload_includes_projection_diagnostics() -> None:
         operation="training",
         profile=ExecutionProfile.TRAINING_PREP,
     )
+    edge_key = ProjectionEdgeKey(edge_id="e_source_train", source="source", target="train")
     plan = ProjectionPlan(
         needed_by_node={"train": None},
-        edge_demands={("source", "train"): frozenset({"target"})},
+        edge_demands={edge_key: frozenset({"target"})},
         opaque_boundaries=frozenset({"train"}),
         diagnostics=ProjectionDiagnostics(
             opaque_reasons={
@@ -1554,7 +1660,7 @@ def test_execution_metrics_payload_includes_projection_diagnostics() -> None:
                 )
             },
             edge_reasons={
-                ("source", "train"): ProjectionReason(
+                edge_key: ProjectionReason(
                     rule="runtime_inferred_streaming",
                     message="runtime parent projection",
                 )
@@ -1643,6 +1749,76 @@ def test_execution_metrics_payload_bounds_width_evidence_and_keeps_unavailable_c
     assert payload["column_widths"]["items"][-1]["node_id"] == "node-127"
     assert ExecutionMetricsPayload.model_validate(payload).model_dump(mode="json") == payload
     ExecutionMetricsPayload.model_validate(payload)
+
+
+def test_execution_efficiency_evidence_uses_closed_cache_reasons_and_aggregate_widths() -> None:
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
+    context.record_column_widths(
+        node_id="a",
+        requested_width=2,
+        physically_scanned_width=3,
+    )
+    context.record_column_widths(
+        node_id="b",
+        requested_width=5,
+        physically_scanned_width=8,
+    )
+    context.record_cache_proof_hit()
+    context.record_cache_proof_miss(ExecutionCacheProofMissReason.METADATA_SOURCE_MISMATCH)
+    context.record_cache_proof_miss(ExecutionCacheProofMissReason.PROOF_UNAVAILABLE)
+    context.record_cache_direct_fallback()
+
+    payload = context.metrics_payload(status="completed")
+
+    assert payload["requested_column_width_total"] == 7
+    assert payload["physically_scanned_column_width_total"] == 11
+    assert payload["cache_proof"] == {
+        "hits": 1,
+        "misses": 2,
+        "direct_fallbacks": 1,
+        "miss_reason_counts": {
+            "artifact_integrity_schema_failure": 0,
+            "metadata_source_mismatch": 1,
+            "proof_unavailable": 1,
+            "unreadable_artifact": 0,
+        },
+    }
+    assert ExecutionMetricsPayload.model_validate(payload).model_dump(mode="json") == payload
+
+
+def test_execution_efficiency_width_totals_fail_closed_on_partial_evidence() -> None:
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
+    context.record_column_widths(
+        node_id="known",
+        requested_width=2,
+        physically_scanned_width=3,
+    )
+    context.record_column_widths(
+        node_id="partial",
+        requested_width=None,
+        physically_scanned_width=5,
+    )
+
+    payload = context.metrics_payload(status="completed")
+
+    assert payload["requested_column_width_total"] is None
+    assert payload["physically_scanned_column_width_total"] == 8
+
+
+def test_execution_efficiency_evidence_rejects_unknown_cache_reason() -> None:
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+    )
+
+    with pytest.raises(TypeError, match="ExecutionCacheProofMissReason"):
+        context.record_cache_proof_miss("new_reason")  # type: ignore[arg-type]
 
 
 def test_projection_strategy_summary_is_bounded() -> None:
@@ -1773,6 +1949,242 @@ def test_admitted_execution_context_uses_profile_specific_memory_limit(monkeypat
     assert context.admission.config_key == "HAUTE_PREVIEW_MEMORY_LIMIT_MB"
 
 
+def test_isolated_context_uses_plain_parent_budget_without_reserving_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._execution_admission as admission_mod
+
+    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "64")
+    parent = create_admitted_execution_context(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: 100,
+    )
+    budget = isolated_execution_budget(parent)
+    monkeypatch.setattr(admission_mod, "current_rss_bytes", lambda: 200)
+
+    child = create_isolated_execution_context(budget)
+
+    assert budget.memory_limit_bytes == 64 * 1024 * 1024
+    assert child.memory_baseline_bytes == 200
+    assert child.rss_limit_bytes == 200 + 64 * 1024 * 1024
+    assert child.admission is not None
+    assert child.admission.operation == "pipeline_preview"
+    assert child.admission_release is None
+    child.release_admission()
+    parent.release_admission()
+
+
+def test_isolated_context_requires_admitted_parent_and_child_rss_sampler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._execution_admission as admission_mod
+
+    with pytest.raises(ValueError, match="admitted parent context"):
+        isolated_execution_budget(
+            ExecutionContext(
+                operation="pipeline_preview",
+                profile=ExecutionProfile.PREVIEW_EAGER,
+                memory_limit_bytes=1,
+            )
+        )
+
+    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "64")
+    parent = create_admitted_execution_context(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: 100,
+    )
+    budget = isolated_execution_budget(parent)
+    monkeypatch.setattr(admission_mod, "current_rss_bytes", lambda: None)
+    try:
+        with pytest.raises(ExecutionAdmissionError) as exc_info:
+            create_isolated_execution_context(budget)
+    finally:
+        parent.release_admission()
+
+    assert exc_info.value.reason == "memory_sampler_unavailable"
+
+
+@pytest.mark.parametrize("memory_limit", [0, -1, True, 1.5])
+def test_isolated_budget_rejects_invalid_memory_limit(memory_limit: object) -> None:
+    with pytest.raises(ValueError, match="memory_limit_bytes"):
+        IsolatedExecutionBudget(
+            operation="preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=memory_limit,  # type: ignore[arg-type]
+            config_key="test",
+            budget_policy="fixed_default",
+        )
+
+
+@pytest.mark.parametrize("process_limit", [0, -1, True, 1.5])
+def test_isolated_budget_rejects_invalid_optional_process_limit(process_limit: object) -> None:
+    with pytest.raises(ValueError, match="process_rss_limit_bytes"):
+        IsolatedExecutionBudget(
+            operation="preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=1,
+            process_rss_limit_bytes=process_limit,  # type: ignore[arg-type]
+            config_key="test",
+            budget_policy="fixed_default",
+        )
+
+
+@pytest.mark.parametrize("headroom", [None, 0, -1, True])
+def test_isolated_budget_requires_positive_admitted_headroom(headroom: object) -> None:
+    parent = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        admission=ExecutionAdmission(
+            operation="preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=10,
+            rss_at_admission_bytes=1,
+            rss_limit_bytes=11,
+            headroom_bytes=headroom,  # type: ignore[arg-type]
+            config_key="test",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="positive admitted memory headroom"):
+        isolated_execution_budget(parent)
+
+
+def test_create_isolated_context_rejects_the_wrong_budget_type() -> None:
+    with pytest.raises(TypeError, match="IsolatedExecutionBudget"):
+        create_isolated_execution_context(object())  # type: ignore[arg-type]
+
+
+def test_admitted_context_rejects_an_unavailable_initial_sampler() -> None:
+    with pytest.raises(ExecutionAdmissionError) as exc_info:
+        create_admitted_execution_context(
+            operation="preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_sampler=lambda: None,
+        )
+
+    assert exc_info.value.reason == "memory_sampler_unavailable"
+
+
+def test_invalid_execution_memory_policy_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_POLICY", "guess")
+
+    with pytest.raises(RuntimeError, match="HAUTE_EXECUTION_MEMORY_POLICY"):
+        execution_budget_for_profile(ExecutionProfile.PREVIEW_EAGER)
+
+
+def test_terminal_calibration_ignores_invalid_positive_evidence() -> None:
+    context = ExecutionContext(operation="preview", profile=ExecutionProfile.PREVIEW_EAGER)
+    diagnostic = SimpleNamespace(strategy=SimpleNamespace(value="materialisation-boundary"))
+
+    context._record_estimate_calibration(
+        {
+            "status": "completed",
+            "raw_estimated_bytes": True,
+            "observed_peak_rss_growth_bytes": 1,
+        },
+        diagnostic=diagnostic,
+    )
+
+    assert context._estimate_calibration_recorded is False
+
+
+def test_isolated_context_uses_admitted_headroom_and_absolute_process_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A child cannot reacquire the profile's wider nominal allowance."""
+
+    import haute._execution_admission as admission_mod
+
+    parent = ExecutionContext(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_limit_bytes=100,
+        admission=ExecutionAdmission(
+            operation="pipeline_preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=100,
+            rss_at_admission_bytes=100,
+            rss_limit_bytes=125,
+            process_rss_limit_bytes=125,
+            headroom_bytes=25,
+            config_key="test",
+        ),
+    )
+    budget = isolated_execution_budget(parent)
+    monkeypatch.setattr(admission_mod, "current_rss_bytes", lambda: 110)
+
+    child = create_isolated_execution_context(budget)
+
+    assert budget.memory_limit_bytes == 25
+    assert budget.process_rss_limit_bytes == 125
+    assert child.memory_limit_bytes == 25
+    assert child.memory_baseline_bytes == 110
+    assert child.rss_limit_bytes == 125
+    assert child.admission is not None
+    assert child.admission.headroom_bytes == 15
+
+
+def test_isolated_context_rejects_child_already_above_absolute_process_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._execution_admission as admission_mod
+
+    parent = ExecutionContext(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_limit_bytes=100,
+        admission=ExecutionAdmission(
+            operation="pipeline_preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=100,
+            rss_at_admission_bytes=100,
+            rss_limit_bytes=125,
+            process_rss_limit_bytes=125,
+            headroom_bytes=25,
+            config_key="test",
+        ),
+    )
+    budget = isolated_execution_budget(parent)
+    monkeypatch.setattr(admission_mod, "current_rss_bytes", lambda: 126)
+
+    with pytest.raises(ExecutionAdmissionError) as exc_info:
+        create_isolated_execution_context(budget)
+
+    assert exc_info.value.reason == "process_rss_limit_exceeded"
+    assert exc_info.value.process_rss_limit_bytes == 125
+
+
+def test_isolated_context_rejects_child_with_no_absolute_cap_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._execution_admission as admission_mod
+
+    parent = ExecutionContext(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        admission=ExecutionAdmission(
+            operation="pipeline_preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=100,
+            rss_at_admission_bytes=100,
+            rss_limit_bytes=125,
+            process_rss_limit_bytes=125,
+            headroom_bytes=25,
+            config_key="test",
+        ),
+    )
+    budget = isolated_execution_budget(parent)
+    monkeypatch.setattr(admission_mod, "current_rss_bytes", lambda: 125)
+
+    with pytest.raises(ExecutionAdmissionError) as exc_info:
+        create_isolated_execution_context(budget)
+
+    assert exc_info.value.reason == "process_rss_limit_exceeded"
+    assert exc_info.value.process_rss_limit_bytes == 125
+
+
 def test_admitted_execution_context_allows_warm_process_above_operation_budget(
     monkeypatch,
 ) -> None:
@@ -1874,6 +2286,23 @@ def test_admitted_execution_context_rejects_when_process_rss_cap_exceeded(
         "headroom_bytes": -1 * 1024 * 1024,
         "reason": "process_rss_limit_exceeded",
     }
+
+
+def test_admitted_execution_context_rejects_at_process_rss_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HAUTE_PREVIEW_PROCESS_RSS_LIMIT_BYTES", "100")
+
+    with pytest.raises(ExecutionAdmissionError) as exc_info:
+        create_admitted_execution_context(
+            operation="pipeline_preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_sampler=lambda: 100,
+        )
+
+    assert exc_info.value.reason == "process_rss_limit_exceeded"
+    assert exc_info.value.rss_at_admission_bytes == 100
+    assert exc_info.value.process_rss_limit_bytes == 100
 
 
 def test_execution_metrics_payload_includes_admission_metadata(monkeypatch) -> None:
@@ -2438,20 +2867,22 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
     )
     captured = {}
 
-    def fake_execute_sink(*_args, **kwargs):
-        captured.update(kwargs)
+    def fake_execute_sink(*args, **_kwargs):
+        captured["budget"] = args[8]
         return WriteOutputResponse(status="ok")
 
-    with patch.object(pipeline_route, "write_data_output", side_effect=fake_execute_sink):
+    with patch.object(
+        pipeline_route,
+        "_output_write_transaction",
+        side_effect=fake_execute_sink,
+    ):
         response = await pipeline_route.write_output_node(
             WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
     assert response.status == "ok"
-    assert captured["execution_context"].profile == ExecutionProfile.LAZY_SINK
-    assert captured["execution_context"].memory_limit_bytes == 512 * 1024 * 1024
-    assert captured["execution_context"].admission is not None
-    assert captured["execution_context"].admission.rss_at_admission_bytes == 128 * 1024 * 1024
+    assert captured["budget"].profile == ExecutionProfile.LAZY_SINK
+    assert captured["budget"].memory_limit_bytes == 512 * 1024 * 1024
 
 
 @pytest.mark.asyncio
@@ -2483,7 +2914,7 @@ async def test_write_output_route_rejects_unconfigured_data_output(
 
     with patch.object(
         pipeline_route,
-        "write_data_output",
+        "_output_write_transaction",
         side_effect=AssertionError("invalid Data Output must not execute"),
     ):
         with pytest.raises(HTTPException) as exc_info:
@@ -3266,7 +3697,7 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
     def raise_memory_budget(*_args, **_kwargs):
         raise memory_error
 
-    monkeypatch.setattr(pipeline_route, "write_data_output", raise_memory_budget)
+    monkeypatch.setattr(pipeline_route, "_output_write_transaction", raise_memory_budget)
 
     with pytest.raises(HTTPException) as exc_info:
         await pipeline_route.write_output_node(
@@ -3311,9 +3742,16 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
     )
 
     def unsupported_sink(*_args, **_kwargs):
-        raise BoundedMemoryUnsupportedError("Bounded streaming sink failed", path="sink")
+        raise pipeline_route._OutputWriteWorkerError(
+            "bounded",
+            str(BoundedMemoryUnsupportedError("Bounded streaming sink failed", path="sink")),
+        )
 
-    with patch.object(pipeline_route, "write_data_output", side_effect=unsupported_sink):
+    with patch.object(
+        pipeline_route,
+        "_output_write_transaction",
+        side_effect=unsupported_sink,
+    ):
         with pytest.raises(HTTPException) as exc_info:
             await pipeline_route.write_output_node(
                 WriteOutputRequest(graph=graph, node_id="sink", source="batch")
@@ -3412,14 +3850,15 @@ async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
 
 
 @pytest.mark.asyncio
-async def test_sink_route_releases_admission_after_timeout_background_task_finishes(
+async def test_sink_route_releases_admission_before_isolated_timeout_returns(
     monkeypatch,
     tmp_path,
 ) -> None:
     from fastapi import HTTPException
 
+    from haute._execution_admission import IsolatedExecutionBudget
+    from haute._worker_isolation import IsolatedWorkerTimeoutError
     from haute.routes import pipeline as pipeline_route
-    from haute.routes._timeouts import BlockingWorkTimeoutError
     from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
@@ -3452,12 +3891,9 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
         profile=ExecutionProfile.LAZY_SINK,
         admission_release=release_admission,
     )
-    background_task: asyncio.Future[None] | None = None
 
     async def raise_timeout(*_args, **_kwargs):
-        nonlocal background_task
-        background_task = asyncio.get_running_loop().create_future()
-        raise BlockingWorkTimeoutError("pipeline_write_output", 0.01, background_task)
+        raise IsolatedWorkerTimeoutError(timeout_seconds=0.01)
 
     monkeypatch.setattr(
         pipeline_route,
@@ -3466,7 +3902,18 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
     )
     monkeypatch.setattr(
         pipeline_route,
-        "run_blocking_with_response_timeout",
+        "isolated_execution_budget",
+        lambda _context: IsolatedExecutionBudget(
+            operation="pipeline_write_output",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=1024,
+            config_key="test",
+            budget_policy="test",
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline_route,
+        "run_cancellable_worker_transaction",
         raise_timeout,
     )
 
@@ -3477,25 +3924,19 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
 
     assert exc_info.value.status_code == 504
     with release_lock:
-        assert release_calls == 0
-
-    assert background_task is not None
-    background_task.set_result(None)
-    await asyncio.sleep(0)
-
-    with release_lock:
         assert release_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_sink_route_releases_admission_when_timeout_task_already_finished(
+async def test_sink_route_maps_cancelled_isolated_worker_without_deferred_release(
     monkeypatch,
     tmp_path,
 ) -> None:
     from fastapi import HTTPException
 
+    from haute._execution_admission import IsolatedExecutionBudget
+    from haute._worker_isolation import IsolatedWorkerStoppedError
     from haute.routes import pipeline as pipeline_route
-    from haute.routes._timeouts import BlockingWorkTimeoutError
     from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
@@ -3529,10 +3970,8 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
         admission_release=release_admission,
     )
 
-    async def raise_finished_timeout(*_args, **_kwargs):
-        background_task = asyncio.get_running_loop().create_future()
-        background_task.set_result(None)
-        raise BlockingWorkTimeoutError("pipeline_write_output", 0.01, background_task)
+    async def raise_cancelled(*_args, **_kwargs):
+        raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
 
     monkeypatch.setattr(
         pipeline_route,
@@ -3541,8 +3980,19 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
     )
     monkeypatch.setattr(
         pipeline_route,
-        "run_blocking_with_response_timeout",
-        raise_finished_timeout,
+        "isolated_execution_budget",
+        lambda _context: IsolatedExecutionBudget(
+            operation="pipeline_write_output",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=1024,
+            config_key="test",
+            budget_policy="test",
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline_route,
+        "run_cancellable_worker_transaction",
+        raise_cancelled,
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -3550,22 +4000,18 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
             WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
-    assert exc_info.value.status_code == 504
-    with release_lock:
-        assert release_calls == 0
-
-    await asyncio.sleep(0)
-
+    assert exc_info.value.status_code == 409
     with release_lock:
         assert release_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_sink_route_cancels_execution_context_on_timeout(monkeypatch, tmp_path) -> None:
+async def test_sink_route_does_not_fall_back_after_isolated_timeout(monkeypatch, tmp_path) -> None:
     from fastapi import HTTPException
 
+    from haute._worker_isolation import IsolatedWorkerTimeoutError
     from haute.routes import pipeline as pipeline_route
-    from haute.schemas import WriteOutputRequest, WriteOutputResponse
+    from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
@@ -3587,28 +4033,23 @@ async def test_sink_route_cancels_execution_context_on_timeout(monkeypatch, tmp_
             "edges": [],
         }
     )
-    started = threading.Event()
-    cancel_seen = threading.Event()
 
-    def slow_execute_sink(*_args, **kwargs):
-        context = kwargs["execution_context"]
-        started.set()
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline and not context.cancellation_token.cancelled:
-            time.sleep(0.005)
-        if context.cancellation_token.cancelled:
-            cancel_seen.set()
-        return WriteOutputResponse(status="ok")
+    async def timed_out(*_args, **_kwargs):
+        raise IsolatedWorkerTimeoutError(timeout_seconds=0.05)
 
-    with patch.object(pipeline_route, "write_data_output", side_effect=slow_execute_sink):
+    fallback = Mock(side_effect=AssertionError("thread fallback must not run"))
+    monkeypatch.setattr(pipeline_route, "run_cancellable_worker_transaction", timed_out)
+    monkeypatch.setattr(pipeline_route, "run_blocking_with_response_timeout", fallback)
+
+    with patch.object(pipeline_route, "_output_write_transaction") as transaction:
         with pytest.raises(HTTPException) as exc_info:
             await pipeline_route.write_output_node(
                 WriteOutputRequest(graph=graph, node_id="sink", source="batch")
             )
 
     assert exc_info.value.status_code == 504
-    assert started.wait(2)
-    assert cancel_seen.wait(2)
+    transaction.assert_not_called()
+    fallback.assert_not_called()
 
 
 def test_optimiser_execute_pipeline_forwards_execution_context(tmp_path) -> None:
@@ -3906,12 +4347,19 @@ def test_deploy_score_graph_final_collect_uses_streaming_engine() -> None:
         memory_sampler=lambda: 1_000,
     )
 
+    class BackgroundQuery:
+        def fetch(self):
+            return pl.DataFrame({"score": [0.25]})
+
+        def cancel(self):
+            raise AssertionError("completed query must not be cancelled")
+
     class CollectingLazy:
         collect_kwargs = None
 
         def collect(self, **kwargs):
             self.collect_kwargs = kwargs
-            return pl.DataFrame({"score": [0.25]})
+            return BackgroundQuery()
 
     output_lf = CollectingLazy()
 
@@ -3929,7 +4377,7 @@ def test_deploy_score_graph_final_collect_uses_streaming_engine() -> None:
         )
 
     assert result["score"].to_list() == [0.25]
-    assert output_lf.collect_kwargs == {"engine": "streaming"}
+    assert output_lf.collect_kwargs == {"engine": "streaming", "background": True}
     assert any(metric.name == "deploy_collect" for metric in context.metrics.snapshot())
 
 
@@ -3989,7 +4437,7 @@ def test_deploy_score_graph_final_collect_preserves_execution_context_memory_err
             )
 
     assert exc_info.value is memory_error
-    assert output_lf.collect_kwargs == {"engine": "streaming"}
+    assert output_lf.collect_kwargs == {"engine": "streaming", "background": True}
     metrics = context.metrics.snapshot()
     assert [metric.name for metric in metrics] == ["deploy_collect"]
     assert metrics[0].node_id == "output"
@@ -4035,6 +4483,69 @@ def test_deploy_score_graph_creates_admitted_context_when_omitted(monkeypatch) -
     assert context.memory_limit_bytes == 96 * 1024 * 1024
     assert context.admission is not None
     assert context.admission.rss_at_admission_bytes == 13_000
+
+
+def test_deploy_score_graph_retain_admission_requires_caller_owned_context() -> None:
+    from haute.deploy._scorer import score_graph
+
+    with pytest.raises(ValueError, match="caller-owned execution_context"):
+        score_graph(
+            make_graph({"nodes": [], "edges": []}),
+            pl.DataFrame({"feature": [1]}),
+            input_node_ids=[],
+            output_node_id="output",
+            retain_admission_on_success=True,
+        )
+
+
+def test_deploy_score_graph_can_retain_admission_after_success() -> None:
+    from haute.deploy._scorer import score_graph
+
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "output",
+                    "data": {
+                        "label": "output",
+                        "nodeType": NodeType.OUTPUT.value,
+                        "config": make_output_config([]),
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    released: list[str] = []
+    context = ExecutionContext(
+        operation="deploy",
+        profile=ExecutionProfile.DEPLOY_LIVE,
+        memory_sampler=lambda: 1,
+        admission_release=lambda: released.append("released"),
+    )
+
+    with patch(
+        "haute.deploy._scorer.execute_lazy_graph",
+        return_value=(
+            {"output": pl.DataFrame({"score": [0.25]}).lazy()},
+            ["output"],
+            {},
+            {},
+        ),
+    ):
+        result = score_graph(
+            graph,
+            pl.DataFrame({"feature": [1]}),
+            input_node_ids=[],
+            output_node_id="output",
+            execution_context=context,
+            retain_admission_on_success=True,
+        )
+
+    assert result["score"].to_list() == [0.25]
+    assert released == []
+    context.release_admission()
+    assert released == ["released"]
 
 
 def test_admit_deploy_execution_rejects_negative_row_count() -> None:

@@ -5,7 +5,7 @@ module-path = "src/haute/_output_assembler.py"
 # practical while still flagging a genuine hang.
 timeout = 15.0
 excluded-modules = []
-test-command = "__HAUTE_PYTHON__ -m pytest tests/test_output_assembler.py -q -x"
+test-command = "__HAUTE_PYTHON__ scripts/run_mutation_pytest.py tests/test_output_assembler_mutation_witnesses.py tests/test_output_assembler.py tests/test_output_nested_roundtrip.py tests/test_output_nest_example_contract.py tests/test_v2_object_nesting_inference.py -q -x"
 
 [cosmic-ray.distributor]
 name = "local"

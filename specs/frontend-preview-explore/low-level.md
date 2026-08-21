@@ -224,11 +224,14 @@
    budget.
 
 `DataPreview` consumes guarded version-1 execution metrics through
-`ExecutionDiagnosticsIndicator`: projected/admitted/not-planned states stay
-silent; a boundary or rejection places a warning/error icon immediately after
-the row/column summary, and memory pressure uses the warning path. Activating
-the icon explains projection limits, correctness, possible I/O/memory cost,
-and remediation without exposing raw bounded-collection JSON.
+`ExecutionDiagnosticsIndicator`: projected/admitted/not-planned states and a
+successfully admitted `materialisation-boundary` with no unprojected boundary stay
+silent; an `unprojected-streaming-boundary` (including one carried in a mixed
+materialisation plan) or rejection places a warning/error icon
+immediately after the row/column summary, and memory pressure uses the warning
+path (including when it accompanies materialisation). Activating the icon
+explains projection limits, correctness, possible I/O/memory cost, and
+remediation without exposing raw bounded-collection JSON.
 `ExplorePreview` passes progress or cache-report metrics to
 `ExecutionDiagnosticsSummary`, whose technical detail is disclosed on demand.
 

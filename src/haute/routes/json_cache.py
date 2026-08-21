@@ -25,8 +25,9 @@ from __future__ import annotations
 import json
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import orjson
 from fastapi import APIRouter, HTTPException
@@ -35,11 +36,32 @@ from fastapi.responses import JSONResponse
 
 from haute._api_input_schema import ApiInputSchemaError
 from haute._env import float_env
+from haute._execution_admission import (
+    ExecutionAdmissionError,
+    IsolatedExecutionBudget,
+    create_admitted_execution_context,
+    create_isolated_execution_context,
+    isolated_execution_budget,
+)
+from haute._execution_context import ExecutionMemoryLimitExceededError, ExecutionProfile
 from haute._logging import get_logger
 from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
+from haute._worker_isolation import (
+    IsolatedWorkerCrashedError,
+    IsolatedWorkerMemoryLimitExceededError,
+    IsolatedWorkerMemoryLimitUnsupportedError,
+    IsolatedWorkerRemoteError,
+    IsolatedWorkerStoppedError,
+    IsolatedWorkerTimeoutError,
+    run_isolated_worker,
+    worker_config_for_memory_policy,
+)
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, pipeline_dir
+from haute.routes._isolated_worker_async import (
+    WorkerCancellationGate,
+    run_cancellable_worker_transaction,
+)
 from haute.routes._runtime_path_errors import runtime_path_http_exception
-from haute.routes._timeouts import run_blocking_with_response_timeout
 from haute.schemas import (
     JsonCacheBuildRequest,
     JsonCacheBuildResponse,
@@ -48,6 +70,9 @@ from haute.schemas import (
     JsonCacheProgressResponse,
     JsonCacheStatusResponse,
 )
+
+if TYPE_CHECKING:
+    from haute._json_shred import PreparedPerPortCacheBuild
 
 logger = get_logger(component="server.json_cache")
 
@@ -58,6 +83,210 @@ router = APIRouter(prefix="/api/json-cache", tags=["json-cache"])
 # after import take effect ───────────────────────────────────────
 def _build_timeout() -> float:
     return float_env("HAUTE_BUILD_TIMEOUT", 1800.0)
+
+
+_JsonCacheWorkerFailureKind = Literal[
+    "file_not_found",
+    "invalid_json",
+    "schema",
+    "source_changed",
+    "memory",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class _JsonCacheWorkerOutcome:
+    prepared: PreparedPerPortCacheBuild | None = None  # pragma: no mutate
+    failure_kind: _JsonCacheWorkerFailureKind | None = None  # pragma: no mutate
+    detail: str | None = None  # pragma: no mutate
+    payload: dict[str, object] | None = None  # pragma: no mutate
+
+
+class _JsonCacheBuildError(RuntimeError):
+    def __init__(
+        self,
+        kind: _JsonCacheWorkerFailureKind,
+        detail: str,
+        payload: dict[str, object] | None = None,  # pragma: no mutate
+    ) -> None:
+        super().__init__(detail)
+        self.kind = kind
+        self.detail = detail
+        self.payload = payload
+
+
+def _validate_worker_prepared_manifest(
+    candidate: object,
+    *,  # pragma: no mutate
+    data_path: str,
+    cache_dir: Path,
+    staging_dir: Path,
+) -> PreparedPerPortCacheBuild:
+    """Bind an isolated worker's manifest to the parent's selected paths.
+
+    The child is allowed to report build evidence, but it must not select a
+    source, publication target, or cleanup target.  Compare canonical strings
+    rather than normalising child-controlled values: normalising first would
+    make an untrusted path suitable for later filesystem use.
+    """
+    from haute._json_shred import PreparedPerPortCacheBuild
+
+    if not isinstance(candidate, PreparedPerPortCacheBuild):
+        raise TypeError("JSON cache worker returned an invalid prepared manifest")
+    expected_data_path = str(Path(data_path).resolve())
+    expected_cache_dir = str(cache_dir.resolve())
+    expected_staging_dir = str(staging_dir.resolve())
+    if candidate.data_path != expected_data_path:
+        raise ValueError("JSON cache worker changed the prepared data path")
+    if candidate.cache_dir != expected_cache_dir:
+        raise ValueError("JSON cache worker changed the prepared cache directory")
+    if type(candidate.no_op) is not bool:
+        raise TypeError("JSON cache worker returned a non-boolean no_op flag")
+    if candidate.no_op:
+        if candidate.staging_dir is not None:
+            raise ValueError("JSON cache worker no-op named a staging directory")
+    elif candidate.staging_dir != expected_staging_dir:
+        raise ValueError("JSON cache worker changed the prepared staging directory")
+    return candidate
+
+
+def _prepare_json_cache_worker(
+    data_path: str,
+    v2_config: dict[str, Any],
+    cache_dir: str,
+    staging_dir: str,
+    budget: IsolatedExecutionBudget,
+) -> _JsonCacheWorkerOutcome:
+    """Prepare one private cache generation without selecting it."""
+    from haute._json_shred import (
+        SourceChangedDuringCacheBuildError,
+        prepare_per_port_cache,
+    )
+
+    context = create_isolated_execution_context(budget)
+    try:
+        try:
+            with context.stage("structured_cache_build"):
+                prepared = prepare_per_port_cache(
+                    data_path,
+                    v2_config,
+                    cache_dir,
+                    staging_dir=staging_dir,
+                )
+        except FileNotFoundError as exc:
+            return _JsonCacheWorkerOutcome(failure_kind="file_not_found", detail=str(exc))
+        except orjson.JSONDecodeError as exc:
+            return _JsonCacheWorkerOutcome(failure_kind="invalid_json", detail=str(exc))
+        except ApiInputSchemaError as exc:
+            return _JsonCacheWorkerOutcome(failure_kind="schema", detail=str(exc))
+        except SourceChangedDuringCacheBuildError as exc:
+            return _JsonCacheWorkerOutcome(failure_kind="source_changed", detail=str(exc))
+        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+            return _JsonCacheWorkerOutcome(
+                failure_kind="memory",
+                detail=str(exc),
+                payload=exc.to_payload(),
+            )
+        return _JsonCacheWorkerOutcome(prepared=prepared)
+    finally:
+        context.release_admission(preserve_primary_error=True)
+
+
+def _json_cache_build_transaction(
+    data_path: str,
+    v2_config: dict[str, Any],
+    cache_dir: Path,
+    budget: IsolatedExecutionBudget,
+    cancellation_requested: WorkerCancellationGate,
+) -> dict[str, Any]:
+    """Own locking, child lifetime, validation, publication, and cleanup."""
+    from haute._json_shred import (
+        commit_prepared_per_port_cache,
+        discard_per_port_cache_staging,
+        new_per_port_cache_staging_dir,
+        per_port_cache_publication_lock,
+    )
+
+    with per_port_cache_publication_lock(cache_dir):
+        staging = new_per_port_cache_staging_dir(cache_dir)
+        primary_error: BaseException | None = None  # pragma: no mutate
+        try:
+            if cancellation_requested.is_set():
+                raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+            config = worker_config_for_memory_policy(
+                memory_limit_bytes=budget.memory_limit_bytes,
+                timeout_seconds=_build_timeout(),
+                stop_reason=(lambda: "cancelled" if cancellation_requested.is_set() else None),
+                process_name="haute-json-cache-build",
+            )
+            outcome = run_isolated_worker(
+                _prepare_json_cache_worker,
+                data_path,
+                v2_config,
+                str(cache_dir),
+                str(staging),
+                budget,
+                config=config,
+            )
+            if not isinstance(outcome, _JsonCacheWorkerOutcome):
+                raise RuntimeError("JSON cache worker returned an invalid outcome")
+            if outcome.failure_kind is not None:
+                raise _JsonCacheBuildError(
+                    outcome.failure_kind,
+                    outcome.detail or "JSON cache build failed",
+                    outcome.payload,
+                )
+            if outcome.prepared is None:
+                raise RuntimeError("JSON cache worker omitted its prepared generation")
+            prepared = _validate_worker_prepared_manifest(
+                outcome.prepared,
+                data_path=data_path,
+                cache_dir=cache_dir,
+                staging_dir=staging,
+            )
+            return commit_prepared_per_port_cache(
+                prepared,
+                v2_config,
+                publication_guard=cancellation_requested.publication_guard(),
+            )
+        except BaseException as exc:
+            primary_error = exc
+            raise
+        finally:
+            try:
+                discard_per_port_cache_staging(cache_dir, staging)
+            except BaseException as cleanup_exc:
+                if primary_error is None:
+                    raise
+                primary_error.add_note(f"JSON cache staging cleanup failed: {cleanup_exc}")
+
+
+def _isolated_memory_detail(
+    exc: BaseException,
+    *,  # pragma: no mutate
+    memory_limit_bytes: int | None,  # pragma: no mutate
+) -> dict[str, object]:
+    detail: dict[str, object] = {
+        "error_code": "memory_limit",
+        "operation": "json_cache_build_v2",
+        "reason": "worker_memory_limit",
+    }
+    if memory_limit_bytes is not None:
+        detail["memory_limit_bytes"] = memory_limit_bytes
+    if isinstance(exc, IsolatedWorkerMemoryLimitExceededError):
+        detail.update(
+            rss_bytes=exc.rss_bytes,
+            rss_limit_bytes=exc.rss_limit_bytes,
+            reason="worker_rss_limit_exceeded",
+        )
+    elif isinstance(exc, IsolatedWorkerMemoryLimitUnsupportedError) or (
+        isinstance(exc, IsolatedWorkerRemoteError)
+        and exc.remote_type == "NativeMemoryLimitUnsupportedError"
+    ):
+        detail["reason"] = "native_memory_cap_unavailable"
+    elif isinstance(exc, IsolatedWorkerCrashedError):
+        detail["reason"] = "worker_may_have_exceeded_memory_limit"
+    return detail
 
 
 _build_progress: dict[str, dict[str, Any]] = {}
@@ -256,7 +485,7 @@ def _aggregate_v2_tables(
     for table in tables:
         label = table.get("label", "")
         parquet_name = table.get("parquet")
-        parquet_path: Path | None = None
+        parquet_path: Path | None = None  # pragma: no mutate
         if isinstance(parquet_name, str):
             parquet_path = cache_dir / parquet_name
             if parquet_path.exists():
@@ -366,33 +595,104 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
         raise HTTPException(status_code=404, detail="Data file not found")
 
     from haute._json_flatten import _json_cache_dir, _mark_working_consulted
-    from haute._json_shred import build_per_port_cache
 
     cache_dir = _json_cache_dir(data_path, "working")
     t0 = time.monotonic()
     _start_build_progress(data_path)
-
-    def _build_with_progress() -> dict[str, Any]:
-        try:
-            return build_per_port_cache(
-                data_path=data_path,
-                v2_config=v2_config,
-                cache_dir=cache_dir,
-            )
-        finally:
-            _finish_build_progress(data_path)
-
+    context = None
+    budget: IsolatedExecutionBudget | None = None  # pragma: no mutate
     try:
-        summary = await run_blocking_with_response_timeout(
-            _build_with_progress,
-            timeout=_build_timeout(),
+        context = create_admitted_execution_context(
             operation="json_cache_build_v2",
+            profile=ExecutionProfile.LAZY_SINK,
         )
-    except TimeoutError:
+        budget = isolated_execution_budget(context)
+
+        def _transaction(cancellation_requested: WorkerCancellationGate) -> dict[str, Any]:
+            assert budget is not None
+            return _json_cache_build_transaction(
+                data_path,
+                v2_config,
+                cache_dir,
+                budget,
+                cancellation_requested,
+            )
+
+        summary = await run_cancellable_worker_transaction(
+            _transaction,
+            task_name="haute-json-cache-build-supervisor",
+        )
+    except IsolatedWorkerTimeoutError:
         raise HTTPException(
             status_code=504,
             detail=f"JSON cache build timed out ({_build_timeout() / 60:.0f} min limit)",
+        ) from None
+    except _JsonCacheBuildError as exc:
+        if exc.kind == "file_not_found":
+            raise HTTPException(status_code=404, detail="Data file not found") from None
+        if exc.kind == "invalid_json":
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid JSON in data file: {exc.detail}",
+            ) from None
+        if exc.kind == "schema":
+            return _api_input_schema_error_response(ApiInputSchemaError(exc.detail))
+        if exc.kind == "source_changed":
+            raise HTTPException(
+                status_code=409,
+                detail="The structured source changed during the cache build; retry the build.",
+            ) from None
+        if exc.kind == "memory":
+            raise HTTPException(status_code=507, detail=exc.payload or exc.detail) from None
+        raise AssertionError(f"unhandled JSON cache worker failure kind: {exc.kind}")
+    except ExecutionAdmissionError as exc:
+        from haute.routes.pipeline import _memory_limit_http_exception
+
+        raise _memory_limit_http_exception(exc) from None
+    except (
+        IsolatedWorkerMemoryLimitExceededError,
+        IsolatedWorkerMemoryLimitUnsupportedError,
+    ) as exc:
+        raise HTTPException(
+            status_code=507,
+            detail=_isolated_memory_detail(
+                exc,
+                memory_limit_bytes=None if budget is None else budget.memory_limit_bytes,
+            ),
+        ) from None
+    except IsolatedWorkerCrashedError as exc:
+        if exc.terminal_reason == "memory_limited":
+            raise HTTPException(
+                status_code=507,
+                detail=_isolated_memory_detail(
+                    exc,
+                    memory_limit_bytes=None if budget is None else budget.memory_limit_bytes,
+                ),
+            ) from None
+        logger.error("json_cache_build_worker_crashed", error=str(exc))
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
+    except IsolatedWorkerStoppedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except IsolatedWorkerRemoteError as exc:
+        if exc.remote_type in {
+            "MemoryError",
+            "ExecutionAdmissionError",
+            "ExecutionMemoryLimitExceededError",
+            "NativeMemoryLimitUnsupportedError",
+        }:
+            raise HTTPException(
+                status_code=507,
+                detail=_isolated_memory_detail(
+                    exc,
+                    memory_limit_bytes=None if budget is None else budget.memory_limit_bytes,
+                ),
+            ) from None
+        logger.error(
+            "json_cache_build_worker_failed",
+            remote_type=exc.remote_type,
+            error=exc.remote_message,
         )
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Data file not found") from None
     except orjson.JSONDecodeError as e:
@@ -405,7 +705,11 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
         return _api_input_schema_error_response(e)
     except Exception as e:
         logger.error("json_cache_build_v2_failed", error=str(e))
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
+    finally:
+        _finish_build_progress(data_path)
+        if context is not None:
+            context.release_admission(preserve_primary_error=True)
     # C2 fix (W2 item 2.1): a SUCCESSFUL production build makes this
     # process authoritative for the working/ layer, which is what arms the
     # save-time `mirror_cache_to_committed` promotion. Without this call
@@ -450,6 +754,7 @@ def _v2_status_response(
     from haute._api_input_schema import validate_v2_schema
     from haute._json_flatten import _json_cache_dir
     from haute._json_shred import (
+        _build_lock_for,
         is_per_port_cache_valid,
         read_per_port_cache_meta,
     )
@@ -464,12 +769,13 @@ def _v2_status_response(
     # invited to rebuild a cache that already existed and was in use.
     for layer in ("working", "committed"):
         cache_dir = _json_cache_dir(data_path, layer)
-        if not is_per_port_cache_valid(cache_dir, v2_config, data_path=data_path):
-            continue
-        meta = read_per_port_cache_meta(cache_dir)
-        if meta is None:
-            continue
-        return _aggregate_v2_status_response(cache_dir, data_path, meta)
+        with _build_lock_for(cache_dir):
+            if not is_per_port_cache_valid(cache_dir, v2_config, data_path=data_path):
+                continue
+            meta = read_per_port_cache_meta(cache_dir)
+            if meta is None:
+                continue
+            return _aggregate_v2_status_response(cache_dir, data_path, meta)
     return JsonCacheStatusResponse(cached=False, data_path=input_path)
 
 
@@ -496,7 +802,7 @@ async def post_json_cache_status(body: JsonCacheBuildRequest) -> Any:
 @router.get("/status", response_model=JsonCacheStatusResponse)
 async def get_json_cache_status(
     path: str,
-    config_path: str | None = None,
+    config_path: str | None = None,  # pragma: no mutate
 ) -> JsonCacheStatusResponse:
     """GET variant — disk-only (no volatile body on a GET).
 

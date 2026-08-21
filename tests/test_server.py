@@ -2460,11 +2460,21 @@ class TestPipelineTimeouts:
         else:
             body = {"graph": self._sink_graph(pipeline_dir), "node_id": "sink"}
 
-        with (
-            patch(
+        if endpoint == "write-output":
+            from haute._worker_isolation import IsolatedWorkerTimeoutError
+
+            timeout_patch = patch(
+                "haute.routes.pipeline._output_write_transaction",
+                side_effect=IsolatedWorkerTimeoutError(timeout_seconds=0.001),
+            )
+        else:
+            timeout_patch = patch(
                 "haute.routes._timeouts.asyncio.to_thread",
                 self._never_finishes,
-            ),
+            )
+
+        with (
+            timeout_patch,
             patch.dict(
                 os.environ,
                 {
@@ -2521,7 +2531,12 @@ class TestPipelineExceptions:
             # bindings.
             ("trace", "haute.routes.pipeline.execute_trace", "trace error", True),
             ("preview", "haute.routes.pipeline.execute_graph", "preview error", True),
-            ("write-output", "haute.routes.pipeline.write_data_output", "sink error", False),
+            (
+                "write-output",
+                "haute.routes.pipeline._output_write_transaction",
+                "sink error",
+                False,
+            ),
         ],
         ids=["trace_exception", "preview_exception", "sink_exception"],
     )
@@ -2584,7 +2599,7 @@ class TestPipelineExceptions:
         )
         error.__cause__ = OSError("secret raw filesystem failure")
 
-        with patch("haute.routes.pipeline.write_data_output", side_effect=error):
+        with patch("haute.routes.pipeline._output_write_transaction", side_effect=error):
             response = client.post(
                 "/api/pipeline/write-output",
                 json={"graph": self._sink_graph(pipeline_dir), "node_id": "sink"},

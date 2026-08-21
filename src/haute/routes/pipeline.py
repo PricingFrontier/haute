@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -16,7 +17,10 @@ from haute._cache import GraphFingerprintMemo, canonical_json
 from haute._env import float_env, int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
+    IsolatedExecutionBudget,
     create_admitted_execution_context,
+    create_isolated_execution_context,
+    isolated_execution_budget,
 )
 from haute._execution_context import (
     ExecutionCancellationToken,
@@ -26,9 +30,19 @@ from haute._execution_context import (
 )
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._hashing import content_hash_bytes
+from haute._interactive_workers import (
+    InteractiveWorkerCrashedError,
+    InteractiveWorkerMemoryLimitError,
+    InteractiveWorkerRemoteError,
+    InteractiveWorkerStoppedError,
+    InteractiveWorkerTimeoutError,
+    resolve_interactive_execution_mode,
+    run_in_interactive_worker,
+)
 from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
+from haute._native_memory_limit import NativeMemoryLimitUnsupportedError
 from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
 from haute._pipeline_recovery import empty_pipeline_editor_document
 from haute._pipeline_repair import (
@@ -39,12 +53,24 @@ from haute._pipeline_repair import (
 from haute._polars_io_registry import (
     PolarsIoConfigError,
     format_for_config,
+    format_group,
     validate_data_output_config,
 )
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streaming_chunk_size
 from haute._sandbox import _get_project_root
 from haute._topo import ancestors
 from haute._types import GraphEdge, GraphNode, NodeData, SubmodelDefinition
+from haute._worker_isolation import (
+    IsolatedWorkerCrashedError,
+    IsolatedWorkerMemoryLimitExceededError,
+    IsolatedWorkerMemoryLimitUnsupportedError,
+    IsolatedWorkerRemoteError,
+    IsolatedWorkerStoppedError,
+    IsolatedWorkerTimeoutError,
+    resolve_worker_memory_enforcement,
+    run_isolated_worker,
+    worker_config_for_memory_policy,
+)
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
@@ -57,11 +83,17 @@ from haute.executor import (
     DataOutputDestinationExistsError,
     DataOutputDurabilityError,
     DataOutputPublicationError,
+    PreparedDataOutput,
     PreviewProjectionError,
     _preview_cache,
+    commit_prepared_data_output,
+    discard_data_output_staging_path,
+    discard_prepared_data_output,
     execute_graph,
+    new_data_output_staging_path,
+    prepare_data_output,
     resolve_data_output_path,
-    write_data_output,
+    validate_prepared_data_output_identity,
 )
 from haute.graph_utils import (
     NodeType,
@@ -83,6 +115,10 @@ from haute.routes._helpers import (
     raise_pipeline_not_found,
     save_lock,
     validate_safe_path,
+)
+from haute.routes._isolated_worker_async import (
+    WorkerCancellationGate,
+    run_cancellable_worker_transaction,
 )
 from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.routes._save_pipeline import SavePipelineService
@@ -118,6 +154,30 @@ from haute.schemas import (
 from haute.trace import execute_trace, trace_result_to_dict
 
 logger = get_logger(component="server.pipeline")
+
+_PUBLIC_REMOTE_ERROR_CODES = {
+    (error_type.__module__, error_type.__name__): error_type.error_code
+    for error_type in PUBLIC_CONTRACT_ERROR_TYPES
+}
+_MEMORY_REMOTE_ERROR_CODES = {
+    (ExecutionAdmissionError.__module__, ExecutionAdmissionError.__name__): "memory_limit",
+    (
+        ExecutionMemoryLimitExceededError.__module__,
+        ExecutionMemoryLimitExceededError.__name__,
+    ): "memory_limit",
+}
+_PREVIEW_PROJECTION_REMOTE_IDENTITY = (
+    PreviewProjectionError.__module__,
+    PreviewProjectionError.__name__,
+)
+_PREVIEW_TARGET_REMOTE_IDENTITY = (__name__, "_PreviewTargetNotReturnedError")
+_TRACE_CONTRACT_REMOTE_IDENTITIES = frozenset(
+    {
+        (ContractMismatchError.__module__, ContractMismatchError.__name__),
+        (SchemaMismatchError.__module__, SchemaMismatchError.__name__),
+    }
+)
+_VALUE_ERROR_REMOTE_IDENTITY = (ValueError.__module__, ValueError.__name__)
 
 router = APIRouter(prefix="/api", tags=["pipeline"])
 
@@ -276,10 +336,12 @@ def _preview_supersession_key(
     row_limit: int,
     requested_preview_columns: list[str] | None,
     port_label: str | None,
+    *,
+    memo: GraphFingerprintMemo | None = None,
 ) -> tuple[str, ...]:
     requested_columns = tuple(requested_preview_columns or ())
     return (
-        *_supersession_key("preview", graph, source),
+        *_supersession_key("preview", graph, source, memo=memo),
         "node",
         node_id,
         "row_limit",
@@ -324,6 +386,115 @@ def _trace_supersession_key(
         "row_values",
         _trace_row_values_fingerprint(row_values),
     )
+
+
+def _interactive_affinity_key(
+    graph: PipelineGraph,
+    source: str,
+    *,
+    memo: GraphFingerprintMemo | None = None,
+) -> tuple[str, ...]:
+    """Route preview and trace for one lineage to the same warm cache owner."""
+    return _supersession_key("interactive", graph, source, memo=memo)
+
+
+class _PreviewTargetNotReturnedError(RuntimeError):
+    """The executor completed but omitted the requested target result."""
+
+
+def _interactive_memory_detail(operation: str, *, reason: str) -> dict[str, object]:
+    """Build the parent-authored, data-free 507 detail for a memory outcome."""
+    return {
+        "error_code": "memory_limit",
+        "operation": operation,
+        "reason": reason,
+    }
+
+
+def _raise_interactive_worker_crash_http_error(
+    exc: InteractiveWorkerCrashedError,
+    *,
+    operation: str,
+) -> NoReturn:
+    """Map a pool-worker crash to 507 when its exit code looks memory-limited."""
+    if exc.terminal_reason == "memory_limited":
+        raise HTTPException(
+            status_code=507,
+            detail=_interactive_memory_detail(
+                operation,
+                reason="worker_may_have_exceeded_memory_limit",
+            ),
+        ) from None
+    logger.error(
+        "interactive_worker_crashed",
+        operation=operation,
+        exitcode=exc.exitcode,
+    )
+    raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
+
+
+def _raise_interactive_remote_http_error(
+    exc: InteractiveWorkerRemoteError,
+    *,
+    operation: str,
+) -> NoReturn:
+    payload = exc.public_payload
+    identity = (exc.remote_module, exc.remote_type)
+    expected_memory_code = _MEMORY_REMOTE_ERROR_CODES.get(identity)
+    if (
+        payload is not None
+        and expected_memory_code is not None
+        and payload.get("error_code") == expected_memory_code
+    ):
+        raise HTTPException(status_code=507, detail=payload) from None
+    # Memory outcomes the child cannot curate: classified by exact identity
+    # and answered with a parent-authored detail, never the child payload. A
+    # same-named exception from any other module stays an internal 500.
+    if identity == ("builtins", "MemoryError"):
+        raise HTTPException(
+            status_code=507,
+            detail=_interactive_memory_detail(operation, reason="worker_memory_exhausted"),
+        ) from None
+    if identity == (
+        NativeMemoryLimitUnsupportedError.__module__,
+        NativeMemoryLimitUnsupportedError.__name__,
+    ):
+        raise HTTPException(
+            status_code=507,
+            detail=_interactive_memory_detail(operation, reason="native_memory_cap_unavailable"),
+        ) from None
+    expected_public_code = _PUBLIC_REMOTE_ERROR_CODES.get(identity)
+    if (
+        payload is not None
+        and expected_public_code is not None
+        and payload.get("error_code") == expected_public_code
+    ):
+        raise HTTPException(status_code=422, detail=payload) from None
+    if operation == "pipeline_preview":
+        if identity == _PREVIEW_PROJECTION_REMOTE_IDENTITY:
+            raise HTTPException(status_code=400, detail=exc.remote_message) from None
+        if identity == _PREVIEW_TARGET_REMOTE_IDENTITY:
+            raise HTTPException(status_code=404, detail=exc.remote_message) from None
+    if operation == "pipeline_trace":
+        if identity in _TRACE_CONTRACT_REMOTE_IDENTITIES:
+            raise HTTPException(status_code=422, detail=exc.remote_message) from None
+        if identity == _VALUE_ERROR_REMOTE_IDENTITY:
+            detail = exc.remote_message
+            if detail.startswith(("Trace data does not match", "Trace row match is ambiguous")):
+                raise HTTPException(status_code=409, detail=detail) from None
+            if detail.startswith("row_index ") and "out of range" in detail:
+                raise HTTPException(status_code=400, detail=detail) from None
+            if detail.startswith("Target node") and "multiple frames" in detail:
+                raise HTTPException(status_code=400, detail=detail) from None
+            if detail.startswith("Target node ") and "not found in graph" in detail:
+                raise HTTPException(status_code=404, detail=detail) from None
+    logger.error(
+        "interactive_worker_remote_failure",
+        operation=operation,
+        remote_type=exc.remote_type,
+        remote_module=exc.remote_module,
+    )
+    raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
 
 
 def _ensure_source_file(graph: PipelineGraph) -> None:
@@ -613,6 +784,146 @@ async def read_json_file(body: ReadJsonRequest) -> ReadJsonResponse:
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
 
 
+def _preview_response_from_results(
+    graph: PipelineGraph,
+    body: PreviewNodeRequest,
+    results: dict[str, Any],
+    execution_context: ExecutionContext,
+) -> PreviewNodeResponse:
+    node_result = results.get(body.node_id)
+    if not node_result:
+        raise _PreviewTargetNotReturnedError(f"Node '{body.node_id}' not found in results")
+
+    node_map = graph.node_map
+    pruned = prune_source_switch_edges(graph.edges, node_map, body.source)
+    relevant = ancestors(body.node_id, pruned, set(node_map.keys()))
+    timings = [
+        NodeTimingInfo(
+            node_id=node_id,
+            label=node_map[node_id].data.label,
+            timing_ms=result.timing_ms,
+        )
+        for node_id, result in results.items()
+        if node_id in node_map and node_id in relevant
+    ]
+    memory = [
+        NodeMemoryInfo(
+            node_id=node_id,
+            label=node_map[node_id].data.label,
+            memory_bytes=result.memory_bytes,
+        )
+        for node_id, result in results.items()
+        if node_id in node_map and node_id in relevant
+    ]
+    node_statuses = {
+        node_id: result.status for node_id, result in results.items() if node_id in relevant
+    }
+    node_columns = {
+        node_id: result.columns
+        for node_id, result in results.items()
+        if node_id in node_map and node_id in relevant
+    }
+    node_available_columns = {
+        node_id: result.available_columns or result.columns
+        for node_id, result in results.items()
+        if node_id in node_map and node_id in relevant
+    }
+    node_frame_columns = {
+        node_id: result.frame_columns
+        for node_id, result in results.items()
+        if node_id in node_map and node_id in relevant and result.frame_columns
+    }
+    node_schema_warnings = {
+        node_id: result.schema_warnings
+        for node_id, result in results.items()
+        if node_id in node_map and node_id in relevant
+    }
+    return PreviewNodeResponse(
+        node_id=body.node_id,
+        status=node_result.status,
+        row_count=node_result.row_count,
+        column_count=node_result.column_count,
+        columns=node_result.columns,
+        available_columns=node_result.available_columns,
+        preview=rows_to_json_safe(node_result.preview),
+        preview_columns=node_result.preview_columns,
+        preview_row_count=node_result.preview_row_count,
+        preview_row_limit=node_result.preview_row_limit,
+        preview_truncated=node_result.preview_truncated,
+        error=node_result.error,
+        error_line=node_result.error_line,
+        timing_ms=node_result.timing_ms,
+        memory_bytes=node_result.memory_bytes,
+        timings=timings,
+        memory=memory,
+        schema_warnings=node_result.schema_warnings,
+        node_statuses=node_statuses,
+        node_columns=node_columns,
+        node_available_columns=node_available_columns,
+        node_frame_columns=node_frame_columns,
+        node_schema_warnings=node_schema_warnings,
+        execution_metrics=ExecutionMetricsPayload.model_validate(
+            execution_context.metrics_payload(status="completed")
+        ),
+    )
+
+
+def _execute_preview_worker(
+    graph: PipelineGraph,
+    body: PreviewNodeRequest,
+    budget: IsolatedExecutionBudget,
+) -> PreviewNodeResponse:
+    context = create_isolated_execution_context(budget)
+    try:
+        chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+        try:
+            with temporary_streaming_chunk_size(chunk_size):
+                results = execute_graph(
+                    graph,
+                    target_node_id=body.node_id,
+                    row_limit=body.row_limit,
+                    source=body.source,
+                    target_preview_only=True,
+                    requested_preview_columns=body.requested_preview_columns,
+                    include_schema_metadata=True,
+                    port_label=body.port_label,
+                    execution_context=context,
+                )
+            return _preview_response_from_results(graph, body, results, context)
+        except (ContractMismatchError, SchemaMismatchError, ParseError, ConfigError) as exc:
+            return PreviewNodeResponse(node_id=body.node_id, status="error", error=str(exc))
+    finally:
+        context.release_admission(preserve_primary_error=True)
+
+
+def _execute_trace_worker(
+    graph: PipelineGraph,
+    body: TraceRequest,
+    budget: IsolatedExecutionBudget,
+) -> dict[str, Any]:
+    context = create_isolated_execution_context(budget)
+    try:
+        chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+        with temporary_streaming_chunk_size(chunk_size):
+            result = execute_trace(
+                graph,
+                row_index=body.row_index,
+                target_node_id=body.target_node_id,
+                column=body.column,
+                row_limit=body.row_limit,
+                source=body.source,
+                row_values=body.row_values,
+                preview=_preview_cache,
+                fingerprint_memo=GraphFingerprintMemo(),
+                execution_context=context,
+            )
+            trace_payload = trace_result_to_dict(result)
+            TraceResponse.model_validate({"status": "ok", "trace": trace_payload})
+            return trace_payload
+    finally:
+        context.release_admission(preserve_primary_error=True)
+
+
 @router.post("/pipeline/trace", response_model=TraceResponse)
 async def trace_row(body: TraceRequest) -> JSONResponse:
     """Trace a single row through the pipeline, returning per-node snapshots."""
@@ -623,6 +934,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
     _ensure_printable_lookup_id(body.target_node_id, "target_node_id")
     _validate_runtime_input_paths(graph)
 
+    trace_token = ExecutionCancellationToken()
     trace_context: ExecutionContext | None = None
 
     try:
@@ -651,7 +963,26 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
             trace_context = create_admitted_execution_context(
                 operation="pipeline_trace",
                 profile=ExecutionProfile.PREVIEW_EAGER,
+                cancellation_token=trace_token,
             )
+            if resolve_interactive_execution_mode() == "process":
+                budget = isolated_execution_budget(trace_context)
+                return await run_in_interactive_worker(
+                    _execute_trace_worker,
+                    graph,
+                    body,
+                    budget,
+                    affinity_key=_interactive_affinity_key(
+                        graph,
+                        body.source,
+                        memo=fingerprint_memo,
+                    ),
+                    timeout_seconds=_trace_timeout(),
+                    stop_reason=(lambda: "superseded" if trace_token.cancelled else None),
+                    absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
+                    memory_growth_limit_bytes=budget.memory_limit_bytes,
+                    require_memory_limit=resolve_worker_memory_enforcement() == "required",
+                )
             chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
 
             def _execute_trace_with_chunk_size() -> dict[str, Any]:
@@ -693,6 +1024,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
             supersession_key,
             _run_trace,
             limiter=_trace_work_slots,
+            cancel_active=trace_token.cancel,
             superseded_message="Trace request superseded by a newer request",
         )
         # ``trace_dict`` is already JSON-safe and was validated against
@@ -703,9 +1035,24 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
         raise _memory_limit_http_exception(e) from None
     except ExecutionMemoryLimitExceededError as e:
         raise _memory_budget_http_exception(e) from None
+    except InteractiveWorkerMemoryLimitError as e:
+        raise HTTPException(status_code=507, detail=e.to_payload()) from None
+    except InteractiveWorkerTimeoutError:
+        trace_token.cancel()
+        raise HTTPException(
+            status_code=504,
+            detail=f"Trace execution timed out ({_trace_timeout():.0f}s limit)",
+        ) from None
+    except InteractiveWorkerStoppedError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
+    except InteractiveWorkerCrashedError as e:
+        _raise_interactive_worker_crash_http_error(e, operation="pipeline_trace")
+    except InteractiveWorkerRemoteError as e:
+        _raise_interactive_remote_http_error(e, operation="pipeline_trace")
     except SupersededRequestError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
     except BlockingWorkTimeoutError as e:
+        trace_token.cancel()
         if trace_context is not None:
             timed_out_context = trace_context
             e.background_task.add_done_callback(
@@ -783,13 +1130,33 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
             )
         _validate_runtime_input_paths(graph)
 
-        async def _run_preview() -> dict[str, Any]:
+        fingerprint_memo = GraphFingerprintMemo()
+
+        async def _run_preview() -> PreviewNodeResponse:
             nonlocal preview_context
             preview_context = create_admitted_execution_context(
                 operation="pipeline_preview",
                 profile=ExecutionProfile.PREVIEW_EAGER,
                 cancellation_token=preview_token,
             )
+            if resolve_interactive_execution_mode() == "process":
+                budget = isolated_execution_budget(preview_context)
+                return await run_in_interactive_worker(
+                    _execute_preview_worker,
+                    graph,
+                    body,
+                    budget,
+                    affinity_key=_interactive_affinity_key(
+                        graph,
+                        body.source,
+                        memo=fingerprint_memo,
+                    ),
+                    timeout_seconds=_preview_timeout(),
+                    stop_reason=(lambda: "superseded" if preview_token.cancelled else None),
+                    absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
+                    memory_growth_limit_bytes=budget.memory_limit_bytes,
+                    require_memory_limit=resolve_worker_memory_enforcement() == "required",
+                )
             chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
 
             def _execute_graph_with_chunk_size() -> dict[str, Any]:
@@ -806,13 +1173,14 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
                         execution_context=preview_context,
                     )
 
-            return await run_blocking_with_response_timeout(
+            results = await run_blocking_with_response_timeout(
                 _execute_graph_with_chunk_size,
                 timeout=_preview_timeout(),
                 operation="pipeline_preview",
             )
+            return _preview_response_from_results(graph, body, results, preview_context)
 
-        results = await _preview_supersession.run_latest(
+        response = await _preview_supersession.run_latest(
             _preview_supersession_key(
                 graph,
                 body.source,
@@ -820,118 +1188,32 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
                 body.row_limit,
                 body.requested_preview_columns,
                 body.port_label,
+                memo=fingerprint_memo,
             ),
             _run_preview,
             limiter=_preview_work_slots,
             cancel_active=preview_token.cancel,
             superseded_message="Preview request superseded by a newer request",
         )
-        if preview_context is None:
-            raise RuntimeError("Preview execution did not create an execution context")
-        node_result = results.get(body.node_id)
-        if not node_result:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Node '{body.node_id}' not found in results",
-            )
-
-        node_map = graph.node_map
-
-        # Only include timings/memory for ancestors of the target node
-        # (+ itself), pruned by the active source so the unused
-        # live_switch branch is excluded.
-        if body.node_id:
-            pruned = prune_source_switch_edges(
-                graph.edges,
-                node_map,
-                body.source,
-            )
-            relevant = ancestors(
-                body.node_id,
-                pruned,
-                set(node_map.keys()),
-            )
-        else:
-            relevant = set(results.keys())
-
-        timings = [
-            NodeTimingInfo(
-                node_id=nid,
-                label=node_map[nid].data.label,
-                timing_ms=r.timing_ms,
-            )
-            for nid, r in results.items()
-            if nid in node_map and nid in relevant
-        ]
-
-        memory = [
-            NodeMemoryInfo(
-                node_id=nid,
-                label=node_map[nid].data.label,
-                memory_bytes=r.memory_bytes,
-            )
-            for nid, r in results.items()
-            if nid in node_map and nid in relevant
-        ]
-
-        node_statuses = {nid: r.status for nid, r in results.items() if nid in relevant}
-        node_columns = {
-            nid: r.columns for nid, r in results.items() if nid in node_map and nid in relevant
-        }
-        node_available_columns = {
-            nid: r.available_columns or r.columns
-            for nid, r in results.items()
-            if nid in node_map and nid in relevant
-        }
-        # Per-frame columns for multi-port producers, keyed
-        # node_id → port_label → columns. Only present for nodes that
-        # actually emit 2+ frames (multi-table apiInput today; submodels
-        # / external callouts later), so the dict is empty for the common
-        # single-frame graph. The OUTPUT editor reads this to learn each
-        # incoming frame's schema regardless of source type.
-        node_frame_columns = {
-            nid: r.frame_columns
-            for nid, r in results.items()
-            if nid in node_map and nid in relevant and r.frame_columns
-        }
-        node_schema_warnings = {
-            nid: r.schema_warnings
-            for nid, r in results.items()
-            if nid in node_map and nid in relevant
-        }
-
-        return PreviewNodeResponse(
-            node_id=body.node_id,
-            status=node_result.status,
-            row_count=node_result.row_count,
-            column_count=node_result.column_count,
-            columns=node_result.columns,
-            available_columns=node_result.available_columns,
-            preview=rows_to_json_safe(node_result.preview),
-            preview_columns=node_result.preview_columns,
-            preview_row_count=node_result.preview_row_count,
-            preview_row_limit=node_result.preview_row_limit,
-            preview_truncated=node_result.preview_truncated,
-            error=node_result.error,
-            error_line=node_result.error_line,
-            timing_ms=node_result.timing_ms,
-            memory_bytes=node_result.memory_bytes,
-            timings=timings,
-            memory=memory,
-            schema_warnings=node_result.schema_warnings,
-            node_statuses=node_statuses,
-            node_columns=node_columns,
-            node_available_columns=node_available_columns,
-            node_frame_columns=node_frame_columns,
-            node_schema_warnings=node_schema_warnings,
-            execution_metrics=ExecutionMetricsPayload.model_validate(
-                preview_context.metrics_payload(status="completed")
-            ),
-        )
+        return response
     except ExecutionAdmissionError as e:
         raise _memory_limit_http_exception(e) from None
     except ExecutionMemoryLimitExceededError as e:
         raise _memory_budget_http_exception(e) from None
+    except InteractiveWorkerMemoryLimitError as e:
+        raise HTTPException(status_code=507, detail=e.to_payload()) from None
+    except InteractiveWorkerTimeoutError:
+        preview_token.cancel()
+        raise HTTPException(
+            status_code=504,
+            detail=f"Preview execution timed out ({_preview_timeout():.0f}s limit)",
+        ) from None
+    except InteractiveWorkerStoppedError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
+    except InteractiveWorkerCrashedError as e:
+        _raise_interactive_worker_crash_http_error(e, operation="pipeline_preview")
+    except InteractiveWorkerRemoteError as e:
+        _raise_interactive_remote_http_error(e, operation="pipeline_preview")
     except SupersededRequestError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
     except BlockingWorkTimeoutError as e:
@@ -987,6 +1269,8 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
     except PreviewProjectionError as e:
         logger.warning("preview_bad_request", error=str(e))
         raise HTTPException(status_code=400, detail=str(e)) from None
+    except _PreviewTargetNotReturnedError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from None
     except Exception as e:
         logger.error("preview_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
@@ -1301,34 +1585,243 @@ async def output_destination(body: OutputDestinationRequest) -> OutputDestinatio
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _OutputWriteWorkerOutcome:
+    prepared: PreparedDataOutput | None = None
+    failure_kind: str | None = None
+    detail: str | None = None
+    payload: dict[str, object] | None = None
+
+
+class _OutputWriteWorkerError(RuntimeError):
+    def __init__(
+        self,
+        kind: str,
+        detail: str,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(detail)
+        self.kind = kind
+        self.detail = detail
+        self.payload = payload
+
+
+def _prepare_data_output_worker(
+    graph: PipelineGraph,
+    output_node_id: str,
+    source: str,
+    streaming_chunk_size: int | None,
+    project_root: str,
+    overwrite: bool,
+    staging_path: str | None,
+    budget: IsolatedExecutionBudget,
+) -> _OutputWriteWorkerOutcome:
+    """Execute one sink while leaving file publication to the parent."""
+    context: ExecutionContext | None = None
+    try:
+        context = create_isolated_execution_context(budget)
+        prepared = prepare_data_output(
+            graph,
+            output_node_id,
+            source,
+            execution_context=context,
+            streaming_chunk_size=streaming_chunk_size,
+            project_root=project_root,
+            overwrite=overwrite,
+            staging_path=staging_path,
+        )
+        return _OutputWriteWorkerOutcome(prepared=prepared)
+    except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+        return _OutputWriteWorkerOutcome(
+            failure_kind="contract",
+            detail=str(exc),
+            payload=exc.to_payload(),
+        )
+    except BoundedMemoryUnsupportedError as exc:
+        return _OutputWriteWorkerOutcome(failure_kind="bounded", detail=str(exc))
+    except DataOutputDestinationExistsError as exc:
+        return _OutputWriteWorkerOutcome(failure_kind="destination_exists", detail=str(exc))
+    except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+        return _OutputWriteWorkerOutcome(
+            failure_kind="memory",
+            detail=str(exc),
+            payload=exc.to_payload(),
+        )
+    finally:
+        if context is not None:
+            context.release_admission(preserve_primary_error=True)
+
+
+def _output_write_transaction(
+    graph: PipelineGraph,
+    output_node_id: str,
+    source: str,
+    streaming_chunk_size: int | None,
+    project_root: Path,
+    overwrite: bool,
+    final_path: Path | None,
+    staging_path: Path | None,
+    budget: IsolatedExecutionBudget,
+    cancellation_requested: WorkerCancellationGate,
+    *,
+    display_path: str,
+) -> WriteOutputResponse:
+    """Supervise a sink child and own its only publication boundary."""
+    prepared: PreparedDataOutput | None = None
+    primary_error: BaseException | None = None
+    try:
+        if cancellation_requested.is_set():
+            raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+        config = worker_config_for_memory_policy(
+            memory_limit_bytes=budget.memory_limit_bytes,
+            timeout_seconds=_sink_timeout(),
+            stop_reason=(lambda: "cancelled" if cancellation_requested.is_set() else None),
+            process_name="haute-output-write",
+        )
+        outcome = run_isolated_worker(
+            _prepare_data_output_worker,
+            graph,
+            output_node_id,
+            source,
+            streaming_chunk_size,
+            str(project_root),
+            overwrite,
+            None if staging_path is None else str(staging_path),
+            budget,
+            config=config,
+        )
+        if not isinstance(outcome, _OutputWriteWorkerOutcome):
+            raise RuntimeError("Output worker returned an invalid outcome")
+        if outcome.failure_kind is not None:
+            raise _OutputWriteWorkerError(
+                outcome.failure_kind,
+                outcome.detail or "Output write failed",
+                outcome.payload,
+            )
+        if outcome.prepared is None:
+            raise RuntimeError("Output worker omitted its prepared result")
+        validate_prepared_data_output_identity(
+            outcome.prepared,
+            project_root=str(project_root),
+            display_path=display_path,
+            final_path=final_path,
+            staging_path=staging_path,
+            overwrite=overwrite,
+            transactional=staging_path is None,
+        )
+        prepared = outcome.prepared
+        return commit_prepared_data_output(
+            prepared,
+            publication_guard=cancellation_requested.publication_guard(),
+        )
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        try:
+            if prepared is not None:
+                discard_prepared_data_output(prepared)
+            elif final_path is not None and staging_path is not None:
+                discard_data_output_staging_path(
+                    final_path,
+                    staging_path,
+                    project_root=project_root,
+                )
+        except BaseException as cleanup_exc:
+            if primary_error is None:
+                raise
+            primary_error.add_note(f"Output staging cleanup failed: {cleanup_exc}")
+
+
+def _isolated_output_memory_detail(
+    exc: BaseException,
+    *,
+    memory_limit_bytes: int | None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "error_code": "memory_limit",
+        "operation": "pipeline_write_output",
+        "reason": "worker_memory_limit",
+    }
+    if memory_limit_bytes is not None:
+        payload["memory_limit_bytes"] = memory_limit_bytes
+    if isinstance(exc, IsolatedWorkerMemoryLimitExceededError):
+        payload.update(
+            rss_bytes=exc.rss_bytes,
+            rss_limit_bytes=exc.rss_limit_bytes,
+            reason="worker_rss_limit_exceeded",
+        )
+    elif isinstance(exc, IsolatedWorkerMemoryLimitUnsupportedError) or (
+        isinstance(exc, IsolatedWorkerRemoteError)
+        and exc.remote_type == "NativeMemoryLimitUnsupportedError"
+    ):
+        payload["reason"] = "native_memory_cap_unavailable"
+    elif isinstance(exc, IsolatedWorkerCrashedError):
+        payload["reason"] = "worker_may_have_exceeded_memory_limit"
+    return payload
+
+
 @router.post("/pipeline/write-output", response_model=WriteOutputResponse)
 async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
     """Execute the pipeline up to a Data Output and publish its destination.
 
     Only called on explicit user action (Write button), not during normal run/preview.
     """
-    graph, _output_node, _config, project_root = _prepare_data_output_request(
+    graph, _output_node, config, project_root = _prepare_data_output_request(
         body.graph,
         body.node_id,
     )
 
+    resolved_output, display_path = resolve_data_output_path(
+        graph,
+        config,
+        project_root=project_root,
+    )
+    is_file_target = format_group(format_for_config(config)) == "file"
+    if (
+        is_file_target
+        and resolved_output is not None
+        and resolved_output.exists()
+        and not body.overwrite
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=str(DataOutputDestinationExistsError(display_path)),
+        )
+    staging_path = (
+        new_data_output_staging_path(resolved_output)
+        if is_file_target and resolved_output is not None
+        else None
+    )
+
     output_context: ExecutionContext | None = None
+    budget: IsolatedExecutionBudget | None = None
     try:
         output_context = create_admitted_execution_context(
             operation="pipeline_write_output",
             profile=ExecutionProfile.LAZY_SINK,
         )
-        result = await run_blocking_with_response_timeout(
-            write_data_output,
-            graph,
-            output_node_id=body.node_id,
-            source=body.source,
-            execution_context=output_context,
-            streaming_chunk_size=body.streaming_chunk_size,
-            project_root=project_root,
-            overwrite=body.overwrite,
-            timeout=_sink_timeout(),
-            operation="pipeline_write_output",
+        budget = isolated_execution_budget(output_context)
+
+        def _transaction(cancellation_requested: WorkerCancellationGate) -> WriteOutputResponse:
+            assert budget is not None
+            return _output_write_transaction(
+                graph,
+                body.node_id,
+                body.source,
+                body.streaming_chunk_size,
+                project_root,
+                body.overwrite,
+                resolved_output if staging_path is not None else None,
+                staging_path,
+                budget,
+                cancellation_requested,
+                display_path=display_path,
+            )
+
+        result = await run_cancellable_worker_transaction(
+            _transaction,
+            task_name="haute-output-write-supervisor",
         )
         if result.execution_metrics is not None:
             logger.info(
@@ -1342,6 +1835,65 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
         raise _memory_limit_http_exception(e) from None
     except ExecutionMemoryLimitExceededError as e:
         raise _memory_budget_http_exception(e) from None
+    except _OutputWriteWorkerError as e:
+        if e.kind == "contract":
+            raise HTTPException(status_code=422, detail=e.payload or e.detail) from None
+        if e.kind == "bounded":
+            raise HTTPException(status_code=422, detail=e.detail) from None
+        if e.kind == "destination_exists":
+            raise HTTPException(status_code=409, detail=e.detail) from None
+        if e.kind == "memory":
+            raise HTTPException(status_code=507, detail=e.payload or e.detail) from None
+        raise AssertionError(f"unhandled output worker failure kind: {e.kind}")
+    except (
+        IsolatedWorkerMemoryLimitExceededError,
+        IsolatedWorkerMemoryLimitUnsupportedError,
+    ) as e:
+        raise HTTPException(
+            status_code=507,
+            detail=_isolated_output_memory_detail(
+                e,
+                memory_limit_bytes=None if budget is None else budget.memory_limit_bytes,
+            ),
+        ) from None
+    except IsolatedWorkerCrashedError as e:
+        if e.terminal_reason == "memory_limited":
+            raise HTTPException(
+                status_code=507,
+                detail=_isolated_output_memory_detail(
+                    e,
+                    memory_limit_bytes=None if budget is None else budget.memory_limit_bytes,
+                ),
+            ) from None
+        logger.error("sink_worker_crashed", error=str(e))
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
+    except IsolatedWorkerRemoteError as e:
+        if e.remote_type in {
+            "MemoryError",
+            "ExecutionAdmissionError",
+            "ExecutionMemoryLimitExceededError",
+            "NativeMemoryLimitUnsupportedError",
+        }:
+            raise HTTPException(
+                status_code=507,
+                detail=_isolated_output_memory_detail(
+                    e,
+                    memory_limit_bytes=None if budget is None else budget.memory_limit_bytes,
+                ),
+            ) from None
+        logger.error(
+            "sink_worker_remote_failure",
+            remote_type=e.remote_type,
+            error=e.remote_message,
+        )
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
+    except IsolatedWorkerTimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Sink execution timed out ({_sink_timeout():.0f}s limit)",
+        ) from None
+    except IsolatedWorkerStoppedError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
         logger.warning("sink_public_contract_error", **contract_error_payload(e))
         raise contract_error_http_exception(e) from None
@@ -1356,25 +1908,11 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
             ),
         )
         raise HTTPException(status_code=422, detail=str(e)) from None
-    except BlockingWorkTimeoutError as e:
-        if output_context is not None:
-            timed_out_context = output_context
-            timed_out_context.cancel()
-            e.background_task.add_done_callback(
-                lambda _future: timed_out_context.release_admission()
-            )
-            output_context = None
-        raise HTTPException(
-            status_code=504,
-            detail=f"Sink execution timed out ({_sink_timeout():.0f}s limit)",
-        )
     except TimeoutError:
-        if output_context is not None:
-            output_context.cancel()
         raise HTTPException(
             status_code=504,
             detail=f"Sink execution timed out ({_sink_timeout():.0f}s limit)",
-        )
+        ) from None
     except DataOutputDestinationExistsError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
     except DataOutputPublicationError as e:
@@ -1395,7 +1933,7 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
         raise
     except Exception as e:
         logger.error("sink_failed", error=str(e))
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
     finally:
         if output_context is not None:
             output_context.release_admission(preserve_primary_error=True)

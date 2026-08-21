@@ -15,6 +15,7 @@ from fastapi import HTTPException
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute.errors import HauteValidationError
+from haute.projection import ProjectionRequest, plan
 from haute.routes._train_service import (
     TrainService,
     _clamp_row_limit,
@@ -1782,6 +1783,100 @@ class TestTrainingProjection:
         assert type(demand["train"]).__name__ == "AllExcept"
         assert demand["train"].required_columns == frozenset({"claim_count"})
         assert demand["train"].excluded_columns == frozenset({"claim_count", "policy_id"})
+
+    def test_catboost_feature_menu_exclusions_project_before_api_input_loading(self):
+        config = {
+            "algorithm": "catboost",
+            "target": "target",
+            "weight": "weight",
+            "offset": "offset",
+            "fold_column": "fold",
+            "id_columns": ["id"],
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "group",
+                "group_column": "group",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
+            "exclude": ["excluded_feature"],
+        }
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "api",
+                        "data": {
+                            "label": "api",
+                            "nodeType": "apiInput",
+                            "config": {
+                                "tables": [
+                                    {
+                                        "label": "rows",
+                                        "emit": True,
+                                        "columns": [
+                                            {"name": column, "selected": True}
+                                            for column in (
+                                                "feature_a",
+                                                "feature_b",
+                                                "excluded_feature",
+                                                "target",
+                                                "weight",
+                                                "offset",
+                                                "fold",
+                                                "id",
+                                                "group",
+                                            )
+                                        ],
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                    {
+                        "id": "train",
+                        "data": {
+                            "label": "train",
+                            "nodeType": "modelling",
+                            "config": config,
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "api-train",
+                        "source": "api",
+                        "target": "train",
+                        "sourceHandle": "rows",
+                    }
+                ],
+            }
+        )
+        required = _training_required_columns_by_node("train", config)
+        projection = plan(
+            ProjectionRequest(
+                graph=graph,
+                target_node_id="train",
+                profile=ExecutionProfile.TRAINING_PREP,
+                required_columns_by_node=required,
+            )
+        )
+        expected = frozenset(
+            {
+                "feature_a",
+                "feature_b",
+                "target",
+                "weight",
+                "offset",
+                "fold",
+                "id",
+                "group",
+            }
+        )
+
+        assert projection.needed_by_node["train"] == expected
+        assert projection.demand_for_edge(graph.edges[0]) == expected
+        assert projection.diagnostics.node_reasons["train"].rule == "schema_all_except"
 
     def test_execute_and_sink_forwards_training_projection(self, tmp_path):
         from haute.routes._job_store import JobStore

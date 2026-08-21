@@ -19,10 +19,10 @@ function strategyIndicator(metrics: ExecutionMetrics): IndicatorContent | null {
     return null
   }
 
-  const location = strategy.blocking_node_id
-    ? ` at '${strategy.blocking_node_id}'${strategy.blocking_operator ? ` (${strategy.blocking_operator})` : ""}`
-    : ""
   if (strategy.status === "rejected") {
+    const location = strategy.blocking_node_id
+      ? ` at '${strategy.blocking_node_id}'${strategy.blocking_operator ? ` (${strategy.blocking_operator})` : ""}`
+      : ""
     return {
       severity: "error",
       title: "Execution could not use a safe strategy",
@@ -31,11 +31,21 @@ function strategyIndicator(metrics: ExecutionMetrics): IndicatorContent | null {
     }
   }
 
+  const projectionBoundary = strategy.boundaries.items.find(
+    (boundary) => boundary.boundary_kind === "unprojected-streaming-boundary",
+  )
+  if (strategy.strategy === "materialisation-boundary" && !projectionBoundary) return null
+  const nodeId = projectionBoundary?.node_id ?? strategy.blocking_node_id
+  const operator = projectionBoundary?.operator ?? strategy.blocking_operator
+  const location = nodeId ? ` at '${nodeId}'${operator ? ` (${operator})` : ""}` : ""
+
   return {
     severity: "warning",
     title: "Column projection was limited",
     explanation: `Haute could not safely push the requested columns through the pipeline${location}, so that section stayed full-width. The preview result is still correct, but it may read more columns and use more memory than necessary.`,
-    remediation: strategy.remediation ?? undefined,
+    remediation: projectionBoundary && strategy.strategy === "materialisation-boundary"
+      ? "Give this node an explicit column contract, or rewrite the transform so Haute can prove its input columns."
+      : strategy.remediation ?? undefined,
   }
 }
 

@@ -18,10 +18,15 @@ from pydantic import (
     Field,
     RootModel,
     StrictBool,
+    StrictInt,
     field_validator,
     model_validator,
 )
 
+from haute._estimate_calibration import (
+    CALIBRATION_BASE_BASIS_POINTS,
+    CALIBRATION_MAX_BASIS_POINTS,
+)
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
@@ -666,6 +671,33 @@ class ExecutionStrategyProvenanceCollectionPayload(BaseModel):
         return self
 
 
+def _validate_calibrated_estimate_evidence(
+    *,
+    estimated_bytes: int | None,
+    raw_estimated_bytes: int | None,
+    factor_basis_points: int | None,
+    admission_basis: str | None,
+) -> None:
+    evidence = (raw_estimated_bytes, factor_basis_points, admission_basis)
+    if not any(value is not None for value in evidence):
+        return
+    if estimated_bytes is None or any(value is None for value in evidence):
+        raise ValueError(
+            "calibrated estimate evidence requires estimated/raw bytes, factor, "
+            "and admission basis together"
+        )
+    assert raw_estimated_bytes is not None and factor_basis_points is not None
+    if factor_basis_points < CALIBRATION_BASE_BASIS_POINTS:
+        raise ValueError("estimate calibration factor cannot reduce an estimate")
+    if factor_basis_points > CALIBRATION_MAX_BASIS_POINTS:
+        raise ValueError("estimate calibration factor exceeds the supported cap")
+    expected = (
+        raw_estimated_bytes * factor_basis_points + CALIBRATION_BASE_BASIS_POINTS - 1
+    ) // CALIBRATION_BASE_BASIS_POINTS
+    if estimated_bytes != expected:
+        raise ValueError("calibrated estimate bytes do not match raw bytes and factor")
+
+
 class ExecutionStrategyDiagnosticPayload(BaseModel):
     """Strict V1 API DTO for one shared execution-planning decision."""
 
@@ -700,7 +732,17 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
     blocking_node_id: str | None = None
     blocking_operator: str | None = None
     remediation: str | None = Field(default=None, max_length=512)
-    estimated_peak_bytes: int | None = Field(default=None, ge=0)
+    estimated_peak_bytes: StrictInt | None = Field(default=None, ge=0)
+    raw_estimated_peak_bytes: StrictInt | None = Field(default=None, ge=0)
+    estimate_calibration_factor_basis_points: StrictInt | None = Field(default=None, ge=0)
+    estimate_admission_basis: (
+        Literal[
+            "provided",
+            "projected_columns",
+            "complete_width_fallback",
+        ]
+        | None
+    ) = None
     headroom_bytes: int | None = Field(default=None, ge=0)
     assumptions: list[str] = Field(default_factory=list)
 
@@ -724,6 +766,12 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
         )
         if self.detail_state != expected_detail_state:
             raise ValueError("detail_state must equal the worst child collection state")
+        _validate_calibrated_estimate_evidence(
+            estimated_bytes=self.estimated_peak_bytes,
+            raw_estimated_bytes=self.raw_estimated_peak_bytes,
+            factor_basis_points=self.estimate_calibration_factor_basis_points,
+            admission_basis=self.estimate_admission_basis,
+        )
         return self
 
 
@@ -790,6 +838,34 @@ class ExecutionColumnWidthsCollectionPayload(BaseModel):
         node_ids = [item.node_id for item in self.items]
         if node_ids != sorted(node_ids) or len(node_ids) != len(set(node_ids)):
             raise ValueError("column-width items must have unique sorted node ids")
+        return self
+
+
+class ExecutionCacheProofMissReasonCountsPayload(BaseModel):
+    metadata_source_mismatch: int = Field(ge=0)
+    artifact_integrity_schema_failure: int = Field(ge=0)
+    unreadable_artifact: int = Field(ge=0)
+    proof_unavailable: int = Field(ge=0)
+
+
+class ExecutionCacheProofPayload(BaseModel):
+    hits: int = Field(ge=0)
+    misses: int = Field(ge=0)
+    direct_fallbacks: int = Field(ge=0)
+    miss_reason_counts: ExecutionCacheProofMissReasonCountsPayload
+
+    @model_validator(mode="after")
+    def _validate_miss_total(self) -> ExecutionCacheProofPayload:
+        reason_total = sum(
+            (
+                self.miss_reason_counts.metadata_source_mismatch,
+                self.miss_reason_counts.artifact_integrity_schema_failure,
+                self.miss_reason_counts.unreadable_artifact,
+                self.miss_reason_counts.proof_unavailable,
+            )
+        )
+        if self.misses != reason_total:
+            raise ValueError("cache proof misses must equal the closed reason-count total")
         return self
 
 
@@ -889,13 +965,37 @@ class ExecutionMetricsPayload(BaseModel):
     column_widths: ExecutionColumnWidthsCollectionPayload = Field(
         default_factory=ExecutionColumnWidthsCollectionPayload
     )
+    requested_column_width_total: int | None = Field(default=None, ge=0)
+    physically_scanned_column_width_total: int | None = Field(default=None, ge=0)
+    cache_proof: ExecutionCacheProofPayload
     bytes_read: int | None = Field(default=None, ge=0)
     bytes_written: int | None = Field(default=None, ge=0)
-    estimated_bytes: int | None = Field(default=None, ge=0)
+    estimated_bytes: StrictInt | None = Field(default=None, ge=0)
+    raw_estimated_bytes: StrictInt | None = Field(default=None, ge=0)
+    estimate_calibration_factor_basis_points: StrictInt | None = Field(default=None, ge=0)
+    estimate_admission_basis: (
+        Literal[
+            "provided",
+            "projected_columns",
+            "complete_width_fallback",
+        ]
+        | None
+    ) = None
     checkpoint_count: int = Field(default=0, ge=0)
     chunk_count: int = Field(default=0, ge=0)
     observed_peak_rss_bytes: int | None = Field(default=None, ge=0)
+    observed_peak_rss_growth_bytes: int | None = Field(default=None, ge=0)
     cancellation_latency_ms: float | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_calibration_evidence(self) -> ExecutionMetricsPayload:
+        _validate_calibrated_estimate_evidence(
+            estimated_bytes=self.estimated_bytes,
+            raw_estimated_bytes=self.raw_estimated_bytes,
+            factor_basis_points=self.estimate_calibration_factor_basis_points,
+            admission_basis=self.estimate_admission_basis,
+        )
+        return self
 
 
 NodeExecutionStatus = Literal["ok", "error"]

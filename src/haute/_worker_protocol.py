@@ -31,8 +31,10 @@ from haute._worker_isolation import (
     IsolatedWorkerTimeoutError,
     WorkerTerminalReason,
     _apply_address_space_limit,
+    _create_worker_rss_watchdog,
     _run_cleanup_callbacks,
     _terminate_process,
+    address_space_caps_supported,
     create_worker_queue,
     process_memory_caps_supported,
 )
@@ -365,7 +367,13 @@ def run_worker_protocol(
             process.start()
         except Exception as exc:  # pragma: no cover - multiprocessing dependent
             raise IsolatedWorkerStartError(f"Failed to start isolated worker: {exc}") from exc
+        rss_watchdog = _create_worker_rss_watchdog(
+            process,
+            memory_limit_bytes=worker_config.memory_limit_bytes,
+            require_memory_limit=worker_config.require_memory_limit,
+        )
         while process.is_alive():
+            rss_watchdog.checkpoint()
             if not progress_ended:
                 expected_sequence, progress_ended = _drain_progress(
                     progress_queue,
@@ -528,7 +536,7 @@ def _protocol_entrypoint(
 ) -> None:
     runtime = WorkerRuntime(progress_queue, artifact_root)
     try:
-        if memory_limit_bytes is not None and process_memory_caps_supported():
+        if memory_limit_bytes is not None and address_space_caps_supported():
             _apply_address_space_limit(memory_limit_bytes)
         result = function(runtime, request)
         if isinstance(result, WorkerFailurePayload):

@@ -664,16 +664,16 @@ class TestGenerateAppSource:
             monkeypatch,
             pl.DataFrame({"premium": list(range(row_count))}),
         )
-        original_to_dicts = pl.DataFrame.to_dicts
+        original_iter_rows = pl.DataFrame.iter_rows
         serialized_heights: list[int] = []
 
-        def guarded_to_dicts(self: pl.DataFrame, *args, **kwargs):
+        def guarded_iter_rows(self: pl.DataFrame, *args, **kwargs):
             serialized_heights.append(self.height)
             if self.height > DEFAULT_QUOTE_RESPONSE_ROW_LIMIT:
                 raise AssertionError("quote response serialized more rows than the limit")
-            return original_to_dicts(self, *args, **kwargs)
+            return original_iter_rows(self, *args, **kwargs)
 
-        monkeypatch.setattr(pl.DataFrame, "to_dicts", guarded_to_dicts)
+        monkeypatch.setattr(pl.DataFrame, "iter_rows", guarded_iter_rows)
 
         response = TestClient(module.app).post("/quote", json=[{"age": 30}])
 

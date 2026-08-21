@@ -21,14 +21,10 @@ Cross-OS guarantee (be precise — these differ):
   the target open without ``FILE_SHARE_DELETE`` — which is the default
   for Python ``open()`` / ``read_bytes`` / ``read_text`` — the replace
   fails with ``PermissionError`` (ERROR_ACCESS_DENIED) or an
-  ERROR_SHARING_VIOLATION. The corruption window is still closed, but the
-  save *fails loudly* (the exception propagates) rather than silently
-  tearing the file. Under the single-user trust model this fail-loud miss
-  is acceptable; we deliberately do NOT retry (no silent fallback that
-  could mask a real contention bug). This is why
-  ``tests/test_file_ops.py`` skips the concurrent-*writers* race on win32
-  and instead pins reader-contention behaviour in
-  ``TestAtomicWriteWindowsReaderContention``.
+  ERROR_SHARING_VIOLATION. Those two errors receive a short bounded retry
+  of the same atomic replace, accommodating transient antivirus/indexer
+  handles without introducing a non-atomic fallback. An exhausted retry
+  still fails loudly and leaves the old complete payload intact.
 
 Temp filenames embed the process pid and a uuid4 fragment so that
 concurrent writers to the same target never collide on the staging
@@ -42,10 +38,14 @@ mkdir that masks configuration bugs.
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
+
+_WINDOWS_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)
+_IS_WINDOWS = os.name == "nt"
 
 
 def _temp_path_for(target: Path) -> Path:
@@ -56,6 +56,19 @@ def _temp_path_for(target: Path) -> Path:
     not clobber each other's staging files.
     """
     return target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+
+
+def _replace_with_windows_contention_retry(source: Path, target: Path) -> None:
+    """Retry only Win32 access/sharing failures from one atomic replace."""
+
+    for delay in (*_WINDOWS_REPLACE_RETRY_DELAYS_SECONDS, None):
+        try:
+            source.replace(target)
+            return
+        except OSError as exc:
+            if not _IS_WINDOWS or getattr(exc, "winerror", None) not in {5, 32} or delay is None:
+                raise
+            time.sleep(delay)
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -69,15 +82,18 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     rename also always succeeds under concurrent readers. On Windows a
     concurrent open reader (default ``open()`` omits ``FILE_SHARE_DELETE``)
     can make the rename raise ``PermissionError`` (ERROR_ACCESS_DENIED) —
-    the write fails loudly rather than corrupting. See the module
-    docstring for the full cross-OS contract.
+    those transient codes receive a bounded retry before the write fails
+    loudly. See the module docstring for the full cross-OS contract.
     """
     tmp = _temp_path_for(path)
     try:
         tmp.write_bytes(data)
-        tmp.replace(path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
+        _replace_with_windows_contention_retry(tmp, path)
+    except BaseException as exc:
+        try:
+            tmp.unlink(missing_ok=True)
+        except BaseException as cleanup_exc:
+            exc.add_note(f"atomic-write staging cleanup failed: {cleanup_exc}")
         raise
 
 

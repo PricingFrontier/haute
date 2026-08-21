@@ -94,21 +94,40 @@ The active pane is remembered per node in the UI store. Without an algorithm, th
 renders alone. A non-empty unsupported algorithm renders an explicit inline diagnostic and no pane
 strip; it never falls through to CatBoost. Pane ownership:
 
-- **Target** — target/weight/offset, task, loss function and variance power, metrics (CatBoost);
-  family/link/dispersion/intercept/metrics (GLM). It also shows the selected algorithm as read-only
+- **Target** — target/weight/offset, a unified loss-function picker and variance power, metrics
+  (CatBoost); family/link/dispersion/intercept/metrics (GLM). CatBoost has no separate task
+  selector: choosing a loss derives and stores its regression/classification task, every supported
+  loss remains visible, and metrics that are incompatible with the selected loss stay visible but
+  disabled. Selecting Tweedie directly reveals its variance-power slider; when no prior value is
+  stored, that selection writes the displayed 1.5 midpoint in the same update instead of showing
+  an intermediate required-value warning action. It also shows the selected algorithm as read-only
   context. The gateway may set the algorithm only while it is unset; after selection, neither this
   pane nor any other supported-node editor action changes it. To configure the other algorithm,
   the user creates a separate modelling node, preserving the original node and all of its settings.
-- **Features** — both algorithms get the same always-expanded include/exclude browser with a
-  case-insensitive name-substring filter, upstream dtype labels, and the existing explicit
-  not-found treatment/removal for stale exclusions. Columns consumed as target, weight, offset,
-  or active evaluation/metadata roles are not presented as trainable features. GLM then adds its
-  factor/term editor below the common browser. Monotonic constraints move here as a collapsible
-  sub-section for both algorithms and offer only final selected numeric features: included
-  CatBoost features, or included GLM `terms` (all included features when `all_factors` is true).
-  Any action that removes final selected features (single/bulk exclusion, GLM term removal, or
-  narrowing from `all_factors`) is one confirmed atomic change: it also removes affected monotone
-  constraints, explicit terms, and interactions; Cancel preserves every field.
+- **Features** — both algorithms get the same always-expanded feature-card browser with a
+  case-insensitive name-substring search, upstream dtype labels, and the existing explicit
+  not-found treatment/removal for stale exclusions. Each eligible feature has one compact,
+  single-row bordered card: the name and dtype sit on the left, followed by the current-state
+  inclusion button and monotonicity selector on the right. The green **Include** or red
+  **Exclude** button reports its current state and toggles that state. These are compact,
+  content-width pills using the same soft-tint, accent-border and
+  accent-text treatment as the Data Input **Provider** selector; they do not stretch across the
+  card. **Include all** and **Exclude all** use the same compact green/red treatment and set every
+  eligible feature, including features hidden by the current search. Columns consumed as target, weight,
+  offset, or active evaluation/metadata roles are not presented as trainable features. GLM then
+  adds its factor/term editor below the common browser. Each card places a three-option
+  monotonicity selector directly beside the inclusion button without a repeated visible label: a
+  red downward arrow (`-1`), yellow dash (no
+  stored constraint), and green upward arrow (`1`). Each choice uses the Provider-style compact
+  control, with its soft tinted surface and accent border identifying the selected direction. The
+  selector is enabled only for final selected numeric
+  features: included CatBoost features, or included GLM `terms` (all included features when
+  `all_factors` is true). Excluding a feature is immediate and reversible: it does not ask for
+  confirmation or delete that feature's monotonic direction, GLM term, or interaction settings.
+  The stored direction remains visibly selected in the greyed, disabled control, does not apply while the
+  feature is excluded, and becomes active again when the feature is re-included. Explicit GLM term
+  removal or narrowing from `all_factors` remains a confirmed atomic cleanup of dependent terms,
+  interactions, and monotonic constraints; Cancel preserves every field.
 - **Params** — immediately below the Hyperparameters heading, CatBoost shows a
   Target-style **Parameter strategy** radio group with **Fixed parameters** and
   **Tune parameters** choices. Exactly one strategy body is visible. Fixed parameters
@@ -199,17 +218,18 @@ malformed present live-history entry fails at the runtime response boundary exac
 completed-result history; absent history produces no chart and is never synthesized from
 latest-loss polls. Under the
 [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
-the `modelling.features`/`modelling.mlflow` section keys cease to be read or written; the generic
-section store and any inert in-memory entries need no migration. The `modelling.monotonic` key
-remains for the Features-pane sub-section.
+the `modelling.features`/`modelling.mlflow`/`modelling.monotonic` section keys cease to be read or
+written; the generic section store and any inert in-memory entries need no migration.
 
 **Regression evidence.** Suites in
 `frontend/src/panels/__tests__/ModellingConfig.test.tsx` and under
 `frontend/src/panels/modelling/__tests__/` prove: five panes with the ownership above for both
-algorithms and the unsupported-algorithm diagnostic; the common filtered/dtype-labelled
-include/exclude browser for CatBoost and GLM;
-role/final-selection-aware monotonic candidates and confirmed dependent cleanup; exact atomic
-dependent-cleanup/cancel semantics; unset-only algorithm selection, read-only selected-algorithm
+algorithms and the unsupported-algorithm diagnostic; CatBoost's unified all-loss picker,
+loss-derived task/default metrics, and visible disabled incompatible metrics; the common searched/dtype-labelled
+feature-card browser for CatBoost and GLM, including current-state per-card toggles and
+search-independent bulk actions; confirmation-free reversible exclusion with dormant monotonic
+and GLM settings; inline arrow-based, role/final-selection-aware monotonic controls and confirmed
+explicit-factor cleanup; exact atomic dependent-cleanup/cancel semantics; unset-only algorithm selection, read-only selected-algorithm
 context, and the absence of an in-place change action; mutually exclusive fixed/tuned Params
 bodies, arbitrary params JSON round trips, valid fixed/search-space autosave, compact default
 draft presentation, invalid/non-object/reserved-key draft persistence without Apply/Revert or

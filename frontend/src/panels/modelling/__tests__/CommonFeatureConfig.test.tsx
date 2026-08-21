@@ -7,7 +7,6 @@ import {
 } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import useSettingsStore from "../../../stores/useSettingsStore"
 import { CommonFeatureConfig } from "../CommonFeatureConfig"
 
 const columns = [
@@ -20,16 +19,11 @@ const columns = [
 ]
 
 function featureRow(name: string): HTMLElement {
-  const label = screen
-    .getAllByText(name)
-    .find((element) => element.tagName === "SPAN")
-  if (!label?.parentElement) throw new Error(`Missing feature row for ${name}`)
-  return label.parentElement
+  return screen.getByRole("group", { name: `${name} feature` })
 }
 
 describe("CommonFeatureConfig", () => {
   beforeEach(() => {
-    useSettingsStore.setState({ openSections: {} })
     vi.stubGlobal("confirm", vi.fn(() => true))
   })
 
@@ -60,7 +54,7 @@ describe("CommonFeatureConfig", () => {
     expect(screen.getByText("missing_feature — not found")).toBeInTheDocument()
     expect(within(featureRow("region")).getByText("String")).toBeInTheDocument()
 
-    fireEvent.change(screen.getByLabelText("Filter features"), {
+    fireEvent.change(screen.getByLabelText("Search features"), {
       target: { value: "REG" },
     })
     expect(screen.getByText("region")).toBeInTheDocument()
@@ -74,10 +68,111 @@ describe("CommonFeatureConfig", () => {
     expect(onUpdate).toHaveBeenCalledWith("exclude", [])
   })
 
-  it("offers monotonicity only for final selected numeric features", () => {
-    useSettingsStore.setState({
-      openSections: { "modelling.monotonic": true },
+  it("shows current inclusion states as green/red card buttons and toggles them", () => {
+    const onUpdate = vi.fn(() => ({ ok: true as const }))
+    const baseProps = {
+      onUpdate,
+      columns,
+      algorithm: "catboost" as const,
+    }
+    const { rerender } = render(
+      <CommonFeatureConfig
+        {...baseProps}
+        config={{ target: "target", exclude: ["region"] }}
+      />,
+    )
+
+    const ageButton = within(featureRow("age")).getByRole("button", {
+      name: "age is included; click to exclude",
     })
+    expect(ageButton).toHaveTextContent("Include")
+    expect(ageButton.style.background).toBe("rgba(0, 179, 134, 0.1)")
+    expect(ageButton.style.border).toContain("rgb(0, 179, 134)")
+    expect(ageButton.style.color).toBe("rgb(0, 179, 134)")
+    expect(ageButton).toHaveClass("px-2.5", "py-1")
+    expect(ageButton).not.toHaveClass("w-full")
+
+    const regionButton = within(featureRow("region")).getByRole("button", {
+      name: "region is excluded; click to include",
+    })
+    expect(regionButton).toHaveTextContent("Exclude")
+    expect(regionButton).toHaveStyle({
+      background: "var(--danger-soft)",
+      color: "var(--danger)",
+    })
+    expect(regionButton.getAttribute("style")).toContain(
+      "border: 1px solid var(--danger)",
+    )
+    expect(regionButton).toHaveClass("px-2.5", "py-1")
+    expect(regionButton).not.toHaveClass("w-full")
+
+    fireEvent.click(ageButton)
+    expect(onUpdate).toHaveBeenCalledWith({ exclude: ["region", "age"] })
+
+    rerender(
+      <CommonFeatureConfig
+        {...baseProps}
+        config={{ target: "target", exclude: ["region", "age"] }}
+      />,
+    )
+    expect(
+      within(featureRow("age")).getByRole("button", {
+        name: "age is excluded; click to include",
+      }),
+    ).toHaveTextContent("Exclude")
+  })
+
+  it("applies bulk inclusion to every feature regardless of the search", () => {
+    const onUpdate = vi.fn(() => ({ ok: true as const }))
+    const baseConfig = {
+      target: "target",
+      weight: "weight",
+      exclude: ["age", "region", "severity"],
+      evaluation: { strategy: "temporal", date_column: "date" },
+    }
+    const { rerender } = render(
+      <CommonFeatureConfig
+        config={baseConfig}
+        onUpdate={onUpdate}
+        columns={columns}
+        algorithm="catboost"
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText("Search features"), {
+      target: { value: "age" },
+    })
+    expect(screen.queryByText("region")).toBeNull()
+
+    const includeAll = screen.getByRole("button", { name: "Include all features" })
+    const excludeAll = screen.getByRole("button", { name: "Exclude all features" })
+    expect(includeAll.style.background).toBe("rgba(0, 179, 134, 0.1)")
+    expect(includeAll.style.color).toBe("rgb(0, 179, 134)")
+    expect(excludeAll).toHaveStyle({
+      background: "var(--danger-soft)",
+      color: "var(--danger)",
+    })
+    expect(includeAll).toHaveClass("px-2.5", "py-1")
+    expect(excludeAll).toHaveClass("px-2.5", "py-1")
+
+    fireEvent.click(includeAll)
+    expect(onUpdate).toHaveBeenLastCalledWith({ exclude: [] })
+
+    rerender(
+      <CommonFeatureConfig
+        config={{ ...baseConfig, exclude: [] }}
+        onUpdate={onUpdate}
+        columns={columns}
+        algorithm="catboost"
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Exclude all features" }))
+    expect(onUpdate).toHaveBeenLastCalledWith({
+      exclude: ["age", "region", "severity"],
+    })
+  })
+
+  it("places arrow monotonicity controls on every card and enables final numeric features only", () => {
     render(
       <CommonFeatureConfig
         config={{
@@ -95,16 +190,72 @@ describe("CommonFeatureConfig", () => {
 
     expect(
       screen.getByRole("button", { name: "age: increasing" }),
-    ).toBeInTheDocument()
+    ).toBeEnabled()
     expect(
-      screen.queryByRole("button", { name: "severity: increasing" }),
-    ).toBeNull()
+      screen.getByRole("button", { name: "severity: increasing" }),
+    ).toBeDisabled()
     expect(
-      screen.queryByRole("button", { name: "region: increasing" }),
-    ).toBeNull()
+      screen.getByRole("button", { name: "region: increasing" }),
+    ).toBeDisabled()
+    const down = within(featureRow("age")).getByRole("button", {
+      name: "age: decreasing",
+    })
+    const neutral = within(featureRow("age")).getByRole("button", {
+      name: "age: no constraint",
+    })
+    const up = within(featureRow("age")).getByRole("button", {
+      name: "age: increasing",
+    })
+    const ageRow = featureRow("age")
+    const ageInclusion = within(ageRow).getByRole("button", {
+      name: "age is included; click to exclude",
+    })
+    expect(ageRow).toHaveClass("flex", "items-center", "px-2", "py-1.5")
+    expect(ageInclusion.parentElement).toBe(ageRow)
+    expect(down.closest("fieldset")?.parentElement).toBe(ageRow)
+    expect(within(ageRow).getByText("Monotonicity")).toHaveClass("sr-only")
+    expect(down).toHaveTextContent("↓")
+    expect(down).toHaveStyle({ color: "var(--danger)" })
+    expect(neutral).toHaveTextContent("−")
+    expect(neutral).toHaveStyle({
+      background: "var(--warning-soft)",
+      color: "var(--warning-strong)",
+    })
+    expect(neutral.getAttribute("style")).toContain(
+      "border: 1px solid var(--warning-strong)",
+    )
+    expect(up).toHaveTextContent("↑")
+    expect(up.style.color).toBe("rgb(0, 179, 134)")
+    expect(up).toHaveStyle({ background: "var(--bg-input)" })
+    expect(down).toHaveClass("h-6", "w-6")
+    expect(neutral).toHaveClass("h-6", "w-6")
+    expect(up).toHaveClass("h-6", "w-6")
   })
 
-  it("cancels or applies a selected-feature removal as one exact update", () => {
+  it("writes arrow monotonicity choices and removes the key for the dash", () => {
+    const onUpdate = vi.fn(() => ({ ok: true as const }))
+    render(
+      <CommonFeatureConfig
+        config={{
+          target: "target",
+          monotone_constraints: { age: -1 },
+        }}
+        onUpdate={onUpdate}
+        columns={columns}
+        algorithm="catboost"
+      />,
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "age: increasing" }))
+    expect(onUpdate).toHaveBeenLastCalledWith("monotone_constraints", {
+      age: 1,
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "age: no constraint" }))
+    expect(onUpdate).toHaveBeenLastCalledWith("monotone_constraints", null)
+  })
+
+  it("keeps feature settings dormant across confirmation-free exclusion and re-inclusion", () => {
     const onUpdate = vi.fn(() => ({ ok: true as const }))
     const confirmMock = vi.mocked(confirm)
     const config = {
@@ -119,7 +270,7 @@ describe("CommonFeatureConfig", () => {
         { factors: ["region", "severity"], include_main: false },
       ],
     }
-    render(
+    const { rerender } = render(
       <CommonFeatureConfig
         config={config}
         onUpdate={onUpdate}
@@ -128,20 +279,52 @@ describe("CommonFeatureConfig", () => {
       />,
     )
 
-    confirmMock.mockReturnValueOnce(false)
-    fireEvent.click(within(featureRow("age")).getByRole("button", { name: "Exclude" }))
-    expect(onUpdate).not.toHaveBeenCalled()
+    expect(screen.getByRole("button", { name: "age: increasing" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "age: increasing" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    )
+    fireEvent.click(within(featureRow("age")).getByRole("button", {
+      name: "age is included; click to exclude",
+    }))
+    expect(confirmMock).not.toHaveBeenCalled()
+    expect(onUpdate).toHaveBeenLastCalledWith({ exclude: ["age"] })
 
-    confirmMock.mockReturnValueOnce(true)
-    fireEvent.click(within(featureRow("age")).getByRole("button", { name: "Exclude" }))
-    expect(onUpdate).toHaveBeenCalledWith({
-      exclude: ["age"],
-      monotone_constraints: { severity: -1 },
-      terms: { region: { type: "categorical" } },
-      interactions: [
-        { factors: ["region", "severity"], include_main: false },
-      ],
-    })
+    rerender(
+      <CommonFeatureConfig
+        config={{ ...config, exclude: ["age"] }}
+        onUpdate={onUpdate}
+        columns={columns}
+        algorithm="glm"
+      />,
+    )
+    const dormantUp = screen.getByRole("button", { name: "age: increasing" })
+    expect(dormantUp).toBeDisabled()
+    expect(dormantUp).toHaveAttribute("aria-pressed", "true")
+    expect(dormantUp.closest("fieldset")).toHaveClass(
+      "disabled:opacity-40",
+      "disabled:grayscale",
+    )
+
+    fireEvent.click(within(featureRow("age")).getByRole("button", {
+      name: "age is excluded; click to include",
+    }))
+    expect(confirmMock).not.toHaveBeenCalled()
+    expect(onUpdate).toHaveBeenLastCalledWith({ exclude: [] })
+
+    rerender(
+      <CommonFeatureConfig
+        config={config}
+        onUpdate={onUpdate}
+        columns={columns}
+        algorithm="glm"
+      />,
+    )
+    expect(screen.getByRole("button", { name: "age: increasing" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "age: increasing" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    )
   })
 
   it("does not ask for confirmation when excluding a GLM column outside final selection", () => {
@@ -160,7 +343,9 @@ describe("CommonFeatureConfig", () => {
     )
 
     fireEvent.click(
-      within(featureRow("severity")).getByRole("button", { name: "Exclude" }),
+      within(featureRow("severity")).getByRole("button", {
+        name: "severity is included; click to exclude",
+      }),
     )
 
     expect(confirmMock).not.toHaveBeenCalled()

@@ -32,7 +32,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 | `ci.yml` | `dependency-floors` | push+PR | **Yes** | `uv lock --resolution lowest-direct` (py3.11) → `uv sync --frozen --group dev` → core test subset run at the re-resolved floor lockfile — proves the published floor specifiers actually install and pass |
 | `ci.yml` | `backend-static` | push+PR | **Yes** | `uv sync --group dev --locked` (py3.12) → ruff lint + ruff format-check + mypy + `HAUTE_BUILD_FRONTEND=1 uv build` |
 | `ci.yml` | `backend-coverage-shard` (×2 shards) | push+PR | **Yes** | full suite split 2-way via `pytest-split` (py3.12), coverage collected per-shard (`--cov-fail-under=0`), uploaded as an artifact |
-| `ci.yml` | `backend-coverage-gate` | push+PR | **Yes** | needs `backend-coverage-shard` → `coverage combine` the two shards → `coverage report --fail-under=90` → `scripts/check_critical_coverage.py` |
+| `ci.yml` | `backend-coverage-gate` | push+PR | **Yes** | needs `backend-coverage-shard` → `coverage combine` the two shards → `coverage report --fail-under=90` → per-file critical floors → 100% changed statement/branch coverage for the configured execution-critical surface |
 | `ci.yml` | `backend-compat` (×2: py3.11, py3.13) | push+PR | **Yes** | full suite, no coverage collected |
 | `ci.yml` | `backend-314-probe` | push+PR | **No** (`continue-on-error: true`; advisory only) | py3.14 forward-looking probe: `uv sync` (expected to fail until catboost ships cp314 wheels) → full suite if sync succeeds |
 | `ci.yml` | `perf` | push+PR | **Yes** | `uv run python scripts/run_perf_suite.py --output-dir .cache/perf` |
@@ -59,7 +59,8 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 1. **`backend-static` + `backend-coverage-shard`/`backend-coverage-gate`** →
    `bash scripts/preflight.sh --backend-only` — runs ruff lint, ruff
    format-check, mypy, pytest collect, pytest + 90% global coverage +
-   `scripts/check_critical_coverage.py`, and `HAUTE_BUILD_FRONTEND=1 uv build`,
+   `scripts/check_critical_coverage.py` + `scripts/check_changed_coverage.py`,
+   and `HAUTE_BUILD_FRONTEND=1 uv build`,
    all in one local pass. **Gap vs CI:** CI splits this across three parallel
    jobs (static gates + build on py3.12; two coverage shards; a gate job that
    combines them and enforces 90%) rather than one job, and separately runs

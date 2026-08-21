@@ -12,19 +12,28 @@ confirming the helper's output changes (see .scratch/json-cache/verify.py).
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+from inspect import Parameter, signature
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 
+import haute.routes.json_cache as json_cache_module
+from haute._json_shred import PreparedPerPortCacheBuild
+from haute._worker_isolation import IsolatedWorkerRemoteError
 from haute.routes.json_cache import (
     _aggregate_v2_build_response,
     _aggregate_v2_status_response,
+    _build_timeout,
     _finish_build_progress,
     _get_build_progress,
+    _isolated_memory_detail,
+    _JsonCacheWorkerOutcome,
     _resolve_config_path,
     _resolve_data_path,
     _start_build_progress,
+    _validate_worker_prepared_manifest,
 )
 
 # ── path resolution: traversal + null-byte (security + status contract) ──
@@ -64,6 +73,151 @@ def test_resolve_config_path_outside_root_raises_403(tmp_path: Path) -> None:
 
 
 # ── build-progress accounting ────────────────────────────────────────
+
+
+def test_build_timeout_default_is_part_of_the_route_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HAUTE_BUILD_TIMEOUT", raising=False)
+    assert _build_timeout() == 1800.0
+
+
+def test_worker_outcome_is_frozen_and_slotted() -> None:
+    outcome = _JsonCacheWorkerOutcome()
+    assert not hasattr(outcome, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        outcome.detail = "changed"  # type: ignore[misc]
+
+
+def test_worker_manifest_parent_evidence_remains_keyword_only() -> None:
+    parameters = signature(_validate_worker_prepared_manifest).parameters
+    assert parameters["candidate"].kind is Parameter.POSITIONAL_OR_KEYWORD
+    assert parameters["data_path"].kind is Parameter.KEYWORD_ONLY
+    assert parameters["cache_dir"].kind is Parameter.KEYWORD_ONLY
+    assert parameters["staging_dir"].kind is Parameter.KEYWORD_ONLY
+
+
+def test_worker_noop_manifest_rejects_object_that_compares_equal_to_none(
+    tmp_path: Path,
+) -> None:
+    class _PretendsToBeNone:
+        def __eq__(self, other: object) -> bool:
+            return other is None
+
+        def __ne__(self, other: object) -> bool:
+            return other is not None
+
+    data_path = tmp_path / "source.json"
+    cache_dir = tmp_path / "cache"
+    staging_dir = tmp_path / "stage"
+    candidate = PreparedPerPortCacheBuild(
+        data_path=str(data_path.resolve()),
+        cache_dir=str(cache_dir.resolve()),
+        staging_dir=_PretendsToBeNone(),  # type: ignore[arg-type]
+        schema_fingerprint="schema",
+        data_file_signature={},
+        summary={},
+        no_op=True,
+    )
+
+    with pytest.raises(ValueError, match="no-op named a staging directory"):
+        _validate_worker_prepared_manifest(
+            candidate,
+            data_path=str(data_path),
+            cache_dir=cache_dir,
+            staging_dir=staging_dir,
+        )
+
+
+def test_worker_manifest_requires_a_builtin_bool_without_overloaded_type_equality(
+    tmp_path: Path,
+) -> None:
+    class _BoolLikeMeta(type):
+        def __eq__(cls, other: object) -> bool:
+            return other is bool
+
+        def __ne__(cls, other: object) -> bool:
+            return other is not bool
+
+    class _BoolLike(metaclass=_BoolLikeMeta):
+        pass
+
+    data_path = tmp_path / "source.json"
+    cache_dir = tmp_path / "cache"
+    staging_dir = tmp_path / "stage"
+    candidate = PreparedPerPortCacheBuild(
+        data_path=str(data_path.resolve()),
+        cache_dir=str(cache_dir.resolve()),
+        staging_dir=None,
+        schema_fingerprint="schema",
+        data_file_signature={},
+        summary={},
+        no_op=_BoolLike(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(TypeError, match="non-boolean no_op"):
+        _validate_worker_prepared_manifest(
+            candidate,
+            data_path=str(data_path),
+            cache_dir=cache_dir,
+            staging_dir=staging_dir,
+        )
+
+
+@pytest.mark.parametrize(
+    ("remote_type", "expected_reason"),
+    [
+        (
+            "".join(("NativeMemoryLimit", "UnsupportedError")),
+            "native_memory_cap_unavailable",
+        ),
+        ("A", "worker_memory_limit"),
+        ("Z", "worker_memory_limit"),
+    ],
+)
+def test_isolated_memory_detail_uses_exact_remote_failure_type(
+    remote_type: str,
+    expected_reason: str,
+) -> None:
+    exc = IsolatedWorkerRemoteError(
+        remote_type=remote_type,
+        remote_message="detail",
+        remote_traceback="trace",
+    )
+    assert _isolated_memory_detail(exc, memory_limit_bytes=123)["reason"] == expected_reason
+
+
+def test_progress_rounds_elapsed_to_one_decimal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = iter((100.0, 101.26))
+    monkeypatch.setattr(json_cache_module.time, "monotonic", lambda: next(ticks))
+    key = str(tmp_path / "timed.json")
+    _start_build_progress(key)
+    try:
+        assert _get_build_progress(key).elapsed == 1.3
+    finally:
+        _finish_build_progress(key)
+
+
+def test_three_progress_starts_and_finishes_balance_exactly(tmp_path: Path) -> None:
+    key = str(tmp_path / "three.json")
+    for _ in range(3):
+        _start_build_progress(key)
+    for _ in range(3):
+        _finish_build_progress(key)
+    assert _get_build_progress(key).active is False
+
+
+def test_finish_decrements_one_builder_at_a_time(tmp_path: Path) -> None:
+    key = str(tmp_path / "decrement.json")
+    for _ in range(3):
+        _start_build_progress(key)
+    _finish_build_progress(key)
+    _finish_build_progress(key)
+    assert _get_build_progress(key).active is True
+    _finish_build_progress(key)
 
 
 def test_progress_balanced_start_finish_clears(tmp_path: Path) -> None:
@@ -153,6 +307,27 @@ def test_aggregate_build_present_counts_summed(tmp_path: Path) -> None:
     assert resp.column_count == 2
     assert resp.columns == {"t.id": "Int64", "t.name": "String"}
     assert resp.skipped_records == 5
+
+
+def test_aggregate_build_rejects_whole_malformed_column_mapping(tmp_path: Path) -> None:
+    summary = {
+        "tables": [
+            {
+                "label": "t",
+                "parquet": None,
+                "columns": {"valid": "Int64", 1: "String"},
+            }
+        ],
+        "skipped": {},
+    }
+    response = _aggregate_v2_build_response(summary, tmp_path, "/d.json", 1.0)
+    assert response.columns == {}
+
+
+def test_aggregate_build_rounds_elapsed_to_three_decimals(tmp_path: Path) -> None:
+    summary = {"tables": [], "skipped": {}}
+    response = _aggregate_v2_build_response(summary, tmp_path, "/d.json", 1.23456)
+    assert response.cache_seconds == 1.235
 
 
 def test_aggregate_status_missing_counts_default_zero(tmp_path: Path) -> None:

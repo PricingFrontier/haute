@@ -2,8 +2,9 @@
 
 ## Purpose
 
-Haute is delivered as a typed Python package with a command-line entry point and,
-where required by the server, a compiled browser client embedded in the package.
+Haute is delivered as a typed Python package with equivalent console-script and
+Python-module command-line entry points. Where required by the server, a
+compiled browser client is embedded in the package.
 This component defines the reproducible boundary between the source checkout and
 the installable wheel/source distribution, so a user does not need a frontend
 toolchain to run an installed release.
@@ -22,8 +23,8 @@ distribution missing any declared bundle resource is invalid.
 
 In scope:
 
-- Python package metadata, dependency ranges, extras, console entry point, typed
-  package marker, and Hatch build targets.
+- Python package metadata, dependency ranges, extras, console-script and
+  Python-module entry points, typed package marker, and Hatch build targets.
 - The opt-in frontend build hook, its freshness validation, and the policy for
   `src/haute/static/` assets embedded in distributions.
 - The Vite production build inputs, output location, lockfile, public assets,
@@ -43,8 +44,10 @@ Out of scope:
 ## Behaviour
 
 - The project builds with Hatchling and distributes the `haute` package for
-  Python 3.11 and later. Installed users receive the `haute` command and typing
-  metadata.
+  Python 3.11 and later. Installed users receive the `haute` command,
+  equivalent `python -m haute` module invocation, and typing metadata. Both
+  invocation forms delegate to the same Click group and therefore expose the
+  same commands, arguments, and exit-code contract.
 - Non-editable package builds made from a checkout that contains `frontend/`
   require a complete static dependency graph and an exact content proof for the
   current production inputs. The proof covers package-version metadata, the

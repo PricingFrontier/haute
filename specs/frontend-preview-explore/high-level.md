@@ -98,9 +98,13 @@ Modelling and optimiser result presentation belongs to
   roving tabs.
 - Preview places actionable projection-boundary, rejected-strategy, or memory
   pressure detail behind an accessible status icon beside the row/column
-  summary. Explore uses a compact diagnostics banner for actionable progress
-  or cache-report metrics. Missing/unsupported planner detail adds no invented
-  secondary state; primary data, error, and status content remains authoritative.
+  summary. A successfully admitted materialisation boundary is informational and
+  stays silent only when the same plan has no unprojected boundary and its execution
+  metrics report no memory pressure. Mixed plans keep the real projection issue
+  visible at the unprojected node. Explore
+  uses a compact diagnostics banner for actionable progress or cache-report
+  metrics. Missing/unsupported planner detail adds no invented secondary state;
+  primary data, error, and status content remains authoritative.
 
 ## Design rationale
 

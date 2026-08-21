@@ -18,7 +18,10 @@ from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import GroupByExecutionUnsupportedError
 from haute.execution import ProjectionRequest, execute_lazy_graph, plan_execution_strategy
 from haute.executor import _build_node_fn
-from haute.routes._train_service import _build_training_feature_selection
+from haute.routes._train_service import (
+    _build_training_feature_selection,
+    _training_required_columns_by_node,
+)
 from tests.conftest import build_test_input_snapshot
 
 pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
@@ -239,6 +242,23 @@ def test_generated_join_training_projection_scale_contract(
     rows = _ROWS_BY_SCALE[scale]
     base_path, lookup_path, base_columns, lookup_columns = _generate_inputs(tmp_path, rows)
     graph = _scenario_graph(base_path, lookup_path, base_columns, lookup_columns)
+    training_config = {
+        "algorithm": "catboost",
+        "target": "target",
+        "weight": "weight",
+        "id_columns": ["policy_id"],
+        "feature_columns": ["feature_a", "feature_b", "region_factor"],
+        "exclude": [
+            "region_key",
+            *[column for column in base_columns if column.startswith("unused_")],
+            *[column for column in lookup_columns if column.startswith("unused_")],
+        ],
+    }
+    required_columns_by_node = _training_required_columns_by_node(
+        "training_input",
+        training_config,
+    )
+    assert required_columns_by_node is not None
     context = ExecutionContext(
         operation="polars_scale_join_training",
         profile=ExecutionProfile.TRAINING_PREP,
@@ -249,7 +269,7 @@ def test_generated_join_training_projection_scale_contract(
         _build_node_fn,
         target_node_id="training_input",
         source="batch",
-        required_columns_by_node={"training_input": frozenset(_TRAINING_COLUMNS)},
+        required_columns_by_node=required_columns_by_node,
         execution_context=context,
     )
     joined_lf = outputs["training_input"]
@@ -275,13 +295,7 @@ def test_generated_join_training_projection_scale_contract(
     assert_frame_equal(actual, expected, check_exact=False, rel_tol=1e-12)
 
     feature_selection = _build_training_feature_selection(
-        {
-            "algorithm": "catboost",
-            "target": "target",
-            "weight": "weight",
-            "id_columns": ["policy_id"],
-            "feature_columns": ["feature_a", "feature_b", "region_factor"],
-        },
+        training_config,
         training_lf.collect_schema().names(),
     )
     assert feature_selection.features.items == ["feature_a", "feature_b", "region_factor"]

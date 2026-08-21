@@ -15,6 +15,7 @@ import type {
   DatabricksWarehousesResponse,
   DissolveSubmodelResponse,
   ExecutionAdmission,
+  ExecutionCacheProof,
   ExecutionMemoryPressureEvent,
   ExecutionMetrics,
   ExecutionColumnWidth,
@@ -662,6 +663,13 @@ function parseExecutionMetrics(
 ): ExecutionMetrics {
   const obj = expectPlainObject(parser, value, field)
   const admission = optionalNullableObject(parser, obj, "admission")
+  const estimatedBytes = parseOptionalNullableNonNegativeNumber(obj, "estimated_bytes", field)
+  const rawEstimatedBytes = parseOptionalNullableNonNegativeNumber(obj, "raw_estimated_bytes", field)
+  const calibrationFactor = parseOptionalNullableNonNegativeNumber(obj, "estimate_calibration_factor_basis_points", field)
+  const admissionBasis = obj.estimate_admission_basis === undefined || obj.estimate_admission_basis === null
+    ? null
+    : expectStringLiteral(parser, obj.estimate_admission_basis, `${field}.estimate_admission_basis`, ESTIMATE_ADMISSION_BASES)
+  validateCalibratedEstimateEvidence(field, estimatedBytes, rawEstimatedBytes, calibrationFactor, admissionBasis)
   return {
     schema_version: optionalNumber(parser, obj, "schema_version", 1),
     operation: optionalString(parser, obj, "operation"),
@@ -699,10 +707,17 @@ function parseExecutionMetrics(
     column_widths: obj.column_widths === undefined
       ? { state: "available", total_count: 0, items: [] }
       : parseColumnWidths(obj.column_widths, `${field}.column_widths`),
+    requested_column_width_total: parseOptionalNullableNonNegativeNumber(obj, "requested_column_width_total", field),
+    physically_scanned_column_width_total: parseOptionalNullableNonNegativeNumber(obj, "physically_scanned_column_width_total", field),
+    cache_proof: parseExecutionCacheProof(obj.cache_proof, `${field}.cache_proof`),
     bytes_read: parseOptionalNullableNonNegativeNumber(obj, "bytes_read", field),
     bytes_written: parseOptionalNullableNonNegativeNumber(obj, "bytes_written", field),
-    estimated_bytes: parseOptionalNullableNonNegativeNumber(obj, "estimated_bytes", field),
+    estimated_bytes: estimatedBytes,
+    raw_estimated_bytes: rawEstimatedBytes,
+    estimate_calibration_factor_basis_points: calibrationFactor,
+    estimate_admission_basis: admissionBasis,
     observed_peak_rss_bytes: parseOptionalNullableNonNegativeNumber(obj, "observed_peak_rss_bytes", field),
+    observed_peak_rss_growth_bytes: parseOptionalNullableNonNegativeNumber(obj, "observed_peak_rss_growth_bytes", field),
     checkpoint_count: parseOptionalNonNegativeNumber(obj, "checkpoint_count", field),
     chunk_count: parseOptionalNonNegativeNumber(obj, "chunk_count", field),
     admission: admission === null
@@ -798,6 +813,27 @@ function parseColumnWidths(value: unknown, field: string): ExecutionColumnWidths
   return { state, total_count: totalCount, items }
 }
 
+function parseExecutionCacheProof(value: unknown, field: string): ExecutionCacheProof {
+  const obj = expectPlainObject("execution metrics", value, field)
+  const reasons = expectPlainObject("execution metrics", obj.miss_reason_counts, `${field}.miss_reason_counts`)
+  const missReasonCounts = {
+    metadata_source_mismatch: expectNonNegativeMetricNumber(reasons.metadata_source_mismatch, `${field}.miss_reason_counts.metadata_source_mismatch`),
+    artifact_integrity_schema_failure: expectNonNegativeMetricNumber(reasons.artifact_integrity_schema_failure, `${field}.miss_reason_counts.artifact_integrity_schema_failure`),
+    unreadable_artifact: expectNonNegativeMetricNumber(reasons.unreadable_artifact, `${field}.miss_reason_counts.unreadable_artifact`),
+    proof_unavailable: expectNonNegativeMetricNumber(reasons.proof_unavailable, `${field}.miss_reason_counts.proof_unavailable`),
+  }
+  const misses = expectNonNegativeMetricNumber(obj.misses, `${field}.misses`)
+  if (misses !== Object.values(missReasonCounts).reduce((total, count) => total + count, 0)) {
+    throw new Error(`execution metrics: ${field}.misses does not equal its closed reason-count total`)
+  }
+  return {
+    hits: expectNonNegativeMetricNumber(obj.hits, `${field}.hits`),
+    misses,
+    direct_fallbacks: expectNonNegativeMetricNumber(obj.direct_fallbacks, `${field}.direct_fallbacks`),
+    miss_reason_counts: missReasonCounts,
+  }
+}
+
 const STRATEGY_STATUS = {
   projected: "projected",
   "schema-all-except": "projected",
@@ -809,6 +845,38 @@ const STRATEGY_STATUS = {
 } as const
 
 const DETAIL_STATES = ["available", "unavailable", "truncated"] as const
+const ESTIMATE_ADMISSION_BASES = ["provided", "projected_columns", "complete_width_fallback"] as const
+
+function validateCalibratedEstimateEvidence(
+  field: string,
+  estimatedBytes: number | null | undefined,
+  rawEstimatedBytes: number | null | undefined,
+  factorBasisPoints: number | null | undefined,
+  admissionBasis: string | null | undefined,
+): void {
+  const evidence = [rawEstimatedBytes, factorBasisPoints, admissionBasis]
+  if (!evidence.some((value) => value !== null && value !== undefined)) return
+  if (
+    estimatedBytes === null || estimatedBytes === undefined ||
+    rawEstimatedBytes === null || rawEstimatedBytes === undefined ||
+    factorBasisPoints === null || factorBasisPoints === undefined ||
+    admissionBasis === null || admissionBasis === undefined
+  ) {
+    throw new Error(`${field}: calibrated estimate evidence must be complete`)
+  }
+  if (factorBasisPoints < 10_000) {
+    throw new Error(`${field}: estimate calibration factor cannot reduce an estimate`)
+  }
+  if (factorBasisPoints > 80_000) {
+    throw new Error(`${field}: estimate calibration factor exceeds the supported cap`)
+  }
+  const expected = (
+    BigInt(rawEstimatedBytes) * BigInt(factorBasisPoints) + 9_999n
+  ) / 10_000n
+  if (BigInt(estimatedBytes) !== expected) {
+    throw new Error(`${field}: calibrated estimate bytes do not match raw bytes and factor`)
+  }
+}
 
 export function expectInteger(value: unknown, field: string, nonNegative = false): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || (nonNegative && value < 0)) {
@@ -904,9 +972,13 @@ export function parseExecutionStrategyDiagnostic(value: unknown): ExecutionStrat
   const remediation = expectOptionalNullableDiagnosticString(obj, "remediation")
   if (remediation !== undefined && remediation !== null && remediation.length > 512) throw new Error("execution strategy: remediation exceeds 512 characters")
   const estimatedPeakBytes = obj.estimated_peak_bytes === undefined || obj.estimated_peak_bytes === null ? obj.estimated_peak_bytes : expectInteger(obj.estimated_peak_bytes, "estimated_peak_bytes", true)
+  const rawEstimatedPeakBytes = obj.raw_estimated_peak_bytes === undefined || obj.raw_estimated_peak_bytes === null ? obj.raw_estimated_peak_bytes : expectInteger(obj.raw_estimated_peak_bytes, "raw_estimated_peak_bytes", true)
+  const estimateCalibrationFactorBasisPoints = obj.estimate_calibration_factor_basis_points === undefined || obj.estimate_calibration_factor_basis_points === null ? obj.estimate_calibration_factor_basis_points : expectInteger(obj.estimate_calibration_factor_basis_points, "estimate_calibration_factor_basis_points", true)
+  const estimateAdmissionBasis = obj.estimate_admission_basis === undefined || obj.estimate_admission_basis === null ? obj.estimate_admission_basis : expectStringLiteral("execution strategy", obj.estimate_admission_basis, "estimate_admission_basis", ESTIMATE_ADMISSION_BASES)
+  validateCalibratedEstimateEvidence("execution strategy", estimatedPeakBytes, rawEstimatedPeakBytes, estimateCalibrationFactorBasisPoints, estimateAdmissionBasis)
   const headroomBytes = obj.headroom_bytes === undefined || obj.headroom_bytes === null ? obj.headroom_bytes : expectInteger(obj.headroom_bytes, "headroom_bytes", true)
   const assumptions = obj.assumptions === undefined ? undefined : expectArray("execution strategy", obj.assumptions, "assumptions").map((assumption, index) => expectString("execution strategy", assumption, `assumptions[${index}]`))
-  return { schema_version: 1, status, strategy, profile, boundedness, reason_code: reasonCode, detail_state: detailState, boundaries, reasons, provenance, ...(obj.blocking_node_id === undefined ? {} : { blocking_node_id: expectOptionalNullableDiagnosticString(obj, "blocking_node_id") }), ...(obj.blocking_operator === undefined ? {} : { blocking_operator: expectOptionalNullableDiagnosticString(obj, "blocking_operator") }), ...(remediation === undefined ? {} : { remediation }), ...(estimatedPeakBytes === undefined ? {} : { estimated_peak_bytes: estimatedPeakBytes }), ...(headroomBytes === undefined ? {} : { headroom_bytes: headroomBytes }), ...(assumptions === undefined ? {} : { assumptions }) }
+  return { schema_version: 1, status, strategy, profile, boundedness, reason_code: reasonCode, detail_state: detailState, boundaries, reasons, provenance, ...(obj.blocking_node_id === undefined ? {} : { blocking_node_id: expectOptionalNullableDiagnosticString(obj, "blocking_node_id") }), ...(obj.blocking_operator === undefined ? {} : { blocking_operator: expectOptionalNullableDiagnosticString(obj, "blocking_operator") }), ...(remediation === undefined ? {} : { remediation }), ...(estimatedPeakBytes === undefined ? {} : { estimated_peak_bytes: estimatedPeakBytes }), ...(rawEstimatedPeakBytes === undefined ? {} : { raw_estimated_peak_bytes: rawEstimatedPeakBytes }), ...(estimateCalibrationFactorBasisPoints === undefined ? {} : { estimate_calibration_factor_basis_points: estimateCalibrationFactorBasisPoints }), ...(estimateAdmissionBasis === undefined ? {} : { estimate_admission_basis: estimateAdmissionBasis }), ...(headroomBytes === undefined ? {} : { headroom_bytes: headroomBytes }), ...(assumptions === undefined ? {} : { assumptions }) }
 }
 
 export function optionalExecutionMetrics(

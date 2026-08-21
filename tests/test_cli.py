@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
+import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -75,6 +78,39 @@ class TestVersion:
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
         assert "version" in result.output.lower()
+
+
+class TestModuleEntrypoint:
+    def test_delegates_to_the_canonical_click_group(self) -> None:
+        module_entrypoint = importlib.import_module("haute.__main__")
+
+        assert module_entrypoint.cli is cli
+
+    @pytest.mark.parametrize(
+        ("arguments", "expected_fragment"),
+        [
+            pytest.param(["--version"], "version", id="version"),
+            pytest.param(["serve", "--help"], "--no-browser", id="nested-command"),
+            pytest.param(["not-a-command"], "No such command", id="usage-error"),
+        ],
+    )
+    def test_matches_the_console_cli(
+        self,
+        runner: CliRunner,
+        arguments: list[str],
+        expected_fragment: str,
+    ) -> None:
+        console_result = runner.invoke(cli, arguments)
+        module_result = subprocess.run(
+            [sys.executable, "-m", "haute", *arguments],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        module_output = module_result.stdout + module_result.stderr
+        assert module_result.returncode == console_result.exit_code
+        assert expected_fragment.lower() in module_output.lower()
 
 
 # ---------------------------------------------------------------------------

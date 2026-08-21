@@ -332,7 +332,7 @@ def _clamp_row_limit(
 def _glm_training_term_columns(config: dict[str, Any]) -> frozenset[str] | None:
     if str(config.get("algorithm", "catboost")).lower() != "glm":
         return None
-    raw_terms = config.get("terms")
+    raw_terms = build_train_params(config).get("terms")
     if not isinstance(raw_terms, dict) or not raw_terms:
         return None
     terms = frozenset(name for name in raw_terms if isinstance(name, str) and name)

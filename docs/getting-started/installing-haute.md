@@ -47,6 +47,20 @@ uv add "haute[databricks]"         # Adds SQL support and pins Databricks client
 
 ## Troubleshooting
 
+### Managed Windows computers
+
+Some Windows Application Control policies allow an organisation-approved Python interpreter but block generated console launchers such as `.venv\Scripts\haute.exe`. Haute exposes the same CLI directly through Python, so the console launcher is optional.
+
+If the project already has a blocked `.venv`, recreate that dependency environment from the approved Python path supplied by your IT team. `--clear` replaces only `.venv`; `uv sync` restores the project's declared packages. The two policy flags prevent uv from substituting a managed download:
+
+```powershell
+uv venv --clear --python "C:\Path\To\Approved\python.exe" --no-managed-python --no-python-downloads
+uv sync --no-managed-python --no-python-downloads
+.\.venv\Scripts\python.exe -m haute serve
+```
+
+Calling the environment's Python explicitly means activation is optional. Once it is activated, the shorter `python -m haute serve` is equivalent. Both module forms and `haute serve` invoke the same command implementation and accept the same options. You can use the module form for every command, such as `python -m haute init` or `python -m haute lint`. If the approved Python interpreter itself is blocked, IT must permit or provision that runtime; Haute does not bypass operating-system policy.
+
 **`haute serve` doesn't open anything in my browser**
 
 Look at the terminal output for a line like `Running on http://localhost:8000`. Copy that address and paste it into your browser. If you see an error, make sure your virtual environment is active (`(.venv)` in your prompt).

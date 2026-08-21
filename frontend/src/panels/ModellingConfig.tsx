@@ -547,7 +547,7 @@ export default function ModellingConfig({
   let paneBody: ReactElement | null = null
   if (algorithm === "catboost") {
     if (activePane === "target") {
-      paneBody = <TargetAndTaskConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} task={task} metrics={metrics} />
+      paneBody = <TargetAndTaskConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} metrics={metrics} />
     } else if (activePane === "features") {
       paneBody = <CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} algorithm="catboost" />
     } else if (activePane === "params") {

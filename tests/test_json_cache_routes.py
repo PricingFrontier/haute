@@ -12,17 +12,18 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 import os
 import threading
-import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
+
+from haute.routes._isolated_worker_async import WorkerCancellationGate
 
 
 @pytest.fixture()
@@ -61,6 +62,509 @@ def _minimal_root_schema() -> dict[str, Any]:
 
 
 class TestBuildJsonCache:
+    @pytest.mark.parametrize(
+        ("raised", "kind"),
+        [
+            (FileNotFoundError("gone"), "file_not_found"),
+            (__import__("orjson").JSONDecodeError("bad", "x", 0), "invalid_json"),
+        ],
+    )
+    def test_prepare_worker_classifies_expected_source_failures(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        raised: BaseException,
+        kind: str,
+    ) -> None:
+        from haute.routes import json_cache
+
+        context = Mock()
+        context.stage.return_value.__enter__ = Mock()
+        context.stage.return_value.__exit__ = Mock(return_value=False)
+        monkeypatch.setattr(
+            json_cache, "create_isolated_execution_context", lambda _budget: context
+        )
+        monkeypatch.setattr(
+            "haute._json_shred.prepare_per_port_cache",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(raised),
+        )
+
+        outcome = json_cache._prepare_json_cache_worker("data.json", {}, "cache", "staging", Mock())
+
+        assert outcome.failure_kind == kind
+        context.release_admission.assert_called_once_with(preserve_primary_error=True)
+
+    @pytest.mark.parametrize("kind", ["schema", "source_changed", "memory"])
+    def test_prepare_worker_classifies_contract_and_memory_failures(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        kind: str,
+    ) -> None:
+        from haute._api_input_schema import ApiInputSchemaError
+        from haute._execution_context import ExecutionMemoryLimitExceededError
+        from haute._json_shred import SourceChangedDuringCacheBuildError
+        from haute.routes import json_cache
+
+        failures: dict[str, BaseException] = {
+            "schema": ApiInputSchemaError("schema mismatch"),
+            "source_changed": SourceChangedDuringCacheBuildError("source changed"),
+            "memory": ExecutionMemoryLimitExceededError(
+                "json_cache_build_v2",
+                rss_bytes=2,
+                limit_bytes=1,
+            ),
+        }
+        context = Mock()
+        context.stage.return_value.__enter__ = Mock()
+        context.stage.return_value.__exit__ = Mock(return_value=False)
+        monkeypatch.setattr(
+            json_cache, "create_isolated_execution_context", lambda _budget: context
+        )
+        monkeypatch.setattr(
+            "haute._json_shred.prepare_per_port_cache",
+            Mock(side_effect=failures[kind]),
+        )
+
+        outcome = json_cache._prepare_json_cache_worker("data.json", {}, "cache", "staging", Mock())
+
+        assert outcome.failure_kind == kind
+        assert outcome.detail == str(failures[kind])
+        assert (outcome.payload is not None) is (kind == "memory")
+        context.release_admission.assert_called_once_with(preserve_primary_error=True)
+
+    def test_prepare_worker_returns_success_and_releases_admission(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute.routes import json_cache
+
+        context = Mock()
+        context.stage.return_value.__enter__ = Mock()
+        context.stage.return_value.__exit__ = Mock(return_value=False)
+        prepared = object()
+        monkeypatch.setattr(
+            json_cache, "create_isolated_execution_context", lambda _budget: context
+        )
+        monkeypatch.setattr(
+            "haute._json_shred.prepare_per_port_cache",
+            Mock(return_value=prepared),
+        )
+
+        outcome = json_cache._prepare_json_cache_worker("data.json", {}, "cache", "staging", Mock())
+
+        assert outcome.prepared is prepared
+        assert outcome.failure_kind is None
+        context.release_admission.assert_called_once_with(preserve_primary_error=True)
+
+    def test_transaction_preserves_primary_error_when_staging_cleanup_fails(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from haute._execution_admission import IsolatedExecutionBudget
+        from haute._execution_context import ExecutionProfile
+        from haute.routes import json_cache
+
+        cache_dir = tmp_path / "cache"
+        staging = tmp_path / "staging"
+        budget = IsolatedExecutionBudget("x", ExecutionProfile.LAZY_SINK, 1, "x", "x")
+        monkeypatch.setattr(
+            "haute._json_shred.new_per_port_cache_staging_dir", lambda _path: staging
+        )
+        monkeypatch.setattr(
+            json_cache,
+            "run_isolated_worker",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("primary")),
+        )
+        monkeypatch.setattr(
+            "haute._json_shred.discard_per_port_cache_staging",
+            lambda *_args: (_ for _ in ()).throw(OSError("cleanup")),
+        )
+
+        with pytest.raises(ValueError, match="primary") as exc_info:
+            json_cache._json_cache_build_transaction(
+                "data.json", {}, cache_dir, budget, WorkerCancellationGate()
+            )
+        assert "staging cleanup failed" in " ".join(exc_info.value.__notes__)
+
+    def test_isolated_memory_detail_covers_memory_failure_classes(self) -> None:
+        from haute._worker_isolation import (
+            IsolatedWorkerCrashedError,
+            IsolatedWorkerMemoryLimitExceededError,
+            IsolatedWorkerMemoryLimitUnsupportedError,
+        )
+        from haute.routes.json_cache import _isolated_memory_detail
+
+        exceeded = IsolatedWorkerMemoryLimitExceededError(rss_bytes=8, rss_limit_bytes=7)
+        assert (
+            _isolated_memory_detail(exceeded, memory_limit_bytes=5)["reason"]
+            == "worker_rss_limit_exceeded"
+        )
+        unsupported = IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=5)
+        assert (
+            _isolated_memory_detail(unsupported, memory_limit_bytes=5)["reason"]
+            == "native_memory_cap_unavailable"
+        )
+        crashed = IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=5)
+        assert (
+            _isolated_memory_detail(crashed, memory_limit_bytes=5)["reason"]
+            == "worker_may_have_exceeded_memory_limit"
+        )
+        generic = _isolated_memory_detail(RuntimeError("failure"), memory_limit_bytes=None)
+        assert generic == {
+            "error_code": "memory_limit",
+            "operation": "json_cache_build_v2",
+            "reason": "worker_memory_limit",
+        }
+
+    @pytest.mark.parametrize(
+        ("mutate", "error"),
+        [
+            (lambda prepared, _staging: object(), TypeError),
+            (
+                lambda prepared, _staging: replace(prepared, data_path="C:/attacker/data.json"),
+                ValueError,
+            ),
+            (
+                lambda prepared, _staging: replace(prepared, cache_dir="C:/attacker/cache"),
+                ValueError,
+            ),
+            (lambda prepared, _staging: replace(prepared, no_op=1), TypeError),
+            (
+                lambda prepared, _staging: replace(prepared, staging_dir="C:/attacker/staging"),
+                ValueError,
+            ),
+            (
+                lambda prepared, _staging: replace(prepared, no_op=True, staging_dir="C:/attacker"),
+                ValueError,
+            ),
+        ],
+    )
+    def test_worker_manifest_must_match_parent_owned_paths(
+        self,
+        tmp_path: Path,
+        mutate: Any,
+        error: type[Exception],
+    ) -> None:
+        from haute._json_shred import PreparedPerPortCacheBuild
+        from haute.routes.json_cache import _validate_worker_prepared_manifest
+
+        data_path = str((tmp_path / "data.json").resolve())
+        cache_dir = (tmp_path / "cache").resolve()
+        staging = cache_dir.with_name(f"{cache_dir.name}.build-tmp-{'a' * 32}")
+        prepared = PreparedPerPortCacheBuild(
+            data_path=data_path,
+            cache_dir=str(cache_dir),
+            staging_dir=str(staging),
+            schema_fingerprint="fingerprint",
+            data_file_signature={},
+            summary={},
+        )
+
+        with pytest.raises(error):
+            _validate_worker_prepared_manifest(
+                mutate(prepared, staging),
+                data_path=data_path,
+                cache_dir=cache_dir,
+                staging_dir=staging,
+            )
+
+        no_op = replace(prepared, no_op=True, staging_dir=None)
+        assert (
+            _validate_worker_prepared_manifest(
+                no_op,
+                data_path=data_path,
+                cache_dir=cache_dir,
+                staging_dir=staging,
+            )
+            is no_op
+        )
+
+    def test_transaction_rejects_malformed_manifest_before_publication_or_cleanup_redirect(
+        self, tmp_path: Path
+    ) -> None:
+        from haute._execution_admission import IsolatedExecutionBudget
+        from haute._execution_context import ExecutionProfile
+        from haute._json_shred import PreparedPerPortCacheBuild
+        from haute.routes import json_cache
+
+        data_path = str((tmp_path / "data.json").resolve())
+        cache_dir = (tmp_path / "cache").resolve()
+        parent_staging = cache_dir.with_name(f"{cache_dir.name}.build-tmp-{'b' * 32}")
+        attacker_staging = tmp_path / "attacker-staging"
+        malformed = PreparedPerPortCacheBuild(
+            data_path=data_path,
+            cache_dir=str(cache_dir),
+            staging_dir=str(attacker_staging),
+            schema_fingerprint="fingerprint",
+            data_file_signature={},
+            summary={},
+        )
+        discard = Mock()
+        commit = Mock()
+        budget = IsolatedExecutionBudget(
+            operation="test",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=1,
+            config_key="test",
+            budget_policy="test",
+        )
+
+        with (
+            patch(
+                "haute._json_shred.new_per_port_cache_staging_dir",
+                return_value=parent_staging,
+            ),
+            patch.object(
+                json_cache,
+                "run_isolated_worker",
+                return_value=json_cache._JsonCacheWorkerOutcome(prepared=malformed),
+            ),
+            patch("haute._json_shred.commit_prepared_per_port_cache", commit),
+            patch("haute._json_shred.discard_per_port_cache_staging", discard),
+        ):
+            with pytest.raises(ValueError, match="staging directory"):
+                json_cache._json_cache_build_transaction(
+                    data_path,
+                    _minimal_root_schema(),
+                    cache_dir,
+                    budget,
+                    WorkerCancellationGate(),
+                )
+
+        commit.assert_not_called()
+        discard.assert_called_once_with(cache_dir, parent_staging)
+
+    def test_transaction_does_not_publish_after_request_cancellation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute._execution_admission import IsolatedExecutionBudget
+        from haute._execution_context import ExecutionProfile
+        from haute._json_shred import PreparedPerPortCacheBuild
+        from haute._worker_isolation import IsolatedWorkerStoppedError
+        from haute.routes import json_cache
+
+        data_path = str((tmp_path / "data.json").resolve())
+        cache_dir = (tmp_path / "cache").resolve()
+        parent_staging = cache_dir.with_name(f"{cache_dir.name}.build-tmp-{'c' * 32}")
+        prepared = PreparedPerPortCacheBuild(
+            data_path=data_path,
+            cache_dir=str(cache_dir),
+            staging_dir=str(parent_staging),
+            schema_fingerprint="fingerprint",
+            data_file_signature={},
+            summary={},
+        )
+        cancellation_requested = WorkerCancellationGate()
+
+        def reject_late_publication(
+            *_args: Any,
+            publication_guard: Any,
+            **_kwargs: Any,
+        ) -> None:
+            with publication_guard:
+                raise AssertionError("cancelled cache generation was published")
+
+        commit = Mock(side_effect=reject_late_publication)
+        discard = Mock()
+        budget = IsolatedExecutionBudget(
+            operation="test",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=1,
+            config_key="test",
+            budget_policy="test",
+        )
+
+        def return_after_cancellation(*_args: Any, **_kwargs: Any):
+            cancellation_requested.request()
+            return json_cache._JsonCacheWorkerOutcome(prepared=prepared)
+
+        with (
+            patch(
+                "haute._json_shred.new_per_port_cache_staging_dir",
+                return_value=parent_staging,
+            ),
+            patch.object(
+                json_cache,
+                "run_isolated_worker",
+                side_effect=return_after_cancellation,
+            ),
+            patch("haute._json_shred.commit_prepared_per_port_cache", commit),
+            patch("haute._json_shred.discard_per_port_cache_staging", discard),
+        ):
+            with pytest.raises(IsolatedWorkerStoppedError):
+                json_cache._json_cache_build_transaction(
+                    data_path,
+                    _minimal_root_schema(),
+                    cache_dir,
+                    budget,
+                    cancellation_requested,
+                )
+
+        commit.assert_called_once()
+        discard.assert_called_once_with(cache_dir, parent_staging)
+
+    @pytest.mark.parametrize(
+        ("outcome", "message"),
+        [
+            (object(), "invalid outcome"),
+            (None, "omitted its prepared generation"),
+        ],
+    )
+    def test_transaction_rejects_invalid_or_incomplete_worker_outcomes(
+        self,
+        tmp_path: Path,
+        outcome: object,
+        message: str,
+    ) -> None:
+        from haute._execution_admission import IsolatedExecutionBudget
+        from haute._execution_context import ExecutionProfile
+        from haute.routes import json_cache
+
+        cache_dir = tmp_path / "cache"
+        staging = tmp_path / "cache.build-tmp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        returned = json_cache._JsonCacheWorkerOutcome() if outcome is None else outcome
+        budget = IsolatedExecutionBudget(
+            "json_cache_build_v2",
+            ExecutionProfile.LAZY_SINK,
+            1,
+            "test",
+            "fixed_default",
+        )
+
+        with (
+            patch(
+                "haute._json_shred.new_per_port_cache_staging_dir",
+                return_value=staging,
+            ),
+            patch.object(json_cache, "run_isolated_worker", return_value=returned),
+            patch("haute._json_shred.discard_per_port_cache_staging"),
+        ):
+            with pytest.raises(RuntimeError, match=message):
+                json_cache._json_cache_build_transaction(
+                    "data.json",
+                    _minimal_root_schema(),
+                    cache_dir,
+                    budget,
+                    WorkerCancellationGate(),
+                )
+
+    def test_transaction_propagates_typed_worker_failure_envelope(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute._execution_admission import IsolatedExecutionBudget
+        from haute._execution_context import ExecutionProfile
+        from haute.routes import json_cache
+
+        cache_dir = tmp_path / "cache"
+        staging = tmp_path / "cache.build-tmp-cccccccccccccccccccccccccccccccc"
+        budget = IsolatedExecutionBudget(
+            "json_cache_build_v2",
+            ExecutionProfile.LAZY_SINK,
+            1,
+            "test",
+            "fixed_default",
+        )
+        with (
+            patch(
+                "haute._json_shred.new_per_port_cache_staging_dir",
+                return_value=staging,
+            ),
+            patch.object(
+                json_cache,
+                "run_isolated_worker",
+                return_value=json_cache._JsonCacheWorkerOutcome(
+                    failure_kind="schema",
+                    detail="schema failed",
+                ),
+            ),
+            patch("haute._json_shred.discard_per_port_cache_staging"),
+        ):
+            with pytest.raises(json_cache._JsonCacheBuildError, match="schema failed"):
+                json_cache._json_cache_build_transaction(
+                    "data.json",
+                    _minimal_root_schema(),
+                    cache_dir,
+                    budget,
+                    WorkerCancellationGate(),
+                )
+
+    def test_transaction_rejects_pre_dispatch_cancellation_and_surfaces_cleanup_failure(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute._execution_admission import IsolatedExecutionBudget
+        from haute._execution_context import ExecutionProfile
+        from haute._json_shred import PreparedPerPortCacheBuild
+        from haute._worker_isolation import IsolatedWorkerStoppedError
+        from haute.routes import json_cache
+
+        cache_dir = tmp_path / "cache"
+        staging = tmp_path / "cache.build-tmp-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        budget = IsolatedExecutionBudget(
+            "json_cache_build_v2",
+            ExecutionProfile.LAZY_SINK,
+            1,
+            "test",
+            "fixed_default",
+        )
+        cancelled = WorkerCancellationGate()
+        cancelled.request()
+        worker = Mock()
+
+        with (
+            patch(
+                "haute._json_shred.new_per_port_cache_staging_dir",
+                return_value=staging,
+            ),
+            patch.object(json_cache, "run_isolated_worker", worker),
+            patch("haute._json_shred.discard_per_port_cache_staging"),
+        ):
+            with pytest.raises(IsolatedWorkerStoppedError):
+                json_cache._json_cache_build_transaction(
+                    "data.json",
+                    _minimal_root_schema(),
+                    cache_dir,
+                    budget,
+                    cancelled,
+                )
+        worker.assert_not_called()
+
+        prepared = PreparedPerPortCacheBuild(
+            data_path=str((tmp_path / "data.json").resolve()),
+            cache_dir=str(cache_dir.resolve()),
+            staging_dir=str(staging.resolve()),
+            schema_fingerprint="fingerprint",
+            data_file_signature={},
+            summary={},
+        )
+        with (
+            patch(
+                "haute._json_shred.new_per_port_cache_staging_dir",
+                return_value=staging,
+            ),
+            patch.object(
+                json_cache,
+                "run_isolated_worker",
+                return_value=json_cache._JsonCacheWorkerOutcome(prepared=prepared),
+            ),
+            patch(
+                "haute._json_shred.commit_prepared_per_port_cache",
+                return_value={"schema_mode": "v2"},
+            ),
+            patch(
+                "haute._json_shred.discard_per_port_cache_staging",
+                side_effect=OSError("cleanup failed"),
+            ),
+        ):
+            with pytest.raises(OSError, match="cleanup failed"):
+                json_cache._json_cache_build_transaction(
+                    prepared.data_path,
+                    _minimal_root_schema(),
+                    cache_dir,
+                    budget,
+                    WorkerCancellationGate(),
+                )
+
     def test_build_missing_path_returns_422(self, client: TestClient) -> None:
         """Missing required 'path' field returns 422."""
         resp = client.post("/api/json-cache/build", json={})
@@ -96,20 +600,17 @@ class TestBuildJsonCache:
         }
         started = threading.Event()
 
-        def _slow_build(*, data_path: str, v2_config: dict, cache_dir: Path) -> dict:
+        def _timed_out_transaction(*_args: Any) -> dict[str, Any]:
+            from haute._worker_isolation import IsolatedWorkerTimeoutError
+
             started.set()
-            time.sleep(0.05)
-            return {
-                "schema_mode": "v2",
-                "schema_fingerprint": "fake",
-                "tables": [],
-                "data_file": {},
-                "skipped": {"records": 0, "rows_by_table": {}},
-                "cache_dir": str(cache_dir),
-            }
+            raise IsolatedWorkerTimeoutError(timeout_seconds=0.001)
 
         with (
-            patch("haute._json_shred.build_per_port_cache", _slow_build),
+            patch(
+                "haute.routes.json_cache._json_cache_build_transaction",
+                _timed_out_transaction,
+            ),
             patch.dict(os.environ, {"HAUTE_BUILD_TIMEOUT": "0.001"}),
         ):
             resp = client.post(
@@ -158,9 +659,11 @@ class TestBuildJsonCache:
         data_file = tmp_path / "data.json"
         data_file.write_text('[{"a":1}]', encoding="utf-8")
 
+        from haute.routes.json_cache import _JsonCacheBuildError
+
         with patch(
-            "haute._json_shred.build_per_port_cache",
-            side_effect=FileNotFoundError("data disappeared"),
+            "haute.routes.json_cache._json_cache_build_transaction",
+            side_effect=_JsonCacheBuildError("file_not_found", "data disappeared"),
         ):
             resp = client.post(
                 "/api/json-cache/build",
@@ -169,6 +672,194 @@ class TestBuildJsonCache:
 
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Data file not found"
+
+    @pytest.mark.parametrize(
+        ("failure_kind", "expected_status"),
+        [
+            ("invalid_json", 422),
+            ("schema", 422),
+            ("source_changed", 409),
+            ("memory", 507),
+            ("unknown_envelope", 500),
+            ("admission", 507),
+            ("native_rss", 507),
+            ("native_unsupported", 507),
+            ("crashed_memory", 507),
+            ("crashed", 500),
+            ("stopped", 409),
+            ("remote_memory", 507),
+            ("remote", 500),
+            ("generic", 500),
+        ],
+    )
+    def test_build_maps_isolated_failures_to_stable_http_contracts(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        failure_kind: str,
+        expected_status: int,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from haute._execution_admission import ExecutionAdmissionError
+        from haute._execution_context import ExecutionProfile
+        from haute._worker_isolation import (
+            IsolatedWorkerCrashedError,
+            IsolatedWorkerMemoryLimitExceededError,
+            IsolatedWorkerMemoryLimitUnsupportedError,
+            IsolatedWorkerRemoteError,
+            IsolatedWorkerStoppedError,
+        )
+        from haute.routes import json_cache
+        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+
+        data_file = tmp_path / "data.json"
+        data_file.write_text('[{"a":1}]', encoding="utf-8")
+        context = Mock()
+        budget = SimpleNamespace(memory_limit_bytes=100)
+        if failure_kind == "admission":
+            failure: BaseException = ExecutionAdmissionError(
+                "json_cache_build_v2",
+                profile=ExecutionProfile.LAZY_SINK,
+                memory_limit_bytes=1,
+                rss_at_admission_bytes=2,
+                reason="forced admission failure",
+            )
+            monkeypatch.setattr(
+                json_cache,
+                "create_admitted_execution_context",
+                Mock(side_effect=failure),
+            )
+        else:
+            monkeypatch.setattr(
+                json_cache,
+                "create_admitted_execution_context",
+                Mock(return_value=context),
+            )
+            monkeypatch.setattr(
+                json_cache,
+                "isolated_execution_budget",
+                Mock(return_value=budget),
+            )
+            if failure_kind in {
+                "invalid_json",
+                "schema",
+                "source_changed",
+                "memory",
+                "unknown_envelope",
+            }:
+                envelope_kind = {
+                    "invalid_json": "invalid_json",
+                    "schema": "schema",
+                    "source_changed": "source_changed",
+                    "memory": "memory",
+                    "unknown_envelope": "unknown",
+                }[failure_kind]
+                payload = {"error_code": "memory_limit"} if failure_kind == "memory" else None
+                failure = json_cache._JsonCacheBuildError(
+                    envelope_kind,
+                    "private worker failure",
+                    payload,
+                )
+            elif failure_kind == "native_rss":
+                failure = IsolatedWorkerMemoryLimitExceededError(
+                    rss_bytes=200,
+                    rss_limit_bytes=100,
+                )
+            elif failure_kind == "native_unsupported":
+                failure = IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=100)
+            elif failure_kind == "crashed_memory":
+                failure = IsolatedWorkerCrashedError(
+                    exitcode=-9,
+                    memory_limit_bytes=100,
+                )
+            elif failure_kind == "crashed":
+                failure = IsolatedWorkerCrashedError(
+                    exitcode=1,
+                    memory_limit_bytes=100,
+                )
+            elif failure_kind == "stopped":
+                failure = IsolatedWorkerStoppedError(terminal_reason="cancelled")
+            elif failure_kind == "remote_memory":
+                failure = IsolatedWorkerRemoteError(
+                    remote_type="MemoryError",
+                    remote_message="private memory detail",
+                    remote_traceback="private traceback",
+                )
+            elif failure_kind == "remote":
+                failure = IsolatedWorkerRemoteError(
+                    remote_type="RuntimeError",
+                    remote_message="private child detail",
+                    remote_traceback="private traceback",
+                )
+            else:
+                failure = RuntimeError("private generic failure")
+            monkeypatch.setattr(
+                json_cache,
+                "_json_cache_build_transaction",
+                Mock(side_effect=failure),
+            )
+
+        response = client.post(
+            "/api/json-cache/build",
+            json={"path": "data.json", "volatile_schema": _minimal_root_schema()},
+        )
+
+        assert response.status_code == expected_status
+        if expected_status == 500:
+            expected_detail = (
+                "Internal server error"
+                if failure_kind == "unknown_envelope"
+                else _INTERNAL_ERROR_DETAIL
+            )
+            assert response.json()["detail"] == expected_detail
+            assert "private" not in response.text
+
+    def test_success_without_an_admission_handle_skips_release(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from haute.routes import json_cache
+
+        data_file = tmp_path / "data.json"
+        data_file.write_text('[{"a":1}]', encoding="utf-8")
+        monkeypatch.setattr(
+            json_cache,
+            "create_admitted_execution_context",
+            Mock(return_value=None),
+        )
+        monkeypatch.setattr(
+            json_cache,
+            "isolated_execution_budget",
+            Mock(return_value=SimpleNamespace(memory_limit_bytes=100)),
+        )
+        monkeypatch.setattr(
+            json_cache,
+            "_json_cache_build_transaction",
+            Mock(
+                return_value={
+                    "schema_mode": "v2",
+                    "schema_fingerprint": "fingerprint",
+                    "tables": [],
+                    "data_file": {},
+                    "skipped": {"records": 0, "rows_by_table": {}},
+                }
+            ),
+        )
+        monkeypatch.setattr("haute._json_flatten._mark_working_consulted", Mock())
+
+        response = client.post(
+            "/api/json-cache/build",
+            json={"path": "data.json", "volatile_schema": _minimal_root_schema()},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["row_count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +894,10 @@ class TestJsonCacheProgress:
         release = threading.Event()
         response_by_thread: dict[str, Response] = {}
 
-        def _slow_build(*, data_path: str, v2_config: dict, cache_dir: Path) -> dict:
+        def _slow_build(*args: Any) -> dict[str, Any]:
             started.set()
             assert release.wait(timeout=5), "test build was not released"
+            cache_dir = args[2]
             return {
                 "schema_mode": "v2",
                 "schema_fingerprint": "fake",
@@ -221,7 +913,10 @@ class TestJsonCacheProgress:
                 json={"path": "data.json", "volatile_schema": schema},
             )
 
-        with patch("haute._json_shred.build_per_port_cache", _slow_build):
+        with patch(
+            "haute.routes.json_cache._json_cache_build_transaction",
+            _slow_build,
+        ):
             worker = threading.Thread(target=_post_build)
             worker.start()
             try:
@@ -243,7 +938,7 @@ class TestJsonCacheProgress:
         assert data["rows"] == 0
 
     @pytest.mark.asyncio
-    async def test_progress_stays_active_after_504_until_worker_finishes(
+    async def test_progress_is_inactive_when_504_returns_after_worker_join(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from fastapi import HTTPException
@@ -264,23 +959,17 @@ class TestJsonCacheProgress:
                 }
             ]
         }
-        started = threading.Event()
-        release = threading.Event()
 
-        def _slow_build(*, data_path: str, v2_config: dict, cache_dir: Path) -> dict:
-            started.set()
-            assert release.wait(timeout=5), "timed-out build worker was not released"
-            return {
-                "schema_mode": "v2",
-                "schema_fingerprint": "fake",
-                "tables": [],
-                "data_file": {},
-                "skipped": {"records": 0, "rows_by_table": {}},
-                "cache_dir": str(cache_dir),
-            }
+        def _timed_out_transaction(*_args: Any) -> dict[str, Any]:
+            from haute._worker_isolation import IsolatedWorkerTimeoutError
+
+            raise IsolatedWorkerTimeoutError(timeout_seconds=0.001)
 
         with (
-            patch("haute._json_shred.build_per_port_cache", _slow_build),
+            patch(
+                "haute.routes.json_cache._json_cache_build_transaction",
+                _timed_out_transaction,
+            ),
             patch.dict(os.environ, {"HAUTE_BUILD_TIMEOUT": "0.001"}),
         ):
             with pytest.raises(HTTPException) as exc_info:
@@ -288,20 +977,9 @@ class TestJsonCacheProgress:
                     JsonCacheBuildRequest(path="data.json", volatile_schema=schema)
                 )
             assert exc_info.value.status_code == 504
-            assert started.wait(timeout=5), "build worker did not start"
 
             progress = await get_json_cache_progress("data.json")
-            assert progress.active is True
-
-            release.set()
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                progress = await get_json_cache_progress("data.json")
-                if progress.active is False:
-                    break
-                await asyncio.sleep(0.01)
-            else:
-                pytest.fail("progress stayed active after the timed-out worker finished")
+            assert progress.active is False
 
     def test_missing_path_returns_422(self, client: TestClient) -> None:
         """Missing required 'path' query param returns 422."""

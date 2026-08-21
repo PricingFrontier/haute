@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 import shlex
 import shutil
@@ -22,17 +21,13 @@ COSMIC_RAY_PACKAGE = "cosmic-ray==8.4.6"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TARGET_CONFIG = "mutation/targets.json"
 PYTHON_PLACEHOLDER = "__HAUTE_PYTHON__"
+TEST_TARGETS_FILE_OPTION = "--test-targets-file"
 
-# Sharding calibration. A Cosmic Ray session is init'd once, then split into
-# disjoint mutant slices that run as independent CI matrix jobs; the merge job
-# recombines the per-shard result sessions. The number of shards for a target is
-# derived from its pending-mutant count so every shard stays well under the job
-# wall-clock (the timeout robustness fix) without over-provisioning runners for
-# small targets. Each shard executes its mutants one at a time, so ~80 mutants
-# keeps a shard to roughly 10-20 minutes even on a slow runner, comfortably
-# inside the 30-minute shard-job timeout.
-MUTANTS_PER_SHARD = 80
-MAX_SHARDS = 12
+# Sharding caps are target calibration, declared in mutation/targets.json. A
+# Cosmic Ray session is init'd once, split into disjoint pending-mutant slices,
+# and recombined by the merge job. Each cap retains timeout and artifact-upload
+# headroom for that target; GitHub caps one matrix at 256 jobs.
+MAX_MATRIX_SHARDS = 256
 
 
 @dataclass(frozen=True)
@@ -41,6 +36,7 @@ class MutationTargetSpec:
     config_path: Path
     fail_over: float
     rationale: str
+    max_pending_per_shard: int
 
 
 @dataclass(frozen=True)
@@ -51,6 +47,7 @@ class MutationTarget:
     test_paths: tuple[Path, ...]
     fail_over: float
     rationale: str
+    max_pending_per_shard: int
 
 
 @dataclass(frozen=True)
@@ -158,10 +155,51 @@ def _extract_test_paths(test_command: str) -> tuple[Path, ...]:
         raise SystemExit(f"Could not parse test-command {test_command!r}: {exc}") from exc
 
     test_paths: set[Path] = set()
-    for token in tokens:
+    expanded_tokens: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token != TEST_TARGETS_FILE_OPTION:
+            expanded_tokens.append(token)
+            index += 1
+            continue
+        if index + 1 >= len(tokens):
+            raise SystemExit(f"{TEST_TARGETS_FILE_OPTION} requires a path in {test_command!r}")
+        manifest_path = _resolve_repo_path(tokens[index + 1])
+        try:
+            manifest_path.relative_to(REPO_ROOT)
+            lines = manifest_path.read_text(encoding="utf-8").splitlines()
+        except (ValueError, OSError) as exc:
+            raise SystemExit(
+                f"Cannot read repository test-targets file {manifest_path}: {exc}"
+            ) from exc
+        manifest_targets = [
+            line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if not manifest_targets:
+            raise SystemExit(f"Test-targets file is empty: {manifest_path}")
+        if len(set(manifest_targets)) != len(manifest_targets):
+            raise SystemExit(f"Test-targets file contains duplicate entries: {manifest_path}")
+        for manifest_target in manifest_targets:
+            normalized = manifest_target.replace("\\", "/")
+            if normalized != "tests" and not normalized.startswith("tests/"):
+                raise SystemExit(f"Test-targets file contains a non-test target: {manifest_target}")
+        test_paths.add(manifest_path)
+        expanded_tokens.extend(manifest_targets)
+        index += 2
+
+    tests_root = (REPO_ROOT / "tests").resolve()
+    for token in expanded_tokens:
         normalized = token.replace("\\", "/")
         if normalized.startswith("tests/") or normalized == "tests":
-            test_paths.add(_resolve_repo_path(normalized))
+            path = _resolve_repo_path(normalized.partition("::")[0])
+            try:
+                path.relative_to(tests_root)
+            except ValueError as exc:
+                raise SystemExit(
+                    f"Test target escapes the repository tests directory: {token}"
+                ) from exc
+            test_paths.add(path)
     return tuple(sorted(test_paths, key=_relative_path))
 
 
@@ -173,8 +211,8 @@ def _load_target_specs(target_config: Path) -> list[MutationTargetSpec]:
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Invalid JSON in {target_config}: {exc}") from exc
 
-    if payload.get("schema_version") != 1:
-        raise SystemExit(f"Mutation target config must use schema_version 1: {target_config}")
+    if payload.get("schema_version") != 2:
+        raise SystemExit(f"Mutation target config must use schema_version 2: {target_config}")
     raw_targets = payload.get("targets")
     if not isinstance(raw_targets, list) or not raw_targets:
         raise SystemExit(
@@ -190,6 +228,7 @@ def _load_target_specs(target_config: Path) -> list[MutationTargetSpec]:
         config = raw_target.get("config")
         fail_over = raw_target.get("max_survival_rate")
         rationale = raw_target.get("rationale")
+        max_pending_per_shard = raw_target.get("max_pending_per_shard")
         if not isinstance(name, str) or not name:
             raise SystemExit(f"Mutation target entry {index} must define name: {target_config}")
         if not isinstance(config, str) or not config:
@@ -200,6 +239,16 @@ def _load_target_specs(target_config: Path) -> list[MutationTargetSpec]:
             raise SystemExit(f"Mutation target {name} max_survival_rate must be between 0 and 100")
         if not isinstance(rationale, str) or not rationale:
             raise SystemExit(f"Mutation target {name} must define rationale: {target_config}")
+        if isinstance(max_pending_per_shard, bool) or not isinstance(max_pending_per_shard, int):
+            raise SystemExit(
+                f"Mutation target {name} max_pending_per_shard must be a positive integer: "
+                f"{target_config}"
+            )
+        if max_pending_per_shard <= 0:
+            raise SystemExit(
+                f"Mutation target {name} max_pending_per_shard must be a positive integer: "
+                f"{target_config}"
+            )
 
         config_path = _resolve_repo_path(config)
         if not config_path.exists():
@@ -210,6 +259,7 @@ def _load_target_specs(target_config: Path) -> list[MutationTargetSpec]:
                 config_path=config_path,
                 fail_over=float(fail_over),
                 rationale=rationale,
+                max_pending_per_shard=max_pending_per_shard,
             )
         )
 
@@ -279,6 +329,7 @@ def _load_target(
         test_paths=_extract_test_paths(test_command),
         fail_over=fail_over,
         rationale=spec.rationale,
+        max_pending_per_shard=spec.max_pending_per_shard,
     )
 
 
@@ -330,6 +381,7 @@ def _select_targets_for_changed_files(
         (REPO_ROOT / ".github" / "workflows" / "mutation.yml").resolve(),
         (REPO_ROOT / "mutation" / "README.md").resolve(),
         (REPO_ROOT / DEFAULT_TARGET_CONFIG).resolve(),
+        (REPO_ROOT / "scripts" / "run_mutation_pytest.py").resolve(),
     }
     if any(path in global_gate_paths for path in normalized_changed):
         return targets
@@ -356,6 +408,7 @@ def _target_summary(target: MutationTarget) -> dict[str, object]:
         "tests": [_relative_path(path) for path in target.test_paths],
         "fail_over": target.fail_over,
         "rationale": target.rationale,
+        "max_pending_per_shard": target.max_pending_per_shard,
     }
 
 
@@ -391,7 +444,8 @@ def _print_target_list(targets: list[MutationTarget]) -> None:
     for target in targets:
         print(
             f"{target.name}\t{_relative_path(target.config_path)}\t"
-            f"{_relative_path(target.module_path)}\tfail-over={target.fail_over:g}"
+            f"{_relative_path(target.module_path)}\tfail-over={target.fail_over:g}\t"
+            f"max-pending-per-shard={target.max_pending_per_shard}"
         )
 
 
@@ -572,11 +626,31 @@ def _partition_job_ids(job_ids: Sequence[str], count: int) -> list[list[str]]:
     return buckets
 
 
-def _shard_count_for_pending(pending: int) -> int:
-    """Shard count for a target, sized so each shard stays well under wall-clock."""
-    if pending <= MUTANTS_PER_SHARD:
-        return 1
-    return max(1, min(MAX_SHARDS, math.ceil(pending / MUTANTS_PER_SHARD)))
+def _partition_pending_job_ids(session_file: Path, count: int) -> list[list[str]]:
+    """Partition only executable mutants; the base session retains prior results."""
+    return _partition_job_ids(_pending_job_ids(session_file), count)
+
+
+def _shard_count_for_pending(pending: int, max_pending_per_shard: int) -> int:
+    """Return the minimum one shard count for executable mutants at this target's cap."""
+    if isinstance(pending, bool) or not isinstance(pending, int) or pending < 0:
+        raise ValueError("pending must be a non-negative integer")
+    if (
+        isinstance(max_pending_per_shard, bool)
+        or not isinstance(max_pending_per_shard, int)
+        or max_pending_per_shard <= 0
+    ):
+        raise ValueError("max_pending_per_shard must be a positive integer")
+    return max(1, (pending + max_pending_per_shard - 1) // max_pending_per_shard)
+
+
+def _validate_shard_matrix_capacity(shard_count: int) -> None:
+    """Reject plans GitHub cannot expand without weakening shard sizing."""
+    if shard_count > MAX_MATRIX_SHARDS:
+        raise ValueError(
+            f"mutation plan requires {shard_count} shard jobs, exceeding the "
+            f"GitHub Actions matrix limit of {MAX_MATRIX_SHARDS}"
+        )
 
 
 def _slice_session(
@@ -634,14 +708,11 @@ def _exec_session(
 ) -> list[MutationStageResult]:
     """Execute this session's pending mutants, one at a time.
 
-    A shard runs its mutants sequentially in the real working tree. This is
-    deliberate: the witness suites are not pure functions of their inputs — the
-    stateful ones (cache/route/durability) resolve the project root, cwd, and
-    server state from the working tree, so they cannot be run in a copied tree
-    (they misbehave) and interfere with each other if run concurrently in the
-    shared tree. Either way concurrency corrupts the survival count. The
-    parallelism that makes the suite fast is therefore *sharding across separate
-    runners*, not per-runner concurrency; within a shard, execution stays
+    A shard runs its mutants sequentially against one mutated source tree and
+    one result session. The test-command gives each invocation a private
+    synthetic project/cache directory, but Cosmic Ray's mutation and session
+    state itself cannot be shared by concurrent executors. Parallelism therefore
+    happens across independent CI runners; within a shard, execution stays
     sequential so every outcome is deterministic and matches an unsharded run.
     """
     return [
@@ -771,6 +842,7 @@ def _write_target_summary(
         "status": "failed" if failures else "passed",
         "fail_over": target.fail_over,
         "rationale": target.rationale,
+        "max_pending_per_shard": target.max_pending_per_shard,
         "survival_rate": survival_rate,
         "failures": failures,
         "stages": [stage.__dict__ for stage in stages],
@@ -804,14 +876,14 @@ def _run_target(
     if not _init_session(target, runtime_config, session_file, target_dir, stages, failures):
         return _write_target_summary(target, target_dir, None, failures, stages)
 
-    all_ids = _all_job_ids(session_file)
-    shard_count = max(1, min(shards if shards is not None else 1, len(all_ids) or 1))
+    pending_ids = _pending_job_ids(session_file)
+    shard_count = max(1, min(shards if shards is not None else 1, len(pending_ids) or 1))
 
     if shard_count <= 1:
         stages.extend(_exec_session(session_file, runtime_config, work_dir=target_dir))
     else:
         shard_sessions: list[Path] = []
-        for shard_index, bucket in enumerate(_partition_job_ids(all_ids, shard_count)):
+        for shard_index, bucket in enumerate(_partition_job_ids(pending_ids, shard_count)):
             shard_dir = target_dir / f"shard-{shard_index}"
             shard_dir.mkdir(parents=True, exist_ok=True)
             shard_session = shard_dir / "session.sqlite"
@@ -873,7 +945,7 @@ def _phase_plan(
 
     shards_plan: list[dict[str, object]] = []
     targets_plan: list[dict[str, object]] = []
-    init_failures: list[str] = []
+    plan_failures: list[str] = []
 
     for target in selected_targets:
         safe = _safe_target_name(target.config_path)
@@ -889,12 +961,12 @@ def _phase_plan(
         if not _init_session(
             target, runtime_config, session_file, target_dir, stages, target_failures
         ):
-            init_failures.extend(f"{target.name}: {failure}" for failure in target_failures)
+            plan_failures.extend(f"{target.name}: {failure}" for failure in target_failures)
             continue
 
         num_pending = len(_pending_job_ids(session_file))
         num_items = len(_all_job_ids(session_file))
-        shard_count = _shard_count_for_pending(num_pending)
+        shard_count = _shard_count_for_pending(num_pending, target.max_pending_per_shard)
         meta = {
             "name": target.name,
             "config": _relative_path(target.config_path),
@@ -902,6 +974,7 @@ def _phase_plan(
             "shard_count": shard_count,
             "num_work_items": num_items,
             "num_pending": num_pending,
+            "max_pending_per_shard": target.max_pending_per_shard,
             "fail_over": target.fail_over,
             "rationale": target.rationale,
         }
@@ -918,6 +991,11 @@ def _phase_plan(
                 }
             )
 
+    try:
+        _validate_shard_matrix_capacity(len(shards_plan))
+    except ValueError as exc:
+        plan_failures.append(str(exc))
+
     plan = {
         "schema_version": 1,
         "generated_at": datetime.now(UTC).isoformat(),
@@ -932,9 +1010,9 @@ def _phase_plan(
     for entry in shards_plan:
         print(f"[mutation]   {entry['target']} shard {entry['shard_index']}/{entry['shard_count']}")
 
-    if init_failures:
-        for failure in init_failures:
-            print(f"[mutation] init failure: {failure}")
+    if plan_failures:
+        for failure in plan_failures:
+            print(f"[mutation] plan failure: {failure}")
         return 1
     return 0
 
@@ -957,7 +1035,7 @@ def _phase_exec_shard(args: argparse.Namespace) -> int:
     runtime_config = _materialize_config(target.config_path, work_dir)
 
     session = args.session.resolve()
-    buckets = _partition_job_ids(_all_job_ids(session), args.shard_count)
+    buckets = _partition_pending_job_ids(session, args.shard_count)
     if not 0 <= args.shard_index < len(buckets):
         raise SystemExit(
             f"shard-index {args.shard_index} out of range for {args.shard_count} shards"

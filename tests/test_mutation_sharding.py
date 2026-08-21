@@ -16,6 +16,7 @@ import re
 import sqlite3
 from pathlib import Path
 
+import pytest
 import yaml
 
 from scripts.run_mutation_suite import (
@@ -23,10 +24,12 @@ from scripts.run_mutation_suite import (
     _all_job_ids,
     _count_items_and_results,
     _partition_job_ids,
+    _partition_pending_job_ids,
     _pending_job_ids,
     _shard_count_for_pending,
     _slice_session,
     _union_results_into,
+    _validate_shard_matrix_capacity,
 )
 
 MODULE_PATH = str((REPO_ROOT / "src" / "haute" / "_json_shred.py").resolve())
@@ -115,12 +118,70 @@ def test_partition_is_deterministic() -> None:
     assert _partition_job_ids(job_ids, 3) == _partition_job_ids(job_ids, 3)
 
 
+def test_pending_partition_excludes_pragma_results_and_stays_balanced(tmp_path: Path) -> None:
+    session = tmp_path / "session.sqlite"
+    job_ids = [f"job-{i:03d}" for i in range(257)]
+    _create_session(session, job_ids)
+    pragma = set(job_ids[::5])
+    for job_id in pragma:
+        _set_result(session, job_id, None, "skipped")
+
+    buckets = _partition_pending_job_ids(session, 3)
+
+    flattened = [job_id for bucket in buckets for job_id in bucket]
+    assert set(flattened) == set(job_ids) - pragma
+    assert not set(flattened) & pragma
+    assert max(map(len, buckets)) - min(map(len, buckets)) <= 1
+
+
 def test_shard_count_scales_with_pending() -> None:
-    assert _shard_count_for_pending(0) == 1
-    assert _shard_count_for_pending(80) == 1
-    assert _shard_count_for_pending(81) == 2
-    assert _shard_count_for_pending(766) == 10  # ceil(766 / 80)
-    assert _shard_count_for_pending(10_000) == 12  # capped at MAX_SHARDS
+    assert _shard_count_for_pending(0, 80) == 1
+    assert _shard_count_for_pending(80, 80) == 1
+    assert _shard_count_for_pending(81, 80) == 2
+    assert _shard_count_for_pending(766, 80) == 10  # ceil(766 / 80)
+    assert _shard_count_for_pending(4_941, 48) == 103
+    assert _shard_count_for_pending(10_000, 80) == 125
+    assert _shard_count_for_pending(10**100, 3) == ((10**100 + 2) // 3)
+
+
+@pytest.mark.parametrize("pending", [-1, True, 1.5])
+def test_shard_count_rejects_invalid_pending(pending: object) -> None:
+    with pytest.raises(ValueError, match="pending must be a non-negative integer"):
+        _shard_count_for_pending(pending, 80)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("cap", [0, -1, True, 1.5])
+def test_shard_count_rejects_invalid_cap(cap: object) -> None:
+    with pytest.raises(ValueError, match="max_pending_per_shard must be a positive integer"):
+        _shard_count_for_pending(80, cap)  # type: ignore[arg-type]
+
+
+def test_current_target_plan_stays_within_matrix_capacity() -> None:
+    pending_and_caps = (
+        (435, 80),
+        (93, 80),
+        (87, 80),
+        (616, 80),
+        (68, 80),
+        (4_941, 48),
+        (413, 80),
+        (1_576, 80),
+    )
+
+    shard_count = sum(
+        _shard_count_for_pending(pending, max_pending_per_shard)
+        for pending, max_pending_per_shard in pending_and_caps
+    )
+
+    assert shard_count == 148
+    _validate_shard_matrix_capacity(shard_count)
+
+
+def test_shard_matrix_capacity_fails_before_github_expansion() -> None:
+    _validate_shard_matrix_capacity(256)
+
+    with pytest.raises(ValueError, match="257.*256"):
+        _validate_shard_matrix_capacity(257)
 
 
 # --- slice ----------------------------------------------------------------
@@ -154,6 +215,7 @@ def test_mutation_gate_runs_and_fails_when_plan_fails() -> None:
         (REPO_ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8")
     )
     gate = workflow["jobs"]["mutation"]
+    assert workflow["jobs"]["shard"]["timeout-minutes"] == 40
 
     assert set(gate["needs"]) == {"plan", "shard"}
     condition = re.sub(r"\s+", "", gate["if"])
@@ -202,7 +264,7 @@ def test_sharded_execution_reproduces_unsharded_results(tmp_path: Path) -> None:
     # then union every shard's results back onto a fresh copy of base.
     shard_count = 5
     shard_sessions: list[Path] = []
-    for shard_index, bucket in enumerate(_partition_job_ids(_all_job_ids(base), shard_count)):
+    for shard_index, bucket in enumerate(_partition_pending_job_ids(base, shard_count)):
         shard = tmp_path / f"shard-{shard_index}.sqlite"
         _slice_session(base, shard, bucket)
         for job_id in _pending_job_ids(shard):

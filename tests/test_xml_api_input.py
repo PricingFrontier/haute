@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from haute._api_input_schema import ApiInputSchemaError, is_json_api_input_path
@@ -41,6 +43,82 @@ def test_xml_routes_through_structured_api_input_codec(tmp_path) -> None:
         {"id": "1", "premium": "12.50"},
         {"id": "2", "premium": "18.75"},
     ]
+
+
+def test_xml_repeated_records_stream_without_path_read_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_path = tmp_path / "quotes.xml"
+    data_path.write_text(
+        "<quotes><quote><id>1</id></quote><quote><id>2</id></quote></quotes>",
+        encoding="utf-8",
+    )
+    original = Path.read_bytes
+
+    def _no_source_read_bytes(path: Path) -> bytes:
+        if path == data_path:
+            raise AssertionError("XML records must not materialise through Path.read_bytes")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", _no_source_read_bytes)
+
+    assert list(_iter_xml_records(data_path)) == [{"id": "1"}, {"id": "2"}]
+
+
+def test_repeated_xml_document_can_exceed_limit_when_each_record_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_path = tmp_path / "quotes.xml"
+    data_path.write_text(
+        "<quotes>" + "".join(f"<quote><id>{i}</id></quote>" for i in range(20)) + "</quotes>",
+        encoding="utf-8",
+    )
+    assert data_path.stat().st_size > 96
+    monkeypatch.setenv("HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES", "96")
+
+    records = list(_iter_xml_records(data_path))
+
+    assert records == [{"id": str(i)} for i in range(20)]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "<quote><value>" + "x" * 128 + "</value></quote>",
+        "<quotes><quote><value>" + "x" * 128 + "</value></quote></quotes>",
+    ],
+)
+def test_xml_logical_record_fails_at_hard_record_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+) -> None:
+    data_path = tmp_path / "oversized.xml"
+    data_path.write_text(source, encoding="utf-8")
+    monkeypatch.setenv("HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES", "64")
+
+    with pytest.raises(
+        ApiInputSchemaError,
+        match="exceeds HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES=64",
+    ):
+        list(_iter_xml_records(data_path))
+
+
+def test_repeated_xml_child_cannot_exceed_encoded_record_limit_via_whitespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = "<quote><id>1</id>" + (" " * 40) + "</quote>"
+    assert len(record.encode("utf-8")) == 65
+    data_path = tmp_path / "oversized-whitespace.xml"
+    data_path.write_text(f"<quotes>{record}</quotes>", encoding="utf-8")
+    monkeypatch.setenv("HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES", "64")
+
+    with pytest.raises(
+        ApiInputSchemaError,
+        match="exceeds HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES=64",
+    ):
+        list(_iter_xml_records(data_path))
 
 
 @pytest.mark.parametrize(

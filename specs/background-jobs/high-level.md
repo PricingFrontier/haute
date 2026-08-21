@@ -128,9 +128,11 @@ Out of scope (owned elsewhere):
   names the expected owner. Symlinks, Windows reparse points, unmarked/malformed
   children, wrong owners, and fresh children are preserved. Server readiness does not
   wait for the tracked background reap.
-- **Process-memory enforcement is explicit.** `best_effort` (the default) uses a
-  hard address-space cap where supported plus admitted/RSS checkpoints;
-  `required` fails before launch when the requested hard cap is unavailable.
+- **Process-memory enforcement is explicit and fail-closed.** `required` is the
+  default and installs the platform's native hard worker cap before user work;
+  `best_effort` is an explicit compatibility override using any available native
+  cap plus admitted/RSS checkpoints. Required mode fails before work when the
+  requested hard cap is unavailable.
   Generated scoring selects `strict_server` admission explicitly but never represents
   application RSS sampling as a hosting-platform/container hard limit.
 - **Timeout accounting starts with job creation.** Training writes monotonic start
@@ -141,14 +143,16 @@ Out of scope (owned elsewhere):
   `HAUTE_ARTIFACT_STALE_SECONDS` is a non-negative integer (default 86,400).
   Startup validates it synchronously, schedules one tracked lifespan reaper without
   delaying readiness, and observes the task at shutdown.
-- **Bounded HTTP response latency, unbounded work.** A blocking call started on a
+- **Bounded HTTP response latency for explicitly thread-backed work.** A blocking call started on a
   worker thread can be capped so the HTTP response returns (504) within a timeout,
   but the underlying work is *not* aborted — it keeps running. On completion the task is
   drained: a late successful return value is discarded, while an ordinary late exception is
   logged. If the HTTP request itself is
   cancelled (e.g. client disconnect), this component still waits for started thread
   work to actually finish before letting the cancellation propagate, since Python
-  cannot forcibly terminate a running thread.
+  cannot forcibly terminate a running thread. Heavy execution routes use killable process
+  isolation in production instead; this thread contract is retained only for bounded I/O helpers
+  and explicit development compatibility mode.
 
 ## Design rationale
 
@@ -180,11 +184,13 @@ Out of scope (owned elsewhere):
   lets a UI keep polling a finished job's summary long after the expensive payload
   has been released, bounding peak memory without shortening the useful life of job
   metadata.
-- **Cooperative, not preemptive, cancellation.** Because Python cannot forcibly stop a
+- **Cooperative cancellation for thread-backed work.** Because Python cannot forcibly stop a
   running thread, cancellation here is always a signal (an `Event` plus a shared
   `ExecutionCancellationToken`) that a worker must poll at safe checkpoints. This
   pushes responsibility for *where* it's safe to stop onto the worker code, which is
-  a deliberate trade-off documented at the call sites that consume this component.
+  a deliberate trade-off documented at the call sites that consume this component. Isolated
+  heavy workers additionally support preemptive parent termination and join on timeout,
+  supersession, and cancellation.
 - **Response-timeout without abandoning the task.** Returning a 504 does not cancel the
   in-flight thread. The task remains observable through `BlockingWorkTimeoutError`'s
   `background_task` (used by supersession to retain real worker occupancy), and a done
@@ -210,7 +216,8 @@ Consumers (own their route-specific job semantics on top of this component):
   store/lifecycle/registry and a `SingleFlightCoordinator` per source-identity digest;
   joins an active same-identity build and repairs stale ownership before starting.
 - [pipeline, json-cache, and output-assemble routes](../server-api/high-level.md)
-  — use only the response-timeout helper (`_timeouts.py`), not the job store.
+  — use admitted killable workers for heavy execution; bounded I/O-only helpers may still use
+  `_timeouts.py`. Explore uses the job store with a parent supervisor and isolated child.
 
 Depended on:
 

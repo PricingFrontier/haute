@@ -16,7 +16,7 @@
 | `frontend/src/api/types.ts`, `frontend/src/types/trainGuards.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned API types and dynamically loaded strict JSON response parsing consumed by modelling progress/results. |
 | `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useUIStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned result/job state and per-node modelling-pane memory consumed by the modelling workflow. |
 | `frontend/src/utils/configField.ts`, `frontend/src/utils/trainingObjective.ts`, `frontend/src/utils/executionDiagnostics.ts` | Typed config reads/parsing, training-configuration issue derivation with click-time presentation, and structured execution-error/metric display helpers. |
-| `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | CatBoost target/task/loss/metric controls, the common feature/monotonicity browser, and the canonical evaluation editor with exact-plan preview. |
+| `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | CatBoost target/loss/metric controls with loss-derived task compatibility, the common feature/monotonicity browser, and the canonical evaluation editor with exact-plan preview. |
 | `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing, optional bounded CatBoost tuning/search-space editing, and pure parameter/feature transitions. |
 | `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMFactorConfig.tsx`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/dispersion, terms/factors and regularisation controls. |
 | `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx` | Train action/result summary, progress and MLflow export. |
@@ -58,13 +58,22 @@
    continuously derives every applicable configuration issue, including the selected CatBoost
    strategy's JSON-draft issue, and passes the current messages to the Train pane. An idle
    Train/Re-train press with a non-empty list suppresses the request and reveals those messages
-   only in the banner beneath the main Train button. CatBoost hyperparameters use `config.params`
-   and `config.variance_power`; GLM controls write their algorithm fields directly on `config`,
+   only in the banner beneath the main Train button. CatBoost's Target pane has no independent task
+   selector. It always presents every supported loss; selecting one atomically stores the
+   loss-derived `config.task` and objective-matched default metrics. Every metric remains visible,
+   while metrics outside that loss's regression or classification family are disabled and cannot
+   mutate the configuration. Tweedie selection also writes variance power `1.5` when the field is
+   absent, then shows the slider immediately; a previously stored power is preserved and there is
+   no intermediate warning-button gate. CatBoost hyperparameters use `config.params` and
+   `config.variance_power`; GLM controls write their algorithm fields directly on `config`,
    including `config.var_power`. `CommonFeatureConfig` uses the shared Polars numeric-dtype
-   classifier and final algorithm selection, so only selected numeric features can write
-   `monotone_constraints[name] = -1|1`; choosing zero removes the key. New algorithms receive a
-   canonical random/single-validation evaluation. Later strategy changes replace incompatible
-   keys atomically instead of retaining stale group/date/fraction fields.
+   classifier and final algorithm selection, so only selected numeric feature cards enable their
+   inline downward/dash/upward selector and can write
+   `monotone_constraints[name] = -1|1`; choosing the dash removes the key. Exclusion changes only
+   `exclude`: a stored direction remains selected in the disabled control and becomes active again
+   after re-inclusion. New algorithms receive a canonical random/single-validation evaluation.
+   Later strategy changes replace incompatible keys atomically instead of retaining stale
+   group/date/fraction fields.
 2. `useStaleConfigEstimate` receives the RAM request endpoint with graph/source/structural version;
    it owns abort/loading/error and associates an estimate with the current config. Every cached
    solve/train result carries the complete canonical identity
@@ -192,16 +201,20 @@ The behavioural contract is defined in
   The gateway handles only an unset algorithm; unsupported values render an explicit diagnostic,
   and supported nodes expose no algorithm mutation action.
 - `frontend/src/panels/modelling/featureSelection.ts` owns role exclusion, final algorithm
-  selection and atomic dependency cleanup. The configured target, weight, offset, fold,
+  selection and explicit-factor dependency cleanup. The configured target, weight, offset, fold,
   identifiers, and active evaluation group/date key are never offered as features. Cleanup returns
   only affected `terms`, `interactions`, and `monotone_constraints` fields for the caller's one
   config update.
 - `TargetAndTaskConfig.tsx` and `GLMTargetConfig.tsx` show read-only algorithm context. The common
-  `CommonFeatureConfig.tsx` browser supplies case-insensitive filtering, dtype labels, stale
-  exclusion repair, include/exclude actions, and final-selection-aware monotonicity. GLM composes
-  `GLMFactorConfig.tsx` beneath it; exclusion, explicit-term removal, and `all_factors` narrowing
-  use the same confirmed dependency transition. `GLMRegularizationConfig.tsx` is the GLM Params
-  body.
+  `CommonFeatureConfig.tsx` browser supplies case-insensitive search, dtype labels, stale
+  exclusion repair, compact single-row per-feature cards with the name/dtype, a
+  Data-Input-Provider-style green/red current-state include/exclude button, and the adjacent
+  final-selection-aware red-down/yellow-neutral/green-up monotonicity selector. Its accessible
+  group label replaces a repeated visible monotonicity label. Matching bulk actions remain
+  search-independent. Feature exclusion writes only `exclude`, without confirmation, so dormant
+  monotonic and GLM settings survive re-inclusion. GLM composes `GLMFactorConfig.tsx` beneath it;
+  explicit-term removal and `all_factors` narrowing use the confirmed dependency transition.
+  `GLMRegularizationConfig.tsx` is the GLM Params body.
 - `HyperparametersConfig.tsx` owns the algorithm-neutral JSON-object editor, while
   `hyperparameters.ts` owns its formatting, object parsing, and reserved-key merge transitions.
   The editor receives display defaults and reserved keys from its caller, accepts arbitrary
@@ -265,9 +278,11 @@ The behavioural contract is defined in
 Verification is deliberately assigned to the owning seams:
 
 - `frontend/src/panels/__tests__/ModellingConfig.test.tsx` and suites under
-  `frontend/src/panels/modelling/__tests__/` cover pane content, both algorithms' common feature
-  browser, role/final-selection filtering, unset-only immutable algorithm selection, confirmed
-  dependent cleanup, arbitrary params JSON draft/object validation, click-time aggregate
+  `frontend/src/panels/modelling/__tests__/` cover pane content, CatBoost's unified loss picker and
+  loss-derived metric compatibility, both algorithms' common feature browser,
+  role/final-selection filtering, reversible confirmation-free exclusion with dormant
+  settings, unset-only immutable algorithm selection, confirmed explicit-factor dependency
+  cleanup, arbitrary params JSON draft/object validation, click-time aggregate
   training-validation presentation, canonical evaluation transitions/preview, tuning
   enablement/search-space drafts, evaluation/result/progress fit counts, result labels, and live
   progress presentation.

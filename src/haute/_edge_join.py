@@ -7,6 +7,8 @@ from typing import Any
 
 import polars as pl
 
+from haute._cardinality import normalise_join_validation
+from haute._polars_utils import execution_collect
 from haute._types import EDGE_JOIN_CONFIG_KEYS
 from haute.errors import ConfigError
 
@@ -199,8 +201,18 @@ def build_edge_join_kwargs(config: dict[str, Any]) -> dict[str, Any]:
         raise ConfigError("edgeJoin suffix must be a string.", suffix=suffix)
     kwargs["suffix"] = suffix
 
+    raw_validate = config.get("validate")
+    if raw_validate is not None and raw_validate != "":
+        try:
+            kwargs["validate"] = normalise_join_validation(raw_validate)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                "edgeJoin validate must be one of the supported Polars uniqueness contracts.",
+                validate=raw_validate,
+                supported=["1:1", "1:m", "m:1", "m:m"],
+            ) from exc
+
     for config_key, polars_key in (
-        ("validate", "validate"),
         ("coalesce", "coalesce"),
         ("maintainOrder", "maintain_order"),
     ):
@@ -320,7 +332,7 @@ def execute_edge_join(
         join_lf = join.lazy()
     result = base_lf.join(join_lf, **build_edge_join_kwargs(config))
     if collect_eager and not base_is_lazy and not join_is_lazy:
-        return result.collect()
+        return execution_collect(result)
     return result
 
 

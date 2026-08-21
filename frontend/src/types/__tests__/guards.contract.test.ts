@@ -276,6 +276,17 @@ function executionMetricsFixture() {
         pressure_ratio: 0.75,
       },
     ],
+    cache_proof: {
+      hits: 1,
+      misses: 2,
+      direct_fallbacks: 1,
+      miss_reason_counts: {
+        metadata_source_mismatch: 1,
+        artifact_integrity_schema_failure: 0,
+        unreadable_artifact: 0,
+        proof_unavailable: 1,
+      },
+    },
   }
 }
 
@@ -315,6 +326,15 @@ describe("parseExecutionStrategyDiagnostic", () => {
     const diagnostic = parseExecutionStrategyDiagnostic(executionStrategyFixture({ unknown_additive_field: true, reasons: { state: "available", total_count: 2, items: [{ reason_code: "same" }, { reason_code: "same" }] } }))
     expect(diagnostic?.reasons.items).toHaveLength(2)
     expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({ schema_version: 2 }))).toBeNull()
+  })
+
+  it.each([
+    { estimated_peak_bytes: 10, raw_estimated_peak_bytes: 10 },
+    { estimated_peak_bytes: 10, raw_estimated_peak_bytes: 10, estimate_calibration_factor_basis_points: 9_999, estimate_admission_basis: "provided" },
+    { estimated_peak_bytes: 81, raw_estimated_peak_bytes: 10, estimate_calibration_factor_basis_points: 80_001, estimate_admission_basis: "provided" },
+    { estimated_peak_bytes: 11, raw_estimated_peak_bytes: 10, estimate_calibration_factor_basis_points: 10_000, estimate_admission_basis: "provided" },
+  ])("rejects incomplete, reducing, over-cap, or inexact calibration evidence", (calibration) => {
+    expect(() => parseExecutionStrategyDiagnostic(executionStrategyFixture(calibration))).toThrow(/calibrat/i)
   })
 })
 
@@ -519,6 +539,39 @@ describe("API response guards", () => {
     expect(parsed.execution_metrics?.column_widths.items.map((item) => item.node_id)).toEqual(["filter", "scan"])
     expect(parsed.execution_metrics?.bytes_written).toBeNull()
     expect(parsed.execution_metrics?.checkpoint_count).toBe(2)
+  })
+
+  it.each([
+    { estimated_bytes: 10, raw_estimated_bytes: 10 },
+    { estimated_bytes: 10, raw_estimated_bytes: 10, estimate_calibration_factor_basis_points: 9_999, estimate_admission_basis: "provided" },
+    { estimated_bytes: 81, raw_estimated_bytes: 10, estimate_calibration_factor_basis_points: 80_001, estimate_admission_basis: "provided" },
+    { estimated_bytes: 11, raw_estimated_bytes: 10, estimate_calibration_factor_basis_points: 10_000, estimate_admission_basis: "provided" },
+  ])("rejects invalid calibrated execution metrics", (calibration) => {
+    expect(() => parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: { ...executionMetricsFixture(), ...calibration },
+    })).toThrow(/calibrat/i)
+  })
+
+  it("requires the closed cache-proof evidence on execution metrics", () => {
+    const withoutCacheProof = { ...executionMetricsFixture() } as Record<string, unknown>
+    delete withoutCacheProof.cache_proof
+    expect(() => parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: withoutCacheProof,
+    })).toThrow(/cache_proof/i)
+    expect(() => parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        cache_proof: {
+          hits: 1,
+          misses: 3,
+          direct_fallbacks: 0,
+          miss_reason_counts: { metadata_source_mismatch: 1, artifact_integrity_schema_failure: 0, unreadable_artifact: 0, proof_unavailable: 1 },
+        },
+      },
+    })).toThrow(/closed reason-count total/i)
   })
 
   it("rejects over-cap or non-deterministically ordered P12 wrappers", () => {

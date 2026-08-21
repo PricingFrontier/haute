@@ -131,7 +131,12 @@ class DeployScorePlan:
     retained_lazy_frames: list[pl.LazyFrame] = field(default_factory=list, repr=False)
     _cleaned_up: bool = False
 
-    def cleanup(self, *, preserve_primary_error: bool) -> None:
+    def cleanup(
+        self,
+        *,
+        preserve_primary_error: bool,
+        release_admission: bool = True,
+    ) -> None:
         if self._cleaned_up:
             return
         self._cleaned_up = True
@@ -142,9 +147,10 @@ class DeployScorePlan:
             )
         finally:
             self.retained_lazy_frames.clear()
-            self.execution_context.release_admission(
-                preserve_primary_error=preserve_primary_error,
-            )
+            if release_admission:
+                self.execution_context.release_admission(
+                    preserve_primary_error=preserve_primary_error,
+                )
 
 
 def deploy_execution_profile(row_count: int) -> ExecutionProfile:
@@ -1082,8 +1088,17 @@ def score_graph(
     artifact_paths: dict[str, str] | None = None,
     output_fields: list[str] | None = None,
     execution_context: ExecutionContext | None = None,
+    retain_admission_on_success: bool = False,
 ) -> pl.DataFrame:
-    """Execute a pruned pipeline graph with injected input data and collect output."""
+    """Execute a pruned graph and collect output, optionally retaining admission.
+
+    ``retain_admission_on_success`` is for callers that must perform one final
+    materialising conversion under the same reservation. Plan resources are still
+    cleaned immediately; the caller must release ``execution_context`` in ``finally``.
+    Failures always release here.
+    """
+    if retain_admission_on_success and execution_context is None:
+        raise ValueError("retain_admission_on_success requires a caller-owned execution_context")
     plan = score_graph_lazy(
         graph=graph,
         input_df=input_df,
@@ -1094,6 +1109,7 @@ def score_graph(
         execution_context=execution_context,
     )
     preserve_primary_error = False
+    succeeded = False
     try:
         plan.execution_context.checkpoint(
             label="before_deploy_collect",
@@ -1108,9 +1124,13 @@ def score_graph(
             label="after_deploy_collect",
             node_id=output_node_id,
         )
+        succeeded = True
         return result
     except BaseException:
         preserve_primary_error = True
         raise
     finally:
-        plan.cleanup(preserve_primary_error=preserve_primary_error)
+        plan.cleanup(
+            preserve_primary_error=preserve_primary_error,
+            release_admission=not (succeeded and retain_admission_on_success),
+        )

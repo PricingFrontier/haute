@@ -43,9 +43,11 @@ Out of scope:
 
 - Pull requests and pushes to `main` run early lint/format and core-test canary
   checks, backend static/type/package checks, sharded coverage with a global
-  90% floor plus configured critical-file floors, supported Python compatibility
-  tests, package/install smoke tests, optional-dependency checks, frontend
-  checks, browser E2E, and the named auxiliary lanes in the CI workflow.
+  90% floor plus configured critical-file floors, and 100% statement/branch
+  coverage of changed executable code in the configured execution-critical
+  surface. They also run supported Python compatibility tests, package/install
+  smoke tests, optional-dependency checks, frontend checks, browser E2E, and the
+  named auxiliary lanes in the CI workflow.
 - Python 3.14 is a non-blocking forward probe. A failure in that lane reports
   compatibility information but does not become a required green result.
 - Pre-commit runs Ruff fix/format and repository-local mypy/frontend
@@ -78,6 +80,14 @@ Out of scope:
   Polars join-plus-training scenario exercises every supported execution profile;
   1m/10m variants remain opt-in and no hardware-specific throughput threshold is
   a normal CI gate.
+- Execution-engine performance certification adds same-machine, isolated-process
+  comparisons rather than portable raw-throughput claims. The wide-Parquet case
+  proves semantic parity and an exact physical-width reduction, then requires the
+  projected collection's incremental resident memory to remain below a versioned
+  fraction of the full-width control. API-input and uncached JSONL cases additionally
+  record port/column width, checkpoint distance, output size, and lifecycle evidence.
+  A certification run is valid only when every named scenario executes and its
+  structured evidence is retained in the normal performance report.
 - Internal improvement work is self-contained in one flat component catalogue:
   `specs/roadmap/README.md` plus one `specs/roadmap/<component>.md` file per
   component. Each package records its problem, implementation direction,
@@ -96,6 +106,12 @@ Out of scope:
 - Critical coverage floors are per-file ratchets alongside the global floor,
   prioritising safety-sensitive or high-impact code instead of rewarding only
   aggregate coverage.
+- Changed-code coverage complements those percentage ratchets: it intersects the
+  version-control diff with Coverage.py's executable statements and branch arcs,
+  so a large legacy module does not hide one newly untested branch behind a high
+  aggregate percentage. Comments, deleted lines, and non-executable formatting do
+  not manufacture a target; a changed executable line, missing coverage artifact,
+  malformed diff, or unavailable base revision fails closed.
 - Locked dependencies prove the committed environment; the scheduled unlocked
   resolve lane separately exposes breakage from a later dependency release
   within published version caps. These answer different questions.
@@ -157,9 +173,10 @@ it does not substitute a scripted provider result for live qualification.
   missing static reason, a non-strict unbudgeted xfail, a stale aggregate
   summary, or malformed mutation-target metadata. Zero current backend flaky
   markers is an enforced budget, not an undocumented observation.
-- Coverage merge/gate fails when shard data cannot satisfy the 90% global floor
-  or `scripts/check_critical_coverage.py` finds a configured file below its
-  statement/branch thresholds.
+- Coverage merge/gate fails when shard data cannot satisfy the 90% global floor,
+  `scripts/check_critical_coverage.py` finds a configured file below its
+  statement/branch thresholds, or the changed-code gate finds an uncovered changed
+  statement/branch arc in its configured execution-critical surface.
 - E2E failures retain Playwright trace/screenshots/video according to its
   configuration. Benchmark/performance failures retain their workflow artifacts
   when the job reaches the upload step.

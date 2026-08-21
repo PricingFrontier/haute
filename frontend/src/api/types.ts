@@ -138,6 +138,9 @@ export interface ExecutionStrategyDiagnostic {
   blocking_operator?: string | null
   remediation?: string | null
   estimated_peak_bytes?: number | null
+  raw_estimated_peak_bytes?: number | null
+  estimate_calibration_factor_basis_points?: number | null
+  estimate_admission_basis?: "provided" | "projected_columns" | "complete_width_fallback" | null
   headroom_bytes?: number | null
   assumptions?: string[]
 }
@@ -160,6 +163,18 @@ export interface ExecutionColumnWidths {
   state: "available" | "truncated"
   total_count: number
   items: ExecutionColumnWidth[]
+}
+
+export interface ExecutionCacheProof {
+  hits: number
+  misses: number
+  direct_fallbacks: number
+  miss_reason_counts: {
+    metadata_source_mismatch: number
+    artifact_integrity_schema_failure: number
+    unreadable_artifact: number
+    proof_unavailable: number
+  }
 }
 
 export interface ExecutionMetrics {
@@ -193,10 +208,17 @@ export interface ExecutionMetrics {
   streamability: "streaming" | "materialising" | null
   streamability_evidence: ExecutionStreamabilityEvidence
   column_widths: ExecutionColumnWidths
+  requested_column_width_total: number | null
+  physically_scanned_column_width_total: number | null
+  cache_proof: ExecutionCacheProof
   bytes_read: number | null
   bytes_written: number | null
   estimated_bytes: number | null
+  raw_estimated_bytes: number | null
+  estimate_calibration_factor_basis_points: number | null
+  estimate_admission_basis: "provided" | "projected_columns" | "complete_width_fallback" | null
   observed_peak_rss_bytes: number | null
+  observed_peak_rss_growth_bytes: number | null
   checkpoint_count: number
   chunk_count: number
   admission: ExecutionAdmission | null

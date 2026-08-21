@@ -2,9 +2,10 @@
 
 ## Purpose
 
-The `haute` CLI is the single command-line entry point for the whole project lifecycle: scaffolding
-a new pricing project, iterating on a pipeline locally, training models, validating and deploying a
-pipeline as a scoring API, and checking on deployed models after release. It exists so that a data
+The Haute CLI is the single command group for the whole project lifecycle, exposed equivalently as
+the installed `haute` console command and as `python -m haute`: scaffolding a new pricing project,
+iterating on a pipeline locally, training models, validating and deploying a pipeline as a scoring
+API, and checking on deployed models after release. It exists so that a data
 scientist or actuary can drive the entire "author pipeline → validate → deploy → monitor" loop
 without leaving the terminal, and so that CI/CD workflows (GitHub Actions, GitLab CI, Azure DevOps)
 have a stable, scriptable surface to call into.
@@ -16,9 +17,10 @@ Python code without going through Click.
 
 ## Scope
 
-In scope: the nine `haute` subcommands (`init`, `run`, `lint`, `train`, `serve`, `deploy`, `smoke`,
-`status`, `impact`), their argument parsing, user-facing output/error formatting, and the small
-amount of orchestration logic that glues each command to the rest of the codebase.
+In scope: the equivalent `haute ...` and `python -m haute ...` invocation forms; the nine
+subcommands (`init`, `run`, `lint`, `train`, `serve`, `deploy`, `smoke`, `status`, `impact`); their
+argument parsing, user-facing output/error formatting; and the small amount of orchestration logic
+that glues each command to the rest of the codebase.
 
 Out of scope, owned elsewhere:
 - Pipeline parsing and graph execution — [execution-engine](../execution-engine/high-level.md),
@@ -31,6 +33,11 @@ Out of scope, owned elsewhere:
 
 ## Behaviour
 
+- `haute ...` and `python -m haute ...` invoke the same Click group. The module form is a
+  first-class compatibility path for managed environments that permit the selected Python
+  interpreter but block generated console-launcher executables. It maintains no separate command
+  registry or parser: Click receives the arguments and preserves the command and exit-code
+  contracts, while identifying the chosen invocation form in usage text.
 - `haute init [--target ...] [--ci ...] [--force]` scaffolds a new project in the current directory:
   `haute.toml`, a blank `rating/` pipeline package, `.env.example`, test-quote fixtures, CI/CD
   workflow files for the chosen provider, a git pre-commit hook, and `.gitignore` guard entries.

@@ -176,7 +176,9 @@ _EXPECTED_DEBT_IDS = {
     "df789ca110c56d8d",
     "e800d20c2fdb0d00",
     "f6ab12590998eb2c",
-    "394d6f9aa801fa62",
+    # This test is now specifically address-space-cap gated because RSS watchdog
+    # support exists cross-platform.
+    "bd811d026e977f2c",
     # 4a.4 — the Poisson/Tweedie CatBoost SHAP space-reconciliation tests
     # train a real CatBoost model; catboost is an optional extra, so the
     # shared trainer helper importorskips it (same convention as every other
@@ -280,6 +282,39 @@ _EXPECTED_DEBT_IDS = {
     # ::TestCommittedSnapshotMatchesPinnedPolars
     # ::test_no_interface_drift_against_installed_polars.
     "ba1f02fb9964cdf3",
+    # Verified JSON source/artifact proofs depend on a native filesystem
+    # revision token (POSIX ctime or Windows USN), and one identity test also
+    # needs hard-link support. Filesystems without those primitives must take
+    # the deliberately conservative full-hash/copy path, so these tests skip
+    # only the unavailable native fast-path assertion. Platform-independent
+    # mocked witnesses in the same modules exercise every fallback, race, and
+    # invalidation branch; Linux CI and capable Windows/NTFS hosts run the real
+    # primitive assertions. Output and Explore publication also use real hard
+    # links to prove the parent rejects aliased staging artifacts. See
+    # test_json_shred_mut_validity.py, test_json_shred_runtime_snapshots.py,
+    # test_data_io_nodes.py, and test_explore_routes.py.
+    "0a5df3350d69e1f5",
+    "0c7b2cb3effd87e0",
+    "0ce7f0f48d149323",
+    "0f0d9227e7f4a5ed",
+    "1cc729c443a4270f",
+    "20ec083bffcea5c5",
+    "2c28fda4eed70866",
+    "3f6505dcbcfac128",
+    "513ab2404561fc80",
+    "525220876e76a500",
+    "7108885c10fdca44",
+    "7e926940549a4f58",
+    "7f618766970d6aa2",
+    "8e42868e79ff264b",
+    "894e7f67b861b301",
+    "91878a6ff56e4c56",
+    "bd96cc6f51a39c67",
+    "bd9cf15e416714c0",
+    "be4b790157583701",
+    "c424c3f1d2cfe91a",
+    "cc655b332f19c3a3",
+    "fc936795d5ac2cdf",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {
@@ -994,8 +1029,8 @@ def _load_summary_mutation_targets() -> list[dict[str, object]]:
         payload = json.loads(_MUTATION_TARGETS_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid mutation target JSON: {exc}") from exc
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-        raise ValueError("Mutation targets must use schema_version 1")
+    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+        raise ValueError("Mutation targets must use schema_version 2")
     targets = payload.get("targets")
     if not isinstance(targets, list):
         raise ValueError("Mutation targets must define targets as a list")
@@ -1003,11 +1038,19 @@ def _load_summary_mutation_targets() -> list[dict[str, object]]:
     for raw in targets:
         if not isinstance(raw, dict):
             raise ValueError("Mutation target must be an object")
-        name, rate = raw.get("name"), raw.get("max_survival_rate")
+        name = raw.get("name")
+        rate = raw.get("max_survival_rate")
+        max_pending_per_shard = raw.get("max_pending_per_shard")
         if not isinstance(name, str) or not name:
             raise ValueError("Mutation target requires a non-empty name")
         if isinstance(rate, bool) or not isinstance(rate, int | float) or not 0 <= rate <= 100:
             raise ValueError(f"Mutation target {name} has invalid max_survival_rate")
+        if (
+            isinstance(max_pending_per_shard, bool)
+            or not isinstance(max_pending_per_shard, int)
+            or max_pending_per_shard <= 0
+        ):
+            raise ValueError(f"Mutation target {name} has invalid max_pending_per_shard")
         result.append({"name": name, "rate": float(rate)})
     return sorted(result, key=lambda target: str(target["name"]))
 

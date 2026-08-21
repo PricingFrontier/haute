@@ -24,11 +24,23 @@ from pydantic import BaseModel, Field
 from haute._env import float_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
+    IsolatedExecutionBudget,
     create_admitted_execution_context,
+    create_isolated_execution_context,
+    isolated_execution_budget,
 )
 from haute._execution_context import ExecutionProfile
+from haute._interactive_workers import (
+    InteractiveWorkerCrashedError,
+    InteractiveWorkerMemoryLimitError,
+    InteractiveWorkerRemoteError,
+    InteractiveWorkerTimeoutError,
+    resolve_interactive_execution_mode,
+    run_in_interactive_worker,
+)
 from haute._logging import get_logger
 from haute._output_assembler import OutputMappingSchemaError, validate_v2_output_mapping
+from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.errors import ConfigError, ContractMismatchError
 from haute.executor import execute_graph
 from haute.graph_utils import NodeType, flatten_graph
@@ -41,7 +53,13 @@ from haute.routes._timeouts import (
     BlockingWorkTimeoutError,
     run_blocking_with_response_timeout,
 )
-from haute.routes.pipeline import _memory_limit_http_exception, _validate_runtime_input_paths
+from haute.routes.pipeline import (
+    _interactive_affinity_key,
+    _memory_limit_http_exception,
+    _raise_interactive_remote_http_error,
+    _raise_interactive_worker_crash_http_error,
+    _validate_runtime_input_paths,
+)
 from haute.schemas import Graph
 
 logger = get_logger(component="server.output_assemble")
@@ -72,6 +90,39 @@ class OutputAssembleDryRunResponse(BaseModel):
     document: list[Any] = Field(default_factory=list)
     row_count: int = 0
     error: str | None = None
+
+
+def _execute_output_assemble_dry_run_worker(
+    graph: Graph,
+    node_id: str,
+    row_limit: int,
+    source: str,
+    budget: IsolatedExecutionBudget,
+) -> OutputAssembleDryRunResponse:
+    """Execute one OUTPUT dry-run with worker-local memory accounting."""
+    context = create_isolated_execution_context(budget)
+    try:
+        results = execute_graph(
+            graph,
+            target_node_id=node_id,
+            row_limit=row_limit,
+            source=source,
+            target_preview_only=True,
+            execution_context=context,
+        )
+        node_result = results.get(node_id)
+        if node_result is None or node_result.status != "ok":
+            detail = (node_result.error if node_result else None) or "Assembly failed"
+            return OutputAssembleDryRunResponse.model_validate({"status": "error", "error": detail})
+        return OutputAssembleDryRunResponse.model_validate(
+            {
+                "status": "ok",
+                "document": node_result.preview,
+                "row_count": node_result.row_count,
+            }
+        )
+    finally:
+        context.release_admission(preserve_primary_error=True)
 
 
 @router.post("/dry-run", response_model=OutputAssembleDryRunResponse)
@@ -116,6 +167,22 @@ async def output_assemble_dry_run(
             operation="output_assemble_dry_run",
             profile=ExecutionProfile.PREVIEW_EAGER,
         )
+        if resolve_interactive_execution_mode() == "process":
+            budget = isolated_execution_budget(context)
+            return await run_in_interactive_worker(
+                _execute_output_assemble_dry_run_worker,
+                graph,
+                body.node_id,
+                body.row_limit,
+                body.source,
+                budget,
+                affinity_key=_interactive_affinity_key(graph, body.source),
+                timeout_seconds=_dry_run_timeout(),
+                absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
+                memory_growth_limit_bytes=budget.memory_limit_bytes,
+                require_memory_limit=resolve_worker_memory_enforcement() == "required",
+            )
+
         admitted_context = context
 
         def _run() -> dict[str, Any]:
@@ -141,6 +208,14 @@ async def output_assemble_dry_run(
             )
             context = None
         raise HTTPException(status_code=504, detail="Output dry-run timed out") from exc
+    except InteractiveWorkerMemoryLimitError as exc:
+        raise HTTPException(status_code=507, detail=exc.to_payload()) from None
+    except InteractiveWorkerTimeoutError:
+        raise HTTPException(status_code=504, detail="Output dry-run timed out") from None
+    except InteractiveWorkerCrashedError as exc:
+        _raise_interactive_worker_crash_http_error(exc, operation="output_assemble_dry_run")
+    except InteractiveWorkerRemoteError as exc:
+        _raise_interactive_remote_http_error(exc, operation="output_assemble_dry_run")
     except PUBLIC_CONTRACT_ERROR_TYPES as exc:
         raise contract_error_http_exception(exc) from None
     except OutputMappingSchemaError as exc:

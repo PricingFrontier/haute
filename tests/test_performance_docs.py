@@ -65,13 +65,14 @@ def test_local_performance_docs_cover_python_perf_suite_contract() -> None:
     assert "Generated scale fixtures are never committed." in doc
 
 
-def test_local_performance_docs_describe_opt_in_polars_scale_workflow() -> None:
+def test_local_performance_docs_describe_scheduled_polars_scale_workflow() -> None:
     doc = _read_doc()
 
-    assert "CI runs the small Polars scale scenario by default." in doc
+    assert "ordinary pull-request suite excludes `pytest.mark.perf`" in doc
+    assert "one-million-row scale weekly" in doc
+    assert "ten-million-row stress scale monthly" in doc
     assert "--polars-scale 1m" in doc
     assert "--polars-scale 10m" in doc
-    assert "The 10m run is not part of default CI." in doc
     assert "Generated scale fixtures are never committed." in doc
     assert "semantic evidence and product metrics" in doc
     assert "independent runner RSS baseline" in doc
@@ -111,6 +112,45 @@ def test_performance_workflow_runs_heavy_frontend_perf_lanes_outside_pr_ci() -> 
     assert "npm run test:e2e:benchmark" in workflow
     assert "./node_modules/.bin/playwright install --with-deps chromium" in workflow
     assert "frontend-performance-${{ github.run_id }}" in workflow
+
+
+def test_performance_workflow_certifies_scales_and_execution_platforms() -> None:
+    workflow = "\n".join(_non_comment_run_lines(PERFORMANCE_WORKFLOW_PATH))
+
+    assert 'cron: "17 3 * * 1"' in workflow
+    assert 'cron: "43 2 1 * *"' in workflow
+    assert "options: [ci, 1m, 10m]" in workflow
+    assert '--polars-scale "$HAUTE_POLARS_PERF_SCALE"' in workflow
+    assert "actions/cache/restore@v4" in workflow
+    assert "actions/cache/save@v4" in workflow
+    assert "--baseline-report .perf-baseline/perf-report.json" in workflow
+    assert "perf-baseline-${{ runner.os }}-${{ env.HAUTE_POLARS_PERF_SCALE }}-" in workflow
+    assert "actions: read" in workflow
+    assert (
+        'gh run list --workflow performance.yml --branch "$GITHUB_REF_NAME" --status success'
+        in workflow
+    )
+    assert "--limit 100 --jq '.[].databaseId'" in workflow
+    assert "GH_TOKEN: ${{ github.token }}" in workflow
+    assert 'for prior_run_id in "${prior_run_ids[@]}"' in workflow
+    assert (
+        'gh run download "$prior_run_id" --name "python-performance-$HAUTE_POLARS_PERF_SCALE"'
+        in workflow
+    )
+    assert "name: python-performance-${{ env.HAUTE_POLARS_PERF_SCALE }}" in workflow
+    assert "os: [ubuntu-latest, windows-latest, macos-latest]" in workflow
+    for test_path in (
+        "tests/test_process_memory.py",
+        "tests/test_native_memory_limit.py",
+        "tests/test_worker_isolation.py",
+        "tests/test_interactive_worker_pool.py",
+        "tests/test_interactive_route_isolation.py",
+        "tests/test_json_direct_spill.py",
+        "tests/test_json_cache_cross_process.py",
+        "tests/test_json_runtime_storage.py",
+        "test_fresh_process_restart_reuses_cache_proof_and_safe_telemetry",
+    ):
+        assert test_path in workflow
 
 
 def test_preview_trace_perf_suite_uses_supersession_snapshot_contract() -> None:

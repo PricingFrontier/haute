@@ -9,19 +9,24 @@ from __future__ import annotations
 
 import ast
 import heapq
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, NamedTuple
+from typing import Any, Generic, NamedTuple, TypeVar
 
 from haute._cache import canonical_json
+from haute._column_lineage import ColumnLineageAnalysis, analyze_polars_lineage
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import (
     build_edge_join_kwargs,
     edge_join_key_columns_by_role,
     narrow_join_parent_demand,
     resolve_edge_join_role_indices,
+)
+from haute._estimate_calibration import (
+    CALIBRATION_BASE_BASIS_POINTS,
+    CALIBRATION_MAX_BASIS_POINTS,
 )
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, build_parents_of, edge_input_name
@@ -33,12 +38,14 @@ __all__ = [
     "AllExcept",
     "AllExceptColumns",
     "ProjectionDiagnostics",
+    "ProjectionEdgeKey",
     "ProjectionPlan",
     "ProjectionRuleCoverage",
     "ProjectionRequest",
     "ProjectionReason",
     "SourceScanProjection",
     "UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME",
+    "api_input_port_columns_by_node",
     "builder_required_output_columns_by_node",
     "explain",
     "model_score_required_output_columns",
@@ -51,6 +58,7 @@ __all__ = [
     "source_user_code_preserves_column_projection",
     "strict_projection_required",
     "validate_projection_rule_coverage",
+    "with_api_input_port_projection_boundaries",
 ]
 
 
@@ -186,9 +194,12 @@ class BoundedDiagnosticCollection:
         *,
         cap: int,
         sort_key: str,
+        retain_one_by: str | None = None,
     ) -> BoundedDiagnosticCollection:
         if not isinstance(cap, int) or isinstance(cap, bool) or cap < 0:
             raise ValueError("diagnostic collection cap must be a non-negative integer")
+        if retain_one_by is not None and (not isinstance(retain_one_by, str) or not retain_one_by):
+            raise ValueError("retain_one_by must be a non-empty field name")
         copied = [_bounded_item(item) for item in items]
         copied.sort(
             key=lambda item: (
@@ -197,7 +208,29 @@ class BoundedDiagnosticCollection:
             )
         )
         total_count = len(copied)
-        retained = tuple(copied[:cap])
+        if total_count <= cap or retain_one_by is None:
+            retained = tuple(copied[:cap])
+        else:
+            representative_indexes: dict[str, int] = {}
+            for index, item in enumerate(copied):
+                if retain_one_by not in item:
+                    raise ValueError(f"diagnostic item is missing grouping field {retain_one_by!r}")
+                representative_indexes.setdefault(
+                    canonical_json(item[retain_one_by]),
+                    index,
+                )
+            if len(representative_indexes) > cap:
+                raise ValueError(
+                    "diagnostic collection cap is smaller than the number of retained groups"
+                )
+            retained_indexes = set(representative_indexes.values())
+            remaining_slots = cap - len(retained_indexes)
+            retained_indexes.update(
+                [index for index in range(total_count) if index not in retained_indexes][
+                    :remaining_slots
+                ]
+            )
+            retained = tuple(copied[index] for index in sorted(retained_indexes))
         if total_count > len(retained):
             return cls(DiagnosticDetailState.TRUNCATED, total_count, retained)
         return cls(DiagnosticDetailState.AVAILABLE, total_count, retained)
@@ -228,6 +261,9 @@ class ExecutionStrategyDiagnostic:
     blocking_operator: str | None = None
     remediation: str | None = None
     estimated_peak_bytes: int | None = None
+    raw_estimated_peak_bytes: int | None = None
+    estimate_calibration_factor_basis_points: int | None = None
+    estimate_admission_basis: str | None = None
     headroom_bytes: int | None = None
     assumptions: tuple[str, ...] = ()
 
@@ -244,6 +280,51 @@ class ExecutionStrategyDiagnostic:
             raise ValueError("detail_state must be the worst bounded collection state")
         if len(self.remediation or "") > _DIAGNOSTIC_MESSAGE_LIMIT:
             raise ValueError("remediation exceeds the V1 512-character cap")
+        for name, value in (
+            ("estimated_peak_bytes", self.estimated_peak_bytes),
+            ("raw_estimated_peak_bytes", self.raw_estimated_peak_bytes),
+            (
+                "estimate_calibration_factor_basis_points",
+                self.estimate_calibration_factor_basis_points,
+            ),
+        ):
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative integer or None")
+        if self.estimate_admission_basis not in {
+            None,
+            "provided",
+            "projected_columns",
+            "complete_width_fallback",
+        }:
+            raise ValueError("estimate_admission_basis is not a supported V1 value")
+        calibration_values = (
+            self.raw_estimated_peak_bytes,
+            self.estimate_calibration_factor_basis_points,
+            self.estimate_admission_basis,
+        )
+        if any(value is not None for value in calibration_values):
+            if self.estimated_peak_bytes is None or any(
+                value is None for value in calibration_values
+            ):
+                raise ValueError(
+                    "calibrated estimate evidence requires estimated/raw bytes, "
+                    "factor, and admission basis together"
+                )
+            assert self.raw_estimated_peak_bytes is not None
+            assert self.estimate_calibration_factor_basis_points is not None
+            if self.estimate_calibration_factor_basis_points < CALIBRATION_BASE_BASIS_POINTS:
+                raise ValueError("estimate calibration factor cannot reduce an estimate")
+            if self.estimate_calibration_factor_basis_points > CALIBRATION_MAX_BASIS_POINTS:
+                raise ValueError("estimate calibration factor exceeds the supported cap")
+            expected = (
+                self.raw_estimated_peak_bytes * self.estimate_calibration_factor_basis_points
+                + CALIBRATION_BASE_BASIS_POINTS
+                - 1
+            ) // CALIBRATION_BASE_BASIS_POINTS
+            if self.estimated_peak_bytes != expected:
+                raise ValueError("calibrated estimate bytes do not match raw bytes and factor")
 
     @classmethod
     def create(
@@ -260,6 +341,9 @@ class ExecutionStrategyDiagnostic:
         blocking_operator: str | None = None,
         remediation: str | None = None,
         estimated_peak_bytes: int | None = None,
+        raw_estimated_peak_bytes: int | None = None,
+        estimate_calibration_factor_basis_points: int | None = None,
+        estimate_admission_basis: str | None = None,
         headroom_bytes: int | None = None,
         assumptions: Iterable[str] = (),
     ) -> ExecutionStrategyDiagnostic:
@@ -283,6 +367,9 @@ class ExecutionStrategyDiagnostic:
             blocking_operator=blocking_operator,
             remediation=(remediation[:_DIAGNOSTIC_MESSAGE_LIMIT] if remediation else None),
             estimated_peak_bytes=estimated_peak_bytes,
+            raw_estimated_peak_bytes=raw_estimated_peak_bytes,
+            estimate_calibration_factor_basis_points=(estimate_calibration_factor_basis_points),
+            estimate_admission_basis=estimate_admission_basis,
             headroom_bytes=headroom_bytes,
             assumptions=tuple(str(item) for item in assumptions),
         )
@@ -305,6 +392,11 @@ class ExecutionStrategyDiagnostic:
             "blocking_operator": self.blocking_operator,
             "remediation": self.remediation,
             "estimated_peak_bytes": self.estimated_peak_bytes,
+            "raw_estimated_peak_bytes": self.raw_estimated_peak_bytes,
+            "estimate_calibration_factor_basis_points": (
+                self.estimate_calibration_factor_basis_points
+            ),
+            "estimate_admission_basis": self.estimate_admission_basis,
             "headroom_bytes": self.headroom_bytes,
         }
         payload.update({key: value for key, value in optional.items() if value is not None})
@@ -341,6 +433,93 @@ class ProjectionReason:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectionEdgeKey:
+    """Complete immutable identity for one graph edge in a projection plan.
+
+    A source/target pair is insufficient: one multi-frame source may connect
+    several ports to the same target.  The persisted id and every visible or
+    retained port field participate so those demands cannot overwrite one
+    another.
+    """
+
+    edge_id: str
+    source: str
+    target: str
+    source_handle: str | None = None
+    target_handle: str | None = None
+    source_port: str | None = None
+    target_port: str | None = None
+
+    @classmethod
+    def from_edge(cls, edge: GraphEdge) -> ProjectionEdgeKey:
+        return cls(
+            edge_id=edge.id,
+            source=edge.source,
+            target=edge.target,
+            source_handle=edge.sourceHandle,
+            target_handle=edge.targetHandle,
+            source_port=edge.sourcePort,
+            target_port=edge.targetPort,
+        )
+
+    def sort_key(self) -> tuple[str, ...]:
+        return (
+            self.source,
+            self.target,
+            self.source_handle or "",
+            self.target_handle or "",
+            self.source_port or "",
+            self.target_port or "",
+            self.edge_id,
+        )
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "edge_id": self.edge_id,
+            "source": self.source,
+            "target": self.target,
+            "source_handle": self.source_handle,
+            "target_handle": self.target_handle,
+            "source_port": self.source_port,
+            "target_port": self.target_port,
+        }
+
+
+_EdgeValue = TypeVar("_EdgeValue")
+
+
+class _EdgeIdentityMapping(Mapping[ProjectionEdgeKey, _EdgeValue], Generic[_EdgeValue]):
+    """Immutable edge-key map addressed only by complete edge identities.
+
+    A ``(source, target)`` pair is lossy — one multi-frame source can connect
+    several ports to the same target — so every lookup and construction key
+    must be a complete :class:`ProjectionEdgeKey`.
+    """
+
+    def __init__(
+        self,
+        values: Mapping[Any, _EdgeValue] = MappingProxyType({}),
+    ) -> None:
+        normalised: dict[ProjectionEdgeKey, _EdgeValue] = {}
+        for raw_key, value in values.items():
+            if not isinstance(raw_key, ProjectionEdgeKey):
+                raise TypeError("projection edge mappings require complete edge keys")
+            normalised[raw_key] = value
+        self._values = MappingProxyType(normalised)
+
+    def __getitem__(self, key: ProjectionEdgeKey) -> _EdgeValue:
+        if isinstance(key, ProjectionEdgeKey):
+            return self._values[key]
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[ProjectionEdgeKey]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+
 @dataclass(frozen=True)
 class ProjectionDiagnostics:
     """Lightweight diagnostics attached to a shared projection plan."""
@@ -351,9 +530,13 @@ class ProjectionDiagnostics:
     node_reasons: Mapping[str, ProjectionReason] = field(
         default_factory=lambda: MappingProxyType({})
     )
-    edge_reasons: Mapping[tuple[str, str], ProjectionReason] = field(
-        default_factory=lambda: MappingProxyType({})
+    edge_reasons: Mapping[ProjectionEdgeKey, ProjectionReason] = field(
+        default_factory=_EdgeIdentityMapping
     )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.edge_reasons, _EdgeIdentityMapping):
+            object.__setattr__(self, "edge_reasons", _EdgeIdentityMapping(self.edge_reasons))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -363,14 +546,25 @@ class ProjectionDiagnostics:
             "node_reasons": {
                 node_id: reason.to_dict() for node_id, reason in sorted(self.node_reasons.items())
             },
-            "edge_reasons": {
-                f"{parent_id}->{child_id}": reason.to_dict()
-                for (parent_id, child_id), reason in sorted(
-                    self.edge_reasons.items(),
-                    key=lambda item: item[0],
-                )
-            },
+            "edge_reasons": self._edge_reasons_payload(),
         }
+
+    def _edge_reasons_payload(self) -> dict[str, dict[str, Any]]:
+        pair_counts: dict[tuple[str, str], int] = {}
+        for key in self.edge_reasons:
+            pair = (key.source, key.target)
+            pair_counts[pair] = pair_counts.get(pair, 0) + 1
+        payload: dict[str, dict[str, Any]] = {}
+        for key, reason in sorted(
+            self.edge_reasons.items(),
+            key=lambda item: item[0].sort_key(),
+        ):
+            if pair_counts[(key.source, key.target)] == 1:
+                label = f"{key.source}->{key.target}"
+            else:
+                label = canonical_json(key.to_dict())
+            payload[label] = reason.to_dict()
+        return payload
 
 
 _MAX_STRATEGY_SUMMARY_NODES = 100
@@ -381,10 +575,22 @@ class ProjectionPlan:
     """Column projection needs at nodes and parent-specific fan-in edges."""
 
     needed_by_node: Mapping[str, frozenset[str] | None]
-    edge_demands: Mapping[tuple[str, str], frozenset[str] | None]
+    edge_demands: Mapping[ProjectionEdgeKey, frozenset[str] | None]
     materialisation_boundaries: frozenset[str] = frozenset()
     opaque_boundaries: frozenset[str] = frozenset()
     diagnostics: ProjectionDiagnostics = field(default_factory=ProjectionDiagnostics)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.edge_demands, _EdgeIdentityMapping):
+            object.__setattr__(self, "edge_demands", _EdgeIdentityMapping(self.edge_demands))
+
+    def demand_for_edge(self, edge: GraphEdge) -> frozenset[str] | None:
+        """Return the demand for exactly *edge*, or ``None`` when absent/opaque."""
+        return self.edge_demands.get(ProjectionEdgeKey.from_edge(edge))
+
+    def reason_for_edge(self, edge: GraphEdge) -> ProjectionReason | None:
+        """Return the diagnostic reason for exactly *edge*."""
+        return self.diagnostics.edge_reasons.get(ProjectionEdgeKey.from_edge(edge))
 
     def _node_strategy(self, node_id: str) -> str:
         reason = self.diagnostics.node_reasons.get(
@@ -498,7 +704,7 @@ class ExecutionStrategyResult:
         return self.projection_plan.needed_by_node
 
     @property
-    def edge_demands(self) -> Mapping[tuple[str, str], frozenset[str] | None]:
+    def edge_demands(self) -> Mapping[ProjectionEdgeKey, frozenset[str] | None]:
         return self.projection_plan.edge_demands
 
     @property
@@ -528,6 +734,9 @@ def build_execution_strategy_result(
     boundary_operators: Mapping[str, str] | None = None,
     remediation: str | None = None,
     estimated_peak_bytes: int | None = None,
+    raw_estimated_peak_bytes: int | None = None,
+    estimate_calibration_factor_basis_points: int | None = None,
+    estimate_admission_basis: str | None = None,
     headroom_bytes: int | None = None,
     assumptions: Iterable[str] = (),
 ) -> ExecutionStrategyResult:
@@ -639,7 +848,9 @@ def build_execution_strategy_result(
                 "message": reason.message,
             }
         )
-    for (parent_id, child_id), reason in projection_plan.diagnostics.edge_reasons.items():
+    for edge_key, reason in projection_plan.diagnostics.edge_reasons.items():
+        parent_id = edge_key.source
+        child_id = edge_key.target
         node = node_map.get(child_id)
         reason_items.append(
             {
@@ -649,6 +860,9 @@ def build_execution_strategy_result(
                 "reason_code": reason.rule,
                 "message": reason.message,
                 "parent_node_id": parent_id,
+                "edge_id": edge_key.edge_id,
+                "source_handle": edge_key.source_handle,
+                "target_handle": edge_key.target_handle,
             }
         )
 
@@ -656,6 +870,7 @@ def build_execution_strategy_result(
         boundary_items,
         cap=_BOUNDARY_REASON_CAP,
         sort_key="boundaries",
+        retain_one_by="boundary_kind",
     )
     reasons = BoundedDiagnosticCollection.from_items(
         reason_items,
@@ -672,7 +887,28 @@ def build_execution_strategy_result(
         cap=_PROVENANCE_CAP,
         sort_key="provenance",
     )
-    first_boundary = boundaries.items[0] if boundaries.items else None
+    primary_boundary_kind = {
+        ExecutionStrategy.MATERIALISATION_BOUNDARY: (
+            ExecutionStrategy.MATERIALISATION_BOUNDARY.value
+        ),
+        ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: (
+            ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY.value
+        ),
+        ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: (
+            ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY.value
+        ),
+    }.get(strategy)
+    primary_candidates = [
+        item for item in boundary_items if item.get("boundary_kind") == primary_boundary_kind
+    ]
+    primary_boundary = min(
+        primary_candidates or boundary_items,
+        key=lambda item: (
+            _bounded_item_primary_key(item, "boundaries"),
+            canonical_json(item),
+        ),
+        default=None,
+    )
     diagnostic = ExecutionStrategyDiagnostic.create(
         strategy=strategy,
         profile=profile,
@@ -681,10 +917,13 @@ def build_execution_strategy_result(
         boundaries=boundaries,
         reasons=reasons,
         provenance=provenance,
-        blocking_node_id=(str(first_boundary["node_id"]) if first_boundary else None),
-        blocking_operator=(str(first_boundary["operator"]) if first_boundary else None),
+        blocking_node_id=(str(primary_boundary["node_id"]) if primary_boundary else None),
+        blocking_operator=(str(primary_boundary["operator"]) if primary_boundary else None),
         remediation=remediation,
         estimated_peak_bytes=estimated_peak_bytes,
+        raw_estimated_peak_bytes=raw_estimated_peak_bytes,
+        estimate_calibration_factor_basis_points=(estimate_calibration_factor_basis_points),
+        estimate_admission_basis=estimate_admission_basis,
         headroom_bytes=headroom_bytes,
         assumptions=assumptions,
     )
@@ -732,19 +971,20 @@ def _execution_strategy_provenance_items(
 
     for node_id in canonical_order:
         demand = projection_plan.needed_by_node.get(node_id)
-        reason = projection_plan.diagnostics.node_reasons.get(node_id)
         if demand is None:
             add("*", "conservative_boundary", node_id)
 
         seed = seeded.get(node_id)
-        seed_applied = reason is not None and reason.rule in {
-            "projection_seed",
-            "schema_all_except",
-        }
-        if seed_applied and seed is not None:
+        if seed is not None:
             seed_columns = seed.keep if isinstance(seed, AllExceptColumns) else seed
-            for column in sorted(seed_columns):
-                if demand is None or column in demand:
+            # Later rule evaluation may replace the node's headline reason
+            # (for example with a lineage result), so reason identity is not a
+            # reliable record of whether the seed contributed.  A concrete
+            # final demand containing the requested columns is the invariant;
+            # an opaque/blocked demand is deliberately not labelled applied.
+            seed_applied = demand is not None and set(seed_columns) <= set(demand)
+            if seed_applied:
+                for column in sorted(seed_columns):
                     add(column, "seed", node_id, column)
 
         node = node_map.get(node_id)
@@ -841,11 +1081,11 @@ class SourceScanProjection:
 class AllExcept:
     """Schema-derived demand for targets that train on all non-excluded columns.
 
-    This is intentionally not converted to an exact column set during static
-    planning.  The concrete feature set is resolved from the materialised target
-    schema, while `required_columns` names metadata such as target, weight,
-    offset, split keys, and ids that must survive even if users also list them
-    in `excluded_columns`.
+    The planner resolves this to an exact set as soon as it has a proven target
+    schema; otherwise it remains conservative until that schema is available.
+    `required_columns` names metadata such as target, weight, offset, split keys,
+    and ids that must survive even if users also list them in
+    `excluded_columns`.
     """
 
     required_columns: frozenset[str] = frozenset()
@@ -858,6 +1098,12 @@ class AllExcept:
     @property
     def exclude(self) -> frozenset[str]:
         return self.excluded_columns
+
+    def resolve(self, exact_columns: Iterable[str]) -> frozenset[str]:
+        """Resolve this schema-relative request against an exact output schema."""
+        return frozenset(
+            (set(exact_columns) - set(self.excluded_columns)) | set(self.required_columns)
+        )
 
 
 AllExceptColumns = AllExcept
@@ -880,6 +1126,7 @@ class ParentDemandResult:
     default: set[str] | None
     by_parent: dict[str, set[str] | None]
     rule_name: str = "projection_rule"
+    resolved_output: set[str] | None = None
 
     def for_parent(self, parent_id: str) -> set[str] | None:
         return self.by_parent.get(parent_id, self.default)
@@ -1238,6 +1485,136 @@ def builder_required_output_columns_by_node(
     return demands
 
 
+def _declared_api_input_port_columns(
+    node: GraphNode,
+) -> dict[str, frozenset[str]] | None:
+    """Return selected columns by emitting v2 port without touching payload data.
+
+    This deliberately mirrors the v2 loader's emit predicate (``emit`` plus
+    at least one selected column). Malformed/flat configs return ``None`` so
+    execution keeps its established full-source path and the owning loader can
+    report the authoritative validation error.
+    """
+    if node.data.nodeType is not NodeType.API_INPUT:
+        return None
+    tables = node.data.config.get("tables")
+    if not isinstance(tables, list):
+        return None
+    ports: dict[str, frozenset[str]] = {}
+    for table in tables:
+        if not isinstance(table, Mapping):
+            return None
+        columns = table.get("columns") or []
+        if not isinstance(columns, list):
+            return None
+        selected: set[str] = set()
+        for column in columns:
+            if not isinstance(column, Mapping):
+                return None
+            if not column.get("selected"):
+                continue
+            name = column.get("name")
+            if not isinstance(name, str) or not name:
+                return None
+            selected.add(name)
+        if not table.get("emit") or not selected:
+            continue
+        label = table.get("label")
+        if not isinstance(label, str) or not label or label in ports:
+            return None
+        ports[label] = frozenset(selected)
+    return ports or None
+
+
+def api_input_port_columns_by_node(
+    node_map: Mapping[str, GraphNode],
+    relevant_edges: Iterable[GraphEdge],
+    projection_plan: ProjectionPlan,
+) -> dict[str, dict[str, frozenset[str] | None]]:
+    """Translate proven edge demands into per-port API-input load demands.
+
+    Only ports used by the prepared graph are included. Concrete consumers of
+    the same port are unioned; one opaque consumer keeps that port full-width.
+    A demand outside the selected schema also stays full-width instead of
+    silently dropping a column or handing an invalid projection to the loader.
+    """
+    demands: dict[str, dict[str, frozenset[str] | None]] = {}
+    unavailable_sources: set[str] = set()
+    declared_by_node: dict[str, dict[str, frozenset[str]] | None] = {}
+    for edge in relevant_edges:
+        source = node_map.get(edge.source)
+        if source is None or source.data.nodeType is not NodeType.API_INPUT:
+            continue
+        if edge.source not in declared_by_node:
+            declared_by_node[edge.source] = _declared_api_input_port_columns(source)
+        declared = declared_by_node[edge.source]
+        port = edge.sourceHandle
+        if declared is None or port is None or port not in declared:
+            unavailable_sources.add(edge.source)
+            demands.pop(edge.source, None)
+            continue
+        if edge.source in unavailable_sources:
+            continue
+
+        edge_key = ProjectionEdgeKey.from_edge(edge)
+        edge_demand = projection_plan.edge_demands.get(edge_key)
+        if (
+            edge_key in projection_plan.edge_demands
+            and edge_demand is not None
+            and edge_demand <= declared[port]
+        ):
+            requested: frozenset[str] | None = frozenset(edge_demand)
+        else:
+            requested = None
+        by_port = demands.setdefault(edge.source, {})
+        existing = by_port.get(port, frozenset())
+        if existing is None or requested is None:
+            by_port[port] = None
+        else:
+            by_port[port] = frozenset(existing | requested)
+    return demands
+
+
+def with_api_input_port_projection_boundaries(
+    projection_plan: ProjectionPlan,
+    node_map: Mapping[str, GraphNode],
+    relevant_edges: Iterable[GraphEdge],
+) -> ProjectionPlan:
+    """Keep unprovable per-port narrowing visible in the public strategy."""
+    port_demands = api_input_port_columns_by_node(node_map, relevant_edges, projection_plan)
+    newly_opaque = {
+        node_id
+        for node_id, by_port in port_demands.items()
+        if projection_plan.needed_by_node.get(node_id) is not None
+        and any(columns is None for columns in by_port.values())
+    }
+    if not newly_opaque:
+        return projection_plan
+
+    needed_by_node = dict(projection_plan.needed_by_node)
+    node_reasons = dict(projection_plan.diagnostics.node_reasons)
+    opaque_reasons = dict(projection_plan.diagnostics.opaque_reasons)
+    for node_id in newly_opaque:
+        needed_by_node[node_id] = None
+        reason = ProjectionReason(
+            rule=UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME,
+            message="API-input edge demand could not be proven within its selected port schema",
+        )
+        node_reasons[node_id] = reason
+        opaque_reasons[node_id] = reason
+    return ProjectionPlan(
+        needed_by_node=MappingProxyType(needed_by_node),
+        edge_demands=projection_plan.edge_demands,
+        materialisation_boundaries=projection_plan.materialisation_boundaries,
+        opaque_boundaries=projection_plan.opaque_boundaries | newly_opaque,
+        diagnostics=ProjectionDiagnostics(
+            opaque_reasons=MappingProxyType(opaque_reasons),
+            node_reasons=MappingProxyType(node_reasons),
+            edge_reasons=projection_plan.diagnostics.edge_reasons,
+        ),
+    )
+
+
 def overlay_declared_contract(node: GraphNode, builder: Contract) -> Contract:
     """Apply any user-declared contract fields over a builder contract."""
     declared_raw = node.data.config.get("contract")
@@ -1287,10 +1664,20 @@ def projection_contract(node: GraphNode) -> Contract:
     contract failures. A malformed concrete contract should be visible rather
     than quietly widening the graph.
     """
-    if node.data.nodeType == NodeType.POLARS and not _has_user_polars_code(node):
-        builder = Contract(inputs=frozenset(), outputs=frozenset())
-    else:
-        builder = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
+    registered = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
+    return _projection_contract_from_registered(node, registered)
+
+
+def _projection_contract_from_registered(
+    node: GraphNode,
+    registered: Contract,
+) -> Contract:
+    """Apply projection-specific interpretation to one registered contract."""
+    builder = (
+        Contract(inputs=frozenset(), outputs=frozenset())
+        if node.data.nodeType == NodeType.POLARS and not _has_user_polars_code(node)
+        else registered
+    )
     return overlay_declared_contract(node, builder)
 
 
@@ -1390,7 +1777,7 @@ class OptimiserParentDemandRule:
 
 
 _OPTIMISER_PARENT_DEMAND_RULE = OptimiserParentDemandRule()
-POLARS_EXPRESSION_DEPENDENCY_RULE_NAME = "polars_expression_dependency"
+POLARS_COLUMN_LINEAGE_RULE_NAME = "polars_column_lineage"
 
 
 def parent_demands_for_node(
@@ -1401,600 +1788,11 @@ def parent_demands_for_node(
 ) -> ParentDemandResult | None:
     """Return node-specific parent demands that the generic algebra cannot infer.
 
-    This is a transitional rule bridge used by the executor while Slice 3
-    extracts first-class projection rules.  Keeping optimiser/ratebook routing
-    here lets future rule extraction happen behind the shared planner facade
-    without route or executor call-site churn.
+    Return optimiser-specific parent demands when configured.
     """
     return _OPTIMISER_PARENT_DEMAND_RULE.parent_demands(
-        node,
-        parent_ids,
-        my_needed,
-        seeded_required,
-    ) or _SINGLE_PARENT_POLARS_RULE.parent_demands(
-        node,
-        parent_ids,
-        my_needed,
+        node, parent_ids, my_needed, seeded_required
     )
-
-
-def _literal_string_dict(node: ast.AST) -> dict[str, str] | None:
-    if not isinstance(node, ast.Dict):
-        return None
-    result: dict[str, str] = {}
-    for key, value in zip(node.keys, node.values, strict=True):
-        if key is None:
-            return None
-        source = _literal_string(key)
-        target = _literal_string(value)
-        if source is None or target is None:
-            return None
-        result[source] = target
-    return result
-
-
-def _pl_col_name(node: ast.AST) -> str | None:
-    if not isinstance(node, ast.Call):
-        return None
-    func = node.func
-    if not (
-        isinstance(func, ast.Attribute)
-        and func.attr == "col"
-        and isinstance(func.value, ast.Name)
-        and func.value.id == "pl"
-    ):
-        return None
-    if len(node.args) != 1 or node.keywords:
-        return None
-    return _literal_string(node.args[0])
-
-
-def _referenced_polars_columns(node: ast.AST) -> set[str] | None:
-    columns: set[str] = set()
-    for ast_node in ast.walk(node):
-        name = _pl_col_name(ast_node)
-        if name is not None:
-            columns.add(name)
-            continue
-        if (
-            isinstance(ast_node, ast.Call)
-            and isinstance(ast_node.func, ast.Attribute)
-            and ast_node.func.attr == "col"
-        ):
-            return None
-    return columns
-
-
-def _alias_name(node: ast.AST) -> str | None:
-    if not isinstance(node, ast.Call):
-        return None
-    func = node.func
-    if not isinstance(func, ast.Attribute) or func.attr != "alias":
-        return None
-    if len(node.args) != 1:
-        return None
-    return _literal_string(node.args[0])
-
-
-def _with_columns_outputs(call: ast.Call) -> set[str] | None:
-    outputs: set[str] = set()
-    for expr in call.args:
-        alias = _alias_name(expr)
-        if alias is not None:
-            outputs.add(alias)
-    for keyword in call.keywords:
-        if keyword.arg is None:
-            return None
-        outputs.add(keyword.arg)
-    return outputs
-
-
-def _select_output_to_input(call: ast.Call) -> dict[str, set[str]] | None:
-    """Map each select output column to the input columns its expression reads."""
-    if call.keywords:
-        return None
-    output_to_input: dict[str, set[str]] = {}
-    for expr in call.args:
-        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
-            output_to_input[expr.value] = {expr.value}
-            continue
-        if isinstance(expr, (ast.List, ast.Tuple)):
-            for element in expr.elts:
-                name = _literal_string(element)
-                if name is None:
-                    return None
-                output_to_input[name] = {name}
-            continue
-        refs = _referenced_polars_columns(expr)
-        if refs is None:
-            return None
-        alias = _alias_name(expr)
-        if alias is not None:
-            output_to_input[alias] = refs
-            continue
-        col_name = _pl_col_name(expr)
-        if col_name is not None:
-            output_to_input[col_name] = {col_name}
-            continue
-        return None
-    return output_to_input
-
-
-def _select_output_demands(call: ast.Call, output_columns: set[str]) -> set[str] | None:
-    output_to_input = _select_output_to_input(call)
-    if output_to_input is None:
-        return None
-    missing = output_columns - set(output_to_input)
-    if missing:
-        return None
-    demands: set[str] = set()
-    for column in output_columns:
-        demands |= output_to_input[column]
-    return demands
-
-
-def _contains_rename_call(tree: ast.AST) -> bool:
-    return any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "rename"
-        for node in ast.walk(tree)
-    )
-
-
-# ``select_seq`` is ``select`` with sequential expression evaluation; both
-# execute every output expression, so the demand analysis treats them alike.
-_SELECT_METHOD_NAMES = frozenset({"select", "select_seq"})
-
-
-def _contains_select_call(tree: ast.AST) -> bool:
-    return any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in _SELECT_METHOD_NAMES
-        for node in ast.walk(tree)
-    )
-
-
-def _derived_output_columns(tree: ast.AST) -> set[str]:
-    """Column names created by ``with_columns``/``select`` expressions in *tree*.
-
-    Only genuinely derived names count: ``alias`` targets and keyword
-    assignments.  Plain passthrough outputs such as ``select('a', 'b')`` come
-    from the parent and must not be treated as derived.  (Select-bearing code
-    is independently routed to the ordered analysis by
-    :func:`_contains_select_call`, so this distinction now only steers
-    select-free ``with_columns`` shapes.)  Unparseable output shapes
-    (``**kwargs``) contribute nothing here; both demand walks bail on those
-    calls anyway, so routing cannot differ.
-    """
-    derived: set[str] = set()
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
-            continue
-        if node.func.attr == "with_columns":
-            outputs = _with_columns_outputs(node)
-            if outputs:
-                derived |= outputs
-        elif node.func.attr == "select":
-            for expr in node.args:
-                alias = _alias_name(expr)
-                if alias is not None:
-                    derived.add(alias)
-            for keyword in node.keywords:
-                if keyword.arg is not None:
-                    derived.add(keyword.arg)
-    return derived
-
-
-def _references_derived_column(tree: ast.AST) -> bool:
-    """Return whether code reads a column name its own expressions create.
-
-    This is the rename-free trigger for ordered backward propagation: the
-    unordered union walk re-adds derived names to the parent demand, which
-    hard-fails valid derive-then-reference pipelines at the edge projection.
-    References are everything the union walk could re-add: ``pl.col`` names
-    plus select input columns, which include plain-string passthroughs such
-    as ``select('m', 'a')``. Statically unknowable references (a dynamic
-    ``pl.col(...)`` or unparseable select) count as a match: preferring the
-    ordered extractor is safe because it either bails (and the union walk
-    decides, exactly as today) or proves the chain and yields the correct
-    demand.
-    """
-    derived = _derived_output_columns(tree)
-    if not derived:
-        return False
-    referenced = _referenced_polars_columns(tree)
-    if referenced is None:
-        return True
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "select"
-        ):
-            output_to_input = _select_output_to_input(node)
-            if output_to_input is None:
-                return True
-            for input_columns in output_to_input.values():
-                referenced |= input_columns
-    return bool(derived & referenced)
-
-
-# Row-only frame methods that neither read nor change columns; demand passes
-# through them untouched in the ordered backward-propagation analysis.
-_ROW_ONLY_CHAIN_METHODS = frozenset({"head", "tail", "limit", "slice"})
-
-
-def _frame_chain_calls(expr: ast.AST, frame_name: str) -> list[ast.Call] | None:
-    """Return the method calls of a chain rooted at *frame_name*, in execution order."""
-    calls: list[ast.Call] = []
-    current = expr
-    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
-        calls.append(current)
-        current = current.func.value
-    if not (isinstance(current, ast.Name) and current.id == frame_name):
-        return None
-    calls.reverse()
-    return calls
-
-
-def _chain_root_name(expr: ast.AST) -> str | None:
-    """Return the bare name a method chain is rooted at, or ``None``."""
-    current = expr
-    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
-        current = current.func.value
-    if isinstance(current, ast.Name):
-        return current.id
-    return None
-
-
-def _ordered_frame_operations(tree: ast.Module) -> list[ast.Call] | None:
-    """Extract the linear frame operation sequence in execution order.
-
-    Rename namespace tracking is only sound when the operation order is
-    provable, so anything other than a plain sequence of ``df = <chain>``
-    statements (plus inert imports/docstrings/literal helper assignments)
-    returns ``None`` and the caller keeps the safe full-width boundary.
-
-    ``df`` is the node's output variable, not an input: the FIRST frame
-    assignment starts the chain from the node's named input parameter
-    (``df = quotes.rename(...)``), and every later one continues from
-    ``df`` itself. A first chain rooted at ``df`` is also accepted for
-    analysis purposes — such legacy code now fails at execution, which
-    makes the demand this walk derives for it moot.
-    """
-    operations: list[ast.Call] = []
-    saw_frame_assignment = False
-    frame_names = {"df"}
-    helper_names: set[str] = set()
-    for stmt in tree.body:
-        if isinstance(stmt, (ast.Import, ast.ImportFrom, ast.Pass)):
-            continue
-        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
-            continue
-        if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
-            return None
-        target = stmt.targets[0]
-        if not isinstance(target, ast.Name):
-            return None
-        if target.id != "df":
-            # Helper assignments must not capture the frame or hide column
-            # references behind calls the column walkers cannot see through.
-            if any(_expr_references_name(stmt.value, name) for name in frame_names):
-                return None
-            if any(isinstance(child, ast.Call) for child in ast.walk(stmt.value)):
-                return None
-            helper_names.add(target.id)
-            continue
-        chain = _frame_chain_calls(stmt.value, "df")
-        if chain is None and not saw_frame_assignment:
-            root = _chain_root_name(stmt.value)
-            if root is not None and root not in helper_names:
-                frame_names.add(root)
-                chain = _frame_chain_calls(stmt.value, root)
-        if chain is None:
-            return None
-        for call in chain:
-            for argument in [*call.args, *(kw.value for kw in call.keywords)]:
-                if any(_expr_references_name(argument, name) for name in frame_names):
-                    return None
-        operations.extend(chain)
-        saw_frame_assignment = True
-    if not saw_frame_assignment:
-        return None
-    return operations
-
-
-def _frame_rename_mapping(call: ast.Call) -> dict[str, str] | None:
-    """Return the literal rename mapping with no-op pairs dropped, or ``None``."""
-    if len(call.args) != 1 or call.keywords:
-        return None
-    mapping = _literal_string_dict(call.args[0])
-    if mapping is None:
-        return None
-    return {source: target for source, target in mapping.items() if source != target}
-
-
-def _demand_before_rename(demand: set[str], renames: dict[str, str]) -> set[str] | None:
-    """Translate post-rename demand into the pre-rename column namespace.
-
-    Polars applies rename pairs simultaneously, so swaps resolve through the
-    reverse mapping. Two sources renamed onto one target is a genuine
-    ``DuplicateError`` at execution. A target that is not also renamed away
-    could also collide with an unchanged upstream column the planner cannot see
-    from syntax alone. Demanding a name the rename removed is a genuine
-    missing-column error. Those cases return ``None`` so the full-width
-    boundary lets execution raise the real failure instead of the planner
-    projecting it into a misleading one.
-    """
-    reverse: dict[str, str] = {}
-    for source, target in renames.items():
-        if target in reverse:
-            return None
-        reverse[target] = source
-    if set(reverse) - set(renames):
-        return None
-    renamed_away = {source for source in renames if source not in reverse}
-    before: set[str] = set()
-    for column in demand:
-        if column in reverse:
-            before.add(reverse[column])
-        elif column in renamed_away:
-            return None
-        else:
-            before.add(column)
-    return before
-
-
-def _call_argument_columns(call: ast.Call) -> set[str] | None:
-    """Columns referenced by a call's own arguments, excluding chained inputs.
-
-    Walking the whole call would also pick up references made by earlier
-    operations in the same method chain (``call.func.value``), which live in a
-    different column namespace once renames are involved.
-    """
-    columns: set[str] = set()
-    for argument in [*call.args, *(kw.value for kw in call.keywords)]:
-        refs = _referenced_polars_columns(argument)
-        if refs is None:
-            return None
-        columns |= refs
-    return columns
-
-
-def _ordered_expression_demands(
-    tree: ast.Module,
-    output_columns: set[str],
-) -> set[str] | None:
-    """Propagate demand backward through ordered operations.
-
-    Three shapes need execution order. A rename changes the column namespace
-    mid-pipeline: upstream of it the parent must provide the pre-rename name,
-    while downstream references use the post-rename name. A
-    ``with_columns``/``select`` alias derives a new column mid-pipeline:
-    later references read the derived name, which the parent never had. A
-    ``select``/``select_seq`` executes every output expression regardless of
-    downstream demand, so the inputs of all outputs must reach it even when
-    downstream only wants a subset. The unordered union walk cannot express
-    any of these — it re-adds post-rename and derived names to the parent
-    demand and intersects select outputs with downstream demand — so such
-    code is analysed as a provable linear operation sequence and the demand
-    set is translated through each operation in reverse execution order.
-    """
-    operations = _ordered_frame_operations(tree)
-    if operations is None:
-        return None
-
-    demand = set(output_columns)
-    saw_supported_operation = False
-    for call in reversed(operations):
-        func = call.func
-        assert isinstance(func, ast.Attribute)  # guaranteed by extraction
-        method = func.attr
-        if method in _ROW_ONLY_CHAIN_METHODS:
-            continue
-        if method == "rename":
-            renames = _frame_rename_mapping(call)
-            if renames is None:
-                return None
-            translated = _demand_before_rename(demand, renames)
-            if translated is None:
-                return None
-            demand = translated | set(renames)
-            saw_supported_operation = True
-        elif method == "filter":
-            if any(kw.arg is None for kw in call.keywords):
-                return None
-            refs = _call_argument_columns(call)
-            if refs is None:
-                return None
-            # Keyword constraints (``df.filter(segment='A')``) name columns.
-            demand |= refs | {kw.arg for kw in call.keywords if kw.arg is not None}
-            saw_supported_operation = True
-        elif method == "fill_null":
-            refs = _call_argument_columns(call)
-            if refs is None:
-                return None
-            demand |= refs
-            saw_supported_operation = True
-        elif method == "with_columns":
-            refs = _call_argument_columns(call)
-            outputs = _with_columns_outputs(call)
-            if refs is None or outputs is None:
-                return None
-            # An un-aliased positional expression (``pl.lit(1)``,
-            # ``pl.col('a').name.suffix('_2')``, ``pl.sum_horizontal(...)``)
-            # creates a column whose name ``_with_columns_outputs`` cannot
-            # see, so the in-node-created name would survive backward
-            # propagation and be wrongly demanded from the parent.  A bare
-            # ``pl.col('x')`` is the only un-aliased shape whose output name
-            # is provably its own reference; anything else bails.
-            if any(_alias_name(expr) is None and _pl_col_name(expr) is None for expr in call.args):
-                return None
-            # Every expression executes regardless of downstream demand, so
-            # all referenced inputs stay required.
-            demand = (demand - outputs) | refs
-            saw_supported_operation = True
-        elif method in _SELECT_METHOD_NAMES:
-            output_to_input = _select_output_to_input(call)
-            if output_to_input is None:
-                return None
-            if demand - set(output_to_input):
-                # Downstream demands a column this select does not produce;
-                # full width lets execution raise the real error.
-                return None
-            # The select executes every output expression regardless of
-            # downstream demand, so the inputs of ALL outputs stay required.
-            demand = set()
-            for input_columns in output_to_input.values():
-                demand |= input_columns
-            saw_supported_operation = True
-        else:
-            return None
-
-    if not saw_supported_operation:
-        return None
-    return demand
-
-
-def _unordered_expression_demands(
-    tree: ast.Module,
-    output_columns: set[str],
-) -> set[str] | None:
-    """Union-walk demand inference for rename-free single-parent Polars code.
-
-    Without renames every operation reads and writes the same column
-    namespace, so an unordered union of references and outputs is a safe
-    over-approximation. Rename-bearing code must never reach this walk: the
-    final ``| referenced_columns`` union would re-add post-rename names to the
-    parent demand (see :func:`_ordered_expression_demands`). The same union
-    re-adds derived names referenced later in the node, and its ``select``
-    branch under-demands by intersecting select outputs with the downstream
-    demand, so provable derived-reference and select-bearing chains are
-    routed to the ordered analysis first and only the unprovable remainder
-    lands here, deliberately keeping its loud over-demand (derived) and
-    under-demand (select) failures.
-    """
-    demands = set(output_columns)
-    produced_columns: set[str] = set()
-    referenced_columns: set[str] = set()
-    saw_supported_operation = False
-
-    for ast_node in ast.walk(tree):
-        if not isinstance(ast_node, ast.Call):
-            continue
-        func = ast_node.func
-        if not isinstance(func, ast.Attribute):
-            continue
-        method = func.attr
-        if method == "with_columns":
-            refs = _referenced_polars_columns(ast_node)
-            outputs = _with_columns_outputs(ast_node)
-            if refs is None or outputs is None:
-                return None
-            produced_columns |= outputs
-            referenced_columns |= refs
-            demands |= refs
-            saw_supported_operation = True
-        elif method == "filter":
-            if any(kw.arg is None for kw in ast_node.keywords):
-                return None
-            refs = _referenced_polars_columns(ast_node)
-            if refs is None:
-                return None
-            # Keyword constraints (``df.filter(segment='A')``) name columns by
-            # their kwarg, mirroring the ordered walk's filter branch. Without
-            # this the parent is under-demanded and a downstream filter can lose
-            # the very column it constrains on.
-            kw_columns = {kw.arg for kw in ast_node.keywords if kw.arg is not None}
-            referenced_columns |= refs | kw_columns
-            demands |= refs | kw_columns
-            saw_supported_operation = True
-        elif method == "select":
-            selected = _select_output_demands(ast_node, output_columns)
-            if selected is None:
-                return None
-            demands = selected
-            referenced_columns |= selected
-            produced_columns = set(output_columns)
-            saw_supported_operation = True
-        elif method in {"alias", "cast", "is_not_null", "is_null", "fill_null"}:
-            continue
-        elif method in {"join", "group_by", "groupby", "agg", "sort", "unique", "explode"}:
-            return None
-
-    if not saw_supported_operation:
-        return None
-    return (demands - produced_columns) | referenced_columns
-
-
-def _single_parent_polars_expression_demands(
-    code: str,
-    output_columns: set[str],
-) -> set[str] | None:
-    """Infer parent columns for common row-preserving single-parent Polars code.
-
-    Ordered backward propagation is required when the code renames columns,
-    calls ``select``/``select_seq``, or references a column its own
-    expressions create. Renames and derived references make the unordered
-    union walk re-add post-rename/derived names to the parent demand; a
-    select makes it under-demand, because its narrowing intersects the
-    select outputs with the downstream demand while the node still executes
-    every select expression verbatim and reads all of their inputs. All
-    other rename-free code keeps the union walk so its established
-    narrowing (helper assignments) is preserved exactly. Unprovable
-    rename-bearing code stays full width (``None``, 2.12's rule);
-    unprovable select-bearing and derived-reference code falls back to the
-    union walk, deliberately keeping today's loud failure at execution or
-    the edge projection rather than widening or guessing a narrowing the
-    planner cannot prove.
-    """
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return None
-    if _contains_rename_call(tree):
-        return _ordered_expression_demands(tree, output_columns)
-    if _contains_select_call(tree) or _references_derived_column(tree):
-        demand = _ordered_expression_demands(tree, output_columns)
-        if demand is not None:
-            return demand
-    return _unordered_expression_demands(tree, output_columns)
-
-
-@dataclass(frozen=True)
-class SingleParentPolarsExpressionRule:
-    """Projection rule for common single-parent Polars feature-engineering code."""
-
-    name: str = POLARS_EXPRESSION_DEPENDENCY_RULE_NAME
-
-    def parent_demands(
-        self,
-        node: GraphNode,
-        parent_ids: Iterable[str],
-        my_needed: set[str] | None,
-    ) -> ParentDemandResult | None:
-        parent_list = list(parent_ids)
-        if node.data.nodeType != NodeType.POLARS or len(parent_list) != 1 or my_needed is None:
-            return None
-        produced, referenced = projection_contract(node).to_tuple()
-        if produced is not None and referenced is not None:
-            return None
-        code = node.data.config.get("code")
-        if not isinstance(code, str) or not code.strip():
-            return None
-        demand = _single_parent_polars_expression_demands(code, my_needed)
-        if demand is None:
-            return None
-        return ParentDemandResult(
-            default=set(demand),
-            by_parent={parent_list[0]: set(demand)},
-            rule_name=self.name,
-        )
-
-
-_SINGLE_PARENT_POLARS_RULE = SingleParentPolarsExpressionRule()
 
 
 @dataclass(frozen=True)
@@ -2366,6 +2164,7 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
                 NodeType.POLARS,
                 _GENERIC_CONTRACT_RULE_NAME,
                 _POLARS_FAN_IN_RULE.name,
+                POLARS_COLUMN_LINEAGE_RULE_NAME,
             ),
             NodeType.EDGE_JOIN: _coverage(
                 NodeType.EDGE_JOIN,
@@ -2820,6 +2619,208 @@ def prepare_graph(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _LineageInputBinding:
+    name: str
+    edge: GraphEdge
+    key: ProjectionEdgeKey
+    exact_columns: frozenset[str] | None
+
+
+def _projection_edges(
+    order: Iterable[str],
+    children_of: Mapping[str, Iterable[str]],
+    relevant_edges: Iterable[GraphEdge] | None,
+) -> tuple[GraphEdge, ...]:
+    """Return authoritative edges, synthesising identity for legacy callers."""
+    known = set(order)
+    if relevant_edges is not None:
+        return tuple(
+            edge for edge in relevant_edges if edge.source in known and edge.target in known
+        )
+
+    # ``compute_prepared_plan`` predates port-aware planning and remains a
+    # useful low-level API for adjacency-only tests/callers.  Give every
+    # adjacency occurrence a deterministic complete identity.  Runtime paths
+    # always pass the real GraphEdge objects.
+    occurrences: dict[tuple[str, str], int] = {}
+    synthesised: list[GraphEdge] = []
+    for source in order:
+        for target in children_of.get(source, ()):
+            if target not in known:
+                continue
+            pair = (source, target)
+            ordinal = occurrences.get(pair, 0)
+            occurrences[pair] = ordinal + 1
+            edge_id = f"e_{source}_{target}" if ordinal == 0 else f"e_{source}_{target}_{ordinal}"
+            synthesised.append(GraphEdge(id=edge_id, source=source, target=target))
+    return tuple(synthesised)
+
+
+def _edges_by_endpoint(
+    order: Iterable[str],
+    edges: Iterable[GraphEdge],
+) -> tuple[dict[str, list[GraphEdge]], dict[str, list[GraphEdge]]]:
+    incoming: dict[str, list[GraphEdge]] = {node_id: [] for node_id in order}
+    outgoing: dict[str, list[GraphEdge]] = {node_id: [] for node_id in order}
+    for edge in edges:
+        if edge.target in incoming and edge.source in outgoing:
+            incoming[edge.target].append(edge)
+            outgoing[edge.source].append(edge)
+    return incoming, outgoing
+
+
+def _exact_columns_for_parent_edge(
+    edge: GraphEdge,
+    node_map: Mapping[str, GraphNode],
+    exact_output_by_node: Mapping[str, frozenset[str]],
+) -> frozenset[str] | None:
+    parent = node_map[edge.source]
+    if parent.data.nodeType is NodeType.API_INPUT:
+        declared = _declared_api_input_port_columns(parent)
+        if declared is None or edge.sourceHandle is None:
+            return None
+        return declared.get(edge.sourceHandle)
+    return exact_output_by_node.get(edge.source)
+
+
+def _lineage_input_bindings(
+    node: GraphNode,
+    incoming_edges: Iterable[GraphEdge],
+    node_map: Mapping[str, GraphNode],
+    exact_output_by_node: Mapping[str, frozenset[str]],
+) -> tuple[_LineageInputBinding, ...] | None:
+    by_name: dict[str, _LineageInputBinding] = {}
+    for edge in incoming_edges:
+        try:
+            name = edge_input_name(edge, node_map[edge.source])
+        except (KeyError, ValueError):
+            return None
+        binding = _LineageInputBinding(
+            name=name,
+            edge=edge,
+            key=ProjectionEdgeKey.from_edge(edge),
+            exact_columns=_exact_columns_for_parent_edge(
+                edge,
+                node_map,
+                exact_output_by_node,
+            ),
+        )
+        previous = by_name.get(name)
+        if previous is not None and previous.key != binding.key:
+            return None
+        by_name[name] = binding
+
+    raw_mapping = node.data.config.get("inputMapping")
+    if raw_mapping:
+        if not isinstance(raw_mapping, Mapping):
+            return None
+        for alias, current_name in raw_mapping.items():
+            if not isinstance(alias, str) or not alias or not isinstance(current_name, str):
+                return None
+            current = by_name.get(current_name)
+            if current is None:
+                return None
+            existing = by_name.get(alias)
+            if existing is not None and existing.key != current.key:
+                return None
+            by_name[alias] = replace(current, name=alias)
+    return tuple(by_name.values())
+
+
+def _analyse_polars_node_lineage(
+    node: GraphNode,
+    incoming_edges: Iterable[GraphEdge],
+    node_map: Mapping[str, GraphNode],
+    exact_output_by_node: Mapping[str, frozenset[str]],
+    demanded_output: set[str] | None,
+    contract: Contract,
+) -> tuple[ColumnLineageAnalysis, tuple[_LineageInputBinding, ...]] | None:
+    if node.data.nodeType is not NodeType.POLARS:
+        return None
+    produced, referenced = contract.to_tuple()
+    if produced is not None and referenced is not None:
+        return None
+    code = node.data.config.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return None
+    bindings = _lineage_input_bindings(
+        node,
+        incoming_edges,
+        node_map,
+        exact_output_by_node,
+    )
+    if not bindings:
+        return None
+    schemas: dict[str, frozenset[str] | None] = {}
+    for binding in bindings:
+        schemas[binding.name] = binding.exact_columns
+    return analyze_polars_lineage(code, schemas, demanded_output), bindings
+
+
+def _exact_registered_contract_output(
+    contract: Contract,
+    input_columns: frozenset[str],
+) -> frozenset[str] | None:
+    """Transfer an exact single-input schema through a registered contract.
+
+    The backward contract algebra already defines every non-produced output
+    column as passthrough.  Its sound forward counterpart is therefore the
+    exact input schema plus the columns the runtime builder produces.  Only
+    the registered builder contract is evidence here: a user declaration on
+    arbitrary code must not manufacture an exact output schema.
+    """
+    produced, referenced = contract.to_tuple()
+    if produced is None or referenced is None:
+        return None
+    if not set(referenced) <= set(input_columns):
+        return None
+    return frozenset(set(input_columns) | set(produced))
+
+
+def _exact_structural_outputs(
+    order: Iterable[str],
+    incoming_by_target: Mapping[str, Iterable[GraphEdge]],
+    node_map: Mapping[str, GraphNode],
+    registered_contract_for: Callable[[GraphNode], Contract],
+    effective_contract_for: Callable[[GraphNode], Contract],
+) -> dict[str, frozenset[str]]:
+    """Propagate every mechanically proven exact schema topologically."""
+    exact: dict[str, frozenset[str]] = {}
+    for node_id in order:
+        incoming = tuple(incoming_by_target.get(node_id, ()))
+        analysed = _analyse_polars_node_lineage(
+            node_map[node_id],
+            incoming,
+            node_map,
+            exact,
+            set(),
+            effective_contract_for(node_map[node_id]),
+        )
+        if analysed is not None:
+            result, _bindings = analysed
+            if result.supported and result.exact_output_columns is not None:
+                exact[node_id] = result.exact_output_columns
+                continue
+
+        if len(incoming) != 1:
+            continue
+        input_columns = _exact_columns_for_parent_edge(
+            incoming[0],
+            node_map,
+            exact,
+        )
+        if input_columns is None:
+            continue
+        output_columns = _exact_registered_contract_output(
+            registered_contract_for(node_map[node_id]),
+            input_columns,
+        )
+        if output_columns is not None:
+            exact[node_id] = output_columns
+    return exact
+
+
 def compute_prepared_plan(
     order: list[str],
     children_of: Mapping[str, Iterable[str]],
@@ -2827,27 +2828,72 @@ def compute_prepared_plan(
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
     *,
     strict_projection: bool = False,
+    relevant_edges: Iterable[GraphEdge] | None = None,
 ) -> ProjectionPlan:
     """Run the reverse topological projection sweep on a prepared graph."""
-    needed: dict[str, set[str] | None] = {}
-    edge_demands: dict[tuple[str, str], set[str] | None] = {}
-    node_reasons: dict[str, ProjectionReason] = {}
-    edge_reasons: dict[tuple[str, str], ProjectionReason] = {}
-    seeded_required = normalise_required_columns_by_node(required_columns_by_node, order)
-    parents_by_child: dict[str, set[str]] = {node_id: set() for node_id in order}
-    for parent_id, child_ids in children_of.items():
-        for child_id in child_ids:
-            if child_id in parents_by_child:
-                parents_by_child[child_id].add(parent_id)
+    prepared_edges = _projection_edges(order, children_of, relevant_edges)
+    incoming_by_target, outgoing_by_source = _edges_by_endpoint(order, prepared_edges)
+    registered_contracts: dict[str, Contract] = {}
+    effective_contracts: dict[str, Contract] = {}
 
-    contribution: dict[str, ParentDemandResult] = {}
+    def registered_contract_for(node: GraphNode) -> Contract:
+        contract = registered_contracts.get(node.id)
+        if contract is None:
+            contract = Contract.from_tuple(
+                get_column_contract(node.data.nodeType, node.data.config)
+            )
+            registered_contracts[node.id] = contract
+        return contract
+
+    def effective_contract_for(node: GraphNode) -> Contract:
+        contract = effective_contracts.get(node.id)
+        if contract is None:
+            contract = _projection_contract_from_registered(
+                node,
+                registered_contract_for(node),
+            )
+            effective_contracts[node.id] = contract
+        return contract
+
+    exact_output_by_node = _exact_structural_outputs(
+        order,
+        incoming_by_target,
+        node_map,
+        registered_contract_for,
+        effective_contract_for,
+    )
+    needed: dict[str, set[str] | None] = {}
+    edge_demands: dict[ProjectionEdgeKey, set[str] | None] = {}
+    node_reasons: dict[str, ProjectionReason] = {}
+    edge_reasons: dict[ProjectionEdgeKey, ProjectionReason] = {}
+    seeded_required = normalise_required_columns_by_node(required_columns_by_node, order)
+
+    def store_parent_result(
+        incoming: Iterable[GraphEdge],
+        result: ParentDemandResult,
+        *,
+        message: str,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        for edge in incoming:
+            key = ProjectionEdgeKey.from_edge(edge)
+            parent_demand = result.for_parent(edge.source)
+            if parent_demand is not None:
+                edge_demands[key] = set(parent_demand)
+            edge_reasons[key] = ProjectionReason(
+                rule=result.rule_name,
+                message=message,
+                details={} if details is None else details,
+            )
+
     for node_id in reversed(order):
         node = node_map[node_id]
-        children = list(children_of.get(node_id, ()))
+        outgoing = outgoing_by_source.get(node_id, [])
+        incoming = incoming_by_target.get(node_id, [])
 
         has_seed = node_id in seeded_required
         seed = seeded_required.get(node_id, set())
-        if not children:
+        if not outgoing:
             if node.data.nodeType == NodeType.OUTPUT:
                 # Keep the projection contract aligned with output assembly:
                 # incomplete editor rows do not demand a blank source column.
@@ -2870,13 +2916,13 @@ def compute_prepared_plan(
                 )
         else:
             accumulated: set[str] | None = set()
-            for child_id in children:
-                child_contrib = contribution[child_id].for_parent(node_id)
-                if child_contrib is None:
+            for edge in outgoing:
+                edge_demand = edge_demands.get(ProjectionEdgeKey.from_edge(edge))
+                if edge_demand is None:
                     accumulated = None
                     break
                 assert accumulated is not None
-                accumulated |= child_contrib
+                accumulated |= edge_demand
             needed[node_id] = accumulated
             node_reasons[node_id] = ProjectionReason(
                 rule="child_demand",
@@ -2885,11 +2931,21 @@ def compute_prepared_plan(
 
         if has_seed:
             if isinstance(seed, AllExceptColumns):
-                if needed[node_id] is not None:
+                exact_output = exact_output_by_node.get(node_id)
+                if exact_output is None:
+                    # The caller consumes an unknown set of feature columns.
+                    # Retaining only metadata would silently drop real model
+                    # inputs, so unresolved all-except demand stays full-width.
+                    needed[node_id] = None
+                elif not outgoing:
+                    # Terminal ``None`` means "the caller wants this node's
+                    # output", not an opaque child.  The exact schema makes
+                    # that schema-relative request concrete.
+                    needed[node_id] = set(seed.resolve(exact_output))
+                elif needed[node_id] is not None:
                     existing = needed[node_id]
-                    if existing is None:
-                        raise RuntimeError("concrete projection branch unexpectedly became opaque")
-                    existing |= set(seed.keep)
+                    assert existing is not None
+                    existing |= set(seed.resolve(exact_output))
                     needed[node_id] = existing
                 node_reasons[node_id] = ProjectionReason(
                     rule="schema_all_except",
@@ -2900,7 +2956,7 @@ def compute_prepared_plan(
                     },
                 )
             elif needed[node_id] is None:
-                if len(children) <= 1:
+                if len(outgoing) <= 1:
                     needed[node_id] = set(seed)
                     node_reasons[node_id] = ProjectionReason(
                         rule="projection_seed",
@@ -2913,7 +2969,7 @@ def compute_prepared_plan(
                         node_id=node_id,
                         node_type=node.data.nodeType.value,
                         seeded_columns=sorted(seed),
-                        child_node_ids=sorted(children),
+                        child_node_ids=sorted({edge.target for edge in outgoing}),
                     )
                 else:
                     node_reasons[node_id] = ProjectionReason(
@@ -2924,7 +2980,7 @@ def compute_prepared_plan(
                         ),
                         details={
                             "seeded_columns": tuple(sorted(seed)),
-                            "child_node_ids": tuple(sorted(children)),
+                            "child_node_ids": tuple(sorted({edge.target for edge in outgoing})),
                         },
                     )
             else:
@@ -2946,7 +3002,98 @@ def compute_prepared_plan(
             )
 
         my_needed = needed[node_id]
-        parent_ids = parents_by_child.get(node_id, set())
+        if my_needed is None and node_id in exact_output_by_node:
+            needed[node_id] = set(exact_output_by_node[node_id])
+            my_needed = needed[node_id]
+            node_reasons[node_id] = ProjectionReason(
+                rule="registered_contract_schema",
+                message="known full schema from structural contract transfer",
+            )
+        parent_ids = {edge.source for edge in incoming}
+
+        lineage = _analyse_polars_node_lineage(
+            node,
+            incoming,
+            node_map,
+            exact_output_by_node,
+            my_needed,
+            effective_contract_for(node),
+        )
+        if lineage is not None:
+            lineage_result, bindings = lineage
+            if lineage_result.supported:
+                node_reasons[node_id] = ProjectionReason(
+                    rule=POLARS_COLUMN_LINEAGE_RULE_NAME,
+                    message="compositional Polars column lineage",
+                    details={
+                        "exact_output": (
+                            tuple(sorted(lineage_result.exact_output_columns))
+                            if lineage_result.exact_output_columns is not None
+                            else None
+                        )
+                    },
+                )
+                demands_by_edge: dict[ProjectionEdgeKey, set[str]] = {}
+                bindings_by_name = {binding.name: binding for binding in bindings}
+                for input_name, columns in lineage_result.demands_by_input.items():
+                    binding = bindings_by_name[input_name]
+                    demands_by_edge.setdefault(binding.key, set()).update(columns)
+                for edge in incoming:
+                    key = ProjectionEdgeKey.from_edge(edge)
+                    # A supported analysis returns one demand (possibly the
+                    # exact empty set) for every bound input. Binding aliases
+                    # have already been unioned onto their physical edge.
+                    edge_demands[key] = set(demands_by_edge[key])
+                    edge_reasons[key] = ProjectionReason(
+                        rule=POLARS_COLUMN_LINEAGE_RULE_NAME,
+                        message="compositional Polars input dependency",
+                        details={
+                            "input_name": next(
+                                (
+                                    binding.name
+                                    for binding in bindings
+                                    if binding.key == key
+                                    and binding.name in lineage_result.demands_by_input
+                                ),
+                                edge_input_name(edge, node_map[edge.source]),
+                            )
+                        },
+                    )
+            else:
+                reason = ProjectionReason(
+                    rule="polars_lineage_unsupported",
+                    message="Polars code is outside the closed column-lineage model",
+                    details={
+                        "reason": lineage_result.reason,
+                        "operation": lineage_result.unsupported_operation,
+                    },
+                )
+                node_reasons[node_id] = ProjectionReason(
+                    rule=reason.rule,
+                    message=reason.message,
+                    details=reason.details,
+                )
+                for edge in incoming:
+                    key = ProjectionEdgeKey.from_edge(edge)
+                    edge_reasons[key] = reason
+            continue
+
+        if len(incoming) != len(parent_ids):
+            # Every remaining rule addresses parents by node id.  Parallel
+            # incoming edges from one source (typically different API ports)
+            # cannot be routed by those contracts without conflating their
+            # demands, so retain a visible boundary.  The edge-aware Polars
+            # lineage path above is the only path allowed to narrow this shape.
+            reason = ProjectionReason(
+                rule="parallel_edge_contract_ambiguous",
+                message="parent-id column contract cannot distinguish parallel input edges",
+                details={"source_node_ids": tuple(sorted(parent_ids))},
+            )
+            node_reasons[node_id] = reason
+            for edge in incoming:
+                edge_reasons[ProjectionEdgeKey.from_edge(edge)] = reason
+            continue
+
         routed_demands = parent_demands_for_node(
             node,
             parent_ids,
@@ -2954,30 +3101,26 @@ def compute_prepared_plan(
             seeded_required,
         )
         if routed_demands is not None:
-            for parent_id, parent_demand in routed_demands.by_parent.items():
-                edge_demands[(parent_id, node_id)] = (
-                    None if parent_demand is None else set(parent_demand)
-                )
-                edge_reasons[(parent_id, node_id)] = ProjectionReason(
-                    rule=routed_demands.rule_name,
-                    message="node-specific parent demand",
-                )
-            contribution[node_id] = ParentDemandResult(
-                default=routed_demands.default,
-                by_parent=routed_demands.by_parent,
-                rule_name=routed_demands.rule_name,
+            store_parent_result(
+                incoming,
+                routed_demands,
+                message="node-specific parent demand",
             )
             continue
 
         if my_needed is None:
-            contribution[node_id] = ParentDemandResult(
-                default=None,
-                by_parent={},
-                rule_name="opaque_demand",
+            store_parent_result(
+                incoming,
+                ParentDemandResult(
+                    default=None,
+                    by_parent={},
+                    rule_name="opaque_demand",
+                ),
+                message="opaque downstream demand",
             )
             continue
 
-        produced, referenced = projection_contract(node).to_tuple()
+        produced, referenced = effective_contract_for(node).to_tuple()
         if produced is None or referenced is None:
             parent_produced = {
                 parent_id: _parent_produced_columns(node_map[parent_id]) for parent_id in parent_ids
@@ -2991,18 +3134,10 @@ def compute_prepared_plan(
                 strict_projection=strict_projection,
             )
             if edge_join_demands is not None:
-                for parent_id, parent_demand in edge_join_demands.by_parent.items():
-                    edge_demands[(parent_id, node_id)] = (
-                        None if parent_demand is None else set(parent_demand)
-                    )
-                    edge_reasons[(parent_id, node_id)] = ProjectionReason(
-                        rule=edge_join_demands.rule_name,
-                        message="edge-join fan-in ownership rule",
-                    )
-                contribution[node_id] = ParentDemandResult(
-                    default=edge_join_demands.default,
-                    by_parent=edge_join_demands.by_parent,
-                    rule_name=edge_join_demands.rule_name,
+                store_parent_result(
+                    incoming,
+                    edge_join_demands,
+                    message="edge-join fan-in ownership rule",
                 )
                 continue
             opaque_demands = opaque_contract_demands_for_node(
@@ -3010,10 +3145,10 @@ def compute_prepared_plan(
                 parent_ids,
                 strict_projection=strict_projection,
             )
-            contribution[node_id] = ParentDemandResult(
-                default=opaque_demands.default,
-                by_parent=opaque_demands.by_parent,
-                rule_name=opaque_demands.rule_name,
+            store_parent_result(
+                incoming,
+                opaque_demands,
+                message="opaque contract demand",
             )
             continue
 
@@ -3026,25 +3161,34 @@ def compute_prepared_plan(
             strict_projection=strict_projection,
         )
         if fan_in_demands is not None:
-            for parent_id, parent_demand in fan_in_demands.by_parent.items():
-                edge_demands[(parent_id, node_id)] = (
-                    None if parent_demand is None else set(parent_demand)
-                )
-                edge_reasons[(parent_id, node_id)] = ProjectionReason(
-                    rule=fan_in_demands.rule_name,
-                    message="fan-in ownership rule",
-                )
-            contribution[node_id] = ParentDemandResult(
-                default=fan_in_demands.default,
-                by_parent=fan_in_demands.by_parent,
-                rule_name=fan_in_demands.rule_name,
+            store_parent_result(
+                incoming,
+                fan_in_demands,
+                message="fan-in ownership rule",
             )
             continue
 
-        contribution[node_id] = ParentDemandResult(
-            default=base_contribution,
-            by_parent={},
-            rule_name="contract_algebra",
+        if len(parent_ids) > 1:
+            # Ordinary contract algebra has one undifferentiated input set. It
+            # cannot prove which parent of an otherwise-unhandled fan-in owns a
+            # demanded column, so broadcasting that set would ask every parent
+            # for columns it may never produce. Dedicated rules above are the
+            # only routes allowed to narrow a multi-parent node.
+            store_parent_result(
+                incoming,
+                _unprojected_boundary_demands(),
+                message="ambiguous multi-parent ownership",
+            )
+            continue
+
+        store_parent_result(
+            incoming,
+            ParentDemandResult(
+                default=base_contribution,
+                by_parent={},
+                rule_name="contract_algebra",
+            ),
+            message="column contract algebra",
         )
 
     return _freeze_plan(
@@ -3061,10 +3205,10 @@ def _freeze_columns(columns: set[str] | frozenset[str] | None) -> frozenset[str]
 
 def _freeze_plan(
     needed_by_node: Mapping[str, set[str] | None],
-    edge_demands: Mapping[tuple[str, str], set[str] | None],
+    edge_demands: Mapping[ProjectionEdgeKey, set[str] | None],
     *,
     node_reasons: Mapping[str, ProjectionReason] | None = None,
-    edge_reasons: Mapping[tuple[str, str], ProjectionReason] | None = None,
+    edge_reasons: Mapping[ProjectionEdgeKey, ProjectionReason] | None = None,
 ) -> ProjectionPlan:
     frozen_needed = {
         node_id: _freeze_columns(columns) for node_id, columns in needed_by_node.items()
@@ -3087,11 +3231,11 @@ def _freeze_plan(
             }
         ),
         node_reasons=MappingProxyType(dict(node_reasons or {})),
-        edge_reasons=MappingProxyType(dict(edge_reasons or {})),
+        edge_reasons=_EdgeIdentityMapping(dict(edge_reasons or {})),
     )
     return ProjectionPlan(
         needed_by_node=MappingProxyType(frozen_needed),
-        edge_demands=MappingProxyType(frozen_edges),
+        edge_demands=_EdgeIdentityMapping(frozen_edges),
         opaque_boundaries=opaque_boundaries,
         diagnostics=diagnostics,
     )
@@ -3131,17 +3275,21 @@ def explain(
             f"{current_node_id}: {reason.rule}: {reason.message} [{_column_text(columns)}]"
         )
 
-    for (parent_id, child_id), columns in projection_plan.edge_demands.items():
+    for edge_key, columns in projection_plan.edge_demands.items():
+        parent_id = edge_key.source
+        child_id = edge_key.target
         if node_id is not None and child_id != node_id and parent_id != node_id:
             continue
         if column is not None and columns is not None and column not in columns:
             continue
         reason = projection_plan.diagnostics.edge_reasons.get(
-            (parent_id, child_id),
+            edge_key,
             ProjectionReason(rule="edge_demand", message="edge demand"),
         )
+        port = f" [{edge_key.source_handle}]" if edge_key.source_handle else ""
         lines.append(
-            f"{parent_id} -> {child_id}: {reason.rule}: {reason.message} [{_column_text(columns)}]"
+            f"{parent_id}{port} -> {child_id}: {reason.rule}: "
+            f"{reason.message} [{_column_text(columns)}]"
         )
 
     return tuple(lines)
@@ -3150,12 +3298,17 @@ def explain(
 def with_runtime_inferred_streaming_edges(
     projection_plan: ProjectionPlan,
     *,
-    child_id: str,
-    demands_by_parent: Mapping[str, Iterable[str]],
+    demands_by_edge: Mapping[ProjectionEdgeKey, Iterable[str]],
     resolved_parent_ids: Iterable[str] = (),
+    relevant_edges: Iterable[GraphEdge] = (),
 ) -> ProjectionPlan:
-    """Return *projection_plan* annotated with runtime-inferred join demands."""
-    if not demands_by_parent:
+    """Return a plan annotated with runtime-inferred edge demands.
+
+    A source boundary is removed only when every outgoing edge in this
+    execution has a concrete static or runtime demand.  Resolving one branch
+    of an opaque fan-out must never hide the still-full-width sibling.
+    """
+    if not demands_by_edge:
         return projection_plan
 
     needed_by_node = dict(projection_plan.needed_by_node)
@@ -3163,8 +3316,15 @@ def with_runtime_inferred_streaming_edges(
     node_reasons = dict(projection_plan.diagnostics.node_reasons)
     opaque_reasons = dict(projection_plan.diagnostics.opaque_reasons)
     edge_reasons = dict(projection_plan.diagnostics.edge_reasons)
-    resolved_parents = frozenset(resolved_parent_ids)
-    for parent_id, columns in demands_by_parent.items():
+    candidate_parents = frozenset(resolved_parent_ids)
+    relevant_edge_keys_by_parent: dict[str, set[ProjectionEdgeKey]] = {}
+    for edge in relevant_edges:
+        if edge.source in candidate_parents:
+            relevant_edge_keys_by_parent.setdefault(edge.source, set()).add(
+                ProjectionEdgeKey.from_edge(edge)
+            )
+    resolved_columns_by_parent: dict[str, set[str]] = {}
+    for edge_key, columns in demands_by_edge.items():
         frozen_columns = frozenset(columns)
         reason = ProjectionReason(
             rule=RUNTIME_INFERRED_STREAMING_RULE_NAME,
@@ -3174,23 +3334,45 @@ def with_runtime_inferred_streaming_edges(
                 "columns": tuple(sorted(frozen_columns)),
             },
         )
-        if parent_id in resolved_parents:
-            needed_by_node[parent_id] = frozen_columns
-            node_reasons[parent_id] = reason
-            opaque_reasons.pop(parent_id, None)
-        edge = (parent_id, child_id)
-        edge_demands[edge] = frozen_columns
-        edge_reasons[edge] = reason
+        edge_demands[edge_key] = frozen_columns
+        edge_reasons[edge_key] = reason
+    resolved_parents = frozenset(
+        parent_id
+        for parent_id, outgoing_keys in relevant_edge_keys_by_parent.items()
+        if outgoing_keys
+        and all(
+            edge_key in edge_demands and edge_demands[edge_key] is not None
+            for edge_key in outgoing_keys
+        )
+    )
+    for parent_id in resolved_parents:
+        for edge_key in relevant_edge_keys_by_parent[parent_id]:
+            edge_columns = edge_demands[edge_key]
+            assert edge_columns is not None
+            resolved_columns_by_parent.setdefault(parent_id, set()).update(edge_columns)
+
+    for parent_id, columns in resolved_columns_by_parent.items():
+        frozen_columns = frozenset(columns)
+        needed_by_node[parent_id] = frozen_columns
+        node_reasons[parent_id] = ProjectionReason(
+            rule=RUNTIME_INFERRED_STREAMING_RULE_NAME,
+            message="runtime-inferred streaming join demand",
+            details={
+                "strategy": RUNTIME_INFERRED_STREAMING_RULE_NAME,
+                "columns": tuple(sorted(frozen_columns)),
+            },
+        )
+        opaque_reasons.pop(parent_id, None)
 
     return ProjectionPlan(
         needed_by_node=MappingProxyType(needed_by_node),
-        edge_demands=MappingProxyType(edge_demands),
+        edge_demands=_EdgeIdentityMapping(edge_demands),
         materialisation_boundaries=projection_plan.materialisation_boundaries,
         opaque_boundaries=(projection_plan.opaque_boundaries - resolved_parents),
         diagnostics=ProjectionDiagnostics(
             opaque_reasons=MappingProxyType(opaque_reasons),
             node_reasons=MappingProxyType(node_reasons),
-            edge_reasons=MappingProxyType(edge_reasons),
+            edge_reasons=_EdgeIdentityMapping(edge_reasons),
         ),
     )
 
@@ -3202,7 +3384,7 @@ def plan(request: ProjectionRequest) -> ProjectionPlan:
         request.target_node_id,
         source=request.source,
     )
-    return compute_prepared_plan(
+    projection_plan = compute_prepared_plan(
         prepared.order,
         _children_of(prepared.order, prepared.parents_of),
         prepared.node_map,
@@ -3211,4 +3393,10 @@ def plan(request: ProjectionRequest) -> ProjectionPlan:
             request.profile,
             request.required_columns_by_node,
         ),
+        relevant_edges=prepared.relevant_edges,
+    )
+    return with_api_input_port_projection_boundaries(
+        projection_plan,
+        prepared.node_map,
+        prepared.relevant_edges,
     )

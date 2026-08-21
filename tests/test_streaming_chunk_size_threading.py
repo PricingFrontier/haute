@@ -171,8 +171,10 @@ class TestSinkRouteThreading:
 
         from haute.schemas import WriteOutputResponse
 
-        def fake_execute_sink(*_args, **kwargs):
-            captured.update(kwargs)
+        def fake_output_transaction(
+            _graph, _node_id, _source, streaming_chunk_size, *_args, **_kwargs
+        ):
+            captured["streaming_chunk_size"] = streaming_chunk_size
             return WriteOutputResponse(
                 status="ok",
                 row_count=0,
@@ -180,7 +182,11 @@ class TestSinkRouteThreading:
                 format="parquet",
             )
 
-        with patch.object(pipeline_route, "write_data_output", side_effect=fake_execute_sink):
+        with patch.object(
+            pipeline_route,
+            "_output_write_transaction",
+            side_effect=fake_output_transaction,
+        ):
             resp = client.post(
                 "/api/pipeline/write-output",
                 json={"graph": graph, "node_id": "sink", "streaming_chunk_size": 9876},
@@ -198,8 +204,10 @@ class TestSinkRouteThreading:
 
         captured: dict[str, object] = {}
 
-        def fake_execute_sink(*_args, **kwargs):
-            captured.update(kwargs)
+        def fake_output_transaction(
+            _graph, _node_id, _source, streaming_chunk_size, *_args, **_kwargs
+        ):
+            captured["streaming_chunk_size"] = streaming_chunk_size
             return WriteOutputResponse(
                 status="ok",
                 row_count=0,
@@ -207,7 +215,11 @@ class TestSinkRouteThreading:
                 format="parquet",
             )
 
-        with patch.object(pipeline_route, "write_data_output", side_effect=fake_execute_sink):
+        with patch.object(
+            pipeline_route,
+            "_output_write_transaction",
+            side_effect=fake_output_transaction,
+        ):
             resp = client.post(
                 "/api/pipeline/write-output",
                 json={"graph": graph, "node_id": "sink"},
@@ -215,6 +227,99 @@ class TestSinkRouteThreading:
 
         assert resp.status_code == 200, resp.text
         assert captured.get("streaming_chunk_size") is None
+
+    @pytest.mark.parametrize(
+        ("failure_kind", "expected_status"),
+        [
+            ("contract", 422),
+            ("bounded", 422),
+            ("destination", 409),
+            ("memory", 507),
+            ("unknown_envelope", 500),
+            ("native_rss", 507),
+            ("native_unsupported", 507),
+            ("crashed_memory", 507),
+            ("crashed", 500),
+            ("remote_memory", 507),
+            ("remote", 500),
+        ],
+    )
+    def test_isolated_sink_failures_map_to_stable_http_contracts(
+        self,
+        client,
+        tmp_path: Path,
+        failure_kind: str,
+        expected_status: int,
+    ) -> None:
+        from haute._worker_isolation import (
+            IsolatedWorkerCrashedError,
+            IsolatedWorkerMemoryLimitExceededError,
+            IsolatedWorkerMemoryLimitUnsupportedError,
+            IsolatedWorkerRemoteError,
+        )
+        from haute.routes import pipeline as pipeline_route
+        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+
+        if failure_kind in {"contract", "bounded", "destination", "memory"}:
+            payload = {"error_code": "test"} if failure_kind in {"contract", "memory"} else None
+            failure: BaseException = pipeline_route._OutputWriteWorkerError(
+                {
+                    "contract": "contract",
+                    "bounded": "bounded",
+                    "destination": "destination_exists",
+                    "memory": "memory",
+                }[failure_kind],
+                f"{failure_kind} failure",
+                payload,
+            )
+        elif failure_kind == "unknown_envelope":
+            failure = pipeline_route._OutputWriteWorkerError("unknown", "unknown failure")
+        elif failure_kind == "native_rss":
+            failure = IsolatedWorkerMemoryLimitExceededError(
+                rss_bytes=200,
+                rss_limit_bytes=100,
+            )
+        elif failure_kind == "native_unsupported":
+            failure = IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=100)
+        elif failure_kind == "crashed_memory":
+            failure = IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=100)
+        elif failure_kind == "crashed":
+            failure = IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=100)
+        elif failure_kind == "remote_memory":
+            failure = IsolatedWorkerRemoteError(
+                remote_type="MemoryError",
+                remote_message="private memory detail",
+                remote_traceback="private traceback",
+            )
+        else:
+            failure = IsolatedWorkerRemoteError(
+                remote_type="RuntimeError",
+                remote_message="private child detail",
+                remote_traceback="private traceback",
+            )
+
+        with patch.object(
+            pipeline_route,
+            "_output_write_transaction",
+            side_effect=failure,
+        ):
+            response = client.post(
+                "/api/pipeline/write-output",
+                json={
+                    "graph": _make_sink_graph("sink_failure.parquet").model_dump(),
+                    "node_id": "sink",
+                },
+            )
+
+        assert response.status_code == expected_status
+        if expected_status == 500:
+            expected_detail = (
+                "Internal server error"
+                if failure_kind == "unknown_envelope"
+                else _INTERNAL_ERROR_DETAIL
+            )
+            assert response.json()["detail"] == expected_detail
+            assert "private" not in response.text
 
 
 # ---------------------------------------------------------------------------

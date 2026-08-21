@@ -55,26 +55,6 @@ export function finalSelectedFeatureNames(
   )
 }
 
-export function removedFinalFeatureNames(
-  config: Record<string, unknown>,
-  eligible: readonly ModellingColumn[],
-  nextExclude: readonly string[],
-  algorithm: ModellingAlgorithm,
-): string[] {
-  const existingExclude = new Set(configField<string[]>(config, "exclude", []))
-  const nextExcludeSet = new Set(nextExclude)
-  const selected = finalSelectedFeatureNames(config, eligible, algorithm)
-
-  return eligible
-    .map((column) => column.name)
-    .filter(
-      (name) =>
-        selected.has(name)
-        && !existingExclude.has(name)
-        && nextExcludeSet.has(name),
-    )
-}
-
 /**
  * Return only the dependent fields changed by removing selected features.
  * The caller merges this object into the same atomic config update.
@@ -118,23 +98,4 @@ export function cleanupFeatureDependencies(
   }
 
   return update
-}
-
-export function featureRemovalUpdate(
-  config: Record<string, unknown>,
-  eligible: readonly ModellingColumn[],
-  nextExclude: readonly string[],
-  algorithm: ModellingAlgorithm,
-): Record<string, unknown> {
-  const removed = removedFinalFeatureNames(
-    config,
-    eligible,
-    nextExclude,
-    algorithm,
-  )
-
-  return {
-    exclude: [...nextExclude],
-    ...cleanupFeatureDependencies(config, removed),
-  }
 }

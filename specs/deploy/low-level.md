@@ -314,6 +314,12 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   A known builder-contract resolution failure therefore returns the same typed failure for a
   single quote and a multi-row request. `score_graph_lazy` releases its owned execution context
   when plan construction fails before a `DeployScorePlan` can be returned.
+- **Pyfunc conversion is inside the admitted lifetime.** `HauteModel.predict()` admits before
+  Pandas→Polars conversion and retains that same reservation through scoring and the final
+  Polars→Pandas conversion. Both copies run in execution stages, and every failure path releases
+  the admission exactly once (including a failure before `score_graph` is entered). The scorer's
+  opt-in retain-on-success mode still cleans its materialised-plan resources; the caller owns the
+  final admission release and failures inside scoring continue to release immediately.
 - **Static sources must support bounded batch reads.** Schema-declared static plain JSON
   is rejected during bundle verification under `DEPLOY_BATCH`; undeclared JSON can pass an
   at-most-one-row `DEPLOY_LIVE` schema dry-run but fail when a multi-row request selects

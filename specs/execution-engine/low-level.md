@@ -11,8 +11,10 @@
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, strict-profile decisions, fan-in edge demands, materialisation/opaque boundaries, source-scan projection, and bounded strategy diagnostics. |
+| `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer and per-input backward column demand for the closed supported operation vocabulary. |
 | `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, deterministic request-local fault points, bounded opt-in terminal telemetry, cancellation-latency evidence, cleanup precedence, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
+| `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve fault, collect-count, and typed-error telemetry. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`; owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component. |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
@@ -20,9 +22,15 @@
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge→input-name derivation: apiInput-frame edge → its frame label verbatim, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, and edge-id construction. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
+| `src/haute/_native_memory_limit.py` | Required/best-effort native memory enforcement for isolated workers: aggregate Linux cgroup and Windows Job Object leases, single-process RLIMIT compatibility, fork-safe ownership, and the context-local active-backend proof used to prevent unaccounted descendant parallelism. |
+| `src/haute/routes/_isolated_worker_async.py` | Async route bridge for cancellable isolated-worker transactions: runs the blocking supervisor off-loop, propagates route cancellation/timeout without thread-compute fallback, drains the supervisor to termination, preserves the primary failure when cleanup also fails, and provides the shared linearizable cancellation/publication gate. |
 | `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks from projected target width, and rejects an over-budget single target row), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the AST-based row-local user-code whitelist. |
 | `src/haute/_host_memory.py` | Host memory observation: `available_ram_bytes()` (per-platform probes behind one shared result contract, including Linux cgroup v2/v1 headroom clamping resolved at the process's own cgroup with ancestor-min semantics — each probe reports a real measurement or a recorded failure reason, never fabricated capacity) and `available_vram_bytes()` (the first GPU's total VRAM via nvidia-smi — the CatBoost single-device sizing basis — or nothing when no GPU is present; detection failures other than an absent binary are logged with a reason). Owns the nvidia-smi subprocess chokepoint. |
 | `src/haute/_ram_estimate.py` | Workload-side estimation: `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), `estimate_gpu_vram_bytes()`, and the `MaterialisationEstimate` contract consumed by strategy planning. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
+| `src/haute/_cardinality.py` | Pure, overflow-safe join row-bound formulas for every supported join strategy. It validates finite non-negative input bounds and the closed Polars uniqueness contract (`m:m`, `1:1`, `1:m`, `m:1`) and returns both the upper bound and auditable evidence. |
+| `src/haute/_estimate_calibration.py` | Process-local, upward-only per-`ExecutionProfile` calibration of materialisation estimates: conservatively rounds calibrated bytes, ratchets observed underestimates with a capped safety margin, exposes immutable diagnostic state, and clears inherited state after fork. |
+| `src/haute/_interactive_workers.py` | Warm, killable spawn-worker pool for interactive preview and trace execution: validates process/thread mode, runs affinity-bound serialisable jobs, supervises readiness, timeout, cancellation and RSS limits, and replaces failed workers without leaking stale results. |
+| `src/haute/_process_memory.py` | Cross-platform process liveness and resident-memory observation: Linux `/proc`, macOS `libproc`, and Windows process-handle probes return an RSS measurement or an explicit unobservable result for supervised-worker enforcement. |
 
 ## Key types and data structures
 
@@ -34,8 +42,11 @@
   `fault_injector`, and optional bounded `telemetry_sink`. `stage(name,
   node_id=...)` is a context manager that times the block, samples RSS at entry/exit,
   records an `ExecutionStageMetric`, and raises `ExecutionMemoryLimitExceededError`
-  before entering the block if already over budget. `checkpoint(label=...)` is the
-  cheap variant used between statements (no stage timing) — both call
+  before entering the block if already over budget. Stage exit always restores the
+  context-local stage stack. If the body is already propagating an exception, an
+  exit-sampling or metric-recording failure is attached to that primary exception
+  instead of replacing it; without a primary exception the exit failure remains loud.
+  `checkpoint(label=...)` is the cheap variant used between statements (no stage timing) — both call
   `cancellation_token.throw_if_cancelled()` first. `_effective_rss_limit_bytes()` is
   `rss_limit_bytes` if set, else `memory_baseline_bytes + memory_limit_bytes`, else
   `memory_limit_bytes` alone, else unbounded.
@@ -43,9 +54,19 @@
   `OPTIMISER_SETUP`, `EXPLORE_ANALYSIS`, `AUTO_RANGE`, `DEPLOY_LIVE`, `DEPLOY_BATCH`,
   `CHUNKED_MAP_REDUCE`. Keys every default memory budget, adaptive-policy entry, and
   environment-variable pair in `_execution_admission.py`.
-- **`ProjectionPlan`** (`src/haute/projection.py`, frozen dataclass) — immutable
-  execution-strategy result: `needed_by_node`, per-parent `edge_demands`,
-  `materialisation_boundaries`, `opaque_boundaries`, and bounded diagnostics.
+- **`ProjectionEdgeKey` / `ProjectionPlan`** (`src/haute/projection.py`, frozen
+  dataclasses) — immutable execution-strategy identity and result. A key contains
+  the persisted edge id plus source, target, visible handles, and retained boundary
+  ports. `edge_demands` and edge diagnostics use that key, never a lossy
+  `(source_node_id, target_node_id)` pair; the mappings accept complete keys only.
+  `ProjectionPlan.demand_for_edge()` is the runtime lookup.
+  The plan also carries `needed_by_node`, materialisation/opaque boundaries, and
+  bounded diagnostics.
+- **`ColumnLineageAnalysis`** (`src/haute/_column_lineage.py`, frozen dataclass) —
+  the reusable result of parsing a Polars node's linear frame program. It reports an
+  exact output schema when proven, per-input backward demands when proven, a closed
+  rule/reason code, and the unsupported operation when the proof stops. The planner
+  uses the same result for one-input expressions, group-bys, and fan-in joins.
   `strategy_summary_payload()` reports projected/full-width/schema-derived/
   materialisation-boundary choices without shipping the full column sets.
 - **`ExecutionStrategyDiagnostic` / `ExecutionStrategyResult`** (`projection.py`) —
@@ -101,9 +122,16 @@
 - **`MaterialisationEstimate`** (`_ram_estimate.py`, frozen dataclass) — explicit
   `available|unavailable` state with `estimated_peak_bytes`. Available requires a
   non-negative integer (zero is a legitimate empty-input estimate); unavailable
-  requires `None` and a reason. One estimate memoises metadata/schema lookups,
+  requires `None` and a reason. One strategy request shares a single graph index
+  across all of its materialisation boundaries, memoises metadata/schema lookups,
   accounts conservatively for variable-width columns, and lets unexpected failures
   propagate.
+- **`RowCardinalityAnalysis`** (`_column_lineage.py`, frozen dataclass) — the
+  fail-closed row analogue of column lineage for a linear Polars program. It reports
+  the output and peak finite upper bounds plus operation evidence, or the exact
+  unsupported operation/reason. Join operations carry their literal `validate`
+  contract into the shared formulas; `explode` is unavailable because no list-length
+  evidence exists.
 - **Available RAM** (`_host_memory.available_ram_bytes`) — tries the platform
   sources in a fixed order (Linux `/proc/meminfo` `MemAvailable`, POSIX
   `sysconf` pages, macOS Mach VM counters, Windows `GlobalMemoryStatusEx`);
@@ -229,7 +257,14 @@ without unrelated graph state changing the key. There is no separate preview-pro
 cache suffix.
 
 The resulting key addresses `_preview_cache` (an `LRUCache`, one entry per unique
-lineage request). On a full hit, cached `eager_outputs`/`errors`/`timings` are served directly.
+lineage request). Runtime identity is computed before strategy planning so a full hit
+does not repeat graph projection or source/footer estimation. Every retained entry
+therefore carries the immutable `ExecutionStrategyResult` that produced it; a full hit
+installs that result on the new `ExecutionContext`, preserving the same visible bounded
+diagnostic and provenance without re-planning. The current context still reports its
+own admission metrics, while the cached diagnostic describes the execution that created
+the cached data. A miss or partial extension always plans against the current context
+before any execution. On a full hit, cached `eager_outputs`/`errors`/`timings` are served directly.
 On a partial hit (same graph, new target needs more materialised nodes), calls
 `_eager_execute()` for only the newly-needed portion and merges into the cached entry
 — fresh outputs win over stale cached ones for any overlapping node id, and a node
@@ -285,6 +320,37 @@ declares a stable public `error_code`, plus `ExecutionCancelledError` and
 `ExecutionMemoryLimitExceededError`, which always propagate. The preview route
 adapts either explicit mismatch to the same in-situ error response.
 
+Before `_build_funcs()` constructs a JSON `apiInput`, eager and lazy execution
+derive a per-source `{port_label: columns | None}` demand from the prepared
+lineage's complete edge keys and actual `sourceHandle` values. Only ports
+on relevant edges are requested. A concrete edge demand is used only when every
+demanded column belongs to that declared port; otherwise that port remains
+full-width and its unprojected boundary remains diagnostic. Multiple consumers
+of one port union their proven columns, while one opaque consumer makes that port
+full-width. Previewing an API-input source without a selected port requests the
+full bundle. Demand-scoped ancestors continue to report the complete declared
+schema through flat `columns` for a single port and through `frame_columns` for
+every configured multi-port frame; schema visibility never requires loading an
+unused parquet payload.
+
+The strategy planner's JSON footer estimator, runtime-input fingerprint, and runtime
+loader all consult the JSON-shredding source-signature boundary. Their independently
+initiated calls share one process-wide SHA-256 proof only behind the same native
+identity/change revision. The JSON `apiInput` runtime-file record therefore carries
+that SHA-256 proof directly and must not additionally call the generic xxHash runtime
+path boundary. This is a versioned `RUNTIME_GRAPH_INPUT` byte-layout change. The first
+observation or any revision movement still performs the full content hash, and
+native-revision failure stays visible through the JSON component's structured
+conservative-fallback warning. Non-JSON runtime paths continue through the generic
+stat-gated runtime-path fingerprint contract.
+
+An exact empty edge demand means that the consumer needs row cardinality but no
+user column (for example `select(pl.len())`). Polars cannot preserve non-zero row
+cardinality in a zero-column frame, so source, edge, and checkpoint projection
+retain exactly one deterministic schema-ordered carrier column. The carrier is a
+physical execution detail, not a logical demand: it is removed naturally by the
+consumer and must never broaden to the whole source or collapse the row count.
+
 **Sink/lazy execution (`execution.execute_lazy_graph` → `_execute_lazy._execute_lazy`).**
 Same graph preparation as the eager path, plus: optional seeding from a
 `DataFrameExecutionCacheRequest` (skips rebuilding any node whose entire downstream
@@ -306,6 +372,18 @@ checkpoint directory, the decision has no materialisation effect. `gc.collect()`
 `_malloc_trim()` run every
 `_GC_BATCH_INTERVAL` (3) checkpoints, not every one, since Polars/Arrow buffers are
 freed immediately on `del` and full GC only matters for cyclic Python garbage.
+
+When a dataframe-cache key names a broader concrete `required_columns` set than the
+immediate runtime request, backward projection is planned from their union. The cache
+key is therefore a physical materialisation demand, not only an identity check: source
+and intermediate projections must retain every passthrough dependency needed to write
+the declared artifact. A narrow runtime request may warm a broader cache entry, but it
+must never silently prune a cache-key column and then skip the cache write. If a column
+required only by that broader cache key is absent from the actual runtime schema, cache
+population is skipped and the cache-only demand is removed from both edge and structural
+checkpoint projections. A missing cache-only column must never fail otherwise-valid
+runtime execution; a missing runtime-required column still raises the typed contract
+mismatch at the first proven boundary.
 
 Checkpoint paths never interpolate an arbitrary node id. `_checkpoint_filename`
 preserves readable `<node_id>.parquet` names for the lower-case safe grammar (at
@@ -371,9 +449,16 @@ Post-read input code is accepted only when the shared AST proof establishes row-
 semantics and is applied exactly once after provider resolution.
 
 **Worker isolation (`run_isolated_worker`).** Starts a `spawn`-context child process
-running `_isolated_worker_entrypoint`, which applies an `RLIMIT_AS` cap (POSIX only,
-and not on macOS — `process_memory_caps_supported()` excludes `darwin` because the
-kernel doesn't actually enforce the limit) before calling the target function and
+running `_isolated_worker_entrypoint`. Before user work begins, Linux prefers a
+delegated cgroup-v2 child with a finite `memory.max` and otherwise applies
+`RLIMIT_AS`; Windows assigns the child to a Job Object with a finite aggregate
+job-memory commit limit, so descendants cannot each consume the complete admitted
+budget. Limits are growth budgets: the native baseline is measured before the
+hard ceiling is installed. Independently, the parent samples child RSS and
+terminates it when the configured cap is crossed; this watchdog is secondary
+defence and observability, never evidence that a hard kernel cap exists.
+`process_memory_caps_supported()` therefore means a native hard cap is available,
+not merely that RSS can be sampled. The child calls the target function and
 putting `("ok", result)` or `("error", (type, message, traceback))` on a
 maxsize-1 queue. The parent polls `process.is_alive()` in `_wait_for_worker()`,
 checking `config.stop_reason()` and the timeout deadline each iteration. While the
@@ -386,13 +471,90 @@ callbacks always run (via `_run_cleanup_callbacks`), even when the primary path
 already failed — a cleanup failure is attached to the primary error via `add_note()`
 rather than replacing it.
 
-`HAUTE_WORKER_MEMORY_ENFORCEMENT` has only `best_effort|required`. Configuration is
+`HAUTE_WORKER_MEMORY_ENFORCEMENT` has only `best_effort|required` and defaults to
+`required`. Configuration is
 resolved before spawn from plain admitted-context fields; the child constructs a
-fresh context rather than receiving the parent object. `required` rejects a missing
-positive limit or unsupported hard cap before process creation. `best_effort`
-continues with platform-supported caps plus child RSS checkpoints. Cancellation or
+fresh context rather than receiving the parent object. The envelope carries the
+parent's effective admitted growth headroom (which may be narrower than the profile
+default under an absolute process cap) and that optional absolute cap. The child and
+parent watchdog both enforce the narrower of those limits against the warm child's
+own RSS baseline. `required` rejects a missing positive native growth limit or an
+unsupported cap before process creation; an absolute RSS watchdog value alone never
+satisfies that contract. A native-cap setup failure is a contract error before user
+work begins. `best_effort` is an explicit compatibility override that continues with
+any platform-supported cap plus child RSS checkpoints, without claiming hard
+enforcement. A failed best-effort programming attempt clears its active-backend evidence;
+the request cannot advertise or restore a limit that was never installed, including when
+a warm Windows worker retains an otherwise reusable Job Object handle. Native cgroup
+directories and Job Object handles are scoped to the
+worker and cleaned after exit. Cancellation or
 timeout terminates, escalates to kill, joins, and verifies death; a surviving child is
 `IsolatedWorkerTerminationError`, never reported as successful cancellation.
+
+macOS exposes resource-limit symbols but does not provide a dependable hard
+per-process memory ceiling for this contract. Required mode therefore rejects it;
+macOS callers and cross-platform transport tests must opt into `best_effort`
+explicitly, retaining RSS supervision without claiming native enforcement.
+
+The active native lease exposes only its bounded backend kind within the worker's
+execution context. Code that may create descendants can do so only under an aggregate
+`cgroup` or Windows Job Object lease. `RLIMIT_AS`, an unavailable best-effort lease,
+and an ordinary in-process execution context are not descendant-wide evidence; those
+paths must retain a single-process bounded algorithm instead of multiplying the
+admitted budget across a process pool.
+
+The native lease covers result construction, synchronous pickle serialization, and
+transport-buffer publication—not merely the user callable. A one-shot child closes and joins
+its result-queue feeder before it exits and never widens its finite lease first; OS teardown and
+the joined parent's exact native-resource cleanup end that lease. A warm child sends one
+serialized result while the lease remains active, waits for `("ack", job_id)`, restores the
+lease, and returns a matching release acknowledgement. The parent validates both envelopes
+before returning or reusing the slot. Any missing, stale, malformed, or failed release kills and
+replaces that exact worker, so queue buffering cannot become an unaccounted post-request memory
+spike.
+
+**Warm interactive worker pool.** `InteractiveWorkerPool` owns a fixed number of
+long-lived `spawn` workers (default two, configured by
+`HAUTE_INTERACTIVE_WORKER_COUNT`). Each slot has a single request in flight and a
+bounded result queue. A stable, non-user-visible affinity digest maps the same
+graph/source lineage to the same slot so `_preview_cache` and trace cache hits survive
+between clicks. The server starts the pool after environment/project initialisation
+and closes it during lifespan teardown; a lazy start is retained for non-ASGI callers.
+Worker readiness is polled at the configured supervisor interval. If a child exits
+before publishing its ready envelope, startup fails immediately with its exit code;
+it never waits out the full startup deadline for a process that is already dead.
+The wire request is `(job_id, module-level callable, pickle-safe args/kwargs,
+IsolatedExecutionBudget)`. A worker constructs a fresh local `ExecutionContext` from
+that budget and returns only the route result/metrics envelope. Parent locks,
+cancellation tokens, callbacks, Polars frames, and contexts never cross the process
+boundary.
+
+The supervisor starts a request deadline only after its affinity slot is acquired. It
+polls the result channel, worker liveness, parent cancellation/supersession, and child
+RSS at the configured interval. Timeout, cancellation, supersession, memory excess,
+protocol mismatch, or an unresponsive termination kills and joins that exact worker;
+the slot is synchronously replaced before another request can acquire it. Successful
+results and structured remote errors carry a matching job id. A stale result from a
+previous worker generation is a protocol error, never accepted for a later request.
+Pool shutdown signals every in-flight slot; active work is killed and joined at the
+next supervisor poll without starting a replacement, so ASGI teardown cannot wait for
+the request deadline or leave computation behind. Slot cleanup is idempotent across
+the request and teardown paths.
+Only the closed public contract-error identities and Haute's two structured memory
+errors may contribute an HTTP detail payload; an arbitrary exception that happens to
+define `to_payload()` is still an internal 500 and cannot smuggle child data into a
+response. Three additional memory outcomes are classified from parent-side evidence
+and answered with a parent-authored, data-free 507 detail (never the child payload):
+an `InteractiveWorkerCrashedError` whose exit code looks memory-limited under a
+configured growth cap (the same `SIGKILL`/`SIGABRT` heuristic as one-shot workers,
+recorded as `terminal_reason="memory_limited"` on the exception), a remote error
+whose exact identity is `builtins.MemoryError`, and a remote
+`haute._native_memory_limit.NativeMemoryLimitUnsupportedError`. A remote exception
+merely *named* like one of these from another module remains an internal 500.
+`HAUTE_INTERACTIVE_EXECUTION_MODE` is the closed set `process|thread`; production
+defaults to `process`. `thread` exists as an explicit compatibility/test mode and
+retains the documented non-killable timeout semantics—it is never an automatic
+fallback after a process failure.
 
 ## Edge cases and invariants
 
@@ -408,6 +570,57 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   caches for these are keyed `(node_id, frame_label)` instead of just `node_id` so
   two consumers of different frames from the same source don't collide on
   contract-check state.
+- **Polars lineage is structural, compositional, and fail-closed.** The analyser
+  accepts a plain sequence assigning the live frame to `df`, including an identity
+  program, with inert imports, docstrings, and scalar literal helpers. It turns each
+  supported call into an
+  operation with a forward schema transfer and a backward demand transfer. Literal
+  `select`/`select_seq`, `with_columns`, `rename`, `filter`, `fill_null`, row-only
+  slicing, `sort`, literal-subset `unique`, literal `explode`, closed
+  `group_by(...).agg(...)`, and supported literal-key joins can be composed in one
+  chain. Every expression or aggregate that Polars executes contributes its input
+  columns even if a later select omits its output. A select or aggregate establishes
+  an exact schema without requiring an upstream schema; rename and join collision
+  decisions use exact schemas and otherwise fail closed.
+- **Lineage inputs are incoming edges, not parent node ids.** Each input binding
+  carries its complete `ProjectionEdgeKey`, executable `edge_input_name`, and exact
+  schema when one is available. Exact API schemas are resolved per source handle;
+  exact structural Polars outputs propagate in topological order. This permits two
+  ports of one `apiInput` to join one another and permits several joins in one linear
+  transform without conflating their demands. Generic contracts that address only a
+  parent node id remain usable when that id identifies exactly one incoming edge;
+  duplicate-parent ambiguity is an observable boundary.
+- **Concrete registered contracts propagate exact single-input schemas.** In the
+  same topological forward pass, a non-opaque registered builder contract with one
+  exact incoming edge transfers `input columns ∪ produced columns` to the node's
+  exact output. This is the schema counterpart of the existing backward contract
+  algebra, which treats non-produced output columns as passthrough. It lets a
+  terminal identity preview (including `modelling`) turn an unseeded all-column
+  request into a concrete demand without claiming that any columns were pruned.
+  An `AllExceptColumns(required_columns, excluded_columns)` seed is resolved whenever
+  that exact output is available as
+  `(exact output - excluded_columns) ∪ required_columns`; the resolved seed is
+  unioned with any independent downstream demand and propagated through ordinary
+  edge/port algebra. This makes CatBoost's include/exclude feature menu a physical
+  source projection rather than a post-load dataframe drop. Without an exact output
+  schema the seed remains schema-dependent and conservative; the planner must not
+  guess that `required_columns` alone is the complete training input.
+  Declared annotations are not used as forward-schema evidence for arbitrary user
+  code; missing input schemas, opaque registered contracts, and multi-input nodes
+  remain unproven.
+- **Unowned fan-in never uses ordinary contract algebra.** After the dedicated
+  optimiser, edge-join, and compositional Polars fan-in rules have had an
+  opportunity to assign columns to individual incoming edges, any remaining node
+  with more than one distinct parent retains an unprojected streaming boundary.
+  A generic passthrough contract cannot be broadcast to every parent because its
+  output-column demand does not prove which parent owns each input column.
+- **Unsupported syntax stays visible.** Dynamic selectors/keys, dataframe-dependent
+  helper assignments, unregistered expression functions or string-argument methods,
+  branches/loops/functions, unsupported join options, schema-
+  dependent ownership without an exact schema, and operations without a registered
+  transfer return a structured unsupported lineage result. The planner retains the
+  full-width edge/node boundary and its diagnostic; neither planning nor the UI
+  silently treats it as projected.
 - **Per-edge input names, not per-source names.** `_build_funcs` derives each
   node's `source_names` per incoming edge via `edge_input_name(edge, source_node)`
   (`_graph_utils.py`) — an apiInput edge contributes its frame label, every other
@@ -454,11 +667,15 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   computation cost — cited in the code as keeping contract enforcement under a <5%
   overhead budget.
 - **Passthrough-runtime nodes skip output-contract checks.** A node builder-wired to
-  `_passthrough_fn` (an unconfigured `MODEL_SCORE`/`OPTIMISER_APPLY`, "drag onto
-  canvas, configure later") has a contract describing its *configured* shape, which
+  `_passthrough_fn` (a `MODEL_SCORE` with no source type selected, or an
+  unconfigured `OPTIMISER_APPLY`, "drag onto canvas, configure later") has a
+  contract describing its *configured* shape, which
   the stub doesn't yet produce; the output check is skipped for exactly this state so
   the unconfigured UX doesn't look broken, while input checks and any contract that
   becomes concrete once the node IS configured still apply.
+  Selecting `run` or `registered` is a configuration commitment: a missing `run_id`
+  or `registered_model` is a loud `ConfigError` in both contract planning and the
+  runtime builder, never an identity passthrough.
 - **`_compile_preamble` single-flight cache.** Keyed on `(preamble text, cwd,
   pipeline_dir, execution_fingerprint)`; a `_PreambleCell` per key is created under a
   tiny `_preamble_cells_guard` lock (never held during exec, so a hot cache hit never
@@ -515,9 +732,15 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
 - **Checkpoint filenames are one safe component.** Ordinary safe node ids preserve
   their readable filename; every unsafe spelling is hashed into the disjoint
   `node=<sha256>.parquet` namespace before joining it to `checkpoint_dir`.
-- **RAM estimation returns `None` rather than guessing** when parquet metadata or the
-  canonical detailed target schema is unavailable (for example Databricks sources) —
-  callers must treat `None` as "estimate unavailable," not "unlimited."
+- **RAM estimation returns `None` rather than guessing** when parquet metadata, the
+  target row-cardinality proof, or the canonical detailed target schema is unavailable
+  (for example Databricks sources or opaque row expansion) — callers must treat `None`
+  as "estimate unavailable," not "unlimited." `estimate_safe_training_rows()` uses the
+  target node's proven output upper bound for training/pool sizing and user-facing row
+  counts. It does not reuse the largest ancestor row count. The independent
+  materialisation estimator uses the greatest intermediate bound and is admitted before
+  the full-frame cache/checkpoint; a final target-row limit cannot conceal or mitigate an
+  over-budget upstream join.
 - **A JSON `apiInput` is sized per emitted table, not per node.** Its v2 cache is one
   parquet per emit-true table, so the node has no single `(row_count, column_count)`
   summary — but each table does, and an edge's source handle names the exact table it
@@ -532,11 +755,59 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   the wrong data; an unreadable or unmatched cache still yields "estimate unavailable."
   Without this, every group-by beneath an `apiInput` was refused for want of an estimate —
   which is the ordinary shape of aggregating a shredded child table per quote.
+- **Demand-scoped admission is proof-sensitive.** For each materialisation boundary,
+  the planner inspects every relevant incoming edge. When all edge demands are exact,
+  estimation uses the union of the physically required columns, including columns
+  read only by grouping, filters, joins, and expressions. A cardinality-only demand
+  retains one physical carrier column. If any edge is opaque, lacks exact schema, or
+  cannot map a demanded column to source metadata, estimation uses the complete
+  relevant source-port width. Unrelated sibling ports are never counted. Diagnostics
+  record `projected_columns` or `complete_width_fallback` as the admission basis.
+  JSON-port metadata first requires plausible schema metadata in a cache layer and
+  only then computes the complete source-content proof needed to trust that layer.
+  With no plausible cache generation, admission reports the estimate unavailable
+  without hashing a source that uncached execution will immediately parse itself.
+- **Cardinality-scoped admission is independently proof-sensitive.** Exact source or
+  API-port row counts seed a memoised graph walk. Known row-preserving and
+  row-reducing built-ins retain the incoming upper bound; scenario expansion applies
+  its validated step multiplier; linear Polars code uses `RowCardinalityAnalysis`;
+  and Edge Join uses its validated roles, strategy, and uniqueness contract directly.
+  The estimator records both the output bound and the greatest bound reached while
+  executing the materialising node. Join bounds are mathematical: Cartesian product
+  for unconstrained inner/cross joins, one-side bounds when the opposite key is
+  unique, left/right preservation for semi/anti and unique outer sides, and explicit
+  unmatched-row terms for full joins. These formulas are not the empirical 3x
+  lifecycle overhead factor, which is applied only after row count and physical row
+  width are established. Fractional measured widths are multiplied as exact rational
+  values and rounded upward, so very large finite join bounds neither overflow a float
+  nor lose bytes through truncation. Missing row metadata, dynamic/unsupported join semantics,
+  `explode`, opaque row-changing code, invalid input-name binding, or an unknown
+  multi-input built-in returns `row_cardinality_unavailable:<node>:<reason>`; the
+  normal materialisation-estimate-unavailable diagnostic surfaces that detail and
+  refuses admission.
+
+- **Estimate calibration only tightens admission.** A bounded process-local registry
+  stores one basis-point multiplier per `ExecutionProfile`. On terminal metrics with
+  a positive estimate and observable RSS growth, an observed/estimated ratio above
+  the current multiplier ratchets that profile upward with a fixed safety margin, to
+  an 80,000-basis-point (8x) cap. It never ratchets downward, never converts unavailable evidence
+  into an estimate, and never keys on a graph, path, node, or column. Planning applies
+  the current factor before the headroom comparison and exposes both raw/calibrated
+  bytes and factor in diagnostic assumptions and aggregate telemetry. Test reset and
+  snapshot seams make the state deterministic.
 - **Version-1 strategy diagnostics are strictly bounded.** Boundary/reason collections
   retain at most 32 entries, provenance at most 128, and remediation/messages at most
   512 characters with deterministic truncation. Missing/malformed required fields,
   unknown version-1 enums, and higher schema versions are invalid; callers may ignore
-  only additive fields within version 1.
+  only additive fields within version 1. When a plan contains more than one kind of
+  boundary, `blocking_node_id` and `blocking_operator` identify the first boundary of
+  the selected strategy kind: a `materialisation-boundary` diagnostic points at the
+  admitted materialisation rather than an earlier projection boundary, while
+  projection/full-width diagnostics point at the first unprojected boundary. The
+  bounded `boundaries` collection reports capped, total-counted detail in
+  topological order and, when truncated, retains the earliest representative of
+  every boundary kind present before filling the remaining capacity. A mixed plan
+  therefore cannot truncate away its only unprojected-boundary evidence.
 - **Group-by profile matrix is closed:**
 
   | Profile | Version-1 result |
@@ -580,10 +851,24 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   genuinely propagating primary exception is an explicit opt-in.
 - **Terminal telemetry is opt-in and redacted.** `HAUTE_EXECUTION_TELEMETRY` is a
   strict boolean validated/warmed at startup and defaults false. One terminal event
-  has at most 32 allow-listed scalar attributes and 128-character string values; it
+  has at most 48 allow-listed scalar attributes and 128-character string values; it
   excludes identifiers, paths, columns, plans, user data, messages, and exception
   text. Overflow drops/logs the event rather than truncating the allow-list, and
-  assembly/sink failures cannot alter execution status.
+  assembly/sink failures cannot alter execution status. New efficiency counters are
+  additive: the existing V1 RSS, truncation, strategy, admission, streamability, and
+  width-state attributes remain present.
+- **Efficiency evidence has closed reason sets.** `ExecutionContext` retains bounded
+  counters for cache proof hits, misses, and direct fallbacks. Miss reasons are a
+  closed enum (metadata/source mismatch, artifact integrity/schema failure,
+  unreadable artifact, and proof unavailable); unknown strings are rejected at the
+  recording boundary. Every metrics payload carries the cache-proof counters and
+  their reason-code breakdown — the field is required on both the backend response
+  model and the frontend guard, and `misses` must equal the closed reason-count
+  total — plus aggregate
+  requested/scanned widths and estimate calibration. A width total is emitted only
+  when that width is known for every recorded node; partial evidence remains `null`
+  rather than looking like a deceptively narrow complete total. They never include cache paths,
+  source identities, column names, graph ids, or exception messages.
 
 ## Error handling
 
@@ -635,8 +920,9 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   `"memory_sampler_unavailable"`. A sampler that becomes unavailable mid-run therefore
   fails loudly rather than silently disabling the remaining memory budget.
 - `ExecutionAdmissionError` (`_execution_admission.py`, extends `MemoryError`) —
-  raised before a bounded operation starts (the RSS sampler returned `None`, RSS is
-  already over a configured process cap, or the in-flight budget is exhausted);
+  raised before a bounded operation starts (the RSS sampler returned `None`, RSS has
+  no positive headroom below a configured process cap, or the in-flight budget is
+  exhausted);
   carries `to_payload()` with the same shape family as the mid-run variant.
 - `RuntimeError` from admission configuration — raised before context creation for
   an unknown `HAUTE_EXECUTION_MEMORY_POLICY`, a malformed/non-positive explicit
@@ -672,10 +958,9 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   naming the limit, which also stays on `timeout_seconds`),
   `IsolatedWorkerStoppedError` (parent-requested stop; raises `ValueError` if
   constructed with `terminal_reason="completed"`, which is not a valid stop reason),
-  `IsolatedWorkerMemoryLimitUnsupportedError` (platform can't enforce the requested
-  cap — always raised on Windows if the address-space-limit code path is ever
-  reached, since callers are expected to gate on `process_memory_caps_supported()`
-  first), `IsolatedWorkerTerminationError` (the child remained alive after terminate
+  `IsolatedWorkerMemoryLimitUnsupportedError` (neither a usable address-space cap nor
+  observable child RSS is available for a required limit),
+  `IsolatedWorkerTerminationError` (the child remained alive after terminate
   and kill attempts), `IsolatedWorkerCleanupError` (one or more cleanup callbacks raised; attached
   via `add_note()` to a primary error rather than replacing it, or raised alone if
   the worker itself succeeded).
@@ -687,11 +972,44 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
 
 ## Testing
 
-- `tests/performance/test_polars_scale_scenario.py` — bounded Polars join/training projection scale generation and CI-small execution-profile smoke contracts.
+- `tests/performance/test_polars_scale_scenario.py` — bounded Polars join/training projection scale generation, modelling-menu demand propagation, and CI-small execution-profile smoke contracts.
+- `tests/performance/test_execution_engine_certification.py` — isolated projected-versus-full wide-Parquet RSS comparison, per-port API-input and direct-JSONL checkpoint evidence, and a fresh-interpreter restart certificate for cache-proof reuse, telemetry privacy, and snapshot-owner cleanup.
+- `tests/performance/_execution_resilience_probe.py` plus
+  `test_execution_engine_certification.py` — fresh-interpreter worker-pool soak with
+  real crash replacement and RSS/descriptor-or-handle plateau evidence; five-phase
+  cache-publication crash recovery; `ENOSPC` rollback; multi-process same-cache
+  contention; and metadata-only extreme-join rejection. The `ci`, `1m`, and `10m`
+  scales use respectively bounded local counts, thousands of weekly executions, and
+  ten thousand monthly executions with one thousand replacements.
+- `scripts/run_perf_suite.py` — writes versioned JSON/Markdown/JUnit evidence and,
+  when `--baseline-report` is supplied, validates one compatible retained report and
+  applies configurable total-time, peak-RSS, and per-test regression thresholds plus
+  a timing noise floor. Suite-wide metrics require identical test identity, while
+  matching per-test comparisons survive ordinary suite additions. Baseline parse/schema
+  errors are fatal; an environment or scale mismatch is retained as an explicit
+  non-comparable result.
+- `.github/workflows/performance.yml` — weekly one-million-row and monthly ten-million-row retained performance/resilience certificates, plus Linux/Windows/macOS process-kill, spill, cross-process cache, publication-crash, restart, native-memory, and lifecycle-plateau lanes. A successful scale-specific Python report is cached as the next historical baseline and retained as a workflow artifact used when the cache has expired; failed runs never replace either source. The baseline loader accepts only a timezone-stamped, successful, all-passed call-phase report whose collection/result counts, outcome totals, slowest-test projection, wall-time partition, RSS evidence, unique identities, and closed v4 test records reconcile exactly. Manual dispatch retains an explicit `ci|1m|10m` scale selector.
 - `tests/test_bounded_collect_contracts.py` — bounded execution modules route collection through the streaming helper rather than direct Polars `.collect()`.
 - `tests/test_builder_edge_cases.py` — builder edge cases for instance resolution, constants, outputs, live-switch/scenario expansion, banding, dispatch, and empty frames.
 - `tests/test_column_renames.py` — column-rename application for configured, empty, missing, and edge-name mappings.
 - `tests/test_compute_needed_columns.py` — topology, contract-algebra, and one-computation-per-node performance invariants for backward needed-column analysis.
+- `tests/test_column_lineage.py` — operation-level schema/demand transfer and
+  differential execution checks: running supported programs against projected
+  inputs must equal running the same programs against full-width inputs.
+- `tests/test_cardinality.py` — overflow-safe join-cardinality formulas, uniqueness
+  contracts, evidence payloads, invalid bounds, and row-cardinality lineage analysis.
+- `tests/test_column_lineage_properties.py` — Hypothesis differential properties for the closed Polars column-lineage model, including projected-versus-full execution equivalence.
+- `tests/test_interactive_route_isolation.py` — preview and trace routes execute serialisable production targets through the spawn-worker boundary.
+- `tests/test_interactive_worker_pool.py` — warm interactive-worker pool readiness, protocol, timeout, cancellation, RSS-limit, replacement, and execution-mode contracts.
+- `tests/test_native_memory_limit.py` — native-backend selection, strict-policy
+  rejection, Linux/Windows aggregate enforcement, active-backend scoping, lease
+  cleanup, and fork-safe ownership contracts.
+- `tests/test_materialisation_calibration.py` — upward-only materialisation-estimate calibration, conservative rounding, profile isolation, and planner/admission integration.
+- `tests/test_process_memory.py` — platform-dispatched RSS and liveness probes, including malformed, inaccessible, and Windows-handle cases.
+- `tests/test_projection_aware_admission.py` — materialisation-boundary admission estimates use exact projected edge demand and preserve conservative fallback behaviour.
+- `tests/test_projection_lineage_integration.py` — edge-identity and API-port
+  integration of compositional lineage, terminal modelling schema propagation,
+  and fail-visible ambiguous/unsupported boundaries.
 - `tests/test_data_input_chunking.py` — Data Input provider snapshots and chunk-plan/runner execution, including unsupported chunk plans.
 - `tests/test_extract_column_refs.py` — extraction of referenced columns across empty/minimal, selected/excluded, and node-config shapes.
 - `tests/test_graph_input_identity.py` — edge-derived pipeline input-name derivation contract across source handles and graph edges.

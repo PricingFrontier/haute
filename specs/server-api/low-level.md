@@ -229,7 +229,9 @@ execution-telemetry and optimiser-housekeeping configuration →
 spawn `_watcher_forever()` and a tracked worker-thread optimiser-reaper task. The lifespan yields
 without awaiting filesystem housekeeping, so temp-directory population cannot delay server
 readiness. Shutdown cancels and awaits the watcher and observes the reaper task; reaper failures
-are logged rather than silently discarded.
+are logged rather than silently discarded. A partial startup failure after the interactive pool
+has opened still cancels every task already created, clears the exported task handles, and closes
+the pool; no startup exception may strand a worker process or watcher.
 
 **Request middleware chain.** `add_middleware` prepends entries and Starlette later wraps in
 reverse, so runtime outer-to-inner order is `LocalTrustedHostMiddleware →
@@ -373,28 +375,72 @@ after request containment, build a composite key from
 `(operation, source_file, source, graph_fingerprint, ...
 operation-specific selectors)` → `run_latest()` → on preview, an
 `ExecutionCancellationToken` is threaded through so a superseded preview's in-flight work is
-asked to cancel cooperatively, not just abandoned. Trace has no corresponding token: its old
-route response is superseded, but the newer same-key trace waits on the condition until the
-old thread finishes. Both wrap execution in `run_blocking_with_response_timeout`. If that
-helper raises a
-`BlockingWorkTimeoutError`, `SupersessionCoordinator` extracts its `background_task` and
-defers clearing `state.active` and releasing the semaphore until the task finishes. Same-key
-work therefore cannot overlap after a 504 and timed-out calls cannot create a worker storm.
-An error carrying that background task is re-raised before the post-worker generation check,
-so a newer request cannot mask the timeout as 409 or trigger early cleanup.
-Preview also cancels its token and defers admission release; trace has no cancellation token,
-so its thread runs to completion while retaining the key/permit.
+stopped. In production process mode the call is submitted to the warm interactive-worker
+pool. The supervisor polls the preview cancellation token (trace receives an equivalent
+parent stop signal), kills and joins the process on timeout/supersession, replaces the
+slot, and only then resolves the route future. The coordinator can therefore clear
+`state.active`, release the semaphore, and release admission immediately after that
+terminal result; there is no late computation. Explicit thread mode retains
+`run_blocking_with_response_timeout`, `BlockingWorkTimeoutError`, and its
+`background_task`, so the existing deferred cleanup path remains correct and visible
+rather than becoming a silent fallback.
+The worker budget is the parent's actual admitted headroom plus its optional absolute
+process cap, not merely the wider profile default. Remote HTTP reconstruction accepts
+payloads only from the closed public-contract and memory-error identities; arbitrary
+child exceptions remain redacted internal failures even if they implement a method
+named `to_payload`. Memory outcomes the child cannot curate are classified from
+parent-side evidence and answered with a parent-authored, data-free 507 detail
+(`error_code="memory_limit"` plus the operation and a closed reason): a pool worker
+crash whose exit code looks memory-limited under a configured growth cap
+(`reason="worker_may_have_exceeded_memory_limit"`), a remote exact
+`builtins.MemoryError` (`reason="worker_memory_exhausted"`), and a remote exact
+`NativeMemoryLimitUnsupportedError` (`reason="native_memory_cap_unavailable"`). Any
+other pool-worker crash logs and returns the redacted internal 500.
 
 **OUTPUT dry-run** (`routes/output_assemble.py`): validate the mapping shape
 (`validate_v2_output_mapping`, data-independent) → flatten the graph → locate and type-check
 the target node → validate every runtime input path stays inside the project root → replace
-the node's `config` in-memory with the volatile mapping → `execute_graph(...,
-target_preview_only=True)` inside an admitted execution context and under a timeout → map the
-result's `status`/`error` to the response, or return the rendered `document` on success.
-Admission refusal is translated through the shared structured-memory adapter to 507. Normal
-success and failure release admission in `finally`; a `BlockingWorkTimeoutError` registers a
-background-task callback and transfers release ownership to it, so the context stays live
-until the worker actually exits.
+the node's `config` in-memory with the volatile mapping → extract the parent's admitted budget
+→ execute and response-model-validate in the warm process pool. The worker constructs a
+child-local context without reserving admission twice. Timeout/cancellation kills and joins the
+slot before the route releases admission; no late result exists. The closed remote contract and
+memory errors retain their existing 422/507 mappings; arbitrary remote failures remain redacted.
+Explicit thread compatibility mode uses the existing deferred-release helper and is never an
+automatic fallback.
+
+**JSON cache build** (`routes/json_cache.py`, `_json_shred.py`): the parent resolves and
+validates paths/config, acquires the cross-process cache build lock off the event loop, chooses
+one unique sibling staging directory, and holds the admitted reservation. A one-shot process
+streams the source into that exact directory and returns a pickle-safe signed manifest. Before
+atomic directory replacement the parent rechecks source identity, staging containment, manifest
+shape, every Parquet signature/footer, and current ownership. The final no-op return or directory
+swap runs under the same short gate that records route cancellation, making cancellation and
+publication linearizable. Timeout, crash, or cancellation removes
+only the known staging directory after the child is joined. The synchronous library entry point
+uses the same prepare/validate/commit primitives in-process, so route isolation cannot drift from
+CLI behavior.
+
+**Output write** (`routes/pipeline.py`, `executor.py`): preflight destination checks occur in the
+parent. For file sinks, a one-shot process executes the graph and writes a parent-selected sibling
+staging file, fsyncs it, and returns a bounded manifest containing the canonical final/staging
+paths, byte length, digest, and response counts. The parent validates containment, type, digest,
+single-link ownership, overwrite policy, and ownership immediately before atomic publication and
+directory fsync. A hard-linked stage is rejected so another pathname cannot mutate the selected
+output after publication. For
+database/lakehouse sinks, the child performs the existing connector transaction and returns its
+bounded result; no non-transactional parent replay is introduced. Timeout/cancellation joins the
+worker and removes a known file staging artifact before returning 504. The sole file-publication
+and directory-fsync section runs under the same short gate that records route cancellation, so a
+result/cancel race has one linearized winner and cannot pass through a check/rename gap.
+
+**Explore materialisation** (`routes/_explore_service.py`, `_explore_cache.py`): the background
+supervisor remains a parent thread only to bridge the synchronous one-shot worker into the job
+lifecycle. The child performs graph execution, bounded materialisation/statistics, and prepares a
+parent-named durable generation without selecting it. The parent validates the immutable report
+and artifact, rechecks latest-wins ownership, atomically commits `current.json`, restores the
+committed generation into process-local caches, and transitions the job. Cancellation,
+supersession, timeout, and worker failure terminate/join the process and discard that exact staged
+generation; child code cannot write the `JobStore` or parent LRU caches.
 
 ## Edge cases and invariants
 
@@ -484,10 +530,11 @@ until the worker actually exits.
 | `ApiInputSchemaError` | json-cache; preview/write execution | 422 | JSON cache retains its `type` discriminator envelope; execution routes use the public-contract adapter (`api_input_schema_invalid`). |
 | `OutputMappingSchemaError` | output-assemble dry-run | 422 | Raised both by the schema-only pre-check and if execution surfaces it deeper (an unmapped port). |
 | `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError` | preview, output write, output-assemble dry-run | 507 | Payload is `exc.to_payload()`, nested under `detail`, for every route. |
+| `InteractiveWorkerCrashedError` (memory-classified), remote `builtins.MemoryError`, remote `NativeMemoryLimitUnsupportedError` | preview, trace, output-assemble dry-run | 507 | Parent-authored data-free detail with `error_code="memory_limit"`, the operation, and a closed reason; a non-memory pool-worker crash stays a redacted 500. Mirrors the write-output worker classification. |
 | `BoundedMemoryUnsupportedError` | output write | 422 | Distinguishes "cannot stream safely" from a hard resource limit. |
 | `DataOutputDestinationExistsError` | `POST /api/pipeline/write-output` | 409 | `overwrite=false` refuses an existing file/table before publication and returns the destination in the detail. |
 | `SupersededRequestError` | preview, trace | 409 | Raised by `SupersessionCoordinator`; the worker never runs for a superseded generation. |
-| `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, output write, output-assemble | 504 | Worker threads are never killed. Preview/output write request cooperative cancellation; trace retains its supersession key/permit; OUTPUT dry-run defers context release until its late worker finishes. A background timeout is not masked by supersession. |
+| `IsolatedWorkerTimeoutError`, `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, JSON cache build, output write, output-assemble, Explore | 504 / timed-out job | Production process mode kills and joins the exact worker before returning or transitioning the job. Explicit thread compatibility mode is opt-in and retains cooperative/deferred cleanup; it is never selected after a process-start failure. |
 | `HTTPException` (raised directly) | path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | `raise_node_not_found`, `raise_node_type_error`, `raise_pipeline_not_found`, `raise_validation_error` centralise the structured-log + raise pattern. |
 | Any other `Exception` | route catch-alls | 500 | Route handlers generally log and return `_INTERNAL_ERROR_DETAIL`; `_RequestIdMiddleware` is a separate backstop whose fixed detail is `Internal server error`. |
 

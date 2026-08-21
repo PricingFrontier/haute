@@ -4,6 +4,7 @@
 
 | File | Responsibility |
 |---|---|
+| `src/haute/__main__.py` | Package-module entry point; imports and invokes the canonical `haute.cli:cli` group for `python -m haute`. |
 | `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all nine subcommands, exposes `--version`. |
 | `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, and the shared `ENDPOINT_SUFFIX_HELP` string. |
 | `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding: `InitConfig`, `handle_init`, TOML-aware `pyproject.toml` dependency injection, CI-provider file generation/pruning. |
@@ -46,6 +47,12 @@ Other notable types:
   callable for testability.
 
 ### Command and option contract
+
+Every command below can be invoked by replacing the leading `haute` token with
+`python -m haute`. The module entry point performs no parsing of its own: Click
+receives the original argument vector and retains the same options, validation,
+handler, and exit-code behaviour. Click's usage prefix identifies which
+invocation form the user selected.
 
 Every subcommand also exposes Click's eager `--help` option, which prints usage and exits 0
 without validating required positional arguments.
@@ -254,7 +261,8 @@ pytest's `tmp_path`, and tests that need a specific cwd use `monkeypatch.chdir`.
 
 Key files and what they cover:
 - `test_cli.py` — end-to-end `CliRunner` coverage per command (`--version`, `init`, `run`, `lint`,
-  `smoke`, `serve`), using a shared `project_dir` fixture that builds a real minimal pipeline.
+  `smoke`, `serve`), plus real-subprocess parity coverage for `python -m haute`; uses a shared
+  `project_dir` fixture that builds a real minimal pipeline.
 - `test_cli_architecture.py` — structural/contract tests: `resolve_model_name` precedence,
   `model_name` optionality across `deploy`/`status`, single shared `resolve_pipeline_file`, that no
   CLI module reimplements ad-hoc pipeline resolution (AST/source scan), that every command has a

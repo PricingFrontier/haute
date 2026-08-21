@@ -276,6 +276,80 @@ class TestHauteModelPredict:
 
         assert captured == {"operation": "deploy_pyfunc_predict", "row_count": 2}
 
+    def test_predict_releases_admission_when_polars_conversion_fails(self, monkeypatch):
+        """A pre-scoring conversion error must not leak the deploy reservation."""
+        import pandas as pd
+
+        from haute._execution_context import ExecutionContext, ExecutionProfile
+        from haute.deploy._model_code import HauteModel
+
+        released: list[str] = []
+        execution_context = ExecutionContext(
+            operation="deploy_pyfunc_predict",
+            profile=ExecutionProfile.DEPLOY_BATCH,
+            memory_sampler=lambda: 1,
+            admission_release=lambda: released.append("released"),
+        )
+        model = HauteModel()
+        model._graph = {"nodes": [], "edges": []}
+        model._input_node_ids = ["src"]
+        model._output_node_id = "out"
+        model._artifact_paths = {}
+        model._output_fields = None
+
+        monkeypatch.setattr(
+            "haute.deploy._scorer.admit_deploy_execution",
+            lambda **_kwargs: execution_context,
+        )
+        monkeypatch.setattr(
+            pl,
+            "from_pandas",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad pandas frame")),
+        )
+
+        with pytest.raises(ValueError, match="bad pandas frame"):
+            model.predict(MagicMock(), pd.DataFrame({"x": [1.0, 2.0]}))
+
+        assert released == ["released"]
+
+    def test_predict_retains_admission_through_pandas_response_conversion(self):
+        import pandas as pd
+
+        from haute._execution_context import ExecutionContext, ExecutionProfile
+        from haute.deploy._model_code import HauteModel
+
+        timeline: list[str] = []
+        execution_context = ExecutionContext(
+            operation="deploy_pyfunc_predict",
+            profile=ExecutionProfile.DEPLOY_LIVE,
+            memory_sampler=lambda: 1,
+            admission_release=lambda: timeline.append("released"),
+        )
+        model = HauteModel()
+        model._graph = {"nodes": [], "edges": []}
+        model._input_node_ids = ["src"]
+        model._output_node_id = "out"
+        model._artifact_paths = {}
+        model._output_fields = None
+
+        class Result:
+            def to_pandas(self):
+                timeline.append("to_pandas")
+                return pd.DataFrame({"score": [0.5]})
+
+        with (
+            patch(
+                "haute.deploy._scorer.admit_deploy_execution",
+                return_value=execution_context,
+            ),
+            patch("haute.deploy._scorer.score_graph", return_value=Result()) as score,
+        ):
+            result = model.predict(MagicMock(), pd.DataFrame({"x": [1.0]}))
+
+        assert result["score"].to_list() == [0.5]
+        assert score.call_args.kwargs["retain_admission_on_success"] is True
+        assert timeline == ["to_pandas", "released"]
+
     def test_predict_passes_output_fields(self, tmp_path):
         """predict() forwards output_fields to score_graph."""
         import pandas as pd

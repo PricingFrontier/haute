@@ -817,14 +817,12 @@ def save_sidecar(
     # non-atomically. `atomic_write_text` stages to a sibling temp and
     # renames into place, so a reader NEVER observes torn/partial bytes
     # on any OS. On POSIX the rename also fully succeeds under concurrent
-    # readers (rename(2) is atomic). On Windows the corruption window is
-    # likewise closed, but the rename is NOT guaranteed to succeed under
-    # reader contention: a concurrent open reader (default `open()` does
-    # not pass FILE_SHARE_DELETE) can make the replace raise
-    # PermissionError (ERROR_ACCESS_DENIED), surfacing this save as a 500.
-    # That is a fail-loud miss, not silent corruption, and is acceptable
-    # under the single-user trust model. See `atomic_write_bytes` for the
-    # primitive-level note. Pinning tests:
+    # readers (rename(2) is atomic). On Windows the primitive retries the
+    # exact same atomic replace for a short, bounded period when a scanner
+    # or concurrent reader causes ERROR_ACCESS_DENIED/SHARING_VIOLATION;
+    # every other error, and contention that outlives that window, still
+    # fails loudly without exposing torn bytes. See `atomic_write_bytes`
+    # for the primitive-level contract. Pinning tests:
     # TestSaveSidecar.test_writes_atomically_via_atomic_write_text and
     # tests/test_file_ops.py::TestAtomicWriteWindowsReaderContention.
     atomic_write_text(sidecar, serialised + "\n")

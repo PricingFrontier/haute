@@ -37,6 +37,7 @@ from haute._types import (
 )
 from haute.errors import ContractMismatchError
 from haute.projection import compute_prepared_plan
+from tests._projection_helpers import pair_value
 from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
@@ -65,11 +66,10 @@ def _polars(nid: str) -> GraphNode:
 
     Production ``projection_contract`` softens an *empty* POLARS node to a
     concrete passthrough — an empty transform is just ``return df``.  To model
-    the genuinely opaque case the planner cannot statically analyse, the node
-    must carry user code so ``_has_user_polars_code`` flips ``True`` and the
-    registered opaque contract takes effect.
+    a genuinely opaque case, use control-flow-dependent frame mutation rather
+    than the now-provable ``df = df`` identity program.
     """
-    return _node(nid, NodeType.POLARS, code="df = df  # opaque user transform")
+    return _node(nid, NodeType.POLARS, code="if True:\n    df = df")
 
 
 def _passthrough(nid: str) -> GraphNode:
@@ -299,12 +299,13 @@ class TestLinearChain:
 class TestDiamond:
     """Diamond = fan-out then fan-in.  Pins the union rule at the source."""
 
-    def test_simple_diamond_source_is_union_of_branches(self):
+    def test_unowned_diamond_fan_in_stays_full_width(self):
         """Source → (branch_a | branch_b) → sink.
 
-        Source's needed_cols = union of the two branches' contributions.
-        Branches are explicit passthroughs so their contribution is
-        exactly ``needed[branch]``.
+        A generic passthrough contract says which columns the sink needs, but
+        does not say which parent owns them. Broadcasting the same demand to
+        both parents can request columns that do not exist, so the ambiguity
+        must remain a visible full-width boundary.
         """
         nodes = [
             _source("src"),
@@ -327,13 +328,11 @@ class TestDiamond:
 
         needed = _needed_by_node(order, children_of, node_map)
 
-        # Every passthrough just carries the OUTPUT fields through.
         assert needed["out"] == {"x", "y", "z"}
         assert needed["sink"] == {"x", "y", "z"}
-        assert needed["a"] == {"x", "y", "z"}
-        assert needed["b"] == {"x", "y", "z"}
-        # src sees the union from a + b (which is the same set).
-        assert needed["src"] == {"x", "y", "z"}
+        assert needed["a"] is None
+        assert needed["b"] is None
+        assert needed["src"] is None
 
     def test_diamond_distinct_branch_needs_union_at_source(self):
         """Each branch consumes different columns; source gets the union.
@@ -795,11 +794,11 @@ class TestEdgeCases:
             "conversion_prediction",
         }
         assert plan.needed_by_node["premium_input"] == {"quote_id", "premium"}
-        assert plan.edge_demands[("model_output", "join_premiums")] == {
+        assert pair_value(plan.edge_demands, "model_output", "join_premiums") == {
             "quote_id",
             "conversion_prediction",
         }
-        assert plan.edge_demands[("premium_input", "join_premiums")] == {
+        assert pair_value(plan.edge_demands, "premium_input", "join_premiums") == {
             "quote_id",
             "premium",
         }
@@ -853,8 +852,8 @@ class TestEdgeCases:
             "territory_band",
             "channel_band",
         }
-        assert plan.edge_demands[("scored", "ratebook_optimiser")] == required
-        assert plan.edge_demands[("banding_source", "ratebook_optimiser")] == {
+        assert pair_value(plan.edge_demands, "scored", "ratebook_optimiser") == required
+        assert pair_value(plan.edge_demands, "banding_source", "ratebook_optimiser") == {
             "quote_id",
             "territory_band",
             "channel_band",
@@ -905,8 +904,8 @@ class TestEdgeCases:
         assert plan.needed_by_node["ratebook_optimiser"] is None
         assert plan.needed_by_node["scored"] == required
         assert plan.needed_by_node["banding_source"] == {"quote_id", "territory_band"}
-        assert plan.edge_demands[("scored", "ratebook_optimiser")] == required
-        assert plan.edge_demands[("banding_source", "ratebook_optimiser")] == {
+        assert pair_value(plan.edge_demands, "scored", "ratebook_optimiser") == required
+        assert pair_value(plan.edge_demands, "banding_source", "ratebook_optimiser") == {
             "quote_id",
             "territory_band",
         }
@@ -955,11 +954,11 @@ class TestEdgeCases:
 
         assert plan.needed_by_node["shared"] == {*required, "territory_band"}
         assert plan.needed_by_node["audit_side_input"] == set()
-        assert plan.edge_demands[("shared", "ratebook_optimiser")] == {
+        assert pair_value(plan.edge_demands, "shared", "ratebook_optimiser") == {
             *required,
             "territory_band",
         }
-        assert plan.edge_demands[("audit_side_input", "ratebook_optimiser")] == set()
+        assert pair_value(plan.edge_demands, "audit_side_input", "ratebook_optimiser") == set()
 
     def test_multi_parent_optimiser_rejects_malformed_ratebook_factor_columns(self):
         """Ratebook routing should fail loudly for malformed factor metadata."""
@@ -1107,12 +1106,12 @@ class TestEdgeCases:
             "quote_id",
             "competitor_premium",
         }
-        assert plan.edge_demands[("policies", "join_scoring")] == {
+        assert pair_value(plan.edge_demands, "policies", "join_scoring") == {
             "quote_id",
             "policy_id",
             "postcode",
         }
-        assert plan.edge_demands[("competitor_scoring", "join_scoring")] == {
+        assert pair_value(plan.edge_demands, "competitor_scoring", "join_scoring") == {
             "quote_id",
             "competitor_premium",
         }
@@ -1175,13 +1174,13 @@ class TestEdgeCases:
             "policy_passthrough",
         }
         assert plan.needed_by_node["quoted_premiums"] == {"quote_id", "premium"}
-        assert plan.edge_demands[("join_policy_data", "join_premiums")] == {
+        assert pair_value(plan.edge_demands, "join_policy_data", "join_premiums") == {
             "quote_id",
             "policy_id",
             "competitor_premium",
             "policy_passthrough",
         }
-        assert plan.edge_demands[("quoted_premiums", "join_premiums")] == {
+        assert pair_value(plan.edge_demands, "quoted_premiums", "join_premiums") == {
             "quote_id",
             "premium",
         }
@@ -1220,8 +1219,8 @@ class TestEdgeCases:
 
         assert plan.needed_by_node["policies"] == {"quote_id", "premium"}
         assert plan.needed_by_node["lookup"] == {"quote_id", "premium"}
-        assert plan.edge_demands[("policies", "join")] == {"quote_id", "premium"}
-        assert plan.edge_demands[("lookup", "join")] == {"quote_id", "premium"}
+        assert pair_value(plan.edge_demands, "policies", "join") == {"quote_id", "premium"}
+        assert pair_value(plan.edge_demands, "lookup", "join") == {"quote_id", "premium"}
 
     def test_multi_parent_inputs_by_parent_rejects_ambiguous_passthrough_columns(self):
         """Uncovered fan-in columns still fail loudly without one clear owner."""
@@ -1611,17 +1610,15 @@ class TestForwardPassReferenceAlgorithmBenchmark:
         order, _children_of, _node_map = _build_realistic_200_node_graph()
         assert len(order) >= 200, f"benchmark graph has only {len(order)} nodes"
 
-    def test_equivalence_on_200_node_graph(self):
-        """The forward pass must match the backward pass bit-for-bit on
+    def test_reference_equivalence_on_200_node_graph(self):
+        """The reference forward pass must match the reference backward pass on
         the benchmark graph — otherwise the speed comparison is between
         two algorithms that aren't solving the same problem.
         """
         order, children_of, node_map = _build_realistic_200_node_graph()
         backward = _reference_backward_pass(order, children_of, node_map)
         forward = _reference_forward_pass(order, children_of, node_map)
-        production = _needed_by_node(order, children_of, node_map)
         assert backward == forward
-        assert backward == production
 
     def test_forward_pass_reference_algorithm_reduces_contract_work(
         self,
@@ -1693,7 +1690,13 @@ class TestProductionComputeNeededColumnsBenchmark:
                 lambda: _needed_by_node(order, children_of, node_map),
             )
 
-        assert backward == production
+        # The reference algorithms predate edge-ownership hardening and
+        # broadcast generic fan-in demand. Production deliberately retains
+        # full-width boundaries at the unowned fan-ins instead.
+        assert backward != production
+        assert production["s1_merge"] is None
+        assert production["s2_agg_a0"] is None
+        assert production["src"] is None
         assert production_calls <= len(order)
         assert backward_calls >= production_calls * 2, (
             "production prepared projection planning did not cut contract lookups "

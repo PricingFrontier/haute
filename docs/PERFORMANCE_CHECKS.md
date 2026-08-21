@@ -24,12 +24,94 @@ The runner supports these long options:
 - `--pytest-arg`
 - `--pytest-target`
 - `--polars-scale`
+- `--baseline-report`
+- `--max-total-regression-fraction`
+- `--max-rss-regression-fraction`
+- `--max-test-regression-fraction`
+- `--min-test-baseline-seconds`
+
+To compare with a prior report on a compatible machine and scale:
+
+```powershell
+uv run python scripts/run_perf_suite.py --baseline-report .cache/perf/perf-report.json
+```
+
+Historical comparisons require identical Polars scale, Python major/minor, platform
+system and machine, and exact Polars version. Total wall time and measurable RSS
+default to a 25% allowance when the collected test identities also match; matching
+passed call-phase tests default to 35% even when the suite has gained other tests, and
+baseline tests below the 0.10-second noise floor are excluded. An incompatible
+baseline is recorded but does not fail the lane; a compatible baseline with no
+material matching tests does fail it.
+Only a complete successful report can become a baseline: all collected tests must
+have one passed call-phase record, identities must be unique, outcome/count/slowest
+summaries and wall-time partitions must reconcile, and the independent RSS sampler
+must have produced finite evidence. A malformed retained report fails the lane
+instead of being ignored or partially compared.
+Suite-wide wall-time and RSS comparisons require identical passed call-phase test
+identities; added or removed tests skip those suite metrics while still comparing
+each material matching test. The Performance workflow keeps a scale-specific
+cache and, on a cache miss, downloads the most recent successful same-branch,
+same-scale performance artifact as its baseline. Failed runs are never retained
+as baselines.
 
 For a focused preview/trace run with tighter local budgets:
 
 ```powershell
 uv run python scripts/run_perf_suite.py --pytest-target tests/performance/test_preview_trace_perf.py --max-total-seconds 120 --max-test-seconds 30
 ```
+
+Run the execution-engine certification added for projection hardening with:
+
+```powershell
+uv run python scripts/run_perf_suite.py --output-dir .cache/perf/execution-engine-certification --pytest-target tests/performance/test_execution_engine_certification.py --pytest-target tests/performance/test_polars_scale_scenario.py --max-total-seconds 300 --max-test-seconds 120
+```
+
+That certificate is comparative rather than a machine-specific throughput
+claim. It retains structured evidence for all of these cases:
+
+- an isolated 50,000-row, 256-column Parquet control and four-column projected
+  scan, with semantic parity, an explicit physical `PROJECT 4/256 COLUMNS`
+  plan, and a bounded incremental-RSS ratio plus fixed sampler allowance;
+- a two-port cached API input where the selected port physically scans two
+  columns from a wide Parquet cache; releasing the execution lease leaves only
+  the bounded verification-cache pin, and explicit cache cleanup removes it;
+- a 32 MiB source-signature control proving that the first observation performs
+  one complete content hash while unchanged warm observations use the native
+  revision proof at no more than 5% of the cold-hash median latency;
+- a 32 MiB cached-Parquet artifact control proving that one fully verified,
+  private snapshot is reused behind the unchanged native revision, within the
+  configured entry/byte bounds, at no more than 5% of cold-hash latency;
+- a small cached JSON apiInput through a downstream Polars `group_by`, proving
+  target-only preview strategy estimation, cache-key construction, and runtime
+  loading reuse the cache-build SHA-256 proof after clearing process state and make
+  neither a new source hash nor a generic runtime xxHash call; the same run records
+  the deliberately favourable upper bound for removing
+  all repeated request-local graph preparation and rejects that candidate unless
+  it clears the common 20% end-to-end materiality gate;
+- repeated complete preview-cache hits proving the producing strategy is reused
+  with one planner invocation total and a warm median no greater than 50% of
+  the cold materialising request;
+- an uncached 20,000-row wide JSONL input projected to two fields, including
+  the minimum cooperative-checkpoint count and proof that no cache was created;
+- the generated join-to-modelling scenario, whose demand is derived from the
+  real target/weight/id/exclude menu configuration before planning;
+- an extreme many-to-many join whose proven `10^18`-row upper bound is rejected
+  by admission without attempting to materialise the join;
+- JSON-array and XML persistent cache builds at 10,000 and 120,000 rows, proving
+  that an input-size increase of at least 8× stays within the bounded incremental-
+  RSS growth contract;
+- a fresh-process restart pair proving committed cache reuse, unchanged generation
+  identity, cache-proof telemetry, sanitized terminal telemetry, and process-owned
+  snapshot cleanup; and
+- the configurable resilience soak (`ci`, `1m`, or `10m`): repeated warm-worker
+  calls and forced replacements with RSS/handle-or-fd plateau gates, five cache-
+  publication crash points, ENOSPC preservation/recovery, and concurrent builders
+  leaving exactly one valid generation and no staging siblings.
+
+The certificate is valid only when the runner exits successfully and writes
+`perf-report.json`, `perf-report.md`, and `perf-junit.xml` containing every
+named scenario. Preserve that output directory with the change evidence.
 
 Run the cache-identity decision gates independently with:
 
@@ -51,10 +133,12 @@ representative multi-branch graph:
 - first trace backed by a full preview cache: `< 0.8s`
 - trace-cache hit: `< 0.3s`
 
-CI runs the small Polars scale scenario by default. The larger generated
-scenarios are opt-in: use `--polars-scale 1m` for a local one-million-row run
-or `--polars-scale 10m` for the ten-million-row run.
-The 10m run is not part of default CI.
+The ordinary pull-request suite excludes `pytest.mark.perf`. A manual
+Performance workflow dispatch defaults to the small `ci` scale and can select
+either larger scale explicitly. The scheduled Performance workflow runs the
+one-million-row scale weekly and the ten-million-row stress scale monthly,
+retaining the same structured artifacts. Locally, use `--polars-scale 1m` or
+`--polars-scale 10m` to reproduce those scheduled lanes.
 
 ```powershell
 uv run python scripts/run_perf_suite.py --polars-scale 1m
@@ -167,3 +251,7 @@ uv run python scripts/memory_smoke.py -- uv run pytest tests/performance/test_pr
 
 The wrapped command output is mirrored to stderr, and the wrapper emits
 JSON to stdout so CI or local scripts can parse the memory summary directly.
+When the wrapper observes RSS for the child PID, that exact sample series owns
+the reported child peak. POSIX `RUSAGE_CHILDREN` is a process-wide high-water
+mark and is used only when no live child sample was available; this prevents an
+earlier high-memory child from being attributed to a later command.

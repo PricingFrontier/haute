@@ -104,7 +104,8 @@ package input validated by `hatch_build.py`, not hand-edited source.
    declaration is required because the teaching bundles and authoring guide
    are non-Python package resources. The sdist exclusions in `pyproject.toml`
    remove source-only trees. The
-   command entry point resolves `haute.cli:cli` after installation.
+   console command entry point resolves `haute.cli:cli` after installation;
+   Python's `-m haute` package entry point imports and invokes that same group.
 6. Separately, `.github/workflows/docs.yml` runs `uv sync --group dev --locked`
    and `uv run mkdocs build --strict`, uploads `site/`, then lets the dependent
    deploy job publish it to GitHub Pages.
@@ -184,6 +185,9 @@ package input validated by `hatch_build.py`, not hand-edited source.
   `scripts/package_smoke_check.py`, `scripts/init_smoke.py`, and CI's
   package/init-smoke jobs. The frontend's build/typecheck commands are likewise
   quality gates, not independent package-format tests.
+- CLI regression coverage invokes the package through a real
+  `python -m haute` subprocess and verifies success, nested-command argument
+  routing, Click usage failures, and exit-code parity with the console group.
 - `scripts/package_smoke_check.py` also calls the installed
   `haute.assistant._assets.validate_example_bundles(execute_fast=True)` entry
   point. It uses only installed resources, validates closed manifests and

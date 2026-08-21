@@ -23,6 +23,7 @@ fingerprint format changes) that mock-based tests wouldn't.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -453,15 +454,32 @@ class TestMirrorCacheToCommitted:
         held: dict[str, bool] = {}
         real_copytree = _shutil.copytree
 
+        def _acquire_from_competing_thread() -> bool:
+            acquired: list[bool] = []
+
+            def _try_acquire() -> None:
+                did_acquire = lock.acquire(blocking=False)
+                acquired.append(did_acquire)
+                if did_acquire:
+                    lock.release()
+
+            contender = threading.Thread(target=_try_acquire)
+            contender.start()
+            contender.join(timeout=5)
+            assert not contender.is_alive()
+            return acquired == [True]
+
         def _spy_copytree(src: Any, dst: Any, *a: Any, **k: Any) -> Any:
-            held["locked"] = lock.locked()
+            # An RLock is intentionally re-entrant and Python 3.11 does not
+            # expose RLock.locked(). Probe ownership from a competing thread.
+            held["locked"] = not _acquire_from_competing_thread()
             return real_copytree(src, dst, *a, **k)
 
         monkeypatch.setattr("haute._json_flatten.shutil.copytree", _spy_copytree)
         assert mirror_cache_to_committed(data_path, v2_config) is True
         assert held["locked"] is True
         # Lock released after the mirror returns.
-        assert lock.locked() is False
+        assert _acquire_from_competing_thread() is True
 
     def test_survives_transient_rename_permission_error(
         self,
@@ -485,19 +503,23 @@ class TestMirrorCacheToCommitted:
         assert not committed_dir.exists()
 
         real_rename = Path.rename
-        calls = {"n": 0}
+        directory_rename_calls = {"n": 0}
 
         def _flaky_rename(self: Path, target: Any) -> Any:
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise PermissionError("transient handle lock")
+            # Runtime parquet snapshot publication also renames a file while
+            # validating working/. This witness targets only the directory
+            # publication performed by _swap_dir_into_place.
+            if self.is_dir():
+                directory_rename_calls["n"] += 1
+                if directory_rename_calls["n"] == 1:
+                    raise PermissionError("transient handle lock")
             return real_rename(self, target)
 
         monkeypatch.setattr(Path, "rename", _flaky_rename)
         # Bare rename would propagate the PermissionError; the retry helper
         # swallows the first failure and succeeds on retry.
         assert mirror_cache_to_committed(data_path, v2_config) is True
-        assert calls["n"] >= 2
+        assert directory_rename_calls["n"] >= 2
         assert (
             _current_parquet(committed_dir).read_bytes()
             == _current_parquet(
@@ -628,10 +650,9 @@ class TestBuildJsonCacheExceptions:
         data_dir = isolated_cwd / "data"
         data_dir.mkdir()
         (data_dir / "ok.json").write_bytes(orjson.dumps([{"x": 1}]))
-        # build_per_port_cache is imported lazily inside the route — patch
-        # at the source module.
+        # Parent-side isolated transaction failures remain opaque at the route.
         with patch(
-            "haute._json_shred.build_per_port_cache",
+            "haute.routes.json_cache._json_cache_build_transaction",
             side_effect=RuntimeError("internal explosion"),
         ):
             resp = client.post(

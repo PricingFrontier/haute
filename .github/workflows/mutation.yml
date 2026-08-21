@@ -74,7 +74,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.any == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -100,7 +100,7 @@ jobs:
           # This shard runs its mutants one at a time in the real working tree.
           # The speedup comes entirely from sharding across separate runners,
           # which is the *safe* lever: each witness suite runs alone at baseline
-          # speed, keeping the full 30s-timeout headroom (robustness), and every
+          # speed, keeping each target's configured timeout headroom, and every
           # outcome is deterministic, so the merged survival equals an unsharded
           # single-run survival. Per-runner concurrency is intentionally avoided
           # (the witnesses are environment-coupled and corrupt the count when run

@@ -9,11 +9,14 @@ import polars as pl
 import pytest
 
 import haute.execution as execution_facade
+import haute.projection as projection_planner
 from haute._contracts import Contract
 from haute._execute_lazy import (
+    _declared_api_input_frame_schema_items,
     _execute_eager_core,
     _execute_lazy,
     _resolve_effective_contract,
+    _runtime_join_demands,
     _strict_contract_resolution,
 )
 from haute._execution_context import ExecutionContext, ExecutionProfile
@@ -24,6 +27,7 @@ from haute.errors import (
     ContractResolutionError,
     SchemaMismatchError,
 )
+from tests._projection_helpers import pair_value
 from tests.conftest import make_edge, make_graph, make_output_config
 
 
@@ -32,6 +36,66 @@ def _node(node_type: NodeType, config: dict[str, object] | None = None) -> Graph
         id="node_1",
         data=NodeData(label="Node 1", nodeType=node_type, config=config or {}),
     )
+
+
+def test_declared_api_input_frame_schema_items_ignores_non_api_or_malformed_tables() -> None:
+    assert _declared_api_input_frame_schema_items(_node(NodeType.POLARS)) == {}
+    assert _declared_api_input_frame_schema_items(_node(NodeType.API_INPUT, {"tables": {}})) == {}
+
+
+def _undeclared_two_port_api_graph(with_target: bool) -> PipelineGraph:
+    nodes = [
+        {"id": "source", "data": {"label": "source", "nodeType": "apiInput", "config": {}}},
+    ]
+    edges: list[dict[str, object]] = []
+    if with_target:
+        nodes.append(
+            {
+                "id": "target",
+                "data": {"label": "target", "nodeType": "polars", "config": {}},
+            }
+        )
+        edges.append(make_edge("source", "target", source_handle="first").model_dump())
+    return make_graph({"nodes": nodes, "edges": edges})
+
+
+def _undeclared_two_port_builder(node: GraphNode, **_kwargs):
+    if node.id == "source":
+        return (
+            node.id,
+            lambda: {"first": pl.LazyFrame({"a": [1]}), "second": pl.LazyFrame({"b": ["x"]})},
+            True,
+        )
+    return node.id, lambda frame: frame, False
+
+
+def test_eager_multi_port_materialized_target_records_observed_port_schemas() -> None:
+    result = _execute_eager_core(
+        _undeclared_two_port_api_graph(with_target=False),
+        _undeclared_two_port_builder,
+        target_node_id="source",
+        materialize_node_ids={"source"},
+    )
+
+    assert result.frame_columns == {
+        ("source", "first"): [("a", "Int64")],
+        ("source", "second"): [("b", "String")],
+    }
+
+
+def test_eager_multi_port_lazy_ancestor_records_schema_without_materialising_source() -> None:
+    result = _execute_eager_core(
+        _undeclared_two_port_api_graph(with_target=True),
+        _undeclared_two_port_builder,
+        target_node_id="target",
+        materialize_node_ids={"target"},
+    )
+
+    assert result.frame_columns == {
+        ("source", "first"): [("a", "Int64")],
+        ("source", "second"): [("b", "String")],
+    }
+    assert "source" not in result.outputs
 
 
 @pytest.mark.parametrize(
@@ -660,6 +724,209 @@ def test_bounded_lazy_execution_runtime_projects_simple_contract_free_join() -> 
     json.dumps(diagnostics)
 
 
+@pytest.mark.parametrize("error", [KeyError("source"), ValueError("port")])
+def test_runtime_join_inference_fails_closed_when_an_edge_name_is_invalid(
+    error: Exception,
+) -> None:
+    node = GraphNode(
+        id="joined",
+        data=NodeData(
+            label="joined",
+            nodeType=NodeType.POLARS,
+            config={"code": "df = left.select(['x'])"},
+        ),
+    )
+    left = GraphNode(id="left", data=NodeData(label="left", nodeType=NodeType.DATA_INPUT))
+    right = GraphNode(
+        id="right",
+        data=NodeData(label="right", nodeType=NodeType.DATA_INPUT),
+    )
+    edges = [make_edge("left", "joined"), make_edge("right", "joined")]
+
+    with patch("haute._execute_lazy.edge_input_name", side_effect=error):
+        demands = _runtime_join_demands(
+            node,
+            edges,
+            [pl.LazyFrame({"x": [1]}), pl.LazyFrame({"y": [2]})],
+            {"x"},
+            {},
+            {"left": left, "right": right, "joined": node},
+        )
+
+    assert demands == {}
+
+
+def test_runtime_join_inference_fails_closed_on_duplicate_input_names() -> None:
+    node = GraphNode(
+        id="joined",
+        data=NodeData(
+            label="joined",
+            nodeType=NodeType.POLARS,
+            config={"code": "df = duplicate.select(['x'])"},
+        ),
+    )
+    left = GraphNode(
+        id="left",
+        data=NodeData(label="duplicate", nodeType=NodeType.DATA_INPUT),
+    )
+    right = GraphNode(
+        id="right",
+        data=NodeData(label="duplicate", nodeType=NodeType.DATA_INPUT),
+    )
+    edges = [make_edge("left", "joined"), make_edge("right", "joined")]
+
+    assert (
+        _runtime_join_demands(
+            node,
+            edges,
+            [pl.LazyFrame({"x": [1]}), pl.LazyFrame({"y": [2]})],
+            {"x"},
+            {},
+            {"left": left, "right": right, "joined": node},
+        )
+        == {}
+    )
+
+
+@pytest.mark.parametrize(
+    "input_mapping",
+    [
+        ["alias"],
+        {"": "left"},
+        {"alias": "missing"},
+        {"right": "left"},
+    ],
+)
+def test_runtime_join_inference_rejects_invalid_input_mapping(
+    input_mapping: object,
+) -> None:
+    node = GraphNode(
+        id="joined",
+        data=NodeData(
+            label="joined",
+            nodeType=NodeType.POLARS,
+            config={
+                "code": "df = left.select(['x'])",
+                "inputMapping": input_mapping,
+            },
+        ),
+    )
+    left = GraphNode(id="left", data=NodeData(label="left", nodeType=NodeType.DATA_INPUT))
+    right = GraphNode(
+        id="right",
+        data=NodeData(label="right", nodeType=NodeType.DATA_INPUT),
+    )
+    edges = [make_edge("left", "joined"), make_edge("right", "joined")]
+
+    assert (
+        _runtime_join_demands(
+            node,
+            edges,
+            [pl.LazyFrame({"x": [1]}), pl.LazyFrame({"y": [2]})],
+            {"x"},
+            {},
+            {"left": left, "right": right, "joined": node},
+        )
+        == {}
+    )
+
+
+def test_runtime_join_inference_maps_alias_demand_to_its_physical_edge() -> None:
+    node = GraphNode(
+        id="joined",
+        data=NodeData(
+            label="joined",
+            nodeType=NodeType.POLARS,
+            config={
+                "code": "df = alias.select(['x'])",
+                "inputMapping": {"alias": "left"},
+            },
+        ),
+    )
+    left = GraphNode(id="left", data=NodeData(label="left", nodeType=NodeType.DATA_INPUT))
+    right = GraphNode(
+        id="right",
+        data=NodeData(label="right", nodeType=NodeType.DATA_INPUT),
+    )
+    edges = [make_edge("left", "joined"), make_edge("right", "joined")]
+
+    demands = _runtime_join_demands(
+        node,
+        edges,
+        [pl.LazyFrame({"x": [1], "unused": [2]}), pl.LazyFrame({"y": [3]})],
+        {"x"},
+        {},
+        {"left": left, "right": right, "joined": node},
+    )
+
+    assert demands[projection_planner.ProjectionEdgeKey.from_edge(edges[0])] == {"x"}
+    assert demands[projection_planner.ProjectionEdgeKey.from_edge(edges[1])] == set()
+
+
+def test_eager_runtime_partial_inference_keeps_unknown_edge_full_and_empty_edge_cardinality(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {"id": "left", "data": {"label": "left", "nodeType": "dataInput"}},
+                {"id": "right", "data": {"label": "right", "nodeType": "dataInput"}},
+                {
+                    "id": "joined",
+                    "data": {
+                        "label": "joined",
+                        "nodeType": "polars",
+                        "config": {"code": "if enabled:\n    df = left"},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("left", "joined").model_dump(),
+                make_edge("right", "joined").model_dump(),
+            ],
+        }
+    )
+    left_edge = graph.edges[0]
+    seen: list[tuple[list[str], list[str], int]] = []
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "left":
+            return node.id, lambda: pl.LazyFrame({"left_id": [1, 2], "unused": [3, 4]}), True
+        if node.id == "right":
+            return node.id, lambda: pl.LazyFrame({"right_id": [1, 2], "payload": [5, 6]}), True
+
+        def retain_right(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
+            seen.append(
+                (
+                    left.collect_schema().names(),
+                    right.collect_schema().names(),
+                    left.select(pl.len()).collect().item(),
+                )
+            )
+            return right
+
+        return node.id, retain_right, False
+
+    monkeypatch.setattr(
+        "haute._execute_lazy._runtime_join_demands",
+        lambda *_args, **_kwargs: {
+            projection_planner.ProjectionEdgeKey.from_edge(left_edge): set()
+        },
+    )
+
+    result = _execute_eager_core(
+        graph,
+        build_node_fn,
+        target_node_id="joined",
+        materialize_node_ids={"joined"},
+    )
+
+    assert seen == [(["left_id"], ["right_id", "payload"], 2)]
+    output = result.outputs["joined"]
+    assert isinstance(output, pl.DataFrame)
+    assert output.columns == ["right_id", "payload"]
+
+
 def test_bounded_lazy_execution_runtime_projects_builtin_edge_join_and_final_diagnostic() -> None:
     graph = make_graph(
         {
@@ -1134,35 +1401,27 @@ def test_bounded_lazy_execution_contract_free_join_missing_key_fails_loudly() ->
 
 
 def test_bounded_lazy_execution_contract_free_join_suffix_collision_fails_loudly() -> None:
-    outputs, seen_join_schemas = _execute_contract_free_join(
-        code="df = left.join(right, on='quote_id')",
-        join_fn=lambda left, right: left.join(right, on="quote_id"),
-        fields=["value_right"],
-        left_df=pl.DataFrame(
-            {
-                "quote_id": ["q1"],
-                "value": [1],
-                "left_unused": [100],
-            }
-        ),
-        right_df=pl.DataFrame(
-            {
-                "quote_id": ["q1"],
-                "value": [2],
-                "value_right": [3],
-                "right_unused": [200],
-            }
-        ),
-    )
-
-    assert seen_join_schemas == [
-        (
-            ["quote_id", "value", "left_unused"],
-            ["quote_id", "value", "value_right", "right_unused"],
-        )
-    ]
     with pytest.raises(pl.exceptions.DuplicateError, match="value_right"):
-        outputs["out"].collect_schema()
+        _execute_contract_free_join(
+            code="df = left.join(right, on='quote_id')",
+            join_fn=lambda left, right: left.join(right, on="quote_id"),
+            fields=["value_right"],
+            left_df=pl.DataFrame(
+                {
+                    "quote_id": ["q1"],
+                    "value": [1],
+                    "left_unused": [100],
+                }
+            ),
+            right_df=pl.DataFrame(
+                {
+                    "quote_id": ["q1"],
+                    "value": [2],
+                    "value_right": [3],
+                    "right_unused": [200],
+                }
+            ),
+        )
 
 
 def test_bounded_lazy_execution_dynamic_join_how_stays_unprojected_boundary() -> None:
@@ -1511,8 +1770,8 @@ def test_bounded_lazy_execution_projects_simple_uncontracted_user_code() -> None
     assert context.projection_plan is not None
     assert context.projection_plan.needed_by_node["source"] == frozenset({"a"})
     assert (
-        context.projection_plan.diagnostics.edge_reasons[("source", "custom")].rule
-        == "polars_expression_dependency"
+        pair_value(context.projection_plan.diagnostics.edge_reasons, "source", "custom").rule
+        == "polars_column_lineage"
     )
 
 
@@ -1870,18 +2129,16 @@ def test_bounded_lazy_execution_rename_pipeline_unknown_column_still_fails_loudl
             )
         return node.id, lambda df: df, False
 
-    outputs, *_ = _execute_lazy(
-        graph,
-        build_node_fn,
-        target_node_id="out",
-        execution_context=ExecutionContext(
-            operation="test_rename_unknown_column",
-            profile=ExecutionProfile.LAZY_SINK,
-        ),
-    )
-
     with pytest.raises(pl.exceptions.ColumnNotFoundError) as excinfo:
-        outputs["out"].collect()
+        _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="out",
+            execution_context=ExecutionContext(
+                operation="test_rename_unknown_column",
+                profile=ExecutionProfile.LAZY_SINK,
+            ),
+        )
 
     assert "zzz" in str(excinfo.value)
 
@@ -1967,14 +2224,8 @@ def test_bounded_lazy_execution_executes_derived_column_filter_pipeline() -> Non
     assert context.projection_plan.needed_by_node["source"] == frozenset({"a", "b"})
 
 
-def test_bounded_lazy_execution_unprovable_derived_reference_still_fails_loudly() -> None:
-    """An unprovable derived-reference shape keeps today's loud over-demand.
-
-    Deliberate: the branch makes the operation order unprovable, so the union
-    walk's over-demand of the derived ``margin`` is kept and the edge
-    projection fails loudly instead of the planner guessing a narrowing it
-    cannot prove.
-    """
+def test_bounded_lazy_execution_unprovable_derived_reference_runs_full_width() -> None:
+    """Unsupported control flow remains correct by retaining the full input."""
     graph = _rename_pipeline_graph(
         "df = df.with_columns((pl.col('a') + pl.col('b')).alias('margin'))\n"
         "if True:\n"
@@ -1995,18 +2246,20 @@ def test_bounded_lazy_execution_unprovable_derived_reference_still_fails_loudly(
             )
         return node.id, lambda df: df, False
 
-    with pytest.raises(ContractMismatchError) as excinfo:
-        _execute_lazy(
-            graph,
-            build_node_fn,
-            target_node_id="out",
-            execution_context=ExecutionContext(
-                operation="test_unprovable_derived_reference",
-                profile=ExecutionProfile.LAZY_SINK,
-            ),
-        )
+    context = ExecutionContext(
+        operation="test_unprovable_derived_reference",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="out",
+        execution_context=context,
+    )
 
-    assert "margin" in str(excinfo.value)
+    assert outputs["out"].collect().to_dict(as_series=False) == {"margin": [3]}
+    assert context.projection_plan is not None
+    assert context.projection_plan.needed_by_node["source"] is None
 
 
 def test_bounded_lazy_execution_executes_select_subset_pipeline() -> None:
@@ -2065,11 +2318,8 @@ def test_bounded_lazy_execution_executes_select_subset_pipeline() -> None:
 def test_bounded_lazy_execution_executes_unaliased_with_columns_then_select_pipeline() -> None:
     """Un-aliased ``with_columns`` outputs must never be demanded from the parent.
 
-    ``name.suffix`` creates ``a_2`` in-node under a name the output walker
-    cannot see.  The ordered extractor must bail on this shape so the union
-    walk's ``{a, b}`` is kept and this today-working pipeline keeps running;
-    demanding ``a_2`` from the parent would hard-fail it with a
-    missing-column contract error naming a column the parent never had.
+    The structural naming transfer maps ``a_2`` back to ``a`` and keeps ``b``;
+    it never asks the parent for the in-node output name.
     """
     graph = _rename_pipeline_graph(
         "df = df.with_columns(pl.col('a').name.suffix('_2'))\ndf = df.select('a_2', 'b')",
@@ -2114,15 +2364,8 @@ def test_bounded_lazy_execution_executes_unaliased_with_columns_then_select_pipe
     assert context.projection_plan.needed_by_node["source"] == frozenset({"a", "b"})
 
 
-def test_bounded_lazy_execution_unprovable_select_still_fails_loudly() -> None:
-    """An unprovable select shape keeps today's loud under-demand.
-
-    Deliberate: the branch makes the operation order unprovable, so the
-    union walk's demand-intersected select handling is kept and the parent
-    edge only carries ``a``.  When the branch executes, the node's full
-    ``select`` fails with the pre-existing ``ColumnNotFoundError`` instead
-    of the planner widening a shape it cannot prove.
-    """
+def test_bounded_lazy_execution_unprovable_select_runs_full_width() -> None:
+    """Unsupported control flow keeps every input needed by the real code."""
     graph = _rename_pipeline_graph(
         "if True:\n    df = df.select('a', 'b', 'c')",
         ["a"],
@@ -2143,17 +2386,20 @@ def test_bounded_lazy_execution_unprovable_select_still_fails_loudly() -> None:
             )
         return node.id, lambda df: df, False
 
-    with pytest.raises(pl.exceptions.ColumnNotFoundError):
-        outputs, *_ = _execute_lazy(
-            graph,
-            build_node_fn,
-            target_node_id="out",
-            execution_context=ExecutionContext(
-                operation="test_unprovable_select",
-                profile=ExecutionProfile.LAZY_SINK,
-            ),
-        )
-        outputs["out"].collect()
+    context = ExecutionContext(
+        operation="test_unprovable_select",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="out",
+        execution_context=context,
+    )
+
+    assert outputs["out"].collect().to_dict(as_series=False) == {"a": [1]}
+    assert context.projection_plan is not None
+    assert context.projection_plan.needed_by_node["source"] is None
 
 
 def test_bounded_lazy_execution_runs_terminal_uncontracted_user_code_as_boundary() -> None:
