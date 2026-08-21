@@ -1379,6 +1379,7 @@ def test_superseded_explore_job_cannot_select_its_prepared_generation(
     release_first = threading.Event()
     timeout_seconds = 30.0
     publications = []
+    dispatch_failures: list[BaseException] = []
     publications_lock = threading.Lock()
     from haute._execution_context import ExecutionAdmission, ExecutionContext
     from haute.routes import _explore_service as service_mod
@@ -1389,7 +1390,7 @@ def test_superseded_explore_job_cannot_select_its_prepared_generation(
         # This test exercises publication ordering, not host-specific admission
         # capacity. Give both workers deterministic admitted headroom so the
         # same latest-wins race is exercised on small and large CI hosts.
-        headroom = 1 << 30
+        headroom = 1 << 40
         admission = ExecutionAdmission(
             operation=operation,
             profile=profile,
@@ -1415,11 +1416,22 @@ def test_superseded_explore_job_cannot_select_its_prepared_generation(
         with publications_lock:
             publications.append(publication)
             call_number = len(publications)
-        outcome = original_dispatch(*args, **kwargs)
+        try:
+            outcome = original_dispatch(*args, **kwargs)
+        except BaseException as exc:
+            if call_number == 1:
+                dispatch_failures.append(exc)
+                first_prepared.set()
+            raise
         if call_number == 1:
             # Gate after the child has prepared and validated its private
             # staging generation, immediately before the parent can publish it.
-            assert publication.staging_path.exists()
+            try:
+                assert publication.staging_path.exists()
+            except BaseException as exc:
+                dispatch_failures.append(exc)
+                first_prepared.set()
+                raise
             first_prepared.set()
             assert release_first.wait(timeout=timeout_seconds)
         return outcome
@@ -1437,6 +1449,7 @@ def test_superseded_explore_job_cannot_select_its_prepared_generation(
 
     first = client.post("/api/explore/run", json=body).json()
     assert first_prepared.wait(timeout=timeout_seconds)
+    assert not dispatch_failures, repr(dispatch_failures[0])
     second = client.post("/api/explore/run", json=body).json()
     try:
         second_completed = _poll_explore(client, second["job_id"], timeout=timeout_seconds)
