@@ -752,7 +752,7 @@ def test_native_memory_cap_is_active_inside_child_process() -> None:
     assert hard == inherited_hard
     assert soft != infinity
     inherited_ceilings = [value for value in (inherited_soft, inherited_hard) if value != infinity]
-    assert soft >= min(limit, *inherited_ceilings)
+    assert soft >= min([limit, *inherited_ceilings])
     for inherited_ceiling in inherited_ceilings:
         assert soft <= inherited_ceiling
 
