@@ -130,6 +130,15 @@ def test_current_cgroup_path_stays_beneath_root(
     assert native._current_cgroup_path() == (tmp_path / "safe").resolve()
 
 
+def test_windows_apis_fail_closed_when_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delattr(native.ctypes, "WinDLL", raising=False)
+
+    with pytest.raises(
+        native.NativeMemoryLimitUnsupportedError, match="Win32 APIs are unavailable"
+    ):
+        native._windows_apis()
+
+
 def test_windows_job_uses_pointer_width_safe_handle_and_reports_assignment_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

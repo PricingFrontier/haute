@@ -138,7 +138,7 @@ def _windows_process_is_alive(pid: int) -> bool:
         get_exit_code.restype = wintypes.BOOL
         handle = open_process(0x1000, False, pid)
         if not handle:
-            error = ctypes.get_last_error()
+            error = int(getattr(ctypes, "get_last_error", lambda: 0)())
             return False if error == 87 else True
         try:
             exit_code = wintypes.DWORD()

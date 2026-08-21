@@ -1215,10 +1215,11 @@ def _acquire_file_lock(
 
     import msvcrt
 
+    msvcrt_module = cast(Any, msvcrt)
     while True:
         handle.seek(0)
         try:
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            msvcrt_module.locking(handle.fileno(), msvcrt_module.LK_NBLCK, 1)
             return True
         except OSError as exc:
             if getattr(exc, "winerror", None) not in {33, 36} and exc.errno not in {
@@ -1242,8 +1243,9 @@ def _release_file_lock(handle: Any) -> None:
 
     import msvcrt
 
+    msvcrt_module = cast(Any, msvcrt)
     handle.seek(0)
-    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    msvcrt_module.locking(handle.fileno(), msvcrt_module.LK_UNLCK, 1)
 
 
 def _is_reparse_point(path_stat: os.stat_result) -> bool:

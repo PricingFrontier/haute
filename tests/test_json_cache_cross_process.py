@@ -395,6 +395,26 @@ def test_file_lock_windows_unexpected_error_is_not_treated_as_contention(
         shred_mod._acquire_file_lock(Handle(), blocking=False)
 
 
+def test_file_lock_windows_success_and_release(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[int, int, int]] = []
+    module = SimpleNamespace(LK_NBLCK=1, LK_UNLCK=2)
+    module.locking = lambda *args: calls.append(args)
+    monkeypatch.setattr(shred_mod.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "msvcrt", module)
+
+    class Handle:
+        def fileno(self) -> int:
+            return 15
+
+        def seek(self, *_args: Any) -> None:
+            return None
+
+    handle = Handle()
+    assert shred_mod._acquire_file_lock(handle, blocking=False) is True
+    shred_mod._release_file_lock(handle)
+    assert calls == [(15, module.LK_NBLCK, 1), (15, module.LK_UNLCK, 1)]
+
+
 def test_build_lock_registry_discards_inherited_locks_after_fork(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

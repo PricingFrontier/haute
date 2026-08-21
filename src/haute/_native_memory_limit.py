@@ -439,8 +439,11 @@ class _PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):  # noqa: N801
 
 def _windows_apis() -> tuple[Any, Any]:
     """Return Win32 APIs with pointer-width-safe ctypes declarations."""
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    windll_factory = getattr(ctypes, "WinDLL", None)
+    if windll_factory is None:
+        raise NativeMemoryLimitUnsupportedError("Win32 APIs are unavailable")
+    kernel32 = windll_factory("kernel32", use_last_error=True)
+    psapi = windll_factory("psapi", use_last_error=True)
     kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
@@ -477,20 +480,22 @@ def _windows_private_usage() -> int:
 
 
 def _windows_error() -> OSError:
-    error = getattr(ctypes, "get_last_error", lambda: 0)()
+    error = _windows_error_code()
     win_error = getattr(ctypes, "WinError", None)
     return win_error(error) if win_error is not None else OSError(error, "Win32 API call failed")
+
+
+def _windows_error_code() -> int:
+    return int(getattr(ctypes, "get_last_error", lambda: 0)())
 
 
 def _create_windows_job() -> Any:
     kernel32, _psapi = _windows_apis()
     handle = kernel32.CreateJobObjectW(None, None)
     if not handle:
-        raise NativeMemoryLimitUnsupportedError(
-            f"CreateJobObject failed: {ctypes.get_last_error()}"
-        )
+        raise NativeMemoryLimitUnsupportedError(f"CreateJobObject failed: {_windows_error_code()}")
     if not kernel32.AssignProcessToJobObject(handle, kernel32.GetCurrentProcess()):
-        error = ctypes.get_last_error()
+        error = _windows_error_code()
         kernel32.CloseHandle(handle)
         raise NativeMemoryLimitUnsupportedError(f"AssignProcessToJobObject failed: {error}")
     return handle
