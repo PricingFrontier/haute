@@ -58,9 +58,11 @@ Interactive preview and trace are dispatched to the execution engine's warm isol
 worker pool. Their HTTP deadline is destructive for the worker, not merely a response
 deadline: after a 504 the timed-out computation no longer consumes CPU or memory.
 Same-key supersession likewise kills obsolete work before the replacement is admitted
-to that affinity slot. Sink/write routes retain their separate transactional and
-cooperative-cancellation contract because killing an arbitrary external write can be
-less safe than allowing its atomic publication cleanup to finish.
+to that affinity slot. OUTPUT dry-runs use the warm pool; JSON-cache builds, output
+writes, and Explore materialisation use killable one-shot workers under the same
+admitted native-memory policy. Irreversible file/cache publication remains
+parent-owned; a transactional database or lakehouse sink necessarily performs its
+native commit in the worker.
 - Long-running job polling (training, optimiser solves, Explore materialisation, frontier
   auto-range) — see [background-jobs](../background-jobs/high-level.md). The response
   *shapes* for those jobs (`TrainResponse`, `OptimiserStatusResponse`, `ExploreStatusResponse`,
@@ -171,23 +173,21 @@ through every node it passed through and returns typed correlation omissions plu
 provenance; `POST /api/pipeline/write-output` explicitly materialises a
 `dataOutput` node, with `overwrite=false` by default. A pre-existing destination returns
 409 before graph execution; `POST /api/pipeline/output-destination` runs the same safe
-destination resolution without executing the graph or touching the target. Preview and
-trace are keyed on (graph fingerprint, source, node,
-row/column selectors): a newer request for the *same* key supersedes the older request's
-response and waits for its active slot to clear, so same-key workers never overlap. Preview
-also requests cooperative cancellation of the active worker; trace has no route-level
-cancellation token, so a newer trace must wait for the older trace thread to finish before it
-can start. A *different* key runs independently, bounded by a small per-operation concurrency
-semaphore. All three long-running endpoints enforce a response timeout
-(`HAUTE_{PREVIEW,TRACE,SINK}_TIMEOUT`, default 120s/120s/300s; the historical internal
-`SINK` setting governs output-write). Preview and output-write
-cooperatively cancel their execution token/context on timeout; trace's already-started thread
-finishes in the background. Preview/trace retain their supersession key and concurrency
-permit until that thread really finishes, despite having returned 504. Preview and output-write use
-memory admission control at this route boundary; trace does not create an admission context
-here. A timeout that carries a still-running background task takes precedence over a newer
-supersession generation, so it remains a 504 and retains both the key and execution context
-until the worker exits.
+destination resolution without executing the graph or touching the target. Preview and trace
+are keyed on (graph fingerprint, source, node, row/column selectors): a newer request for the
+*same* key supersedes the older request and terminates and joins its active worker before the
+replacement starts, so same-key workers never overlap. A *different* key runs independently,
+bounded by a small per-operation concurrency semaphore. Preview, trace, and output-write
+enforce a response timeout (`HAUTE_{PREVIEW,TRACE,SINK}_TIMEOUT`, default 120s/120s/300s;
+the historical internal `SINK` setting governs output-write). Production dispatches all three
+to killable worker processes under admitted native memory growth limits. Timeout, request
+cancellation, or supersession terminates and joins the exact worker before the route releases
+admission or returns; there is no late graph computation. For file outputs, the worker may
+create and validate only a parent-selected private staging artifact, while the parent alone
+publishes it to the final destination. Transactional database/lakehouse sinks commit in the
+isolated worker because their native transaction is the publication boundary. An explicitly
+selected development compatibility mode may retain cooperative thread execution, but it is
+never a silent fallback when process isolation cannot start.
 
 Editor documents carry `source_revision`, a deterministic digest over raw parent/child
 source bytes, every referenced node-config file, and every participating `.haute.json`
@@ -223,8 +223,18 @@ in-memory config (never touching disk), runs the graph up to that node, and retu
 rendered document. The assembly algorithm itself (schema-determined cyclic-core detection,
 surgical cut, prefix-nested serialisation) lives in `_output_assembler.py` and is shared with
 the deploy-time render path. Admission refusal uses the same structured 507 payload as the
-other execution routes. Ordinary success and failure release the admission context in
-`finally`; a 504 defers release to the still-running background task.
+other execution routes. Production runs the graph and render in a killable worker with the
+parent's admitted memory headroom; a timeout or disconnected request terminates and joins the
+worker before releasing admission, so no dry-run continues invisibly after a 504.
+
+**Structured-cache and Explore publication.** Explicit JSON/JSONL/XML cache builds and Explore
+materialisation execute in one-shot killable workers under admitted native memory limits. The
+parent chooses the exact staging generation before launch, validates the returned manifest and
+source identity, and performs the atomic pointer/directory publication only while the request
+or latest-wins job still owns publication rights. Timeout, cancellation, supersession, worker
+crash, and malformed manifests remove only that known private staging path and never replace a
+previous valid generation. No child process mutates parent-owned job state or process-local
+caches.
 
 **Execution diagnostics and public contract errors.** Execution-consuming endpoints expose
 the bounded version-1 strategy diagnostic DTO: canonical, capped collections describe
@@ -399,11 +409,10 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
 - **Resource limits** surface as their own status codes rather than a generic 500:
   `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → 507 for preview,
   output-write, and OUTPUT dry-run; a superseded request →
-  `SupersededRequestError` → 409; a timed-out blocking operation → 504. Worker threads are
-  never forcibly killed: preview/output-write request cooperative cancellation, while trace and
-  OUTPUT dry-run drain the late result/error after returning. A timeout carrying a background
-  task is never masked by supersession, and OUTPUT dry-run releases its execution context
-  only after that task completes.
+  `SupersededRequestError` → 409; a timed-out isolated operation → 504. Production heavy-route
+  workers are terminated and joined before the terminal response or job transition. Parent
+  cleanup then removes the exact private staging artifact, and admission is released only after
+  both worker termination and cleanup have completed.
 - **Path-safety violations** (`validate_safe_path`, the save-time output-path allowlist,
   runtime-input-path validation) return 400 for malformed input (null bytes, empty codegen
   paths, traversal segments) and 403 for a resolved path that escapes its allowed root —

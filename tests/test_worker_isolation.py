@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
-import queue
+import pickle
 import shutil
 import signal
 import sys
@@ -13,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
+import haute._worker_isolation as isolation
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
@@ -45,6 +47,11 @@ from haute.routes._background_jobs import (
     IsolatedJobSupervisor,
     SupervisorInfrastructureError,
 )
+from haute.routes._isolated_worker_async import (
+    WorkerCancellationGate,
+    run_cancellable_worker_transaction,
+    run_isolated_worker_async,
+)
 from haute.routes._job_lifecycle import JobLifecycle
 from haute.routes._job_store import JobStore
 
@@ -69,10 +76,279 @@ def _sleep_for(seconds: float) -> None:
     time.sleep(seconds)
 
 
+class _EntrypointQueue:
+    """Small child-queue fake that records its explicit feeder shutdown."""
+
+    def __init__(self) -> None:
+        self.values: list[bytes] = []
+        self.closed = 0
+        self.joined = 0
+
+    def put(self, value: bytes) -> None:
+        self.values.append(value)
+
+    def get_nowait(self) -> bytes:
+        return self.values.pop(0)
+
+    def close(self) -> None:
+        self.closed += 1
+
+    def join_thread(self) -> None:
+        self.joined += 1
+
+
 def _current_address_space_limit() -> tuple[int, int]:
     import resource
 
     return tuple(int(value) for value in resource.getrlimit(resource.RLIMIT_AS))
+
+
+def test_worker_cancellation_gate_rejects_publication_after_cancellation() -> None:
+    gate = WorkerCancellationGate()
+
+    assert not gate.is_set()
+    gate.request()
+    assert gate.is_set()
+    with pytest.raises(IsolatedWorkerStoppedError) as exc_info:
+        with gate.publication_guard():
+            raise AssertionError("publication body must not run")
+
+    assert exc_info.value.terminal_reason == "cancelled"
+
+
+def test_worker_cancellation_gate_serializes_request_after_publication() -> None:
+    gate = WorkerCancellationGate()
+    request_started = threading.Event()
+
+    def request_cancellation() -> None:
+        request_started.set()
+        gate.request()
+
+    with gate.publication_guard():
+        requester = threading.Thread(target=request_cancellation)
+        requester.start()
+        assert request_started.wait(timeout=1.0)
+        assert requester.is_alive()
+        assert not gate.is_set()
+
+    requester.join(timeout=1.0)
+    assert not requester.is_alive()
+    assert gate.is_set()
+
+
+async def test_cancellable_worker_transaction_returns_success() -> None:
+    def transaction(gate: WorkerCancellationGate) -> int:
+        assert not gate.is_set()
+        return 7
+
+    assert await run_cancellable_worker_transaction(transaction, task_name="test-supervisor") == 7
+
+
+async def test_cancellable_worker_transaction_drains_before_reraising_cancellation() -> None:
+    started = threading.Event()
+    finalized = threading.Event()
+
+    def transaction(gate: WorkerCancellationGate) -> None:
+        started.set()
+        while not gate.is_set():
+            time.sleep(0.001)
+        time.sleep(0.01)
+        finalized.set()
+        raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+
+    task = asyncio.create_task(
+        run_cancellable_worker_transaction(transaction, task_name="test-supervisor")
+    )
+    assert await asyncio.to_thread(started.wait, 1.0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finalized.is_set()
+
+
+async def test_cancellable_worker_transaction_notes_non_cancellation_finalization_error() -> None:
+    started = threading.Event()
+
+    def transaction(gate: WorkerCancellationGate) -> None:
+        started.set()
+        while not gate.is_set():
+            time.sleep(0.001)
+        raise RuntimeError("finalization failed")
+
+    task = asyncio.create_task(
+        run_cancellable_worker_transaction(transaction, task_name="test-supervisor")
+    )
+    assert await asyncio.to_thread(started.wait, 1.0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await task
+    assert any("finalization failed" in note for note in exc_info.value.__notes__)
+
+
+async def test_cancellable_worker_transaction_tolerates_repeated_task_cancellation() -> None:
+    started = threading.Event()
+    cancellation_observed = threading.Event()
+    release = threading.Event()
+
+    def transaction(gate: WorkerCancellationGate) -> None:
+        started.set()
+        while not gate.is_set():
+            time.sleep(0.001)
+        cancellation_observed.set()
+        assert release.wait(timeout=1.0)
+        raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+
+    task = asyncio.create_task(
+        run_cancellable_worker_transaction(transaction, task_name="test-supervisor")
+    )
+    assert await asyncio.to_thread(started.wait, 1.0)
+    task.cancel()
+    assert await asyncio.to_thread(cancellation_observed.wait, 1.0)
+    await asyncio.sleep(0)
+    task.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_cancellable_worker_transaction_handles_result_ready_at_cancel_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    class BoundaryGate:
+        def request(self) -> None:
+            release.set()
+            assert finished.wait(timeout=1.0)
+
+    def transaction(_gate: BoundaryGate) -> int:
+        started.set()
+        assert release.wait(timeout=1.0)
+        finished.set()
+        return 7
+
+    monkeypatch.setattr(
+        "haute.routes._isolated_worker_async.WorkerCancellationGate",
+        BoundaryGate,
+    )
+    task = asyncio.create_task(
+        run_cancellable_worker_transaction(
+            transaction,  # type: ignore[arg-type]
+            task_name="test-supervisor",
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 1.0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_cancellable_worker_transaction_notes_non_cancelled_stop() -> None:
+    started = threading.Event()
+
+    def transaction(gate: WorkerCancellationGate) -> None:
+        started.set()
+        while not gate.is_set():
+            time.sleep(0.001)
+        raise IsolatedWorkerStoppedError(terminal_reason="superseded")
+
+    task = asyncio.create_task(
+        run_cancellable_worker_transaction(transaction, task_name="test-supervisor")
+    )
+    assert await asyncio.to_thread(started.wait, 1.0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await task
+    assert "isolated worker stopped as superseded" in exc_info.value.__notes__
+
+
+async def test_run_isolated_worker_async_composes_configured_stop_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[object] = []
+
+    def fake_run(
+        _function: object, *_args: object, config: IsolatedWorkerConfig, **_kwargs: object
+    ):
+        assert config.stop_reason is not None
+        observed.append(config.stop_reason())
+        return "done"
+
+    monkeypatch.setattr("haute.routes._isolated_worker_async.run_isolated_worker", fake_run)
+
+    assert (
+        await run_isolated_worker_async(
+            _return_payload,
+            1,
+            2,
+            config=IsolatedWorkerConfig(
+                process_name="test-worker",
+                stop_reason=lambda: "superseded",
+            ),
+        )
+        == "done"
+    )
+    assert observed == ["superseded"]
+
+
+async def test_run_isolated_worker_async_propagates_route_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+
+    def fake_run(
+        _function: object, *_args: object, config: IsolatedWorkerConfig, **_kwargs: object
+    ) -> None:
+        assert config.stop_reason is not None
+        started.set()
+        while config.stop_reason() is None:
+            time.sleep(0.001)
+        raise IsolatedWorkerStoppedError(terminal_reason=config.stop_reason() or "missing")
+
+    monkeypatch.setattr("haute.routes._isolated_worker_async.run_isolated_worker", fake_run)
+    task = asyncio.create_task(
+        run_isolated_worker_async(
+            _return_payload,
+            1,
+            2,
+            config=IsolatedWorkerConfig(process_name="test-worker"),
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 1.0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_run_isolated_worker_async_uses_no_stop_reason_when_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(
+        _function: object, *_args: object, config: IsolatedWorkerConfig, **_kwargs: object
+    ):
+        assert config.stop_reason is not None
+        assert config.stop_reason() is None
+        return "done"
+
+    monkeypatch.setattr("haute.routes._isolated_worker_async.run_isolated_worker", fake_run)
+
+    assert (
+        await run_isolated_worker_async(
+            _return_payload,
+            1,
+            2,
+            config=IsolatedWorkerConfig(process_name="test-worker"),
+        )
+        == "done"
+    )
 
 
 def test_isolated_worker_returns_picklable_value() -> None:
@@ -199,6 +475,132 @@ def test_start_failure_preserves_typed_error_and_runs_cleanup(
         )
 
     assert cleaned == ["done"]
+
+
+def test_one_shot_join_cleans_exact_dead_worker_native_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeQueue:
+        def close(self) -> None:
+            pass
+
+        def join_thread(self) -> None:
+            pass
+
+    class Process:
+        pid = 4321
+        exitcode = 0
+
+        def start(self) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+        def join(self, timeout: float | None = None) -> None:
+            pass
+
+    class Context:
+        def Queue(self, maxsize: int) -> FakeQueue:  # noqa: N802
+            return FakeQueue()
+
+        def Process(self, **_kwargs: object) -> Process:  # noqa: N802
+            return Process()
+
+    cleaned: list[int] = []
+    monkeypatch.setattr("haute._worker_isolation.mp.get_context", lambda _method: Context())
+    monkeypatch.setattr("haute._worker_isolation._wait_for_worker", lambda *_args: ("ok", 7))
+    monkeypatch.setattr("haute._worker_isolation.cleanup_private_cgroups_for_pid", cleaned.append)
+
+    assert run_isolated_worker(lambda: 7) == 7
+    assert cleaned == [4321]
+
+
+def test_one_shot_rejects_queued_payload_when_child_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Queue:
+        def close(self) -> None:
+            pass
+
+        def join_thread(self) -> None:
+            pass
+
+    class Process:
+        pid = 4321
+        exitcode = 23
+
+        def start(self) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+        def join(self, timeout: float | None = None) -> None:
+            pass
+
+    class Context:
+        def Queue(self, maxsize: int) -> Queue:  # noqa: N802 - multiprocessing API
+            return Queue()
+
+        def Process(self, **_kwargs: object) -> Process:  # noqa: N802
+            return Process()
+
+    monkeypatch.setattr("haute._worker_isolation.mp.get_context", lambda _method: Context())
+    monkeypatch.setattr("haute._worker_isolation._wait_for_worker", lambda *_args: ("ok", 7))
+
+    with pytest.raises(IsolatedWorkerCrashedError) as exc_info:
+        run_isolated_worker(lambda: 7)
+
+    assert exc_info.value.exitcode == 23
+
+
+def test_one_shot_notes_native_cleanup_failure_without_masking_remote_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Queue:
+        def close(self) -> None:
+            pass
+
+        def join_thread(self) -> None:
+            pass
+
+    class Process:
+        pid = 4321
+        exitcode = 0
+
+        def start(self) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+        def join(self, timeout: float | None = None) -> None:
+            pass
+
+    class Context:
+        def Queue(self, maxsize: int) -> Queue:  # noqa: N802 - multiprocessing API
+            return Queue()
+
+        def Process(self, **_kwargs: object) -> Process:  # noqa: N802
+            return Process()
+
+    monkeypatch.setattr("haute._worker_isolation.mp.get_context", lambda _method: Context())
+    monkeypatch.setattr(
+        "haute._worker_isolation._wait_for_worker",
+        lambda *_args: ("error", ("ValueError", "bad", "traceback")),
+    )
+    monkeypatch.setattr(
+        "haute._worker_isolation.cleanup_private_cgroups_for_pid",
+        lambda _pid: (_ for _ in ()).throw(OSError("cgroup cleanup failed")),
+    )
+
+    with pytest.raises(IsolatedWorkerRemoteError, match="bad") as exc_info:
+        run_isolated_worker(lambda: 7)
+
+    assert (
+        "native memory resource cleanup failed: cgroup cleanup failed" in exc_info.value.__notes__
+    )
 
 
 def test_terminate_process_fails_loudly_when_child_survives_kill() -> None:
@@ -359,7 +761,7 @@ def test_cross_platform_worker_rss_watchdog_enforces_growth_budget(
     assert exc_info.value.rss_limit_bytes == 1_050
 
 
-def test_worker_rss_watchdog_required_mode_fails_when_child_is_unobservable(
+def test_worker_rss_watchdog_is_secondary_when_child_is_unobservable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import haute._worker_isolation as isolation_mod
@@ -368,34 +770,23 @@ def test_worker_rss_watchdog_required_mode_fails_when_child_is_unobservable(
         pid = 42
 
     monkeypatch.setattr(isolation_mod, "process_rss_bytes", lambda _pid: None)
-    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: False)
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: True)
+    watchdog = _create_worker_rss_watchdog(
+        _Process(),  # type: ignore[arg-type]
+        memory_limit_bytes=50,
+        require_memory_limit=True,
+    )
+    assert watchdog.rss_limit_bytes is None
 
-    with pytest.raises(IsolatedWorkerMemoryLimitUnsupportedError):
-        _create_worker_rss_watchdog(
-            _Process(),  # type: ignore[arg-type]
-            memory_limit_bytes=50,
-            require_memory_limit=True,
-        )
 
-
-def test_process_memory_support_includes_verified_rss_sampling(
+def test_process_memory_support_excludes_rss_sampling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import haute._worker_isolation as isolation_mod
 
-    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: False)
-    monkeypatch.setattr(isolation_mod, "process_rss_sampling_supported", lambda: True)
-    assert process_memory_caps_supported() is True
-
-    monkeypatch.setattr(isolation_mod, "process_rss_sampling_supported", lambda: False)
+    monkeypatch.setattr(isolation_mod, "native_memory_caps_supported", lambda: False)
     assert process_memory_caps_supported() is False
-
-    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: True)
-    monkeypatch.setattr(
-        isolation_mod,
-        "process_rss_sampling_supported",
-        lambda: (_ for _ in ()).throw(AssertionError("short-circuit expected")),
-    )
+    monkeypatch.setattr(isolation_mod, "native_memory_caps_supported", lambda: True)
     assert process_memory_caps_supported() is True
 
 
@@ -441,7 +832,7 @@ def test_worker_rss_watchdog_creation_covers_unobservable_and_missing_pid(
 
     Process.pid = 42
     monkeypatch.setattr(isolation_mod, "process_rss_bytes", lambda _pid: None)
-    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: False)
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: False)
     optional = _create_worker_rss_watchdog(
         Process(),  # type: ignore[arg-type]
         memory_limit_bytes=50,
@@ -450,7 +841,7 @@ def test_worker_rss_watchdog_creation_covers_unobservable_and_missing_pid(
     assert optional.rss_limit_bytes is None
     assert optional.address_space_cap_active is False
 
-    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: True)
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: True)
     required = _create_worker_rss_watchdog(
         Process(),  # type: ignore[arg-type]
         memory_limit_bytes=50,
@@ -462,9 +853,9 @@ def test_worker_rss_watchdog_creation_covers_unobservable_and_missing_pid(
 
 @pytest.mark.parametrize(
     ("memory_limit", "caps_supported", "expected_limits"),
-    [(None, True, []), (128, False, []), (128, True, [128])],
+    [(None, True, []), (128, False, [128]), (128, True, [128])],
 )
-def test_isolated_entrypoint_applies_only_supported_address_space_caps(
+def test_isolated_entrypoint_applies_native_lease_before_callable(
     monkeypatch: pytest.MonkeyPatch,
     memory_limit: int | None,
     caps_supported: bool,
@@ -472,10 +863,18 @@ def test_isolated_entrypoint_applies_only_supported_address_space_caps(
 ) -> None:
     import haute._worker_isolation as isolation_mod
 
-    results: queue.Queue[tuple[str, object]] = queue.Queue()
+    results = _EntrypointQueue()
     applied: list[int] = []
-    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: caps_supported)
-    monkeypatch.setattr(isolation_mod, "_apply_address_space_limit", applied.append)
+    monkeypatch.setattr(
+        isolation_mod,
+        "NativeMemoryLease",
+        lambda: SimpleNamespace(
+            backend=None,
+            apply=lambda limit, **_kwargs: applied.append(limit),
+            restore=lambda: None,
+            close=lambda: None,
+        ),
+    )
 
     isolation_mod._isolated_worker_entrypoint(
         results,
@@ -483,17 +882,28 @@ def test_isolated_entrypoint_applies_only_supported_address_space_caps(
         (2,),
         {"increment": 3},
         memory_limit,
+        caps_supported,
     )
 
-    assert results.get_nowait() == ("ok", 5)
+    assert pickle.loads(results.get_nowait()) == ("ok", 5)
     assert applied == expected_limits
 
 
 def test_isolated_entrypoint_serialises_child_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     import haute._worker_isolation as isolation_mod
 
-    results: queue.Queue[tuple[str, object]] = queue.Queue()
+    results = _EntrypointQueue()
     monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: False)
+    monkeypatch.setattr(
+        isolation_mod,
+        "NativeMemoryLease",
+        lambda: SimpleNamespace(
+            backend=None,
+            apply=lambda *_args, **_kwargs: True,
+            restore=lambda: None,
+            close=lambda: None,
+        ),
+    )
 
     isolation_mod._isolated_worker_entrypoint(
         results,
@@ -503,12 +913,67 @@ def test_isolated_entrypoint_serialises_child_failure(monkeypatch: pytest.Monkey
         128,
     )
 
-    status, payload = results.get_nowait()
+    status, payload = pickle.loads(results.get_nowait())
     assert status == "error"
     error_type, message, remote_traceback = payload  # type: ignore[misc]
     assert error_type == "ValueError"
     assert message == "child boom"
     assert "ValueError: child boom" in remote_traceback
+
+
+def test_isolated_entrypoint_exposes_native_backend_only_during_callable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._native_memory_limit as native
+    import haute._worker_isolation as isolation_mod
+
+    results = _EntrypointQueue()
+
+    class Lease:
+        backend = None
+
+        def apply(self, *_args, **_kwargs):
+            self.backend = "cgroup"
+            return True
+
+    monkeypatch.setattr(isolation_mod, "NativeMemoryLease", Lease)
+
+    isolation_mod._isolated_worker_entrypoint(
+        results,
+        native.current_native_memory_backend,
+        (),
+        {},
+        128,
+        True,
+    )
+
+    assert pickle.loads(results.get_nowait()) == ("ok", "cgroup")
+    assert native.current_native_memory_backend() is None
+
+
+def test_isolated_entrypoint_leaves_native_lease_active_until_process_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._worker_isolation as isolation_mod
+
+    results = _EntrypointQueue()
+    events: list[str] = []
+    monkeypatch.setattr(
+        isolation_mod,
+        "NativeMemoryLease",
+        lambda: SimpleNamespace(
+            backend=None,
+            apply=lambda *_args, **_kwargs: events.append("apply") or True,
+            restore=lambda: events.append("restore"),
+            close=lambda: events.append("close"),
+        ),
+    )
+
+    isolation_mod._isolated_worker_entrypoint(results, lambda: "result", (), {}, 128, True)
+
+    assert pickle.loads(results.get_nowait()) == ("ok", "result")
+    assert events == ["apply"]
+    assert (results.closed, results.joined) == (1, 1)
 
 
 @pytest.mark.parametrize(
@@ -547,15 +1012,15 @@ def test_memory_limited_exitcode_classification_is_platform_independent() -> Non
     assert isolation_mod._exitcode_looks_memory_limited(-7, 10) is False
 
 
-def test_worker_memory_enforcement_defaults_to_best_effort(
+def test_worker_memory_enforcement_defaults_to_required(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", raising=False)
 
-    assert resolve_worker_memory_enforcement() == "best_effort"
+    assert resolve_worker_memory_enforcement() == "required"
     config = worker_config_for_memory_policy(memory_limit_bytes=123)
     assert config.memory_limit_bytes == 123
-    assert config.require_memory_limit is False
+    assert config.require_memory_limit is True
 
 
 def test_required_worker_memory_enforcement_sets_required_cap(
@@ -978,6 +1443,76 @@ class TestDeadResourceTrackerRecovery:
         assert info["rlimit_nproc"] == (10, 20)
         assert info["rlimit_as"] == (30, 60)
         assert "rlimit_nofile" not in info
+
+
+def test_worker_isolation_support_payload_and_cleanup_edges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "resource", SimpleNamespace())
+    assert not address_space_caps_supported()
+    monkeypatch.setitem(
+        sys.modules,
+        "resource",
+        SimpleNamespace(RLIMIT_AS=1, setrlimit=lambda *_args: None),
+    )
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert not address_space_caps_supported()
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert address_space_caps_supported()
+    with pytest.raises(IsolatedWorkerCrashedError):
+        isolation._decode_worker_payload(b"not pickle")
+    with pytest.raises(IsolatedWorkerCrashedError):
+        isolation._decode_worker_payload(pickle.dumps(("wrong", 1)))
+    errors = isolation._run_cleanup_callbacks((lambda: (_ for _ in ()).throw(OSError("one")),))
+    assert errors is not None and len(errors.errors) == 1
+
+
+def test_worker_entrypoint_reports_native_setup_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Queue:
+        def __init__(self) -> None:
+            self.actions: list[str] = []
+            self.value: bytes | None = None
+
+        def put(self, value: bytes) -> None:
+            self.value = value
+            self.actions.append("put")
+
+        def close(self) -> None:
+            self.actions.append("close")
+
+        def join_thread(self) -> None:
+            self.actions.append("join")
+
+    queue = Queue()
+    monkeypatch.setattr(
+        isolation.NativeMemoryLease,
+        "apply",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("cap")),
+    )
+    isolation._isolated_worker_entrypoint(queue, lambda: 1, (), {}, 10, True)
+    assert queue.actions == ["put", "close", "join"]
+    assert pickle.loads(queue.value)[0] == "error"
+
+
+def test_worker_payload_serialization_returns_remote_error_for_unpicklable_result() -> None:
+    payload = isolation._serialise_worker_payload(("ok", lambda: None))
+    status, evidence = pickle.loads(payload)
+    assert status == "error"
+    assert evidence[0] == "RuntimeError"
+
+
+def test_watchdog_and_finalization_preserve_primary_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    process = SimpleNamespace(pid=4)
+    monkeypatch.setattr(isolation, "process_memory_caps_supported", lambda: False)
+    monkeypatch.setattr(isolation, "process_rss_bytes", lambda _pid: None)
+    with pytest.raises(IsolatedWorkerMemoryLimitUnsupportedError):
+        isolation._create_worker_rss_watchdog(
+            process, memory_limit_bytes=5, require_memory_limit=True
+        )
+    watchdog = isolation._WorkerRssWatchdog(4, 5, False, False)
+    monkeypatch.setattr(isolation, "process_rss_bytes", lambda _pid: 6)
+    with pytest.raises(IsolatedWorkerMemoryLimitExceededError):
+        watchdog.checkpoint()
 
 
 class TestSpawnableInterpreter:

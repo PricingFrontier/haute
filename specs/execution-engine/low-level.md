@@ -22,9 +22,12 @@
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge→input-name derivation: apiInput-frame edge → its frame label verbatim, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, and edge-id construction. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
+| `src/haute/_native_memory_limit.py` | Required/best-effort native memory enforcement for isolated workers: aggregate Linux cgroup and Windows Job Object leases, single-process RLIMIT compatibility, fork-safe ownership, and the context-local active-backend proof used to prevent unaccounted descendant parallelism. |
+| `src/haute/routes/_isolated_worker_async.py` | Async route bridge for cancellable isolated-worker transactions: runs the blocking supervisor off-loop, propagates route cancellation/timeout without thread-compute fallback, drains the supervisor to termination, preserves the primary failure when cleanup also fails, and provides the shared linearizable cancellation/publication gate. |
 | `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks from projected target width, and rejects an over-budget single target row), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the AST-based row-local user-code whitelist. |
 | `src/haute/_host_memory.py` | Host memory observation: `available_ram_bytes()` (per-platform probes behind one shared result contract, including Linux cgroup v2/v1 headroom clamping resolved at the process's own cgroup with ancestor-min semantics — each probe reports a real measurement or a recorded failure reason, never fabricated capacity) and `available_vram_bytes()` (the first GPU's total VRAM via nvidia-smi — the CatBoost single-device sizing basis — or nothing when no GPU is present; detection failures other than an absent binary are logged with a reason). Owns the nvidia-smi subprocess chokepoint. |
 | `src/haute/_ram_estimate.py` | Workload-side estimation: `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), `estimate_gpu_vram_bytes()`, and the `MaterialisationEstimate` contract consumed by strategy planning. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
+| `src/haute/_cardinality.py` | Pure, overflow-safe join row-bound formulas for every supported join strategy. It validates finite non-negative input bounds and the closed Polars uniqueness contract (`m:m`, `1:1`, `1:m`, `m:1`) and returns both the upper bound and auditable evidence. |
 | `src/haute/_estimate_calibration.py` | Process-local, upward-only per-`ExecutionProfile` calibration of materialisation estimates: conservatively rounds calibrated bytes, ratchets observed underestimates with a capped safety margin, exposes immutable diagnostic state, and clears inherited state after fork. |
 | `src/haute/_interactive_workers.py` | Warm, killable spawn-worker pool for interactive preview and trace execution: validates process/thread mode, runs affinity-bound serialisable jobs, supervises readiness, timeout, cancellation and RSS limits, and replaces failed workers without leaking stale results. |
 | `src/haute/_process_memory.py` | Cross-platform process liveness and resident-memory observation: Linux `/proc`, macOS `libproc`, and Windows process-handle probes return an RSS measurement or an explicit unobservable result for supervised-worker enforcement. |
@@ -123,6 +126,12 @@
   across all of its materialisation boundaries, memoises metadata/schema lookups,
   accounts conservatively for variable-width columns, and lets unexpected failures
   propagate.
+- **`RowCardinalityAnalysis`** (`_column_lineage.py`, frozen dataclass) — the
+  fail-closed row analogue of column lineage for a linear Polars program. It reports
+  the output and peak finite upper bounds plus operation evidence, or the exact
+  unsupported operation/reason. Join operations carry their literal `validate`
+  contract into the shared formulas; `explode` is unavailable because no list-length
+  evidence exists.
 - **Available RAM** (`_host_memory.available_ram_bytes`) — tries the platform
   sources in a fixed order (Linux `/proc/meminfo` `MemAvailable`, POSIX
   `sysconf` pages, macOS Mach VM counters, Windows `GlobalMemoryStatusEx`);
@@ -440,12 +449,16 @@ Post-read input code is accepted only when the shared AST proof establishes row-
 semantics and is applied exactly once after provider resolution.
 
 **Worker isolation (`run_isolated_worker`).** Starts a `spawn`-context child process
-running `_isolated_worker_entrypoint`. Linux applies `RLIMIT_AS`. Independently, the
-parent samples child RSS on Linux, macOS, and Windows and terminates it when the
-configured cap is crossed; macOS and Windows therefore use the parent watchdog as
-their enforcement mechanism. `process_memory_caps_supported()` means that at least
-one verified enforcement mechanism is available, not merely that
-`resource.RLIMIT_AS` imports. The child calls the target function and
+running `_isolated_worker_entrypoint`. Before user work begins, Linux prefers a
+delegated cgroup-v2 child with a finite `memory.max` and otherwise applies
+`RLIMIT_AS`; Windows assigns the child to a Job Object with a finite aggregate
+job-memory commit limit, so descendants cannot each consume the complete admitted
+budget. Limits are growth budgets: the native baseline is measured before the
+hard ceiling is installed. Independently, the parent samples child RSS and
+terminates it when the configured cap is crossed; this watchdog is secondary
+defence and observability, never evidence that a hard kernel cap exists.
+`process_memory_caps_supported()` therefore means a native hard cap is available,
+not merely that RSS can be sampled. The child calls the target function and
 putting `("ok", result)` or `("error", (type, message, traceback))` on a
 maxsize-1 queue. The parent polls `process.is_alive()` in `_wait_for_worker()`,
 checking `config.stop_reason()` and the timeout deadline each iteration. While the
@@ -458,17 +471,42 @@ callbacks always run (via `_run_cleanup_callbacks`), even when the primary path
 already failed — a cleanup failure is attached to the primary error via `add_note()`
 rather than replacing it.
 
-`HAUTE_WORKER_MEMORY_ENFORCEMENT` has only `best_effort|required`. Configuration is
+`HAUTE_WORKER_MEMORY_ENFORCEMENT` has only `best_effort|required` and defaults to
+`required`. Configuration is
 resolved before spawn from plain admitted-context fields; the child constructs a
 fresh context rather than receiving the parent object. The envelope carries the
 parent's effective admitted growth headroom (which may be narrower than the profile
 default under an absolute process cap) and that optional absolute cap. The child and
 parent watchdog both enforce the narrower of those limits against the warm child's
-own RSS baseline. `required` rejects a missing positive limit or unsupported cap
-before process creation. `best_effort`
-continues with platform-supported caps plus child RSS checkpoints. Cancellation or
+own RSS baseline. `required` rejects a missing positive native growth limit or an
+unsupported cap before process creation; an absolute RSS watchdog value alone never
+satisfies that contract. A native-cap setup failure is a contract error before user
+work begins. `best_effort` is an explicit compatibility override that continues with
+any platform-supported cap plus child RSS checkpoints, without claiming hard
+enforcement. A failed best-effort programming attempt clears its active-backend evidence;
+the request cannot advertise or restore a limit that was never installed, including when
+a warm Windows worker retains an otherwise reusable Job Object handle. Native cgroup
+directories and Job Object handles are scoped to the
+worker and cleaned after exit. Cancellation or
 timeout terminates, escalates to kill, joins, and verifies death; a surviving child is
 `IsolatedWorkerTerminationError`, never reported as successful cancellation.
+
+The active native lease exposes only its bounded backend kind within the worker's
+execution context. Code that may create descendants can do so only under an aggregate
+`cgroup` or Windows Job Object lease. `RLIMIT_AS`, an unavailable best-effort lease,
+and an ordinary in-process execution context are not descendant-wide evidence; those
+paths must retain a single-process bounded algorithm instead of multiplying the
+admitted budget across a process pool.
+
+The native lease covers result construction, synchronous pickle serialization, and
+transport-buffer publication—not merely the user callable. A one-shot child closes and joins
+its result-queue feeder before it exits and never widens its finite lease first; OS teardown and
+the joined parent's exact native-resource cleanup end that lease. A warm child sends one
+serialized result while the lease remains active, waits for `("ack", job_id)`, restores the
+lease, and returns a matching release acknowledgement. The parent validates both envelopes
+before returning or reusing the slot. Any missing, stale, malformed, or failed release kills and
+replaces that exact worker, so queue buffering cannot become an unaccounted post-request memory
+spike.
 
 **Warm interactive worker pool.** `InteractiveWorkerPool` owns a fixed number of
 long-lived `spawn` workers (default two, configured by
@@ -682,9 +720,15 @@ fallback after a process failure.
 - **Checkpoint filenames are one safe component.** Ordinary safe node ids preserve
   their readable filename; every unsafe spelling is hashed into the disjoint
   `node=<sha256>.parquet` namespace before joining it to `checkpoint_dir`.
-- **RAM estimation returns `None` rather than guessing** when parquet metadata or the
-  canonical detailed target schema is unavailable (for example Databricks sources) —
-  callers must treat `None` as "estimate unavailable," not "unlimited."
+- **RAM estimation returns `None` rather than guessing** when parquet metadata, the
+  target row-cardinality proof, or the canonical detailed target schema is unavailable
+  (for example Databricks sources or opaque row expansion) — callers must treat `None`
+  as "estimate unavailable," not "unlimited." `estimate_safe_training_rows()` uses the
+  target node's proven output upper bound for training/pool sizing and user-facing row
+  counts. It does not reuse the largest ancestor row count. The independent
+  materialisation estimator uses the greatest intermediate bound and is admitted before
+  the full-frame cache/checkpoint; a final target-row limit cannot conceal or mitigate an
+  over-budget upstream join.
 - **A JSON `apiInput` is sized per emitted table, not per node.** Its v2 cache is one
   parquet per emit-true table, so the node has no single `(row_count, column_count)`
   summary — but each table does, and an edge's source handle names the exact table it
@@ -711,6 +755,24 @@ fallback after a process failure.
   only then computes the complete source-content proof needed to trust that layer.
   With no plausible cache generation, admission reports the estimate unavailable
   without hashing a source that uncached execution will immediately parse itself.
+- **Cardinality-scoped admission is independently proof-sensitive.** Exact source or
+  API-port row counts seed a memoised graph walk. Known row-preserving and
+  row-reducing built-ins retain the incoming upper bound; scenario expansion applies
+  its validated step multiplier; linear Polars code uses `RowCardinalityAnalysis`;
+  and Edge Join uses its validated roles, strategy, and uniqueness contract directly.
+  The estimator records both the output bound and the greatest bound reached while
+  executing the materialising node. Join bounds are mathematical: Cartesian product
+  for unconstrained inner/cross joins, one-side bounds when the opposite key is
+  unique, left/right preservation for semi/anti and unique outer sides, and explicit
+  unmatched-row terms for full joins. These formulas are not the empirical 3x
+  lifecycle overhead factor, which is applied only after row count and physical row
+  width are established. Fractional measured widths are multiplied as exact rational
+  values and rounded upward, so very large finite join bounds neither overflow a float
+  nor lose bytes through truncation. Missing row metadata, dynamic/unsupported join semantics,
+  `explode`, opaque row-changing code, invalid input-name binding, or an unknown
+  multi-input built-in returns `row_cardinality_unavailable:<node>:<reason>`; the
+  normal materialisation-estimate-unavailable diagnostic surfaces that detail and
+  refuses admission.
 
 - **Estimate calibration only tightens admission.** A bounded process-local registry
   stores one basis-point multiplier per `ExecutionProfile`. On terminal metrics with
@@ -897,7 +959,21 @@ fallback after a process failure.
 
 - `tests/performance/test_polars_scale_scenario.py` — bounded Polars join/training projection scale generation, modelling-menu demand propagation, and CI-small execution-profile smoke contracts.
 - `tests/performance/test_execution_engine_certification.py` — isolated projected-versus-full wide-Parquet RSS comparison, per-port API-input and direct-JSONL checkpoint evidence, and a fresh-interpreter restart certificate for cache-proof reuse, telemetry privacy, and snapshot-owner cleanup.
-- `.github/workflows/performance.yml` — weekly one-million-row and monthly ten-million-row retained performance certificates, plus Linux/Windows/macOS process-kill, spill, cross-process cache, restart, and RSS-enforcement lanes. Manual dispatch retains an explicit `ci|1m|10m` scale selector.
+- `tests/performance/_execution_resilience_probe.py` plus
+  `test_execution_engine_certification.py` — fresh-interpreter worker-pool soak with
+  real crash replacement and RSS/descriptor-or-handle plateau evidence; five-phase
+  cache-publication crash recovery; `ENOSPC` rollback; multi-process same-cache
+  contention; and metadata-only extreme-join rejection. The `ci`, `1m`, and `10m`
+  scales use respectively bounded local counts, thousands of weekly executions, and
+  ten thousand monthly executions with one thousand replacements.
+- `scripts/run_perf_suite.py` — writes versioned JSON/Markdown/JUnit evidence and,
+  when `--baseline-report` is supplied, validates one compatible retained report and
+  applies configurable total-time, peak-RSS, and per-test regression thresholds plus
+  a timing noise floor. Suite-wide metrics require identical test identity, while
+  matching per-test comparisons survive ordinary suite additions. Baseline parse/schema
+  errors are fatal; an environment or scale mismatch is retained as an explicit
+  non-comparable result.
+- `.github/workflows/performance.yml` — weekly one-million-row and monthly ten-million-row retained performance/resilience certificates, plus Linux/Windows/macOS process-kill, spill, cross-process cache, publication-crash, restart, native-memory, and lifecycle-plateau lanes. A successful scale-specific Python report is cached as the next historical baseline and retained as a workflow artifact used when the cache has expired; failed runs never replace either source. The baseline loader accepts only a timezone-stamped, successful, all-passed call-phase report whose collection/result counts, outcome totals, slowest-test projection, wall-time partition, RSS evidence, unique identities, and closed v4 test records reconcile exactly. Manual dispatch retains an explicit `ci|1m|10m` scale selector.
 - `tests/test_bounded_collect_contracts.py` — bounded execution modules route collection through the streaming helper rather than direct Polars `.collect()`.
 - `tests/test_builder_edge_cases.py` — builder edge cases for instance resolution, constants, outputs, live-switch/scenario expansion, banding, dispatch, and empty frames.
 - `tests/test_column_renames.py` — column-rename application for configured, empty, missing, and edge-name mappings.
@@ -905,9 +981,14 @@ fallback after a process failure.
 - `tests/test_column_lineage.py` — operation-level schema/demand transfer and
   differential execution checks: running supported programs against projected
   inputs must equal running the same programs against full-width inputs.
+- `tests/test_cardinality.py` — overflow-safe join-cardinality formulas, uniqueness
+  contracts, evidence payloads, invalid bounds, and row-cardinality lineage analysis.
 - `tests/test_column_lineage_properties.py` — Hypothesis differential properties for the closed Polars column-lineage model, including projected-versus-full execution equivalence.
 - `tests/test_interactive_route_isolation.py` — preview and trace routes execute serialisable production targets through the spawn-worker boundary.
 - `tests/test_interactive_worker_pool.py` — warm interactive-worker pool readiness, protocol, timeout, cancellation, RSS-limit, replacement, and execution-mode contracts.
+- `tests/test_native_memory_limit.py` — native-backend selection, strict-policy
+  rejection, Linux/Windows aggregate enforcement, active-backend scoping, lease
+  cleanup, and fork-safe ownership contracts.
 - `tests/test_materialisation_calibration.py` — upward-only materialisation-estimate calibration, conservative rounding, profile isolation, and planner/admission integration.
 - `tests/test_process_memory.py` — platform-dispatched RSS and liveness probes, including malformed, inaccessible, and Windows-handle cases.
 - `tests/test_projection_aware_admission.py` — materialisation-boundary admission estimates use exact projected edge demand and preserve conservative fallback behaviour.

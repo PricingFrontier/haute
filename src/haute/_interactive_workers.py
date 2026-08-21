@@ -20,6 +20,12 @@ from typing import Any, Literal, TypeVar, cast
 
 from haute._env import int_env
 from haute._logging import get_logger
+from haute._native_memory_limit import (
+    NativeMemoryLease,
+    cleanup_private_cgroups_for_pid,
+    native_memory_backend_scope,
+    native_memory_caps_supported,
+)
 from haute._process_memory import process_rss_bytes
 from haute._worker_isolation import (
     IsolatedWorkerError,
@@ -83,7 +89,7 @@ class InteractiveWorkerStoppedError(InteractiveWorkerError):
 class InteractiveWorkerMemoryLimitError(InteractiveWorkerError, MemoryError):
     def __init__(self, *, rss_bytes: int, limit_bytes: int) -> None:
         super().__init__(
-            f"Interactive worker exceeded its RSS cap: {rss_bytes} bytes used > "
+            f"Interactive worker exceeded its RSS watchdog limit: {rss_bytes} bytes used > "
             f"{limit_bytes} bytes allowed",
             terminal_reason="memory_limited",
         )
@@ -120,7 +126,11 @@ class InteractiveWorkerRemoteError(InteractiveWorkerError):
         public_payload: dict[str, object] | None,
     ) -> None:
         terminal_reason: WorkerTerminalReason = (
-            "memory_limited" if remote_type.endswith("MemoryError") else "error"
+            "contract_error"
+            if remote_type.startswith("NativeMemoryLimit")
+            else "memory_limited"
+            if remote_type.endswith("MemoryError")
+            else "error"
         )
         super().__init__(
             f"Interactive worker raised {remote_type}: {remote_message}",
@@ -163,6 +173,7 @@ def _interactive_worker_entrypoint(
     result_queue: Any,
     preload_modules: tuple[str, ...],
 ) -> None:
+    lease = NativeMemoryLease()
     try:
         for module_name in preload_modules:
             importlib.import_module(module_name)
@@ -172,12 +183,12 @@ def _interactive_worker_entrypoint(
             request = pickle.loads(raw_request)
             if request == ("shutdown",):
                 return
-            if not isinstance(request, tuple) or len(request) != 5 or request[0] != "run":
+            if not isinstance(request, tuple) or len(request) != 7 or request[0] != "run":
                 raise RuntimeError("interactive worker received a malformed request")
-            _kind, job_id, function, args, kwargs = request
+            _kind, job_id, function, args, kwargs, native_growth, native_required = request
             try:
-                value = function(*args, **kwargs)
-                envelope = ("result", job_id, "ok", value)
+                if native_growth is not None:
+                    lease.apply(native_growth, required=native_required)
             except BaseException as exc:
                 envelope = (
                     "result",
@@ -191,31 +202,96 @@ def _interactive_worker_entrypoint(
                         _public_exception_payload(exc),
                     ),
                 )
-            # Serialise synchronously so an unpicklable return value becomes a
-            # deterministic remote error instead of dying in Queue's feeder.
-            try:
-                payload = pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL)
-            except BaseException as exc:
-                payload = pickle.dumps(
-                    (
-                        "result",
-                        job_id,
-                        "error",
+                backend = None
+                run_function = False
+            else:
+                backend = lease.backend
+                run_function = True
+            with native_memory_backend_scope(backend):
+                if run_function:
+                    try:
+                        value = function(*args, **kwargs)
+                        envelope = ("result", job_id, "ok", value)
+                    except BaseException as exc:
+                        envelope = (
+                            "result",
+                            job_id,
+                            "error",
+                            (
+                                type(exc).__name__,
+                                type(exc).__module__,
+                                str(exc),
+                                "".join(
+                                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                                ),
+                                _public_exception_payload(exc),
+                            ),
+                        )
+                # Serialise synchronously so an unpicklable return value becomes a
+                # deterministic remote error instead of dying in Queue's feeder.
+                try:
+                    payload = pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL)
+                except BaseException as exc:
+                    payload = pickle.dumps(
                         (
-                            type(exc).__name__,
-                            type(exc).__module__,
-                            f"worker result was not serialisable: {exc}",
-                            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
-                            None,
+                            "result",
+                            job_id,
+                            "error",
+                            (
+                                type(exc).__name__,
+                                type(exc).__module__,
+                                f"worker result was not serialisable: {exc}",
+                                "".join(
+                                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                                ),
+                                None,
+                            ),
                         ),
-                    ),
+                        protocol=pickle.HIGHEST_PROTOCOL,
+                    )
+                result_queue.put(payload)
+                raw_ack = request_queue.get()
+                acknowledgement = pickle.loads(raw_ack)
+                if acknowledgement != ("ack", job_id):
+                    raise RuntimeError(
+                        "interactive worker received a malformed or stale acknowledgement"
+                    )
+            try:
+                if native_growth is not None:
+                    lease.restore()
+            except BaseException as exc:
+                result_queue.put(
+                    pickle.dumps(
+                        (
+                            "released",
+                            job_id,
+                            "error",
+                            (
+                                type(exc).__name__,
+                                type(exc).__module__,
+                                str(exc),
+                                "".join(
+                                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                                ),
+                                _public_exception_payload(exc),
+                            ),
+                        ),
+                        protocol=pickle.HIGHEST_PROTOCOL,
+                    )
+                )
+                raise
+            result_queue.put(
+                pickle.dumps(
+                    ("released", job_id, "ok", None),
                     protocol=pickle.HIGHEST_PROTOCOL,
                 )
-            result_queue.put(payload)
+            )
     except BaseException:
         # The parent classifies an entrypoint/protocol failure from exitcode;
         # trying to use a possibly broken queue here can hide the original exit.
         raise
+    finally:
+        lease.close()
 
 
 class InteractiveWorkerPool:
@@ -297,12 +373,14 @@ class InteractiveWorkerPool:
             raise ValueError("absolute_rss_limit_bytes must be positive")
         if memory_growth_limit_bytes is not None and memory_growth_limit_bytes <= 0:
             raise ValueError("memory_growth_limit_bytes must be positive")
+        if require_memory_limit and memory_growth_limit_bytes is None:
+            raise ValueError("required memory enforcement needs a native memory growth limit")
         if (
             require_memory_limit
-            and absolute_rss_limit_bytes is None
-            and memory_growth_limit_bytes is None
+            and memory_growth_limit_bytes is not None
+            and not native_memory_caps_supported()
         ):
-            raise ValueError("required memory enforcement needs an RSS limit")
+            raise RuntimeError("Interactive worker native memory caps are unavailable on this host")
         self.start()
         slot = self._slot_for_affinity(affinity_key)
         while not slot.lock.acquire(timeout=self._poll_interval_seconds):
@@ -319,10 +397,9 @@ class InteractiveWorkerPool:
                 baseline_rss = process_rss_bytes(cast(int, slot.process.pid))
                 if baseline_rss is None:
                     if require_memory_limit:
-                        self._stop_and_replace(slot)
-                        raise RuntimeError(
-                            "Interactive worker memory enforcement could not sample child RSS"
-                        )
+                        # Native enforcement remains valid; RSS is only a
+                        # secondary watchdog and must not reject this request.
+                        absolute_rss_limit_bytes = None
                     logger.warning(
                         "interactive_worker_rss_baseline_unavailable",
                         worker_index=slot.index,
@@ -334,7 +411,15 @@ class InteractiveWorkerPool:
                         if absolute_rss_limit_bytes is None
                         else min(absolute_rss_limit_bytes, growth_cap)
                     )
-            request = ("run", job_id, function, args, kwargs)
+            request = (
+                "run",
+                job_id,
+                function,
+                args,
+                kwargs,
+                memory_growth_limit_bytes,
+                require_memory_limit,
+            )
             try:
                 serialised = pickle.dumps(request, protocol=pickle.HIGHEST_PROTOCOL)
             except BaseException as exc:
@@ -481,9 +566,48 @@ class InteractiveWorkerPool:
             if raw_result is not None:
                 try:
                     envelope = pickle.loads(raw_result)
-                    return self._interpret_result(slot, job_id=job_id, envelope=envelope)
-                except InteractiveWorkerRemoteError:
-                    raise
+                    result: Any = None
+                    user_error: InteractiveWorkerRemoteError | None = None
+                    try:
+                        result = self._interpret_result(slot, job_id=job_id, envelope=envelope)
+                    except InteractiveWorkerRemoteError as exc:
+                        user_error = exc
+                    try:
+                        slot.request_queue.put(
+                            pickle.dumps(("ack", job_id), protocol=pickle.HIGHEST_PROTOCOL)
+                        )
+                    except BaseException as exc:
+                        release_error = InteractiveWorkerProtocolError(
+                            f"Interactive worker acknowledgement could not be sent: {exc}",
+                            terminal_reason="contract_error",
+                        )
+                        if user_error is not None:
+                            user_error.add_note(
+                                f"Worker release confirmation failed: {release_error}"
+                            )
+                            raise user_error
+                        raise release_error from exc
+                    try:
+                        self._wait_for_release(
+                            slot,
+                            job_id=job_id,
+                            deadline=deadline,
+                            timeout_seconds=timeout_seconds,
+                            stop_reason=stop_reason,
+                            absolute_rss_limit_bytes=absolute_rss_limit_bytes,
+                            require_memory_limit=require_memory_limit,
+                            sampler_unavailable_logged=sampler_unavailable_logged,
+                        )
+                    except BaseException as release_error:
+                        if user_error is not None:
+                            user_error.add_note(
+                                f"Worker release confirmation failed: {release_error}"
+                            )
+                            raise user_error
+                        raise
+                    if user_error is not None:
+                        raise user_error
+                    return result
                 except BaseException:
                     self._stop_and_replace(slot)
                     raise
@@ -520,6 +644,63 @@ class InteractiveWorkerPool:
                         limit_bytes=absolute_rss_limit_bytes,
                     )
 
+    def _wait_for_release(
+        self,
+        slot: _WorkerSlot,
+        *,
+        job_id: str,
+        deadline: float,
+        timeout_seconds: float,
+        stop_reason: Callable[[], WorkerTerminalReason | None] | None,
+        absolute_rss_limit_bytes: int | None,
+        require_memory_limit: bool,
+        sampler_unavailable_logged: bool,
+    ) -> None:
+        while True:
+            if self._shutdown_event.is_set():
+                raise InteractiveWorkerStoppedError("cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise InteractiveWorkerTimeoutError(timeout_seconds)
+            try:
+                raw_release = slot.result_queue.get(
+                    timeout=min(self._poll_interval_seconds, remaining)
+                )
+            except queue.Empty:
+                raw_release = None
+            if raw_release is not None:
+                try:
+                    release = pickle.loads(raw_release)
+                    self._interpret_release(job_id=job_id, envelope=release)
+                    return
+                except BaseException:
+                    raise
+            if not slot.process.is_alive():
+                exitcode = slot.process.exitcode
+                raise InteractiveWorkerCrashedError(exitcode)
+            if stop_reason is not None:
+                reason = stop_reason()
+                if reason is not None:
+                    raise InteractiveWorkerStoppedError(reason)
+            if absolute_rss_limit_bytes is not None:
+                rss = process_rss_bytes(cast(int, slot.process.pid))
+                if rss is None:
+                    if require_memory_limit:
+                        raise RuntimeError(
+                            "Interactive worker memory enforcement could not sample child RSS"
+                        )
+                    if not sampler_unavailable_logged:
+                        sampler_unavailable_logged = True
+                        logger.warning(
+                            "interactive_worker_rss_unavailable",
+                            worker_index=slot.index,
+                        )
+                elif rss > absolute_rss_limit_bytes:
+                    raise InteractiveWorkerMemoryLimitError(
+                        rss_bytes=rss,
+                        limit_bytes=absolute_rss_limit_bytes,
+                    )
+
     def _interpret_result(self, slot: _WorkerSlot, *, job_id: str, envelope: Any) -> Any:
         if not isinstance(envelope, tuple) or len(envelope) != 4:
             raise InteractiveWorkerProtocolError(
@@ -537,6 +718,39 @@ class InteractiveWorkerPool:
         if not isinstance(payload, tuple) or len(payload) != 5:
             raise InteractiveWorkerProtocolError(
                 "Interactive worker returned malformed error evidence",
+                terminal_reason="contract_error",
+            )
+        remote_type, remote_module, remote_message, remote_traceback, public_payload = payload
+        raise InteractiveWorkerRemoteError(
+            remote_type=str(remote_type),
+            remote_module=str(remote_module),
+            remote_message=str(remote_message),
+            remote_traceback=str(remote_traceback),
+            public_payload=(public_payload if isinstance(public_payload, dict) else None),
+        )
+
+    def _interpret_release(self, *, job_id: str, envelope: Any) -> None:
+        if not isinstance(envelope, tuple) or len(envelope) != 4:
+            raise InteractiveWorkerProtocolError(
+                "Interactive worker returned a malformed release envelope",
+                terminal_reason="contract_error",
+            )
+        kind, returned_job_id, status, payload = envelope
+        if kind != "released" or returned_job_id != job_id or status not in {"ok", "error"}:
+            raise InteractiveWorkerProtocolError(
+                "Interactive worker returned a stale or invalid release envelope",
+                terminal_reason="contract_error",
+            )
+        if status == "ok":
+            if payload is not None:
+                raise InteractiveWorkerProtocolError(
+                    "Interactive worker returned a malformed successful release envelope",
+                    terminal_reason="contract_error",
+                )
+            return
+        if not isinstance(payload, tuple) or len(payload) != 5:
+            raise InteractiveWorkerProtocolError(
+                "Interactive worker returned malformed release error evidence",
                 terminal_reason="contract_error",
             )
         remote_type, remote_module, remote_message, remote_traceback, public_payload = payload
@@ -577,6 +791,15 @@ class InteractiveWorkerPool:
                 primary = exc
             else:
                 primary.add_note(f"worker join failed: {exc}")
+        try:
+            pid = getattr(slot.process, "pid", None)
+            if pid is not None and not slot.process.is_alive():
+                cleanup_private_cgroups_for_pid(pid)
+        except BaseException as exc:
+            if primary is None:
+                primary = exc
+            else:
+                primary.add_note(f"native memory resource cleanup failed: {exc}")
         for name, work_queue in (
             ("request", slot.request_queue),
             ("result", slot.result_queue),

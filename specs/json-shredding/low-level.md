@@ -57,12 +57,17 @@ Submodel graph expansion and boundary rewiring are owned by
   all route through it so they can never disagree about which parquets exist.
 - `_POLARS_TYPE_MAP` — the five v2 `ColumnType` tokens (`int`, `float`, `str`,
   `bool`, `date`) mapped to Polars `DataType` classes.
-- `_iter_xml_records(data_path)` — rejects DTD/entity declarations, parses one XML
-  document, strips element/attribute namespaces, maps attributes and child elements
-  to the common object/list/scalar record shape, and promotes homogeneous object
-  children of an attribute-free root to top-level records. An attributed root stays
-  one record so its attributes are never discarded. Mixed content and field-name
-  collisions raise `ApiInputSchemaError`.
+- `_iter_xml_records(data_path)` — rejects DTD/entity declarations with a bounded
+  chunk scan, then uses `XMLPullParser` rather than a complete-document byte buffer.
+  A parallel event-only Expat tracker records each direct child's encoded start offset
+  and reserves the maximum UTF-32 closing-tag width, so a child that could exceed the
+  configured record bound fails closed before that chunk reaches the retaining parser.
+  A validation pass classifies an attribute-free root containing homogeneous object
+  children; an emitting pass then converts, yields, removes, and clears each direct
+  child. Other XML shapes retain their one-root-record semantics only when the file
+  fits `HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES`; larger ones fail before a complete
+  tree is retained. Element/attribute namespaces are stripped. Mixed content and
+  field-name collisions raise `ApiInputSchemaError`.
 
 **`_jsonpath.py`**
 
@@ -195,21 +200,26 @@ without another upstream read.
    the whole directory.
 7. Shred, by one of two paths that produce identical artifacts:
    - **Serial** (default) — `shred_to_buffers(_counted_records(), v2_config,
-     stats=skip_stats)`, the shred core (below), consuming `_iter_records`
-     directly (not materialised into a list). Then `_write_tables_serially`.
+     stats=skip_stats, _row_sink=writer.emit)` consumes `_iter_records` directly.
+     `_BoundedParquetRowGroupWriter` owns one aggregate row/estimated-byte budget
+     across every table and flushes all non-empty buffers when either limit is met.
    - **Parallel** (`_should_shred_in_parallel`: a `.jsonl`/`.ndjson` source of at
      least `_PARALLEL_MIN_BYTES` that splits into more than one range) —
-     `_write_tables_in_parallel`, described below.
+     `_write_tables_in_parallel`, described below. When a managed execution context
+     is active, this path additionally requires an aggregate native lease (`cgroup`
+     or Windows Job Object). A per-process `RLIMIT_AS` lease, unavailable best-effort
+     enforcement, or an ordinary context uses the same bounded serial writer so
+     process fan-out cannot multiply the admitted memory budget.
 8. Conservation assertion at the root level: for every emit-true root table,
    `emitted + skipped_rows_by_table[label] == record_count`, else `RuntimeError`.
    The parallel path asserts this per chunk; ranges tile the file exactly, so
    holding it on every chunk holds it on the whole file.
-9. Each table: `_buffer_to_frame` → `to_arrow()` → attach per-frame schema
-   metadata (`_per_frame_metadata`) → `pq.write_table(..., compression="zstd")`;
-   after each final write, record its derived filename plus `{size, sha256}`
-   `content_signature` in the table summary; then write `meta.json`. Both paths
-   build the summary through `_table_summary` from a frame produced by
-   `_buffer_to_frame`, so their reported dtypes agree by construction.
+9. The shared writer converts each bounded buffer through `_buffer_to_frame`, writes
+   it as a zstd Parquet row group with `_per_frame_metadata`, and immediately releases
+   the Python rows. Closing the writers also produces valid schema-carrying empty
+   parquets. After close, each final artifact is recorded with its derived filename,
+   row/column counts, dtypes, and `{size, sha256}` `content_signature`; then
+   `meta.json` is written.
 10. `_swap_dir_into_place(tmp_dir, cache_dir)` — recoverable two-rename publish
     (below).
 
@@ -224,26 +234,25 @@ the skip/conservation accounting.
   tile the file exactly — gapless, non-overlapping, in file order.
 - Chunk size (`_PARALLEL_CHUNK_BYTES`) and worker count
   (`_PARALLEL_MAX_WORKERS`, `_parallel_worker_count`) are deliberately separate
-  knobs. Decoded records cost several times their JSON size as Python objects,
-  so chunk size bounds peak memory (one chunk resident per worker) while worker
-  count bounds parallelism. Sizing chunks as `file_size / n_workers` would make
-  memory grow with the file and exhaust it on exactly the large inputs this
-  path exists for.
+  knobs. Worker count bounds parallelism; the shared row-group writer, rather than
+  the complete source range, bounds decoded rows retained by each worker. Sizing
+  chunks as `file_size / n_workers` would make queued work and recovery time grow
+  with the file even though retained row buffers are independently bounded.
 - `_shred_chunk` runs in a worker process: it is module-level and
   argument-driven so it survives `spawn` pickling, and it returns a
   `_ChunkResult` rather than raising, so a failure can be re-raised in the
-  parent. Rows are written as uncompressed Arrow IPC parts in the staging dir,
-  never returned through the pool's result channel.
-- The parent streams each table's parts into one `pq.ParquetWriter` **in chunk
-  order** (so row order matches the serial shred exactly), unlinking each part
-  as it is consumed to keep parent memory bounded by a single part. Disk is the
-  trade: workers finish writing every part before assembly starts consuming
-  them, so the staging directory transiently holds roughly the whole dataset as
-  uncompressed IPC parts alongside the growing zstd parquets. The swap into
-  place still publishes only the compressed artifacts, and any failure removes
-  the staging directory with the parts in it. A chunk that produced no part for
-  an emitting table (worker/parent spec divergence — never legitimate) fails
-  the build rather than publishing a parquet with silently missing rows.
+  parent. Rows are written through `_BoundedParquetRowGroupWriter` as compressed
+  Parquet parts in the staging dir, never returned through the pool's result channel.
+- The parent reads one part row group at a time and feeds it into the shared writer
+  **in chunk order** (so row order matches the serial shred exactly), unlinking each
+  part as it is consumed. Parent and child peak memory are therefore bounded by one
+  configured row group plus one logical record, rather than one source range. Disk
+  is the trade: workers may finish writing every part before assembly starts, so the
+  staging directory transiently holds the part parquets alongside the growing final
+  parquets. The swap into place still publishes only the final artifacts, and any
+  failure removes the staging directory with the parts in it. A chunk that produced
+  no part for an emitting table (worker/parent spec divergence — never legitimate)
+  fails the build rather than publishing a parquet with silently missing rows.
 - `_raise_chunk_error` rebuilds the worker's failure in the parent rather than
   pickling arbitrary exception objects. The envelope carries an
   `ApiInputSchemaError`'s raw `message` plus complete `context`, an
@@ -266,6 +275,10 @@ the skip/conservation accounting.
   `spawn` user, a caller that invokes the build from module-level script code
   must guard it with `if __name__ == "__main__":`; the packaged entry point
   (`haute = haute.cli:cli`) already does.
+- Parallel eligibility is therefore a performance choice only after memory ownership
+  is proven. Direct library builds without an execution context retain the historical
+  parallel path; isolated route builds never treat a per-process limit as an aggregate
+  descendant budget.
 
 **Shred core** — `shred_to_buffers(records, v2_config, stats=None)`:
 1. Validate schema; collect emit-true tables' `(label, segments, col_specs)`, where
@@ -366,18 +379,22 @@ the skip/conservation accounting.
    process termination may leave a
    private snapshot directory for later operational cleanup, but never makes that
    directory part of cache discovery or serving.
-4. If no cache can serve, JSON/JSONL uses `_iter_records` plus the shared shred walker
-   with only the requested projected specs. A direct-spill sink owns one aggregate
-   byte/row-bounded buffer across all requested tables. Crossing either bound flushes
-   every non-empty table buffer through the same strict `_buffer_to_frame` conversion
-   into a PyArrow `ParquetWriter` row group, then releases those Python rows. The
+4. If no cache can serve, `_iter_records` plus the shared shred walker uses only the
+   requested projected specs. The same `_BoundedParquetRowGroupWriter` used by cache
+   generation owns one aggregate byte/row-bounded buffer across all requested tables.
+   Crossing either bound flushes every non-empty table buffer through the same strict
+   `_buffer_to_frame` conversion into a PyArrow `ParquetWriter` row group, then releases those Python rows. The
    resulting `{label: scan_parquet(...)}` bundle preserves schema order, row order,
    carrier-column cardinality, skip accounting, strict bool/date errors, and root
    conservation. JSON root arrays are tokenised one complete top-level value at a
-   time; root objects and individual JSONL lines are the irreducible record-sized
-   bound. XML retains its document-sized bound. Checkpoints run during parsing,
+   time; JSON root objects, individual JSONL lines, repeated XML children, and
+   one-root XML documents are all subject to the hard structured-input record-byte
+   limit. The XML parser releases repeated record elements at each direct-child end.
+   Checkpoints run during parsing,
    emission, conversion, and flush. Runtime spill files live outside `working/` and
    `committed/`; this path never writes, refreshes, deletes, or promotes cache state.
+   Orderly-exit cleanup reports residue through structured warnings; cleanup failures
+   during a primary build error are attached as exception notes rather than hidden.
    A managed `ExecutionContext` owns the spill lease until collection/cleanup; an
    unmanaged LazyFrame is conservatively process-pinned until orderly exit.
 5. Return a `{label: LazyFrame}` dict in schema order for every requested frame
@@ -628,7 +645,8 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   `status` values with exact field paths), a dotted leaf crossing a non-empty array, a `$value`/real-
   column collision, a column value that doesn't match its declared type (including
   the silent-coercion guards), inference's unexpressible-key rejections, invalid XML,
-  XML DTD/entity declarations, mixed XML content, and XML field-name collisions.
+  XML DTD/entity declarations, mixed XML content, XML field-name collisions, and a
+  logical JSON/XML record exceeding `HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES`.
   Schema/table errors carry their normal `column=`/`table=` context; XML decode errors
   carry a direct safe message.
 - `RuntimeError` — raised by the shared file-shred path on a root conservation-

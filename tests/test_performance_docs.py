@@ -121,9 +121,27 @@ def test_performance_workflow_certifies_scales_and_execution_platforms() -> None
     assert 'cron: "43 2 1 * *"' in workflow
     assert "options: [ci, 1m, 10m]" in workflow
     assert '--polars-scale "$HAUTE_POLARS_PERF_SCALE"' in workflow
+    assert "actions/cache/restore@v4" in workflow
+    assert "actions/cache/save@v4" in workflow
+    assert "--baseline-report .perf-baseline/perf-report.json" in workflow
+    assert "perf-baseline-${{ runner.os }}-${{ env.HAUTE_POLARS_PERF_SCALE }}-" in workflow
+    assert "actions: read" in workflow
+    assert (
+        'gh run list --workflow performance.yml --branch "$GITHUB_REF_NAME" --status success'
+        in workflow
+    )
+    assert "--limit 100 --jq '.[].databaseId'" in workflow
+    assert "GH_TOKEN: ${{ github.token }}" in workflow
+    assert 'for prior_run_id in "${prior_run_ids[@]}"' in workflow
+    assert (
+        'gh run download "$prior_run_id" --name "python-performance-$HAUTE_POLARS_PERF_SCALE"'
+        in workflow
+    )
+    assert "name: python-performance-${{ env.HAUTE_POLARS_PERF_SCALE }}" in workflow
     assert "os: [ubuntu-latest, windows-latest, macos-latest]" in workflow
     for test_path in (
         "tests/test_process_memory.py",
+        "tests/test_native_memory_limit.py",
         "tests/test_worker_isolation.py",
         "tests/test_interactive_worker_pool.py",
         "tests/test_interactive_route_isolation.py",

@@ -20,6 +20,7 @@ from enum import StrEnum
 from functools import lru_cache
 from types import MappingProxyType
 
+from haute._cardinality import join_cardinality_upper_bound, normalise_join_validation
 from haute._edge_join import narrow_join_parent_demand
 
 
@@ -50,6 +51,7 @@ class LineageOperation:
     right_input: str | None = None
     key_pairs: tuple[tuple[str, str], ...] = ()
     how: str | None = None
+    validate: str | None = None
     suffix: str | None = None
     subset_columns: frozenset[str] | None = frozenset()
 
@@ -74,6 +76,18 @@ class ColumnLineageAnalysis:
 
 
 @dataclass(frozen=True, slots=True)
+class RowCardinalityAnalysis:
+    """Finite row-count proof for one accepted linear frame program."""
+
+    supported: bool
+    output_upper_bound: int | None
+    peak_upper_bound: int | None
+    evidence: tuple[str, ...]
+    reason: str
+    unsupported_operation: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _EvaluatedOperation:
     operation: LineageOperation
     before_schema: frozenset[str] | None
@@ -89,6 +103,7 @@ class _ParseFailure:
 _ROW_ONLY_METHODS = frozenset({"head", "tail", "limit", "slice"})
 _SELECT_METHODS = frozenset({"select", "select_seq"})
 _SUPPORTED_JOIN_HOW = frozenset({"inner", "left", "semi", "anti"})
+_CARDINALITY_JOIN_HOW = frozenset({"inner", "left", "right", "full", "semi", "anti", "cross"})
 _SCHEMA_DEPENDENT_PL_CALLS = frozenset(
     {
         "all",
@@ -120,12 +135,83 @@ _LITERAL_STRING_ARGUMENT_METHODS = frozenset(
     }
 )
 
+# These expression operations can construct more outer rows than their input
+# frame supplies. Keeping this closed list beside the AST parser makes the
+# cardinality proof independent from column-lineage support: an expression can
+# have exact column dependencies while still being unsafe to size by input row
+# count. Polars is pinned; dependency upgrades must audit additions to Expr's
+# variable-length API before extending this set or the safe direct-call set.
+_ROW_EXPANDING_EXPRESSION_METHODS = frozenset(
+    {
+        "append",
+        "deserialize",
+        "explode",
+        "extend_constant",
+        "flatten",
+        "from_json",
+        "gather",
+        "hist",
+        "map_batches",
+        "pipe",
+        "register_plugin",
+        "sample",
+        "search_sorted",
+    }
+)
+_ROW_BOUND_SAFE_POLARS_CALLS = frozenset(
+    {
+        "arg_sort_by",
+        "arg_where",
+        "business_day_count",
+        "coalesce",
+        "col",
+        "concat_arr",
+        "concat_list",
+        "concat_str",
+        "cum_fold",
+        "cum_reduce",
+        "date",
+        "date_ranges",
+        "datetime",
+        "datetime_ranges",
+        "duration",
+        "element",
+        "fold",
+        "format",
+        "from_epoch",
+        "int_ranges",
+        "len",
+        "linear_spaces",
+        "lit",
+        "reduce",
+        "struct",
+        "time",
+        "time_ranges",
+        "when",
+        *_HORIZONTAL_PL_CALL_OUTPUTS,
+    }
+)
+
 
 def _unsupported(reason: str, operation: str | None = None) -> ColumnLineageAnalysis:
     return ColumnLineageAnalysis(
         supported=False,
         exact_output_columns=None,
         demands_by_input=MappingProxyType({}),
+        reason=reason,
+        unsupported_operation=operation,
+    )
+
+
+def _unsupported_cardinality(
+    reason: str,
+    operation: str | None = None,
+) -> RowCardinalityAnalysis:
+    return RowCardinalityAnalysis(
+        supported=False,
+        output_upper_bound=None,
+        peak_upper_bound=None,
+        evidence=(),
         reason=reason,
         unsupported_operation=operation,
     )
@@ -272,6 +358,37 @@ def _referenced_columns(node: ast.AST) -> frozenset[str] | None:
             ):
                 return None
     return frozenset(columns)
+
+
+def _expression_has_unbounded_row_effect(node: ast.AST) -> bool:
+    """Reject expression syntax whose successful result may outgrow the frame.
+
+    Top-level Polars constructors are allow-listed because a new constructor can
+    manufacture an arbitrary-length Series. Expr methods are row-bounded by
+    default except the audited variable-length and user-callback operations.
+    Nested list/struct namespace methods retain the outer row count; their
+    ``explode``/``flatten`` exits are still caught by method name.
+    """
+
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        direct = _polars_call_name(child)
+        if direct is not None:
+            if direct not in _ROW_BOUND_SAFE_POLARS_CALLS:
+                return True
+            continue
+        if isinstance(child.func, ast.Attribute):
+            if child.func.attr in _ROW_EXPANDING_EXPRESSION_METHODS:
+                return True
+            # Foreign/free calls were already rejected by
+            # _referenced_columns; lambdas and named callbacks passed into an
+            # Expr method need an explicit guard because they are not calls in
+            # the AST themselves.
+            if any(isinstance(argument, (ast.Lambda, ast.Name)) for argument in child.args):
+                if child.func.attr in {"map_elements", "rolling_map"}:
+                    return True
+    return False
 
 
 def _alias_name(node: ast.AST) -> str | None:
@@ -486,7 +603,12 @@ def _parse_group_by_agg(
     )
 
 
-def _parse_join(call: ast.Call, input_names: frozenset[str]) -> LineageOperation | _ParseFailure:
+def _parse_join(
+    call: ast.Call,
+    input_names: frozenset[str],
+    *,
+    cardinality_only: bool = False,
+) -> LineageOperation | _ParseFailure:
     if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
         return _ParseFailure("dynamic_join_input", "join")
     right_input = call.args[0].id
@@ -494,6 +616,7 @@ def _parse_join(call: ast.Call, input_names: frozenset[str]) -> LineageOperation
         return _ParseFailure("unknown_join_input", "join")
 
     how = "inner"
+    validate = "m:m"
     suffix = "_right"
     on_node: ast.AST | None = None
     left_on_node: ast.AST | None = None
@@ -501,6 +624,14 @@ def _parse_join(call: ast.Call, input_names: frozenset[str]) -> LineageOperation
     for keyword in call.keywords:
         if keyword.arg == "how":
             how = _literal_string(keyword.value) or ""
+        elif keyword.arg == "validate":
+            literal_validate = _literal_string(keyword.value)
+            if literal_validate is None:
+                return _ParseFailure("dynamic_join_validate", "join")
+            try:
+                validate = normalise_join_validation(literal_validate)
+            except (TypeError, ValueError):
+                return _ParseFailure("unsupported_join_semantics", "join")
         elif keyword.arg == "suffix":
             suffix = _literal_string(keyword.value) or ""
         elif keyword.arg == "on":
@@ -511,8 +642,20 @@ def _parse_join(call: ast.Call, input_names: frozenset[str]) -> LineageOperation
             right_on_node = keyword.value
         else:
             return _ParseFailure("unsupported_join_option", "join")
-    if how not in _SUPPORTED_JOIN_HOW or not suffix:
+    supported_how = _CARDINALITY_JOIN_HOW if cardinality_only else _SUPPORTED_JOIN_HOW
+    if how not in supported_how or (not cardinality_only and not suffix):
         return _ParseFailure("unsupported_join_semantics", "join")
+    if cardinality_only and how == "cross":
+        if any(node is not None for node in (on_node, left_on_node, right_on_node)):
+            return _ParseFailure("unsupported_join_semantics", "join")
+        return LineageOperation(
+            kind=LineageOperationKind.JOIN,
+            method="join",
+            right_input=right_input,
+            how=how,
+            validate=validate,
+            suffix=suffix,
+        )
     if on_node is not None and (left_on_node is not None or right_on_node is not None):
         return _ParseFailure("ambiguous_join_keys", "join")
     if on_node is not None:
@@ -549,6 +692,7 @@ def _parse_join(call: ast.Call, input_names: frozenset[str]) -> LineageOperation
         right_input=right_input,
         key_pairs=tuple(zip(left_order, right_order, strict=True)),
         how=how,
+        validate=validate,
         suffix=suffix,
     )
 
@@ -556,6 +700,8 @@ def _parse_join(call: ast.Call, input_names: frozenset[str]) -> LineageOperation
 def _parse_call_sequence(
     calls: list[ast.Call],
     input_names: frozenset[str],
+    *,
+    cardinality_only: bool = False,
 ) -> tuple[list[LineageOperation], _ParseFailure | None]:
     operations: list[LineageOperation] = []
     index = 0
@@ -572,15 +718,35 @@ def _parse_call_sequence(
             aggregate = calls[index + 1]
             if not isinstance(aggregate.func, ast.Attribute) or aggregate.func.attr != "agg":
                 return [], _ParseFailure("incomplete_group_by", method)
-            parsed_group = _parse_group_by_agg(call, aggregate)
-            if isinstance(parsed_group, _ParseFailure):
-                return [], parsed_group
-            operations.append(parsed_group)
+            if cardinality_only:
+                # Whatever expressions define the groups or aggregates, a
+                # successful Polars group-by aggregation emits no more rows
+                # than it consumes. Column lineage remains deliberately
+                # stricter because it must also name every output.
+                operations.append(
+                    LineageOperation(
+                        kind=LineageOperationKind.GROUP_BY_AGG,
+                        method="group_by.agg",
+                    )
+                )
+            else:
+                parsed_group = _parse_group_by_agg(call, aggregate)
+                if isinstance(parsed_group, _ParseFailure):
+                    return [], parsed_group
+                operations.append(parsed_group)
             index += 2
             continue
         if method == "agg":
             return [], _ParseFailure("orphan_aggregate", method)
         if method in _SELECT_METHODS:
+            if cardinality_only and any(
+                _expression_has_unbounded_row_effect(expression)
+                for expression in [
+                    *call.args,
+                    *(keyword.value for keyword in call.keywords),
+                ]
+            ):
+                return [], _ParseFailure("row_expansion_unbounded", method)
             outputs = _normalise_expression_outputs(call, allow_plain_strings=True)
             if outputs is None:
                 return [], _ParseFailure("dynamic_select", method)
@@ -592,6 +758,14 @@ def _parse_call_sequence(
                 )
             )
         elif method == "with_columns":
+            if cardinality_only and any(
+                _expression_has_unbounded_row_effect(expression)
+                for expression in [
+                    *call.args,
+                    *(keyword.value for keyword in call.keywords),
+                ]
+            ):
+                return [], _ParseFailure("row_expansion_unbounded", method)
             outputs = _normalise_expression_outputs(call, allow_plain_strings=False)
             if outputs is None:
                 return [], _ParseFailure("dynamic_with_columns", method)
@@ -716,7 +890,7 @@ def _parse_call_sequence(
                 )
             )
         elif method == "join":
-            parsed_join = _parse_join(call, input_names)
+            parsed_join = _parse_join(call, input_names, cardinality_only=cardinality_only)
             if isinstance(parsed_join, _ParseFailure):
                 return [], parsed_join
             operations.append(parsed_join)
@@ -730,6 +904,7 @@ def _parse_call_sequence(
 def _parse_program(
     code: str,
     input_names: frozenset[str],
+    cardinality_only: bool = False,
 ) -> LinearFrameProgram | _ParseFailure:
     try:
         tree = ast.parse(code)
@@ -791,7 +966,11 @@ def _parse_program(
         else:
             return _ParseFailure("unknown_frame_root")
         calls = _frame_chain_calls(statement.value)
-        parsed, failure = _parse_call_sequence(calls, input_names)
+        parsed, failure = _parse_call_sequence(
+            calls,
+            input_names,
+            cardinality_only=cardinality_only,
+        )
         if failure is not None:
             return failure
         operations.extend(parsed)
@@ -1039,10 +1218,86 @@ def analyze_polars_lineage(
     )
 
 
+def analyze_polars_cardinality(
+    code: str,
+    inputs: Mapping[str, int],
+) -> RowCardinalityAnalysis:
+    """Prove finite output and intermediate row-count bounds for Polars code.
+
+    The proof deliberately reuses the closed AST program accepted by column
+    lineage. Operations that can only preserve or reduce rows keep the current
+    bound. Joins use their declared Polars uniqueness contract. Any operation
+    with unbounded row expansion, or syntax outside the closed model, returns
+    an unsupported result instead of inventing a multiplier.
+    """
+
+    if not isinstance(code, str) or not code.strip():
+        return _unsupported_cardinality("empty_code")
+    if not inputs or any(not isinstance(name, str) or not name for name in inputs):
+        return _unsupported_cardinality("invalid_inputs")
+    if any(
+        not isinstance(bound, int) or isinstance(bound, bool) or bound < 0
+        for bound in inputs.values()
+    ):
+        return _unsupported_cardinality("invalid_inputs")
+
+    normalised_inputs = dict(inputs)
+    program = _parse_program(code, frozenset(normalised_inputs), True)
+    if isinstance(program, _ParseFailure):
+        return _unsupported_cardinality(program.reason, program.operation)
+
+    current = normalised_inputs[program.root_input]
+    peak = current
+    evidence: list[str] = [
+        f"cardinality_root_input={program.root_input}",
+        f"cardinality_root_upper_bound={current}",
+    ]
+    for index, operation in enumerate(program.operations):
+        if operation.kind is LineageOperationKind.EXPLODE:
+            return _unsupported_cardinality("row_expansion_unbounded", operation.method)
+        if operation.kind is LineageOperationKind.JOIN:
+            assert operation.right_input is not None
+            assert operation.how is not None
+            bound = join_cardinality_upper_bound(
+                current,
+                normalised_inputs[operation.right_input],
+                how=operation.how,
+                validate=operation.validate,
+            )
+            current = bound.max_rows
+            peak = max(peak, normalised_inputs[operation.right_input], current)
+            evidence.extend(f"operation[{index}].{item}" for item in bound.evidence)
+        elif operation.kind in {LineageOperationKind.SELECT, LineageOperationKind.WITH_COLUMNS}:
+            # A scalar expression materialises one row even over an empty
+            # frame. For non-empty inputs the accepted expression vocabulary
+            # is bounded by the current height.
+            current = max(current, 1)
+            peak = max(peak, current)
+            evidence.append(f"operation[{index}].scalar_empty_frame_upper_bound={current}")
+        # Every other accepted operation is row-preserving or row-reducing.
+
+    evidence.extend(
+        (
+            f"cardinality_output_upper_bound={current}",
+            f"cardinality_peak_upper_bound={peak}",
+        )
+    )
+    return RowCardinalityAnalysis(
+        supported=True,
+        output_upper_bound=current,
+        peak_upper_bound=peak,
+        evidence=tuple(evidence),
+        reason="cardinality_proven",
+        unsupported_operation=None,
+    )
+
+
 __all__ = [
     "ColumnLineageAnalysis",
     "LinearFrameProgram",
     "LineageOperation",
     "LineageOperationKind",
+    "RowCardinalityAnalysis",
+    "analyze_polars_cardinality",
     "analyze_polars_lineage",
 ]

@@ -532,7 +532,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
       boundary bypass), and an unknown id would be indistinguishable from a dissolved
       placeholder.
    2. **Reproduce the production execution callers' graph preparation** — the
-      `_explore_service._materialise_and_summarise` sequence, never an assistant-local
+      `_explore_service._materialise_and_summarise_worker` sequence, never an assistant-local
       variant: `flat = flatten_graph(graph)` (submodels inlined, as every
       run/preview/optimise caller does first); `preamble_ns = _compile_preamble(
       graph.preamble or "", pipeline_dir=_pipeline_dir(graph))`; then

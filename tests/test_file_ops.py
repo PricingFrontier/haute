@@ -12,7 +12,8 @@ Atomicity model (matches the parquet temp-rename pattern at
 - Write payload to a sibling ``.tmp`` file in the same directory as the
   target (same filesystem — ``os.replace`` is atomic only on one FS).
 - ``Path.replace`` the temp onto the target. If the replace raises, the
-  temp is unlinked and the exception propagates — no partial target.
+  temp cleanup is attempted and the publication exception propagates — no
+  partial target. A cleanup failure is attached without replacing that error.
 - Parent directory is NOT silently created (fail loudly — project principle).
 - Target being a directory is a loud error, never silently replaced.
 
@@ -90,6 +91,110 @@ class TestAtomicWriteBytes:
         # Target file is unchanged — no partial write visible.
         assert target.exists()
         assert target.read_bytes() == original
+
+    def test_transient_windows_sharing_violation_retries_same_atomic_replace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "stable.bin"
+        target.write_bytes(b"old")
+        original_replace = Path.replace
+        attempts = 0
+
+        class SimulatedSharingViolationError(PermissionError):
+            winerror = 32
+
+        def transient_replace(source: Path, destination: Path) -> Path:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise SimulatedSharingViolationError("transient sharing violation")
+            return original_replace(source, destination)
+
+        monkeypatch.setattr("haute._file_ops._IS_WINDOWS", True)
+        with (
+            patch.object(Path, "replace", transient_replace),
+            patch("haute._file_ops.time.sleep") as sleep,
+        ):
+            atomic_write_bytes(target, b"new")
+
+        assert attempts == 3
+        assert [item.args[0] for item in sleep.call_args_list] == [0.01, 0.025]
+        assert target.read_bytes() == b"new"
+        assert not tuple(tmp_path.glob("*.tmp"))
+
+    def test_exhausted_windows_sharing_violation_preserves_original(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "stable.bin"
+        target.write_bytes(b"old")
+
+        class SimulatedAccessDeniedError(PermissionError):
+            winerror = 5
+
+        monkeypatch.setattr("haute._file_ops._IS_WINDOWS", True)
+        with (
+            patch.object(
+                Path,
+                "replace",
+                side_effect=SimulatedAccessDeniedError("persistent access denied"),
+            ) as replace,
+            patch("haute._file_ops.time.sleep") as sleep,
+        ):
+            with pytest.raises(SimulatedAccessDeniedError, match="persistent access denied"):
+                atomic_write_bytes(target, b"new")
+
+        assert replace.call_count == 5
+        assert [item.args[0] for item in sleep.call_args_list] == [0.01, 0.025, 0.05, 0.1]
+        assert target.read_bytes() == b"old"
+        assert not tuple(tmp_path.glob("*.tmp"))
+
+    def test_winerror_shaped_failure_is_not_retried_off_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "stable.bin"
+        target.write_bytes(b"old")
+
+        class SimulatedAccessDeniedError(PermissionError):
+            winerror = 5
+
+        monkeypatch.setattr("haute._file_ops._IS_WINDOWS", False)
+        with (
+            patch.object(
+                Path,
+                "replace",
+                side_effect=SimulatedAccessDeniedError("not a Win32 failure"),
+            ) as replace,
+            patch("haute._file_ops.time.sleep") as sleep,
+        ):
+            with pytest.raises(SimulatedAccessDeniedError, match="not a Win32 failure"):
+                atomic_write_bytes(target, b"new")
+
+        assert replace.call_count == 1
+        sleep.assert_not_called()
+        assert target.read_bytes() == b"old"
+
+    def test_temp_cleanup_failure_does_not_replace_publication_error(self, tmp_path: Path) -> None:
+        target = tmp_path / "stable.bin"
+        stage = tmp_path / "known-stage.tmp"
+        target.write_bytes(b"old")
+        original_unlink = Path.unlink
+
+        def fail_stage_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+            if path == stage:
+                raise PermissionError("stage cleanup blocked")
+            original_unlink(path, *args, **kwargs)
+
+        with (
+            patch("haute._file_ops._temp_path_for", return_value=stage),
+            patch.object(Path, "replace", side_effect=OSError("publication failed")),
+            patch.object(Path, "unlink", fail_stage_cleanup),
+            pytest.raises(OSError, match="publication failed") as raised,
+        ):
+            atomic_write_bytes(target, b"new")
+
+        assert any("stage cleanup blocked" in note for note in raised.value.__notes__)
+        assert target.read_bytes() == b"old"
+        assert stage.read_bytes() == b"new"
 
     def test_parent_directory_missing_raises(self, tmp_path: Path) -> None:
         """Writing into a non-existent directory fails loudly (no silent mkdir)."""
@@ -244,8 +349,8 @@ class TestAtomicWriteWindowsReaderContention:
 
     * The reader never observes torn/partial bytes — it sees exactly the
       old complete payload.
-    * The replace raises a clear OS sharing error (the write fails loudly,
-      no silent retry / fallback).
+    * The replace raises a clear OS sharing error after the bounded transient
+      retry window is exhausted (there is no non-atomic fallback).
     * The original file on disk is left intact (no partial write lands).
     * No stray ``.tmp`` sibling lingers — the cleanup path runs.
 

@@ -9,7 +9,9 @@ node type (schema-mapping round-trips; struct capability end to end).
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
@@ -31,9 +33,16 @@ from haute.executor import (
     DataOutputDestinationExistsError,
     DataOutputDurabilityError,
     DataOutputPublicationError,
+    PreparedDataOutput,
+    commit_prepared_data_output,
+    discard_prepared_data_output,
+    prepare_data_output,
     resolve_data_output_path,
+    validate_prepared_data_output_identity,
     write_data_output,
 )
+from haute.routes._isolated_worker_async import WorkerCancellationGate
+from haute.schemas import WriteOutputResponse
 from tests.conftest import build_test_input_snapshot
 
 ensure_registry_ready()
@@ -70,7 +79,613 @@ def struct_frame() -> pl.DataFrame:
 
 
 class TestExecuteSinkDataOutput:
+    @pytest.mark.parametrize(
+        ("failure_kind", "expected_kind"),
+        [
+            (None, None),
+            ("contract", "contract"),
+            ("bounded", "bounded"),
+            ("destination", "destination_exists"),
+            ("memory", "memory"),
+        ],
+    )
+    def test_output_worker_closes_admission_and_classifies_expected_failures(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        failure_kind: str | None,
+        expected_kind: str | None,
+    ) -> None:
+        from haute._execution_admission import IsolatedExecutionBudget
+        from haute._execution_context import (
+            ExecutionMemoryLimitExceededError,
+            ExecutionProfile,
+        )
+        from haute.errors import BoundedMemoryUnsupportedError, PreambleError
+        from haute.routes import pipeline as pipeline_route
+
+        releases: list[bool] = []
+
+        class _Context:
+            def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+                releases.append(preserve_primary_error)
+
+        prepared = PreparedDataOutput(
+            response=WriteOutputResponse(status="ok", path="result.parquet"),
+            project_root=str(tmp_path),
+            display_path="result.parquet",
+            final_path=None,
+            staging_path=None,
+            overwrite=False,
+            transactional=True,
+        )
+        failure: BaseException | None
+        if failure_kind == "contract":
+            failure = PreambleError("preamble failed")
+        elif failure_kind == "bounded":
+            failure = BoundedMemoryUnsupportedError("bounded execution unavailable")
+        elif failure_kind == "destination":
+            failure = DataOutputDestinationExistsError("result.parquet")
+        elif failure_kind == "memory":
+            failure = ExecutionMemoryLimitExceededError(
+                "pipeline_write_output",
+                rss_bytes=2,
+                limit_bytes=1,
+            )
+        else:
+            failure = None
+
+        def _prepare(*_args, **_kwargs):
+            if failure is not None:
+                raise failure
+            return prepared
+
+        monkeypatch.setattr(
+            pipeline_route,
+            "create_isolated_execution_context",
+            lambda _budget: _Context(),
+        )
+        monkeypatch.setattr(pipeline_route, "prepare_data_output", _prepare)
+        budget = IsolatedExecutionBudget(
+            operation="pipeline_write_output",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=1024,
+            config_key="test",
+            budget_policy="fixed_default",
+        )
+
+        outcome = pipeline_route._prepare_data_output_worker(
+            PipelineGraph(),
+            "sink",
+            "batch",
+            123,
+            str(tmp_path),
+            False,
+            None,
+            budget,
+        )
+
+        assert outcome.failure_kind == expected_kind
+        if failure is None:
+            assert outcome.prepared is prepared
+        else:
+            assert outcome.detail == str(failure)
+        assert releases == [True]
+
+    def test_output_worker_does_not_release_when_context_creation_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute.routes import pipeline as pipeline_route
+
+        monkeypatch.setattr(
+            pipeline_route,
+            "create_isolated_execution_context",
+            lambda _budget: (_ for _ in ()).throw(RuntimeError("context failed")),
+        )
+        with pytest.raises(RuntimeError, match="context failed"):
+            pipeline_route._prepare_data_output_worker(
+                PipelineGraph(),
+                "sink",
+                "batch",
+                None,
+                str(tmp_path),
+                False,
+                None,
+                SimpleNamespace(),  # type: ignore[arg-type]
+            )
+
+    @pytest.mark.parametrize("primary_failure", [False, True])
+    def test_output_transaction_cleanup_failure_preserves_primary_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        primary_failure: bool,
+    ) -> None:
+        from haute.routes import pipeline as pipeline_route
+
+        final = tmp_path / "result.parquet"
+        staging = tmp_path / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
+        prepared = PreparedDataOutput(
+            response=WriteOutputResponse(status="ok", path="result.parquet"),
+            project_root=str(tmp_path),
+            display_path="result.parquet",
+            final_path=str(final),
+            staging_path=str(staging),
+            overwrite=False,
+            transactional=False,
+        )
+        outcome: object = (
+            object()
+            if primary_failure
+            else pipeline_route._OutputWriteWorkerOutcome(prepared=prepared)
+        )
+        monkeypatch.setattr(
+            pipeline_route,
+            "run_isolated_worker",
+            lambda *_args, **_kwargs: outcome,
+        )
+        monkeypatch.setattr(
+            pipeline_route,
+            "validate_prepared_data_output_identity",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            pipeline_route,
+            "commit_prepared_data_output",
+            lambda *_args, **_kwargs: prepared.response,
+        )
+        cleanup_failure = OSError("cleanup failed")
+        monkeypatch.setattr(
+            pipeline_route,
+            "discard_prepared_data_output",
+            lambda _prepared: (_ for _ in ()).throw(cleanup_failure),
+        )
+        monkeypatch.setattr(
+            pipeline_route,
+            "discard_data_output_staging_path",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(cleanup_failure),
+        )
+
+        with pytest.raises((RuntimeError, OSError)) as raised:
+            pipeline_route._output_write_transaction(
+                PipelineGraph(),
+                "sink",
+                "batch",
+                None,
+                tmp_path,
+                False,
+                final,
+                staging,
+                SimpleNamespace(memory_limit_bytes=1024),  # type: ignore[arg-type]
+                WorkerCancellationGate(),
+                display_path="result.parquet",
+            )
+
+        if primary_failure:
+            assert "invalid outcome" in str(raised.value)
+            assert "cleanup failed" in "\n".join(raised.value.__notes__)
+        else:
+            assert raised.value is cleanup_failure
+
+    def test_output_transaction_rejects_cancelled_and_incomplete_worker_outcomes(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute._worker_isolation import IsolatedWorkerStoppedError
+        from haute.routes import pipeline as pipeline_route
+
+        gate = WorkerCancellationGate()
+        gate.request()
+        with pytest.raises(IsolatedWorkerStoppedError):
+            pipeline_route._output_write_transaction(
+                PipelineGraph(),
+                "sink",
+                "batch",
+                None,
+                tmp_path,
+                False,
+                None,
+                None,
+                SimpleNamespace(memory_limit_bytes=1024),  # type: ignore[arg-type]
+                gate,
+                display_path="database",
+            )
+
+        monkeypatch.setattr(
+            pipeline_route,
+            "run_isolated_worker",
+            lambda *_args, **_kwargs: pipeline_route._OutputWriteWorkerOutcome(),
+        )
+        with pytest.raises(RuntimeError, match="omitted its prepared result"):
+            pipeline_route._output_write_transaction(
+                PipelineGraph(),
+                "sink",
+                "batch",
+                None,
+                tmp_path,
+                False,
+                None,
+                None,
+                SimpleNamespace(memory_limit_bytes=1024),  # type: ignore[arg-type]
+                WorkerCancellationGate(),
+                display_path="database",
+            )
+
+        monkeypatch.setattr(
+            pipeline_route,
+            "run_isolated_worker",
+            lambda *_args, **_kwargs: pipeline_route._OutputWriteWorkerOutcome(
+                failure_kind="bounded",
+                detail="bounded failure",
+            ),
+        )
+        with pytest.raises(pipeline_route._OutputWriteWorkerError, match="bounded failure"):
+            pipeline_route._output_write_transaction(
+                PipelineGraph(),
+                "sink",
+                "batch",
+                None,
+                tmp_path,
+                False,
+                None,
+                None,
+                SimpleNamespace(memory_limit_bytes=1024),  # type: ignore[arg-type]
+                WorkerCancellationGate(),
+                display_path="database",
+            )
+
+    @pytest.mark.parametrize(
+        ("failure_kind", "expected_reason"),
+        [
+            ("rss", "worker_rss_limit_exceeded"),
+            ("unsupported", "native_memory_cap_unavailable"),
+            ("remote_native", "native_memory_cap_unavailable"),
+            ("crashed", "worker_may_have_exceeded_memory_limit"),
+            ("generic", "worker_memory_limit"),
+        ],
+    )
+    def test_output_memory_detail_preserves_only_parent_verified_evidence(
+        self,
+        failure_kind: str,
+        expected_reason: str,
+    ) -> None:
+        from haute._worker_isolation import (
+            IsolatedWorkerCrashedError,
+            IsolatedWorkerMemoryLimitExceededError,
+            IsolatedWorkerMemoryLimitUnsupportedError,
+            IsolatedWorkerRemoteError,
+        )
+        from haute.routes import pipeline as pipeline_route
+
+        if failure_kind == "rss":
+            failure: BaseException = IsolatedWorkerMemoryLimitExceededError(
+                rss_bytes=200,
+                rss_limit_bytes=100,
+            )
+        elif failure_kind == "unsupported":
+            failure = IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=100)
+        elif failure_kind == "remote_native":
+            failure = IsolatedWorkerRemoteError(
+                remote_type="NativeMemoryLimitUnsupportedError",
+                remote_message="unsupported",
+                remote_traceback="traceback",
+            )
+        elif failure_kind == "crashed":
+            failure = IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=100)
+        else:
+            failure = RuntimeError("generic")
+
+        payload = pipeline_route._isolated_output_memory_detail(
+            failure,
+            memory_limit_bytes=None if failure_kind == "generic" else 100,
+        )
+
+        assert payload["reason"] == expected_reason
+        assert ("memory_limit_bytes" in payload) is (failure_kind != "generic")
+        if failure_kind == "rss":
+            assert payload["rss_bytes"] == 200
+            assert payload["rss_limit_bytes"] == 100
+
+    def test_parent_manifest_identity_validator_rejects_altered_worker_fields(
+        self, tmp_path: Path
+    ) -> None:
+        final = tmp_path / "result.parquet"
+        staging = tmp_path / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
+        prepared = PreparedDataOutput(
+            response=WriteOutputResponse(status="ok", path="result.parquet"),
+            project_root=str(tmp_path),
+            display_path="result.parquet",
+            final_path=str(final),
+            staging_path=str(staging),
+            overwrite=False,
+            transactional=False,
+        )
+        expected = dict(
+            project_root=str(tmp_path),
+            display_path="result.parquet",
+            final_path=final,
+            staging_path=staging,
+            overwrite=False,
+            transactional=False,
+        )
+
+        for changed in (
+            {"project_root": str(tmp_path / "other")},
+            {"display_path": "other.parquet"},
+            {"final_path": str(tmp_path / "other.parquet")},
+            {
+                "staging_path": str(
+                    tmp_path / ".other.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
+                )
+            },
+            {"overwrite": True},
+            {"transactional": True},
+            {"overwrite": 0},
+        ):
+            with pytest.raises((TypeError, ValueError), match="parent request|PreparedDataOutput"):
+                validate_prepared_data_output_identity(replace(prepared, **changed), **expected)
+
+        with pytest.raises(TypeError, match="PreparedDataOutput"):
+            validate_prepared_data_output_identity(object(), **expected)  # type: ignore[arg-type]
+
+        transactional = replace(
+            prepared,
+            final_path=None,
+            staging_path=None,
+            transactional=True,
+        )
+        validate_prepared_data_output_identity(
+            transactional,
+            project_root=tmp_path,
+            display_path="result.parquet",
+            final_path=None,
+            staging_path=None,
+            overwrite=False,
+            transactional=True,
+        )
+
+    def test_parent_transaction_cleanup_ignores_child_named_decoy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.routes import pipeline as pipeline_route
+
+        final = tmp_path / "result.parquet"
+        staging = tmp_path / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
+        decoy = tmp_path / ".decoy.haute-stage-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.parquet"
+        staging.write_bytes(b"known parent stage")
+        decoy.write_bytes(b"child decoy")
+        child_prepared = PreparedDataOutput(
+            response=WriteOutputResponse(status="ok", path="result.parquet"),
+            project_root=str(tmp_path),
+            display_path="result.parquet",
+            final_path=str(final),
+            staging_path=str(decoy),
+            overwrite=False,
+            transactional=False,
+        )
+        outcome = pipeline_route._OutputWriteWorkerOutcome(prepared=child_prepared)
+        monkeypatch.setattr(
+            pipeline_route,
+            "run_isolated_worker",
+            lambda *_args, **_kwargs: outcome,
+        )
+
+        with pytest.raises(ValueError, match="staging_path.*parent request"):
+            pipeline_route._output_write_transaction(
+                graph=None,  # type: ignore[arg-type]
+                output_node_id="sink",
+                source="batch",
+                streaming_chunk_size=None,
+                project_root=tmp_path,
+                overwrite=False,
+                final_path=final,
+                staging_path=staging,
+                budget=SimpleNamespace(memory_limit_bytes=1),  # type: ignore[arg-type]
+                cancellation_requested=WorkerCancellationGate(),
+                display_path="result.parquet",
+            )
+
+        assert not staging.exists()
+        assert decoy.read_bytes() == b"child decoy"
+
+    def test_parent_does_not_publish_file_after_request_cancellation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import hashlib
+
+        from haute._worker_isolation import IsolatedWorkerStoppedError
+        from haute.routes import pipeline as pipeline_route
+
+        final = tmp_path / "result.parquet"
+        staging = tmp_path / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
+        payload = b"completed child output"
+        staging.write_bytes(payload)
+        prepared = PreparedDataOutput(
+            response=WriteOutputResponse(status="ok", path="result.parquet"),
+            project_root=str(tmp_path),
+            display_path="result.parquet",
+            final_path=str(final),
+            staging_path=str(staging),
+            overwrite=False,
+            size_bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            transactional=False,
+        )
+        outcome = pipeline_route._OutputWriteWorkerOutcome(prepared=prepared)
+        cancellation_requested = WorkerCancellationGate()
+
+        def return_after_cancellation(*_args, **_kwargs):
+            cancellation_requested.request()
+            return outcome
+
+        monkeypatch.setattr(
+            pipeline_route,
+            "run_isolated_worker",
+            return_after_cancellation,
+        )
+
+        with pytest.raises(IsolatedWorkerStoppedError):
+            pipeline_route._output_write_transaction(
+                graph=None,  # type: ignore[arg-type]
+                output_node_id="sink",
+                source="batch",
+                streaming_chunk_size=None,
+                project_root=tmp_path,
+                overwrite=False,
+                final_path=final,
+                staging_path=staging,
+                budget=SimpleNamespace(memory_limit_bytes=1),  # type: ignore[arg-type]
+                cancellation_requested=cancellation_requested,
+                display_path="result.parquet",
+            )
+
+        assert not final.exists()
+        assert not staging.exists()
+
+    def test_transactional_manifest_rejects_empty_sha256(self, tmp_path: Path) -> None:
+        prepared = PreparedDataOutput(
+            response=WriteOutputResponse(status="ok", path="database"),
+            project_root=str(tmp_path),
+            display_path="database",
+            final_path=None,
+            staging_path=None,
+            overwrite=False,
+            sha256="",
+            transactional=True,
+        )
+
+        with pytest.raises(ValueError, match="unexpected file manifest"):
+            commit_prepared_data_output(prepared)
+
+    def test_cancelled_parent_cannot_accept_transactional_output_result(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute._worker_isolation import IsolatedWorkerStoppedError
+
+        prepared = PreparedDataOutput(
+            response=WriteOutputResponse(status="ok", path="database"),
+            project_root=str(tmp_path),
+            display_path="database",
+            final_path=None,
+            staging_path=None,
+            overwrite=False,
+            transactional=True,
+        )
+        gate = WorkerCancellationGate()
+        gate.request()
+
+        with pytest.raises(IsolatedWorkerStoppedError):
+            commit_prepared_data_output(
+                prepared,
+                publication_guard=gate.publication_guard(),
+            )
+
     """write_data_output dispatches dataOutput nodes through the format registry."""
+
+    def test_file_output_is_invisible_until_parent_commit(self, haute_scratch) -> None:
+        source = haute_scratch / "input.parquet"
+        pl.DataFrame({"value": [1, 2]}).write_parquet(source)
+        destination = haute_scratch / "result.parquet"
+        staging = haute_scratch / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
+        graph = PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "din",
+                    {"inputType": "file", "format": "parquet", "path": str(source)},
+                ),
+                _data_output_node(
+                    "dout",
+                    {"outputType": "file", "format": "parquet", "path": str(destination)},
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        prepared = prepare_data_output(graph, "dout", staging_path=staging)
+        try:
+            assert staging.is_file()
+            assert not destination.exists()
+            result = commit_prepared_data_output(prepared)
+        finally:
+            discard_prepared_data_output(prepared)
+
+        assert result.row_count == 2
+        assert destination.is_file()
+        assert not staging.exists()
+
+    def test_parent_rejects_tampered_output_stage_without_replacing_target(
+        self, haute_scratch
+    ) -> None:
+        source = haute_scratch / "input.parquet"
+        pl.DataFrame({"value": [1]}).write_parquet(source)
+        destination = haute_scratch / "result.parquet"
+        destination.write_bytes(b"previous")
+        staging = haute_scratch / ".result.haute-stage-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.parquet"
+        graph = PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "din",
+                    {"inputType": "file", "format": "parquet", "path": str(source)},
+                ),
+                _data_output_node(
+                    "dout",
+                    {"outputType": "file", "format": "parquet", "path": str(destination)},
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        prepared = prepare_data_output(
+            graph,
+            "dout",
+            staging_path=staging,
+            overwrite=True,
+        )
+        staging.write_bytes(b"tampered")
+        try:
+            with pytest.raises(RuntimeError, match="signature"):
+                commit_prepared_data_output(prepared)
+        finally:
+            discard_prepared_data_output(prepared)
+
+        assert destination.read_bytes() == b"previous"
+
+    def test_parent_rejects_hard_linked_output_stage(self, tmp_path: Path) -> None:
+        import hashlib
+        import os
+
+        destination = tmp_path / "result.parquet"
+        staging = tmp_path / ".result.haute-stage-cccccccccccccccccccccccccccccccc.parquet"
+        external = tmp_path / "external.parquet"
+        payload = b"completed output"
+        external.write_bytes(payload)
+        try:
+            os.link(external, staging)
+        except OSError:
+            pytest.skip("hard links are unavailable on this filesystem")
+        prepared = PreparedDataOutput(
+            response=WriteOutputResponse(status="ok", path="result.parquet"),
+            project_root=str(tmp_path),
+            display_path="result.parquet",
+            final_path=str(destination),
+            staging_path=str(staging),
+            overwrite=False,
+            size_bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            transactional=False,
+        )
+
+        with pytest.raises(RuntimeError, match="hard-linked"):
+            commit_prepared_data_output(prepared)
+
+        assert not destination.exists()
+        assert external.read_bytes() == payload
 
     def test_data_input_to_data_output_ndjson_round_trip(self, haute_scratch, struct_frame) -> None:
         src_path = haute_scratch / "in.parquet"
@@ -1413,3 +2028,209 @@ def test_data_input_codegen_passes_discovered_project_root() -> None:
     assert "get_project_root(_HAUTE_CONFIG_BASE)" in code
     assert "base_dir=_HAUTE_CONFIG_BASE" in code
     assert "project_root=project_root" in code
+
+
+def test_staging_identity_and_manifest_guards_reject_untrusted_artifacts(tmp_path: Path) -> None:
+    final = tmp_path / "result.parquet"
+    malformed = tmp_path / ".result.haute-stage-not-a-token.parquet"
+    with pytest.raises(ValueError, match="exact private generation"):
+        executor_module._validate_output_staging_identity(final, malformed)
+
+    prepared = PreparedDataOutput(
+        response=WriteOutputResponse(status="ok", path="result.parquet"),
+        project_root=str(tmp_path),
+        display_path="result.parquet",
+        final_path=str(final),
+        staging_path=str(tmp_path / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"),
+        overwrite=False,
+        transactional=False,
+    )
+    with pytest.raises(ValueError, match="invalid content signature"):
+        commit_prepared_data_output(prepared)
+
+
+def test_prepared_output_paths_and_discard_require_a_file_stage(tmp_path: Path) -> None:
+    transactional = PreparedDataOutput(
+        response=WriteOutputResponse(status="ok", path="database"),
+        project_root=str(tmp_path),
+        display_path="database",
+        final_path=None,
+        staging_path=None,
+        overwrite=False,
+        transactional=True,
+    )
+
+    with pytest.raises(ValueError, match="does not have a staged file"):
+        executor_module._prepared_output_paths(transactional)
+    discard_prepared_data_output(transactional)
+
+
+def test_commit_rejects_response_mismatch_and_accepts_transactional_manifest(
+    tmp_path: Path,
+) -> None:
+    transactional = PreparedDataOutput(
+        response=WriteOutputResponse(status="ok", path="database"),
+        project_root=str(tmp_path),
+        display_path="database",
+        final_path=None,
+        staging_path=None,
+        overwrite=False,
+        transactional=True,
+    )
+    assert commit_prepared_data_output(transactional).path == "database"
+
+    mismatched = replace(transactional, display_path="other")
+    with pytest.raises(ValueError, match="response does not match"):
+        commit_prepared_data_output(mismatched)
+
+
+def test_discard_and_parent_cleanup_are_idempotent_for_missing_stages(tmp_path: Path) -> None:
+    final = tmp_path / "result.parquet"
+    staging = tmp_path / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
+    prepared = PreparedDataOutput(
+        response=WriteOutputResponse(status="ok", path="result.parquet"),
+        project_root=str(tmp_path),
+        display_path="result.parquet",
+        final_path=str(final),
+        staging_path=str(staging),
+        overwrite=False,
+        transactional=False,
+    )
+    discard_prepared_data_output(prepared)
+    executor_module.discard_data_output_staging_path(final, staging, project_root=tmp_path)
+
+
+def test_executor_manifest_helpers_reject_invalid_states_and_cleanup_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    final = tmp_path / "result.parquet"
+    staging = tmp_path / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
+    staged = PreparedDataOutput(
+        response=WriteOutputResponse(status="ok", path="result.parquet"),
+        project_root=str(tmp_path),
+        display_path="result.parquet",
+        final_path=str(final),
+        staging_path=str(staging),
+        overwrite=False,
+        transactional=False,
+    )
+    with pytest.raises(TypeError, match="PreparedDataOutput"):
+        executor_module._prepared_output_paths(object())
+    with pytest.raises(ValueError, match="omitted"):
+        executor_module._prepared_output_paths(replace(staged, final_path=None))
+
+    class ChangingArtifact:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stat(self):
+            self.calls += 1
+            return SimpleNamespace(st_dev=1, st_ino=1, st_size=self.calls, st_mtime_ns=1)
+
+        def open(self, *_args):
+            from io import BytesIO
+
+            return BytesIO(b"payload")
+
+        def __str__(self) -> str:
+            return "changing-stage"
+
+    with pytest.raises(OSError, match="changed while"):
+        executor_module._output_artifact_signature(ChangingArtifact())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="plain regular"):
+        executor_module._validate_plain_output_artifact(tmp_path)
+
+    monkeypatch.setattr(executor_module, "prepare_data_output", lambda *_args, **_kwargs: staged)
+    monkeypatch.setattr(
+        executor_module,
+        "commit_prepared_data_output",
+        lambda _prepared: (_ for _ in ()).throw(ValueError("publish failed")),
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "discard_prepared_data_output",
+        lambda _prepared: (_ for _ in ()).throw(OSError("cleanup failed")),
+    )
+    with pytest.raises(ValueError, match="publish failed") as failure:
+        write_data_output(PipelineGraph(), "sink")
+    assert "cleanup failed" in "\n".join(failure.value.__notes__)
+
+
+def test_executor_rejects_unexpected_optional_manifest_fields_and_cleanup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transactional = PreparedDataOutput(
+        response=WriteOutputResponse(status="ok", path="database"),
+        project_root=str(tmp_path),
+        display_path="database",
+        final_path="unexpected",
+        staging_path=None,
+        overwrite=False,
+        transactional=True,
+    )
+    with pytest.raises(ValueError, match="final_path"):
+        validate_prepared_data_output_identity(
+            transactional,
+            project_root=tmp_path,
+            display_path="database",
+            final_path=None,
+            staging_path=None,
+            overwrite=False,
+            transactional=True,
+        )
+    with pytest.raises(TypeError, match="PreparedDataOutput"):
+        commit_prepared_data_output(object())  # type: ignore[arg-type]
+
+    clean = replace(transactional, final_path=None)
+    monkeypatch.setattr(executor_module, "prepare_data_output", lambda *_args, **_kwargs: clean)
+    monkeypatch.setattr(
+        executor_module, "commit_prepared_data_output", lambda _prepared: clean.response
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "discard_prepared_data_output",
+        lambda _prepared: (_ for _ in ()).throw(OSError("cleanup failed")),
+    )
+    with pytest.raises(OSError, match="cleanup failed"):
+        write_data_output(PipelineGraph(), "sink")
+
+
+def test_prepare_rejects_preexisting_parent_staging_path(haute_scratch: Path) -> None:
+    source = haute_scratch / "input.parquet"
+    pl.DataFrame({"value": [1]}).write_parquet(source)
+    destination = haute_scratch / "result.parquet"
+    staging = haute_scratch / ".result.haute-stage-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet"
+    staging.write_bytes(b"pre-existing")
+    graph = PipelineGraph(
+        nodes=[
+            _ready_data_input_node(
+                "din", {"inputType": "file", "format": "parquet", "path": str(source)}
+            ),
+            _data_output_node(
+                "dout", {"outputType": "file", "format": "parquet", "path": str(destination)}
+            ),
+        ],
+        edges=[_edge("din", "dout")],
+    )
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        prepare_data_output(graph, "dout", staging_path=staging)
+
+
+def test_prepare_rejects_a_staging_path_for_non_atomic_lakehouse_output(tmp_path: Path) -> None:
+    graph = PipelineGraph(
+        nodes=[
+            _data_output_node(
+                "dout",
+                {
+                    "outputType": "lakehouse",
+                    "format": "iceberg",
+                    "mode": "sink",
+                    "path": "lake/results",
+                },
+            )
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Only atomic file outputs"):
+        prepare_data_output(graph, "dout", project_root=tmp_path, staging_path=tmp_path / "stage")

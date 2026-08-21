@@ -39,6 +39,8 @@ pytestmark = pytest.mark.meta
 ROOT = Path(__file__).resolve().parents[1]
 MKDOCS_CONFIG = ROOT / "mkdocs.yml"
 EXECUTION_STRATEGY_DOC = ROOT / "docs" / "building-models" / "execution-strategy.md"
+INSTALLING_HAUTE_DOC = ROOT / "docs" / "getting-started" / "installing-haute.md"
+ENVIRONMENT_SETUP_DOC = ROOT / "docs" / "getting-started" / "environment.md"
 EDGE_JOIN_GUIDE = ROOT / "docs" / "building-models" / "nodes" / "edge-join.md"
 EDGE_JOIN_RUNTIME_SPEC = ROOT / "specs" / "json-shredding" / "low-level.md"
 EDGE_JOIN_EDITOR_SPEC = ROOT / "specs" / "frontend-node-editors" / "low-level.md"
@@ -203,6 +205,23 @@ def test_execution_strategy_guide_is_in_public_navigation_and_states_key_contrac
         "unavailable or `null`",
     ):
         assert claim in guide
+
+
+def test_managed_windows_setup_uses_the_module_entrypoint_and_approved_python() -> None:
+    install_guide = INSTALLING_HAUTE_DOC.read_text(encoding="utf-8")
+    environment_guide = ENVIRONMENT_SETUP_DOC.read_text(encoding="utf-8")
+
+    for claim in (
+        ".\\.venv\\Scripts\\python.exe -m haute serve",
+        "python -m haute serve",
+        "--clear",
+        "--no-managed-python",
+        "--no-python-downloads",
+        "approved Python",
+    ):
+        assert claim in install_guide
+    assert "Python 3.11 or later" in environment_guide
+    assert "approved by your IT team" in environment_guide
 
 
 def test_edge_join_guide_matches_runtime_and_canvas_contract() -> None:

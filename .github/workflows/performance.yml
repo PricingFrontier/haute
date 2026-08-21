@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 # Manual, weekly, and monthly certifications are independent records. Include
 # their selected scale/cron so a long monthly stress run cannot be cancelled by
@@ -39,19 +40,68 @@ jobs:
 
       - run: uv sync --group dev --locked
 
+      - name: Restore scale-specific performance baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: .perf-baseline
+          key: perf-baseline-${{ runner.os }}-${{ env.HAUTE_POLARS_PERF_SCALE }}-${{ github.run_id }}
+          restore-keys: |
+            perf-baseline-${{ runner.os }}-${{ env.HAUTE_POLARS_PERF_SCALE }}-
+
       - name: Python performance lane
-        run: >
-          uv run python scripts/run_perf_suite.py
-          --output-dir .perf-artifacts
-          --polars-scale "$HAUTE_POLARS_PERF_SCALE"
-          --max-total-seconds 3600
-          --max-test-seconds 1800
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          baseline_args=()
+          mkdir -p .perf-baseline
+          if [[ ! -f .perf-baseline/perf-report.json ]]; then
+            mkdir -p .perf-prior
+            if ! gh run list --workflow performance.yml --branch "$GITHUB_REF_NAME" --status success --json databaseId --limit 100 --jq '.[].databaseId' > .perf-prior/run-ids.txt; then
+              echo "Could not query retained performance baselines" >&2
+              exit 1
+            fi
+            mapfile -t prior_run_ids < .perf-prior/run-ids.txt
+            for prior_run_id in "${prior_run_ids[@]}"; do
+              prior_dir=".perf-prior/$prior_run_id"
+              mkdir -p "$prior_dir"
+              if gh run download "$prior_run_id" --name "python-performance-$HAUTE_POLARS_PERF_SCALE" --dir "$prior_dir"; then
+                if [[ ! -f "$prior_dir/perf-report.json" ]]; then
+                  echo "Downloaded performance artifact lacks perf-report.json" >&2
+                  exit 1
+                fi
+                cp "$prior_dir/perf-report.json" .perf-baseline/perf-report.json
+                break
+              fi
+            done
+          fi
+          if [[ -f .perf-baseline/perf-report.json ]]; then
+            baseline_args=(--baseline-report .perf-baseline/perf-report.json)
+          fi
+          uv run python scripts/run_perf_suite.py \
+            --output-dir .perf-artifacts \
+            --polars-scale "$HAUTE_POLARS_PERF_SCALE" \
+            --max-total-seconds 3600 \
+            --max-test-seconds 1800 \
+            "${baseline_args[@]}"
+
+      - name: Save scale-specific performance baseline
+        if: success()
+        run: |
+          mkdir -p .perf-baseline
+          cp .perf-artifacts/perf-report.json .perf-baseline/perf-report.json
+
+      - name: Cache scale-specific performance baseline
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: .perf-baseline
+          key: perf-baseline-${{ runner.os }}-${{ env.HAUTE_POLARS_PERF_SCALE }}-${{ github.run_id }}
 
       - name: Upload performance artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: python-performance-${{ github.run_id }}
+          name: python-performance-${{ env.HAUTE_POLARS_PERF_SCALE }}
           path: .perf-artifacts
 
   execution-engine-platform:
@@ -74,6 +124,7 @@ jobs:
         run: >
           uv run pytest
           tests/test_process_memory.py
+          tests/test_native_memory_limit.py
           tests/test_worker_isolation.py
           tests/test_interactive_worker_pool.py
           tests/test_interactive_route_isolation.py

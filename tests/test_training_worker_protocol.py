@@ -65,6 +65,8 @@ from haute.routes._train_service import (
 )
 from haute.schemas import EvaluationReportPayload, TuningReportPayload
 
+_TEST_WORKER_MEMORY_LIMIT_BYTES = 512 * 1024**2
+
 
 class _ForwardingQueue:
     def __init__(self, callback=None) -> None:
@@ -450,7 +452,9 @@ def _launch(service: TrainService, store: JobStore, tmp_path: Path, output_dir: 
         None,
         10,
         execution_context=ExecutionContext(
-            operation="training_pipeline", profile=ExecutionProfile.TRAINING_PREP
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
         ),
     )
     assert thread is not None
@@ -1461,6 +1465,7 @@ def test_train_service_keeps_completed_status_when_post_commit_cleanup_is_denied
     context = ExecutionContext(
         operation="training_pipeline",
         profile=ExecutionProfile.TRAINING_PREP,
+        memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
         admission_release=lambda: released.append(True),
     )
     original_rmtree = __import__("shutil").rmtree
@@ -1517,6 +1522,7 @@ def test_parent_worker_cleanup_reports_all_failures_once(tmp_path: Path) -> None
         execution_context=ExecutionContext(
             operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
+            memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
             admission_release=fail_admission_release,
         ),
         tmp_parquet=prepared,
@@ -1558,6 +1564,7 @@ def test_terminal_job_after_preparation_does_not_launch_worker(tmp_path: Path) -
     context = ExecutionContext(
         operation="training_pipeline",
         profile=ExecutionProfile.TRAINING_PREP,
+        memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
         admission_release=lambda: released.append(True),
     )
     job_id = store.create_job(
@@ -1637,7 +1644,9 @@ def test_train_service_publication_wins_late_cancel_and_records_elapsed(tmp_path
             None,
             10,
             execution_context=ExecutionContext(
-                operation="training_pipeline", profile=ExecutionProfile.TRAINING_PREP
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
             ),
         )
         assert thread is not None

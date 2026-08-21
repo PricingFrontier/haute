@@ -34,6 +34,10 @@ haute init
 haute serve
 ```
 
+On managed Windows, if application policy blocks the generated `haute.exe`
+launcher, run the same CLI through an organisation-approved Python runtime:
+`python -m haute serve`. Both forms use the same commands and options.
+
 ---
 
 ## Why open source matters for pricing
@@ -168,7 +172,7 @@ Behind the scenes, it uses Git with guardrails. Protected branches can't be over
 
 Before training a model on a large dataset, Haute probes a sample of your data to estimate how much memory the full run will need. If it would exceed your machine's available memory, it tells you before you start - and suggests a safe dataset size.
 
-This is a small detail, but it catches the kind of silent crash that can lose work before it happens. The estimate reads your machine's available memory directly; inside a memory-capped container it can't see the cap, and where it can't read memory at all it falls back to a conservative default.
+This is a small detail, but it catches the kind of silent crash that can lose work before it happens. The estimate reads the effective host or container memory limit and current headroom. Heavy server work then runs in an isolated process with a native memory cap; if Haute cannot establish that cap, it refuses the work instead of silently treating an unknown limit as safe. An explicitly selected `best_effort` mode remains available for compatibility-only environments.
 
 ---
 

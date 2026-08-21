@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import pickle
 import queue
 import sys
 import time
@@ -14,7 +15,13 @@ from multiprocessing.process import BaseProcess
 from typing import Any, Literal, TypeVar, cast
 
 from haute._logging import get_logger
-from haute._process_memory import process_rss_bytes, process_rss_sampling_supported
+from haute._native_memory_limit import (
+    NativeMemoryLease,
+    cleanup_private_cgroups_for_pid,
+    native_memory_backend_scope,
+    native_memory_caps_supported,
+)
+from haute._process_memory import process_rss_bytes
 
 logger = get_logger(component="worker_isolation")
 
@@ -58,7 +65,7 @@ class IsolatedWorkerConfig:
 
 def resolve_worker_memory_enforcement() -> WorkerMemoryEnforcement:
     """Return the explicit hard-cap policy for isolated workers."""
-    raw = os.environ.get(_WORKER_MEMORY_ENFORCEMENT_ENV, "best_effort")
+    raw = os.environ.get(_WORKER_MEMORY_ENFORCEMENT_ENV, "required")
     policy = raw.strip().lower()
     if policy not in {"best_effort", "required"}:
         raise RuntimeError(f"{_WORKER_MEMORY_ENFORCEMENT_ENV} must be 'best_effort' or 'required'")
@@ -128,7 +135,11 @@ class IsolatedWorkerRemoteError(IsolatedWorkerError):
         remote_traceback: str,
     ) -> None:
         terminal_reason: WorkerTerminalReason = (
-            "memory_limited" if remote_type == "MemoryError" else "error"
+            "contract_error"
+            if remote_type.startswith("NativeMemoryLimit")
+            else "memory_limited"
+            if remote_type == "MemoryError"
+            else "error"
         )
         super().__init__(
             f"Isolated worker raised {remote_type}: {remote_message}",
@@ -209,19 +220,18 @@ class IsolatedWorkerMemoryLimitUnsupportedError(IsolatedWorkerError):
 
     def __init__(self, *, memory_limit_bytes: int) -> None:
         super().__init__(
-            "Isolated worker memory caps require either an address-space limit "
-            "or observable child RSS, neither of which is available on this host.",
+            "Isolated worker memory caps require a supported native kernel limit on this host.",
             terminal_reason="contract_error",
         )
         self.memory_limit_bytes = memory_limit_bytes
 
 
 class IsolatedWorkerMemoryLimitExceededError(IsolatedWorkerError, MemoryError):
-    """Raised when the parent watchdog observes a child above its RSS cap."""
+    """Raised when the parent watchdog observes a child above its RSS limit."""
 
     def __init__(self, *, rss_bytes: int, rss_limit_bytes: int) -> None:
         super().__init__(
-            f"Isolated worker exceeded its RSS cap: {rss_bytes} bytes used > "
+            f"Isolated worker exceeded its RSS watchdog limit: {rss_bytes} bytes used > "
             f"{rss_limit_bytes} bytes allowed",
             terminal_reason="memory_limited",
         )
@@ -274,8 +284,8 @@ def address_space_caps_supported() -> bool:
 
 
 def process_memory_caps_supported() -> bool:
-    """Return whether a kernel cap or verified parent RSS watchdog is available."""
-    return address_space_caps_supported() or process_rss_sampling_supported()
+    """Return whether a native kernel hard cap is theoretically available."""
+    return native_memory_caps_supported()
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,7 +329,7 @@ def _create_worker_rss_watchdog(
             "Isolated worker did not expose a process id after startup",
             terminal_reason="error",
         )
-    address_space_cap_active = address_space_caps_supported()
+    address_space_cap_active = process_memory_caps_supported()
     baseline_rss_bytes = process_rss_bytes(pid)
     if baseline_rss_bytes is None:
         if require_memory_limit and not address_space_cap_active:
@@ -556,11 +566,18 @@ def run_isolated_worker(
         )
 
     ctx = mp.get_context("spawn")
-    result_queue: mp.Queue[tuple[str, Any]] = create_worker_queue(ctx, 1)
+    result_queue: mp.Queue[bytes] = create_worker_queue(ctx, 1)
     process = ctx.Process(
         target=_isolated_worker_entrypoint,
         name=worker_config.process_name,
-        args=(result_queue, function, args, kwargs, worker_config.memory_limit_bytes),
+        args=(
+            result_queue,
+            function,
+            args,
+            kwargs,
+            worker_config.memory_limit_bytes,
+            worker_config.require_memory_limit,
+        ),
     )
     primary_error: BaseException | None = None
     result: T | None = None
@@ -587,6 +604,16 @@ def run_isolated_worker(
             result_queue,
             rss_watchdog,
         )
+
+        # A feeder flush failure can leave a complete-looking payload in the
+        # pipe before the child exits non-zero.  The child explicitly closes
+        # and joins that feeder under its cap, so its exit status is the only
+        # trustworthy confirmation that transport completed.
+        if queued_payload is not None and process.exitcode not in {None, 0}:
+            raise IsolatedWorkerCrashedError(
+                exitcode=process.exitcode,
+                memory_limit_bytes=worker_config.memory_limit_bytes,
+            )
 
         status, payload = (
             queued_payload
@@ -643,6 +670,12 @@ def run_isolated_worker(
                 process.join(timeout=2.0)
             except BaseException as exc:
                 record_finalization_error(exc, step="process join")
+            try:
+                pid = getattr(process, "pid", None)
+                if pid is not None and not process.is_alive():
+                    cleanup_private_cgroups_for_pid(pid)
+            except BaseException as exc:
+                record_finalization_error(exc, step="native memory resource cleanup")
         try:
             result_queue.close()
         except BaseException as exc:
@@ -668,26 +701,58 @@ def run_isolated_worker(
 
 
 def _isolated_worker_entrypoint(
-    result_queue: mp.Queue[tuple[str, Any]],
+    result_queue: mp.Queue[bytes],
     function: Callable[..., Any],
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     memory_limit_bytes: int | None,
+    require_memory_limit: bool = False,
 ) -> None:
+    lease = NativeMemoryLease()
     try:
-        if memory_limit_bytes is not None and address_space_caps_supported():
-            _apply_address_space_limit(memory_limit_bytes)
-        result_queue.put(("ok", function(*args, **kwargs)))
+        if memory_limit_bytes is not None:
+            lease.apply(memory_limit_bytes, required=require_memory_limit)
     except BaseException as exc:
-        result_queue.put(
-            (
-                "error",
-                (
-                    type(exc).__name__,
-                    str(exc),
-                    "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
-                ),
-            )
+        envelope = _worker_error_envelope(exc)
+        payload = _serialise_worker_payload(envelope)
+        result_queue.put(payload)
+        result_queue.close()
+        result_queue.join_thread()
+        return
+    with native_memory_backend_scope(lease.backend):
+        try:
+            envelope = ("ok", function(*args, **kwargs))
+        except BaseException as exc:
+            envelope = _worker_error_envelope(exc)
+        # The native limit deliberately remains active until the queue feeder has
+        # flushed this possibly-large payload.  Do not restore or close the lease:
+        # process teardown releases it, and the joined parent removes any private
+        # native resource.  Widening it here would leave transport uncapped.
+        payload = _serialise_worker_payload(envelope)
+        result_queue.put(payload)
+        result_queue.close()
+        result_queue.join_thread()
+
+
+def _worker_error_envelope(exc: BaseException) -> tuple[str, tuple[str, str, str]]:
+    return (
+        "error",
+        (
+            type(exc).__name__,
+            str(exc),
+            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        ),
+    )
+
+
+def _serialise_worker_payload(envelope: tuple[str, Any]) -> bytes:
+    """Serialize the child result while its native cap is active."""
+    try:
+        return pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL)
+    except BaseException as exc:
+        return pickle.dumps(
+            _worker_error_envelope(RuntimeError(f"worker result was not serialisable: {exc}")),
+            protocol=pickle.HIGHEST_PROTOCOL,
         )
 
 
@@ -711,13 +776,13 @@ def _apply_address_space_limit(memory_limit_bytes: int) -> None:
 
 
 def _read_worker_payload(
-    result_queue: mp.Queue[tuple[str, Any]],
+    result_queue: mp.Queue[bytes],
     *,
     exitcode: int | None,
     memory_limit_bytes: int | None,
 ) -> tuple[str, Any]:
     try:
-        return result_queue.get(timeout=1.0)
+        return _decode_worker_payload(result_queue.get(timeout=1.0))
     except queue.Empty as exc:
         raise IsolatedWorkerCrashedError(
             exitcode=exitcode,
@@ -740,7 +805,7 @@ def _terminate_process(process: BaseProcess) -> None:
 def _wait_for_worker(
     process: BaseProcess,
     config: IsolatedWorkerConfig,
-    result_queue: mp.Queue[tuple[str, Any]],
+    result_queue: mp.Queue[bytes],
     rss_watchdog: _WorkerRssWatchdog,
 ) -> tuple[str, Any] | None:
     deadline = None if config.timeout_seconds is None else time.monotonic() + config.timeout_seconds
@@ -749,7 +814,7 @@ def _wait_for_worker(
         rss_watchdog.checkpoint()
         if queued_payload is None:
             try:
-                queued_payload = result_queue.get_nowait()
+                queued_payload = _decode_worker_payload(result_queue.get_nowait())
             except queue.Empty:
                 pass
         if config.stop_reason is not None:
@@ -768,6 +833,16 @@ def _wait_for_worker(
             wait_seconds = min(wait_seconds, remaining)
         process.join(timeout=wait_seconds)
     return queued_payload
+
+
+def _decode_worker_payload(raw_payload: Any) -> tuple[str, Any]:
+    try:
+        payload = pickle.loads(raw_payload)
+    except BaseException as exc:
+        raise IsolatedWorkerCrashedError(exitcode=None, memory_limit_bytes=None) from exc
+    if not isinstance(payload, tuple) or len(payload) != 2 or payload[0] not in {"ok", "error"}:
+        raise IsolatedWorkerCrashedError(exitcode=None, memory_limit_bytes=None)
+    return cast(tuple[str, Any], payload)
 
 
 def _run_cleanup_callbacks(

@@ -210,6 +210,34 @@ running heavy work in a child process the parent can kill on timeout or memory l
   bounded CI scale; scheduled certification runs the one-million-row scenario
   weekly and the ten-million-row stress scenario monthly, with both larger
   scales also available through explicit workflow dispatch.
+- **Resilience is certified as a lifecycle, not inferred from one successful run.**
+  A fresh-process soak repeatedly executes and deliberately crashes the warm worker
+  pool, forcing real slot replacement while measuring the parent process's RSS and
+  open handle/file-descriptor counts before and after the steady-state window. The
+  bounded local scale keeps pull-request diagnosis practical; the weekly lane runs
+  thousands of requests and the monthly lane runs ten thousand requests with one
+  thousand real replacements. Both reject resource growth outside their explicit
+  plateau allowance. A separate cross-platform cache certificate kills producer
+  processes during row-group emission, after private-generation completion, after
+  live-to-backup rename, after staged-to-live rename, and during obsolete-generation
+  cleanup. On the next lock acquisition, readers must see either the complete old
+  generation or the complete new generation, never a mixture. The same certificate
+  injects `ENOSPC`, stresses multiple independent builders contending for one cache,
+  and proves an extreme many-to-many join is rejected from metadata without executing
+  or allocating its Cartesian result.
+- **Performance history is an enforced input to scheduled certification.** Each
+  successful scale-specific run becomes the next retained baseline. A subsequent run
+  compares matching material test durations only when the platform, Python minor
+  version, Polars version, and workload scale are compatible; suite-wide time and
+  independent peak RSS additionally require the same collected test identity so newly
+  added coverage cannot be mislabelled as a slowdown. Configurable relative thresholds
+  and an absolute timing noise floor prevent tiny tests from producing false alarms;
+  malformed baselines fail loudly,
+  incompatible baselines are recorded as such, and every comparison plus violation is
+  written into the versioned JSON/Markdown evidence before the lane succeeds or fails.
+  A fast scale-specific Actions cache is backed by the retained artifact from the most
+  recent successful same-scale workflow, so the monthly baseline does not disappear
+  merely because cache eviction is shorter than its schedule.
 - Route/service long-running operations create an admitted `ExecutionContext` bound
   to an `ExecutionProfile` (preview, lazy sink, training prep, optimiser setup, deploy
   live/batch, chunked map-reduce, ...). An admitted context enforces a resident-memory
@@ -348,6 +376,17 @@ running heavy work in a child process the parent can kill on timeout or memory l
   growth is compared with the estimate and feeds a bounded, profile-local upward
   calibration factor so repeated under-estimation tightens later admission rather
   than remaining an unobserved operational risk.
+- **Join expansion is bounded mathematically before admission.** Source and per-port
+  row counts propagate through row-preserving/reducing operations and every proven
+  join. A many-to-many join uses the finite Cartesian upper bound; `1:1`, `1:m`, and
+  `m:1` validation contracts tighten that bound according to which key side is
+  unique. Cross, outer, semi, and anti joins each use their own safe formula. The
+  materialisation estimate uses the greatest row bound reached before or within the
+  boundary, rather than the largest ancestor source. Dynamic joins, `explode`, an
+  opaque row-changing transform, or a source without a row count make the estimate
+  unavailable with the blocking node and reason. Haute never substitutes an
+  arbitrary join multiplier, so admission either has auditable finite evidence or
+  fails conservatively before execution.
 - **Metadata-only RAM estimation, not a sample run.** An earlier probe-based approach
   ran a 1,000-row sample through the pipeline before training; inner joins with no key
   overlap in a small sample produced zero rows and broke the estimate. Reading
@@ -447,13 +486,25 @@ running heavy work in a child process the parent can kill on timeout or memory l
   failures are collected into `IsolatedWorkerCleanupError`. A cleanup-only failure is
   raised; when there is already a primary worker failure, cleanup detail is attached
   to it with `add_note()` rather than replacing it or raising a second exception.
-- **Worker memory enforcement has a closed policy.**
-  `HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort|required`; unknown values and missing
-  required limits fail loudly. Required mode rejects before spawn when a hard process
-  cap is unavailable, while best-effort retains process isolation and in-child
-  admission/RSS checkpoints without misrepresenting them as an OS hard cap.
+- **Worker memory enforcement is hard and fail-closed by default.**
+  `HAUTE_WORKER_MEMORY_ENFORCEMENT=required|best_effort`; unknown values and missing
+  required limits fail loudly. Required mode installs a native per-worker cap before
+  user work (Linux cgroup v2 where delegated, otherwise `RLIMIT_AS`; Windows Job
+  Object) and rejects an unsupported host. Parent RSS observation is a secondary
+  watchdog, not a substitute for a kernel cap. `best_effort` is an explicit
+  compatibility opt-out and never reports hard enforcement.
+- **A worker result remains inside the hard-cap window until transport is complete.**
+  One-shot workers synchronously serialize and flush their bounded result channel before
+  exiting; the parent joins the process before accepting that payload. Warm workers keep
+  the request's native lease active after publishing a result and release it only after a
+  matching parent acknowledgement, then confirm that release before the slot can be reused.
+  A malformed acknowledgement, failed release, or stale generation replaces the worker and
+  is never reported as a successful request.
 - **RAM estimation degrades to "unknown" rather than guessing.** When source row
-  counts or column schema cannot be determined from Parquet metadata (for example,
-  Databricks sources or a stale/unreadable API-input cache), `estimate_safe_training_rows` returns
-  `safe_row_limit=None` / `total_rows=None` — the caller proceeds without a downsample
-  rather than receiving a fabricated number.
+  counts, target cardinality, or column schema cannot be proved (for example,
+  Databricks sources, a stale/unreadable API-input cache, or an opaque row-expanding
+  transform), `estimate_safe_training_rows` returns an unavailable estimate rather than
+  a fabricated number. When it is available, `total_rows` is the proven upper bound at
+  the modelling node—not the largest ancestor source. The separate materialisation
+  admission estimate uses the greatest upstream/intermediate bound, so a target-row
+  downsample is never presented as protection for a larger join or source boundary.

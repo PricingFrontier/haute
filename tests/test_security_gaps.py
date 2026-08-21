@@ -1039,8 +1039,9 @@ class TestW8bLocalSessionProtection:
         }
         captured_kwargs: dict[str, object] = {}
 
-        def fake_execute_sink(*_args, **kwargs):
+        def fake_execute_sink(*args, **kwargs):
             captured_kwargs.update(kwargs)
+            captured_kwargs["project_root"] = args[4]
             return WriteOutputResponse(
                 status="ok",
                 row_count=0,
@@ -1048,7 +1049,9 @@ class TestW8bLocalSessionProtection:
                 format="parquet",
             )
 
-        with patch("haute.routes.pipeline.write_data_output", side_effect=fake_execute_sink):
+        with patch(
+            "haute.routes.pipeline._output_write_transaction", side_effect=fake_execute_sink
+        ):
             resp = client.post(
                 "/api/pipeline/write-output",
                 json={"graph": graph, "node_id": "sink"},

@@ -19,8 +19,13 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from haute._execution_admission import ExecutionAdmissionError
+from haute._execution_admission import ExecutionAdmissionError, IsolatedExecutionBudget
 from haute._execution_context import ExecutionProfile
+from haute._interactive_workers import (
+    InteractiveWorkerMemoryLimitError,
+    InteractiveWorkerRemoteError,
+    InteractiveWorkerTimeoutError,
+)
 from haute._json_flatten import _json_cache_dir
 from haute._json_shred import build_per_port_cache
 from haute._sandbox import _get_project_root, set_project_root
@@ -212,6 +217,9 @@ def test_dry_run_releases_admission_after_success(project) -> None:
             return_value=_Context(),
         ),
         patch(
+            "haute.routes.output_assemble.resolve_interactive_execution_mode", return_value="thread"
+        ),
+        patch(
             "haute.routes.output_assemble.execute_graph",
             return_value={"out": NodeResult(status="ok", preview=[], row_count=0)},
         ),
@@ -264,6 +272,9 @@ async def test_dry_run_timeout_defers_admission_release_until_worker_finishes(pr
             "haute.routes.output_assemble.create_admitted_execution_context",
             return_value=context,
         ),
+        patch(
+            "haute.routes.output_assemble.resolve_interactive_execution_mode", return_value="thread"
+        ),
         patch("haute.routes.output_assemble.execute_graph", _execute_graph),
         patch(
             "haute.routes.output_assemble.run_blocking_with_response_timeout",
@@ -291,3 +302,300 @@ async def test_dry_run_timeout_defers_admission_release_until_worker_finishes(pr
     background_task.set_result(None)
     await asyncio.sleep(0)
     assert release_calls == [False]
+
+
+def test_dry_run_process_dispatch_uses_admitted_budget_and_required_policy(project) -> None:
+    from haute.routes.output_assemble import OutputAssembleDryRunResponse
+
+    client, data_path = project
+    release_calls: list[bool] = []
+    calls: list[dict[str, Any]] = []
+    budget = IsolatedExecutionBudget(
+        operation="output_assemble_dry_run",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_limit_bytes=123,
+        config_key="test",
+        budget_policy="fixed_default",
+        process_rss_limit_bytes=456,
+    )
+
+    class _Context:
+        def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+            release_calls.append(preserve_primary_error)
+
+    async def _run_worker(function, *args, **kwargs):
+        calls.append({"function": function, "args": args, "kwargs": kwargs})
+        return OutputAssembleDryRunResponse(status="ok", document=[], row_count=0)
+
+    with (
+        patch(
+            "haute.routes.output_assemble.create_admitted_execution_context",
+            return_value=_Context(),
+        ),
+        patch("haute.routes.output_assemble.isolated_execution_budget", return_value=budget),
+        patch(
+            "haute.routes.output_assemble.resolve_interactive_execution_mode",
+            return_value="process",
+        ),
+        patch(
+            "haute.routes.output_assemble.resolve_worker_memory_enforcement",
+            return_value="required",
+        ),
+        patch("haute.routes.output_assemble.run_in_interactive_worker", _run_worker),
+    ):
+        resp = client.post(
+            "/api/output-assemble/dry-run",
+            json={
+                "graph": _graph_json(_api_input_config(data_path)),
+                "node_id": "out",
+                "output_mapping": [],
+            },
+        )
+
+    assert resp.status_code == 200
+    assert release_calls == [True]
+    assert len(calls) == 1
+    assert calls[0]["args"][-1] is budget
+    assert calls[0]["kwargs"]["absolute_rss_limit_bytes"] == 456
+    assert calls[0]["kwargs"]["memory_growth_limit_bytes"] == 123
+    assert calls[0]["kwargs"]["require_memory_limit"] is True
+
+
+def test_dry_run_worker_creates_and_releases_child_context() -> None:
+    from haute.routes.output_assemble import _execute_output_assemble_dry_run_worker
+
+    releases: list[bool] = []
+
+    class _Context:
+        def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+            releases.append(preserve_primary_error)
+
+    budget = IsolatedExecutionBudget(
+        operation="output_assemble_dry_run",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_limit_bytes=1,
+        config_key="test",
+        budget_policy="fixed_default",
+    )
+    with (
+        patch(
+            "haute.routes.output_assemble.create_isolated_execution_context",
+            return_value=_Context(),
+        ),
+        patch(
+            "haute.routes.output_assemble.execute_graph",
+            return_value={"out": NodeResult(status="ok", preview=[{"x": 1}], row_count=1)},
+        ),
+    ):
+        response = _execute_output_assemble_dry_run_worker(object(), "out", 10, "live", budget)
+
+    assert response.model_dump() == {
+        "status": "ok",
+        "document": [{"x": 1}],
+        "row_count": 1,
+        "error": None,
+    }
+    assert releases == [True]
+
+
+@pytest.mark.parametrize(
+    ("node_result", "expected_error"),
+    [
+        (None, "Assembly failed"),
+        (NodeResult(status="error", error="mapping failed"), "mapping failed"),
+    ],
+)
+def test_dry_run_worker_returns_explicit_error_for_missing_or_failed_result(
+    node_result: NodeResult | None,
+    expected_error: str,
+) -> None:
+    from haute.routes.output_assemble import _execute_output_assemble_dry_run_worker
+
+    releases: list[bool] = []
+
+    class _Context:
+        def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+            releases.append(preserve_primary_error)
+
+    budget = IsolatedExecutionBudget(
+        operation="output_assemble_dry_run",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_limit_bytes=1,
+        config_key="test",
+        budget_policy="fixed_default",
+    )
+    results = {} if node_result is None else {"out": node_result}
+    with (
+        patch(
+            "haute.routes.output_assemble.create_isolated_execution_context",
+            return_value=_Context(),
+        ),
+        patch("haute.routes.output_assemble.execute_graph", return_value=results),
+    ):
+        response = _execute_output_assemble_dry_run_worker(object(), "out", 10, "live", budget)
+
+    assert response.status == "error"
+    assert response.error == expected_error
+    assert releases == [True]
+
+
+@pytest.mark.parametrize("failure_kind", ["memory", "remote"])
+def test_dry_run_process_worker_failures_are_mapped_and_parent_admission_is_released(
+    project,
+    failure_kind: str,
+) -> None:
+    client, data_path = project
+    releases: list[bool] = []
+
+    class _Context:
+        def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+            releases.append(preserve_primary_error)
+
+    budget = IsolatedExecutionBudget(
+        operation="output_assemble_dry_run",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_limit_bytes=123,
+        config_key="test",
+        budget_policy="fixed_default",
+    )
+    if failure_kind == "memory":
+        failure: BaseException = InteractiveWorkerMemoryLimitError(
+            rss_bytes=200,
+            limit_bytes=123,
+        )
+        expected_status = 507
+    else:
+        failure = InteractiveWorkerRemoteError(
+            remote_type="RuntimeError",
+            remote_module="builtins",
+            remote_message="private child detail",
+            remote_traceback="private traceback",
+            public_payload=None,
+        )
+        expected_status = 500
+
+    async def _fail(*_args, **_kwargs):
+        raise failure
+
+    with (
+        patch(
+            "haute.routes.output_assemble.create_admitted_execution_context",
+            return_value=_Context(),
+        ),
+        patch("haute.routes.output_assemble.isolated_execution_budget", return_value=budget),
+        patch(
+            "haute.routes.output_assemble.resolve_interactive_execution_mode",
+            return_value="process",
+        ),
+        patch("haute.routes.output_assemble.run_in_interactive_worker", _fail),
+    ):
+        response = client.post(
+            "/api/output-assemble/dry-run",
+            json={
+                "graph": _graph_json(_api_input_config(data_path)),
+                "node_id": "out",
+                "output_mapping": [],
+            },
+        )
+
+    assert response.status_code == expected_status
+    if failure_kind == "memory":
+        assert response.json()["detail"]["reason"] == "worker_rss_limit_exceeded"
+    else:
+        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+
+        assert response.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        assert "private child detail" not in response.text
+    assert releases == [True]
+
+
+def test_dry_run_process_timeout_releases_parent_admission_immediately(project) -> None:
+    client, data_path = project
+    releases: list[bool] = []
+
+    class _Context:
+        def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+            releases.append(preserve_primary_error)
+
+    budget = IsolatedExecutionBudget(
+        operation="output_assemble_dry_run",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_limit_bytes=1,
+        config_key="test",
+        budget_policy="fixed_default",
+    )
+
+    async def _timeout(*args, **kwargs):
+        del args, kwargs
+        raise InteractiveWorkerTimeoutError(1)
+
+    with (
+        patch(
+            "haute.routes.output_assemble.create_admitted_execution_context",
+            return_value=_Context(),
+        ),
+        patch("haute.routes.output_assemble.isolated_execution_budget", return_value=budget),
+        patch(
+            "haute.routes.output_assemble.resolve_interactive_execution_mode",
+            return_value="process",
+        ),
+        patch("haute.routes.output_assemble.run_in_interactive_worker", _timeout),
+        patch("haute.routes.output_assemble.run_blocking_with_response_timeout") as thread_run,
+    ):
+        resp = client.post(
+            "/api/output-assemble/dry-run",
+            json={
+                "graph": _graph_json(_api_input_config(data_path)),
+                "node_id": "out",
+                "output_mapping": [],
+            },
+        )
+
+    assert resp.status_code == 504
+    assert releases == [True]
+    thread_run.assert_not_called()
+
+
+def test_dry_run_process_failure_does_not_fall_back_to_thread(project) -> None:
+    client, data_path = project
+
+    class _Context:
+        def release_admission(self, **kwargs) -> None:
+            del kwargs
+
+    budget = IsolatedExecutionBudget(
+        operation="output_assemble_dry_run",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_limit_bytes=1,
+        config_key="test",
+        budget_policy="fixed_default",
+    )
+
+    async def _fail(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("process failed")
+
+    with (
+        patch(
+            "haute.routes.output_assemble.create_admitted_execution_context",
+            return_value=_Context(),
+        ),
+        patch("haute.routes.output_assemble.isolated_execution_budget", return_value=budget),
+        patch(
+            "haute.routes.output_assemble.resolve_interactive_execution_mode",
+            return_value="process",
+        ),
+        patch("haute.routes.output_assemble.run_in_interactive_worker", _fail),
+        patch("haute.routes.output_assemble.run_blocking_with_response_timeout") as thread_run,
+    ):
+        resp = client.post(
+            "/api/output-assemble/dry-run",
+            json={
+                "graph": _graph_json(_api_input_config(data_path)),
+                "node_id": "out",
+                "output_mapping": [],
+            },
+        )
+
+    assert resp.status_code == 500
+    thread_run.assert_not_called()

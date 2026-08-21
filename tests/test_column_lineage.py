@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from haute._column_lineage import analyze_polars_lineage
+from haute._column_lineage import analyze_polars_cardinality, analyze_polars_lineage
 from haute._user_exec import _exec_user_code
 
 
@@ -16,6 +16,183 @@ def test_unseeded_select_has_an_exact_output_and_minimal_unknown_input_demand() 
     assert result.supported
     assert result.exact_output_columns == frozenset({"a"})
     assert result.demands_by_input == {"rows": frozenset({"a"})}
+
+
+def test_cardinality_analysis_bounds_many_to_many_join_output_and_peak() -> None:
+    result = analyze_polars_cardinality(
+        "df = left.join(right, on='id', validate='m:m')",
+        {"left": 4, "right": 3},
+    )
+
+    assert result.supported
+    assert result.reason == "cardinality_proven"
+    assert result.output_upper_bound == 12
+    assert result.peak_upper_bound == 12
+    assert result.evidence
+
+
+def test_cardinality_analysis_uses_join_validate_to_tighten_the_bound() -> None:
+    result = analyze_polars_cardinality(
+        "df = left.join(right, on='id', validate='m:1')",
+        {"left": 4, "right": 3},
+    )
+
+    assert result.supported
+    assert result.output_upper_bound == 4
+    assert result.peak_upper_bound == 4
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_output", "expected_peak"),
+    [
+        ("df = left.join(right, on='id', how='right')", 12, 12),
+        ("df = left.join(right, on='id', how='full')", 12, 12),
+        ("df = left.join(right, how='cross')", 12, 12),
+        ("df = left.join(right, on='id', how='semi')", 4, 4),
+        ("df = left.join(right, on='id', how='anti')", 4, 4),
+    ],
+)
+def test_cardinality_analysis_supports_every_closed_join_strategy(
+    code: str,
+    expected_output: int,
+    expected_peak: int,
+) -> None:
+    result = analyze_polars_cardinality(code, {"left": 4, "right": 3})
+
+    assert result.supported
+    assert result.output_upper_bound == expected_output
+    assert result.peak_upper_bound == expected_peak
+
+
+def test_cardinality_analysis_group_by_never_increases_the_input_bound() -> None:
+    result = analyze_polars_cardinality(
+        "df = rows.group_by('group').agg(pl.col('amount').sum())",
+        {"rows": 9},
+    )
+
+    assert result.supported
+    assert result.output_upper_bound == 9
+    assert result.peak_upper_bound == 9
+
+
+def test_cardinality_analysis_fails_closed_for_explode() -> None:
+    result = analyze_polars_cardinality("df = rows.explode('items')", {"rows": 3})
+
+    assert not result.supported
+    assert result.reason == "row_expansion_unbounded"
+    assert result.unsupported_operation == "explode"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = rows.select(pl.col('items').explode())",
+        "df = rows.select(pl.int_range(0, 100).alias('generated'))",
+        "df = rows.with_columns(pl.col('value').append(pl.col('value')).alias('twice'))",
+    ],
+)
+def test_cardinality_analysis_fails_closed_for_row_expanding_expressions(code: str) -> None:
+    result = analyze_polars_cardinality(code, {"rows": 3})
+
+    assert not result.supported
+    assert result.reason == "row_expansion_unbounded"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = rows.select(pl.lit(1).alias('value'))",
+        "df = rows.select(pl.len().alias('row_count'))",
+        "df = rows.with_columns(pl.lit(1).alias('value'))",
+    ],
+)
+def test_cardinality_analysis_accounts_for_scalar_expression_on_empty_frame(code: str) -> None:
+    result = analyze_polars_cardinality(code, {"rows": 0})
+
+    assert result.supported
+    assert result.output_upper_bound == 1
+    assert result.peak_upper_bound == 1
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = left.join(right, on='id', validate=contract)",
+        "df = left.join(right, on='id', validate='not-a-contract')",
+    ],
+)
+def test_cardinality_analysis_fails_closed_for_dynamic_or_invalid_validate(code: str) -> None:
+    result = analyze_polars_cardinality(code, {"left": 3, "right": 3})
+
+    assert not result.supported
+    assert result.unsupported_operation == "join"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = rows.with_columns(pl.col('value').map_elements(lambda x: x))",
+        "df = rows.with_columns(pl.col('value').rolling_map(callback))",
+    ],
+)
+def test_cardinality_analysis_rejects_callbacks_that_can_escape_row_bounds(code: str) -> None:
+    result = analyze_polars_cardinality(code, {"rows": 3})
+
+    assert not result.supported
+    assert result.reason == "row_expansion_unbounded"
+
+
+def test_cardinality_analysis_keeps_ordinary_expression_methods_row_bounded() -> None:
+    result = analyze_polars_cardinality(
+        "df = rows.with_columns(pl.col('value').cast(pl.String).alias('text'))",
+        {"rows": 3},
+    )
+
+    assert result.supported
+    assert result.output_upper_bound == 3
+
+
+def test_cardinality_analysis_keeps_named_arguments_to_bounded_methods_bounded() -> None:
+    result = analyze_polars_cardinality(
+        "df = rows.with_columns(pl.col('value').cast(dtype).alias('text'))",
+        {"rows": 3},
+    )
+
+    assert result.supported
+    assert result.output_upper_bound == 3
+
+
+def test_cardinality_analysis_leaves_bare_expression_calls_to_syntax_validation() -> None:
+    result = analyze_polars_cardinality("df = rows.select(helper())", {"rows": 3})
+
+    assert not result.supported
+    assert result.reason == "dynamic_select"
+    assert result.unsupported_operation == "select"
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        ("df = left.join(right, how='cross', on='id')", "unsupported_join_semantics"),
+        ("df = left.join(right, on='id', unknown=True)", "unsupported_join_option"),
+    ],
+)
+def test_cardinality_analysis_rejects_closed_model_join_forms(code: str, reason: str) -> None:
+    result = analyze_polars_cardinality(code, {"left": 2, "right": 3})
+
+    assert not result.supported
+    assert result.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("code", "inputs"),
+    [("", {"rows": 1}), ("df = rows", {}), ("df = rows", {"": 1}), ("df = rows", {"rows": True})],
+)
+def test_cardinality_analysis_rejects_invalid_proof_inputs(code: object, inputs: object) -> None:
+    result = analyze_polars_cardinality(code, inputs)  # type: ignore[arg-type]
+
+    assert not result.supported
+    assert result.reason in {"empty_code", "invalid_inputs"}
 
 
 def test_row_count_select_expresses_an_exact_empty_column_demand() -> None:
@@ -700,7 +877,7 @@ def test_closed_operations_have_exact_structured_lineage(
             "df = left.join(right, on='id', validate='1:1')",
             {"left": None, "right": None},
             None,
-            "unsupported_join_option",
+            "join_schema_unknown",
             "join",
         ),
         (

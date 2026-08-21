@@ -650,10 +650,9 @@ class TestBuildJsonCacheExceptions:
         data_dir = isolated_cwd / "data"
         data_dir.mkdir()
         (data_dir / "ok.json").write_bytes(orjson.dumps([{"x": 1}]))
-        # build_per_port_cache is imported lazily inside the route — patch
-        # at the source module.
+        # Parent-side isolated transaction failures remain opaque at the route.
         with patch(
-            "haute._json_shred.build_per_port_cache",
+            "haute.routes.json_cache._json_cache_build_transaction",
             side_effect=RuntimeError("internal explosion"),
         ):
             resp = client.post(

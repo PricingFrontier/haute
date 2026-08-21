@@ -16,7 +16,7 @@ You need two things installed: **VS Code** and **uv**.
 
 ## 2. uv
 
-**uv** is a fast Python package manager. It handles Python installation, virtual environments, and dependencies for you - so you don't need to install Python separately.
+**uv** is a fast Python package manager. It handles Python installation, virtual environments, and dependencies for you - so on an unmanaged computer you don't need to install Python separately.
 
 - Open the VS Code terminal (Ctrl + Shift + ') and run: `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
 - To check it worked, close and reopen the terminal, then type `uv --version`
@@ -24,6 +24,10 @@ You need two things installed: **VS Code** and **uv**.
 uv will automatically download and manage the right version of Python when you create your Haute project.
 
 See [uv installation docs](https://docs.astral.sh/uv/getting-started/installation/) if you run into trouble.
+
+### Managed Windows computers
+
+If your organisation uses Windows Application Control, use a Python 3.11 or later installation approved by your IT team instead of allowing uv to download one. Ask IT for the full path to that `python.exe`; the [installation guide](installing-haute.md#managed-windows-computers) shows how to create the project environment from it. Haute then runs as an ordinary package inside that approved Python runtime.
 
 ---
 

@@ -257,8 +257,8 @@ def _mlflow_tracking_patch(attr: str, error_msg: str, on_client: bool = False):
 @contextlib.contextmanager
 def _json_cache_build_patch(error_msg: str):
     """Patch path resolution, file-existence, schema selection, and
-    build_per_port_cache so the json-cache/build route reaches the shred
-    call and raises the expected RuntimeError."""
+    the isolated transaction so the json-cache/build route reaches its
+    parent-side failure boundary and raises the expected RuntimeError."""
     fake_v2_config = {"tables": [{"label": "t", "emit": True, "columns": []}]}
     mock_path_cls = MagicMock()
     mock_path_cls.return_value.exists.return_value = True
@@ -273,7 +273,7 @@ def _json_cache_build_patch(error_msg: str):
             return_value=fake_v2_config,
         ),
         patch(
-            "haute._json_shred.build_per_port_cache",
+            "haute.routes.json_cache._json_cache_build_transaction",
             side_effect=RuntimeError(error_msg),
         ),
     ):
@@ -488,7 +488,7 @@ class TestSafeDetailOnError:
         # Route-scoped patch -- see note in
         # ``test_pipeline_trace_500_no_leak``.
         with patch(
-            "haute.routes.pipeline.write_data_output",
+            "haute.routes.pipeline._output_write_transaction",
             side_effect=RuntimeError("PermissionError: /secure/dir/output.parquet"),
         ):
             resp = client.post(
@@ -787,7 +787,7 @@ class TestLogOnError:
             # Route-scoped patch -- see note in
             # ``test_pipeline_trace_logs_error``.
             patch(
-                "haute.routes.pipeline.write_data_output",
+                "haute.routes.pipeline._output_write_transaction",
                 side_effect=RuntimeError("real-sink-error"),
             ),
             patch("haute.routes.pipeline.logger", mock_logger),
@@ -1223,7 +1223,7 @@ class TestSensitiveInfoLeakage:
         # Route-scoped patch -- see note in
         # ``test_pipeline_trace_500_no_leak``.
         with patch(
-            "haute.routes.pipeline.write_data_output",
+            "haute.routes.pipeline._output_write_transaction",
             side_effect=RuntimeError(
                 "SystemError: CPython 3.11.5 (default, Sep 11 2023) "
                 "[GCC 12.2.0] on linux: frame object is garbage collected"

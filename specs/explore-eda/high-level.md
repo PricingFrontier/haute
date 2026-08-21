@@ -93,10 +93,13 @@ Out of scope (owned elsewhere):
   retaining the last durable generation until the replacement has been completely and atomically
   published. A failed or cancelled refresh therefore leaves the previous generation available
   and stale/current according to its identity.
-- Otherwise a job is created and runs in a background thread. The client polls
-  `GET /api/explore/status/{job_id}` until the job reaches a terminal status
-  (`completed`, `error`, `cancelled`, `superseded`, `memory_limited`,
-  `contract_error`).
+- Otherwise a job is created and a lightweight parent supervisor thread starts one killable
+  worker process. The worker reconstructs the canonical Explore cache request, executes and
+  profiles the graph under the admitted native memory limit, and may write only into the exact
+  private generation directory named by the parent. It cannot update the job store, process-local
+  caches, or the selected durable-generation pointer. The client polls
+  `GET /api/explore/status/{job_id}` until the job reaches a terminal status (`completed`,
+  `error`, `cancelled`, `superseded`, `memory_limited`, `contract_error`, or `timed_out`).
 - A group-by in the lineage feeding the Explore node is admitted as part of this explicit
   full-frame cache materialisation only when its source-derived peak-memory estimate fits the
   admitted `EXPLORE_ANALYSIS` headroom. Missing estimates or insufficient headroom fail with the
@@ -105,9 +108,19 @@ Out of scope (owned elsewhere):
 - Starting a new run for the same Explore node/source while a previous run is still in flight
   supersedes the older job; the older job's status transitions to `superseded`.
 - `POST /api/explore/cancel/{job_id}` interrupts an in-flight materialisation (not just a status
-  flip): Explore starts its statistics aggregation as a Polars streaming background query, polls
-  it at bounded intervals, and calls the native query's `cancel()` when an execution checkpoint
-  observes cancellation. The job then transitions to `cancelled` (or `superseded`).
+  flip): the parent terminates and joins the exact worker before making the job terminal or
+  releasing its admitted reservation. Supersession and the `HAUTE_EXPLORE_TIMEOUT` deadline use
+  the same terminal protocol, so no timed-out or obsolete process can continue consuming CPU,
+  memory, or publishing artifacts after the visible result. The job then transitions to
+  `cancelled`, `superseded`, or `timed_out` as appropriate.
+- A successful worker returns an immutable report and signed artifact manifest only after its
+  private generation is complete. While holding the latest-wins publication guard, the parent
+  revalidates the generation's containment, identity, regular-file status, metadata, Parquet
+  footer, size, and digest; restores the still-unselected artifact into the parent dataframe
+  cache; atomically selects the durable generation; publishes the report; and only then marks the
+  job completed. A pre-selection restore or pointer failure evicts the replacement's process
+  entry. Crash, timeout, cancellation, tampering, or lost ownership discards that exact unselected
+  generation and leaves the previous selected generation untouched.
 - The completed report contains, per column: dtype, a coarse `kind` classification (Numeric,
   Text, Temporal, Boolean, Nested, Other), null count, NaN count (float dtypes only; `None` for
   every other dtype — not applicable, mirroring `zero_count`/`negative_count`), distinct count

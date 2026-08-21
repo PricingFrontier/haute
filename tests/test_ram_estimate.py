@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import polars as pl
@@ -16,6 +17,8 @@ from haute._ram_estimate import (
     MaterialisationEstimate,
     MaterialisationEstimateState,
     RamEstimate,
+    _bounded_cardinality_evidence,
+    _data_input_parquet_artifact,
     _dedupe_resolved_columns,
     _detailed_ancestor_source_metadata,
     _detailed_source_metadata_for_node,
@@ -24,15 +27,20 @@ from haute._ram_estimate import (
     _estimate_base_bytes_per_row,
     _estimate_peak_bytes,
     _EstimateGraphIndex,
+    _named_cardinality_inputs,
     _parquet_metadata,
+    _passthrough_cardinality,
     _resolve_edge_join_column_names,
+    _resolve_row_cardinality_from_index,
     _resolve_target_column_names,
     _resolve_target_columns,
+    _ResolvedRowCardinality,
     _source_column_base_widths,
     estimate_gpu_vram_bytes,
     estimate_materialisation_boundary,
     estimate_safe_training_rows,
 )
+from haute._types import NodeType
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 from tests.conftest import build_test_input_snapshot
 
@@ -205,6 +213,42 @@ def test_source_metadata_propagates_programming_errors_but_marks_os_errors_unava
 
     with patch("haute._ram_estimate._detailed_parquet_metadata", side_effect=OSError("offline")):
         assert _detailed_source_metadata_for_node(node) is None
+
+
+def test_persistent_data_input_uses_verified_generation_row_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generation_path = tmp_path / "generation.parquet"
+    generation = SimpleNamespace(
+        metadata=SimpleNamespace(row_count=17),
+        data_path=generation_path,
+    )
+    opened: list[object] = []
+
+    monkeypatch.setattr("haute._builders._configured_pipeline_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        "haute._polars_io_registry.validate_data_input_config",
+        lambda _config: {"validated": True},
+    )
+    monkeypatch.setattr(
+        "haute._polars_io_registry.data_input_is_direct",
+        lambda _config: False,
+    )
+    monkeypatch.setattr(
+        "haute._input_providers.source_cache_identity",
+        lambda _config, *, base_dir: ("identity", base_dir),
+    )
+    monkeypatch.setattr("haute._sandbox._get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "haute._source_cache.SourceCacheStore",
+        lambda root: SimpleNamespace(
+            open_generation=lambda identity: opened.append((root, identity)) or generation
+        ),
+    )
+
+    assert _data_input_parquet_artifact({"source": "persistent"}) == (17, generation_path)
+    assert opened == [(tmp_path, ("identity", tmp_path))]
 
 
 @pytest.mark.parametrize("suffix", [None, ".json", ".parquet"])
@@ -712,16 +756,17 @@ class TestEstimateSafeTrainingRows:
                 "joinInput": "join",
                 "how": "left",
                 "on": ["quote_id"],
+                "validate": "1:1",
                 "selected_columns": ["quote_id", "premium", "claim_count"],
             },
         )
-        joined.data.nodeType = "edgeJoin"
+        joined.data.nodeType = NodeType.EDGE_JOIN
         target = _make_modelling_node(config={"exclude": ["quote_id"]})
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
-                GraphEdge(id="e1", source="base", target="joined"),
-                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e1", source="base", target="joined", targetHandle="base"),
+                GraphEdge(id="e2", source="join", target="joined", targetHandle="join"),
                 GraphEdge(id="e3", source="joined", target=target.id),
             ],
         )
@@ -731,6 +776,78 @@ class TestEstimateSafeTrainingRows:
         assert result.probe_columns == 3
         assert result.bytes_per_row == 3 * 8 * 3.0
         assert result.estimated_bytes == _estimate_peak_bytes(rows, 3)
+
+    def test_many_to_many_join_uses_target_cardinality_for_training_rows(
+        self,
+        tmp_path,
+    ) -> None:
+        left_path = tmp_path / "left.parquet"
+        right_path = tmp_path / "right.parquet"
+        pl.DataFrame({"id": [1, 1, 1, 1], "left_value": range(4)}).write_parquet(left_path)
+        pl.DataFrame({"id": [1, 1, 1], "right_value": range(3)}).write_parquet(right_path)
+        left = _make_source_node(
+            node_id="left",
+            node_type="dataInput",
+            config=_ready_file_input_config(left_path),
+        )
+        right = _make_source_node(
+            node_id="right",
+            node_type="dataInput",
+            config=_ready_file_input_config(right_path),
+        )
+        joined = _make_transform_node(
+            node_id="joined",
+            config={
+                "baseInput": "left",
+                "joinInput": "right",
+                "how": "left",
+                "on": ["id"],
+                "validate": "m:m",
+            },
+        )
+        joined.data.nodeType = NodeType.EDGE_JOIN
+        target = _make_modelling_node()
+        graph = PipelineGraph(
+            nodes=[left, right, joined, target],
+            edges=[
+                GraphEdge(id="left-join", source="left", target="joined", targetHandle="base"),
+                GraphEdge(id="right-join", source="right", target="joined", targetHandle="join"),
+                GraphEdge(id="join-model", source="joined", target=target.id),
+            ],
+        )
+
+        result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        assert result.total_rows == 12
+        assert result.probe_columns == 3
+        assert result.estimated_bytes == _estimate_peak_bytes(12, 3)
+
+    def test_unproven_target_cardinality_returns_unavailable_training_estimate(
+        self,
+        tmp_path,
+    ) -> None:
+        path = tmp_path / "lists.parquet"
+        pl.DataFrame({"items": [[1, 2], [3]], "value": [10, 20]}).write_parquet(path)
+        source = _make_source_node(
+            node_type="dataInput",
+            config=_ready_file_input_config(path),
+        )
+        transform = _make_transform_node(config={"code": "df = df.explode('items')"})
+        target = _make_modelling_node()
+        graph = PipelineGraph(
+            nodes=[source, transform, target],
+            edges=[
+                GraphEdge(id="source-transform", source=source.id, target=transform.id),
+                GraphEdge(id="transform-model", source=transform.id, target=target.id),
+            ],
+        )
+
+        result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        assert result.total_rows is None
+        assert result.safe_row_limit is None
+        assert result.estimated_bytes == 0
+        assert result.probe_columns == 0
 
     def test_string_exclude_config_is_ignored_as_invalid_sequence(self, tmp_path) -> None:
         """A bare string is not treated as a sequence of excluded column names."""
@@ -791,15 +908,16 @@ class TestEstimateSafeTrainingRows:
                 "joinInput": "join",
                 "how": "left",
                 "on": ["quote_id"],
+                "validate": "1:1",
             },
         )
-        joined.data.nodeType = "edgeJoin"
+        joined.data.nodeType = NodeType.EDGE_JOIN
         target = _make_modelling_node(config={"exclude": ["quote_id"]})
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
-                GraphEdge(id="e1", source="base", target="joined"),
-                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e1", source="base", target="joined", targetHandle="base"),
+                GraphEdge(id="e2", source="join", target="joined", targetHandle="join"),
                 GraphEdge(id="e3", source="joined", target=target.id),
             ],
         )
@@ -847,16 +965,17 @@ class TestEstimateSafeTrainingRows:
                 "joinInput": "join",
                 "how": "left",
                 "on": ["quote_id"],
+                "validate": "1:1",
                 "coalesce": False,
             },
         )
-        joined.data.nodeType = "edgeJoin"
+        joined.data.nodeType = NodeType.EDGE_JOIN
         target = _make_modelling_node(config={"exclude": ["quote_id"]})
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
-                GraphEdge(id="e1", source="base", target="joined"),
-                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e1", source="base", target="joined", targetHandle="base"),
+                GraphEdge(id="e2", source="join", target="joined", targetHandle="join"),
                 GraphEdge(id="e3", source="joined", target=target.id),
             ],
         )
@@ -907,16 +1026,17 @@ class TestEstimateSafeTrainingRows:
                 "joinInput": "join",
                 "how": "left",
                 "on": ["quote_id"],
+                "validate": "1:1",
                 "coalesce": False,
             },
         )
-        joined.data.nodeType = "edgeJoin"
+        joined.data.nodeType = NodeType.EDGE_JOIN
         target = _make_modelling_node(config={"exclude": ["quote_id", "quote_id_right"]})
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
-                GraphEdge(id="e1", source="base", target="joined"),
-                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e1", source="base", target="joined", targetHandle="base"),
+                GraphEdge(id="e2", source="join", target="joined", targetHandle="join"),
                 GraphEdge(id="e3", source="joined", target=target.id),
             ],
         )
@@ -968,16 +1088,17 @@ class TestEstimateSafeTrainingRows:
                 "how": "left",
                 "leftOn": ["id"],
                 "rightOn": ["jid"],
+                "validate": "1:1",
                 "coalesce": False,
             },
         )
-        joined.data.nodeType = "edgeJoin"
+        joined.data.nodeType = NodeType.EDGE_JOIN
         target = _make_modelling_node()
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
-                GraphEdge(id="e1", source="base", target="joined"),
-                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e1", source="base", target="joined", targetHandle="base"),
+                GraphEdge(id="e2", source="join", target="joined", targetHandle="join"),
                 GraphEdge(id="e3", source="joined", target=target.id),
             ],
         )
@@ -1028,15 +1149,16 @@ class TestEstimateSafeTrainingRows:
                 "how": "left",
                 "leftOn": ["id"],
                 "rightOn": ["jid"],
+                "validate": "1:1",
             },
         )
-        joined.data.nodeType = "edgeJoin"
+        joined.data.nodeType = NodeType.EDGE_JOIN
         target = _make_modelling_node()
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
-                GraphEdge(id="e1", source="base", target="joined"),
-                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e1", source="base", target="joined", targetHandle="base"),
+                GraphEdge(id="e2", source="join", target="joined", targetHandle="join"),
                 GraphEdge(id="e3", source="joined", target=target.id),
             ],
         )
@@ -1086,15 +1208,16 @@ class TestEstimateSafeTrainingRows:
                 "joinInput": "join",
                 "how": "left",
                 "on": ["quote_id"],
+                "validate": "1:1",
             },
         )
-        joined.data.nodeType = "edgeJoin"
+        joined.data.nodeType = NodeType.EDGE_JOIN
         target = _make_modelling_node()
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
-                GraphEdge(id="e1", source="base", target="joined"),
-                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e1", source="base", target="joined", targetHandle="base"),
+                GraphEdge(id="e2", source="join", target="joined", targetHandle="join"),
                 GraphEdge(id="e3", source="joined", target=target.id),
             ],
         )
@@ -1549,6 +1672,275 @@ class TestEstimatePeakBytes:
         expected = int(n_rows * n_cols * 8 * 3.0)
         assert _estimate_peak_bytes(n_rows, n_cols) == expected
 
+    def test_fractional_width_rounds_up_for_conservative_admission(self) -> None:
+        assert _estimate_peak_bytes(1, 1, base_bytes_per_row=0.5) == 2
+
+    def test_extreme_finite_cardinality_does_not_overflow_float(self) -> None:
+        rows = 10**400
+        assert _estimate_peak_bytes(rows, 1, base_bytes_per_row=0.5) == (rows * 3) // 2
+
+    @pytest.mark.parametrize("width", [-0.5, math.inf, math.nan])
+    def test_invalid_measured_width_fails_loudly(self, width: float) -> None:
+        with pytest.raises(ValueError, match="base_bytes_per_row"):
+            _estimate_peak_bytes(1, 1, base_bytes_per_row=width)
+
+    @pytest.mark.parametrize("rows,columns", [(True, 1), (1, True), (-1, 1), (1, -1)])
+    def test_invalid_dimensions_fail_loudly(self, rows: object, columns: object) -> None:
+        with pytest.raises(ValueError, match="non-negative integer"):
+            _estimate_peak_bytes(rows, columns)  # type: ignore[arg-type]
+
+
+def test_cardinality_proof_validation_and_evidence_cap_are_explicit() -> None:
+    with pytest.raises(ValueError, match="finite non-negative"):
+        _ResolvedRowCardinality.proven(3, 2, ("proof",))
+
+    items = [f"proof-{index}" for index in range(65)]
+    evidence = _bounded_cardinality_evidence(items + ["proof-0", ""])
+
+    assert len(evidence) == 64
+    assert evidence[-1] == "cardinality_evidence_truncated=2"
+
+
+def _cardinality_index_for_node(
+    node_type: NodeType, config: dict[str, object], parent_count: int = 1
+) -> _EstimateGraphIndex:
+    parents = [
+        GraphNode(id=f"parent-{index}", data=NodeData(nodeType=NodeType.CONSTANT))
+        for index in range(parent_count)
+    ]
+    target = GraphNode(id="target", data=NodeData(nodeType=node_type, config=config))
+    edges = [
+        GraphEdge(id=f"edge-{index}", source=parent.id, target=target.id)
+        for index, parent in enumerate(parents)
+    ]
+    index = _EstimateGraphIndex.build(PipelineGraph(nodes=[*parents, target], edges=edges), "batch")
+    for parent in parents:
+        index.cardinality_by_target[(parent.id, None)] = _ResolvedRowCardinality.proven(
+            4, 5, (f"source={parent.id}",)
+        )
+    return index
+
+
+@pytest.mark.parametrize(
+    ("node_type", "config", "expected_rows"),
+    [
+        (NodeType.POLARS, {"code": "df = df.filter(pl.col('value') > 0)"}, 4),
+        (NodeType.SCENARIO_EXPANDER, {"steps": 3}, 12),
+        (NodeType.RATING_STEP, {}, 4),
+        (NodeType.EXPLORE, {"code": "df = df.filter(pl.col('value') > 0)"}, 4),
+        (NodeType.MODEL_SCORE, {}, 4),
+        (NodeType.OPTIMISER, {}, 4),
+        (NodeType.OPTIMISER_APPLY, {}, 4),
+        (NodeType.EXTERNAL_FILE, {}, 4),
+        (NodeType.DATA_OUTPUT, {}, 4),
+    ],
+)
+def test_row_cardinality_resolution_proves_closed_node_semantics(
+    node_type: NodeType, config: dict[str, object], expected_rows: int
+) -> None:
+    index = _cardinality_index_for_node(node_type, config)
+
+    result = _resolve_row_cardinality_from_index(index, "target", None)
+
+    assert result.available
+    assert result.output_rows == expected_rows
+    assert result.peak_rows is not None and result.peak_rows >= expected_rows
+
+
+@pytest.mark.parametrize(
+    ("node_type", "config", "parent_count", "reason"),
+    [
+        (NodeType.POLARS, {}, 1, "empty_code"),
+        (NodeType.SCENARIO_EXPANDER, {"steps": 0}, 1, "invalid_scenario_steps"),
+        (NodeType.SCENARIO_EXPANDER, {}, 2, "invalid_input_cardinality"),
+        (NodeType.RATING_STEP, {}, 2, "invalid_input_cardinality"),
+        (NodeType.OPTIMISER, {"data_input": "absent"}, 1, "invalid_optimiser_input"),
+        (NodeType.EXTERNAL_FILE, {}, 0, "external_object_row_cardinality_unknown"),
+        (NodeType.DATA_OUTPUT, {}, 2, "invalid_input_cardinality"),
+    ],
+)
+def test_row_cardinality_resolution_refuses_ambiguous_or_invalid_semantics(
+    node_type: NodeType, config: dict[str, object], parent_count: int, reason: str
+) -> None:
+    index = _cardinality_index_for_node(node_type, config, parent_count)
+
+    result = _resolve_row_cardinality_from_index(index, "target", None)
+
+    assert not result.available
+    assert result.unavailable_reason == reason
+
+
+def test_cardinality_helpers_fail_closed_for_invalid_bindings_and_missing_nodes() -> None:
+    index = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": {"alias": 1}})
+    target = index.node_map["target"]
+    edge = index.pruned_edges[0]
+    parent = index.cardinality_by_target[(edge.source, None)]
+
+    assert _named_cardinality_inputs(index, target, ((edge, parent),)) is None
+    unavailable = _passthrough_cardinality("target", (), evidence="preserved")
+    assert unavailable.unavailable_reason == "input_cardinality_unavailable"
+    missing = _resolve_row_cardinality_from_index(index, "missing", None)
+    assert missing.unavailable_reason == "node_missing"
+
+
+def test_cardinality_resolution_handles_constants_and_rejects_invalid_join_arity() -> None:
+    constant_index = _EstimateGraphIndex.build(
+        PipelineGraph(nodes=[GraphNode(id="constant", data=NodeData(nodeType=NodeType.CONSTANT))]),
+        "batch",
+    )
+    constant = _resolve_row_cardinality_from_index(constant_index, "constant", None)
+    assert (constant.output_rows, constant.peak_rows) == (1, 1)
+
+    join_index = _cardinality_index_for_node(NodeType.EDGE_JOIN, {}, parent_count=1)
+    result = _resolve_row_cardinality_from_index(join_index, "target", None)
+    assert result.unavailable_reason == "invalid_join_arity"
+
+
+def test_cardinality_binding_and_node_failure_paths_fail_closed() -> None:
+    api = GraphNode(id="api", data=NodeData(nodeType=NodeType.API_INPUT))
+    target = GraphNode(id="target", data=NodeData(nodeType=NodeType.POLARS))
+    api_edge = GraphEdge(id="api-edge", source="api", target="target")
+    index = _EstimateGraphIndex.build(PipelineGraph(nodes=[api, target], edges=[api_edge]), "batch")
+    proof = _ResolvedRowCardinality.proven(4, 4, ("proof",))
+    assert _named_cardinality_inputs(index, target, ((api_edge, proof),)) is None
+
+    duplicate = _cardinality_index_for_node(NodeType.POLARS, {}, parent_count=2)
+    duplicate.node_map["parent-1"].data.label = duplicate.node_map["parent-0"].data.label
+    duplicate_edges = tuple(
+        (edge, duplicate.cardinality_by_target[(edge.source, None)])
+        for edge in duplicate.pruned_edges
+    )
+    assert (
+        _named_cardinality_inputs(duplicate, duplicate.node_map["target"], duplicate_edges) is None
+    )
+
+    cases = [
+        (
+            NodeType.POLARS,
+            {"code": "df = df", "inputMapping": {"df": 1}},
+            1,
+            "invalid_input_name_binding",
+        ),
+        (NodeType.SCENARIO_EXPANDER, {"steps": "invalid"}, 1, "invalid_scenario_steps"),
+        (
+            NodeType.SCENARIO_EXPANDER,
+            {"steps": 2, "code": "df = df.filter(pl.col('x') > 0)"},
+            1,
+            None,
+        ),
+        (NodeType.MODEL_SCORE, {"code": "df = df.filter(pl.col('x') > 0)"}, 1, None),
+        (
+            NodeType.MODEL_SCORE,
+            {"code": "df = df", "inputMapping": {"df": 1}},
+            1,
+            "invalid_input_name_binding",
+        ),
+        (NodeType.OPTIMISER, {}, 0, "input_cardinality_unavailable"),
+        (NodeType.OPTIMISER_APPLY, {}, 0, "input_cardinality_unavailable"),
+        (NodeType.EXTERNAL_FILE, {"code": "df = df.filter(pl.col('x') > 0)"}, 1, None),
+        (
+            NodeType.EXTERNAL_FILE,
+            {"code": "df = df", "inputMapping": {"df": 1}},
+            1,
+            "invalid_input_name_binding",
+        ),
+        (NodeType.OUTPUT, {}, 1, "row_semantics_unsupported"),
+    ]
+    for node_type, config, parent_count, reason in cases:
+        result = _resolve_row_cardinality_from_index(
+            _cardinality_index_for_node(node_type, config, parent_count), "target", None
+        )
+        if reason is None:
+            assert result.available or result.unavailable_reason in {
+                "ambiguous_frame_root",
+                "unknown_frame_root",
+            }
+        else:
+            assert result.unavailable_reason == reason
+
+
+def test_cardinality_resolution_covers_malformed_bindings_and_source_transforms() -> None:
+    proof = _ResolvedRowCardinality.proven(4, 4, ("proof",))
+    malformed = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": ["not-a-map"]})
+    edge = malformed.pruned_edges[0]
+    assert (
+        _named_cardinality_inputs(malformed, malformed.node_map["target"], ((edge, proof),)) is None
+    )
+
+    mapped = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": {"alias": "Unnamed"}})
+    mapped_edge = mapped.pruned_edges[0]
+    bindings = _named_cardinality_inputs(mapped, mapped.node_map["target"], ((mapped_edge, proof),))
+    assert bindings is not None and bindings["alias"] == proof
+
+    collision = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": {"a": "b"}}, 2)
+    collision.node_map["parent-0"].data.label = "a"
+    collision.node_map["parent-1"].data.label = "b"
+    collision_edges = tuple(
+        (item, collision.cardinality_by_target[(item.source, None)])
+        for item in collision.pruned_edges
+    )
+    assert (
+        _named_cardinality_inputs(collision, collision.node_map["target"], collision_edges) is None
+    )
+
+    no_edge_alias = _cardinality_index_for_node(NodeType.POLARS, {})
+    assert (
+        _named_cardinality_inputs(
+            no_edge_alias,
+            no_edge_alias.node_map["target"],
+            (),
+            alias_first_as_df=True,
+        )
+        is None
+    )
+    alias_collision = _cardinality_index_for_node(NodeType.POLARS, {}, 2)
+    alias_collision.node_map["parent-0"].data.label = "first"
+    alias_collision.node_map["parent-1"].data.label = "df"
+    alias_edges = tuple(
+        (item, alias_collision.cardinality_by_target[(item.source, None)])
+        for item in alias_collision.pruned_edges
+    )
+    assert (
+        _named_cardinality_inputs(
+            alias_collision, alias_collision.node_map["target"], alias_edges, alias_first_as_df=True
+        )
+        is None
+    )
+
+    source = GraphNode(
+        id="source",
+        data=NodeData(
+            nodeType=NodeType.DATA_INPUT, config={"code": "df = df.filter(pl.col('x') > 0)"}
+        ),
+    )
+    source_index = _EstimateGraphIndex.build(PipelineGraph(nodes=[source]), "batch")
+    source_index.metadata_by_node["source"] = _DetailedSourceMetadata(
+        4, 1, {"x": "Int64"}, {}, {}, 32
+    )
+    source_result = _resolve_row_cardinality_from_index(source_index, "source", None)
+    assert source_result.available and source_result.output_rows == 4
+
+
+def test_cardinality_resolution_detects_cycles_and_invalid_join_or_score_inputs() -> None:
+    cycle = _cardinality_index_for_node(NodeType.POLARS, {})
+    cycle.resolving_cardinality.add(("target", None))
+    with pytest.raises(RuntimeError, match="cycle"):
+        cycle.resolve_cardinality("target")
+
+    join = _cardinality_index_for_node(NodeType.EDGE_JOIN, {}, 2)
+    assert (
+        _resolve_row_cardinality_from_index(join, "target", None).unavailable_reason
+        == "invalid_join_config"
+    )
+    score = _cardinality_index_for_node(NodeType.MODEL_SCORE, {}, 0)
+    assert (
+        _resolve_row_cardinality_from_index(score, "target", None).unavailable_reason
+        == "input_cardinality_unavailable"
+    )
+    optimiser = _cardinality_index_for_node(NodeType.OPTIMISER, {"data_input": "parent-0"})
+    resolved = _resolve_row_cardinality_from_index(optimiser, "target", None)
+    assert resolved.available and resolved.output_rows == 4
+
 
 # ---------------------------------------------------------------------------
 # estimate_gpu_vram_bytes edge cases
@@ -1881,8 +2273,9 @@ class TestJsonApiInputPortMetadata:
 
         _data_path, config, _cache_dir, _committed_dir = json_api_input
         source = _make_source_node(node_id="quote_in", node_type="apiInput", config=config)
-        first = _make_transform_node(node_id="agg1")
-        second = _make_transform_node(node_id="agg2")
+        aggregate_code = {"code": "df = df.group_by('policy_id').agg(pl.len().alias('count'))"}
+        first = _make_transform_node(node_id="agg1", config=aggregate_code)
+        second = _make_transform_node(node_id="agg2", config=aggregate_code)
         graph = PipelineGraph(
             nodes=[source, first, second],
             edges=[
@@ -2193,10 +2586,17 @@ class TestUnavailableEstimateReasons:
 
     def test_an_unsizable_ancestor_reports_source_row_count_unavailable(self, tmp_path) -> None:
         source = _make_source_node(node_type="apiInput", config={"path": ""})
-        target = _make_transform_node()
+        target = _make_transform_node(config={"code": "df = df"})
         graph = PipelineGraph(
             nodes=[source, target],
-            edges=[GraphEdge(id="e1", source=source.id, target=target.id)],
+            edges=[
+                GraphEdge(
+                    id="e1",
+                    source=source.id,
+                    target=target.id,
+                    sourceHandle="quotes",
+                )
+            ],
         )
 
         estimate = estimate_materialisation_boundary(graph, target.id)
@@ -2208,10 +2608,17 @@ class TestUnavailableEstimateReasons:
         path = tmp_path / "quotes.parquet"
         pl.DataFrame({"a": range(4)}).write_parquet(str(path))
         source = _make_source_node(node_type="apiInput", config={"path": str(path)})
-        target = _make_transform_node()
+        target = _make_transform_node(config={"code": "df = df"})
         graph = PipelineGraph(
             nodes=[source, target],
-            edges=[GraphEdge(id="e1", source=source.id, target=target.id)],
+            edges=[
+                GraphEdge(
+                    id="e1",
+                    source=source.id,
+                    target=target.id,
+                    sourceHandle="quotes",
+                )
+            ],
         )
 
         with patch("haute._ram_estimate._resolve_target_columns", return_value=None):

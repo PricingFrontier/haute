@@ -5,7 +5,7 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): thin Explore materialisation and `/pivots` run/status/cancel/member endpoints. Graph-bearing requests share `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before service delegation. |
-| `src/haute/routes/_explore_service.py` | Core service: cache-key derivation (`ExploreCacheSpec`), background job execution (`_run_job`, `_materialise_and_summarise`), and all statistics/summary computation (`_build_frame_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`). |
+| `src/haute/routes/_explore_service.py` | Core service: cache-key derivation (`ExploreCacheSpec`), background job execution (`_run_job`, `_materialise_and_summarise_worker`), and all statistics/summary computation (`_build_frame_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`). |
 | `src/haute/_explore_cache.py` | Project-local durable Explore generations: strict metadata/current-report validation, leased current/stale reads, two-phase atomic publication, and restoration into the process dataframe execution cache. |
 | `src/haute/routes/_pivot_service.py` | Pivot service: requires the derived Explore dataframe-cache entry, validates fields/aggregations, applies typed exact-member filters, enforces cardinality before aggregation, runs latest-wins admitted jobs, and caches typed matrices by calculation identity. |
 | `src/haute/_cache.py` | Dataframe execution-cache invariant owned by [caching](../caching/low-level.md) and used by the execution path: the materialised Explore dataframe is reused independently of the in-process report cache. |
@@ -295,8 +295,11 @@
       token and the previous job id (if any) for the same family. If a previous job existed, it
       is transitioned to `superseded` via `JobLifecycle.transition` (guarded by
       `expected_status="running"` — a no-op if it already finished).
-   f. A daemon thread (`haute-explore-{job_id}`) runs `_run_job`; the route returns
-      `ExploreRunResponse(status="started", job_id=job_id)` without waiting.
+   f. The parent allocates a canonical generation id and exact private staging directory, then a
+      daemon supervisor thread (`haute-explore-{job_id}`) runs `_run_job`; the route returns
+      `ExploreRunResponse(status="started", job_id=job_id)` without waiting. The thread performs
+      lifecycle coordination only. Heavy execution and statistics run in one killable spawned
+      process.
 
 ### `prepare_spec` (`ExploreService.prepare_spec`)
 
@@ -319,40 +322,64 @@
    **not** part of this payload, which is what makes an overview-only config change reuse the
    cached report.
 
-### `_run_job` (background thread)
+### `_run_job` (parent supervisor thread)
 
 1. `create_admitted_execution_context(operation="explore_cache", profile=EXPLORE_ANALYSIS,
    job_id, cancellation_token=token.execution_token)` — admission-gated context creation; raises
    `ExecutionAdmissionError` if the run cannot be admitted under current memory limits.
 2. `bind_running_execution_metrics_publisher(store, job_id, execution_context)` streams live
-   execution metrics into the job store while the job runs.
-3. `_materialise_and_summarise(body, spec, job_id, execution_context)` — see below.
-4. `execution_context.checkpoint(label="explore_before_store", node_id=spec.node_id)`.
-5. The report is copied with `execution_metrics` attached
-   (`ExecutionMetricsPayload.model_validate(execution_context.metrics_payload(status="completed"))`).
-6. Once computation and terminal metrics are complete, the context releases its memory-admission
-   reservation. While the exact dataframe entry is protected from eviction, the service copies
-   and validates a new staged durable generation without selecting it.
-7. `CancellableJobRegistry.latest_publication(job_id)` makes the latest-owner check indivisible
+   execution metrics into the job store while the job runs. The parent converts the actual
+   admitted reservation and optional process cap into an `IsolatedExecutionBudget`.
+3. `run_isolated_worker(...)` spawns a one-shot worker with required native memory enforcement,
+   `HAUTE_EXPLORE_TIMEOUT` (default 1800 seconds), and a stop callback that reports cancellation
+   or supersession. The worker reconstructs `ExploreCacheSpec` from the submitted request instead
+   of receiving a parent process-local cache object; `_materialise_and_summarise_worker(...)` executes and
+   profiles the graph, prepares the exact parent-named durable generation, and returns a closed
+   outcome envelope containing either a validated report plus
+   `ExplorePersistentCachePublication`, or one tagged contract/memory failure with its bounded
+   public payload. The parent validates that exactly one envelope shape is present before using
+   it, so moving execution across the process boundary cannot degrade a public contract error to
+   a generic job failure. The worker never writes `JobStore`, the report LRU, the
+   selected-generation pointer, or a parent dataframe-cache entry.
+4. The isolation supervisor terminates and joins the child before returning a timeout,
+   cancellation, supersession, native-memory breach, crash, or malformed response. The parent
+   then maps the typed outcome to the terminal job status and removes only its known staging
+   directory. There is no thread-compute fallback.
+5. On success, the parent validates the returned generation id and paths against the values it
+   allocated before launch, validates both artifacts as contained non-link regular files, and
+   rejects Windows reparse points and hard links before rechecking metadata, report identity,
+   Parquet footer/schema/counts, sizes, and digests.
+6. `CancellableJobRegistry.latest_publication(job_id)` makes the latest-owner check indivisible
    from the short final publication. A cancelled or superseded owner discards its staging
-   directory. The latest owner atomically selects the generation, stores the report in
+   directory. The latest owner restores the validated, still-unselected artifact into the parent
+   dataframe execution cache, atomically selects the generation, stores the report in
    `self._report_cache`, and transitions the still-running job to `completed` while the guard is
-   held; a replacement request therefore cannot interleave those three visible effects.
-8. After commit, unselected generations without reader leases are retired best-effort. Cleanup
+   held; a replacement request therefore cannot interleave those visible effects.
+   A restore or pointer failure evicts the replacement's process-cache entry before surfacing the
+   error, so process-local state cannot hide the prior durable selection.
+7. After commit, unselected generations without reader leases are retired best-effort. Cleanup
    failure is logged but does not invalidate the selected pointer or completed job.
-9. `finally`: `execution_context.release_admission()` (idempotently, if a context was created) and
-   `self._jobs.release(job_id)` always run, even on the exception paths below.
+8. `finally`: the parent releases admission idempotently, discards an unselected exact staging
+   generation, and calls `self._jobs.release(job_id)` on every path. No terminal status is visible
+   while its child is still alive.
 
 Exception handling (each maps to a distinct terminal status via `JobLifecycle.transition`, see
 Error handling section): `ExecutionCancelledError` → `token.terminal_reason or "cancelled"`;
 `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → `"memory_limited"`;
+the closed `PUBLIC_CONTRACT_ERROR_TYPES` (including their stable public fields),
 `ContractMismatchError` / `SchemaMismatchError` / `BoundedMemoryUnsupportedError` →
-`"contract_error"`; any other `Exception` → `"error"` (logged via `logger.error(
-"explore_cache_failed", ...)` with `exc_info=True`).
+`"contract_error"`. A parent-authored isolated-worker timeout, crash, cancellation, or native
+memory-limit message is safe to expose with its typed terminal reason. An
+`IsolatedWorkerRemoteError` is never exposed: its child exception type, message, and traceback
+are diagnostic-only and the job stores `_INTERNAL_ERROR_DETAIL` while retaining the supervisor's
+typed terminal reason. Any other unexpected parent-side `Exception` likewise maps to `"error"`,
+is logged via `logger.error("explore_cache_failed", ...)` with `exc_info=True`, and stores only
+`_INTERNAL_ERROR_DETAIL` in the public job record.
 
-### `_materialise_and_summarise`
+### `_materialise_and_summarise_worker` (isolated worker)
 
-1. Updates job progress to `0.1` ("Executing Explore pipeline").
+1. Creates a child-local `ExecutionContext` from the parent-admitted budget without acquiring a
+   second admission reservation. It has no job-store callback.
 2. `_compile_preamble(body.graph.preamble or "", pipeline_dir=_pipeline_dir(body.graph))`
    (imported lazily from `haute.executor`).
 3. `execution_facade.execute_lazy_graph(body.graph, _build_node_fn, target_node_id=spec.node_id,
@@ -366,11 +393,14 @@ Error handling section): `ExecutionCancelledError` → `token.terminal_reason or
 4. `lazy_outputs.get(spec.node_id)` must not be `None`; if it is,
    `ValueError(f"No data arrived at Explore node '{spec.node_id}'.")` is raised (caught by the
    generic `except Exception` branch in `_run_job`, i.e. surfaces as job status `error`).
-5. Updates progress to `0.85` ("Reading cached schema"); `explore_lf.collect_schema()`.
+5. `explore_lf.collect_schema()` reads the materialised schema. Parent-visible progress is limited
+   to lifecycle-safe supervisor phases; child computation never mutates the parent job store.
 6. `execution_context.stage("explore_frame_stats")` wraps `_build_frame_stats(explore_lf, schema,
    execution_context=execution_context)` — the single aggregation pass (see below).
-7. Returns a populated `ExploreCacheReport` (without `execution_metrics`, which `_run_job` attaches
-   afterward).
+7. Attaches terminal child execution metrics, pins the worker-local dataframe artifact while
+   copying it into the exact parent-named generation, writes and syncs the metadata, validates the
+   completed generation, and returns a populated `ExploreCacheReport` plus its immutable
+   publication descriptor. Selection remains exclusively a parent operation.
 
 ### `_build_frame_stats` — the single batched aggregation
 
@@ -568,7 +598,7 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
 - Any other `Exception` — caught by the final `except Exception` clause in `_run_job`, logged via
   `logger.error("explore_cache_failed", job_id=job_id, error=str(exc), exc_info=True)`, and
   translated to job status `"error"`. This includes the `ValueError` raised by
-  `_materialise_and_summarise` when no data arrives at the Explore node.
+  `_materialise_and_summarise_worker` when no data arrives at the Explore node.
 - `JobStore.require_job` (used by `status`/`cancel`) raises `HTTPException(404, "Job '{job_id}'
   not found")` directly on an unknown job id (verified by
   `test_explore_status_unknown_job_is_404`); this behaviour is inherited from the shared
@@ -584,7 +614,7 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
     caching (row/column counts reflect the post-code frame).
   - `test_explore_reuses_completed_report_for_same_analysis_key` /
     `test_explore_reuses_typed_report_cache_without_reexecuting_sources` — report-cache hits
-    return synchronously and skip `_materialise_and_summarise` entirely (asserted by
+    return synchronously and skip `_materialise_and_summarise_worker` entirely (asserted by
     monkeypatching it to raise on any call).
   - `test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache` /
     `test_explore_display_config_does_not_invalidate_analysis_dataframe_cache` /

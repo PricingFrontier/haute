@@ -41,6 +41,21 @@ relationship is recorded in `specs/ownership.toml`.
 - `DatabaseSnapshotBuilder` validates a read query and yields Arrow record batches with one
   stable schema from an existing SQLite database.
 
+### Atomic pointer and metadata publication
+
+`atomic_write_bytes` / `atomic_write_text` stage a uniquely named sibling file and atomically
+replace the target, so readers observe either the complete old payload or the complete new
+payload. The parent directory must already exist. A failed write or exhausted publication
+attempt removes the private staging file and preserves the old target. If that exact-file
+cleanup also fails, the publication error remains primary, the cleanup failure is attached as
+an exception note, and the uniquely named stage remains visible for diagnosis. Windows antivirus,
+indexer, and concurrent-reader handles can transiently reject an otherwise valid replace with
+`ERROR_ACCESS_DENIED` or `ERROR_SHARING_VIOLATION`; only those two Win32 errors receive the
+bounded delays `10 ms, 25 ms, 50 ms, 100 ms`, after which the original error still propagates.
+The codes are retried only on Windows; every error on another platform and every other Windows
+filesystem error fails immediately. This is retry of the same atomic operation, not
+an in-place or non-atomic fallback.
+
 ## Control flow
 
 ### Canonical Data Input

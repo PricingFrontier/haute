@@ -287,3 +287,89 @@ def test_request_planner_passes_proven_edge_demand_into_admission_estimate(tmp_p
 
     assert result.diagnostic.raw_estimated_peak_bytes == _estimate_peak_bytes(10, 2)
     assert result.diagnostic.estimate_admission_basis == "projected_columns"
+
+
+def _joined_group_by_graph(tmp_path, *, validate: str = "m:m"):
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    pl.DataFrame({"id": range(4), "left_value": range(4)}).write_parquet(left_path)
+    pl.DataFrame({"id": range(3), "right_value": range(3)}).write_parquet(right_path)
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "left",
+                    "data": {
+                        "label": "left",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(left_path),
+                    },
+                },
+                {
+                    "id": "right",
+                    "data": {
+                        "label": "right",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(right_path),
+                    },
+                },
+                {
+                    "id": "joined",
+                    "data": {
+                        "label": "joined",
+                        "nodeType": "edgeJoin",
+                        "config": {
+                            "baseInput": "left",
+                            "joinInput": "right",
+                            "how": "inner",
+                            "on": ["id"],
+                            "validate": validate,
+                        },
+                    },
+                },
+                {
+                    "id": "aggregate",
+                    "data": {
+                        "label": "aggregate",
+                        "nodeType": "polars",
+                        "config": {"code": "df = df.group_by('id').agg(pl.len().alias('count'))"},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("left", "joined", target_handle="base").model_dump(),
+                make_edge("right", "joined", target_handle="join").model_dump(),
+                make_edge("joined", "aggregate").model_dump(),
+            ],
+        }
+    )
+    return graph
+
+
+def test_group_by_admission_uses_upstream_many_to_many_join_product(tmp_path) -> None:
+    graph = _joined_group_by_graph(tmp_path)
+
+    estimate = dict(estimate_materialisation_boundaries(graph, ["aggregate"]))["aggregate"]
+
+    # With no projection evidence supplied to this direct estimator call, the
+    # group-by boundary must retain the complete three-column join output.
+    assert estimate.estimated_peak_bytes == _estimate_peak_bytes(12, 3)
+    assert "join cardinality is not expanded without source statistics" not in estimate.assumptions
+
+
+def test_group_by_admission_tightens_upstream_join_with_validate_contract(tmp_path) -> None:
+    graph = _joined_group_by_graph(tmp_path, validate="m:1")
+
+    estimate = dict(estimate_materialisation_boundaries(graph, ["aggregate"]))["aggregate"]
+
+    assert estimate.estimated_peak_bytes == _estimate_peak_bytes(4, 3)
+
+
+def test_unsupported_row_expanding_transform_reports_blocking_node_reason(tmp_path) -> None:
+    graph, edge = _single_input_graph(tmp_path / "source.parquet", columns=1)
+    graph.nodes[1].data.config = {"code": "df = df.explode('column_0')"}
+
+    estimate = _estimate(graph, edge, frozenset({"column_0"}))
+
+    assert estimate.estimated_peak_bytes is None
+    assert estimate.unavailable_reason == "row_cardinality_unavailable:agg:row_expansion_unbounded"

@@ -273,7 +273,7 @@ def _resolve_schema_outputs(
 ) -> Mapping[str, object]:
     """Run the production preparation for schema resolution only.
 
-    Exactly the `_explore_service._materialise_and_summarise` sequence — no
+    Exactly the `_explore_service._materialise_and_summarise_worker` sequence — no
     assistant-only recovery. `schema_only=True` states the invariant this
     module already guarantees and tests by poisoning `collect`: nothing is
     collected and no sink runs, so the engine's group-by materialisation gate,

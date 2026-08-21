@@ -5,7 +5,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import polars as pl
 import pytest
@@ -2865,20 +2865,22 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
     )
     captured = {}
 
-    def fake_execute_sink(*_args, **kwargs):
-        captured.update(kwargs)
+    def fake_execute_sink(*args, **_kwargs):
+        captured["budget"] = args[8]
         return WriteOutputResponse(status="ok")
 
-    with patch.object(pipeline_route, "write_data_output", side_effect=fake_execute_sink):
+    with patch.object(
+        pipeline_route,
+        "_output_write_transaction",
+        side_effect=fake_execute_sink,
+    ):
         response = await pipeline_route.write_output_node(
             WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
     assert response.status == "ok"
-    assert captured["execution_context"].profile == ExecutionProfile.LAZY_SINK
-    assert captured["execution_context"].memory_limit_bytes == 512 * 1024 * 1024
-    assert captured["execution_context"].admission is not None
-    assert captured["execution_context"].admission.rss_at_admission_bytes == 128 * 1024 * 1024
+    assert captured["budget"].profile == ExecutionProfile.LAZY_SINK
+    assert captured["budget"].memory_limit_bytes == 512 * 1024 * 1024
 
 
 @pytest.mark.asyncio
@@ -2910,7 +2912,7 @@ async def test_write_output_route_rejects_unconfigured_data_output(
 
     with patch.object(
         pipeline_route,
-        "write_data_output",
+        "_output_write_transaction",
         side_effect=AssertionError("invalid Data Output must not execute"),
     ):
         with pytest.raises(HTTPException) as exc_info:
@@ -3693,7 +3695,7 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
     def raise_memory_budget(*_args, **_kwargs):
         raise memory_error
 
-    monkeypatch.setattr(pipeline_route, "write_data_output", raise_memory_budget)
+    monkeypatch.setattr(pipeline_route, "_output_write_transaction", raise_memory_budget)
 
     with pytest.raises(HTTPException) as exc_info:
         await pipeline_route.write_output_node(
@@ -3738,9 +3740,16 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
     )
 
     def unsupported_sink(*_args, **_kwargs):
-        raise BoundedMemoryUnsupportedError("Bounded streaming sink failed", path="sink")
+        raise pipeline_route._OutputWriteWorkerError(
+            "bounded",
+            str(BoundedMemoryUnsupportedError("Bounded streaming sink failed", path="sink")),
+        )
 
-    with patch.object(pipeline_route, "write_data_output", side_effect=unsupported_sink):
+    with patch.object(
+        pipeline_route,
+        "_output_write_transaction",
+        side_effect=unsupported_sink,
+    ):
         with pytest.raises(HTTPException) as exc_info:
             await pipeline_route.write_output_node(
                 WriteOutputRequest(graph=graph, node_id="sink", source="batch")
@@ -3839,14 +3848,15 @@ async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
 
 
 @pytest.mark.asyncio
-async def test_sink_route_releases_admission_after_timeout_background_task_finishes(
+async def test_sink_route_releases_admission_before_isolated_timeout_returns(
     monkeypatch,
     tmp_path,
 ) -> None:
     from fastapi import HTTPException
 
+    from haute._execution_admission import IsolatedExecutionBudget
+    from haute._worker_isolation import IsolatedWorkerTimeoutError
     from haute.routes import pipeline as pipeline_route
-    from haute.routes._timeouts import BlockingWorkTimeoutError
     from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
@@ -3879,12 +3889,9 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
         profile=ExecutionProfile.LAZY_SINK,
         admission_release=release_admission,
     )
-    background_task: asyncio.Future[None] | None = None
 
     async def raise_timeout(*_args, **_kwargs):
-        nonlocal background_task
-        background_task = asyncio.get_running_loop().create_future()
-        raise BlockingWorkTimeoutError("pipeline_write_output", 0.01, background_task)
+        raise IsolatedWorkerTimeoutError(timeout_seconds=0.01)
 
     monkeypatch.setattr(
         pipeline_route,
@@ -3893,7 +3900,18 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
     )
     monkeypatch.setattr(
         pipeline_route,
-        "run_blocking_with_response_timeout",
+        "isolated_execution_budget",
+        lambda _context: IsolatedExecutionBudget(
+            operation="pipeline_write_output",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=1024,
+            config_key="test",
+            budget_policy="test",
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline_route,
+        "run_cancellable_worker_transaction",
         raise_timeout,
     )
 
@@ -3904,25 +3922,19 @@ async def test_sink_route_releases_admission_after_timeout_background_task_finis
 
     assert exc_info.value.status_code == 504
     with release_lock:
-        assert release_calls == 0
-
-    assert background_task is not None
-    background_task.set_result(None)
-    await asyncio.sleep(0)
-
-    with release_lock:
         assert release_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_sink_route_releases_admission_when_timeout_task_already_finished(
+async def test_sink_route_maps_cancelled_isolated_worker_without_deferred_release(
     monkeypatch,
     tmp_path,
 ) -> None:
     from fastapi import HTTPException
 
+    from haute._execution_admission import IsolatedExecutionBudget
+    from haute._worker_isolation import IsolatedWorkerStoppedError
     from haute.routes import pipeline as pipeline_route
-    from haute.routes._timeouts import BlockingWorkTimeoutError
     from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
@@ -3956,10 +3968,8 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
         admission_release=release_admission,
     )
 
-    async def raise_finished_timeout(*_args, **_kwargs):
-        background_task = asyncio.get_running_loop().create_future()
-        background_task.set_result(None)
-        raise BlockingWorkTimeoutError("pipeline_write_output", 0.01, background_task)
+    async def raise_cancelled(*_args, **_kwargs):
+        raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
 
     monkeypatch.setattr(
         pipeline_route,
@@ -3968,8 +3978,19 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
     )
     monkeypatch.setattr(
         pipeline_route,
-        "run_blocking_with_response_timeout",
-        raise_finished_timeout,
+        "isolated_execution_budget",
+        lambda _context: IsolatedExecutionBudget(
+            operation="pipeline_write_output",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=1024,
+            config_key="test",
+            budget_policy="test",
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline_route,
+        "run_cancellable_worker_transaction",
+        raise_cancelled,
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -3977,22 +3998,18 @@ async def test_sink_route_releases_admission_when_timeout_task_already_finished(
             WriteOutputRequest(graph=graph, node_id="sink", source="batch")
         )
 
-    assert exc_info.value.status_code == 504
-    with release_lock:
-        assert release_calls == 0
-
-    await asyncio.sleep(0)
-
+    assert exc_info.value.status_code == 409
     with release_lock:
         assert release_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_sink_route_cancels_execution_context_on_timeout(monkeypatch, tmp_path) -> None:
+async def test_sink_route_does_not_fall_back_after_isolated_timeout(monkeypatch, tmp_path) -> None:
     from fastapi import HTTPException
 
+    from haute._worker_isolation import IsolatedWorkerTimeoutError
     from haute.routes import pipeline as pipeline_route
-    from haute.schemas import WriteOutputRequest, WriteOutputResponse
+    from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
@@ -4014,28 +4031,23 @@ async def test_sink_route_cancels_execution_context_on_timeout(monkeypatch, tmp_
             "edges": [],
         }
     )
-    started = threading.Event()
-    cancel_seen = threading.Event()
 
-    def slow_execute_sink(*_args, **kwargs):
-        context = kwargs["execution_context"]
-        started.set()
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline and not context.cancellation_token.cancelled:
-            time.sleep(0.005)
-        if context.cancellation_token.cancelled:
-            cancel_seen.set()
-        return WriteOutputResponse(status="ok")
+    async def timed_out(*_args, **_kwargs):
+        raise IsolatedWorkerTimeoutError(timeout_seconds=0.05)
 
-    with patch.object(pipeline_route, "write_data_output", side_effect=slow_execute_sink):
+    fallback = Mock(side_effect=AssertionError("thread fallback must not run"))
+    monkeypatch.setattr(pipeline_route, "run_cancellable_worker_transaction", timed_out)
+    monkeypatch.setattr(pipeline_route, "run_blocking_with_response_timeout", fallback)
+
+    with patch.object(pipeline_route, "_output_write_transaction") as transaction:
         with pytest.raises(HTTPException) as exc_info:
             await pipeline_route.write_output_node(
                 WriteOutputRequest(graph=graph, node_id="sink", source="batch")
             )
 
     assert exc_info.value.status_code == 504
-    assert started.wait(2)
-    assert cancel_seen.wait(2)
+    transaction.assert_not_called()
+    fallback.assert_not_called()
 
 
 def test_optimiser_execute_pipeline_forwards_execution_context(tmp_path) -> None:

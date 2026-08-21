@@ -101,6 +101,12 @@ def test_build_lock_registry_releases_inactive_cache_directories(tmp_path: Path)
 
 
 def test_manifest_structure_rejects_bad_labels_and_label_sets() -> None:
+    assert _cache_manifest_structure_failure({"tables": {}}) == _CacheProbeFailure(
+        "malformed_manifest"
+    )
+    assert _cache_manifest_structure_failure({"tables": ["root"]}) == _CacheProbeFailure(
+        "malformed_manifest"
+    )
     empty_label = _cache_manifest_structure_failure({"tables": [_manifest_entry("")]})
     assert empty_label == _CacheProbeFailure("malformed_manifest")
     assert _cache_manifest_structure_failure(
@@ -137,6 +143,20 @@ def test_manifest_file_check_stops_on_structure_failure_then_checks_missing_fram
     assert _cache_manifest_failure(tmp_path, valid) == _CacheProbeFailure(
         "missing_frame", label="root"
     )
+
+
+def test_cache_bundle_rejects_a_non_plain_parquet_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+    specs = shred_mod._emitting_table_specs(config)
+    (tmp_path / "root.parquet").mkdir()
+    monkeypatch.setattr(shred_mod, "_cache_manifest_failure", lambda *_a, **_k: None)
+
+    failure = shred_mod._cache_bundle_failure_in_place(tmp_path, specs, {"tables": []})
+
+    assert failure == _CacheProbeFailure("non_plain_frame", label="root")
 
 
 def test_cache_meta_requires_exact_fingerprint_and_handles_bad_config(

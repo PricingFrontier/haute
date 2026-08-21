@@ -90,12 +90,21 @@ sharing a key name qualify symmetrically (`a_items`/`b_items`) — never raw pat
 strings, so an inferred schema is immediately valid under the label rule below
 and its labels read as the argument names they will become.
 
-The uncached JSON/JSONL path parses at most one top-level value, walks emitted rows
-into one shared byte/row-bounded buffer, and flushes typed row groups to private
-runtime Parquet spills. Returned LazyFrames scan those leased files. A single source
-record/value may itself exceed the configured buffer—the irreducible bound—but memory
-does not grow with file or emitted-table row count. XML retains its documented
-document-materialising parser.
+Runtime fallback and persistent cache construction use the same aggregate
+byte/row-bounded Parquet row-group writer. JSON arrays are tokenised one top-level
+value at a time, JSONL is decoded one non-empty line at a time, and repeated XML
+record containers are parsed and released one direct child at a time. Returned
+LazyFrames scan leased runtime files; cache builds publish the corresponding staged
+files only after every writer and the manifest have completed.
+
+The configured structured-input record limit is a hard bound, not merely a flush
+hint. A JSON root object, JSONL line, JSON array element, repeated XML child, or XML
+document whose semantics make the complete root one logical record must fit within
+`HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES` (64 MiB by default). An oversized logical
+record fails with `ApiInputSchemaError` before it can make memory grow with the input
+file. Parser read-ahead is limited to one fixed-size chunk. Subject to that explicit
+single-record bound, peak Python memory is independent of source-file length and
+emitted-table row count for runtime loads and persistent cache builds alike.
 
 Cache publication and runtime storage are coordinated across server processes.
 Readers, builders, and promotion share an OS file lock per cache identity; a reader
@@ -108,10 +117,12 @@ shredding. Element namespaces are removed from field names; attributes become
 fields; leaf text is the scalar value (or a `value` field when attributes are also
 present); repeated same-name children become lists, while a single child remains a
 single value. A document whose root contains repeated same-name object children
-uses those children as its top-level records; otherwise the root is one record.
-DTD/entity declarations, mixed child/text content, and field-name collisions
-between namespace-stripped attributes, children, or the synthetic `value` field
-are rejected rather than interpreted ambiguously.
+uses those children as its top-level records. Haute validates that classification
+with a bounded first pass, then streams and releases each child during the emitting
+pass. Otherwise the complete root is one logical record and is admitted only when
+the document fits the hard record limit. DTD/entity declarations, mixed child/text
+content, and field-name collisions between namespace-stripped attributes, children,
+or the synthetic `value` field are rejected rather than interpreted ambiguously.
 
 Every array element the shred sees is accounted for: it either becomes a row in some
 table, or is counted as a skip against that table (its shape didn't match — an
@@ -248,10 +259,13 @@ publish. Both signed layers are verified before declaring a no-op, so invalid, s
 or concurrently changed working state cannot replace a healthy committed cache and
 damaged committed bytes are repaired from healthy working state.
 
-**Cache writes are fully staged and same-process builds for one cache cannot
-interleave.** A build writes every parquet and its manifest into a unique sibling
-staging directory before replacing the live directory. Replacement attempts to
-restore the prior directory if publication fails. Builds for different cache
+**Cache writes are fully staged, bounded, and same-cache builds cannot interleave.**
+A build feeds emitted rows through the same aggregate-bounded row-group writer used
+by runtime spills and writes every parquet and its manifest into a unique sibling
+staging directory before replacing the live directory. Parallel JSONL workers use
+that writer for bounded parts; the parent consumes one bounded row group at a time
+through the same writer when assembling the final artifacts. Replacement attempts
+to restore the prior directory if publication fails. Builds for different cache
 directories remain independent, and the same staged-replacement behavior governs
 both a new shred and working-to-committed promotion. Cache paths are rooted from
 the process working directory selected for the project; callers must not assume

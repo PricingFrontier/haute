@@ -206,24 +206,10 @@ def test_stop_reason_kills_and_replaces_worker() -> None:
     assert replacement_pid != original_pid
 
 
-def test_parent_rss_watchdog_kills_over_limit_worker(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import haute._interactive_workers as worker_mod
-
+def test_required_memory_enforcement_rejects_absolute_watchdog_without_native_limit() -> None:
     pool = InteractiveWorkerPool(size=1, poll_interval_seconds=0.01)
     try:
-        original_pid, _ = pool.run(
-            _worker_identity,
-            affinity_key="lineage",
-            timeout_seconds=5,
-        )
-        monkeypatch.setattr(
-            worker_mod,
-            "process_rss_bytes",
-            lambda pid: 10_000 if pid == original_pid else 1,
-        )
-        with pytest.raises(InteractiveWorkerMemoryLimitError) as exc_info:
+        with pytest.raises(ValueError, match="native memory growth limit"):
             pool.run(
                 _worker_sleep,
                 5.0,
@@ -232,17 +218,28 @@ def test_parent_rss_watchdog_kills_over_limit_worker(
                 absolute_rss_limit_bytes=9_999,
                 require_memory_limit=True,
             )
-        replacement_pid, _ = pool.run(
-            _worker_identity,
-            affinity_key="lineage",
-            timeout_seconds=5,
-        )
     finally:
         pool.close()
 
-    assert exc_info.value.rss_bytes == 10_000
-    assert exc_info.value.limit_bytes == 9_999
-    assert replacement_pid != original_pid
+
+def test_required_native_cap_unavailable_is_rejected_before_pool_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = InteractiveWorkerPool(size=1)
+    starts: list[bool] = []
+    monkeypatch.setattr(pool, "start", lambda: starts.append(True))
+    monkeypatch.setattr(worker_mod, "native_memory_caps_supported", lambda: False)
+
+    with pytest.raises(RuntimeError, match="native memory caps are unavailable"):
+        pool.run(
+            _returns,
+            affinity_key="lineage",
+            timeout_seconds=1,
+            memory_growth_limit_bytes=100,
+            require_memory_limit=True,
+        )
+
+    assert starts == []
 
 
 def test_parent_rss_watchdog_applies_limit_to_per_request_growth(
@@ -268,26 +265,6 @@ def test_parent_rss_watchdog_applies_limit_to_per_request_growth(
 
     assert exc_info.value.rss_bytes == 1_051
     assert exc_info.value.limit_bytes == 1_050
-
-
-def test_required_memory_enforcement_fails_if_sampler_is_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import haute._interactive_workers as worker_mod
-
-    pool = InteractiveWorkerPool(size=1)
-    monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: None)
-    try:
-        with pytest.raises(RuntimeError, match="could not sample"):
-            pool.run(
-                _worker_identity,
-                affinity_key="lineage",
-                timeout_seconds=5,
-                absolute_rss_limit_bytes=1_000,
-                require_memory_limit=True,
-            )
-    finally:
-        pool.close()
 
 
 def test_remote_error_is_structured_and_worker_remains_usable() -> None:
@@ -381,18 +358,22 @@ def test_exception_payload_and_entrypoint_protocols(monkeypatch: pytest.MonkeyPa
     assert worker_mod._public_exception_payload(BadPayloadError()) is None
     request = _Queue(
         [
-            pickle.dumps(("run", "one", _returns, (3,), {})),
-            pickle.dumps(("run", "two", _raises, (), {})),
+            pickle.dumps(("run", "one", _returns, (3,), {}, None, False)),
+            pickle.dumps(("ack", "one")),
+            pickle.dumps(("run", "two", _raises, (), {}, None, False)),
+            pickle.dumps(("ack", "two")),
             pickle.dumps(("shutdown",)),
         ]
     )
     results = _Queue()
     monkeypatch.setattr(worker_mod.os, "getpid", lambda: 42)
     worker_mod._interactive_worker_entrypoint(request, results, ())
-    ready, good, bad = [pickle.loads(value) for value in results.values]
+    ready, good, good_release, bad, bad_release = [pickle.loads(value) for value in results.values]
     assert ready == ("ready", 42)
     assert good == ("result", "one", "ok", 3)
+    assert good_release == ("released", "one", "ok", None)
     assert bad[2:4][0] == "error"
+    assert bad_release == ("released", "two", "ok", None)
 
 
 def test_pool_validation_result_shapes_and_queue_cleanup() -> None:
@@ -429,6 +410,11 @@ def test_run_rejects_invalid_limits_without_starting() -> None:
         {"timeout_seconds": 1, "absolute_rss_limit_bytes": 0},
         {"timeout_seconds": 1, "memory_growth_limit_bytes": 0},
         {"timeout_seconds": 1, "require_memory_limit": True},
+        {
+            "timeout_seconds": 1,
+            "absolute_rss_limit_bytes": 1,
+            "require_memory_limit": True,
+        },
     )
     for options in cases:
         with pytest.raises(ValueError):
@@ -469,7 +455,11 @@ def test_entrypoint_preload_unpicklable_and_malformed_requests(
     imported: list[str] = []
     monkeypatch.setattr(worker_mod.importlib, "import_module", imported.append)
     requests = _Queue(
-        [pickle.dumps(("run", "x", _unpicklable_result, (), {})), pickle.dumps(("shutdown",))]
+        [
+            pickle.dumps(("run", "x", _unpicklable_result, (), {}, None, False)),
+            pickle.dumps(("ack", "x")),
+            pickle.dumps(("shutdown",)),
+        ]
     )
     results = _Queue()
     worker_mod._interactive_worker_entrypoint(requests, results, ("preload",))
@@ -477,6 +467,150 @@ def test_entrypoint_preload_unpicklable_and_malformed_requests(
     assert pickle.loads(results.values[1])[2] == "error"
     with pytest.raises(RuntimeError, match="malformed"):
         worker_mod._interactive_worker_entrypoint(_Queue([pickle.dumps(("bad",))]), _Queue(), ())
+
+
+def test_entrypoint_holds_native_lease_until_matching_ack_then_releases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._native_memory_limit as native
+
+    events: list[str] = []
+
+    class Lease:
+        backend = None
+
+        def apply(self, *_args, **_kwargs):
+            events.append("apply")
+            self.backend = "windows_job"
+
+        def restore(self):
+            events.append("restore")
+
+        def close(self):
+            events.append("close")
+
+    monkeypatch.setattr(
+        worker_mod,
+        "NativeMemoryLease",
+        Lease,
+    )
+    requests = _Queue(
+        [
+            pickle.dumps(("run", "x", native.current_native_memory_backend, (), {}, 128, True)),
+            pickle.dumps(("ack", "x")),
+            pickle.dumps(("shutdown",)),
+        ]
+    )
+    results = _Queue()
+
+    worker_mod._interactive_worker_entrypoint(requests, results, ())
+
+    envelopes = [pickle.loads(value) for value in results.values]
+    assert envelopes[1:] == [
+        ("result", "x", "ok", "windows_job"),
+        ("released", "x", "ok", None),
+    ]
+    assert events == ["apply", "restore", "close"]
+    assert native.current_native_memory_backend() is None
+
+
+def test_entrypoint_rejects_stale_ack_without_restoring_native_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        worker_mod,
+        "NativeMemoryLease",
+        lambda: SimpleNamespace(
+            backend=None,
+            apply=lambda *_args, **_kwargs: events.append("apply"),
+            restore=lambda: events.append("restore"),
+            close=lambda: events.append("close"),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="acknowledgement"):
+        worker_mod._interactive_worker_entrypoint(
+            _Queue(
+                [
+                    pickle.dumps(("run", "x", _returns, (3,), {}, 128, True)),
+                    pickle.dumps(("ack", "other")),
+                ]
+            ),
+            _Queue(),
+            (),
+        )
+
+    assert events == ["apply", "close"]
+
+
+def test_wait_for_result_acknowledges_before_returning_and_requires_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = InteractiveWorkerPool(size=1, poll_interval_seconds=0.01)
+    requests, results = (
+        _Queue(),
+        _Queue(
+            [
+                pickle.dumps(("result", "x", "ok", 7)),
+                pickle.dumps(("released", "x", "ok", None)),
+            ]
+        ),
+    )
+    slot = SimpleNamespace(
+        index=0,
+        process=SimpleNamespace(pid=1, exitcode=None, is_alive=lambda: True),
+        request_queue=requests,
+        result_queue=results,
+        closed=False,
+    )
+    monkeypatch.setattr(pool, "_replace_slot", lambda _slot: None)
+
+    assert (
+        pool._wait_for_result(
+            slot,
+            job_id="x",
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=None,
+            require_memory_limit=False,
+        )
+        == 7
+    )
+    assert pickle.loads(requests.values[0]) == ("ack", "x")
+
+
+def test_remote_result_keeps_primary_error_when_release_is_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = InteractiveWorkerPool(size=1, poll_interval_seconds=0.01)
+    slot = SimpleNamespace(
+        index=0,
+        process=SimpleNamespace(pid=1, exitcode=None, is_alive=lambda: True),
+        request_queue=_Queue(),
+        result_queue=_Queue(
+            [
+                pickle.dumps(("result", "x", "error", ("ValueError", "m", "bad", "tb", None))),
+                pickle.dumps(("released", "other", "ok", None)),
+            ]
+        ),
+        closed=False,
+    )
+    replacements: list[object] = []
+    monkeypatch.setattr(pool, "_replace_slot", replacements.append)
+
+    with pytest.raises(InteractiveWorkerRemoteError) as exc_info:
+        pool._wait_for_result(
+            slot,
+            job_id="x",
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=None,
+            require_memory_limit=False,
+        )
+
+    assert replacements == [slot]
+    assert any("release confirmation failed" in note.lower() for note in exc_info.value.__notes__)
 
 
 def test_start_close_and_singleton_helpers_with_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -686,7 +820,7 @@ def test_run_rechecks_closed_state_after_acquiring_slot(
     lock.release()
 
 
-def test_growth_limit_required_mode_replaces_worker_when_baseline_is_unobservable(
+def test_growth_limit_required_mode_uses_native_cap_when_baseline_is_unobservable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pool = InteractiveWorkerPool(size=1)
@@ -700,9 +834,11 @@ def test_growth_limit_required_mode_replaces_worker_when_baseline_is_unobservabl
     monkeypatch.setattr(pool, "start", lambda: None)
     monkeypatch.setattr(pool, "_slot_for_affinity", lambda _key: slot)
     monkeypatch.setattr(pool, "_stop_and_replace", replaced.append)
+    monkeypatch.setattr(worker_mod, "native_memory_caps_supported", lambda: True)
+    monkeypatch.setattr(pool, "_wait_for_result", lambda *_args, **_kwargs: 7)
     monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: None)
 
-    with pytest.raises(RuntimeError, match="could not sample"):
+    assert (
         pool.run(
             _returns,
             affinity_key="lineage",
@@ -710,8 +846,10 @@ def test_growth_limit_required_mode_replaces_worker_when_baseline_is_unobservabl
             memory_growth_limit_bytes=100,
             require_memory_limit=True,
         )
+        == 7
+    )
 
-    assert replaced == [slot]
+    assert replaced == []
 
 
 def test_optional_growth_limit_warns_and_continues_without_baseline(
@@ -892,6 +1030,7 @@ def test_optional_sampler_warning_is_once_and_under_limit_sample_keeps_waiting(
 ) -> None:
     pool = InteractiveWorkerPool(size=1, poll_interval_seconds=0.01)
     ok = pickle.dumps(("result", "job", "ok", 7))
+    released = pickle.dumps(("released", "job", "ok", None))
     process = SimpleNamespace(pid=42, exitcode=None, is_alive=lambda: True)
     warnings: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -903,7 +1042,10 @@ def test_optional_sampler_warning_is_once_and_under_limit_sample_keeps_waiting(
     unavailable_slot = SimpleNamespace(
         index=0,
         process=process,
-        result_queue=_ScriptedResultQueue(queue.Empty(), queue.Empty(), ok),
+        request_queue=_Queue(),
+        result_queue=_ScriptedResultQueue(
+            queue.Empty(), queue.Empty(), ok, queue.Empty(), released
+        ),
         closed=False,
     )
 
@@ -924,7 +1066,8 @@ def test_optional_sampler_warning_is_once_and_under_limit_sample_keeps_waiting(
     under_limit_slot = SimpleNamespace(
         index=0,
         process=process,
-        result_queue=_ScriptedResultQueue(queue.Empty(), ok),
+        request_queue=_Queue(),
+        result_queue=_ScriptedResultQueue(queue.Empty(), ok, released),
         closed=False,
     )
     assert (
@@ -1051,6 +1194,22 @@ def test_close_slot_reports_process_that_survives_without_other_failure(
         worker_mod.InteractiveWorkerPool._close_slot(slot, graceful=False)
 
 
+def test_close_slot_surfaces_native_cleanup_failure_after_join(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _CloseProcess(alive=False)
+    process.pid = 42
+    slot = _close_slot(process)
+    monkeypatch.setattr(
+        worker_mod,
+        "cleanup_private_cgroups_for_pid",
+        lambda _pid: (_ for _ in ()).throw(OSError("cgroup cleanup failed")),
+    )
+
+    with pytest.raises(OSError, match="cgroup cleanup failed"):
+        worker_mod.InteractiveWorkerPool._close_slot(slot, graceful=False)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cleanup_failure", [False, True])
 async def test_async_wrapper_cancellation_waits_for_worker_cleanup(
@@ -1096,3 +1255,363 @@ def test_shutdown_singleton_is_a_noop_when_pool_is_absent(
 ) -> None:
     monkeypatch.setattr(worker_mod, "_POOL", None)
     worker_mod.shutdown_interactive_worker_pool()
+
+
+def test_entrypoint_reports_native_apply_and_restore_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Queue:
+        def __init__(self, values: list[object]) -> None:
+            self.values = values
+            self.puts: list[bytes] = []
+
+        def get(self) -> object:
+            return self.values.pop(0)
+
+        def put(self, value: bytes) -> None:
+            self.puts.append(value)
+
+    request = pickle.dumps(("run", "job", _returns, (), {}, 10, True))
+    requests = Queue([request, pickle.dumps(("ack", "job")), pickle.dumps(("shutdown",))])
+    results = Queue([])
+    monkeypatch.setattr(
+        worker_mod.NativeMemoryLease,
+        "apply",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("cap")),
+    )
+    worker_mod._interactive_worker_entrypoint(requests, results, ())
+    envelope = pickle.loads(results.puts[1])
+    assert envelope[2] == "error" and envelope[3][0] == "RuntimeError"
+
+    requests = Queue([request, pickle.dumps(("ack", "job"))])
+    results = Queue([])
+    monkeypatch.setattr(worker_mod.NativeMemoryLease, "apply", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        worker_mod.NativeMemoryLease,
+        "restore",
+        lambda *_a: (_ for _ in ()).throw(RuntimeError("restore")),
+    )
+    with pytest.raises(RuntimeError, match="restore"):
+        worker_mod._interactive_worker_entrypoint(requests, results, ())
+    released = pickle.loads(results.puts[-1])
+    assert released[:3] == ("released", "job", "error")
+
+
+def test_wait_for_result_preserves_remote_error_when_ack_or_release_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = InteractiveWorkerPool(size=1)
+    remote = pickle.dumps(("result", "job", "error", ("ValueError", "x", "bad", "tb", None)))
+    process = SimpleNamespace(pid=1, exitcode=None, is_alive=lambda: True)
+    slot = SimpleNamespace(
+        index=0,
+        process=process,
+        result_queue=_ScriptedResultQueue(remote),
+        request_queue=SimpleNamespace(put=lambda *_a: (_ for _ in ()).throw(OSError("ack"))),
+    )
+    replaced: list[object] = []
+    monkeypatch.setattr(pool, "_stop_and_replace", replaced.append)
+    with pytest.raises(InteractiveWorkerRemoteError) as exc_info:
+        pool._wait_for_result(
+            slot,
+            job_id="job",
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=None,
+            require_memory_limit=False,
+        )
+    assert "release confirmation" in " ".join(exc_info.value.__notes__) and replaced == [slot]
+
+
+def test_wait_and_protocol_error_boundaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    pool = InteractiveWorkerPool(size=1)
+    process = SimpleNamespace(pid=1, exitcode=None, is_alive=lambda: True)
+    slot = SimpleNamespace(
+        index=3,
+        process=process,
+        result_queue=_ScriptedResultQueue(queue.Empty()),
+        request_queue=_Queue(),
+    )
+    replaced: list[object] = []
+    monkeypatch.setattr(pool, "_stop_and_replace", replaced.append)
+    monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: None)
+    with pytest.raises(RuntimeError, match="could not sample"):
+        pool._wait_for_result(
+            slot,
+            job_id="job",
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=10,
+            require_memory_limit=True,
+        )
+    assert replaced == [slot]
+    with pytest.raises(worker_mod.InteractiveWorkerProtocolError):
+        pool._interpret_release(job_id="job", envelope=("released", "job", "ok", 1))
+    with pytest.raises(worker_mod.InteractiveWorkerProtocolError):
+        pool._interpret_release(job_id="job", envelope=("released", "job", "error", "bad"))
+
+
+def test_wait_for_release_covers_protocol_stop_and_rss_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = InteractiveWorkerPool(size=1)
+    process = SimpleNamespace(pid=5, exitcode=None, is_alive=lambda: True)
+
+    malformed = SimpleNamespace(
+        index=0,
+        process=process,
+        result_queue=_ScriptedResultQueue(pickle.dumps(("bad",))),
+    )
+    with pytest.raises(worker_mod.InteractiveWorkerProtocolError):
+        pool._wait_for_release(
+            malformed,
+            job_id="job",
+            deadline=time.monotonic() + 1,
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=None,
+            require_memory_limit=False,
+            sampler_unavailable_logged=False,
+        )
+
+    empty = SimpleNamespace(
+        index=0,
+        process=process,
+        result_queue=_ScriptedResultQueue(queue.Empty()),
+    )
+    with pytest.raises(InteractiveWorkerStoppedError):
+        pool._wait_for_release(
+            empty,
+            job_id="job",
+            deadline=time.monotonic() + 1,
+            timeout_seconds=1,
+            stop_reason=lambda: "cancelled",
+            absolute_rss_limit_bytes=None,
+            require_memory_limit=False,
+            sampler_unavailable_logged=False,
+        )
+
+    monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: 11)
+    empty = SimpleNamespace(
+        index=0,
+        process=process,
+        result_queue=_ScriptedResultQueue(queue.Empty()),
+    )
+    with pytest.raises(InteractiveWorkerMemoryLimitError):
+        pool._wait_for_release(
+            empty,
+            job_id="job",
+            deadline=time.monotonic() + 1,
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=10,
+            require_memory_limit=False,
+            sampler_unavailable_logged=False,
+        )
+
+
+def test_wait_for_result_surfaces_ack_and_release_errors_without_user_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = InteractiveWorkerPool(size=1)
+    process = SimpleNamespace(pid=5, exitcode=None, is_alive=lambda: True)
+    slot = SimpleNamespace(
+        index=0,
+        process=process,
+        result_queue=_ScriptedResultQueue(pickle.dumps(("result", "job", "ok", 1))),
+        request_queue=SimpleNamespace(put=lambda *_args: (_ for _ in ()).throw(OSError("ack"))),
+    )
+    monkeypatch.setattr(pool, "_stop_and_replace", lambda _slot: None)
+    with pytest.raises(worker_mod.InteractiveWorkerProtocolError, match="acknowledgement"):
+        pool._wait_for_result(
+            slot,
+            job_id="job",
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=None,
+            require_memory_limit=False,
+        )
+
+    slot = SimpleNamespace(
+        index=0,
+        process=process,
+        result_queue=_ScriptedResultQueue(pickle.dumps(("result", "job", "ok", 1))),
+        request_queue=_Queue(),
+    )
+    monkeypatch.setattr(
+        pool,
+        "_wait_for_release",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("release")),
+    )
+    with pytest.raises(RuntimeError, match="release"):
+        pool._wait_for_result(
+            slot,
+            job_id="job",
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=None,
+            require_memory_limit=False,
+        )
+
+
+def test_memory_limit_error_exposes_public_payload() -> None:
+    error = InteractiveWorkerMemoryLimitError(rss_bytes=101, limit_bytes=100)
+
+    assert error.to_payload() == {
+        "error_code": "memory_limit",
+        "rss_bytes": 101,
+        "rss_limit_bytes": 100,
+        "reason": "worker_rss_limit_exceeded",
+    }
+
+
+def test_wait_for_release_covers_shutdown_deadline_and_dead_child() -> None:
+    pool = InteractiveWorkerPool(size=1)
+    alive = SimpleNamespace(pid=5, exitcode=None, is_alive=lambda: True)
+    slot = SimpleNamespace(index=0, process=alive, result_queue=_ScriptedResultQueue())
+    pool._shutdown_event.set()
+    with pytest.raises(InteractiveWorkerStoppedError, match="cancelled"):
+        pool._wait_for_release(
+            slot,
+            job_id="job",
+            deadline=time.monotonic() + 1,
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=None,
+            require_memory_limit=False,
+            sampler_unavailable_logged=False,
+        )
+    pool._shutdown_event.clear()
+    with pytest.raises(InteractiveWorkerTimeoutError):
+        pool._wait_for_release(
+            slot,
+            job_id="job",
+            deadline=time.monotonic() - 1,
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=None,
+            require_memory_limit=False,
+            sampler_unavailable_logged=False,
+        )
+    dead = SimpleNamespace(pid=5, exitcode=17, is_alive=lambda: False)
+    with pytest.raises(InteractiveWorkerCrashedError) as exc_info:
+        pool._wait_for_release(
+            SimpleNamespace(
+                index=0, process=dead, result_queue=_ScriptedResultQueue(queue.Empty())
+            ),
+            job_id="job",
+            deadline=time.monotonic() + 1,
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=None,
+            require_memory_limit=False,
+            sampler_unavailable_logged=False,
+        )
+    assert exc_info.value.exitcode == 17
+
+
+def test_wait_for_release_retries_stop_and_rss_sampling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = InteractiveWorkerPool(size=1, poll_interval_seconds=0.01)
+    process = SimpleNamespace(pid=5, exitcode=None, is_alive=lambda: True)
+    released = pickle.dumps(("released", "job", "ok", None))
+    stop_polls = iter((None, "superseded"))
+    pool._wait_for_release(
+        SimpleNamespace(
+            index=0,
+            process=process,
+            result_queue=_ScriptedResultQueue(queue.Empty(), released),
+        ),
+        job_id="job",
+        deadline=time.monotonic() + 1,
+        timeout_seconds=1,
+        stop_reason=lambda: next(stop_polls),
+        absolute_rss_limit_bytes=None,
+        require_memory_limit=False,
+        sampler_unavailable_logged=False,
+    )
+
+    monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: None)
+    with pytest.raises(RuntimeError, match="could not sample"):
+        pool._wait_for_release(
+            SimpleNamespace(
+                index=0, process=process, result_queue=_ScriptedResultQueue(queue.Empty())
+            ),
+            job_id="job",
+            deadline=time.monotonic() + 1,
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=100,
+            require_memory_limit=True,
+            sampler_unavailable_logged=False,
+        )
+    warnings: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        worker_mod.logger, "warning", lambda _event, **fields: warnings.append(fields)
+    )
+    pool._wait_for_release(
+        SimpleNamespace(
+            index=2,
+            process=process,
+            result_queue=_ScriptedResultQueue(queue.Empty(), queue.Empty(), released),
+        ),
+        job_id="job",
+        deadline=time.monotonic() + 1,
+        timeout_seconds=1,
+        stop_reason=None,
+        absolute_rss_limit_bytes=100,
+        require_memory_limit=False,
+        sampler_unavailable_logged=False,
+    )
+    assert warnings == [{"worker_index": 2}]
+
+    samples = iter((50, 50))
+    monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: next(samples))
+    pool._wait_for_release(
+        SimpleNamespace(
+            index=0,
+            process=process,
+            result_queue=_ScriptedResultQueue(queue.Empty(), released),
+        ),
+        job_id="job",
+        deadline=time.monotonic() + 1,
+        timeout_seconds=1,
+        stop_reason=None,
+        absolute_rss_limit_bytes=100,
+        require_memory_limit=False,
+        sampler_unavailable_logged=True,
+    )
+
+
+def test_interpret_release_surfaces_valid_remote_error_evidence() -> None:
+    pool = InteractiveWorkerPool(size=1)
+
+    with pytest.raises(InteractiveWorkerRemoteError) as exc_info:
+        pool._interpret_release(
+            job_id="job",
+            envelope=("released", "job", "error", ("ValueError", "mod", "bad", "tb", {"x": 1})),
+        )
+
+    assert exc_info.value.remote_message == "bad"
+    assert exc_info.value.public_payload == {"x": 1}
+
+
+def test_close_slot_notes_native_cleanup_failure_after_primary_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _CloseProcess(alive=False, join_error=RuntimeError("join failed"))
+    process.pid = 42
+    slot = _close_slot(process)
+    monkeypatch.setattr(
+        worker_mod,
+        "cleanup_private_cgroups_for_pid",
+        lambda _pid: (_ for _ in ()).throw(OSError("cgroup cleanup failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="join failed") as exc_info:
+        worker_mod.InteractiveWorkerPool._close_slot(slot, graceful=False)
+
+    assert (
+        "native memory resource cleanup failed: cgroup cleanup failed" in exc_info.value.__notes__
+    )

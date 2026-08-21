@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import statistics
 import subprocess
 import sys
@@ -20,7 +21,10 @@ from haute._execution_context import ExecutionAdmission, ExecutionContext, Execu
 from haute._json_flatten import _json_cache_dir
 from haute._json_shred import build_per_port_cache, load_v2_api_source
 from haute._polars_utils import execution_collect
+from haute._ram_estimate import estimate_materialisation_boundary
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute.errors import GroupByExecutionUnsupportedError
+from haute.execution import plan_prepared_execution_strategy
 from haute.executor import _preview_cache, execute_graph
 from scripts.memory_smoke import run_smoke
 
@@ -28,6 +32,8 @@ pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
 
 _PROBE = Path(__file__).with_name("_execution_engine_probe.py")
 _RESTART_PROBE = Path(__file__).with_name("_execution_restart_probe.py")
+_STRUCTURED_CACHE_PROBE = Path(__file__).with_name("_structured_cache_memory_probe.py")
+_RESILIENCE_PROBE = Path(__file__).with_name("_execution_resilience_probe.py")
 _WIDE_ROWS = 50_000
 _WIDE_COLUMNS = 256
 _SELECTED_WIDE_COLUMNS = ("row_id", "value_000", "value_001", "value_002")
@@ -47,6 +53,175 @@ _MAX_ARTIFACT_WARM_FRACTION = 0.05
 _PREVIEW_HIT_WARM_SAMPLES = 9
 _MAX_PREVIEW_HIT_WARM_FRACTION = 0.50
 _OPTIMISATION_MATERIALITY_FRACTION = 0.20
+_STREAM_CACHE_SMALL_ROWS = 10_000
+_STREAM_CACHE_LARGE_ROWS = 120_000
+_STREAM_CACHE_PAYLOAD_BYTES = 512
+_STREAM_CACHE_GROWTH_ALLOWANCE_BYTES = 32 * 1024 * 1024
+_STREAM_CACHE_MAX_GROWTH_FACTOR = 1.35
+_RESILIENCE_SCALES = {
+    "ci": {"calls": 120, "replacements": 8, "timeout_seconds": 120},
+    "1m": {"calls": 2_000, "replacements": 100, "timeout_seconds": 900},
+    "10m": {"calls": 10_000, "replacements": 1_000, "timeout_seconds": 1_700},
+}
+
+
+def _run_execution_resilience_probe(tmp_path: Path) -> dict[str, Any]:
+    output = tmp_path / "resilience.json"
+    interpreter = str(getattr(sys, "_base_executable", sys.executable))
+    inherited_paths = [path for path in sys.path if path]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [*inherited_paths, environment.get("PYTHONPATH", "")]
+    )
+    scale = environment.get("HAUTE_POLARS_PERF_SCALE", "ci")
+    if scale not in _RESILIENCE_SCALES:
+        raise ValueError(f"Unsupported resilience scale: {scale}")
+    scale_contract = _RESILIENCE_SCALES[scale]
+    completed = subprocess.run(
+        [
+            interpreter,
+            str(_RESILIENCE_PROBE),
+            "--mode",
+            scale,
+            "--root",
+            str(tmp_path / "work"),
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=scale_contract["timeout_seconds"],
+        check=False,
+        env=environment,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(output.read_text(encoding="utf-8"))
+
+
+def test_fresh_process_execution_resilience_certificate(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    evidence = _run_execution_resilience_probe(tmp_path)
+    scale = os.environ.get("HAUTE_POLARS_PERF_SCALE", "ci")
+    scale_contract = _RESILIENCE_SCALES[scale]
+    soak = evidence["worker_soak"]
+    assert evidence["mode"] == scale
+    assert soak["calls"] == scale_contract["calls"]
+    assert soak["replacements"] == scale_contract["replacements"]
+    assert soak["unique_worker_pids"] == scale_contract["replacements"] + 1
+    assert soak["plateau"]["rss_growth_bytes"] <= soak["plateau"]["rss_growth_limit_bytes"]
+    assert soak["plateau"]["resource_growth"] <= soak["plateau"]["resource_growth_limit"]
+    assert (
+        soak["plateau"]["after_close_resource_delta"]
+        <= soak["plateau"]["after_close_resource_delta_limit"]
+    )
+    assert evidence["cache"]["enospc_preserved_old"] is True
+    assert len(evidence["cache"]["phases"]) == 5
+    request.node.user_properties.append(
+        ("haute_perf_evidence", {"scenario": "execution_resilience_certificate", **evidence})
+    )
+
+
+def test_extreme_many_to_many_join_skew_is_estimated_and_rejected_without_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """A finite 10^18 join proof must reach admission without materialising it."""
+    import haute._ram_estimate as estimate_mod
+
+    left = GraphNode(id="left", data=NodeData(label="left", nodeType=NodeType.API_INPUT, config={}))
+    right = GraphNode(
+        id="right", data=NodeData(label="right", nodeType=NodeType.API_INPUT, config={})
+    )
+    joined = GraphNode(
+        id="joined",
+        data=NodeData(
+            label="joined",
+            nodeType=NodeType.EDGE_JOIN,
+            config={
+                "baseInput": "left",
+                "joinInput": "right",
+                "how": "inner",
+                "on": ["id"],
+                "validate": "m:m",
+            },
+        ),
+    )
+    boundary = GraphNode(
+        id="boundary",
+        data=NodeData(
+            label="boundary",
+            nodeType=NodeType.POLARS,
+            config={"code": "df.group_by('id').agg(pl.len())"},
+        ),
+    )
+    graph = PipelineGraph(
+        nodes=[left, right, joined, boundary],
+        edges=[
+            GraphEdge(id="left-join", source="left", target="joined", targetHandle="base"),
+            GraphEdge(id="right-join", source="right", target="joined", targetHandle="join"),
+            GraphEdge(id="join-boundary", source="joined", target="boundary"),
+        ],
+    )
+    metadata_type = estimate_mod._DetailedSourceMetadata
+    metadata = metadata_type(
+        1_000_000_000,
+        2,
+        {"id": "Int64", "value": "Int64"},
+        {"id": "id", "value": "value"},
+        {"id": 8, "value": 8},
+        16,
+    )
+    monkeypatch.setattr(estimate_mod, "_detailed_source_metadata_for_node", lambda _node: metadata)
+    index = estimate_mod._EstimateGraphIndex.build(graph, "live")
+    cardinality = index.resolve_cardinality("joined")
+    assert cardinality.output_rows == cardinality.peak_rows == 10**18
+    # Estimate the join boundary directly: this exercises the cardinality and
+    # materialisation APIs without executing or materialising the skewed join.
+    estimate = estimate_materialisation_boundary(graph, "joined")
+    assert estimate.estimated_peak_bytes is not None and estimate.estimated_peak_bytes > 1024
+    context = ExecutionContext(
+        operation="extreme_skew",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        admission=ExecutionAdmission(
+            operation="extreme_skew",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            admitted=True,
+            memory_limit_bytes=1024,
+            headroom_bytes=1024,
+            rss_at_admission_bytes=0,
+            rss_limit_bytes=None,
+            config_key="certificate",
+        ),
+    )
+    with pytest.raises(GroupByExecutionUnsupportedError) as rejected:
+        plan_prepared_execution_strategy(
+            ["left", "right", "joined", "boundary"],
+            {"left": ["joined"], "right": ["joined"], "joined": ["boundary"], "boundary": []},
+            {node.id: node for node in graph.nodes},
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            execution_context=context,
+            materialisation_estimate=estimate,
+            relevant_edges=graph.edges,
+        )
+    assert rejected.value.reason_code == "materialisation_exceeds_headroom"
+    assert rejected.value.estimated_peak_bytes is not None
+    assert any(
+        "cardinality_output_upper_bound=1000000000000000000" in item
+        for item in estimate.assumptions
+    )
+    request.node.user_properties.append(
+        (
+            "haute_perf_evidence",
+            {
+                "scenario": "extreme_many_to_many_join_skew",
+                "cardinality": cardinality.output_rows,
+                "estimate_bytes": estimate.estimated_peak_bytes,
+                "admission_rejection": rejected.value.reason_code,
+                "cardinality_evidence": cardinality.evidence,
+            },
+        )
+    )
 
 
 def _write_wide_parquet(path: Path) -> list[str]:
@@ -1033,6 +1208,160 @@ def test_direct_jsonl_projection_has_bounded_checkpoint_distance(
                 },
                 "admission": {"state": "direct_context", "detail": None},
                 "payload_bytes": len(orjson.dumps(result.head(1).to_dicts())),
+            },
+        )
+    )
+
+
+def _write_streaming_cache_fixture(
+    path: Path,
+    *,
+    source_format: str,
+    rows: int,
+) -> None:
+    payload = "x" * _STREAM_CACHE_PAYLOAD_BYTES
+    with path.open("wb") as stream:
+        if source_format == "json":
+            stream.write(b"[")
+            for row in range(rows):
+                if row:
+                    stream.write(b",")
+                stream.write(orjson.dumps({"id": str(row), "payload": payload}))
+            stream.write(b"]")
+            return
+        if source_format != "xml":
+            raise ValueError(f"unsupported structured cache fixture format {source_format!r}")
+        stream.write(b"<records>")
+        payload_bytes = payload.encode()
+        for row in range(rows):
+            stream.write(b"<record><id>")
+            stream.write(str(row).encode())
+            stream.write(b"</id><payload>")
+            stream.write(payload_bytes)
+            stream.write(b"</payload></record>")
+        stream.write(b"</records>")
+
+
+def _run_streaming_cache_probe(
+    tmp_path: Path,
+    *,
+    source: Path,
+    rows: int,
+    label: str,
+) -> dict[str, Any]:
+    result_path = tmp_path / f"{label}-result.json"
+    cache_path = tmp_path / f"{label}-cache"
+    child_output = io.BytesIO()
+    interpreter = str(getattr(sys, "_base_executable", sys.executable))
+    inherited_paths = [path for path in sys.path if path]
+    bootstrap = (
+        "import os,runpy,sys;"
+        "os.environ['HAUTE_JSON_DIRECT_SPILL_MAX_ROWS']='512';"
+        "os.environ['HAUTE_JSON_DIRECT_SPILL_MAX_BYTES']='2097152';"
+        f"sys.path[:0]={inherited_paths!r};"
+        f"runpy.run_path({str(_STRUCTURED_CACHE_PROBE)!r},run_name='__main__')"
+    )
+    smoke = run_smoke(
+        command=[
+            interpreter,
+            "-c",
+            bootstrap,
+            "--source",
+            str(source),
+            "--cache",
+            str(cache_path),
+            "--rows",
+            str(rows),
+            "--output",
+            str(result_path),
+        ],
+        enable_tracemalloc=False,
+        poll_interval_seconds=0.005,
+        child_output=child_output,
+    )
+    assert smoke["exit_code"] == 0, child_output.getvalue().decode(errors="replace")
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    baseline = result["rss_before_bytes"]
+    peak = smoke["child_peak_rss_bytes"]
+    assert isinstance(baseline, int) and baseline > 0
+    assert isinstance(peak, int) and peak >= baseline
+    assert smoke["child_rss_sample_count"] >= 2
+    return {
+        **result,
+        "child_peak_rss_bytes": peak,
+        "incremental_peak_rss_bytes": peak - baseline,
+        "rss_sample_count": smoke["child_rss_sample_count"],
+        "wall_seconds": smoke["elapsed_seconds"],
+    }
+
+
+@pytest.mark.parametrize("source_format", ["json", "xml"])
+def test_persistent_structured_cache_build_has_bounded_growth_rss(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+    source_format: str,
+) -> None:
+    suffix = ".json" if source_format == "json" else ".xml"
+    small_source = tmp_path / f"small{suffix}"
+    large_source = tmp_path / f"large{suffix}"
+    _write_streaming_cache_fixture(
+        small_source,
+        source_format=source_format,
+        rows=_STREAM_CACHE_SMALL_ROWS,
+    )
+    _write_streaming_cache_fixture(
+        large_source,
+        source_format=source_format,
+        rows=_STREAM_CACHE_LARGE_ROWS,
+    )
+
+    small = _run_streaming_cache_probe(
+        tmp_path,
+        source=small_source,
+        rows=_STREAM_CACHE_SMALL_ROWS,
+        label=f"{source_format}-small",
+    )
+    large = _run_streaming_cache_probe(
+        tmp_path,
+        source=large_source,
+        rows=_STREAM_CACHE_LARGE_ROWS,
+        label=f"{source_format}-large",
+    )
+
+    assert large["source_bytes"] >= small["source_bytes"] * 8
+    assert large["incremental_peak_rss_bytes"] <= (
+        small["incremental_peak_rss_bytes"] * _STREAM_CACHE_MAX_GROWTH_FACTOR
+        + _STREAM_CACHE_GROWTH_ALLOWANCE_BYTES
+    )
+
+    request.node.user_properties.append(
+        (
+            "haute_perf_evidence",
+            {
+                "scenario": "persistent_structured_cache_bounded_memory",
+                "scale": f"ci-growing-{source_format}",
+                "execution_profiles": [ExecutionProfile.LAZY_SINK.value],
+                "input": {
+                    "format": source_format,
+                    "small_rows": _STREAM_CACHE_SMALL_ROWS,
+                    "large_rows": _STREAM_CACHE_LARGE_ROWS,
+                    "payload_bytes_per_row": _STREAM_CACHE_PAYLOAD_BYTES,
+                },
+                "small": small,
+                "large": large,
+                "rss_contract": {
+                    "max_growth_factor": _STREAM_CACHE_MAX_GROWTH_FACTOR,
+                    "allowance_bytes": _STREAM_CACHE_GROWTH_ALLOWANCE_BYTES,
+                },
+                "product_metrics": {
+                    "n_collects": 0,
+                    "n_checkpoints": 0,
+                    "chunk_count": 0,
+                    "output_bytes": large["cache_bytes"],
+                    "temp_disk_peak_bytes": large["cache_bytes"],
+                },
+                "admission": {"state": "isolated_process_control", "detail": None},
+                "payload_bytes": 0,
             },
         )
     )

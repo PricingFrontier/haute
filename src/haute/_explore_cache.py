@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat as stat_module
 import threading
 import uuid
 from collections.abc import Iterator
@@ -18,7 +19,7 @@ from haute._dataframe_execution_cache import (
     DataFrameExecutionCacheRequest,
 )
 from haute._file_ops import atomic_write_text
-from haute._hashing import content_hash_bytes
+from haute._hashing import content_hash, content_hash_bytes
 from haute._logging import get_logger
 from haute._polars_utils import read_parquet_metadata
 from haute.schemas import ExploreCacheReport
@@ -141,6 +142,7 @@ class ExplorePersistentCacheStore:
             generation_dir = family_dir / "generations" / generation_id
             metadata_path = generation_dir / "meta.json"
             data_path = generation_dir / "data.parquet"
+            self._validate_generation_files(generation_dir, metadata_path, data_path)
             raw = json.loads(metadata_path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise ValueError("generation metadata must be an object")
@@ -195,9 +197,12 @@ class ExplorePersistentCacheStore:
                     artifact.get("uncompressed_size_bytes"),
                     field="artifact.uncompressed_size_bytes",
                 ),
+                "digest": _non_empty_string(artifact.get("digest"), field="artifact.digest"),
             }
             observed = read_parquet_metadata(data_path)
             self._validate_artifact(observed, expected_artifact)
+            if content_hash(data_path) != expected_artifact["digest"]:
+                raise ValueError("durable Explore artifact digest does not match metadata")
             if report is not None and (
                 report.row_count != expected_artifact["row_count"]
                 or report.column_count != expected_artifact["column_count"]
@@ -231,6 +236,36 @@ class ExplorePersistentCacheStore:
                 raise ValueError(
                     f"durable Explore artifact {artifact_field} does not match metadata"
                 )
+
+    @staticmethod
+    def _validate_generation_files(
+        generation_dir: Path, metadata_path: Path, data_path: Path
+    ) -> None:
+        """Reject links and non-regular artifacts before trusting a generation."""
+        generation_stat = generation_dir.lstat()
+        if (
+            not stat_module.S_ISDIR(generation_stat.st_mode)
+            or stat_module.S_ISLNK(generation_stat.st_mode)
+            or bool(getattr(generation_stat, "st_file_attributes", 0) & 0x400)
+        ):
+            raise ValueError("durable Explore generation contains a non-regular artifact")
+        for path in (metadata_path, data_path):
+            artifact_stat = path.lstat()
+            if (
+                not stat_module.S_ISREG(artifact_stat.st_mode)
+                or stat_module.S_ISLNK(artifact_stat.st_mode)
+                or bool(getattr(artifact_stat, "st_file_attributes", 0) & 0x400)
+            ):
+                raise ValueError("durable Explore generation contains a non-regular artifact")
+            if artifact_stat.st_nlink != 1:
+                raise ValueError("durable Explore artifact must not be hard-linked")
+        resolved_generation = generation_dir.resolve(strict=True)
+        if resolved_generation.parent != generation_dir.parent.resolve(strict=True):
+            raise ValueError("durable Explore generation escapes its cache family")
+        for path in (metadata_path, data_path):
+            resolved = path.resolve(strict=True)
+            if resolved.parent != resolved_generation or not resolved.is_file():
+                raise ValueError("durable Explore artifact escapes its generation")
 
     @contextmanager
     def lease(
@@ -302,6 +337,10 @@ class ExplorePersistentCacheStore:
                 shutil.copy2(snapshot.data_path, target)
                 observed = read_parquet_metadata(target)
                 self._validate_artifact(observed, snapshot.artifact_metadata)
+                if content_hash(target) != snapshot.artifact_metadata.get("digest"):
+                    raise ExplorePersistentCacheCorruptError(
+                        "Restored Explore artifact digest does not match its generation"
+                    )
                 return cache.store_artifact(key, target, observed)
             except BaseException:
                 target.unlink(missing_ok=True)
@@ -314,6 +353,7 @@ class ExplorePersistentCacheStore:
         report_cache_key: str,
         report: ExploreCacheReport,
         entry: DataFrameExecutionCacheEntry,
+        generation_id: str,
     ) -> ExplorePersistentCachePublication:
         """Copy and validate a replacement without making it visible to readers."""
 
@@ -331,14 +371,8 @@ class ExplorePersistentCacheStore:
         family_dir = self._family_dir(family_key)
         generations_dir = family_dir / "generations"
         generations_dir.mkdir(parents=True, exist_ok=True)
-        generation_id = str(uuid.uuid4())
-        staging = family_dir / f".staging-{generation_id}"
-        publication = ExplorePersistentCachePublication(
-            family_key=family_key,
-            generation_id=generation_id,
-            staging_path=staging,
-            final_path=generations_dir / generation_id,
-        )
+        publication = self.new_publication(family_key, generation_id=generation_id)
+        staging = publication.staging_path
         try:
             staging.mkdir()
             staged_data = staging / "data.parquet"
@@ -350,13 +384,14 @@ class ExplorePersistentCacheStore:
                 "columns": dict(entry.columns),
                 "size_bytes": entry.size_bytes,
                 "uncompressed_size_bytes": entry.uncompressed_size_bytes,
+                "digest": content_hash(staged_data),
             }
             self._validate_artifact(observed, expected)
             metadata = {
                 "schema_version": EXPLORE_PERSISTENT_CACHE_SCHEMA_VERSION,
                 "family_digest": self.family_digest(family_key),
                 "family": list(family_key),
-                "generation_id": generation_id,
+                "generation_id": publication.generation_id,
                 "report_cache_key": report_cache_key,
                 "dataframe_cache_key": entry.key.cache_key,
                 "report": report.model_dump(mode="json"),
@@ -367,6 +402,74 @@ class ExplorePersistentCacheStore:
             self._retire_directory_best_effort(staging)
             raise
         return publication
+
+    def new_publication(
+        self,
+        family_key: ExploreFamilyKey,
+        *,
+        generation_id: str | None = None,
+    ) -> ExplorePersistentCachePublication:
+        """Allocate the exact parent-owned paths for one private generation."""
+        if family_key[0] != "explore" or not all(
+            isinstance(item, str) and item for item in family_key
+        ):
+            raise ValueError("invalid Explore cache family")
+        canonical_id = (
+            _generation_id(generation_id) if generation_id is not None else str(uuid.uuid4())
+        )
+        family_dir = self._family_dir(family_key)
+        return ExplorePersistentCachePublication(
+            family_key=family_key,
+            generation_id=canonical_id,
+            staging_path=family_dir / f".staging-{canonical_id}",
+            final_path=family_dir / "generations" / canonical_id,
+        )
+
+    def validate_publication(
+        self,
+        publication: ExplorePersistentCachePublication,
+        *,
+        report_cache_key: str,
+        report: ExploreCacheReport,
+    ) -> dict[str, Any]:
+        """Validate a staged child result before it can move the current pointer."""
+        self._validate_publication_paths(publication)
+        return self._validate_generation_at(
+            publication.family_key,
+            publication.generation_id,
+            publication.staging_path,
+            report_cache_key=report_cache_key,
+            report=report,
+        )
+
+    def restore_publication(
+        self,
+        publication: ExplorePersistentCachePublication,
+        request: DataFrameExecutionCacheRequest,
+        *,
+        node_id: str,
+        report_cache_key: str,
+        report: ExploreCacheReport,
+    ) -> DataFrameExecutionCacheEntry:
+        """Restore one validated, still-unselected generation into the parent cache."""
+
+        artifact = self.validate_publication(
+            publication,
+            report_cache_key=report_cache_key,
+            report=report,
+        )
+        return self.restore(
+            ExplorePersistentCacheSnapshot(
+                state="current",
+                generation_id=publication.generation_id,
+                report_cache_key=report_cache_key,
+                report=report,
+                data_path=publication.staging_path / "data.parquet",
+                artifact_metadata=artifact,
+            ),
+            request,
+            node_id=node_id,
+        )
 
     def commit_publication(self, publication: ExplorePersistentCachePublication) -> None:
         """Atomically select one prepared generation; previous readers stay leased."""
@@ -499,3 +602,58 @@ class ExplorePersistentCacheStore:
         expected_final = family_dir / "generations" / generation_id
         if publication.staging_path != expected_staging or publication.final_path != expected_final:
             raise ValueError("Explore publication paths do not match its family and generation")
+
+    def _validate_generation_at(
+        self,
+        family_key: ExploreFamilyKey,
+        generation_id: str,
+        generation_dir: Path,
+        *,
+        report_cache_key: str,
+        report: ExploreCacheReport,
+    ) -> dict[str, Any]:
+        metadata_path = generation_dir / "meta.json"
+        data_path = generation_dir / "data.parquet"
+        self._validate_generation_files(generation_dir, metadata_path, data_path)
+        raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if (
+            not isinstance(raw, dict)
+            or raw.get("schema_version") != EXPLORE_PERSISTENT_CACHE_SCHEMA_VERSION
+        ):
+            raise ValueError("invalid durable Explore generation metadata")
+        if (
+            raw.get("family_digest") != self.family_digest(family_key)
+            or raw.get("family") != list(family_key)
+            or raw.get("generation_id") != generation_id
+            or raw.get("report_cache_key") != report_cache_key
+            or raw.get("dataframe_cache_key") != report.dataframe_cache_key
+            or ExploreCacheReport.model_validate(raw.get("report")) != report
+        ):
+            raise ValueError("durable Explore generation identity does not match worker result")
+        artifact = raw.get("artifact")
+        if not isinstance(artifact, dict):
+            raise ValueError("invalid durable Explore artifact metadata")
+        raw_columns = artifact.get("columns")
+        if not isinstance(raw_columns, dict):
+            raise ValueError("artifact columns must be a string mapping")
+        columns: dict[str, str] = {}
+        for name, dtype in raw_columns.items():
+            if not isinstance(name, str) or not isinstance(dtype, str):
+                raise ValueError("artifact columns must be a string mapping")
+            columns[name] = dtype
+        expected: dict[str, Any] = {
+            "row_count": report.row_count,
+            "column_count": report.column_count,
+            "columns": columns,
+            "size_bytes": _positive_or_zero_int(
+                artifact.get("size_bytes"), field="artifact.size_bytes"
+            ),
+            "uncompressed_size_bytes": _positive_or_zero_int(
+                artifact.get("uncompressed_size_bytes"), field="artifact.uncompressed_size_bytes"
+            ),
+            "digest": _non_empty_string(artifact.get("digest"), field="artifact.digest"),
+        }
+        self._validate_artifact(read_parquet_metadata(data_path), expected)
+        if content_hash(data_path) != expected["digest"]:
+            raise ValueError("durable Explore artifact digest does not match metadata")
+        return expected

@@ -24,6 +24,36 @@ The runner supports these long options:
 - `--pytest-arg`
 - `--pytest-target`
 - `--polars-scale`
+- `--baseline-report`
+- `--max-total-regression-fraction`
+- `--max-rss-regression-fraction`
+- `--max-test-regression-fraction`
+- `--min-test-baseline-seconds`
+
+To compare with a prior report on a compatible machine and scale:
+
+```powershell
+uv run python scripts/run_perf_suite.py --baseline-report .cache/perf/perf-report.json
+```
+
+Historical comparisons require identical Polars scale, Python major/minor, platform
+system and machine, and exact Polars version. Total wall time and measurable RSS
+default to a 25% allowance when the collected test identities also match; matching
+passed call-phase tests default to 35% even when the suite has gained other tests, and
+baseline tests below the 0.10-second noise floor are excluded. An incompatible
+baseline is recorded but does not fail the lane; a compatible baseline with no
+material matching tests does fail it.
+Only a complete successful report can become a baseline: all collected tests must
+have one passed call-phase record, identities must be unique, outcome/count/slowest
+summaries and wall-time partitions must reconcile, and the independent RSS sampler
+must have produced finite evidence. A malformed retained report fails the lane
+instead of being ignored or partially compared.
+Suite-wide wall-time and RSS comparisons require identical passed call-phase test
+identities; added or removed tests skip those suite metrics while still comparing
+each material matching test. The Performance workflow keeps a scale-specific
+cache and, on a cache miss, downloads the most recent successful same-branch,
+same-scale performance artifact as its baseline. Failed runs are never retained
+as baselines.
 
 For a focused preview/trace run with tighter local budgets:
 
@@ -65,7 +95,19 @@ claim. It retains structured evidence for all of these cases:
 - an uncached 20,000-row wide JSONL input projected to two fields, including
   the minimum cooperative-checkpoint count and proof that no cache was created;
 - the generated join-to-modelling scenario, whose demand is derived from the
-  real target/weight/id/exclude menu configuration before planning.
+  real target/weight/id/exclude menu configuration before planning;
+- an extreme many-to-many join whose proven `10^18`-row upper bound is rejected
+  by admission without attempting to materialise the join;
+- JSON-array and XML persistent cache builds at 10,000 and 120,000 rows, proving
+  that an input-size increase of at least 8× stays within the bounded incremental-
+  RSS growth contract;
+- a fresh-process restart pair proving committed cache reuse, unchanged generation
+  identity, cache-proof telemetry, sanitized terminal telemetry, and process-owned
+  snapshot cleanup; and
+- the configurable resilience soak (`ci`, `1m`, or `10m`): repeated warm-worker
+  calls and forced replacements with RSS/handle-or-fd plateau gates, five cache-
+  publication crash points, ENOSPC preservation/recovery, and concurrent builders
+  leaving exactly one valid generation and no staging siblings.
 
 The certificate is valid only when the runner exits successfully and writes
 `perf-report.json`, `perf-report.md`, and `perf-junit.xml` containing every

@@ -1408,8 +1408,8 @@ def test_edge_join_runtime_validate_rejects_unknown_mode_loudly() -> None:
         {"how": "left", "on": ["k"], "validate": "bogus"},
         _HOW_BASE,
         _HOW_JOIN,
-        ValueError,
-        "must be one of",
+        ConfigError,
+        "supported Polars uniqueness contracts",
     )
 
 

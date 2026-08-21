@@ -46,12 +46,13 @@ import uuid
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
 from typing import Any, Literal, NoReturn, cast
 from weakref import WeakValueDictionary
+from xml.parsers import expat
 
 import orjson
 import polars as pl
@@ -81,6 +82,7 @@ from haute._execution_context import (
 )
 from haute._jsonpath import is_identifier_name
 from haute._logging import get_logger
+from haute._native_memory_limit import current_native_memory_backend
 from haute._process_memory import process_is_alive
 
 logger = get_logger(component="json_shred")
@@ -91,6 +93,8 @@ _SHRED_EXECUTION_CHECKPOINT_ROWS = 1_024
 _DIRECT_SPILL_DIRNAME = ".runtime-spills"
 _DIRECT_SPILL_MAX_ROWS_DEFAULT = 10_000
 _DIRECT_SPILL_MAX_BYTES_DEFAULT = 16 * 1024 * 1024
+_STRUCTURED_INPUT_MAX_RECORD_BYTES_DEFAULT = 64 * 1024 * 1024
+_STRUCTURED_INPUT_PARSE_CHUNK_BYTES = 64 * 1024
 
 # Direct spill bundles are deliberately not cache artifacts.  An unmanaged
 # LazyFrame can be cloned and retained after this function returns, so its
@@ -879,7 +883,12 @@ class _DataFileSignatureMemo:
             action="full_source_hash_per_operation",
         )
 
-    def get(self, data_path: Path) -> dict[str, Any]:
+    def get(
+        self,
+        data_path: Path,
+        *,
+        upgrade_legacy_proofs: bool = True,
+    ) -> dict[str, Any]:
         """Return a source signature, hashing once per unchanged generation."""
         self._ensure_current_process()
         resolved_path = data_path.expanduser().resolve()
@@ -916,11 +925,12 @@ class _DataFileSignatureMemo:
                         resolved_path,
                         current_revision,
                     )
-                    _upgrade_legacy_persisted_source_proofs(
-                        resolved_path,
-                        signature,
-                        current_revision,
-                    )
+                    if upgrade_legacy_proofs:
+                        _upgrade_legacy_persisted_source_proofs(
+                            resolved_path,
+                            signature,
+                            current_revision,
+                        )
                 with self._lock:
                     self._entries[key] = (current_revision, signature)
                     self._entries.move_to_end(key)
@@ -966,7 +976,11 @@ def _clear_data_file_signature_memo() -> None:
     _DATA_FILE_SIGNATURE_MEMO.clear()
 
 
-def _data_file_signature(data_path: Path) -> dict[str, Any]:
+def _data_file_signature(
+    data_path: Path,
+    *,
+    upgrade_legacy_proofs: bool = True,
+) -> dict[str, Any]:
     """Return the size/mtime/SHA-256 identity recorded in cache metadata.
 
     The complete content hash remains authoritative. It is reused from memory
@@ -975,7 +989,10 @@ def _data_file_signature(data_path: Path) -> dict[str, Any]:
     the conservative full-hash path. Raises ``OSError`` for an unreadable or
     concurrently changing file.
     """
-    return _DATA_FILE_SIGNATURE_MEMO.get(data_path)
+    return _DATA_FILE_SIGNATURE_MEMO.get(
+        data_path,
+        upgrade_legacy_proofs=upgrade_legacy_proofs,
+    )
 
 
 def _hash_file(path: Path) -> str:
@@ -1325,6 +1342,10 @@ class _CacheBuildLock:
             raise RuntimeError("cache build lock could not be acquired")
         return self
 
+    def owned_by_current_thread(self) -> bool:
+        """Return whether this process/thread owns the publication lock."""
+        return self._depth > 0 and self._owner_thread_id == threading.get_ident()
+
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
         """Acquire the thread and process lock with ``RLock``-compatible controls."""
         if not blocking and timeout != -1:
@@ -1466,6 +1487,23 @@ class JsonRuntimeStorageIntegrityError(RuntimeError):
         )
         self.path = path
         self.reason = reason
+
+
+class SourceChangedDuringCacheBuildError(RuntimeError):
+    """The structured source no longer matches the generation a worker staged."""
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedPerPortCacheBuild:
+    """Pickle-safe evidence for one complete but not-yet-visible generation."""
+
+    data_path: str
+    cache_dir: str
+    staging_dir: str | None
+    schema_fingerprint: str
+    data_file_signature: dict[str, Any]
+    summary: dict[str, Any]
+    no_op: bool = False
 
 
 def _runtime_storage_root_for_cache(cache_dir: Path) -> Path:
@@ -1935,6 +1973,13 @@ def _build_lock_for(cache_dir: Path) -> _CacheBuildLock:
         return _BUILD_LOCKS.setdefault(key, _CacheBuildLock(absolute))
 
 
+@contextmanager
+def per_port_cache_publication_lock(cache_dir: str | Path) -> Iterator[None]:
+    """Serialize prepare/validate/commit for one visible cache generation."""
+    with _build_lock_for(Path(cache_dir)):
+        yield
+
+
 def _cleanup_runtime_snapshot_dirs() -> None:
     """Remove every private parquet snapshot directory owned by this process."""
     with _RUNTIME_SNAPSHOT_LOCK:
@@ -2303,6 +2348,12 @@ def _unique_build_tmp_dir(cache_dir: Path) -> Path:
     return cache_dir.with_name(f"{cache_dir.name}.build-tmp-{uuid.uuid4().hex}")
 
 
+def new_per_port_cache_staging_dir(cache_dir: str | Path) -> Path:
+    """Return one parent-owned, validated private generation path."""
+    cd = _normalised_build_path(cache_dir)
+    return _validated_build_staging_dir(cd, _unique_build_tmp_dir(cd))
+
+
 def _unique_build_old_dir(cache_dir: Path) -> Path:
     return cache_dir.with_name(f"{cache_dir.name}.build-old-{uuid.uuid4().hex}")
 
@@ -2370,6 +2421,231 @@ def _xml_element_value(element: ET.Element) -> Any:
     return result
 
 
+def _structured_input_record_limit() -> int:
+    return int_env(
+        "HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES",
+        _STRUCTURED_INPUT_MAX_RECORD_BYTES_DEFAULT,
+    )
+
+
+def _record_limit_error(kind: str, limit: int) -> ApiInputSchemaError:
+    return ApiInputSchemaError(
+        f"{kind} exceeds HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES={limit}; "
+        "split the source into smaller logical records or raise the limit "
+        "within the execution memory budget"
+    )
+
+
+def _scan_xml_declaration_chunk(carry: bytes, chunk: bytes) -> bytes:
+    """Reject unsafe declarations in the exact bytes about to reach the parser."""
+    tokens = (b"<!DOCTYPE", b"<!ENTITY")
+    overlap = max(len(token) for token in tokens) - 1
+    # Removing NULs also recognises the ASCII declaration tokens in UTF-16/32
+    # XML encodings. The XML parser still remains authoritative for encoding.
+    upper = (carry + chunk).upper().replace(b"\x00", b"")
+    if any(token in upper for token in tokens):
+        raise ApiInputSchemaError("XML DTD and entity declarations are not supported")
+    return upper[-overlap:]
+
+
+def _validate_xml_record_value_size(value: dict[str, Any], limit: int) -> None:
+    if len(orjson.dumps(value)) > limit:
+        raise _record_limit_error("XML record", limit)
+
+
+class _XmlDirectChildByteTracker:
+    """Enforce a conservative encoded-byte bound without retaining source bytes."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._depth = 0
+        self._record_start: int | None = None
+        self._closing_tag_allowance = 0
+        self._parser = expat.ParserCreate()
+        self._parser.StartElementHandler = self._start_element
+        self._parser.EndElementHandler = self._end_element
+
+    def _start_element(self, name: str, _attributes: dict[str, str]) -> None:
+        self._depth += 1
+        if self._depth == 2:
+            self._record_start = self._parser.CurrentByteIndex
+            # XML supports UTF-8/16/32. Reserving four bytes per closing-tag
+            # code point makes the limit fail closed without buffering the tag.
+            self._closing_tag_allowance = 4 * (len(name) + 3)
+
+    def _end_element(self, _name: str) -> None:
+        if self._depth == 2:
+            self._check_open_record()
+            self._record_start = None
+            self._closing_tag_allowance = 0
+        self._depth -= 1
+
+    def _check_open_record(self) -> None:
+        if self._record_start is None:
+            return
+        encoded_bytes = self._parser.CurrentByteIndex - self._record_start
+        if encoded_bytes + self._closing_tag_allowance > self._limit:
+            raise _record_limit_error("XML record", self._limit)
+
+    def feed(self, chunk: bytes) -> None:
+        self._parser.Parse(chunk, False)
+        self._check_open_record()
+
+    def close(self) -> None:
+        self._parser.Parse(b"", True)
+
+
+@dataclass(frozen=True, slots=True)
+class _XmlRecordShape:
+    repeated_object_children: bool
+
+
+def _read_xml_events(
+    parser: ET.XMLPullParser,
+) -> Iterator[tuple[str, ET.Element[str]]]:
+    """Narrow typeshed's event union to this parser's start/end contract."""
+    return cast("Iterator[tuple[str, ET.Element[str]]]", parser.read_events())
+
+
+def _require_xml_root(root: ET.Element[str] | None) -> ET.Element[str]:
+    """Reject an impossible pull-parser event order with explicit evidence."""
+    if root is None:
+        raise RuntimeError("XML parser emitted a direct child before the document root")
+    return root
+
+
+def _inspect_xml_record_shape(data_path: Path, limit: int) -> _XmlRecordShape:
+    """Validate XML and classify its top-level record shape with bounded retention."""
+    parser = ET.XMLPullParser(events=("start", "end"))
+    byte_tracker = _XmlDirectChildByteTracker(limit)
+    chunk_size = min(_STRUCTURED_INPUT_PARSE_CHUNK_BYTES, limit + 1)
+    root: ET.Element | None = None
+    depth = 0
+    direct_child_count = 0
+    direct_child_name: str | None = None
+    all_direct_children_are_objects = True
+    root_has_attributes = False
+    declaration_carry = b""
+    try:
+        with data_path.open("rb") as source:
+            while chunk := source.read(chunk_size):
+                declaration_carry = _scan_xml_declaration_chunk(declaration_carry, chunk)
+                byte_tracker.feed(chunk)
+                parser.feed(chunk)
+                for event, element in _read_xml_events(parser):
+                    if event == "start":
+                        depth += 1
+                        if depth == 1:
+                            root = element
+                            root_has_attributes = bool(element.attrib)
+                        continue
+
+                    if depth == 2:
+                        root_element = _require_xml_root(root)
+                        if (element.tail or "").strip():
+                            root_name = _xml_local_name(root_element.tag)
+                            raise ApiInputSchemaError(
+                                f"mixed text and child elements are not supported in XML element "
+                                f"{root_name!r}"
+                            )
+                        value = _xml_element_value(element)
+                        if isinstance(value, dict):
+                            _validate_xml_record_value_size(value, limit)
+                        child_name = _xml_local_name(element.tag)
+                        if direct_child_name is None:
+                            direct_child_name = child_name
+                        elif child_name != direct_child_name:
+                            all_direct_children_are_objects = False
+                        if not isinstance(value, dict):
+                            all_direct_children_are_objects = False
+                        direct_child_count += 1
+                        root_element.remove(element)
+                        element.clear()
+                    elif depth == 1 and (element.text or "").strip() and direct_child_count:
+                        raise ApiInputSchemaError(
+                            f"mixed text and child elements are not supported in XML element "
+                            f"{_xml_local_name(element.tag)!r}"
+                        )
+                    depth -= 1
+            byte_tracker.close()
+            parser.close()
+    except (ET.ParseError, expat.ExpatError) as exc:
+        raise ApiInputSchemaError(f"Invalid XML in data file: {exc}") from exc
+
+    return _XmlRecordShape(
+        repeated_object_children=(
+            direct_child_count > 0
+            and not root_has_attributes
+            and all_direct_children_are_objects
+            and direct_child_name is not None
+        )
+    )
+
+
+def _iter_repeated_xml_records(data_path: Path, limit: int) -> Iterator[dict[str, Any]]:
+    """Yield and release homogeneous direct-child XML records."""
+    parser = ET.XMLPullParser(events=("start", "end"))
+    byte_tracker = _XmlDirectChildByteTracker(limit)
+    chunk_size = min(_STRUCTURED_INPUT_PARSE_CHUNK_BYTES, limit + 1)
+    root: ET.Element | None = None
+    depth = 0
+    declaration_carry = b""
+    try:
+        with data_path.open("rb") as source:
+            while chunk := source.read(chunk_size):
+                declaration_carry = _scan_xml_declaration_chunk(declaration_carry, chunk)
+                byte_tracker.feed(chunk)
+                parser.feed(chunk)
+                for event, element in _read_xml_events(parser):
+                    if event == "start":
+                        depth += 1
+                        if depth == 1:
+                            root = element
+                        continue
+
+                    if depth == 2:
+                        root_element = _require_xml_root(root)
+                        value = _xml_element_value(element)
+                        if not isinstance(value, dict):
+                            raise RuntimeError(
+                                "XML record shape changed between validation and emission"
+                            )
+                        _validate_xml_record_value_size(value, limit)
+                        root_element.remove(element)
+                        element.clear()
+                        yield value
+                    depth -= 1
+            byte_tracker.close()
+            parser.close()
+    except (ET.ParseError, expat.ExpatError) as exc:
+        raise ApiInputSchemaError(f"Invalid XML in data file: {exc}") from exc
+
+
+def _parse_bounded_xml_root(data_path: Path, limit: int) -> ET.Element:
+    """Parse one-root-record XML while enforcing its encoded-byte bound."""
+    parser = ET.XMLPullParser(events=("start", "end"))
+    total = 0
+    root: ET.Element | None = None
+    declaration_carry = b""
+    try:
+        with data_path.open("rb") as source:
+            while chunk := source.read(_STRUCTURED_INPUT_PARSE_CHUNK_BYTES):
+                declaration_carry = _scan_xml_declaration_chunk(declaration_carry, chunk)
+                total += len(chunk)
+                if total > limit:
+                    raise _record_limit_error("XML record", limit)
+                parser.feed(chunk)
+                for event, element in _read_xml_events(parser):
+                    if event == "start" and root is None:
+                        root = element
+            parser.close()
+    except ET.ParseError as exc:
+        raise ApiInputSchemaError(f"Invalid XML in data file: {exc}") from exc
+    if root is None:
+        raise ApiInputSchemaError("Invalid XML in data file: no document element")
+    return root
+
+
 def _iter_xml_records(data_path: Path) -> Iterator[dict[str, Any]]:
     """Yield records from a single XML document.
 
@@ -2377,24 +2653,13 @@ def _iter_xml_records(data_path: Path) -> Iterator[dict[str, Any]]:
     treated like a JSON root array. Otherwise the document root itself is one
     record so root attributes are never discarded.
     """
-    raw = data_path.read_bytes()
-    upper = raw.upper()
-    if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
-        raise ApiInputSchemaError("XML DTD and entity declarations are not supported")
-    try:
-        root = ET.fromstring(raw)
-    except ET.ParseError as exc:
-        raise ApiInputSchemaError(f"Invalid XML in data file: {exc}") from exc
+    limit = _structured_input_record_limit()
+    shape = _inspect_xml_record_shape(data_path, limit)
+    if shape.repeated_object_children:
+        yield from _iter_repeated_xml_records(data_path, limit)
+        return
 
-    children = list(root)
-    if children and not root.attrib:
-        child_names = {_xml_local_name(child.tag) for child in children}
-        if len(child_names) == 1:
-            converted = [_xml_element_value(child) for child in children]
-            if all(isinstance(value, dict) for value in converted):
-                yield from converted
-                return
-
+    root = _parse_bounded_xml_root(data_path, limit)
     value = _xml_element_value(root)
     if isinstance(value, dict):
         yield value
@@ -2425,13 +2690,16 @@ def _iter_records(
         if stats is not None:
             stats.count_record_skip()
 
+    record_limit = _structured_input_record_limit()
     suffix = data_path.suffix.lower()
     if suffix == ".xml":
         yield from _iter_xml_records(data_path)
         return
     if suffix in (".jsonl", ".ndjson"):
         with data_path.open("rb") as f:
-            for raw_line in f:
+            while raw_line := f.readline(record_limit + 1):
+                if len(raw_line) > record_limit:
+                    raise _record_limit_error("JSONL record", record_limit)
                 stripped = raw_line.strip()
                 if not stripped:
                     continue
@@ -2465,8 +2733,13 @@ def _iter_records(
             return
         if first != b"[":
             # Root-object/scalar semantics remain exactly the existing JSON
-            # semantics.  This branch is necessarily record-sized.
-            obj = orjson.loads(first + f.read())
+            # semantics, with one explicit hard logical-record bound.
+            document = bytearray(first)
+            while chunk := f.read(min(_STRUCTURED_INPUT_PARSE_CHUNK_BYTES, record_limit + 1)):
+                document.extend(chunk)
+                if len(document) > record_limit:
+                    raise _record_limit_error("JSON root record", record_limit)
+            obj = orjson.loads(document)
             if isinstance(obj, dict):
                 yield obj
             else:
@@ -2481,11 +2754,14 @@ def _iter_records(
             if first == b"]":
                 if expect_value:
                     raise _json_decode_error("trailing comma in array", pos)
-                trailing = f.read()
-                if any(byte not in b" \t\r\n" for byte in trailing):
-                    raise _json_decode_error("unexpected trailing data", pos)
+                pos = _validate_json_trailing_whitespace(f, pos)
                 return
-            value, delimiter = _read_root_array_value(first, _read_byte, lambda: pos)
+            value, delimiter = _read_root_array_value(
+                first,
+                _read_byte,
+                lambda: pos,
+                max_bytes=record_limit,
+            )
             obj = orjson.loads(value)
             if isinstance(obj, dict):
                 yield obj
@@ -2493,14 +2769,24 @@ def _iter_records(
                 _count_record_skip()
             expect_value = delimiter == b","
             if delimiter == b"]":
-                trailing = f.read()
-                if any(byte not in b" \t\r\n" for byte in trailing):
-                    raise _json_decode_error("unexpected trailing data", pos)
+                pos = _validate_json_trailing_whitespace(f, pos)
                 return
 
 
 def _json_decode_error(message: str, pos: int) -> orjson.JSONDecodeError:
     return orjson.JSONDecodeError(message, "", pos)
+
+
+def _validate_json_trailing_whitespace(source: Any, pos: int) -> int:
+    """Consume JSON trailing whitespace without allocating it as one byte string."""
+    while chunk := source.read(_STRUCTURED_INPUT_PARSE_CHUNK_BYTES):
+        for offset, byte in enumerate(chunk):
+            if byte not in b" \t\r\n":
+                # ``pos`` is the count of bytes already consumed, which is
+                # also the zero-based index of the first byte in ``chunk``.
+                raise _json_decode_error("unexpected trailing data", pos + offset)
+        pos += len(chunk)
+    return pos
 
 
 def _iter_sampled_json_array_records(
@@ -2540,9 +2826,8 @@ def _iter_sampled_json_array_records(
             return
 
         def _validate_eof() -> None:
-            trailing = f.read()
-            if any(b not in b" \t\r\n" for b in trailing):
-                raise _json_decode_error("unexpected trailing data", pos)
+            nonlocal pos
+            pos = _validate_json_trailing_whitespace(f, pos)
 
         while yielded < sample_size:  # pragma: no mutate
             first = _read_non_ws()
@@ -2554,7 +2839,12 @@ def _iter_sampled_json_array_records(
                 _validate_eof()
                 return
 
-            value, delimiter = _read_root_array_value(first, _read_byte, lambda: pos)
+            value, delimiter = _read_root_array_value(
+                first,
+                _read_byte,
+                lambda: pos,
+                max_bytes=_structured_input_record_limit(),
+            )
             obj = orjson.loads(value)
             if isinstance(obj, dict):
                 yield obj
@@ -2569,8 +2859,11 @@ def _read_root_array_value(
     first: bytes,
     read_byte: Callable[[], bytes],
     current_pos: Callable[[], int],
+    *,
+    max_bytes: int | None = None,
 ) -> tuple[bytes, bytes]:
     """Read one value from a root JSON array and return its delimiter."""
+    limit = _structured_input_record_limit() if max_bytes is None else max_bytes
     buf = bytearray(first)
     depth = 1 if first in {b"{", b"["} else 0
     in_string = first == b'"'  # pragma: no mutate
@@ -2583,6 +2876,8 @@ def _read_root_array_value(
 
         if in_string:
             buf.extend(b)
+            if len(buf) > limit:
+                raise _record_limit_error("JSON array element", limit)
             if escaped:
                 escaped = False
             elif b == b"\\":  # pragma: no mutate
@@ -2593,18 +2888,24 @@ def _read_root_array_value(
 
         if b == b'"':  # pragma: no mutate
             buf.extend(b)
+            if len(buf) > limit:
+                raise _record_limit_error("JSON array element", limit)
             in_string = True
             continue
 
         if b in {b"{", b"["}:
             depth += 1
             buf.extend(b)
+            if len(buf) > limit:
+                raise _record_limit_error("JSON array element", limit)
             continue
 
         if b in {b"}", b"]"}:
             if depth > 0:  # pragma: no mutate
                 depth -= 1
                 buf.extend(b)
+                if len(buf) > limit:
+                    raise _record_limit_error("JSON array element", limit)
                 continue
             if b == b"]":  # pragma: no mutate
                 return bytes(buf).rstrip(), b
@@ -2616,6 +2917,8 @@ def _read_root_array_value(
             return bytes(buf).rstrip(), b
 
         buf.extend(b)
+        if len(buf) > limit:
+            raise _record_limit_error("JSON array element", limit)
 
 
 def _iter_records_for_inference(
@@ -3011,33 +3314,6 @@ def _assert_root_conservation(
             )
 
 
-def _shred_data_file(
-    data_path: Path,
-    v2_config: dict[str, Any],
-    table_specs: tuple[_EmittingTableSpec, ...],
-) -> tuple[dict[str, list[dict[str, Any]]], ShredSkipStats]:
-    """Shred one source file with shared skip accounting and conservation."""
-    skip_stats = ShredSkipStats()
-    record_count = 0
-
-    def _counted_records() -> Iterator[dict[str, Any]]:
-        nonlocal record_count
-        for record in _iter_records(data_path, stats=skip_stats):
-            record_count += 1
-            yield record
-
-    buffers = shred_to_buffers(
-        _counted_records(),
-        v2_config,
-        stats=skip_stats,
-        _table_specs=table_specs,
-    )
-
-    _assert_root_conservation(table_specs, buffers, skip_stats, record_count)
-
-    return buffers, skip_stats
-
-
 # ---------------------------------------------------------------------------
 # Parallel JSON processing (newline-delimited sources only)
 #
@@ -3197,7 +3473,7 @@ class _ChunkResult:
     skipped_records: int
     skipped_rows_by_table: dict[str, int]
     row_counts: dict[str, int]
-    # label -> Arrow IPC part path. Rows stay on disk: piping millions of rows
+    # label -> bounded Parquet part path. Rows stay on disk: piping millions of rows
     # back through the pool's result channel would cost more than the shred.
     part_paths: dict[str, str]
     failure: _ChunkFailure | None = None
@@ -3206,7 +3482,7 @@ class _ChunkResult:
 def _shred_chunk(
     args: tuple[str, int, int, int, dict[str, Any], str],
 ) -> _ChunkResult:
-    """Shred one byte range and write its rows as Arrow IPC parts.
+    """Shred one byte range into bounded Parquet row-group parts.
 
     Module-level and argument-driven so it survives ``spawn`` pickling on
     Windows. Ordinary failures return structured evidence for the parent to
@@ -3215,12 +3491,17 @@ def _shred_chunk(
     data_path_s, start, end, index, v2_config, tmp_dir_s = args
     data_path = Path(data_path_s)
     tmp_dir = Path(tmp_dir_s)
+    writer: _BoundedParquetRowGroupWriter | None = None
     try:
-        import pyarrow as pa
-
         table_specs = _emitting_table_specs(v2_config)
         stats = ShredSkipStats()
         record_count = 0
+        emitted_counts: dict[str, int] = {spec.label: 0 for spec in table_specs}
+        writer = _BoundedParquetRowGroupWriter(
+            tmp_dir,
+            table_specs,
+            filename_suffix=f".{index:06d}.part",
+        )
 
         def _counted() -> Iterator[dict[str, Any]]:
             nonlocal record_count
@@ -3228,42 +3509,42 @@ def _shred_chunk(
                 record_count += 1
                 yield record
 
-        buffers = shred_to_buffers(_counted(), v2_config, stats=stats, _table_specs=table_specs)
+        shred_to_buffers(
+            _counted(),
+            v2_config,
+            stats=stats,
+            _table_specs=table_specs,
+            _row_sink=writer.emit,
+            _emitted_counts=emitted_counts,
+        )
 
         # Ranges tile the file exactly, so holding conservation on every chunk
         # holds it on the whole file and localises a violation to its range.
         _assert_root_conservation(
             table_specs,
-            buffers,
+            {},
             stats,
             record_count,
             location=f" in byte range [{start}, {end})",
+            emitted_counts=emitted_counts,
         )
-
-        part_paths: dict[str, str] = {}
-        row_counts: dict[str, int] = {}
-        for spec in table_specs:
-            frame = _buffer_to_frame(buffers.get(spec.label, []), spec.leaf_specs)
-            part = tmp_dir / f"{_sanitise_label(spec.label)}.{index:06d}.arrow"
-            # Arrow IPC, uncompressed: this part is read back once, by one
-            # process, on the same machine. Compressing it would trade away the
-            # CPU this whole path exists to save.
-            arrow_table = frame.to_arrow()
-            with pa.OSFile(str(part), "wb") as sink:
-                with pa.ipc.new_file(sink, arrow_table.schema) as ipc_writer:
-                    ipc_writer.write_table(arrow_table)
-            part_paths[spec.label] = str(part)
-            row_counts[spec.label] = frame.height
+        writer.flush()
+        writer.close()
 
         return _ChunkResult(
             index=index,
             record_count=record_count,
             skipped_records=stats.skipped_records,
             skipped_rows_by_table=dict(stats.skipped_rows_by_table),
-            row_counts=row_counts,
-            part_paths=part_paths,
+            row_counts=dict(writer.row_counts),
+            part_paths={label: str(path) for label, path in writer.paths.items()},
         )
     except Exception as exc:  # noqa: BLE001 — reported, then re-raised in the parent
+        if writer is not None:
+            try:
+                writer.close()
+            except BaseException as cleanup_exc:
+                exc.add_note(f"bounded chunk writer cleanup failed: {cleanup_exc}")
         return _ChunkResult(
             index=index,
             record_count=0,
@@ -3338,6 +3619,11 @@ def _raise_chunk_error(result: _ChunkResult) -> NoReturn:
 def _should_shred_in_parallel(data_path: Path) -> bool:
     """True when splitting *data_path* is both possible and worth it."""
     if data_path.suffix.lower() not in (".jsonl", ".ndjson"):
+        return False
+    if current_execution_context() is not None and current_native_memory_backend() not in {
+        "cgroup",
+        "windows_job",
+    }:
         return False
     try:
         return data_path.stat().st_size >= _PARALLEL_MIN_BYTES
@@ -3460,6 +3746,62 @@ def _cache_manifest_failure(
 def _cache_manifest_files_match(cache_dir: Path, meta: dict[str, Any]) -> bool:
     """Return whether a self-contained cache manifest matches its artifacts."""
     return _cache_manifest_failure(cache_dir, meta) is None
+
+
+def _cache_bundle_failure_in_place(
+    cache_dir: Path,
+    table_specs: tuple[_EmittingTableSpec, ...],
+    meta: dict[str, Any],
+) -> _CacheProbeFailure | None:
+    """Validate a generation while an external publication lock makes it stable."""
+    manifest_failure = _cache_manifest_failure(
+        cache_dir,
+        meta,
+        expected_labels=tuple(spec.label for spec in table_specs),
+    )
+    if manifest_failure is not None:
+        return manifest_failure
+    for table_spec in table_specs:
+        parquet_path = cache_dir / f"{_sanitise_label(table_spec.label)}.parquet"
+        path_stat = parquet_path.lstat()
+        if (
+            not stat_module.S_ISREG(path_stat.st_mode)
+            or stat_module.S_ISLNK(path_stat.st_mode)
+            or _is_reparse_point(path_stat)
+        ):
+            return _CacheProbeFailure("non_plain_frame", label=table_spec.label)
+        expected_schema = _declared_frame_schema(table_spec)
+        try:
+            actual_schema = pl.scan_parquet(parquet_path).collect_schema()
+        except (OSError, pl.exceptions.PolarsError):
+            return _CacheProbeFailure("unreadable_frame", label=table_spec.label)
+        if dict(actual_schema.items()) != dict(expected_schema.items()):
+            return _CacheProbeFailure(
+                "schema_mismatch",
+                label=table_spec.label,
+                expected_schema=expected_schema,
+                actual_schema=actual_schema,
+            )
+    return None
+
+
+def _cache_is_valid_under_external_lock(
+    cache_dir: Path,
+    v2_config: dict[str, Any],
+    *,
+    data_path: Path,
+    data_file_signature: Mapping[str, Any],
+) -> bool:
+    meta = _read_per_port_cache_meta_unlocked(cache_dir)
+    if meta is None or not _cache_meta_matches_config_and_source(
+        meta,
+        v2_config,
+        data_path=data_path,
+        data_file_signature=data_file_signature,
+    ):
+        return False
+    table_specs = _emitting_table_specs(v2_config)
+    return _cache_bundle_failure_in_place(cache_dir, table_specs, meta) is None
 
 
 def _probe_cache_bundle(
@@ -3625,12 +3967,27 @@ def _cleanup_direct_spill_dirs() -> None:
         spill_dirs = tuple(_DIRECT_SPILL_DIRS)
         _DIRECT_SPILL_DIRS.clear()
     for spill_dir in spill_dirs:
-        shutil.rmtree(spill_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(spill_dir)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning(
+                "json_direct_spill_cleanup_failed",
+                path=str(spill_dir),
+                error=repr(exc),
+            )
     for parent in {spill_dir.parent for spill_dir in spill_dirs}:
         try:
             shutil.rmtree(parent)
-        except OSError:
+        except FileNotFoundError:
             pass
+        except OSError as exc:
+            logger.warning(
+                "json_direct_spill_owner_cleanup_failed",
+                path=str(parent),
+                error=repr(exc),
+            )
 
 
 def _new_direct_spill_dir(cache_dir: Path) -> Path:
@@ -3653,12 +4010,17 @@ def _new_direct_spill_dir(cache_dir: Path) -> Path:
                 owner_dir.mkdir(parents=True, exist_ok=True)
                 _ensure_runtime_owner_metadata(owner_dir)
                 spill_dir.mkdir(exist_ok=False)
-        except BaseException:
-            shutil.rmtree(spill_dir, ignore_errors=True)
+        except BaseException as exc:
+            try:
+                shutil.rmtree(spill_dir)
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_exc:
+                exc.add_note(f"direct spill staging cleanup failed: {cleanup_exc}")
             try:
                 _remove_empty_runtime_owner_dir(owner_dir)
-            except OSError:
-                pass
+            except OSError as cleanup_exc:
+                exc.add_note(f"direct spill owner cleanup failed: {cleanup_exc}")
             raise
         _DIRECT_SPILL_DIRS.add(spill_dir)
         if not _DIRECT_SPILL_ATEXIT_REGISTERED:
@@ -3683,18 +4045,21 @@ def _release_direct_spill_dir(spill_dir: Path) -> None:
             pass
 
 
-class _DirectSpillBundle:
-    """One aggregate-bounded row buffer writing ordered Parquet row groups."""
+class _BoundedParquetRowGroupWriter:
+    """Shared aggregate-bounded writer for cache artifacts and runtime spills."""
 
     def __init__(
         self,
-        cache_dir: Path,
+        output_dir: Path,
         table_specs: tuple[_EmittingTableSpec, ...],
+        *,
+        disk_budget_root: Path | None = None,
+        filename_suffix: str = "",
     ) -> None:
         import pyarrow.parquet as pq
 
-        self.cache_root = _runtime_storage_root_for_cache(cache_dir)
-        self.spill_dir = _new_direct_spill_dir(cache_dir)
+        self.output_dir = output_dir
+        self.cache_root = disk_budget_root
         self.table_specs = table_specs
         self.max_rows = int_env("HAUTE_JSON_DIRECT_SPILL_MAX_ROWS", _DIRECT_SPILL_MAX_ROWS_DEFAULT)
         self.max_bytes = int_env(
@@ -3705,14 +4070,17 @@ class _DirectSpillBundle:
         self.buffered_bytes = 0
         self.paths: dict[str, Path] = {}
         self.writers: dict[str, Any] = {}
+        self.row_counts: dict[str, int] = {spec.label: 0 for spec in table_specs}
+        self.schema_frames: dict[str, pl.DataFrame] = {}
         try:
-            with _runtime_disk_budget_transaction(self.cache_root):
+            with self._disk_transaction():
                 for spec in table_specs:
                     frame = _buffer_to_frame([], spec.leaf_specs)
-                    path = self.spill_dir / f"{_sanitise_label(spec.label)}.parquet"
+                    path = output_dir / (f"{_sanitise_label(spec.label)}{filename_suffix}.parquet")
                     arrow_schema = frame.to_arrow().schema.with_metadata(
                         _per_frame_metadata(spec.label, spec.leaf_specs)
                     )
+                    self.schema_frames[spec.label] = frame
                     self.paths[spec.label] = path
                     self.writers[spec.label] = pq.ParquetWriter(
                         path,
@@ -3723,15 +4091,22 @@ class _DirectSpillBundle:
             try:
                 self.close()
             except BaseException as cleanup_exc:
-                exc.add_note(f"direct spill writer cleanup failed: {cleanup_exc}")
-            try:
-                _release_direct_spill_dir(self.spill_dir)
-            except BaseException as cleanup_exc:
-                exc.add_note(f"direct spill directory cleanup failed: {cleanup_exc}")
+                exc.add_note(f"bounded parquet writer cleanup failed: {cleanup_exc}")
             raise
 
+    def _disk_transaction(self, *, allow_existing_excess: bool = False) -> Any:
+        if self.cache_root is None:
+            return nullcontext()
+        return _runtime_disk_budget_transaction(
+            self.cache_root,
+            allow_existing_excess=allow_existing_excess,
+        )
+
     def emit(self, label: str, row: dict[str, Any]) -> None:
+        if label not in self.buffers:
+            raise RuntimeError(f"bounded parquet writer received unknown table {label!r}")
         self.buffers[label].append(row)
+        self.row_counts[label] += 1
         self.buffered_rows += 1
         # This is an accounting estimate, not serialisation retained in memory.
         self.buffered_bytes += len(orjson.dumps(row))
@@ -3740,8 +4115,8 @@ class _DirectSpillBundle:
 
     def flush(self) -> None:
         progress = _ShredExecutionProgress.current()
-        progress.checkpoint("json_shred_direct_spill_before_flush")
-        with _runtime_disk_budget_transaction(self.cache_root):
+        progress.checkpoint("json_shred_row_group_before_flush")
+        with self._disk_transaction():
             for spec in self.table_specs:
                 rows = self.buffers[spec.label]
                 if not rows:
@@ -3751,17 +4126,29 @@ class _DirectSpillBundle:
                 rows.clear()
         self.buffered_rows = 0
         self.buffered_bytes = 0
-        progress.checkpoint("json_shred_direct_spill_after_flush")
+        progress.checkpoint("json_shred_row_group_after_flush")
+
+    def write_arrow_table(self, label: str, table: Any) -> None:
+        """Append one already-bounded Arrow table, preserving caller order."""
+        if label not in self.writers:
+            raise RuntimeError(f"bounded parquet writer received unknown table {label!r}")
+        if table.num_rows > self.max_rows:
+            raise RuntimeError(
+                f"bounded parquet part for table {label!r} contains {table.num_rows} rows; "
+                f"configured maximum is {self.max_rows}"
+            )
+        if self.buffered_rows:
+            self.flush()
+        with self._disk_transaction():
+            self.writers[label].write_table(table)
+        self.row_counts[label] += table.num_rows
 
     def close(self) -> None:
         if not self.writers:
             return
         errors: list[BaseException] = []
         try:
-            with _runtime_disk_budget_transaction(
-                self.cache_root,
-                allow_existing_excess=True,
-            ):
+            with self._disk_transaction(allow_existing_excess=True):
                 for writer in self.writers.values():
                     try:
                         writer.close()
@@ -3772,11 +4159,48 @@ class _DirectSpillBundle:
         if errors:
             first, *rest = errors
             for error in rest:
-                first.add_note(f"additional direct spill writer cleanup failure: {error}")
+                first.add_note(f"additional bounded parquet writer cleanup failure: {error}")
             raise first
 
     def lazy_bundle(self) -> dict[str, pl.LazyFrame]:
         return {spec.label: pl.scan_parquet(self.paths[spec.label]) for spec in self.table_specs}
+
+    def table_summaries(self) -> list[dict[str, Any]]:
+        if self.writers:
+            raise RuntimeError("bounded parquet writers must be closed before summarising")
+        return [
+            _table_summary(
+                spec.label,
+                self.paths[spec.label],
+                self.row_counts[spec.label],
+                self.schema_frames[spec.label],
+            )
+            for spec in self.table_specs
+        ]
+
+
+class _DirectSpillBundle(_BoundedParquetRowGroupWriter):
+    """Runtime lifecycle wrapper around the shared bounded row-group writer."""
+
+    def __init__(
+        self,
+        cache_dir: Path,
+        table_specs: tuple[_EmittingTableSpec, ...],
+    ) -> None:
+        cache_root = _runtime_storage_root_for_cache(cache_dir)
+        self.spill_dir = _new_direct_spill_dir(cache_dir)
+        try:
+            super().__init__(
+                self.spill_dir,
+                table_specs,
+                disk_budget_root=cache_root,
+            )
+        except BaseException as exc:
+            try:
+                _release_direct_spill_dir(self.spill_dir)
+            except BaseException as cleanup_exc:
+                exc.add_note(f"direct spill directory cleanup failed: {cleanup_exc}")
+            raise
 
 
 def _shred_data_file_to_direct_spill(
@@ -3874,29 +4298,49 @@ def _table_summary(
     }
 
 
-def _write_tables_serially(
-    buffers: dict[str, list[dict[str, Any]]],
+def _write_tables_streaming(
+    data_path: Path,
+    v2_config: dict[str, Any],
     table_specs: tuple[_EmittingTableSpec, ...],
     tmp_dir: Path,
-) -> list[dict[str, Any]]:
-    """Write one parquet per emitting table from in-memory row buffers."""
-    import pyarrow.parquet as pq  # local — keeps top-of-module import surface small
+) -> tuple[list[dict[str, Any]], ShredSkipStats]:
+    """Stream one source into bounded staged Parquet row groups."""
+    skip_stats = ShredSkipStats()
+    emitted_counts: dict[str, int] = {spec.label: 0 for spec in table_specs}
+    record_count = 0
+    writer = _BoundedParquetRowGroupWriter(tmp_dir, table_specs)
+    try:
 
-    summaries: list[dict[str, Any]] = []
-    for spec in table_specs:
-        col_specs = spec.leaf_specs
-        frame = _buffer_to_frame(buffers.get(spec.label, []), col_specs)
-        parquet_path = tmp_dir / f"{_sanitise_label(spec.label)}.parquet"
-        # Convert to Arrow and attach the per-frame schema in the footer
-        # (DUAL_CACHE.md §3). Polars's DataFrame.write_parquet doesn't accept
-        # the bytes-keyed metadata shape PyArrow uses; going via Arrow directly
-        # matches the flat-cache writer.
-        arrow_tbl = frame.to_arrow().replace_schema_metadata(
-            _per_frame_metadata(spec.label, col_specs),
+        def _counted_records() -> Iterator[dict[str, Any]]:
+            nonlocal record_count
+            for record in _iter_records(data_path, stats=skip_stats):
+                record_count += 1
+                yield record
+
+        shred_to_buffers(
+            _counted_records(),
+            v2_config,
+            stats=skip_stats,
+            _table_specs=table_specs,
+            _row_sink=writer.emit,
+            _emitted_counts=emitted_counts,
         )
-        pq.write_table(arrow_tbl, parquet_path, compression="zstd")
-        summaries.append(_table_summary(spec.label, parquet_path, frame.height, frame))
-    return summaries
+        _assert_root_conservation(
+            table_specs,
+            {},
+            skip_stats,
+            record_count,
+            emitted_counts=emitted_counts,
+        )
+        writer.flush()
+        writer.close()
+        return writer.table_summaries(), skip_stats
+    except BaseException as exc:
+        try:
+            writer.close()
+        except BaseException as cleanup_exc:
+            exc.add_note(f"bounded cache writer cleanup failed: {cleanup_exc}")
+        raise
 
 
 def _merge_chunk_skip_stats(results: Iterable[_ChunkResult]) -> ShredSkipStats:
@@ -3920,14 +4364,13 @@ def _write_tables_in_parallel(
 ) -> tuple[list[dict[str, Any]], ShredSkipStats]:
     """Shred *ranges* across worker processes, then assemble one parquet each.
 
-    Parts are streamed into the final parquet in chunk order, so row order
-    matches the serial shred exactly. Each part is released as it is consumed,
-    keeping the parent's memory bounded by one part rather than the whole file.
+    Parts are streamed one row group at a time into the final parquet in chunk
+    order, so row order matches the serial shred exactly. Each part is released
+    as it is consumed; parent and workers share the same aggregate bounds.
     """
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
 
-    import pyarrow as pa
     import pyarrow.parquet as pq
 
     tasks = [
@@ -3966,15 +4409,10 @@ def _write_tables_in_parallel(
 
     skip_stats = _merge_chunk_skip_stats(results)
 
-    summaries: list[dict[str, Any]] = []
-    for spec in table_specs:
-        col_specs = spec.leaf_specs
-        parquet_path = tmp_dir / f"{_sanitise_label(spec.label)}.parquet"
-        metadata = _per_frame_metadata(spec.label, col_specs)
-        schema_frame = _buffer_to_frame([], col_specs)
-        row_count = 0
-        writer: Any = None
-        try:
+    writer = _BoundedParquetRowGroupWriter(tmp_dir, table_specs)
+    try:
+        for spec in table_specs:
+            expected_rows = 0
             for result in results:
                 part = result.part_paths.get(spec.label)
                 if part is None:
@@ -3988,29 +4426,27 @@ def _write_tables_in_parallel(
                         f"for table {spec.label!r} — worker and parent table "
                         "specs diverged",
                     )
-                # OSFile, not memory_map: a mapped part stays locked on Windows
-                # and could not be unlinked below. Reading it owns the buffers,
-                # and only one part is resident at a time by design.
-                with pa.OSFile(part, "rb") as source:
-                    part_table = pa.ipc.open_file(source).read_all()
-                part_table = part_table.replace_schema_metadata(metadata)
-                if writer is None:
-                    writer = pq.ParquetWriter(parquet_path, part_table.schema, compression="zstd")
-                writer.write_table(part_table)
-                row_count += part_table.num_rows
-                del part_table
+                with pq.ParquetFile(part) as part_file:
+                    for row_group_index in range(part_file.num_row_groups):
+                        part_table = part_file.read_row_group(row_group_index)
+                        writer.write_arrow_table(spec.label, part_table)
+                        del part_table
+                expected_rows += result.row_counts.get(spec.label, 0)
                 Path(part).unlink(missing_ok=True)
-            if writer is None:
-                # Only reachable with zero chunk results, and the caller only
-                # dispatches here with at least two ranges.
+            if writer.row_counts[spec.label] != expected_rows:
                 raise RuntimeError(
-                    f"parallel json shred assembled no parts for table "
-                    f"{spec.label!r} — the pool returned no chunk results",
+                    f"parallel json shred row-count mismatch for table {spec.label!r}: "
+                    f"assembled {writer.row_counts[spec.label]} != "
+                    f"worker-reported {expected_rows}"
                 )
-        finally:
-            if writer is not None:
-                writer.close()
-        summaries.append(_table_summary(spec.label, parquet_path, row_count, schema_frame))
+        writer.close()
+        summaries = writer.table_summaries()
+    except BaseException as exc:
+        try:
+            writer.close()
+        except BaseException as cleanup_exc:
+            exc.add_note(f"bounded parallel writer cleanup failed: {cleanup_exc}")
+        raise
 
     logger.info(
         "json_shred_parallel_complete",
@@ -4025,139 +4461,287 @@ def _write_tables_in_parallel(
     return summaries, skip_stats
 
 
-def build_per_port_cache(
-    data_path: str | Path,  # pragma: no mutate
+def _normalised_build_path(path: str | Path) -> Path:
+    return Path(os.path.abspath(path))
+
+
+def _validated_build_staging_dir(cache_dir: Path, staging_dir: str | Path) -> Path:
+    staging = _normalised_build_path(staging_dir)
+    expected_prefix = f"{cache_dir.name}.build-tmp-"
+    suffix = staging.name.removeprefix(expected_prefix)
+    if (
+        staging.parent != cache_dir.parent
+        or not staging.name.startswith(expected_prefix)
+        or len(suffix) != 32
+        or any(character not in "0123456789abcdef" for character in suffix)
+    ):
+        raise ValueError("cache staging directory must be an exact private sibling generation")
+    _assert_cache_path_ancestors_plain(staging)
+    return staging
+
+
+def _cache_summary(meta: Mapping[str, Any], cache_dir: Path) -> dict[str, Any]:
+    return {
+        "schema_mode": meta["schema_mode"],
+        "schema_fingerprint": meta["schema_fingerprint"],
+        "tables": meta["tables"],
+        "data_file": meta["data_file"],
+        "skipped": meta["skipped"],
+        "cache_dir": str(cache_dir),
+    }
+
+
+def _remove_prepared_staging(staging: Path) -> None:
+    try:
+        _remove_plain_cache_directory(staging)
+    except FileNotFoundError:
+        return
+
+
+def prepare_per_port_cache(
+    data_path: str | Path,
     v2_config: dict[str, Any],
-    cache_dir: str | Path,  # pragma: no mutate
-) -> dict[str, Any]:
-    """Build the per-port parquet cache for *data_path* under *v2_config*.
+    cache_dir: str | Path,
+    *,
+    staging_dir: str | Path,
+) -> PreparedPerPortCacheBuild:
+    """Materialise and validate a private generation without publishing it.
 
-    *cache_dir* is the per-data-file directory (e.g.
-    ``.haute_cache/working/json_<hash>/``); the caller already knows which
-    layer to target.
-
-    Returns a summary dict with ``schema_mode``, ``schema_fingerprint``,
-    ``tables`` (per-port row/column counts, derived parquet names, and
-    size/SHA-256 content signatures),
-    ``data_file`` (the data-file signature validity checks against — W2
-    item 2.4), and ``skipped`` (counts of shape-mismatched inputs dropped
-    during the shred — W2 item 2.7). Also writes ``meta.json`` into
-    *cache_dir* with the same payload so later cache-validity checks don't
-    need to re-shred to know what's there.
-
-    The build is **serialized** per cache directory (a concurrent build of
-    the same cache waits) and **atomic**: one complete generation is written
-    into a sibling staging directory and swapped into place only after every
-    parquet and ``meta.json`` is materialised. Runtime LazyFrames scan private,
-    generation-pinned file snapshots, so replacing this visible on-disk
-    generation does not change already-returned plans (W2 item 2.6).
+    A parent must hold :func:`per_port_cache_publication_lock` across this call
+    (or across an isolated child invocation of it) and the later commit. The
+    explicit staging path lets the parent clean up safely even when the worker
+    times out or crashes before returning a manifest.
     """
-    dp = Path(data_path)
-    cd = Path(cache_dir)
+    dp = _normalised_build_path(data_path)
+    cd = _normalised_build_path(cache_dir)
+    staging = _validated_build_staging_dir(cd, staging_dir)
+    table_specs = _emitting_table_specs(v2_config)
+    fingerprint = _v2_fingerprint(v2_config)
+    data_file_sig = _data_file_signature(dp, upgrade_legacy_proofs=False)
 
-    with _build_lock_for(cd):
-        table_specs = _emitting_table_specs(v2_config)
-        # A build has one source identity. Reuse this exact, double-stat-
-        # verified signature for the no-op decision and a possible new meta.json.
-        data_file_sig = _data_file_signature(dp)
-        # No-op trapdoor: if the existing meta.json's fingerprint matches the
-        # current v2 schema, the recorded source signature still matches, and
-        # every expected parquet matches its signed manifest entry and footer
-        # schema, skip the rebuild entirely. Repeated cache-button clicks then
-        # don't churn the preview cache.
-        if is_per_port_cache_valid(
+    if _cache_is_valid_under_external_lock(
+        cd,
+        v2_config,
+        data_path=dp,
+        data_file_signature=data_file_sig,
+    ):
+        existing_meta = _read_per_port_cache_meta_unlocked(cd)
+        if existing_meta is None:
+            raise RuntimeError("valid cache generation omitted its metadata")
+        summary = _cache_summary(existing_meta, cd)
+        logger.info(
+            "json_shred_build_noop",
+            data_path=str(dp),
+            cache_dir=str(cd),
+            fingerprint=fingerprint[:8],
+        )
+        return PreparedPerPortCacheBuild(
+            data_path=str(dp),
+            cache_dir=str(cd),
+            staging_dir=None,
+            schema_fingerprint=fingerprint,
+            data_file_signature=dict(data_file_sig),
+            summary=summary,
+            no_op=True,
+        )
+
+    if staging.exists() or staging.is_symlink():
+        raise FileExistsError(f"cache staging generation already exists: {staging}")
+    staging.parent.mkdir(parents=True, exist_ok=True)
+    staging.mkdir()
+    try:
+        ranges = (
+            _jsonl_byte_ranges(dp, _PARALLEL_CHUNK_BYTES) if _should_shred_in_parallel(dp) else []
+        )
+        if len(ranges) > 1:
+            table_summaries, skip_stats = _write_tables_in_parallel(
+                dp, v2_config, table_specs, staging, ranges
+            )
+        else:
+            table_summaries, skip_stats = _write_tables_streaming(
+                dp,
+                v2_config,
+                table_specs,
+                staging,
+            )
+        if _data_file_signature(dp, upgrade_legacy_proofs=False) != data_file_sig:
+            raise SourceChangedDuringCacheBuildError(
+                f"structured source changed while its cache was built: {dp}"
+            )
+        meta_payload = {
+            "schema_mode": "v2",
+            "schema_fingerprint": fingerprint,
+            "tables": table_summaries,
+            "data_file": data_file_sig,
+            "skipped": skip_stats.as_meta(),
+        }
+        (staging / _META_FILENAME).write_bytes(orjson.dumps(meta_payload))
+        failure = _cache_manifest_failure(
+            staging,
+            meta_payload,
+            expected_labels=tuple(spec.label for spec in table_specs),
+        )
+        if failure is not None:
+            raise RuntimeError(f"prepared cache manifest failed validation: {failure.reason}")
+    except BaseException as exc:
+        try:
+            _remove_prepared_staging(staging)
+        except BaseException as cleanup_exc:
+            exc.add_note(f"cache staging cleanup failed: {cleanup_exc}")
+        raise
+
+    return PreparedPerPortCacheBuild(
+        data_path=str(dp),
+        cache_dir=str(cd),
+        staging_dir=str(staging),
+        schema_fingerprint=fingerprint,
+        data_file_signature=dict(data_file_sig),
+        summary=_cache_summary(meta_payload, cd),
+    )
+
+
+def _validate_prepared_cache(
+    prepared: PreparedPerPortCacheBuild,
+    v2_config: dict[str, Any],
+) -> tuple[Path, Path | None, dict[str, Any]]:
+    if not isinstance(prepared, PreparedPerPortCacheBuild):
+        raise TypeError("prepared must be a PreparedPerPortCacheBuild")
+    dp = _normalised_build_path(prepared.data_path)
+    cd = _normalised_build_path(prepared.cache_dir)
+    expected_fingerprint = _v2_fingerprint(v2_config)
+    if prepared.schema_fingerprint != expected_fingerprint:
+        raise ValueError("prepared cache schema fingerprint does not match the requested config")
+    if _data_file_signature(dp) != prepared.data_file_signature:
+        raise SourceChangedDuringCacheBuildError(
+            f"structured source changed before its cache could be published: {dp}"
+        )
+    if prepared.no_op:
+        if prepared.staging_dir is not None:
+            raise ValueError("no-op cache preparation must not name a staging directory")
+        if not _cache_is_valid_under_external_lock(
             cd,
             v2_config,
             data_path=dp,
-            data_file_signature=data_file_sig,
+            data_file_signature=prepared.data_file_signature,
         ):
-            existing_meta = read_per_port_cache_meta(cd)
-            if existing_meta is not None:
-                fp8 = str(existing_meta["schema_fingerprint"])[:8]  # pragma: no mutate
-                logger.info(
-                    "json_shred_build_noop",
-                    data_path=str(dp),
-                    cache_dir=str(cd),
-                    fingerprint=fp8,
-                )
-                return {
-                    "schema_mode": existing_meta["schema_mode"],
-                    "schema_fingerprint": existing_meta["schema_fingerprint"],
-                    "tables": existing_meta["tables"],
-                    "data_file": existing_meta["data_file"],
-                    "skipped": existing_meta["skipped"],
-                    "cache_dir": str(cd),
-                }
+            raise RuntimeError("the no-op cache generation changed before publication")
+        meta = _read_per_port_cache_meta_unlocked(cd)
+        if meta is None or prepared.summary != _cache_summary(meta, cd):
+            raise RuntimeError("the no-op cache summary does not match the visible generation")
+        return cd, None, meta
 
-        # Fully materialise one generation in a sibling staging directory,
-        # then atomically swap the directory into place. Unique temp names
-        # prevent collisions across xdist/CLI processes. The staging directory
-        # is created BEFORE the shred so parallel workers have somewhere to
-        # write their parts, and a failure at any point removes the lot.
-        fingerprint = _v2_fingerprint(v2_config)
-        tmp_dir = _unique_build_tmp_dir(cd)
-        tmp_dir.mkdir(parents=True)
-        try:
-            # A newline-delimited source above the threshold is shredded across
-            # processes; everything else keeps the single-pass walk. Both paths
-            # write the same artifacts through the same frame construction.
-            ranges = (
-                _jsonl_byte_ranges(dp, _PARALLEL_CHUNK_BYTES)
-                if _should_shred_in_parallel(dp)
-                else []
-            )
-            if len(ranges) > 1:
-                table_summaries, skip_stats = _write_tables_in_parallel(
-                    dp, v2_config, table_specs, tmp_dir, ranges
-                )
-            else:
-                # Shred — single pass, with skip accounting (W2 item 2.7). The
-                # record iterator is consumed directly (not materialised into a
-                # list) so the build doesn't hold a full extra Python-object
-                # copy of the file alongside the row buffers (W1). The shared
-                # file-shred helper counts object records and asserts root
-                # conservation for cache and direct materialisation alike.
-                buffers, skip_stats = _shred_data_file(dp, v2_config, table_specs)
-                table_summaries = _write_tables_serially(buffers, table_specs, tmp_dir)
+    if prepared.staging_dir is None:
+        raise ValueError("prepared cache generation omitted its staging directory")
+    staging = _validated_build_staging_dir(cd, prepared.staging_dir)
+    _plain_directory_stat(staging)
+    meta = _read_per_port_cache_meta_unlocked(staging)
+    expected_meta = {
+        key: prepared.summary.get(key)
+        for key in ("schema_mode", "schema_fingerprint", "tables", "data_file", "skipped")
+    }
+    if meta != expected_meta or meta.get("data_file") != prepared.data_file_signature:
+        raise RuntimeError("prepared cache metadata does not match its returned manifest")
+    table_specs = _emitting_table_specs(v2_config)
+    expected_names = {
+        _META_FILENAME,
+        *(f"{_sanitise_label(spec.label)}.parquet" for spec in table_specs),
+    }
+    children = tuple(staging.iterdir())
+    if {child.name for child in children} != expected_names:
+        raise RuntimeError("prepared cache generation contains unexpected or missing artifacts")
+    for child in children:
+        child_stat = child.lstat()
+        if (
+            not stat_module.S_ISREG(child_stat.st_mode)
+            or stat_module.S_ISLNK(child_stat.st_mode)
+            or _is_reparse_point(child_stat)
+        ):
+            raise RuntimeError(f"prepared cache artifact is not a plain regular file: {child}")
+    failure = _cache_bundle_failure_in_place(staging, table_specs, meta)
+    if failure is not None:
+        raise RuntimeError(f"prepared cache generation failed validation: {failure.reason}")
+    return cd, staging, meta
 
-            meta_payload = {
-                "schema_mode": "v2",
-                "schema_fingerprint": fingerprint,
-                "tables": table_summaries,
-                "data_file": data_file_sig,
-                "skipped": skip_stats.as_meta(),
-            }
-            (tmp_dir / _META_FILENAME).write_bytes(orjson.dumps(meta_payload))
-        except BaseException:
-            shutil.rmtree(tmp_dir, ignore_errors=True)  # pragma: no mutate
-            raise
 
-        _swap_dir_into_place(tmp_dir, cd)
-
-    if skip_stats.total:
+def commit_prepared_per_port_cache(
+    prepared: PreparedPerPortCacheBuild,
+    v2_config: dict[str, Any],
+    *,
+    publication_guard: AbstractContextManager[None] | None = None,
+) -> dict[str, Any]:
+    """Validate and atomically publish a child-prepared cache generation."""
+    cd = _normalised_build_path(prepared.cache_dir)
+    if not _build_lock_for(cd).owned_by_current_thread():
+        raise RuntimeError("cache publication requires the parent-owned build lock")
+    cd, staging, meta = _validate_prepared_cache(prepared, v2_config)
+    if staging is None:
+        with publication_guard or nullcontext():
+            return _cache_summary(meta, cd)
+    with publication_guard or nullcontext():
+        _swap_dir_into_place(staging, cd)
+    skipped = meta["skipped"]
+    if skipped.get("records", 0) or skipped.get("rows_by_table"):
         logger.warning(
             "json_shred_records_skipped",
-            data_path=str(dp),
+            data_path=prepared.data_path,
             cache_dir=str(cd),
-            skipped_records=skip_stats.skipped_records,
-            skipped_rows_by_table=skip_stats.skipped_rows_by_table,
+            skipped_records=skipped.get("records", 0),
+            skipped_rows_by_table=skipped.get("rows_by_table", {}),
         )
     logger.info(
         "json_shred_built",
-        data_path=str(dp),
+        data_path=prepared.data_path,
         cache_dir=str(cd),
-        table_count=len(table_summaries),
-        fingerprint=fingerprint[:8],  # pragma: no mutate
+        table_count=len(meta["tables"]),
+        fingerprint=prepared.schema_fingerprint[:8],
     )
+    return _cache_summary(meta, cd)
 
-    return {
-        "schema_mode": "v2",
-        "schema_fingerprint": fingerprint,
-        "tables": table_summaries,
-        "data_file": data_file_sig,
-        "skipped": skip_stats.as_meta(),
-        "cache_dir": str(cd),
-    }
+
+def discard_prepared_per_port_cache(prepared: PreparedPerPortCacheBuild) -> None:
+    """Remove only the exact unpublished staging generation named by *prepared*."""
+    if prepared.staging_dir is None:
+        return
+    cd = _normalised_build_path(prepared.cache_dir)
+    staging = _validated_build_staging_dir(cd, prepared.staging_dir)
+    _remove_prepared_staging(staging)
+
+
+def discard_per_port_cache_staging(
+    cache_dir: str | Path,
+    staging_dir: str | Path,
+) -> None:
+    """Remove one exact parent-selected staging path after a worker failure."""
+    cd = _normalised_build_path(cache_dir)
+    if not _build_lock_for(cd).owned_by_current_thread():
+        raise RuntimeError("cache staging cleanup requires the parent-owned build lock")
+    staging = _validated_build_staging_dir(cd, staging_dir)
+    _remove_prepared_staging(staging)
+
+
+def build_per_port_cache(
+    data_path: str | Path,
+    v2_config: dict[str, Any],
+    cache_dir: str | Path,
+) -> dict[str, Any]:
+    """Build one serialized generation through the shared prepare/commit path."""
+    cd = _normalised_build_path(cache_dir)
+    with per_port_cache_publication_lock(cd):
+        staging = _unique_build_tmp_dir(cd)
+        prepared: PreparedPerPortCacheBuild | None = None
+        try:
+            prepared = prepare_per_port_cache(
+                data_path,
+                v2_config,
+                cd,
+                staging_dir=staging,
+            )
+            return commit_prepared_per_port_cache(prepared, v2_config)
+        finally:
+            if prepared is not None:
+                discard_prepared_per_port_cache(prepared)
+            elif staging.exists() or staging.is_symlink():
+                _remove_prepared_staging(staging)
 
 
 def _swap_dir_into_place(tmp_dir: Path, live_dir: Path) -> None:

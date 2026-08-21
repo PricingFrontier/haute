@@ -39,13 +39,22 @@ from haute.routes._train_service import TrainService
 from tests.conftest import make_edge, make_graph
 from tests.test_training_worker_protocol import _inline_protocol_runner, _SuccessfulTrainingJob
 
+_TEST_WORKER_MEMORY_LIMIT_BYTES = 512 * 1024**2
+
 
 def _training_execution_context() -> ExecutionContext:
-    """A real TRAINING_PREP context with no admission reservation to release."""
+    """A deterministic TRAINING_PREP context with no admission to release.
+
+    These service tests exercise lifecycle and error mapping rather than the
+    process RSS sampler.  Pinning the sample keeps their meaning independent of
+    the memory retained by other tests in the same pytest worker.
+    """
     return ExecutionContext(
         operation="training_pipeline",
         profile=ExecutionProfile.TRAINING_PREP,
         job_id="ctx-job",
+        memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
+        memory_sampler=lambda: 1,
     )
 
 
@@ -1812,6 +1821,7 @@ class TestLaunchBackgroundWorker:
             operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
             job_id="ctx-job",
+            memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
             admission_release=lambda: released.append(True),
         )
         # Non-existent temp path so the start-failure handler takes the
@@ -2216,6 +2226,7 @@ class TestProtocolLaunchCleanup:
         context = ExecutionContext(
             operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
+            memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
             admission_release=lambda: released.append(True),
         )
         return store, service, job_id, prepared, context, released
