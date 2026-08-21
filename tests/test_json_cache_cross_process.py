@@ -415,6 +415,38 @@ def test_file_lock_windows_success_and_release(monkeypatch: pytest.MonkeyPatch) 
     assert calls == [(15, module.LK_NBLCK, 1), (15, module.LK_UNLCK, 1)]
 
 
+def test_file_lock_windows_recognises_contention_for_nonblocking_and_retrying_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows sharing violations either refuse immediately or are retried."""
+    attempts: list[int] = []
+    module = SimpleNamespace(LK_NBLCK=1, LK_UNLCK=2)
+
+    def locking(*_args: Any) -> None:
+        attempts.append(1)
+        if len(attempts) != 3:
+            raise OSError(13, "busy", None, 33)
+
+    module.locking = locking
+    monkeypatch.setattr(shred_mod.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "msvcrt", module)
+    monkeypatch.setattr(shred_mod.time, "sleep", lambda _seconds: None)
+
+    class Handle:
+        def fileno(self) -> int:
+            return 16
+
+        def seek(self, *_args: Any) -> None:
+            return None
+
+    handle = Handle()
+    assert shred_mod._acquire_file_lock(handle, blocking=False) is False
+    ticks = iter((0.0, 0.0))
+    monkeypatch.setattr(shred_mod.time, "monotonic", lambda: next(ticks))
+    assert shred_mod._acquire_file_lock(handle, timeout_seconds=0.01) is True
+    assert len(attempts) == 3
+
+
 def test_build_lock_registry_discards_inherited_locks_after_fork(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -509,6 +509,17 @@ def test_native_platform_adapter_error_paths(
         native.NativeMemoryLease(_job=1).close()
 
 
+def test_resource_api_returns_none_when_resource_cannot_be_imported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def import_module(_name: str) -> None:
+        raise ImportError("resource is unavailable")
+
+    monkeypatch.setattr(native.importlib, "import_module", import_module)
+
+    assert native._resource_api() is None
+
+
 def test_native_cgroup_creation_and_adapter_failure_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

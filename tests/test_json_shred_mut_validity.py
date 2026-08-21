@@ -825,6 +825,24 @@ def test_strong_file_revision_dispatches_posix_without_constructing_windows_path
     assert shred_mod._strong_file_revision(tmp_path / "data.json") is expected
 
 
+def test_strong_file_revision_dispatches_windows_without_constructing_posix_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The public revision gate selects the native Windows implementation."""
+    import haute._json_shred as shred_mod
+
+    expected = SimpleNamespace(marker="windows")
+    monkeypatch.setattr(shred_mod.os, "name", "nt")
+    monkeypatch.setattr(shred_mod, "_windows_strong_file_revision", lambda _path: expected)
+    monkeypatch.setattr(
+        shred_mod,
+        "_posix_strong_file_revision",
+        lambda _path: pytest.fail("POSIX helper must not run"),
+    )
+
+    assert shred_mod._strong_file_revision(tmp_path / "data.json") is expected
+
+
 class _NativeCallable:
     def __init__(self, callback: Any) -> None:
         self.callback = callback

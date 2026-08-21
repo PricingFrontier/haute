@@ -121,6 +121,17 @@ def test_calibration_registers_a_child_reset_when_fork_hooks_are_available(
     assert callbacks == [namespace["_reset_materialisation_calibration_for_tests"]]
 
 
+def test_calibration_loads_when_fork_hooks_are_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(os, "register_at_fork", raising=False)
+
+    module_path = Path(__file__).parents[1] / "src" / "haute" / "_estimate_calibration.py"
+    namespace = runpy.run_path(str(module_path), run_name="_no_fork_hook_probe")
+
+    assert callable(namespace["_reset_materialisation_calibration_for_tests"])
+
+
 def test_calibration_never_ratchets_down_and_is_profile_scoped() -> None:
     observe_materialisation_estimate(
         ExecutionProfile.PREVIEW_EAGER,

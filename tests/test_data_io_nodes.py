@@ -2234,3 +2234,36 @@ def test_prepare_rejects_a_staging_path_for_non_atomic_lakehouse_output(tmp_path
 
     with pytest.raises(ValueError, match="Only atomic file outputs"):
         prepare_data_output(graph, "dout", project_root=tmp_path, staging_path=tmp_path / "stage")
+
+
+def test_prepare_database_output_without_staging_path_is_transactional(
+    haute_scratch: Path,
+) -> None:
+    """Database targets have no filesystem output and therefore no stage."""
+    source = haute_scratch / "input.parquet"
+    database = haute_scratch / "results.sqlite"
+    pl.DataFrame({"value": [1]}).write_parquet(source)
+    graph = PipelineGraph(
+        nodes=[
+            _ready_data_input_node(
+                "din", {"inputType": "file", "format": "parquet", "path": str(source)}
+            ),
+            _data_output_node(
+                "dout",
+                {
+                    "outputType": "database",
+                    "format": "database",
+                    "table": "results",
+                    "uri": f"sqlite:///{database}",
+                },
+            ),
+        ],
+        edges=[_edge("din", "dout")],
+    )
+
+    prepared = prepare_data_output(graph, "dout", project_root=haute_scratch)
+
+    assert prepared.final_path is None
+    assert prepared.staging_path is None
+    assert prepared.transactional is True
+    assert prepared.response.row_count == 1
