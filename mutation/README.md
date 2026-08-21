@@ -68,6 +68,10 @@ equivalence is covered by `tests/test_mutation_sharding.py` (database level) and
 verified end to end against real targets (unsharded == sharded survival on
 `path-resolution` and `json-cache`, both matching their documented budgets).
 
+The planner targets at most 80 pending mutants per shard without a per-target
+cap. It rejects a plan above GitHub Actions' 256-job matrix limit instead of
+silently overpacking shards until they hit the 30-minute job timeout.
+
 Run a target sharded locally (each shard sequential, exactly as CI runs it):
 
 ```bash

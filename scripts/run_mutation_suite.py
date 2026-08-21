@@ -30,9 +30,10 @@ PYTHON_PLACEHOLDER = "__HAUTE_PYTHON__"
 # wall-clock (the timeout robustness fix) without over-provisioning runners for
 # small targets. Each shard executes its mutants one at a time, so ~80 mutants
 # keeps a shard to roughly 10-20 minutes even on a slow runner, comfortably
-# inside the 30-minute shard-job timeout.
+# inside the 30-minute shard-job timeout. GitHub caps one matrix at 256 jobs;
+# fail planning rather than silently overfilling shards when that limit binds.
 MUTANTS_PER_SHARD = 80
-MAX_SHARDS = 12
+MAX_MATRIX_SHARDS = 256
 
 
 @dataclass(frozen=True)
@@ -572,11 +573,25 @@ def _partition_job_ids(job_ids: Sequence[str], count: int) -> list[list[str]]:
     return buckets
 
 
+def _partition_pending_job_ids(session_file: Path, count: int) -> list[list[str]]:
+    """Partition only executable mutants; the base session retains prior results."""
+    return _partition_job_ids(_pending_job_ids(session_file), count)
+
+
 def _shard_count_for_pending(pending: int) -> int:
     """Shard count for a target, sized so each shard stays well under wall-clock."""
     if pending <= MUTANTS_PER_SHARD:
         return 1
-    return max(1, min(MAX_SHARDS, math.ceil(pending / MUTANTS_PER_SHARD)))
+    return math.ceil(pending / MUTANTS_PER_SHARD)
+
+
+def _validate_shard_matrix_capacity(shard_count: int) -> None:
+    """Reject plans GitHub cannot expand without weakening shard sizing."""
+    if shard_count > MAX_MATRIX_SHARDS:
+        raise ValueError(
+            f"mutation plan requires {shard_count} shard jobs, exceeding the "
+            f"GitHub Actions matrix limit of {MAX_MATRIX_SHARDS}"
+        )
 
 
 def _slice_session(
@@ -804,14 +819,14 @@ def _run_target(
     if not _init_session(target, runtime_config, session_file, target_dir, stages, failures):
         return _write_target_summary(target, target_dir, None, failures, stages)
 
-    all_ids = _all_job_ids(session_file)
-    shard_count = max(1, min(shards if shards is not None else 1, len(all_ids) or 1))
+    pending_ids = _pending_job_ids(session_file)
+    shard_count = max(1, min(shards if shards is not None else 1, len(pending_ids) or 1))
 
     if shard_count <= 1:
         stages.extend(_exec_session(session_file, runtime_config, work_dir=target_dir))
     else:
         shard_sessions: list[Path] = []
-        for shard_index, bucket in enumerate(_partition_job_ids(all_ids, shard_count)):
+        for shard_index, bucket in enumerate(_partition_job_ids(pending_ids, shard_count)):
             shard_dir = target_dir / f"shard-{shard_index}"
             shard_dir.mkdir(parents=True, exist_ok=True)
             shard_session = shard_dir / "session.sqlite"
@@ -873,7 +888,7 @@ def _phase_plan(
 
     shards_plan: list[dict[str, object]] = []
     targets_plan: list[dict[str, object]] = []
-    init_failures: list[str] = []
+    plan_failures: list[str] = []
 
     for target in selected_targets:
         safe = _safe_target_name(target.config_path)
@@ -889,7 +904,7 @@ def _phase_plan(
         if not _init_session(
             target, runtime_config, session_file, target_dir, stages, target_failures
         ):
-            init_failures.extend(f"{target.name}: {failure}" for failure in target_failures)
+            plan_failures.extend(f"{target.name}: {failure}" for failure in target_failures)
             continue
 
         num_pending = len(_pending_job_ids(session_file))
@@ -918,6 +933,11 @@ def _phase_plan(
                 }
             )
 
+    try:
+        _validate_shard_matrix_capacity(len(shards_plan))
+    except ValueError as exc:
+        plan_failures.append(str(exc))
+
     plan = {
         "schema_version": 1,
         "generated_at": datetime.now(UTC).isoformat(),
@@ -932,9 +952,9 @@ def _phase_plan(
     for entry in shards_plan:
         print(f"[mutation]   {entry['target']} shard {entry['shard_index']}/{entry['shard_count']}")
 
-    if init_failures:
-        for failure in init_failures:
-            print(f"[mutation] init failure: {failure}")
+    if plan_failures:
+        for failure in plan_failures:
+            print(f"[mutation] plan failure: {failure}")
         return 1
     return 0
 
@@ -957,7 +977,7 @@ def _phase_exec_shard(args: argparse.Namespace) -> int:
     runtime_config = _materialize_config(target.config_path, work_dir)
 
     session = args.session.resolve()
-    buckets = _partition_job_ids(_all_job_ids(session), args.shard_count)
+    buckets = _partition_pending_job_ids(session, args.shard_count)
     if not 0 <= args.shard_index < len(buckets):
         raise SystemExit(
             f"shard-index {args.shard_index} out of range for {args.shard_count} shards"

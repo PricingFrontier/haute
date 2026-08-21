@@ -205,7 +205,10 @@
    repeated captures prove stable system-font or native-control differences.
 6. Mutation CI calls `scripts/run_mutation_suite.py --phase plan`, executes
    each isolated target/shard, downloads all artifacts, and calls `--phase merge`
-   to enforce total survivor budgets. The merge job's `!cancelled()` status
+   to enforce total survivor budgets. Planning derives enough shards to keep each
+   shard at no more than 80 pending mutants; it does not cap a large target into
+   overfull shards. A plan requiring more than GitHub Actions' 256-job matrix
+   limit fails explicitly before matrix expansion. The merge job's `!cancelled()` status
    condition ensures dependency failures do not skip it, and it fails explicitly
    when planning or a required shard was unsuccessful. Plan and merge artifacts
    retain each target's rationale beside the threshold and observed
