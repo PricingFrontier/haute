@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from haute._execution_admission import ExecutionAdmissionError, IsolatedExecutionBudget
 from haute._execution_context import ExecutionProfile
 from haute._interactive_workers import (
+    InteractiveWorkerCrashedError,
     InteractiveWorkerMemoryLimitError,
     InteractiveWorkerRemoteError,
     InteractiveWorkerTimeoutError,
@@ -439,7 +440,7 @@ def test_dry_run_worker_returns_explicit_error_for_missing_or_failed_result(
     assert releases == [True]
 
 
-@pytest.mark.parametrize("failure_kind", ["memory", "remote"])
+@pytest.mark.parametrize("failure_kind", ["memory", "remote", "crash_memory", "crash"])
 def test_dry_run_process_worker_failures_are_mapped_and_parent_admission_is_released(
     project,
     failure_kind: str,
@@ -464,6 +465,12 @@ def test_dry_run_process_worker_failures_are_mapped_and_parent_admission_is_rele
             limit_bytes=123,
         )
         expected_status = 507
+    elif failure_kind == "crash_memory":
+        failure = InteractiveWorkerCrashedError(-9, memory_limited=True)
+        expected_status = 507
+    elif failure_kind == "crash":
+        failure = InteractiveWorkerCrashedError(3)
+        expected_status = 500
     else:
         failure = InteractiveWorkerRemoteError(
             remote_type="RuntimeError",
@@ -501,6 +508,12 @@ def test_dry_run_process_worker_failures_are_mapped_and_parent_admission_is_rele
     assert response.status_code == expected_status
     if failure_kind == "memory":
         assert response.json()["detail"]["reason"] == "worker_rss_limit_exceeded"
+    elif failure_kind == "crash_memory":
+        assert response.json()["detail"] == {
+            "error_code": "memory_limit",
+            "operation": "output_assemble_dry_run",
+            "reason": "worker_may_have_exceeded_memory_limit",
+        }
     else:
         from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 

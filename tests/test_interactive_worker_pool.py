@@ -4,6 +4,7 @@ import asyncio
 import os
 import pickle
 import queue
+import signal
 import threading
 import time
 from types import SimpleNamespace
@@ -435,6 +436,7 @@ def test_wait_for_result_defensive_paths(monkeypatch: pytest.MonkeyPatch) -> Non
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=None,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
         )
     alive = SimpleNamespace(pid=1, exitcode=None, is_alive=lambda: True)
@@ -447,8 +449,70 @@ def test_wait_for_result_defensive_paths(monkeypatch: pytest.MonkeyPatch) -> Non
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=None,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
         )
+
+
+@pytest.mark.parametrize(
+    ("exitcode", "memory_growth_limit_bytes", "expected_reason"),
+    [
+        (-9, 64 * 1024 * 1024, "memory_limited"),
+        (-int(signal.SIGABRT), 64 * 1024 * 1024, "memory_limited"),
+        (-9, None, "error"),
+        (3, 64 * 1024 * 1024, "error"),
+    ],
+)
+def test_crashed_worker_memory_classification_follows_the_one_shot_heuristic(
+    monkeypatch: pytest.MonkeyPatch,
+    exitcode: int,
+    memory_growth_limit_bytes: int | None,
+    expected_reason: str,
+) -> None:
+    """A SIGKILL/SIGABRT-shaped exit under a configured growth cap is a
+    hedged memory outcome; without a cap, or for any other exit, it stays a
+    plain crash — exactly the one-shot isolated-worker classification."""
+    pool = InteractiveWorkerPool(size=1, poll_interval_seconds=0.01)
+    process = SimpleNamespace(pid=1, exitcode=exitcode, is_alive=lambda: False)
+    slot = SimpleNamespace(index=0, process=process, result_queue=_Queue(), closed=False)
+    monkeypatch.setattr(pool, "_replace_slot", lambda _slot: None)
+    with pytest.raises(InteractiveWorkerCrashedError) as exc_info:
+        pool._wait_for_result(
+            slot,
+            job_id="x",
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=None,
+            memory_growth_limit_bytes=memory_growth_limit_bytes,
+            require_memory_limit=False,
+        )
+    assert exc_info.value.terminal_reason == expected_reason
+    assert exc_info.value.exitcode == exitcode
+
+
+def test_worker_death_during_required_rss_sampling_classifies_the_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker can die between the liveness check and the RSS sample. The
+    lost sample must not be misreported as a required-enforcement failure;
+    the next supervision pass classifies the crash, memory heuristic included."""
+    pool = InteractiveWorkerPool(size=1, poll_interval_seconds=0.01)
+    liveness = iter((True, False, False))
+    process = SimpleNamespace(pid=1, exitcode=-9, is_alive=lambda: next(liveness))
+    slot = SimpleNamespace(index=0, process=process, result_queue=_Queue(), closed=False)
+    monkeypatch.setattr(pool, "_replace_slot", lambda _slot: None)
+    monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: None)
+    with pytest.raises(InteractiveWorkerCrashedError) as exc_info:
+        pool._wait_for_result(
+            slot,
+            job_id="x",
+            timeout_seconds=1,
+            stop_reason=None,
+            absolute_rss_limit_bytes=100,
+            memory_growth_limit_bytes=100,
+            require_memory_limit=True,
+        )
+    assert exc_info.value.terminal_reason == "memory_limited"
 
 
 def test_entrypoint_preload_unpicklable_and_malformed_requests(
@@ -575,6 +639,7 @@ def test_wait_for_result_acknowledges_before_returning_and_requires_release(
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=None,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
         )
         == 7
@@ -608,6 +673,7 @@ def test_remote_result_keeps_primary_error_when_release_is_invalid(
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=None,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
         )
 
@@ -1058,6 +1124,7 @@ def test_optional_sampler_warning_is_once_and_under_limit_sample_keeps_waiting(
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=100,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
         )
         == 7
@@ -1079,6 +1146,7 @@ def test_optional_sampler_warning_is_once_and_under_limit_sample_keeps_waiting(
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=100,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
         )
         == 7
@@ -1320,6 +1388,7 @@ def test_wait_for_result_preserves_remote_error_when_ack_or_release_fails(
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=None,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
         )
     assert "release confirmation" in " ".join(exc_info.value.__notes__) and replaced == [slot]
@@ -1344,6 +1413,7 @@ def test_wait_and_protocol_error_boundaries(monkeypatch: pytest.MonkeyPatch) -> 
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=10,
+            memory_growth_limit_bytes=None,
             require_memory_limit=True,
         )
     assert replaced == [slot]
@@ -1372,6 +1442,7 @@ def test_wait_for_release_covers_protocol_stop_and_rss_boundaries(
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=None,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
             sampler_unavailable_logged=False,
         )
@@ -1389,6 +1460,7 @@ def test_wait_for_release_covers_protocol_stop_and_rss_boundaries(
             timeout_seconds=1,
             stop_reason=lambda: "cancelled",
             absolute_rss_limit_bytes=None,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
             sampler_unavailable_logged=False,
         )
@@ -1407,6 +1479,7 @@ def test_wait_for_release_covers_protocol_stop_and_rss_boundaries(
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=10,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
             sampler_unavailable_logged=False,
         )
@@ -1431,6 +1504,7 @@ def test_wait_for_result_surfaces_ack_and_release_errors_without_user_error(
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=None,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
         )
 
@@ -1452,6 +1526,7 @@ def test_wait_for_result_surfaces_ack_and_release_errors_without_user_error(
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=None,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
         )
 
@@ -1480,6 +1555,7 @@ def test_wait_for_release_covers_shutdown_deadline_and_dead_child() -> None:
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=None,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
             sampler_unavailable_logged=False,
         )
@@ -1492,6 +1568,7 @@ def test_wait_for_release_covers_shutdown_deadline_and_dead_child() -> None:
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=None,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
             sampler_unavailable_logged=False,
         )
@@ -1506,6 +1583,7 @@ def test_wait_for_release_covers_shutdown_deadline_and_dead_child() -> None:
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=None,
+            memory_growth_limit_bytes=None,
             require_memory_limit=False,
             sampler_unavailable_logged=False,
         )
@@ -1530,6 +1608,7 @@ def test_wait_for_release_retries_stop_and_rss_sampling(
         timeout_seconds=1,
         stop_reason=lambda: next(stop_polls),
         absolute_rss_limit_bytes=None,
+        memory_growth_limit_bytes=None,
         require_memory_limit=False,
         sampler_unavailable_logged=False,
     )
@@ -1545,6 +1624,7 @@ def test_wait_for_release_retries_stop_and_rss_sampling(
             timeout_seconds=1,
             stop_reason=None,
             absolute_rss_limit_bytes=100,
+            memory_growth_limit_bytes=None,
             require_memory_limit=True,
             sampler_unavailable_logged=False,
         )
@@ -1563,6 +1643,7 @@ def test_wait_for_release_retries_stop_and_rss_sampling(
         timeout_seconds=1,
         stop_reason=None,
         absolute_rss_limit_bytes=100,
+        memory_growth_limit_bytes=None,
         require_memory_limit=False,
         sampler_unavailable_logged=False,
     )
@@ -1581,6 +1662,7 @@ def test_wait_for_release_retries_stop_and_rss_sampling(
         timeout_seconds=1,
         stop_reason=None,
         absolute_rss_limit_bytes=100,
+        memory_growth_limit_bytes=None,
         require_memory_limit=False,
         sampler_unavailable_logged=True,
     )

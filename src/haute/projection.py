@@ -463,11 +463,6 @@ class ProjectionEdgeKey:
             target_port=edge.targetPort,
         )
 
-    @classmethod
-    def legacy_pair(cls, source: str, target: str) -> ProjectionEdgeKey:
-        """Lift the historical pair spelling for direct library fixtures."""
-        return cls(edge_id=f"e_{source}_{target}", source=source, target=target)
-
     def sort_key(self) -> tuple[str, ...]:
         return (
             self.source,
@@ -495,12 +490,11 @@ _EdgeValue = TypeVar("_EdgeValue")
 
 
 class _EdgeIdentityMapping(Mapping[ProjectionEdgeKey, _EdgeValue], Generic[_EdgeValue]):
-    """Immutable edge-key map with fail-loud unique-pair compatibility.
+    """Immutable edge-key map addressed only by complete edge identities.
 
-    Production code always addresses a complete :class:`ProjectionEdgeKey`.
-    Historical direct callers may still index by ``(source, target)`` when
-    exactly one matching edge exists.  An ambiguous pair raises ``ValueError``
-    instead of choosing a port silently.
+    A ``(source, target)`` pair is lossy — one multi-frame source can connect
+    several ports to the same target — so every lookup and construction key
+    must be a complete :class:`ProjectionEdgeKey`.
     """
 
     def __init__(
@@ -509,39 +503,14 @@ class _EdgeIdentityMapping(Mapping[ProjectionEdgeKey, _EdgeValue], Generic[_Edge
     ) -> None:
         normalised: dict[ProjectionEdgeKey, _EdgeValue] = {}
         for raw_key, value in values.items():
-            if isinstance(raw_key, ProjectionEdgeKey):
-                key = raw_key
-            elif (
-                isinstance(raw_key, tuple)
-                and len(raw_key) == 2
-                and all(isinstance(part, str) for part in raw_key)
-            ):
-                key = ProjectionEdgeKey.legacy_pair(raw_key[0], raw_key[1])
-            else:
+            if not isinstance(raw_key, ProjectionEdgeKey):
                 raise TypeError("projection edge mappings require complete edge keys")
-            normalised[key] = value
+            normalised[raw_key] = value
         self._values = MappingProxyType(normalised)
 
-    def __getitem__(
-        self,
-        key: ProjectionEdgeKey | tuple[str, str],
-    ) -> _EdgeValue:
+    def __getitem__(self, key: ProjectionEdgeKey) -> _EdgeValue:
         if isinstance(key, ProjectionEdgeKey):
             return self._values[key]
-        if isinstance(key, tuple) and len(key) == 2:
-            source, target = key
-            matches = [
-                value
-                for edge_key, value in self._values.items()
-                if edge_key.source == source and edge_key.target == target
-            ]
-            if len(matches) == 1:
-                return matches[0]
-            if len(matches) > 1:
-                raise ValueError(
-                    "Projection edge lookup is ambiguous for node pair "
-                    f"{source!r} -> {target!r}; use the complete edge identity."
-                )
         raise KeyError(key)
 
     def __iter__(self) -> Iterator[ProjectionEdgeKey]:

@@ -159,9 +159,9 @@ def test_prepare_dispatches_parallel_only_for_multiple_ranges_and_rechecks_signa
         result = shred.prepare_per_port_cache(data, config, cache, staging_dir=staging)
         assert any(name == expected for name, _value in calls)
         assert calls == [
-            ("sig", {"upgrade_legacy_proofs": False}),
+            ("sig", {"rebind_persisted_proofs": False}),
             (expected, None),
-            ("sig", {"upgrade_legacy_proofs": False}),
+            ("sig", {"rebind_persisted_proofs": False}),
         ]
         assert Path(result.staging_dir or "").parent.exists()
         shred._remove_prepared_staging(Path(result.staging_dir or ""))

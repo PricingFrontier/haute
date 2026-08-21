@@ -58,8 +58,8 @@
   dataclasses) — immutable execution-strategy identity and result. A key contains
   the persisted edge id plus source, target, visible handles, and retained boundary
   ports. `edge_demands` and edge diagnostics use that key, never a lossy
-  `(source_node_id, target_node_id)` pair. `ProjectionPlan.demand_for_edge()` is the
-  runtime lookup; pair-only lookup is diagnostic convenience and rejects ambiguity.
+  `(source_node_id, target_node_id)` pair; the mappings accept complete keys only.
+  `ProjectionPlan.demand_for_edge()` is the runtime lookup.
   The plan also carries `needed_by_node`, materialisation/opaque boundaries, and
   bounded diagnostics.
 - **`ColumnLineageAnalysis`** (`src/haute/_column_lineage.py`, frozen dataclass) —
@@ -543,7 +543,14 @@ the request and teardown paths.
 Only the closed public contract-error identities and Haute's two structured memory
 errors may contribute an HTTP detail payload; an arbitrary exception that happens to
 define `to_payload()` is still an internal 500 and cannot smuggle child data into a
-response.
+response. Three additional memory outcomes are classified from parent-side evidence
+and answered with a parent-authored, data-free 507 detail (never the child payload):
+an `InteractiveWorkerCrashedError` whose exit code looks memory-limited under a
+configured growth cap (the same `SIGKILL`/`SIGABRT` heuristic as one-shot workers,
+recorded as `terminal_reason="memory_limited"` on the exception), a remote error
+whose exact identity is `builtins.MemoryError`, and a remote
+`haute._native_memory_limit.NativeMemoryLimitUnsupportedError`. A remote exception
+merely *named* like one of these from another module remains an internal 500.
 `HAUTE_INTERACTIVE_EXECUTION_MODE` is the closed set `process|thread`; production
 defaults to `process`. `thread` exists as an explicit compatibility/test mode and
 retains the documented non-killable timeout semantics—it is never an automatic
@@ -854,7 +861,10 @@ fallback after a process failure.
   counters for cache proof hits, misses, and direct fallbacks. Miss reasons are a
   closed enum (metadata/source mismatch, artifact integrity/schema failure,
   unreadable artifact, and proof unavailable); unknown strings are rejected at the
-  recording boundary. Metrics may include counts and reason codes, plus aggregate
+  recording boundary. Every metrics payload carries the cache-proof counters and
+  their reason-code breakdown — the field is required on both the backend response
+  model and the frontend guard, and `misses` must equal the closed reason-count
+  total — plus aggregate
   requested/scanned widths and estimate calibration. A width total is emitted only
   when that width is known for every recorded node; partial evidence remains `null`
   rather than looking like a deceptively narrow complete total. They never include cache paths,

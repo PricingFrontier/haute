@@ -354,7 +354,7 @@ def test_legacy_upgrade_skips_independent_bad_layers_and_writes_exact_payload(
     signature = shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, revision)
     monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
 
-    shred_mod._upgrade_legacy_persisted_source_proofs(path, signature, revision)
+    shred_mod._rebind_persisted_source_proofs(path, signature, revision)
 
     assert seen == ["working", "committed"]
     assert (working_meta.read_bytes() if working_meta.exists() else None) == bad_working
@@ -382,7 +382,7 @@ def test_legacy_upgrade_current_payload_is_untouched_and_movement_stops_later_la
         shred_mod.os, "replace", lambda *_args: pytest.fail("current proof rewritten")
     )
     with structlog.testing.capture_logs() as current_logs:
-        shred_mod._upgrade_legacy_persisted_source_proofs(path, signature, revision)
+        shred_mod._rebind_persisted_source_proofs(path, signature, revision)
     assert current_logs == []
 
     legacy = {"schema_mode": "v2", "data_file": {"size": 3, "sha256": "a" * 64}}
@@ -392,7 +392,7 @@ def test_legacy_upgrade_current_payload_is_untouched_and_movement_stops_later_la
     observations = iter((revision, moved))
     monkeypatch.setattr(shred_mod.os, "replace", real_replace)
     monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: next(observations))
-    shred_mod._upgrade_legacy_persisted_source_proofs(path, signature, revision)
+    shred_mod._rebind_persisted_source_proofs(path, signature, revision)
     assert (
         orjson.loads((dirs["working"] / "meta.json").read_bytes())["data_file"]
         == signature.as_dict()
@@ -419,7 +419,7 @@ def test_legacy_upgrade_never_rewrites_other_schema_modes(
     monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
 
     with structlog.testing.capture_logs() as logs:
-        shred_mod._upgrade_legacy_persisted_source_proofs(path, signature, revision)
+        shred_mod._rebind_persisted_source_proofs(path, signature, revision)
 
     assert orjson.loads(meta_path.read_bytes()) == legacy
     assert logs == []
@@ -440,7 +440,7 @@ def test_legacy_upgrade_success_does_not_report_missing_temp_cleanup(
     monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: revision)
 
     with structlog.testing.capture_logs() as logs:
-        shred_mod._upgrade_legacy_persisted_source_proofs(path, signature, revision)
+        shred_mod._rebind_persisted_source_proofs(path, signature, revision)
 
     assert [entry["event"] for entry in logs] == ["json_source_persisted_proof_upgraded"]
     assert orjson.loads(meta_path.read_bytes())["data_file"] == signature.as_dict()
@@ -472,7 +472,7 @@ def test_legacy_upgrade_write_and_cleanup_failures_are_visible(
 
     monkeypatch.setattr(Path, "unlink", deny_cleanup)
     with structlog.testing.capture_logs() as logs:
-        shred_mod._upgrade_legacy_persisted_source_proofs(path, signature, revision)
+        shred_mod._rebind_persisted_source_proofs(path, signature, revision)
     assert orjson.loads(meta_path.read_bytes()) == legacy
     assert [(entry["event"], entry.get("action")) for entry in logs] == [
         ("json_source_persisted_proof_upgrade_failed", "retain_full_hash_result"),
@@ -498,13 +498,13 @@ def test_signature_memo_cached_hits_lru_unavailable_and_gate_cleanup(
     calls: list[Path] = []
     monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda path: revisions[path])
     monkeypatch.setattr(shred_mod, "_persisted_data_file_signature", lambda _p, _r: None)
-    monkeypatch.setattr(shred_mod, "_upgrade_legacy_persisted_source_proofs", lambda *_a: None)
+    monkeypatch.setattr(shred_mod, "_rebind_persisted_source_proofs", lambda *_a: None)
     monkeypatch.setattr(
         shred_mod,
         "_revision_gated_data_file_signature",
         lambda p, r: calls.append(p) or shred_mod._DataFileSignatureRecord(3, 4, "a" * 64, r),
     )
-    memo.get(paths[0], upgrade_legacy_proofs=False)
+    memo.get(paths[0], rebind_persisted_proofs=False)
     memo.get(paths[1])
     memo.get(paths[0])
     memo.get(paths[2])
@@ -516,7 +516,7 @@ def test_signature_memo_cached_hits_lru_unavailable_and_gate_cleanup(
         "_uncached_data_file_signature",
         lambda _p: shred_mod._DataFileSignatureRecord(3, 4, "u" * 64, None),
     )
-    assert memo.get(paths[1], upgrade_legacy_proofs=False)["sha256"] == "u" * 64
+    assert memo.get(paths[1], rebind_persisted_proofs=False)["sha256"] == "u" * 64
     assert len(memo) == 2
 
 
@@ -548,7 +548,7 @@ def test_signature_memo_default_upgrades_and_equal_fresh_revisions_hit(
     monkeypatch.setattr(shred_mod, "_revision_gated_data_file_signature", hash_once)
     monkeypatch.setattr(
         shred_mod,
-        "_upgrade_legacy_persisted_source_proofs",
+        "_rebind_persisted_source_proofs",
         lambda source_path, _signature, current: upgrades.append((source_path, current)),
     )
 
@@ -611,7 +611,7 @@ def test_signature_memo_eviction_keeps_only_active_old_gate(
         lambda p: new_revision if p == new.resolve() else old_revision,
     )
     monkeypatch.setattr(shred_mod, "_persisted_data_file_signature", lambda _p, _r: None)
-    monkeypatch.setattr(shred_mod, "_upgrade_legacy_persisted_source_proofs", lambda *_a: None)
+    monkeypatch.setattr(shred_mod, "_rebind_persisted_source_proofs", lambda *_a: None)
     monkeypatch.setattr(
         shred_mod,
         "_revision_gated_data_file_signature",

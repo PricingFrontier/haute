@@ -120,6 +120,44 @@ def test_remote_public_error_payload_requires_the_declared_error_code() -> None:
     assert exc_info.value.status_code == 500
 
 
+def test_memory_classified_crash_maps_to_a_parent_authored_507_detail() -> None:
+    from haute._interactive_workers import InteractiveWorkerCrashedError
+    from haute.routes.pipeline import _raise_interactive_worker_crash_http_error
+
+    crash = InteractiveWorkerCrashedError(-9, memory_limited=True)
+
+    with pytest.raises(HTTPException) as exc_info:
+        _raise_interactive_worker_crash_http_error(crash, operation="pipeline_preview")
+
+    assert exc_info.value.status_code == 507
+    assert exc_info.value.detail == {
+        "error_code": "memory_limit",
+        "operation": "pipeline_preview",
+        "reason": "worker_may_have_exceeded_memory_limit",
+    }
+
+
+def test_remote_builtin_memory_error_maps_to_a_data_free_507_detail() -> None:
+    from haute.routes.pipeline import _raise_interactive_remote_http_error
+
+    remote = _remote_error(
+        remote_module="builtins",
+        remote_type="MemoryError",
+        public_payload=None,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        _raise_interactive_remote_http_error(remote, operation="pipeline_trace")
+
+    assert exc_info.value.status_code == 507
+    assert exc_info.value.detail == {
+        "error_code": "memory_limit",
+        "operation": "pipeline_trace",
+        "reason": "worker_memory_exhausted",
+    }
+    assert "private child detail" not in str(exc_info.value.detail)
+
+
 def test_known_remote_memory_error_keeps_its_public_payload() -> None:
     from haute._execution_admission import ExecutionAdmissionError
     from haute.routes.pipeline import _raise_interactive_remote_http_error
@@ -329,6 +367,39 @@ class _RaisingCoordinator:
                 remote_type="RuntimeError",
                 remote_module="private.module",
                 remote_message="private",
+                remote_traceback="private traceback",
+                public_payload=None,
+            ),
+            500,
+        ),
+        (lambda module: module.InteractiveWorkerCrashedError(-9, memory_limited=True), 507),
+        (lambda module: module.InteractiveWorkerCrashedError(3), 500),
+        (
+            lambda module: module.InteractiveWorkerRemoteError(
+                remote_type="MemoryError",
+                remote_module="builtins",
+                remote_message="private allocation detail",
+                remote_traceback="private traceback",
+                public_payload=None,
+            ),
+            507,
+        ),
+        (
+            lambda module: module.InteractiveWorkerRemoteError(
+                remote_type="NativeMemoryLimitUnsupportedError",
+                remote_module="haute._native_memory_limit",
+                remote_message="private host detail",
+                remote_traceback="private traceback",
+                public_payload=None,
+            ),
+            507,
+        ),
+        (
+            # A same-named exception from any other module must stay redacted.
+            lambda module: module.InteractiveWorkerRemoteError(
+                remote_type="MemoryError",
+                remote_module="third_party.plugin",
+                remote_message="forged",
                 remote_traceback="private traceback",
                 public_payload=None,
             ),

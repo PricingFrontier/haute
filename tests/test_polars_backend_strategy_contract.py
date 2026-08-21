@@ -284,7 +284,32 @@ def test_calibrated_metric_evidence_uses_the_same_closed_contract(
     calibration_fields: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
-        ExecutionMetricsPayload.model_validate(calibration_fields)
+        ExecutionMetricsPayload.model_validate(
+            {**calibration_fields, "cache_proof": _empty_cache_proof()}
+        )
+
+
+def _empty_cache_proof() -> dict[str, object]:
+    return {
+        "hits": 0,
+        "misses": 0,
+        "direct_fallbacks": 0,
+        "miss_reason_counts": {
+            "metadata_source_mismatch": 0,
+            "artifact_integrity_schema_failure": 0,
+            "unreadable_artifact": 0,
+            "proof_unavailable": 0,
+        },
+    }
+
+
+def test_execution_metrics_payload_requires_cache_proof_evidence() -> None:
+    with pytest.raises(ValidationError):
+        ExecutionMetricsPayload.model_validate({})
+    with pytest.raises(ValidationError):
+        ExecutionMetricsPayload.model_validate(
+            {"cache_proof": {**_empty_cache_proof(), "misses": 3}}
+        )
 
 
 def test_calibrated_payloads_accept_exact_upward_evidence() -> None:
@@ -314,6 +339,7 @@ def test_calibrated_payloads_accept_exact_upward_evidence() -> None:
                 "raw_estimated_bytes": 10,
                 "estimate_calibration_factor_basis_points": 11_000,
                 "estimate_admission_basis": "provided",
+                "cache_proof": _empty_cache_proof(),
             }
         ).estimated_bytes
         == 11

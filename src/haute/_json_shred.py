@@ -771,12 +771,19 @@ def _persisted_data_file_signature(
     return candidates[0]  # pragma: no mutate - candidates are proven value-identical above
 
 
-def _upgrade_legacy_persisted_source_proofs(
+def _rebind_persisted_source_proofs(
     data_path: Path,
     signature: _DataFileSignatureRecord,
     revision: _StrongFileRevision,
 ) -> None:
-    """Atomically bind matching legacy manifests to one freshly hashed revision."""
+    """Atomically bind content-matching manifests to one freshly hashed revision.
+
+    This is the fresh-host/first-observation path, not a version shim: a
+    manifest whose content signature matches but whose recorded native
+    revision differs (a cache built on another volume, or before this host
+    could observe a revision) is rebound so later processes here can reuse
+    the proof without re-hashing the whole source.
+    """
 
     from haute._json_flatten import _json_cache_dir
 
@@ -890,7 +897,7 @@ class _DataFileSignatureMemo:
         self,
         data_path: Path,
         *,  # pragma: no mutate
-        upgrade_legacy_proofs: bool = True,
+        rebind_persisted_proofs: bool = True,
     ) -> dict[str, Any]:
         """Return a source signature, hashing once per unchanged generation."""
         self._ensure_current_process()
@@ -928,8 +935,8 @@ class _DataFileSignatureMemo:
                         resolved_path,
                         current_revision,
                     )
-                    if upgrade_legacy_proofs:
-                        _upgrade_legacy_persisted_source_proofs(
+                    if rebind_persisted_proofs:
+                        _rebind_persisted_source_proofs(
                             resolved_path,
                             signature,
                             current_revision,
@@ -982,7 +989,7 @@ def _clear_data_file_signature_memo() -> None:
 def _data_file_signature(
     data_path: Path,
     *,  # pragma: no mutate
-    upgrade_legacy_proofs: bool = True,
+    rebind_persisted_proofs: bool = True,
 ) -> dict[str, Any]:
     """Return the size/mtime/SHA-256 identity recorded in cache metadata.
 
@@ -994,7 +1001,7 @@ def _data_file_signature(
     """
     return _DATA_FILE_SIGNATURE_MEMO.get(
         data_path,
-        upgrade_legacy_proofs=upgrade_legacy_proofs,
+        rebind_persisted_proofs=rebind_persisted_proofs,
     )
 
 
@@ -4528,7 +4535,7 @@ def prepare_per_port_cache(
     staging = _validated_build_staging_dir(cd, staging_dir)
     table_specs = _emitting_table_specs(v2_config)
     fingerprint = _v2_fingerprint(v2_config)
-    data_file_sig = _data_file_signature(dp, upgrade_legacy_proofs=False)
+    data_file_sig = _data_file_signature(dp, rebind_persisted_proofs=False)
 
     if _cache_is_valid_under_external_lock(
         cd,
@@ -4575,7 +4582,7 @@ def prepare_per_port_cache(
                 table_specs,
                 staging,
             )
-        if _data_file_signature(dp, upgrade_legacy_proofs=False) != data_file_sig:
+        if _data_file_signature(dp, rebind_persisted_proofs=False) != data_file_sig:
             raise SourceChangedDuringCacheBuildError(
                 f"structured source changed while its cache was built: {dp}"
             )

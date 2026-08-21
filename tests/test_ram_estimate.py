@@ -37,12 +37,18 @@ from haute._ram_estimate import (
     _ResolvedRowCardinality,
     _source_column_base_widths,
     estimate_gpu_vram_bytes,
-    estimate_materialisation_boundary,
+    estimate_materialisation_boundaries,
     estimate_safe_training_rows,
 )
 from haute._types import NodeType
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 from tests.conftest import build_test_input_snapshot
+
+
+def _boundary_estimate(graph: PipelineGraph, target_node_id: str) -> MaterialisationEstimate:
+    [(_, estimate)] = list(estimate_materialisation_boundaries(graph, [target_node_id]))
+    return estimate
+
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -312,7 +318,7 @@ def test_materialisation_estimate_reports_known_empty_parquet_as_available_zero(
     )
     graph = PipelineGraph(nodes=[source], edges=[])
 
-    estimate = estimate_materialisation_boundary(graph, source.id)
+    estimate = _boundary_estimate(graph, source.id)
 
     assert estimate.state is MaterialisationEstimateState.AVAILABLE
     assert estimate.estimated_peak_bytes == 0
@@ -478,7 +484,7 @@ def test_materialisation_estimate_reads_each_source_metadata_once(tmp_path) -> N
     )
 
     with patch("haute._ram_estimate.read_parquet_metadata", wraps=read_parquet_metadata) as read:
-        estimate = estimate_materialisation_boundary(graph, target.id)
+        estimate = _boundary_estimate(graph, target.id)
 
     assert estimate.state is MaterialisationEstimateState.AVAILABLE
     assert read.call_count == 1
@@ -2599,7 +2605,7 @@ class TestUnavailableEstimateReasons:
             ],
         )
 
-        estimate = estimate_materialisation_boundary(graph, target.id)
+        estimate = _boundary_estimate(graph, target.id)
 
         assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
         assert estimate.unavailable_reason == "source_row_count_unavailable"
@@ -2621,8 +2627,8 @@ class TestUnavailableEstimateReasons:
             ],
         )
 
-        with patch("haute._ram_estimate._resolve_target_columns", return_value=None):
-            estimate = estimate_materialisation_boundary(graph, target.id)
+        with patch("haute._ram_estimate._resolve_target_columns_from_index", return_value=None):
+            estimate = _boundary_estimate(graph, target.id)
 
         assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
         assert estimate.unavailable_reason == "target_schema_unavailable"

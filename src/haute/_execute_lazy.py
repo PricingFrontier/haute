@@ -42,7 +42,12 @@ from haute._graph_utils import (
 )
 from haute._logging import get_logger
 from haute._path_resolution import runtime_project_root_scoped
-from haute._polars_utils import _malloc_trim, bounded_sink, streaming_collect
+from haute._polars_utils import (
+    _malloc_trim,
+    bounded_sink,
+    projected_or_carrier_columns,
+    streaming_collect,
+)
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -1164,9 +1169,7 @@ def _execute_lazy(
             )
             demand = set(demand) - missing
 
-        ordered = [column for column in schema_cols if column in demand]
-        if not ordered and not demand and schema_cols:
-            ordered = schema_cols[:1]
+        ordered = projected_or_carrier_columns(schema_cols, demand)
         return lazy_frame.select(ordered), frozenset(ordered)
 
     def _runtime_join_edge_demands(
@@ -1524,9 +1527,7 @@ def _execute_lazy(
                         missing=sorted(cache_only_missing),
                     )
                 effective_projection = set(projection) - cache_only_missing
-                valid = [c for c in schema_cols if c in effective_projection]
-                if not valid and not effective_projection and schema_cols:
-                    valid = schema_cols[:1]
+                valid = projected_or_carrier_columns(schema_cols, effective_projection)
                 if valid and len(valid) < len(schema_cols):
                     logger.info(
                         "checkpoint_projection",
@@ -2116,9 +2117,7 @@ def _execute_eager_core(
                             projected_inputs.append(input_lf)
                             continue
                         schema_names = input_lf.collect_schema().names()
-                        selected = [column for column in schema_names if column in demand]
-                        if not selected and not demand and schema_names:
-                            selected = schema_names[:1]
+                        selected = projected_or_carrier_columns(schema_names, demand)
                         projected_inputs.append(input_lf.select(selected))
                     input_lfs = projected_inputs
 

@@ -24,6 +24,7 @@ from haute.projection import (
     source_scan_projection,
     validate_projection_rule_coverage,
 )
+from tests._projection_helpers import has_pair, pair_value, pair_value_or_none
 from tests.conftest import make_edge, make_graph, make_output_config
 
 
@@ -333,8 +334,12 @@ def test_public_projection_plan_routes_fan_in_demands_by_parent():
     assert projection.needed_by_node["joined"] == frozenset(
         {"quote_id", "left_value", "right_value"}
     )
-    assert projection.edge_demands[("left", "joined")] == frozenset({"quote_id", "left_value"})
-    assert projection.edge_demands[("right", "joined")] == frozenset({"quote_id", "right_value"})
+    assert pair_value(projection.edge_demands, "left", "joined") == frozenset(
+        {"quote_id", "left_value"}
+    )
+    assert pair_value(projection.edge_demands, "right", "joined") == frozenset(
+        {"quote_id", "right_value"}
+    )
     assert isinstance(projection.opaque_boundaries, frozenset)
 
 
@@ -408,11 +413,15 @@ def test_edge_join_projection_routes_demand_by_parent_produced_columns():
 
     # The join key is demanded from both roles; produced columns route to the
     # parent that owns them; the base role is the spine for anything else.
-    assert projection.edge_demands[("base", "joined")] == frozenset({"quote_id", "policy_id"})
-    assert projection.edge_demands[("join", "joined")] == frozenset(
+    assert pair_value(projection.edge_demands, "base", "joined") == frozenset(
+        {"quote_id", "policy_id"}
+    )
+    assert pair_value(projection.edge_demands, "join", "joined") == frozenset(
         {"quote_id", "competitor_premium"}
     )
-    assert projection.diagnostics.edge_reasons[("join", "joined")].rule == "edge_join_fan_in"
+    assert (
+        pair_value(projection.diagnostics.edge_reasons, "join", "joined").rule == "edge_join_fan_in"
+    )
 
 
 def test_edge_join_projection_keeps_suffixed_collision_column_from_join_parent():
@@ -434,9 +443,9 @@ def test_edge_join_projection_keeps_suffixed_collision_column_from_join_parent()
         )
     )
     # The join parent must still be asked for 'x' (so Polars can emit 'x_right').
-    assert "x" in projection.edge_demands[("join", "joined")]
-    assert "x" in projection.edge_demands[("base", "joined")]
-    assert "quote_id" in projection.edge_demands[("join", "joined")]
+    assert "x" in pair_value(projection.edge_demands, "join", "joined")
+    assert "x" in pair_value(projection.edge_demands, "base", "joined")
+    assert "quote_id" in pair_value(projection.edge_demands, "join", "joined")
 
 
 def test_narrow_join_parent_demand_routes_keys_and_producers():
@@ -537,8 +546,10 @@ def test_edge_join_projection_splits_left_and_right_keys_by_role():
     )
 
     # leftOn demands the left key from base; rightOn demands the right key from join.
-    assert projection.edge_demands[("base", "joined")] == frozenset({"base_key", "policy_id"})
-    assert projection.edge_demands[("join", "joined")] == frozenset(
+    assert pair_value(projection.edge_demands, "base", "joined") == frozenset(
+        {"base_key", "policy_id"}
+    )
+    assert pair_value(projection.edge_demands, "join", "joined") == frozenset(
         {"join_key", "competitor_premium"}
     )
 
@@ -651,9 +662,12 @@ def test_projection_diagnostics_records_named_rule_reasons():
     )
 
     assert fan_in_projection.diagnostics.node_reasons["out"].rule == "projection_seed"
-    assert fan_in_projection.diagnostics.edge_reasons[("right", "joined")].rule == "polars_fan_in"
     assert (
-        ratebook_projection.diagnostics.edge_reasons[("scored", "ratebook_opt")].rule
+        pair_value(fan_in_projection.diagnostics.edge_reasons, "right", "joined").rule
+        == "polars_fan_in"
+    )
+    assert (
+        pair_value(ratebook_projection.diagnostics.edge_reasons, "scored", "ratebook_opt").rule
         == "optimiser_parent_demand"
     )
 
@@ -821,8 +835,10 @@ def test_single_parent_polars_with_columns_projects_expression_dependencies():
         )
     )
 
-    assert projection.edge_demands[("source", "features")] == frozenset({"premium", "burn_cost"})
-    assert projection.diagnostics.edge_reasons[("source", "features")].rule == (
+    assert pair_value(projection.edge_demands, "source", "features") == frozenset(
+        {"premium", "burn_cost"}
+    )
+    assert pair_value(projection.diagnostics.edge_reasons, "source", "features").rule == (
         "polars_column_lineage"
     )
 
@@ -876,8 +892,10 @@ def test_empty_declared_polars_contract_does_not_mask_expression_dependency():
     )
 
     assert projection.needed_by_node["source"] == frozenset({"quote_id", "premium"})
-    assert projection.edge_demands[("source", "features")] == frozenset({"quote_id", "premium"})
-    assert projection.diagnostics.edge_reasons[("source", "features")].rule == (
+    assert pair_value(projection.edge_demands, "source", "features") == frozenset(
+        {"quote_id", "premium"}
+    )
+    assert pair_value(projection.diagnostics.edge_reasons, "source", "features").rule == (
         "polars_column_lineage"
     )
 
@@ -1105,7 +1123,9 @@ def test_single_parent_polars_filter_keeps_predicate_dependencies():
         )
     )
 
-    assert projection.edge_demands[("source", "filtered")] == frozenset({"premium", "segment"})
+    assert pair_value(projection.edge_demands, "source", "filtered") == frozenset(
+        {"premium", "segment"}
+    )
 
 
 def test_single_parent_polars_keyword_filter_keeps_constraint_column():
@@ -1159,7 +1179,9 @@ def test_single_parent_polars_keyword_filter_keeps_constraint_column():
         )
     )
 
-    assert projection.edge_demands[("source", "filtered")] == frozenset({"premium", "segment"})
+    assert pair_value(projection.edge_demands, "source", "filtered") == frozenset(
+        {"premium", "segment"}
+    )
 
 
 def test_single_parent_polars_keyword_filter_double_star_stays_full_width():
@@ -1173,7 +1195,7 @@ def test_single_parent_polars_keyword_filter_double_star_stays_full_width():
         ["premium"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1221,7 +1243,7 @@ def test_single_parent_polars_rename_to_new_target_keeps_full_width():
         )
     )
 
-    assert ("source", "renamed") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "renamed")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1282,7 +1304,7 @@ def test_single_parent_polars_rename_then_filter_on_new_name_keeps_full_width():
         ["premium", "quote_id"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1292,7 +1314,7 @@ def test_single_parent_polars_chained_new_target_renames_keep_full_width():
         ["c", "keep"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1302,7 +1324,7 @@ def test_single_parent_polars_multiple_new_target_renames_keep_full_width():
         ["x", "y"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1312,7 +1334,7 @@ def test_single_parent_polars_rename_to_same_name_is_a_no_op():
         ["premium"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"premium"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"premium"})
 
 
 def test_single_parent_polars_swap_renames_resolve_simultaneously():
@@ -1321,7 +1343,7 @@ def test_single_parent_polars_swap_renames_resolve_simultaneously():
         ["a", "b"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b"})
 
 
 def test_single_parent_polars_rename_collision_keeps_pre_rename_reference_demand():
@@ -1335,7 +1357,7 @@ def test_single_parent_polars_rename_collision_keeps_pre_rename_reference_demand
         ["b"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1352,7 +1374,7 @@ def test_single_parent_polars_rename_target_collision_keeps_full_width():
         ["c"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1367,7 +1389,7 @@ def test_single_parent_polars_demand_for_renamed_away_column_keeps_full_width():
         ["a", "b"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
     assert "source" in projection.opaque_boundaries
 
@@ -1383,7 +1405,7 @@ def test_single_parent_polars_duplicate_rename_targets_keep_full_width():
         ["c"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1393,7 +1415,7 @@ def test_single_parent_polars_dynamic_rename_mapping_keeps_full_width():
         ["x"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1403,7 +1425,7 @@ def test_single_parent_polars_rename_then_select_on_new_name_keeps_full_width():
         ["b", "keep"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1414,7 +1436,7 @@ def test_single_parent_polars_rename_then_with_columns_keeps_full_width():
         ["double", "amount"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1425,7 +1447,7 @@ def test_single_parent_polars_rename_keeps_unused_rename_source_for_execution():
         ["p2"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1437,7 +1459,9 @@ def test_single_parent_polars_no_rename_union_path_unchanged():
         ["m"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "flag"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset(
+        {"a", "b", "flag"}
+    )
 
 
 def test_rename_node_then_downstream_filter_node_keeps_rename_parent_full_width():
@@ -1494,8 +1518,10 @@ def test_rename_node_then_downstream_filter_node_keeps_rename_parent_full_width(
         )
     )
 
-    assert projection.edge_demands[("renamed", "filtered")] == frozenset({"premium", "quote_id"})
-    assert ("source", "renamed") not in projection.edge_demands
+    assert pair_value(projection.edge_demands, "renamed", "filtered") == frozenset(
+        {"premium", "quote_id"}
+    )
+    assert not has_pair(projection.edge_demands, "source", "renamed")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1511,9 +1537,9 @@ def test_single_parent_polars_derived_column_filter_projects_expression_inputs()
         ["m"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b"})
     assert projection.needed_by_node["source"] == frozenset({"a", "b"})
-    assert projection.diagnostics.edge_reasons[("source", "transform")].rule == (
+    assert pair_value(projection.diagnostics.edge_reasons, "source", "transform").rule == (
         "polars_column_lineage"
     )
 
@@ -1524,7 +1550,7 @@ def test_single_parent_polars_derived_keyword_column_filter_projects_expression_
         ["m"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b"})
 
 
 def test_single_parent_polars_derived_of_derived_projects_root_inputs():
@@ -1535,7 +1561,7 @@ def test_single_parent_polars_derived_of_derived_projects_root_inputs():
         ["n"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b"})
 
 
 def test_single_parent_polars_select_of_derived_projects_expression_inputs():
@@ -1544,7 +1570,7 @@ def test_single_parent_polars_select_of_derived_projects_expression_inputs():
         ["m", "a"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b"})
 
 
 def test_single_parent_polars_overwrite_same_name_keeps_single_demand():
@@ -1558,7 +1584,7 @@ def test_single_parent_polars_overwrite_same_name_keeps_single_demand():
         ["a"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a"})
 
 
 def test_single_parent_polars_reference_before_production_still_demands_parent_column():
@@ -1572,7 +1598,7 @@ def test_single_parent_polars_reference_before_production_still_demands_parent_c
         ["m"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "m"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "m"})
 
 
 def test_single_parent_polars_helper_call_keeps_visible_full_width_boundary():
@@ -1582,9 +1608,9 @@ def test_single_parent_polars_helper_call_keeps_visible_full_width_boundary():
         ["x", "keep"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
-    reason = projection.diagnostics.edge_reasons[("source", "transform")]
+    reason = pair_value(projection.diagnostics.edge_reasons, "source", "transform")
     assert reason.rule == "polars_lineage_unsupported"
     assert reason.details == {"reason": "dynamic_helper", "operation": None}
 
@@ -1599,7 +1625,7 @@ def test_single_parent_polars_named_root_derive_select_narrows_parent_demand():
     )
 
     assert projection.needed_by_node["source"] == frozenset({"raw_premium", "quote_id"})
-    assert projection.edge_demands[("source", "transform")] == frozenset(
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset(
         {"raw_premium", "quote_id"}
     )
 
@@ -1615,9 +1641,9 @@ def test_single_parent_polars_select_subset_demands_inputs_of_every_select_outpu
         ["a"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b", "c"})
     assert projection.needed_by_node["source"] == frozenset({"a", "b", "c"})
-    assert projection.diagnostics.edge_reasons[("source", "transform")].rule == (
+    assert pair_value(projection.diagnostics.edge_reasons, "source", "transform").rule == (
         "polars_column_lineage"
     )
 
@@ -1629,7 +1655,7 @@ def test_single_parent_polars_select_with_mixed_expression_args_demands_all_inpu
         ["a"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b"})
 
 
 def test_single_parent_polars_select_with_aliased_expression_demands_all_inputs():
@@ -1643,7 +1669,7 @@ def test_single_parent_polars_select_with_aliased_expression_demands_all_inputs(
         ["m"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b"})
 
 
 def test_single_parent_polars_select_seq_subset_demands_inputs_of_every_select_output():
@@ -1653,7 +1679,7 @@ def test_single_parent_polars_select_seq_subset_demands_inputs_of_every_select_o
         ["a"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b", "c"})
 
 
 def test_single_parent_polars_select_then_filter_demands_all_select_inputs():
@@ -1662,7 +1688,7 @@ def test_single_parent_polars_select_then_filter_demands_all_select_inputs():
         ["a"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b", "c"})
 
 
 def test_single_parent_polars_filter_then_select_demands_filter_and_select_inputs():
@@ -1671,7 +1697,9 @@ def test_single_parent_polars_filter_then_select_demands_filter_and_select_input
         ["a"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c", "x"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset(
+        {"a", "b", "c", "x"}
+    )
 
 
 def test_single_parent_polars_chained_selects_demand_first_select_inputs():
@@ -1685,7 +1713,7 @@ def test_single_parent_polars_chained_selects_demand_first_select_inputs():
         ["a"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b"})
 
 
 def test_single_parent_polars_unaliased_with_columns_tracks_structural_output_name():
@@ -1699,7 +1727,7 @@ def test_single_parent_polars_unaliased_with_columns_tracks_structural_output_na
         ["b"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b"})
 
 
 def test_single_parent_polars_unaliased_lit_then_select_excludes_literal_demand():
@@ -1713,7 +1741,7 @@ def test_single_parent_polars_unaliased_lit_then_select_excludes_literal_demand(
         ["b"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"b"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"b"})
 
 
 def test_single_parent_polars_unaliased_sum_horizontal_uses_first_input_name():
@@ -1723,7 +1751,7 @@ def test_single_parent_polars_unaliased_sum_horizontal_uses_first_input_name():
         ["a", "b", "c"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b", "c"})
 
 
 def test_single_parent_polars_select_of_derived_subset_demand_projects_expression_inputs():
@@ -1733,7 +1761,7 @@ def test_single_parent_polars_select_of_derived_subset_demand_projects_expressio
         ["m"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert pair_value(projection.edge_demands, "source", "transform") == frozenset({"a", "b"})
 
 
 def test_single_parent_polars_select_demand_outside_outputs_keeps_full_width():
@@ -1747,7 +1775,7 @@ def test_single_parent_polars_select_demand_outside_outputs_keeps_full_width():
         ["z"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1758,9 +1786,9 @@ def test_single_parent_polars_unprovable_select_fails_closed():
         ["a"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
-    reason = projection.diagnostics.edge_reasons[("source", "transform")]
+    reason = pair_value(projection.diagnostics.edge_reasons, "source", "transform")
     assert reason.details == {"reason": "non_linear_control_flow", "operation": "If"}
 
 
@@ -1771,7 +1799,7 @@ def test_single_parent_polars_unprovable_select_seq_fails_closed():
         ["a"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1784,7 +1812,7 @@ def test_single_parent_polars_unprovable_derived_reference_fails_closed():
         ["m"],
     )
 
-    assert ("source", "transform") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "source", "transform")
     assert projection.needed_by_node["source"] is None
 
 
@@ -1837,9 +1865,11 @@ def test_single_parent_polars_group_by_projects_literal_keys_and_aggregate_input
         )
     )
 
-    assert projection.edge_demands[("source", "agg")] == frozenset({"segment", "premium"})
+    assert pair_value(projection.edge_demands, "source", "agg") == frozenset({"segment", "premium"})
     assert projection.needed_by_node["source"] == frozenset({"segment", "premium"})
-    assert projection.diagnostics.edge_reasons[("source", "agg")].rule == ("polars_column_lineage")
+    assert pair_value(projection.diagnostics.edge_reasons, "source", "agg").rule == (
+        "polars_column_lineage"
+    )
 
 
 def test_single_parent_polars_group_by_with_dynamic_key_stays_full_width():
@@ -1892,7 +1922,7 @@ def test_single_parent_polars_group_by_with_dynamic_key_stays_full_width():
         )
     )
 
-    assert projection.edge_demands.get(("source", "agg")) is None
+    assert pair_value_or_none(projection.edge_demands, "source", "agg") is None
     assert "source" in projection.opaque_boundaries
 
 
@@ -2015,13 +2045,13 @@ def test_api_input_port_projection_crosses_provable_polars_join_select_fan_in():
         }
     )
     assert projection.diagnostics.node_reasons["quote_features"].rule == ("polars_column_lineage")
-    assert projection.edge_demands[("claims_agg", "quote_features")] == frozenset(
+    assert pair_value(projection.edge_demands, "claims_agg", "quote_features") == frozenset(
         {"quote_id", "total_claims"}
     )
-    assert projection.edge_demands[("api", "quote_features")] == frozenset(
+    assert pair_value(projection.edge_demands, "api", "quote_features") == frozenset(
         {"quote_id", "cover_type", "channel", "date_of_birth", "ncd_years"}
     )
-    assert projection.diagnostics.edge_reasons[("api", "quote_features")].rule == (
+    assert pair_value(projection.diagnostics.edge_reasons, "api", "quote_features").rule == (
         "polars_column_lineage"
     )
     assert api_input_port_columns_by_node(
@@ -2062,10 +2092,10 @@ def test_api_input_port_projection_resolves_join_rooted_at_seeded_df():
         )
     )
 
-    assert projection.edge_demands[("claims_agg", "quote_features")] == frozenset(
+    assert pair_value(projection.edge_demands, "claims_agg", "quote_features") == frozenset(
         {"quote_id", "total_claims"}
     )
-    assert projection.edge_demands[("api", "quote_features")] == frozenset(
+    assert pair_value(projection.edge_demands, "api", "quote_features") == frozenset(
         {"quote_id", "cover_type", "channel", "date_of_birth", "ncd_years"}
     )
     assert "quote_features" not in projection.opaque_boundaries
@@ -2082,7 +2112,7 @@ def test_api_input_port_projection_keeps_dynamic_polars_join_full_width():
         )
     )
 
-    assert ("api", "quote_features") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "api", "quote_features")
     assert (
         api_input_port_columns_by_node(
             prepared.node_map,
@@ -2112,7 +2142,7 @@ def test_polars_join_projection_rejects_a_coalesced_right_key_as_output():
         )
     )
 
-    assert ("api", "quote_features") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "api", "quote_features")
     assert (
         api_input_port_columns_by_node(
             prepared.node_map,
@@ -2273,8 +2303,8 @@ def test_public_projection_plan_strict_profile_uses_boundary_for_unowned_fan_in(
     assert projection.needed_by_node["joined"] == frozenset(
         {"quote_id", "left_value", "right_value"}
     )
-    assert ("left", "joined") not in projection.edge_demands
-    assert ("right", "joined") not in projection.edge_demands
+    assert not has_pair(projection.edge_demands, "left", "joined")
+    assert not has_pair(projection.edge_demands, "right", "joined")
     assert "left" in projection.opaque_boundaries
     assert "right" in projection.opaque_boundaries
 
@@ -2408,7 +2438,7 @@ def test_public_projection_plan_strict_profile_projects_simple_user_code():
 
     assert projection.needed_by_node["custom"] == frozenset({"a"})
     assert projection.needed_by_node["source"] == frozenset({"a"})
-    assert projection.diagnostics.edge_reasons[("source", "custom")].rule == (
+    assert pair_value(projection.diagnostics.edge_reasons, "source", "custom").rule == (
         "polars_column_lineage"
     )
 
@@ -2690,7 +2720,7 @@ def test_public_projection_plan_routes_ratebook_shared_input_factors_in_planner(
         )
     )
 
-    assert projection.edge_demands[("source", "ratebook_opt")] == frozenset(
+    assert pair_value(projection.edge_demands, "source", "ratebook_opt") == frozenset(
         {
             "quote_ref",
             "scenario_index",
@@ -2701,7 +2731,7 @@ def test_public_projection_plan_routes_ratebook_shared_input_factors_in_planner(
             "channel_band",
         }
     )
-    assert projection.diagnostics.edge_reasons[("source", "ratebook_opt")].rule == (
+    assert pair_value(projection.diagnostics.edge_reasons, "source", "ratebook_opt").rule == (
         "optimiser_parent_demand"
     )
 
@@ -2785,8 +2815,8 @@ def test_public_projection_plan_routes_ratebook_data_and_banding_inputs():
         )
     )
 
-    assert projection.edge_demands[("scored", "ratebook_opt")] == frozenset(required)
-    assert projection.edge_demands[("banding", "ratebook_opt")] == frozenset(
+    assert pair_value(projection.edge_demands, "scored", "ratebook_opt") == frozenset(required)
+    assert pair_value(projection.edge_demands, "banding", "ratebook_opt") == frozenset(
         {"quote_ref", "territory_band", "channel_band"}
     )
     assert projection.needed_by_node["banding"] == frozenset(

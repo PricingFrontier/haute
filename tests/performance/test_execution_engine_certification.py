@@ -21,7 +21,7 @@ from haute._execution_context import ExecutionAdmission, ExecutionContext, Execu
 from haute._json_flatten import _json_cache_dir
 from haute._json_shred import build_per_port_cache, load_v2_api_source
 from haute._polars_utils import execution_collect
-from haute._ram_estimate import estimate_materialisation_boundary
+from haute._ram_estimate import estimate_materialisation_boundaries
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import GroupByExecutionUnsupportedError
 from haute.execution import plan_prepared_execution_strategy
@@ -178,7 +178,7 @@ def test_extreme_many_to_many_join_skew_is_estimated_and_rejected_without_execut
     assert cardinality.output_rows == cardinality.peak_rows == 10**18
     # Estimate the join boundary directly: this exercises the cardinality and
     # materialisation APIs without executing or materialising the skewed join.
-    estimate = estimate_materialisation_boundary(graph, "joined")
+    [(_, estimate)] = list(estimate_materialisation_boundaries(graph, ["joined"]))
     assert estimate.estimated_peak_bytes is not None and estimate.estimated_peak_bytes > 1024
     context = ExecutionContext(
         operation="extreme_skew",

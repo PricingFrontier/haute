@@ -1631,6 +1631,7 @@ def test_execution_context_memory_pressure_events_survive_memory_failure() -> No
 def test_execution_metrics_payload_includes_projection_diagnostics() -> None:
     from haute.projection import (
         ProjectionDiagnostics,
+        ProjectionEdgeKey,
         ProjectionPlan,
         ProjectionReason,
     )
@@ -1639,9 +1640,10 @@ def test_execution_metrics_payload_includes_projection_diagnostics() -> None:
         operation="training",
         profile=ExecutionProfile.TRAINING_PREP,
     )
+    edge_key = ProjectionEdgeKey(edge_id="e_source_train", source="source", target="train")
     plan = ProjectionPlan(
         needed_by_node={"train": None},
-        edge_demands={("source", "train"): frozenset({"target"})},
+        edge_demands={edge_key: frozenset({"target"})},
         opaque_boundaries=frozenset({"train"}),
         diagnostics=ProjectionDiagnostics(
             opaque_reasons={
@@ -1658,7 +1660,7 @@ def test_execution_metrics_payload_includes_projection_diagnostics() -> None:
                 )
             },
             edge_reasons={
-                ("source", "train"): ProjectionReason(
+                edge_key: ProjectionReason(
                     rule="runtime_inferred_streaming",
                     message="runtime parent projection",
                 )

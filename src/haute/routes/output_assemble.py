@@ -31,6 +31,7 @@ from haute._execution_admission import (
 )
 from haute._execution_context import ExecutionProfile
 from haute._interactive_workers import (
+    InteractiveWorkerCrashedError,
     InteractiveWorkerMemoryLimitError,
     InteractiveWorkerRemoteError,
     InteractiveWorkerTimeoutError,
@@ -56,6 +57,7 @@ from haute.routes.pipeline import (
     _interactive_affinity_key,
     _memory_limit_http_exception,
     _raise_interactive_remote_http_error,
+    _raise_interactive_worker_crash_http_error,
     _validate_runtime_input_paths,
 )
 from haute.schemas import Graph
@@ -210,6 +212,8 @@ async def output_assemble_dry_run(
         raise HTTPException(status_code=507, detail=exc.to_payload()) from None
     except InteractiveWorkerTimeoutError:
         raise HTTPException(status_code=504, detail="Output dry-run timed out") from None
+    except InteractiveWorkerCrashedError as exc:
+        _raise_interactive_worker_crash_http_error(exc, operation="output_assemble_dry_run")
     except InteractiveWorkerRemoteError as exc:
         _raise_interactive_remote_http_error(exc, operation="output_assemble_dry_run")
     except PUBLIC_CONTRACT_ERROR_TYPES as exc:

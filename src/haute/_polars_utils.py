@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import threading
 import time
-from collections.abc import Generator, Iterator
+from collections.abc import Collection, Generator, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -44,6 +44,26 @@ def is_bounded_execution_profile(profile: ExecutionProfile | str | None) -> bool
     """Whether *profile* requires the bounded-memory I/O policy."""
     normalised = normalise_execution_profile(profile)
     return normalised is not None and normalised not in BOUNDED_MEMORY_EXEMPT_PROFILES
+
+
+def projected_or_carrier_columns(
+    schema_columns: Sequence[str],
+    demanded: Collection[str],
+    *,
+    carrier_candidates: Collection[str] | None = None,
+) -> list[str]:
+    """Return schema-ordered demanded columns, keeping one carrier when empty.
+
+    Polars collapses a zero-column select to zero rows. An exact empty logical
+    demand means "rows only", so one physical column — the first schema column,
+    or the first of *carrier_candidates* when supplied — is retained to
+    preserve the frame's height.
+    """
+    selected = [column for column in schema_columns if column in demanded]
+    if selected or demanded or not schema_columns:
+        return selected
+    candidates = carrier_candidates or schema_columns
+    return [next(column for column in schema_columns if column in candidates)]
 
 
 def streaming_collect(

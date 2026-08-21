@@ -32,7 +32,28 @@ def test_execution_cache_proof_rejects_an_incoherent_miss_total() -> None:
     with pytest.raises(ValidationError, match="closed reason-count total"):
         ExecutionCacheProofPayload.model_validate(
             {
+                "hits": 0,
                 "misses": 1,
+                "direct_fallbacks": 0,
+                "miss_reason_counts": {
+                    "metadata_source_mismatch": 0,
+                    "artifact_integrity_schema_failure": 0,
+                    "unreadable_artifact": 0,
+                    "proof_unavailable": 0,
+                },
+            }
+        )
+
+
+def test_execution_cache_proof_requires_every_counter() -> None:
+    with pytest.raises(ValidationError):
+        ExecutionCacheProofPayload.model_validate({"misses": 0})
+    with pytest.raises(ValidationError):
+        ExecutionCacheProofPayload.model_validate(
+            {
+                "hits": 0,
+                "misses": 0,
+                "direct_fallbacks": 0,
                 "miss_reason_counts": {"proof_unavailable": 0},
             }
         )

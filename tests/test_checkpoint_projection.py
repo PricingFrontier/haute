@@ -25,6 +25,7 @@ from haute._types import (
 )
 from haute.errors import ContractMismatchError, ProjectionImpossibleError
 from haute.projection import compute_prepared_plan
+from tests._projection_helpers import pair_value
 from tests.conftest import make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -885,8 +886,8 @@ class TestProjectionImpossibleDiagnostics:
             strict_projection=True,
         )
 
-        assert plan.edge_demands[("left", "join")] == {"quote_id", "left_value"}
-        assert plan.edge_demands[("right", "join")] == {"quote_id", "right_value"}
+        assert pair_value(plan.edge_demands, "left", "join") == {"quote_id", "left_value"}
+        assert pair_value(plan.edge_demands, "right", "join") == {"quote_id", "right_value"}
 
     def test_lazy_execution_required_seed_enables_strict_projection(self, tmp_path):
         nodes = [

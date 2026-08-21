@@ -31,6 +31,7 @@ from haute._execution_context import (
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._hashing import content_hash_bytes
 from haute._interactive_workers import (
+    InteractiveWorkerCrashedError,
     InteractiveWorkerMemoryLimitError,
     InteractiveWorkerRemoteError,
     InteractiveWorkerStoppedError,
@@ -41,6 +42,7 @@ from haute._interactive_workers import (
 from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
+from haute._native_memory_limit import NativeMemoryLimitUnsupportedError
 from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
 from haute._pipeline_recovery import empty_pipeline_editor_document
 from haute._pipeline_repair import (
@@ -400,6 +402,37 @@ class _PreviewTargetNotReturnedError(RuntimeError):
     """The executor completed but omitted the requested target result."""
 
 
+def _interactive_memory_detail(operation: str, *, reason: str) -> dict[str, object]:
+    """Build the parent-authored, data-free 507 detail for a memory outcome."""
+    return {
+        "error_code": "memory_limit",
+        "operation": operation,
+        "reason": reason,
+    }
+
+
+def _raise_interactive_worker_crash_http_error(
+    exc: InteractiveWorkerCrashedError,
+    *,
+    operation: str,
+) -> NoReturn:
+    """Map a pool-worker crash to 507 when its exit code looks memory-limited."""
+    if exc.terminal_reason == "memory_limited":
+        raise HTTPException(
+            status_code=507,
+            detail=_interactive_memory_detail(
+                operation,
+                reason="worker_may_have_exceeded_memory_limit",
+            ),
+        ) from None
+    logger.error(
+        "interactive_worker_crashed",
+        operation=operation,
+        exitcode=exc.exitcode,
+    )
+    raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
+
+
 def _raise_interactive_remote_http_error(
     exc: InteractiveWorkerRemoteError,
     *,
@@ -414,6 +447,22 @@ def _raise_interactive_remote_http_error(
         and payload.get("error_code") == expected_memory_code
     ):
         raise HTTPException(status_code=507, detail=payload) from None
+    # Memory outcomes the child cannot curate: classified by exact identity
+    # and answered with a parent-authored detail, never the child payload. A
+    # same-named exception from any other module stays an internal 500.
+    if identity == ("builtins", "MemoryError"):
+        raise HTTPException(
+            status_code=507,
+            detail=_interactive_memory_detail(operation, reason="worker_memory_exhausted"),
+        ) from None
+    if identity == (
+        NativeMemoryLimitUnsupportedError.__module__,
+        NativeMemoryLimitUnsupportedError.__name__,
+    ):
+        raise HTTPException(
+            status_code=507,
+            detail=_interactive_memory_detail(operation, reason="native_memory_cap_unavailable"),
+        ) from None
     expected_public_code = _PUBLIC_REMOTE_ERROR_CODES.get(identity)
     if (
         payload is not None
@@ -996,6 +1045,8 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
         ) from None
     except InteractiveWorkerStoppedError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
+    except InteractiveWorkerCrashedError as e:
+        _raise_interactive_worker_crash_http_error(e, operation="pipeline_trace")
     except InteractiveWorkerRemoteError as e:
         _raise_interactive_remote_http_error(e, operation="pipeline_trace")
     except SupersededRequestError as e:
@@ -1159,6 +1210,8 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
         ) from None
     except InteractiveWorkerStoppedError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
+    except InteractiveWorkerCrashedError as e:
+        _raise_interactive_worker_crash_http_error(e, operation="pipeline_preview")
     except InteractiveWorkerRemoteError as e:
         _raise_interactive_remote_http_error(e, operation="pipeline_preview")
     except SupersededRequestError as e:

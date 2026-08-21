@@ -298,10 +298,139 @@ def _has_direct_string_argument(node: ast.AST) -> bool:
     return False
 
 
+def _guarantees_expression(node: ast.AST) -> bool:
+    """Whether *node*'s runtime value is certain to be a Polars expression.
+
+    Call syntax reaching this predicate has already passed (or will fail) the
+    structural walk, whose accepted vocabulary only produces expressions or
+    raises. Operators return an expression whenever either operand is one.
+    """
+    if isinstance(node, ast.Call):
+        return True
+    if isinstance(node, ast.BinOp):
+        return _guarantees_expression(node.left) or _guarantees_expression(node.right)
+    if isinstance(node, ast.UnaryOp):
+        return _guarantees_expression(node.operand)
+    return False
+
+
+def _may_evaluate_to_python_string(node: ast.AST) -> bool:
+    """Whether *node* could silently evaluate to a Python string at runtime.
+
+    Polars parses a Python string in expression position as a column name, so
+    any value that can be a string smuggles a reference the structural walk
+    cannot see (helpers, imported names, string arithmetic, short-circuit
+    operators returning an operand). Values that are provably expressions, or
+    whose misuse raises at runtime either way, are safe.
+    """
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str)
+    if isinstance(node, ast.BoolOp):
+        # ``or``/``and`` return one operand outright; an expression operand
+        # evaluated for truth raises, which is fail-visible either way.
+        return any(_may_evaluate_to_python_string(value) for value in node.values)
+    if isinstance(node, ast.IfExp):
+        return _may_evaluate_to_python_string(node.body) or _may_evaluate_to_python_string(
+            node.orelse
+        )
+    if isinstance(node, ast.BinOp):
+        if _guarantees_expression(node.left) or _guarantees_expression(node.right):
+            return False
+        return _may_evaluate_to_python_string(node.left) or _may_evaluate_to_python_string(
+            node.right
+        )
+    if isinstance(node, (ast.UnaryOp, ast.Compare, ast.Call)):
+        # Never a string: operators/comparisons yield numbers, booleans, or
+        # expressions, and accepted call syntax yields expressions or raises.
+        return False
+    if isinstance(node, (ast.List, ast.Tuple)):
+        # A sequence is not itself a string; consumers that read strings out
+        # of sequences classify the elements explicitly.
+        return False
+    return True
+
+
+def _opaque_helper_argument(node: ast.AST) -> bool:
+    """Whether an unregistered-helper argument could carry a column name.
+
+    Unknown helpers may read strings — including strings inside sequences —
+    as column names, so both explicit string constants anywhere in the
+    argument and any value that could evaluate to a string are opaque.
+    """
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return any(_opaque_helper_argument(element) for element in node.elts)
+    return _may_evaluate_to_python_string(node) or any(
+        isinstance(descendant, ast.Constant) and isinstance(descendant.value, str)
+        for descendant in ast.walk(node)
+    )
+
+
+def _collect_string_expression_columns(node: ast.AST, columns: set[str]) -> bool:
+    """Classify one string-as-column argument, collecting bare references.
+
+    Bare strings (including inside sequences) read the named column here.
+    Expression arguments contribute their references through the surrounding
+    walk. Anything that could silently evaluate to a Python string fails
+    closed rather than under-demanding.
+    """
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str):
+            if not node.value:
+                return False
+            columns.add(node.value)
+        return True
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return all(_collect_string_expression_columns(element, columns) for element in node.elts)
+    return not _may_evaluate_to_python_string(node)
+
+
+def _when_columns(call: ast.Call) -> frozenset[str] | None:
+    """Return the columns ``pl.when`` itself reads, rejecting opaque predicates.
+
+    A bare string predicate and every keyword-constraint name each read one
+    column. Constraint values compare as literals, so they carry no reference.
+    """
+    columns: set[str] = set()
+    for argument in call.args:
+        if not _collect_string_expression_columns(argument, columns):
+            return None
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            return None
+        columns.add(keyword.arg)
+    return frozenset(columns)
+
+
+def _horizontal_columns(call: ast.Call) -> frozenset[str] | None:
+    """Return literal column references passed to one horizontal helper.
+
+    Strings and string sequences name columns for these helpers; keyword
+    arguments are scalar configuration and must not be able to carry one.
+    """
+    columns: set[str] = set()
+    for argument in call.args:
+        if not _collect_string_expression_columns(argument, columns):
+            return None
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            return None
+        if _may_evaluate_to_python_string(keyword.value):
+            return None
+    return frozenset(columns)
+
+
 def _referenced_columns(node: ast.AST) -> frozenset[str] | None:
-    """Return literal ``pl.col`` references, rejecting schema selectors."""
+    """Return literal column references, rejecting schema selectors.
+
+    Beyond ``pl.col``, bare strings read columns wherever the closed model
+    knows Polars parses them as one (horizontal helpers, ``pl.when``
+    predicates and constraint names). A runtime-formatted string could
+    evaluate to any column name, so f-strings reject the whole expression.
+    """
     columns: set[str] = set()
     for child in ast.walk(node):
+        if isinstance(child, ast.JoinedStr):
+            return None
         if not isinstance(child, ast.Call):
             continue
         direct = _polars_call_name(child)
@@ -313,10 +442,15 @@ def _referenced_columns(node: ast.AST) -> frozenset[str] | None:
         elif direct in _SCHEMA_DEPENDENT_PL_CALLS:
             return None
         elif direct in _HORIZONTAL_PL_CALL_OUTPUTS:
-            for argument in child.args:
-                literal = _literal_columns(argument)
-                if literal is not None:
-                    columns.update(literal)
+            horizontal = _horizontal_columns(child)
+            if horizontal is None:
+                return None
+            columns.update(horizontal)
+        elif direct == "when":
+            predicate_columns = _when_columns(child)
+            if predicate_columns is None:
+                return None
+            columns.update(predicate_columns)
         elif direct is None and (
             not isinstance(child.func, ast.Attribute) or isinstance(child.func.value, ast.Name)
         ):
@@ -327,6 +461,15 @@ def _referenced_columns(node: ast.AST) -> frozenset[str] | None:
             return None
         elif direct is None and isinstance(child.func, ast.Attribute):
             method = child.func.attr
+            # A method chain is only attributable when it is rooted in a
+            # provable expression. A string, helper, or imported root would
+            # make the whole chain a Python-level value ("a".upper() is the
+            # column A to a select) the walk cannot account for.
+            chain_root: ast.AST = child.func.value
+            while isinstance(chain_root, ast.Attribute):
+                chain_root = chain_root.value
+            if _may_evaluate_to_python_string(chain_root):
+                return None
             is_name_suffix = (
                 method == "suffix"
                 and isinstance(child.func.value, ast.Attribute)
@@ -347,16 +490,16 @@ def _referenced_columns(node: ast.AST) -> frozenset[str] | None:
                 ]
             ):
                 return None
-        elif direct not in {None, "len", "lit", "when"}:
+        elif direct not in {None, "len", "lit"}:
             # Strings accepted by many top-level Polars expression helpers
-            # mean column names.  Unknown helpers with string arguments are
-            # therefore schema-dependent until they receive an explicit rule.
-            if any(
-                isinstance(descendant, ast.Constant) and isinstance(descendant.value, str)
-                for argument in child.args
-                for descendant in ast.walk(argument)
-            ):
-                return None
+            # mean column names, and a value that can evaluate to a string —
+            # directly or inside a sequence — can smuggle one. Unknown
+            # helpers with either, positionally or as keyword values, are
+            # schema-dependent until they receive an explicit rule; only
+            # ``pl.lit`` treats every argument as a literal.
+            for argument in [*child.args, *(keyword.value for keyword in child.keywords)]:
+                if _opaque_helper_argument(argument):
+                    return None
     return frozenset(columns)
 
 
@@ -485,6 +628,8 @@ def _normalise_expression_outputs(
         if allow_plain_strings:
             if isinstance(expression, (ast.List, ast.Tuple)):
                 return all(append_expression(element) for element in expression.elts)
+        if _may_evaluate_to_python_string(expression):
+            return False
         references = _referenced_columns(expression)
         if references is None:
             return False
@@ -501,28 +646,20 @@ def _normalise_expression_outputs(
         if keyword.arg is None:
             return None
         bare_column = _literal_string(keyword.value)
-        references = (
-            frozenset({bare_column})
-            if bare_column is not None
-            else _referenced_columns(keyword.value)
-        )
-        if references is None:
+        if bare_column is not None:
+            references = frozenset({bare_column})
+        elif _may_evaluate_to_python_string(keyword.value):
             return None
+        else:
+            maybe_references = _referenced_columns(keyword.value)
+            if maybe_references is None:
+                return None
+            references = maybe_references
         outputs.append((keyword.arg, references))
     names = [name for name, _references in outputs]
     if not outputs or len(names) != len(set(names)):
         return None
     return tuple(outputs)
-
-
-def _argument_references(call: ast.Call) -> frozenset[str] | None:
-    columns: set[str] = set()
-    for argument in [*call.args, *(keyword.value for keyword in call.keywords)]:
-        references = _referenced_columns(argument)
-        if references is None:
-            return None
-        columns.update(references)
-    return frozenset(columns)
 
 
 def _chain_root_name(expr: ast.AST) -> str | None:
@@ -582,13 +719,15 @@ def _parse_group_by_agg(
         if keyword.arg is None:
             return _ParseFailure("dynamic_aggregate", "agg")
         bare_column = _literal_string(keyword.value)
-        references = (
-            frozenset({bare_column})
-            if bare_column is not None
-            else _referenced_columns(keyword.value)
-        )
-        if references is None:
+        if bare_column is not None:
+            references = frozenset({bare_column})
+        elif _may_evaluate_to_python_string(keyword.value):
             return _ParseFailure("dynamic_aggregate", "agg")
+        else:
+            maybe_references = _referenced_columns(keyword.value)
+            if maybe_references is None:
+                return _ParseFailure("dynamic_aggregate", "agg")
+            references = maybe_references
         expressions.append((keyword.arg, references))
     output_names = [name for name, _references in expressions]
     if len(output_names) != len(set(output_names)) or set(output_names) & keys:
@@ -797,19 +936,49 @@ def _parse_call_sequence(
                     renamed_columns=tuple(
                         (source, target) for source, target in mapping.items() if source != target
                     ),
+                    # A strict rename requires every named source at runtime,
+                    # including identity pairs the schema transfer drops.
+                    referenced_columns=frozenset(mapping),
                 )
             )
         elif method in {"filter", "fill_null"}:
-            refs = _argument_references(call)
-            if refs is None or any(keyword.arg is None for keyword in call.keywords):
+            if any(keyword.arg is None for keyword in call.keywords):
+                return [], _ParseFailure(f"dynamic_{method}", method)
+            collected: set[str] = set()
+            failed = False
+            for argument in call.args:
+                if method == "filter":
+                    # A bare string predicate reads that boolean column, and
+                    # an unseeable value could evaluate to one. ``fill_null``
+                    # values are literals, so only ``filter`` needs either.
+                    predicate = _literal_string(argument)
+                    if predicate is not None:
+                        collected.add(predicate)
+                        continue
+                    if _may_evaluate_to_python_string(argument):
+                        failed = True
+                        break
+                argument_references = _referenced_columns(argument)
+                if argument_references is None:
+                    failed = True
+                    break
+                collected.update(argument_references)
+            if not failed:
+                for keyword in call.keywords:
+                    keyword_references = _referenced_columns(keyword.value)
+                    if keyword_references is None:
+                        failed = True
+                        break
+                    collected.update(keyword_references)
+            if failed:
                 return [], _ParseFailure(f"dynamic_{method}", method)
             if method == "filter":
-                refs = frozenset(set(refs) | {kw.arg for kw in call.keywords if kw.arg})
+                collected.update(kw.arg for kw in call.keywords if kw.arg)
             operations.append(
                 LineageOperation(
                     kind=LineageOperationKind.READ_COLUMNS,
                     method=method,
-                    referenced_columns=refs,
+                    referenced_columns=frozenset(collected),
                 )
             )
         elif method in _ROW_ONLY_METHODS:
@@ -1023,7 +1192,13 @@ def _evaluate_program(
     for operation in program.operations:
         before = schema
         if schema is not None:
-            required_from_current: set[str] = set(operation.referenced_columns)
+            # Rename validates its own sources below so a missing source keeps
+            # the precise ``invalid_rename`` reason.
+            required_from_current: set[str] = (
+                set()
+                if operation.kind is LineageOperationKind.RENAME
+                else set(operation.referenced_columns)
+            )
             if operation.kind in {
                 LineageOperationKind.SELECT,
                 LineageOperationKind.WITH_COLUMNS,
@@ -1049,6 +1224,10 @@ def _evaluate_program(
         elif operation.kind is LineageOperationKind.RENAME:
             mapping = dict(operation.renamed_columns)
             if schema is not None:
+                # Every source — including identity pairs the schema transfer
+                # drops — must exist for the strict runtime rename.
+                if set(operation.referenced_columns) - set(schema):
+                    return _ParseFailure("invalid_rename", operation.method)
                 schema = _rename_schema(schema, mapping)
                 if schema is None:
                     return _ParseFailure("invalid_rename", operation.method)
@@ -1098,8 +1277,10 @@ def _translate_rename_demand(
     # The containment check above, combined with the one-to-one reverse map,
     # proves this mapping is a permutation of its source names.  Consequently
     # every mapped output has a unique predecessor; all other demanded names
-    # pass through unchanged.
-    return {unknown_reverse.get(column, column) for column in demand}
+    # pass through unchanged.  A strict rename still requires every source to
+    # exist at runtime, so all mapping sources stay demanded exactly as in the
+    # known-schema branch.
+    return {unknown_reverse.get(column, column) for column in demand} | set(mapping)
 
 
 def analyze_polars_lineage(
@@ -1163,7 +1344,9 @@ def analyze_polars_lineage(
             )
             if translated is None:
                 return _unsupported("rename_schema_ambiguous", operation.method)
-            demand = translated
+            # Identity pairs are dropped from the schema transfer but the
+            # strict runtime rename still requires those sources to exist.
+            demand = translated | set(operation.referenced_columns)
         elif operation.kind in {
             LineageOperationKind.READ_COLUMNS,
             LineageOperationKind.SORT,

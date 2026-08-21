@@ -709,9 +709,7 @@ function parseExecutionMetrics(
       : parseColumnWidths(obj.column_widths, `${field}.column_widths`),
     requested_column_width_total: parseOptionalNullableNonNegativeNumber(obj, "requested_column_width_total", field),
     physically_scanned_column_width_total: parseOptionalNullableNonNegativeNumber(obj, "physically_scanned_column_width_total", field),
-    cache_proof: obj.cache_proof === undefined
-      ? { hits: 0, misses: 0, direct_fallbacks: 0, miss_reason_counts: { metadata_source_mismatch: 0, artifact_integrity_schema_failure: 0, unreadable_artifact: 0, proof_unavailable: 0 } }
-      : parseExecutionCacheProof(obj.cache_proof, `${field}.cache_proof`),
+    cache_proof: parseExecutionCacheProof(obj.cache_proof, `${field}.cache_proof`),
     bytes_read: parseOptionalNullableNonNegativeNumber(obj, "bytes_read", field),
     bytes_written: parseOptionalNullableNonNegativeNumber(obj, "bytes_written", field),
     estimated_bytes: estimatedBytes,

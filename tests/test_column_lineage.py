@@ -300,6 +300,335 @@ def test_registered_string_date_format_is_scalar_configuration() -> None:
     assert_frame_equal(projected, full)
 
 
+def test_when_string_predicate_demands_its_column() -> None:
+    code = "df = rows.select(pl.when('flag').then(pl.col('b')).otherwise(pl.col('c')).alias('x'))"
+    result = analyze_polars_lineage(code, {"rows": frozenset({"flag", "b", "c", "unused"})})
+
+    assert result.supported
+    assert result.exact_output_columns == frozenset({"x"})
+    assert result.demands_by_input == {"rows": frozenset({"flag", "b", "c"})}
+
+    frame = pl.DataFrame({"flag": [True], "b": [1], "c": [2], "unused": [3]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+    ).collect()
+    assert_frame_equal(projected, full)
+
+
+def test_when_constraint_keywords_demand_their_columns() -> None:
+    code = "df = rows.select(pl.when(flag=1).then(pl.col('b')).otherwise(pl.col('c')).alias('x'))"
+    result = analyze_polars_lineage(code, {"rows": frozenset({"flag", "b", "c", "unused"})})
+
+    assert result.supported
+    assert result.demands_by_input == {"rows": frozenset({"flag", "b", "c"})}
+
+    frame = pl.DataFrame({"flag": [1], "b": [1], "c": [2], "unused": [3]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+    ).collect()
+    assert_frame_equal(projected, full)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "pl.when(helper).then(pl.col('b')).otherwise(pl.col('c')).alias('x')",
+        "pl.when([helper]).then(pl.col('b')).otherwise(pl.col('c')).alias('x')",
+        "pl.when('').then(pl.col('b')).otherwise(pl.col('c')).alias('x')",
+    ],
+)
+def test_when_with_unseeable_predicate_fails_closed(expression: str) -> None:
+    code = f"helper = 1\ndf = rows.select({expression})"
+    result = analyze_polars_lineage(code, {"rows": frozenset({"flag", "b", "c"})})
+
+    assert not result.supported
+    assert result.reason == "dynamic_select"
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "pl.max_horizontal(helper).alias('m')",
+        "pl.max_horizontal(['a', helper]).alias('m')",
+        "pl.max_horizontal(**helpers).alias('m')",
+        "pl.max_horizontal('a', unknown='z').alias('m')",
+        "pl.when(**helpers).then(pl.col('a')).otherwise(None).alias('m')",
+    ],
+)
+def test_horizontal_helper_with_unseeable_argument_fails_closed(expression: str) -> None:
+    code = f"helper = 'a'\ndf = rows.select({expression})"
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "z"})})
+
+    assert not result.supported
+    assert result.reason == "dynamic_select"
+
+
+def test_horizontal_helper_accepts_scalar_keyword_configuration() -> None:
+    code = "df = rows.select(pl.sum_horizontal('a', 'b', ignore_nulls=True).alias('total'))"
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "b", "unused"})})
+
+    assert result.supported
+    assert result.demands_by_input == {"rows": frozenset({"a", "b"})}
+
+    frame = pl.DataFrame({"a": [1], "b": [2], "unused": [3]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+    ).collect()
+    assert_frame_equal(projected, full)
+
+
+def test_filter_string_predicate_demands_its_column() -> None:
+    code = "df = rows.filter('flag').select(['b'])"
+    result = analyze_polars_lineage(code, {"rows": frozenset({"flag", "b", "unused"})})
+
+    assert result.supported
+    assert result.demands_by_input == {"rows": frozenset({"flag", "b"})}
+
+    frame = pl.DataFrame({"flag": [True, False], "b": [1, 2], "unused": [3, 4]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+    ).collect()
+    assert_frame_equal(projected, full)
+
+
+def test_filter_with_unseeable_predicate_fails_closed() -> None:
+    result = analyze_polars_lineage(
+        "helper = 'flag'\ndf = rows.filter(helper)",
+        {"rows": frozenset({"flag", "b"})},
+    )
+
+    assert not result.supported
+    assert result.reason == "dynamic_filter"
+
+
+def test_expression_keyword_outputs_demand_their_references() -> None:
+    code = (
+        "df = rows.with_columns(doubled=pl.col('a') * 2)"
+        ".group_by('g').agg(total=pl.col('doubled').sum())"
+    )
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "g", "unused"})})
+
+    assert result.supported
+    assert result.exact_output_columns == frozenset({"g", "total"})
+    assert result.demands_by_input == {"rows": frozenset({"a", "g"})}
+
+    frame = pl.DataFrame({"a": [1, 2], "g": ["x", "x"], "unused": [3, 4]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+    ).collect()
+    assert_frame_equal(projected, full)
+
+
+def test_when_scalar_predicate_and_literal_horizontal_arguments_stay_supported() -> None:
+    code = (
+        "df = rows.select("
+        "pl.when(True).then(pl.col('b')).otherwise(pl.col('c')).alias('x'), "
+        "pl.max_horizontal('a', 1).alias('m'))"
+    )
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "b", "c", "unused"})})
+
+    assert result.supported
+    assert result.demands_by_input == {"rows": frozenset({"a", "b", "c"})}
+
+    frame = pl.DataFrame({"a": [0], "b": [1], "c": [2], "unused": [3]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+    ).collect()
+    assert_frame_equal(projected, full)
+
+
+def test_horizontal_expression_keyword_contributes_through_the_walk() -> None:
+    # An expression keyword is a runtime TypeError either way; the analysis
+    # stays sound because the nested reference is still demanded.
+    result = analyze_polars_lineage(
+        "df = rows.select(pl.max_horizontal('a', b=pl.col('z')))",
+        {"rows": frozenset({"a", "z"})},
+    )
+
+    assert result.supported
+    assert result.demands_by_input == {"rows": frozenset({"a", "z"})}
+
+
+def test_unknown_helper_with_clean_scalar_arguments_stays_supported() -> None:
+    result = analyze_polars_lineage(
+        "df = rows.select(pl.int_range(0, 5).alias('idx'))",
+        {"rows": frozenset({"a"})},
+    )
+
+    assert result.supported
+    assert result.exact_output_columns == frozenset({"idx"})
+    assert result.demands_by_input == {"rows": frozenset()}
+
+
+def test_filter_constraint_keywords_demand_their_columns() -> None:
+    code = "df = rows.filter(flag=1).select(['b'])"
+    result = analyze_polars_lineage(code, {"rows": frozenset({"flag", "b", "unused"})})
+
+    assert result.supported
+    assert result.demands_by_input == {"rows": frozenset({"flag", "b"})}
+
+    frame = pl.DataFrame({"flag": [1, 2], "b": [1, 2], "unused": [3, 4]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+    ).collect()
+    assert_frame_equal(projected, full)
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        ("df = rows.filter(flag=pl.all())", "dynamic_filter"),
+        ("df = rows.with_columns(y=pl.all())", "dynamic_with_columns"),
+        ("helper = 'a'\ndf = rows.group_by('g').agg(total=helper)", "dynamic_aggregate"),
+        ("df = rows.group_by('g').agg(total=pl.all())", "dynamic_aggregate"),
+        (
+            "df = rows.select((pl.col('a') + f'{suffix}').alias('y'))",
+            "dynamic_select",
+        ),
+    ],
+)
+def test_schema_dependent_keyword_values_fail_closed(code: str, reason: str) -> None:
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "flag", "g"})})
+
+    assert not result.supported
+    assert result.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        # ``or`` returns an operand outright, so a truthy helper string
+        # bypasses the expression entirely and reads its own column.
+        ("helper = 'a'\ndf = rows.select(copy=helper or pl.col('b'))", "dynamic_select"),
+        (
+            "prefix = 'fl'\nsuffix = 'ag'\ndf = rows.select("
+            "pl.when(prefix + suffix).then(pl.col('b')).otherwise(pl.col('c')).alias('x'))",
+            "dynamic_select",
+        ),
+        ("helper = 'a'\ndf = rows.select(pl.struct([helper]).alias('s'))", "dynamic_select"),
+        ("df = rows.select('a'.upper())", "dynamic_select"),
+        ("df = rows.select(imported.str.upper().alias('y'))", "dynamic_select"),
+        (
+            "helper = 'b'\ndf = rows.select("
+            "pl.when(pl.col('flag') if helper else helper).then(pl.col('b'))"
+            ".otherwise(None).alias('x'))",
+            "dynamic_select",
+        ),
+    ],
+)
+def test_python_value_expressions_cannot_smuggle_column_names(code: str, reason: str) -> None:
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "b", "c", "flag"})})
+
+    assert not result.supported
+    assert result.reason == reason
+
+
+def test_when_and_horizontal_expression_sequences_stay_supported() -> None:
+    code = (
+        "df = rows.select("
+        "pl.when([pl.col('flag')]).then(pl.col('b')).otherwise(pl.col('c')).alias('x'), "
+        "pl.when(['gate']).then(pl.col('b')).otherwise(pl.col('c')).alias('y'), "
+        "pl.sum_horizontal([pl.col('a'), pl.lit(1)]).alias('m'))"
+    )
+    result = analyze_polars_lineage(
+        code,
+        {"rows": frozenset({"a", "b", "c", "flag", "gate", "unused"})},
+    )
+
+    assert result.supported
+    assert result.demands_by_input == {"rows": frozenset({"a", "b", "c", "flag", "gate"})}
+
+    frame = pl.DataFrame(
+        {"a": [1], "b": [2], "c": [3], "flag": [True], "gate": [False], "unused": [4]}
+    )
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+    ).collect()
+    assert_frame_equal(projected, full)
+
+
+def test_operator_string_literals_beside_expressions_stay_supported() -> None:
+    code = "df = rows.select((pl.col('a') + '_sfx').alias('tagged'))"
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "unused"})})
+
+    assert result.supported
+    assert result.demands_by_input == {"rows": frozenset({"a"})}
+
+    frame = pl.DataFrame({"a": ["x"], "unused": [1]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+    ).collect()
+    assert_frame_equal(projected, full)
+
+
+def test_identity_rename_pairs_stay_demanded() -> None:
+    code = "df = rows.rename({'a': 'a'}).select(['c'])"
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "c", "unused"})})
+
+    assert result.supported
+    # A strict rename requires its identity source at runtime even though the
+    # schema transfer treats the pair as a no-op.
+    assert result.demands_by_input == {"rows": frozenset({"a", "c"})}
+
+    frame = pl.DataFrame({"a": [1], "c": [2], "unused": [3]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+    ).collect()
+    assert_frame_equal(projected, full)
+
+    unknown_schema = analyze_polars_lineage(code, {"rows": None}, ["c"])
+    assert unknown_schema.supported
+    assert unknown_schema.demands_by_input == {"rows": frozenset({"a", "c"})}
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        ("df = rows.select(('a' + 'b'))", "dynamic_select"),
+        ("helper = 'a'\ndf = rows.with_columns(copy=helper)", "dynamic_with_columns"),
+        ("df = rows.select(pl.col(f'{1}'))", "dynamic_select"),
+        ("df = rows.select(pl.struct(total='a').alias('s'))", "dynamic_select"),
+    ],
+)
+def test_value_level_string_construction_fails_closed(code: str, reason: str) -> None:
+    # A Python-level string can reach Polars as a column name the structural
+    # walk never saw; each spelling must reject rather than under-demand.
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "b", "ab"})})
+
+    assert not result.supported
+    assert result.reason == reason
+
+
 def test_composed_transforms_and_two_joins_route_each_parent_minimally() -> None:
     code = """\
 df = left.with_columns((pl.col('amount') * pl.col('rate')).alias('priced'))
@@ -1018,4 +1347,16 @@ def test_unknown_schema_rename_permutation_translates_an_explicit_demand() -> No
 
     assert result.supported
     assert result.exact_output_columns is None
-    assert result.demands_by_input == {"rows": frozenset({"b"})}
+    # The demanded output "a" translates to its source "b", and the strict
+    # rename additionally requires every mapping source at runtime.
+    assert result.demands_by_input == {"rows": frozenset({"a", "b"})}
+
+
+def test_unknown_schema_rename_permutation_demands_every_mapping_source() -> None:
+    result = analyze_polars_lineage("df = rows.rename({'a': 'b', 'b': 'a'})", {"rows": None}, ["c"])
+
+    assert result.supported
+    # A demand outside the permutation passes through, but projecting away the
+    # rename sources would make the strict runtime rename fail on missing
+    # columns, so they stay demanded exactly as in the known-schema branch.
+    assert result.demands_by_input == {"rows": frozenset({"a", "b", "c"})}

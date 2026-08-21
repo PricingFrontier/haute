@@ -29,6 +29,7 @@ from haute.projection import (
     with_api_input_port_projection_boundaries,
     with_runtime_inferred_streaming_edges,
 )
+from tests._projection_helpers import edge_keys_for_pair
 from tests.conftest import make_graph, make_output_config
 
 
@@ -105,8 +106,9 @@ def test_api_ports_sharing_a_source_node_keep_independent_join_edge_demands() ->
 
     assert projection.demand_for_edge(left_edge) == frozenset({"id", "left_value"})
     assert projection.demand_for_edge(right_edge) == frozenset({"id", "right_value"})
-    with pytest.raises(ValueError, match="ambiguous"):
-        projection.edge_demands[("api", "joined")]
+    # Parallel ports between one node pair keep two distinct complete keys;
+    # a lossy pair can never address either demand.
+    assert len(edge_keys_for_pair(projection.edge_demands, "api", "joined")) == 2
     assert len(projection.diagnostics.to_dict()["edge_reasons"]) == 2
     assert api_input_port_columns_by_node(
         prepared.node_map, prepared.relevant_edges, projection
@@ -404,13 +406,17 @@ def test_bounded_diagnostics_retain_every_group_then_fill_capacity() -> None:
     assert {item["node_id"] for item in collection.items} == {"first", "second"}
 
 
-def test_edge_identity_mapping_rejects_invalid_keys_and_missing_pairs() -> None:
+def test_edge_identity_mapping_accepts_only_complete_edge_keys() -> None:
     with pytest.raises(TypeError, match="complete edge keys"):
         _EdgeIdentityMapping({1: "value"})
+    with pytest.raises(TypeError, match="complete edge keys"):
+        _EdgeIdentityMapping({("source", "target"): "value"})
 
-    mapping = _EdgeIdentityMapping({ProjectionEdgeKey.legacy_pair("source", "target"): "value"})
+    key = ProjectionEdgeKey(edge_id="e_source_target", source="source", target="target")
+    mapping = _EdgeIdentityMapping({key: "value"})
+    assert mapping[key] == "value"
     with pytest.raises(KeyError):
-        mapping[("missing", "target")]
+        mapping[("source", "target")]  # type: ignore[index]
     with pytest.raises(KeyError):
         mapping["invalid"]  # type: ignore[index]
 
@@ -912,7 +918,7 @@ def test_runtime_inference_without_new_demands_is_an_identity() -> None:
 
 
 def test_projection_explain_handles_empty_node_and_edge_collections() -> None:
-    edge_key = ProjectionEdgeKey.legacy_pair("source", "target")
+    edge_key = ProjectionEdgeKey(edge_id="e_source_target", source="source", target="target")
     edge_only = ProjectionPlan(
         needed_by_node={},
         edge_demands={edge_key: frozenset({"a"})},

@@ -180,10 +180,18 @@ running heavy work in a child process the parent can kill on timeout or memory l
   closed `group_by(...).agg(...)`, and mechanically attributable joins therefore
   compose before or after one another, including multiple joins and two ports from
   one source node. A terminal literal select or closed aggregate supplies its own
-  exact output contract, so an unseeded preview can still be projected. Dynamic
+  exact output contract, so an unseeded preview can still be projected. Everywhere
+  Polars reads a bare string as a column — `select`/`with_columns` expressions and
+  named outputs, `filter` predicates and constraint names, and `pl.when`
+  predicates and constraint names — the proof demands that column exactly, and a
+  rename always demands every rename source because a strict rename requires them
+  at runtime. Dynamic
   selectors, unregistered expression helpers, helper/control-flow-dependent frame mutation,
   unsupported join
-  semantics, unknown schemas needed for ownership, or ambiguous names preserve a
+  semantics, unknown schemas needed for ownership, ambiguous names, or any
+  value-level string construction the walk cannot see through (an f-string, a
+  helper or imported name, or string arithmetic outside an expression call)
+  preserve a
   visible full-width boundary; the engine never guesses or suppresses that warning.
 - **Known full width is not an opaque boundary.** When a single-input node's
   registered runtime contract is concrete, the planner carries an exact upstream
@@ -368,7 +376,11 @@ running heavy work in a child process the parent can kill on timeout or memory l
   reusable; no timed-out native Polars operation is allowed to continue invisibly in
   a server thread. Admission is still decided and reserved by the server process, and
   workers receive only a plain serialisable budget envelope rather than a shared
-  `ExecutionContext`.
+  `ExecutionContext`. Memory outcomes classify identically to the one-shot worker
+  path: a pool worker that dies with a memory-looking exit code under a configured
+  cap, or that raises Python's own `MemoryError` or a native-cap-unavailable
+  contract error, is reported as a structured memory-limit outcome rather than a
+  generic internal failure.
 - **Materialisation admission follows proven physical demand.** When column lineage
   proves every input edge of a materialising boundary exactly, the estimate uses
   those projected columns (including grouping, join, filter, and expression inputs).

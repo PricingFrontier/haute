@@ -38,6 +38,7 @@ from haute.routes._optimiser_service import (
     _optimiser_solve_required_columns_by_node,
 )
 from haute.routes.optimiser import _build_artifact_payload
+from tests._projection_helpers import pair_value
 from tests.conftest import build_test_input_snapshot, make_edge, make_graph
 from tests.optimiser_fixtures import frontier_result as _frontier_result
 from tests.optimiser_fixtures import poll_frontier_until_done as _poll_frontier_until_done
@@ -4486,10 +4487,10 @@ class TestEstimateRoute:
             )
         )
 
-        assert projection.edge_demands[("scored", "opt")] == frozenset(
+        assert pair_value(projection.edge_demands, "scored", "opt") == frozenset(
             {"quote_ref", "expected_margin"}
         )
-        assert projection.edge_demands[("banding", "opt")] == frozenset(
+        assert pair_value(projection.edge_demands, "banding", "opt") == frozenset(
             {"quote_ref", "territory", "channel", "age_band"}
         )
 

@@ -20,6 +20,7 @@ from haute._logging import get_logger
 from haute._polars_utils import (
     is_bounded_execution_profile,
     normalise_execution_profile,
+    projected_or_carrier_columns,
 )
 from haute._validation_error import HauteValidationError
 from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
@@ -197,14 +198,13 @@ def _select_columns(
             missing=sorted(missing),
             available=schema_columns,
         )
-    selected = [column for column in schema_columns if column in requested]
-    if not selected and not requested and schema_columns:
-        # An exact empty logical demand means "rows only". Polars collapses a
-        # zero-column select to zero rows, so retain one physical carrier. When
-        # selected_columns are being validated, choose the first of those so a
-        # later declarative selection cannot discard the carrier.
-        carrier_candidates = validation_requested or set(schema_columns)
-        selected = [next(column for column in schema_columns if column in carrier_candidates)]
+    # When selected_columns are being validated, the carrier comes from those
+    # so a later declarative selection cannot discard it.
+    selected = projected_or_carrier_columns(
+        schema_columns,
+        requested,
+        carrier_candidates=validation_requested,
+    )
     return lf.select(selected)
 
 

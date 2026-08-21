@@ -27,6 +27,7 @@ from haute.errors import (
     ContractResolutionError,
     SchemaMismatchError,
 )
+from tests._projection_helpers import pair_value
 from tests.conftest import make_edge, make_graph, make_output_config
 
 
@@ -1769,7 +1770,7 @@ def test_bounded_lazy_execution_projects_simple_uncontracted_user_code() -> None
     assert context.projection_plan is not None
     assert context.projection_plan.needed_by_node["source"] == frozenset({"a"})
     assert (
-        context.projection_plan.diagnostics.edge_reasons[("source", "custom")].rule
+        pair_value(context.projection_plan.diagnostics.edge_reasons, "source", "custom").rule
         == "polars_column_lineage"
     )
 

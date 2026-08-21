@@ -202,8 +202,9 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
         ),
         (
             ExecutionMetricsPayload,
-            [],
+            ["cache_proof"],
             {
+                "cache_proof": {"ref": "ExecutionCacheProofPayload"},
                 "schema_version": {"type": "integer", "default": 1},
                 "operation": {"type": "string", "default": ""},
                 "profile": {"type": "string", "default": ""},

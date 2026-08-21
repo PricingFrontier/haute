@@ -59,7 +59,6 @@ __all__ = [
     "MaterialisationEstimateState",
     "estimate_gpu_vram_bytes",
     "estimate_materialisation_boundaries",
-    "estimate_materialisation_boundary",
     "estimate_safe_training_rows",
     "RamEstimate",
 ]
@@ -1636,31 +1635,6 @@ def estimate_safe_training_rows(
     )
 
 
-def estimate_materialisation_boundary(
-    graph: PipelineGraph,
-    target_node_id: str,
-    *,
-    source: str = "live",
-) -> MaterialisationEstimate:
-    """Estimate the conservative peak of a full frame boundary.
-
-    The compatibility wrapper deliberately returns unavailable when source row,
-    graph cardinality, or target-width metadata cannot be established. It never
-    converts an unknown value to zero. Join expansion uses the same finite,
-    uniqueness-aware proof as the projection-aware multi-boundary estimator;
-    unprovable row-changing semantics remain explicit diagnostics.
-    """
-    estimate_index = _EstimateGraphIndex.build(graph, source)
-    return _estimate_materialisation_boundary_from_index(
-        graph,
-        target_node_id,
-        source=source,
-        estimate_index=estimate_index,
-        edge_demands=None,
-        legacy_target_schema=True,
-    )
-
-
 def estimate_materialisation_boundaries(
     graph: PipelineGraph,
     target_node_ids: Iterable[str],
@@ -1685,7 +1659,6 @@ def estimate_materialisation_boundaries(
                 source=source,
                 estimate_index=estimate_index,
                 edge_demands=edge_demands,
-                legacy_target_schema=False,
             ),
         )
 
@@ -1697,7 +1670,6 @@ def _estimate_materialisation_boundary_from_index(
     source: str,
     estimate_index: _EstimateGraphIndex,
     edge_demands: Mapping[ProjectionEdgeKey, frozenset[str] | None] | None,
-    legacy_target_schema: bool,
 ) -> MaterialisationEstimate:
     """Estimate one boundary using an already prepared request-local index."""
 
@@ -1722,14 +1694,10 @@ def _estimate_materialisation_boundary_from_index(
         f"cardinality_output_upper_bound={cardinality.output_rows}",
         f"cardinality_peak_upper_bound={cardinality.peak_rows}",
     )
-    incoming_edges = (
-        ()
-        if legacy_target_schema
-        else tuple(
-            edge
-            for edge in estimate_index.pruned_edges
-            if edge.target == target_node_id and edge.source in estimate_index.node_map
-        )
+    incoming_edges = tuple(
+        edge
+        for edge in estimate_index.pruned_edges
+        if edge.target == target_node_id and edge.source in estimate_index.node_map
     )
     resolved_inputs = tuple(
         (
@@ -1762,39 +1730,6 @@ def _estimate_materialisation_boundary_from_index(
                 if exact_zero_width_proof
                 else MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK
             ),
-        )
-
-    if legacy_target_schema:
-        resolved_columns = _resolve_target_columns(
-            graph,
-            target_node_id,
-            source,
-            _index=estimate_index,
-        )
-        if resolved_columns is None or not resolved_columns.columns:
-            return MaterialisationEstimate.unavailable("target_schema_unavailable")
-        column_names = resolved_columns.columns
-        width_column_names = tuple(
-            resolved_columns.width_columns.get(column, column) for column in column_names
-        )
-        n_columns = len(column_names)
-        base_bytes_per_row = _estimate_base_bytes_per_row(
-            n_columns,
-            target_columns=column_names,
-            target_width_columns=width_column_names,
-            sources=source_metadata.sources,
-        )
-        return MaterialisationEstimate.available(
-            _estimate_peak_bytes(
-                total_rows,
-                n_columns,
-                base_bytes_per_row=base_bytes_per_row,
-            ),
-            assumptions=(
-                *cardinality_assumptions,
-                f"full-boundary overhead multiplier={_OVERHEAD_MULTIPLIER:g}",
-            ),
-            basis=MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK,
         )
 
     if not incoming_edges:

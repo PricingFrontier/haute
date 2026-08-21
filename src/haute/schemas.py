@@ -842,19 +842,17 @@ class ExecutionColumnWidthsCollectionPayload(BaseModel):
 
 
 class ExecutionCacheProofMissReasonCountsPayload(BaseModel):
-    metadata_source_mismatch: int = Field(default=0, ge=0)
-    artifact_integrity_schema_failure: int = Field(default=0, ge=0)
-    unreadable_artifact: int = Field(default=0, ge=0)
-    proof_unavailable: int = Field(default=0, ge=0)
+    metadata_source_mismatch: int = Field(ge=0)
+    artifact_integrity_schema_failure: int = Field(ge=0)
+    unreadable_artifact: int = Field(ge=0)
+    proof_unavailable: int = Field(ge=0)
 
 
 class ExecutionCacheProofPayload(BaseModel):
-    hits: int = Field(default=0, ge=0)
-    misses: int = Field(default=0, ge=0)
-    direct_fallbacks: int = Field(default=0, ge=0)
-    miss_reason_counts: ExecutionCacheProofMissReasonCountsPayload = Field(
-        default_factory=ExecutionCacheProofMissReasonCountsPayload
-    )
+    hits: int = Field(ge=0)
+    misses: int = Field(ge=0)
+    direct_fallbacks: int = Field(ge=0)
+    miss_reason_counts: ExecutionCacheProofMissReasonCountsPayload
 
     @model_validator(mode="after")
     def _validate_miss_total(self) -> ExecutionCacheProofPayload:
@@ -969,7 +967,7 @@ class ExecutionMetricsPayload(BaseModel):
     )
     requested_column_width_total: int | None = Field(default=None, ge=0)
     physically_scanned_column_width_total: int | None = Field(default=None, ge=0)
-    cache_proof: ExecutionCacheProofPayload = Field(default_factory=ExecutionCacheProofPayload)
+    cache_proof: ExecutionCacheProofPayload
     bytes_read: int | None = Field(default=None, ge=0)
     bytes_written: int | None = Field(default=None, ge=0)
     estimated_bytes: StrictInt | None = Field(default=None, ge=0)

@@ -388,7 +388,14 @@ The worker budget is the parent's actual admitted headroom plus its optional abs
 process cap, not merely the wider profile default. Remote HTTP reconstruction accepts
 payloads only from the closed public-contract and memory-error identities; arbitrary
 child exceptions remain redacted internal failures even if they implement a method
-named `to_payload`.
+named `to_payload`. Memory outcomes the child cannot curate are classified from
+parent-side evidence and answered with a parent-authored, data-free 507 detail
+(`error_code="memory_limit"` plus the operation and a closed reason): a pool worker
+crash whose exit code looks memory-limited under a configured growth cap
+(`reason="worker_may_have_exceeded_memory_limit"`), a remote exact
+`builtins.MemoryError` (`reason="worker_memory_exhausted"`), and a remote exact
+`NativeMemoryLimitUnsupportedError` (`reason="native_memory_cap_unavailable"`). Any
+other pool-worker crash logs and returns the redacted internal 500.
 
 **OUTPUT dry-run** (`routes/output_assemble.py`): validate the mapping shape
 (`validate_v2_output_mapping`, data-independent) → flatten the graph → locate and type-check
@@ -523,6 +530,7 @@ generation; child code cannot write the `JobStore` or parent LRU caches.
 | `ApiInputSchemaError` | json-cache; preview/write execution | 422 | JSON cache retains its `type` discriminator envelope; execution routes use the public-contract adapter (`api_input_schema_invalid`). |
 | `OutputMappingSchemaError` | output-assemble dry-run | 422 | Raised both by the schema-only pre-check and if execution surfaces it deeper (an unmapped port). |
 | `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError` | preview, output write, output-assemble dry-run | 507 | Payload is `exc.to_payload()`, nested under `detail`, for every route. |
+| `InteractiveWorkerCrashedError` (memory-classified), remote `builtins.MemoryError`, remote `NativeMemoryLimitUnsupportedError` | preview, trace, output-assemble dry-run | 507 | Parent-authored data-free detail with `error_code="memory_limit"`, the operation, and a closed reason; a non-memory pool-worker crash stays a redacted 500. Mirrors the write-output worker classification. |
 | `BoundedMemoryUnsupportedError` | output write | 422 | Distinguishes "cannot stream safely" from a hard resource limit. |
 | `DataOutputDestinationExistsError` | `POST /api/pipeline/write-output` | 409 | `overwrite=false` refuses an existing file/table before publication and returns the destination in the detail. |
 | `SupersededRequestError` | preview, trace | 409 | Raised by `SupersessionCoordinator`; the worker never runs for a superseded generation. |

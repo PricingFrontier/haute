@@ -32,6 +32,7 @@ from haute._worker_isolation import (
     IsolatedWorkerHostError,
     IsolatedWorkerTerminationError,
     WorkerTerminalReason,
+    _exitcode_looks_memory_limited,
     _terminate_process,
     create_worker_queue,
 )
@@ -106,11 +107,24 @@ class InteractiveWorkerMemoryLimitError(InteractiveWorkerError, MemoryError):
 
 
 class InteractiveWorkerCrashedError(InteractiveWorkerError):
-    def __init__(self, exitcode: int | None) -> None:
+    """A pool worker exited without a result.
+
+    ``memory_limited`` applies the same parent-side exit-code heuristic as the
+    one-shot isolated worker: a SIGKILL/SIGABRT-shaped exit under a configured
+    native growth cap is reported as a hedged memory outcome, never a generic
+    internal failure.
+    """
+
+    def __init__(self, exitcode: int | None, *, memory_limited: bool = False) -> None:
         detail = "" if exitcode is None else f" (exit code {exitcode})"
+        message = (
+            f"Interactive worker may have run out of memory{detail}"
+            if memory_limited
+            else f"Interactive worker stopped before returning a result{detail}"
+        )
         super().__init__(
-            f"Interactive worker stopped before returning a result{detail}",
-            terminal_reason="error",
+            message,
+            terminal_reason="memory_limited" if memory_limited else "error",
         )
         self.exitcode = exitcode
 
@@ -436,6 +450,7 @@ class InteractiveWorkerPool:
                     timeout_seconds=timeout_seconds,
                     stop_reason=stop_reason,
                     absolute_rss_limit_bytes=absolute_rss_limit_bytes,
+                    memory_growth_limit_bytes=memory_growth_limit_bytes,
                     require_memory_limit=require_memory_limit,
                 ),
             )
@@ -544,6 +559,7 @@ class InteractiveWorkerPool:
         timeout_seconds: float,
         stop_reason: Callable[[], WorkerTerminalReason | None] | None,
         absolute_rss_limit_bytes: int | None,
+        memory_growth_limit_bytes: int | None,
         require_memory_limit: bool,
     ) -> Any:
         deadline = time.monotonic() + timeout_seconds
@@ -595,6 +611,7 @@ class InteractiveWorkerPool:
                             timeout_seconds=timeout_seconds,
                             stop_reason=stop_reason,
                             absolute_rss_limit_bytes=absolute_rss_limit_bytes,
+                            memory_growth_limit_bytes=memory_growth_limit_bytes,
                             require_memory_limit=require_memory_limit,
                             sampler_unavailable_logged=sampler_unavailable_logged,
                         )
@@ -615,7 +632,13 @@ class InteractiveWorkerPool:
             if not slot.process.is_alive():
                 exitcode = slot.process.exitcode
                 self._replace_slot(slot)
-                raise InteractiveWorkerCrashedError(exitcode)
+                raise InteractiveWorkerCrashedError(
+                    exitcode,
+                    memory_limited=_exitcode_looks_memory_limited(
+                        exitcode,
+                        memory_growth_limit_bytes,
+                    ),
+                )
 
             if stop_reason is not None:
                 reason = stop_reason()
@@ -623,26 +646,16 @@ class InteractiveWorkerPool:
                     self._stop_and_replace(slot)
                     raise InteractiveWorkerStoppedError(reason)
 
-            if absolute_rss_limit_bytes is not None:
-                rss = process_rss_bytes(cast(int, slot.process.pid))
-                if rss is None:
-                    if require_memory_limit:
-                        self._stop_and_replace(slot)
-                        raise RuntimeError(
-                            "Interactive worker memory enforcement could not sample child RSS"
-                        )
-                    if not sampler_unavailable_logged:
-                        sampler_unavailable_logged = True
-                        logger.warning(
-                            "interactive_worker_rss_unavailable",
-                            worker_index=slot.index,
-                        )
-                elif rss > absolute_rss_limit_bytes:
-                    self._stop_and_replace(slot)
-                    raise InteractiveWorkerMemoryLimitError(
-                        rss_bytes=rss,
-                        limit_bytes=absolute_rss_limit_bytes,
-                    )
+            try:
+                sampler_unavailable_logged = self._enforce_rss_watchdog(
+                    slot,
+                    absolute_rss_limit_bytes=absolute_rss_limit_bytes,
+                    require_memory_limit=require_memory_limit,
+                    sampler_unavailable_logged=sampler_unavailable_logged,
+                )
+            except BaseException:
+                self._stop_and_replace(slot)
+                raise
 
     def _wait_for_release(
         self,
@@ -653,6 +666,7 @@ class InteractiveWorkerPool:
         timeout_seconds: float,
         stop_reason: Callable[[], WorkerTerminalReason | None] | None,
         absolute_rss_limit_bytes: int | None,
+        memory_growth_limit_bytes: int | None,
         require_memory_limit: bool,
         sampler_unavailable_logged: bool,
     ) -> None:
@@ -677,29 +691,64 @@ class InteractiveWorkerPool:
                     raise
             if not slot.process.is_alive():
                 exitcode = slot.process.exitcode
-                raise InteractiveWorkerCrashedError(exitcode)
+                raise InteractiveWorkerCrashedError(
+                    exitcode,
+                    memory_limited=_exitcode_looks_memory_limited(
+                        exitcode,
+                        memory_growth_limit_bytes,
+                    ),
+                )
             if stop_reason is not None:
                 reason = stop_reason()
                 if reason is not None:
                     raise InteractiveWorkerStoppedError(reason)
-            if absolute_rss_limit_bytes is not None:
-                rss = process_rss_bytes(cast(int, slot.process.pid))
-                if rss is None:
-                    if require_memory_limit:
-                        raise RuntimeError(
-                            "Interactive worker memory enforcement could not sample child RSS"
-                        )
-                    if not sampler_unavailable_logged:
-                        sampler_unavailable_logged = True
-                        logger.warning(
-                            "interactive_worker_rss_unavailable",
-                            worker_index=slot.index,
-                        )
-                elif rss > absolute_rss_limit_bytes:
-                    raise InteractiveWorkerMemoryLimitError(
-                        rss_bytes=rss,
-                        limit_bytes=absolute_rss_limit_bytes,
-                    )
+            sampler_unavailable_logged = self._enforce_rss_watchdog(
+                slot,
+                absolute_rss_limit_bytes=absolute_rss_limit_bytes,
+                require_memory_limit=require_memory_limit,
+                sampler_unavailable_logged=sampler_unavailable_logged,
+            )
+
+    def _enforce_rss_watchdog(
+        self,
+        slot: _WorkerSlot,
+        *,
+        absolute_rss_limit_bytes: int | None,
+        require_memory_limit: bool,
+        sampler_unavailable_logged: bool,
+    ) -> bool:
+        """Sample the worker RSS once, raising on breach or required-mode loss.
+
+        Returns the updated log-once state; the caller decides whether a raise
+        additionally replaces the slot (the result wait replaces immediately,
+        the release wait defers to its caller's replacement handling).
+        """
+        if absolute_rss_limit_bytes is None:
+            return sampler_unavailable_logged
+        rss = process_rss_bytes(cast(int, slot.process.pid))
+        if rss is None:
+            if not slot.process.is_alive():
+                # The worker died between the caller's liveness check and this
+                # sample. Let the next supervision pass classify the crash
+                # (including its memory-limited exit-code heuristic) instead
+                # of misreporting a dead child as a lost sampler.
+                return sampler_unavailable_logged
+            if require_memory_limit:
+                raise RuntimeError(
+                    "Interactive worker memory enforcement could not sample child RSS"
+                )
+            if not sampler_unavailable_logged:
+                logger.warning(
+                    "interactive_worker_rss_unavailable",
+                    worker_index=slot.index,
+                )
+            return True
+        if rss > absolute_rss_limit_bytes:
+            raise InteractiveWorkerMemoryLimitError(
+                rss_bytes=rss,
+                limit_bytes=absolute_rss_limit_bytes,
+            )
+        return sampler_unavailable_logged
 
     def _interpret_result(self, slot: _WorkerSlot, *, job_id: str, envelope: Any) -> Any:
         if not isinstance(envelope, tuple) or len(envelope) != 4:

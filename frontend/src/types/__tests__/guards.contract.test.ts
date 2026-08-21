@@ -276,6 +276,17 @@ function executionMetricsFixture() {
         pressure_ratio: 0.75,
       },
     ],
+    cache_proof: {
+      hits: 1,
+      misses: 2,
+      direct_fallbacks: 1,
+      miss_reason_counts: {
+        metadata_source_mismatch: 1,
+        artifact_integrity_schema_failure: 0,
+        unreadable_artifact: 0,
+        proof_unavailable: 1,
+      },
+    },
   }
 }
 
@@ -540,6 +551,27 @@ describe("API response guards", () => {
       ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
       execution_metrics: { ...executionMetricsFixture(), ...calibration },
     })).toThrow(/calibrat/i)
+  })
+
+  it("requires the closed cache-proof evidence on execution metrics", () => {
+    const withoutCacheProof = { ...executionMetricsFixture() } as Record<string, unknown>
+    delete withoutCacheProof.cache_proof
+    expect(() => parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: withoutCacheProof,
+    })).toThrow(/cache_proof/i)
+    expect(() => parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: {
+        ...executionMetricsFixture(),
+        cache_proof: {
+          hits: 1,
+          misses: 3,
+          direct_fallbacks: 0,
+          miss_reason_counts: { metadata_source_mismatch: 1, artifact_integrity_schema_failure: 0, unreadable_artifact: 0, proof_unavailable: 1 },
+        },
+      },
+    })).toThrow(/closed reason-count total/i)
   })
 
   it("rejects over-cap or non-deterministically ordered P12 wrappers", () => {

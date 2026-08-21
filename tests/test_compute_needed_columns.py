@@ -37,6 +37,7 @@ from haute._types import (
 )
 from haute.errors import ContractMismatchError
 from haute.projection import compute_prepared_plan
+from tests._projection_helpers import pair_value
 from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
@@ -793,11 +794,11 @@ class TestEdgeCases:
             "conversion_prediction",
         }
         assert plan.needed_by_node["premium_input"] == {"quote_id", "premium"}
-        assert plan.edge_demands[("model_output", "join_premiums")] == {
+        assert pair_value(plan.edge_demands, "model_output", "join_premiums") == {
             "quote_id",
             "conversion_prediction",
         }
-        assert plan.edge_demands[("premium_input", "join_premiums")] == {
+        assert pair_value(plan.edge_demands, "premium_input", "join_premiums") == {
             "quote_id",
             "premium",
         }
@@ -851,8 +852,8 @@ class TestEdgeCases:
             "territory_band",
             "channel_band",
         }
-        assert plan.edge_demands[("scored", "ratebook_optimiser")] == required
-        assert plan.edge_demands[("banding_source", "ratebook_optimiser")] == {
+        assert pair_value(plan.edge_demands, "scored", "ratebook_optimiser") == required
+        assert pair_value(plan.edge_demands, "banding_source", "ratebook_optimiser") == {
             "quote_id",
             "territory_band",
             "channel_band",
@@ -903,8 +904,8 @@ class TestEdgeCases:
         assert plan.needed_by_node["ratebook_optimiser"] is None
         assert plan.needed_by_node["scored"] == required
         assert plan.needed_by_node["banding_source"] == {"quote_id", "territory_band"}
-        assert plan.edge_demands[("scored", "ratebook_optimiser")] == required
-        assert plan.edge_demands[("banding_source", "ratebook_optimiser")] == {
+        assert pair_value(plan.edge_demands, "scored", "ratebook_optimiser") == required
+        assert pair_value(plan.edge_demands, "banding_source", "ratebook_optimiser") == {
             "quote_id",
             "territory_band",
         }
@@ -953,11 +954,11 @@ class TestEdgeCases:
 
         assert plan.needed_by_node["shared"] == {*required, "territory_band"}
         assert plan.needed_by_node["audit_side_input"] == set()
-        assert plan.edge_demands[("shared", "ratebook_optimiser")] == {
+        assert pair_value(plan.edge_demands, "shared", "ratebook_optimiser") == {
             *required,
             "territory_band",
         }
-        assert plan.edge_demands[("audit_side_input", "ratebook_optimiser")] == set()
+        assert pair_value(plan.edge_demands, "audit_side_input", "ratebook_optimiser") == set()
 
     def test_multi_parent_optimiser_rejects_malformed_ratebook_factor_columns(self):
         """Ratebook routing should fail loudly for malformed factor metadata."""
@@ -1105,12 +1106,12 @@ class TestEdgeCases:
             "quote_id",
             "competitor_premium",
         }
-        assert plan.edge_demands[("policies", "join_scoring")] == {
+        assert pair_value(plan.edge_demands, "policies", "join_scoring") == {
             "quote_id",
             "policy_id",
             "postcode",
         }
-        assert plan.edge_demands[("competitor_scoring", "join_scoring")] == {
+        assert pair_value(plan.edge_demands, "competitor_scoring", "join_scoring") == {
             "quote_id",
             "competitor_premium",
         }
@@ -1173,13 +1174,13 @@ class TestEdgeCases:
             "policy_passthrough",
         }
         assert plan.needed_by_node["quoted_premiums"] == {"quote_id", "premium"}
-        assert plan.edge_demands[("join_policy_data", "join_premiums")] == {
+        assert pair_value(plan.edge_demands, "join_policy_data", "join_premiums") == {
             "quote_id",
             "policy_id",
             "competitor_premium",
             "policy_passthrough",
         }
-        assert plan.edge_demands[("quoted_premiums", "join_premiums")] == {
+        assert pair_value(plan.edge_demands, "quoted_premiums", "join_premiums") == {
             "quote_id",
             "premium",
         }
@@ -1218,8 +1219,8 @@ class TestEdgeCases:
 
         assert plan.needed_by_node["policies"] == {"quote_id", "premium"}
         assert plan.needed_by_node["lookup"] == {"quote_id", "premium"}
-        assert plan.edge_demands[("policies", "join")] == {"quote_id", "premium"}
-        assert plan.edge_demands[("lookup", "join")] == {"quote_id", "premium"}
+        assert pair_value(plan.edge_demands, "policies", "join") == {"quote_id", "premium"}
+        assert pair_value(plan.edge_demands, "lookup", "join") == {"quote_id", "premium"}
 
     def test_multi_parent_inputs_by_parent_rejects_ambiguous_passthrough_columns(self):
         """Uncovered fan-in columns still fail loudly without one clear owner."""
