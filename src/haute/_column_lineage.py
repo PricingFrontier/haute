@@ -1154,8 +1154,12 @@ def _rename_schema(
     schema: frozenset[str],
     mapping: Mapping[str, str],
 ) -> frozenset[str] | None:
-    if not set(mapping) <= set(schema):
-        return None
+    """Transfer a known schema through a rename, detecting target collisions.
+
+    Source existence is owned by the forward transfer, which validates every
+    rename source (identity pairs included) before calling this.
+    """
+    assert set(mapping) <= set(schema)
     output = {mapping.get(column, column) for column in schema}
     if len(output) != len(schema):
         return None

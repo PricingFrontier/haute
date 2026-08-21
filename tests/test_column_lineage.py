@@ -572,13 +572,33 @@ def test_when_and_horizontal_expression_sequences_stay_supported() -> None:
 
 
 def test_operator_string_literals_beside_expressions_stay_supported() -> None:
-    code = "df = rows.select((pl.col('a') + '_sfx').alias('tagged'))"
+    # The chained spelling keeps a nested operator as the expression anchor.
+    code = (
+        "df = rows.select((pl.col('a') + '_sfx').alias('tagged'), tail=pl.col('a') + '_x' + '_y')"
+    )
     result = analyze_polars_lineage(code, {"rows": frozenset({"a", "unused"})})
 
     assert result.supported
     assert result.demands_by_input == {"rows": frozenset({"a"})}
 
     frame = pl.DataFrame({"a": ["x"], "unused": [1]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+    ).collect()
+    assert_frame_equal(projected, full)
+
+
+def test_unary_wrapped_expression_operand_still_guarantees_an_expression() -> None:
+    code = "df = rows.with_columns(shifted=-pl.col('a') + 1).select(['shifted'])"
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "unused"})})
+
+    assert result.supported
+    assert result.demands_by_input == {"rows": frozenset({"a"})}
+
+    frame = pl.DataFrame({"a": [3], "unused": [1]})
     full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
     projected = _exec_user_code(
         code,
