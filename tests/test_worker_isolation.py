@@ -97,10 +97,13 @@ class _EntrypointQueue:
         self.joined += 1
 
 
-def _current_address_space_limit() -> tuple[int, int]:
+def _current_native_memory_limit() -> tuple[str | None, int, int]:
     import resource
 
-    return tuple(int(value) for value in resource.getrlimit(resource.RLIMIT_AS))
+    from haute._native_memory_limit import current_native_memory_backend
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+    return current_native_memory_backend(), int(soft), int(hard)
 
 
 def test_worker_cancellation_gate_rejects_publication_after_cancellation() -> None:
@@ -722,19 +725,36 @@ def test_required_memory_cap_fails_loudly_when_unsupported(
     not address_space_caps_supported(),
     reason="worker address-space caps are only available on platforms with resource.RLIMIT_AS",
 )
-def test_memory_cap_is_applied_inside_child_process() -> None:
-    limit = 512 * 1024 * 1024
+def test_native_memory_cap_is_active_inside_child_process() -> None:
+    import resource
 
-    soft, hard = run_isolated_worker(
-        _current_address_space_limit,
+    limit = 512 * 1024 * 1024
+    inherited_soft, inherited_hard = (
+        int(value) for value in resource.getrlimit(resource.RLIMIT_AS)
+    )
+
+    backend, soft, hard = run_isolated_worker(
+        _current_native_memory_limit,
         config=IsolatedWorkerConfig(
             memory_limit_bytes=limit,
             require_memory_limit=True,
         ),
     )
 
-    assert soft == limit
-    assert hard == limit
+    assert backend in {"cgroup", "rlimit"}
+    if backend == "cgroup":
+        return
+
+    # RLIMIT_AS is an address-space *growth* ceiling.  The installed soft
+    # limit therefore includes the worker's pre-existing virtual-memory
+    # baseline and must not be confused with the growth budget itself.
+    infinity = int(resource.RLIM_INFINITY)
+    assert hard == inherited_hard
+    assert soft != infinity
+    inherited_ceilings = [value for value in (inherited_soft, inherited_hard) if value != infinity]
+    assert soft >= min(limit, *inherited_ceilings)
+    for inherited_ceiling in inherited_ceilings:
+        assert soft <= inherited_ceiling
 
 
 def test_cross_platform_worker_rss_watchdog_enforces_growth_budget(
