@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
 
 from haute._api_input_schema import ApiInputSchemaError, is_json_api_input_path
-from haute._json_shred import (
-    _iter_xml_records,
-    _xml_local_name,
-    build_per_port_cache,
-    infer_v2_schema_from_data,
-    load_per_port_cache,
-)
+from haute._json_shred._cache import build_per_port_cache, load_per_port_cache
+from haute._json_shred._inference import infer_v2_schema_from_data
+from haute._json_shred._records import _iter_xml_records, _xml_element_value, _xml_local_name
 
 
 def test_xml_routes_through_structured_api_input_codec(tmp_path) -> None:
@@ -257,3 +254,12 @@ def test_xml_scalar_and_attribute_only_roots_are_records(
     data_path.write_text(source, encoding="utf-8")
 
     assert list(_iter_xml_records(data_path)) == [expected]
+
+
+def test_nested_element_child_tail_text_is_mixed_content(tmp_path) -> None:
+    """A child's trailing tail text is mixed content even when the element's
+    own text is blank; the nested-value converter must fail closed on it."""
+    element = ET.fromstring("<nested>\n  <child>1</child>trailing</nested>")
+
+    with pytest.raises(ApiInputSchemaError, match="mixed text and child elements"):
+        _xml_element_value(element)

@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from haute._json_shred import build_per_port_cache
+from haute._json_shred._cache import build_per_port_cache
 from scripts.memory_smoke import StdlibMemorySampler
 
 

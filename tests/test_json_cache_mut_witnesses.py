@@ -20,7 +20,7 @@ import pytest
 from fastapi import HTTPException
 
 import haute.routes.json_cache as json_cache_module
-from haute._json_shred import PreparedPerPortCacheBuild
+from haute._json_shred._cache import PreparedPerPortCacheBuild
 from haute._worker_isolation import IsolatedWorkerRemoteError
 from haute.routes.json_cache import (
     _aggregate_v2_build_response,

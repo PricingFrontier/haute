@@ -684,7 +684,7 @@ newer overlapping transform.
   authoritative backstop at save.
 - **An emit-true table with no selected column is not a frame**: no row, no
   handle, no display name — mirroring runtime eligibility
-  (`_json_shred.load_v2_api_source`), so the body can never advertise a
+  (`_json_shred._cache.load_v2_api_source`), so the body can never advertise a
   frame the executor would not emit.
 - **Edge-join join-handle position is computed live**, not stored: it
   compares the connected join-source node's vertical centre against the

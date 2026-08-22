@@ -26,7 +26,7 @@ import polars as pl
 import pytest
 
 from haute._json_flatten import _json_cache_dir
-from haute._json_shred import build_per_port_cache
+from haute._json_shred._cache import build_per_port_cache
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
@@ -415,7 +415,7 @@ def test_build_noop_when_fingerprint_matches(isolated_root) -> None:
     clicks.
     """
     from haute._json_flatten import _json_cache_dir
-    from haute._json_shred import build_per_port_cache as _build
+    from haute._json_shred._cache import build_per_port_cache as _build
 
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
@@ -752,7 +752,7 @@ def test_group_by_preview_loads_only_proven_api_port_columns(
     isolated_root,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import haute._json_shred as json_shred
+    from haute._json_shred import _cache
 
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
@@ -787,13 +787,13 @@ def test_group_by_preview_loads_only_proven_api_port_columns(
         ],
     )
     observed_demands: list[dict[str, frozenset[str] | None] | None] = []
-    real_load = json_shred.load_v2_api_source
+    real_load = _cache.load_v2_api_source
 
     def _capture_load(*args: Any, **kwargs: Any):
         observed_demands.append(kwargs.get("port_columns"))
         return real_load(*args, **kwargs)
 
-    monkeypatch.setattr(json_shred, "load_v2_api_source", _capture_load)
+    monkeypatch.setattr(_cache, "load_v2_api_source", _capture_load)
 
     results = execute_graph(
         graph,
@@ -815,7 +815,7 @@ def test_cardinality_only_preview_reads_one_carrier_without_losing_rows(
     isolated_root,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import haute._json_shred as json_shred
+    from haute._json_shred import _cache
 
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
@@ -846,13 +846,13 @@ def test_cardinality_only_preview_reads_one_carrier_without_losing_rows(
         ],
     )
     observed_demands: list[dict[str, frozenset[str] | None] | None] = []
-    real_load = json_shred.load_v2_api_source
+    real_load = _cache.load_v2_api_source
 
     def _capture_load(*args: Any, **kwargs: Any):
         observed_demands.append(kwargs.get("port_columns"))
         return real_load(*args, **kwargs)
 
-    monkeypatch.setattr(json_shred, "load_v2_api_source", _capture_load)
+    monkeypatch.setattr(_cache, "load_v2_api_source", _capture_load)
 
     results = execute_graph(
         graph,
@@ -871,7 +871,7 @@ def test_join_select_preview_loads_only_columns_proven_for_each_api_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A closed aggregate/join/select fan-in must stay narrow at both ports."""
-    import haute._json_shred as json_shred
+    from haute._json_shred import _cache
 
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
@@ -937,13 +937,13 @@ def test_join_select_preview_loads_only_columns_proven_for_each_api_port(
         ],
     )
     observed_demands: list[dict[str, frozenset[str] | None] | None] = []
-    real_load = json_shred.load_v2_api_source
+    real_load = _cache.load_v2_api_source
 
     def _capture_load(*args: Any, **kwargs: Any):
         observed_demands.append(kwargs.get("port_columns"))
         return real_load(*args, **kwargs)
 
-    monkeypatch.setattr(json_shred, "load_v2_api_source", _capture_load)
+    monkeypatch.setattr(_cache, "load_v2_api_source", _capture_load)
 
     results = execute_graph(
         graph,
@@ -971,7 +971,7 @@ def test_two_ports_from_one_api_source_join_directly_without_demand_collision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Parallel edges sharing source/target retain independent port demands."""
-    import haute._json_shred as json_shred
+    from haute._json_shred import _cache
 
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
@@ -1020,13 +1020,13 @@ def test_two_ports_from_one_api_source_join_directly_without_demand_collision(
         ],
     )
     observed_demands: list[dict[str, frozenset[str] | None] | None] = []
-    real_load = json_shred.load_v2_api_source
+    real_load = _cache.load_v2_api_source
 
     def _capture_load(*args: Any, **kwargs: Any):
         observed_demands.append(kwargs.get("port_columns"))
         return real_load(*args, **kwargs)
 
-    monkeypatch.setattr(json_shred, "load_v2_api_source", _capture_load)
+    monkeypatch.setattr(_cache, "load_v2_api_source", _capture_load)
 
     results = execute_graph(
         graph,

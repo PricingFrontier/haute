@@ -356,50 +356,6 @@ def _config_with_resolved_data_path(config: Mapping[str, Any]) -> Mapping[str, A
     return {**config, "path": resolved}
 
 
-def _make_api_source_v2(
-    data_path: str,
-    config: dict[str, Any],
-) -> Callable[..., Any]:
-    """Build the runtime source function for a v2 apiInput.
-
-    Behaviour at call time:
-
-    - 0 emit-true tables → raise a clear RuntimeError (the editor's
-      empty-state message; the user has to tick at least one ``emit``
-      before previewing).
-    - 1+ emitting tables → return a ``dict[port_label, LazyFrame]``. The
-      executor's edge-resolution picks one frame per outgoing edge using
-      ``edge.sourceHandle``.
-
-    A valid ``working/`` or ``committed/`` per-port parquet cache is used as
-    a performance fast path. When neither can serve the current post-schema
-    shape, the source JSON/JSONL is shredded directly for this execution;
-    caching remains an explicit, optional prewarm action.
-    """
-    from haute._api_input_schema import validate_v2_schema
-    from haute._json_shred import load_v2_api_source
-
-    # Validate at build time so a malformed config fails before any data is
-    # fetched. The emit-state checks, optional cache resolution, direct-shred
-    # fallback, and uniform frame-bundle return live in the shared
-    # `load_v2_api_source` so codegen and this runtime path cannot drift.
-    validate_v2_schema(config)
-
-    def _api_source_v2(
-        _data_path: str = data_path,
-        _config: dict[str, Any] = config,
-    ) -> _Frame | dict[str, _Frame]:
-        # Resolve the (possibly pipeline-relative) data path the same way the
-        # cache-build route and codegen do, so both optional cache lookup and
-        # direct shredding target the same file the build route would cache
-        # when cwd != the pipeline dir.  Deferred to call time (not build
-        # time) to mirror codegen's generated body and leave the deploy build
-        # path — which creates but never invokes this fn — untouched.
-        return load_v2_api_source(_resolve_runtime_data_path(_data_path), _config)
-
-    return _api_source_v2
-
-
 @_register(NodeType.API_INPUT, opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config

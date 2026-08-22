@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +13,7 @@ from typing import Any
 
 import pytest
 
-import haute._json_shred as shred
+from haute._json_shred import _publication
 
 
 def _windows_lock_error(winerror: int) -> OSError:
@@ -32,8 +34,8 @@ def test_open_cache_lock_file_uses_private_binary_descriptor_and_closes_on_wrap_
         opened.append((path, flags, mode))
         return original_open(path, flags, mode)
 
-    monkeypatch.setattr(shred.os, "open", record_open)
-    handle = shred._open_cache_lock_file(lock_path)
+    monkeypatch.setattr(os, "open", record_open)
+    handle = _publication._open_cache_lock_file(lock_path)
     try:
         assert opened == [
             (
@@ -52,11 +54,11 @@ def test_open_cache_lock_file_uses_private_binary_descriptor_and_closes_on_wrap_
         handle.close()
 
     monkeypatch.setattr(
-        shred.os, "fdopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("wrap"))
+        os, "fdopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("wrap"))
     )
-    monkeypatch.setattr(shred.os, "close", lambda fd: closed.append(fd) or original_close(fd))
+    monkeypatch.setattr(os, "close", lambda fd: closed.append(fd) or original_close(fd))
     with pytest.raises(OSError, match="wrap"):
-        shred._open_cache_lock_file(lock_path)
+        _publication._open_cache_lock_file(lock_path)
     assert len(closed) == 1
 
 
@@ -69,8 +71,8 @@ def test_open_cache_lock_file_rejects_identity_mismatch_in_either_direction(
 ) -> None:
     lock_path = tmp_path / "build.lock"
     closed: list[int] = []
-    monkeypatch.setattr(shred.os, "open", lambda *_args: 91)
-    monkeypatch.setattr(shred.os, "close", closed.append)
+    monkeypatch.setattr(os, "open", lambda *_args: 91)
+    monkeypatch.setattr(os, "close", closed.append)
     monkeypatch.setattr(
         Path,
         "lstat",
@@ -79,15 +81,15 @@ def test_open_cache_lock_file_rejects_identity_mismatch_in_either_direction(
         ),
     )
     monkeypatch.setattr(
-        shred.os,
+        os,
         "fstat",
         lambda _fd: SimpleNamespace(
             st_mode=0o100600, st_dev=descriptor_identity[0], st_ino=descriptor_identity[1]
         ),
     )
 
-    with pytest.raises(shred.JsonCacheRecoveryError, match="identity"):
-        shred._open_cache_lock_file(lock_path)
+    with pytest.raises(_publication.JsonCacheRecoveryError, match="identity"):
+        _publication._open_cache_lock_file(lock_path)
     assert closed == [91]
 
 
@@ -98,16 +100,16 @@ def test_open_cache_lock_file_wraps_raw_descriptor_exactly(
     calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     handle = BytesIO()
     identity = SimpleNamespace(st_mode=0o100600, st_dev=1, st_ino=2)
-    monkeypatch.setattr(shred.os, "open", lambda *_args: 92)
+    monkeypatch.setattr(os, "open", lambda *_args: 92)
     monkeypatch.setattr(Path, "lstat", lambda _path: identity)
-    monkeypatch.setattr(shred.os, "fstat", lambda _fd: identity)
+    monkeypatch.setattr(os, "fstat", lambda _fd: identity)
     monkeypatch.setattr(
-        shred.os,
+        os,
         "fdopen",
         lambda *args, **kwargs: calls.append((args, kwargs)) or handle,
     )
 
-    assert shred._open_cache_lock_file(lock_path) is handle
+    assert _publication._open_cache_lock_file(lock_path) is handle
     assert calls == [((92, "r+b"), {"buffering": 0})]
 
 
@@ -125,11 +127,11 @@ def test_file_lock_platform_contracts_and_deadlines(monkeypatch: pytest.MonkeyPa
     posix_calls: list[tuple[int, int]] = []
     fcntl = SimpleNamespace(LOCK_EX=1, LOCK_NB=2, LOCK_UN=4)
     fcntl.flock = lambda fd, mode: posix_calls.append((fd, mode))
-    monkeypatch.setattr(shred.os, "name", "posix")
+    monkeypatch.setattr(os, "name", "posix")
     monkeypatch.setitem(sys.modules, "fcntl", fcntl)
-    assert shred._acquire_file_lock(Handle()) is True
-    assert shred._acquire_file_lock(Handle(), blocking=False) is True
-    shred._release_file_lock(Handle())
+    assert _publication._acquire_file_lock(Handle()) is True
+    assert _publication._acquire_file_lock(Handle(), blocking=False) is True
+    _publication._release_file_lock(Handle())
     assert posix_calls == [(41, 1), (41, 3), (41, 4)]
 
     attempts: list[int] = []
@@ -140,23 +142,23 @@ def test_file_lock_platform_contracts_and_deadlines(monkeypatch: pytest.MonkeyPa
 
     fcntl.flock = busy
     ticks = iter((10.0, 10.0, 10.02))
-    monkeypatch.setattr(shred.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
     sleeps: list[float] = []
-    monkeypatch.setattr(shred.time, "sleep", sleeps.append)
-    assert shred._acquire_file_lock(Handle(), timeout_seconds=0.01) is False
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    assert _publication._acquire_file_lock(Handle(), timeout_seconds=0.01) is False
     assert attempts == [1, 1] and sleeps == [0.01]
     fcntl.flock = lambda *_args: (_ for _ in ()).throw(OSError(5, "bad"))
     with pytest.raises(OSError, match="bad"):
-        shred._acquire_file_lock(Handle(), blocking=False)
+        _publication._acquire_file_lock(Handle(), blocking=False)
 
     windows_calls: list[tuple[int, int, int]] = []
     msvcrt = SimpleNamespace(LK_NBLCK=7, LK_UNLCK=8)
     msvcrt.locking = lambda *args: windows_calls.append(args)
-    monkeypatch.setattr(shred.os, "name", "nt")
+    monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setitem(sys.modules, "msvcrt", msvcrt)
     handle = Handle()
-    assert shred._acquire_file_lock(handle, blocking=False) is True
-    shred._release_file_lock(handle)
+    assert _publication._acquire_file_lock(handle, blocking=False) is True
+    _publication._release_file_lock(handle)
     assert handle.seeks == [(0, 0), (0, 0)]
     assert windows_calls == [(41, 7, 1), (41, 8, 1)]
 
@@ -167,14 +169,15 @@ def test_file_lock_timeout_at_deadline_does_not_sleep_again(
     fcntl = SimpleNamespace(LOCK_EX=1, LOCK_NB=2, LOCK_UN=4)
     attempts: list[int] = []
     fcntl.flock = lambda *_args: attempts.append(1) or (_ for _ in ()).throw(OSError(11, "busy"))
-    monkeypatch.setattr(shred.os, "name", "posix")
+    monkeypatch.setattr(os, "name", "posix")
     monkeypatch.setitem(sys.modules, "fcntl", fcntl)
-    monkeypatch.setattr(shred.time, "monotonic", iter((5.0, 5.0, 5.01)).__next__)
+    monkeypatch.setattr(time, "monotonic", iter((5.0, 5.0, 5.01)).__next__)
     sleeps: list[float] = []
-    monkeypatch.setattr(shred.time, "sleep", sleeps.append)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
 
     assert (
-        shred._acquire_file_lock(SimpleNamespace(fileno=lambda: 43), timeout_seconds=0.01) is False
+        _publication._acquire_file_lock(SimpleNamespace(fileno=lambda: 43), timeout_seconds=0.01)
+        is False
     )
     assert attempts == [1, 1]
     assert sleeps == [0.01]
@@ -185,10 +188,12 @@ def test_file_lock_posix_treats_permission_denied_as_contention(
 ) -> None:
     fcntl = SimpleNamespace(LOCK_EX=1, LOCK_NB=2, LOCK_UN=4)
     fcntl.flock = lambda *_args: (_ for _ in ()).throw(OSError(13, "busy"))
-    monkeypatch.setattr(shred.os, "name", "posix")
+    monkeypatch.setattr(os, "name", "posix")
     monkeypatch.setitem(sys.modules, "fcntl", fcntl)
 
-    assert shred._acquire_file_lock(SimpleNamespace(fileno=lambda: 43), blocking=False) is False
+    assert (
+        _publication._acquire_file_lock(SimpleNamespace(fileno=lambda: 43), blocking=False) is False
+    )
 
 
 @pytest.mark.parametrize(
@@ -212,15 +217,15 @@ def test_file_lock_windows_contention_errors_are_retried_until_deadline(
         raise error
 
     msvcrt.locking = busy
-    monkeypatch.setattr(shred.os, "name", "nt")
+    monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setitem(sys.modules, "msvcrt", msvcrt)
-    monkeypatch.setattr(shred.time, "monotonic", iter((2.0, 2.0, 2.01)).__next__)
+    monkeypatch.setattr(time, "monotonic", iter((2.0, 2.0, 2.01)).__next__)
     sleeps: list[float] = []
-    monkeypatch.setattr(shred.time, "sleep", sleeps.append)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
     handle = SimpleNamespace(fileno=lambda: 44, seek=lambda *args: seeks.append(args))
     seeks: list[tuple[int, ...]] = []
 
-    assert shred._acquire_file_lock(handle, timeout_seconds=0.01) is False
+    assert _publication._acquire_file_lock(handle, timeout_seconds=0.01) is False
     assert calls == [(44, 9, 1), (44, 9, 1)]
     assert seeks == [(0,), (0,)]
     assert sleeps == [0.01]
@@ -232,14 +237,14 @@ def test_file_lock_windows_timeout_stops_after_overshooting_deadline(
     attempts: list[int] = []
     msvcrt = SimpleNamespace(LK_NBLCK=9, LK_UNLCK=10)
     msvcrt.locking = lambda *_args: attempts.append(1) or (_ for _ in ()).throw(OSError(11, "busy"))
-    monkeypatch.setattr(shred.os, "name", "nt")
+    monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setitem(sys.modules, "msvcrt", msvcrt)
-    monkeypatch.setattr(shred.time, "monotonic", iter((2.0, 2.02)).__next__)
+    monkeypatch.setattr(time, "monotonic", iter((2.0, 2.02)).__next__)
     sleeps: list[float] = []
-    monkeypatch.setattr(shred.time, "sleep", sleeps.append)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
     handle = SimpleNamespace(fileno=lambda: 44, seek=lambda *_args: None)
 
-    assert shred._acquire_file_lock(handle, timeout_seconds=0.01) is False
+    assert _publication._acquire_file_lock(handle, timeout_seconds=0.01) is False
     assert attempts == [1]
     assert sleeps == []
 
@@ -247,11 +252,11 @@ def test_file_lock_windows_timeout_stops_after_overshooting_deadline(
 def test_file_lock_windows_propagates_unexpected_error(monkeypatch: pytest.MonkeyPatch) -> None:
     msvcrt = SimpleNamespace(LK_NBLCK=9, LK_UNLCK=10)
     msvcrt.locking = lambda *_args: (_ for _ in ()).throw(OSError(5, "broken"))
-    monkeypatch.setattr(shred.os, "name", "nt")
+    monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setitem(sys.modules, "msvcrt", msvcrt)
 
     with pytest.raises(OSError, match="broken"):
-        shred._acquire_file_lock(
+        _publication._acquire_file_lock(
             SimpleNamespace(fileno=lambda: 45, seek=lambda *_args: None), blocking=False
         )
 
@@ -259,18 +264,18 @@ def test_file_lock_windows_propagates_unexpected_error(monkeypatch: pytest.Monke
 def test_cache_ancestors_reparse_and_recovery_generation_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert shred._is_reparse_point(SimpleNamespace(st_file_attributes=0x400))
-    assert not shred._is_reparse_point(SimpleNamespace(st_file_attributes=0x200))
-    assert not shred._is_reparse_point(SimpleNamespace())
+    assert _publication._is_reparse_point(SimpleNamespace(st_file_attributes=0x400))
+    assert not _publication._is_reparse_point(SimpleNamespace(st_file_attributes=0x200))
+    assert not _publication._is_reparse_point(SimpleNamespace())
 
     cache_root = tmp_path / ".haute_cache"
     cache_root.mkdir()
     non_directory = cache_root / "file"
     non_directory.write_text("x")
-    with pytest.raises(shred.JsonCacheRecoveryError, match="non-plain"):
-        shred._assert_cache_path_ancestors_plain(non_directory / "lock")
+    with pytest.raises(_publication.JsonCacheRecoveryError, match="non-plain"):
+        _publication._assert_cache_path_ancestors_plain(non_directory / "lock")
     missing = cache_root / "missing" / "lock"
-    shred._assert_cache_path_ancestors_plain(missing)
+    _publication._assert_cache_path_ancestors_plain(missing)
 
     cache_dir = tmp_path / "cache"
     older = tmp_path / "cache.build-old-old"
@@ -279,7 +284,7 @@ def test_cache_ancestors_reparse_and_recovery_generation_selection(
     for directory in (older, newest, staged):
         directory.mkdir()
     monkeypatch.setattr(
-        shred,
+        _publication,
         "_publication_siblings",
         lambda _cache_dir, kind: (
             [(older, SimpleNamespace(st_mtime_ns=1)), (newest, SimpleNamespace(st_mtime_ns=2))]
@@ -287,7 +292,7 @@ def test_cache_ancestors_reparse_and_recovery_generation_selection(
             else [(staged, SimpleNamespace(st_mtime_ns=3))]
         ),
     )
-    shred._recover_cache_publication(cache_dir)
+    _publication._recover_cache_publication(cache_dir)
     assert cache_dir.is_dir()
     assert not older.exists() and not newest.exists() and not staged.exists()
 
@@ -295,19 +300,19 @@ def test_cache_ancestors_reparse_and_recovery_generation_selection(
     failed_old = tmp_path / "failed.build-old-only"
     failed_old.mkdir()
     monkeypatch.setattr(
-        shred,
+        _publication,
         "_publication_siblings",
         lambda _cache_dir, kind: (
             [(failed_old, SimpleNamespace(st_mtime_ns=1))] if kind == "old" else []
         ),
     )
     monkeypatch.setattr(
-        shred,
+        _publication,
         "_rename_dir_with_retry",
         lambda *_args: (_ for _ in ()).throw(PermissionError("rename")),
     )
     with pytest.raises(PermissionError, match="rename"):
-        shred._recover_cache_publication(failed_cache)
+        _publication._recover_cache_publication(failed_cache)
     assert failed_old.is_dir()
 
 
@@ -319,22 +324,22 @@ def test_cache_ancestor_validation_visits_only_the_cache_boundary(
     nested.mkdir(parents=True)
     checked: list[Path] = []
     monkeypatch.setattr(
-        shred,
+        _publication,
         "_plain_directory_stat",
         lambda path, **_kwargs: checked.append(path) or SimpleNamespace(),
     )
 
-    shred._assert_cache_path_ancestors_plain(nested / "lock")
+    _publication._assert_cache_path_ancestors_plain(nested / "lock")
     assert checked == [cache_root, nested.parent, nested]
 
     checked.clear()
-    shred._assert_cache_path_ancestors_plain(cache_root / "missing" / "lock")
+    _publication._assert_cache_path_ancestors_plain(cache_root / "missing" / "lock")
     assert checked == [cache_root]
 
     outside = tmp_path / "outside" / "leaf"
     outside.parent.mkdir()
     checked.clear()
-    shred._assert_cache_path_ancestors_plain(outside)
+    _publication._assert_cache_path_ancestors_plain(outside)
     assert checked == [outside.parent]
 
 
@@ -343,7 +348,9 @@ def test_cache_ancestor_validation_visits_only_the_cache_boundary(
     [(0x3FF, False), (0x400, True), (0x401, True), (0x800, False)],
 )
 def test_reparse_point_mask_boundaries(attributes: int, expected: bool) -> None:
-    assert shred._is_reparse_point(SimpleNamespace(st_file_attributes=attributes)) is expected
+    assert (
+        _publication._is_reparse_point(SimpleNamespace(st_file_attributes=attributes)) is expected
+    )
 
 
 def test_recovery_existing_cache_removes_all_superseded_siblings_and_logs_counts(
@@ -356,7 +363,7 @@ def test_recovery_existing_cache_removes_all_superseded_siblings_and_logs_counts
     actions: list[tuple[str, Path]] = []
     logs: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     monkeypatch.setattr(
-        shred,
+        _publication,
         "_publication_siblings",
         lambda _cache, kind: (
             [(old, SimpleNamespace(st_mtime_ns=1))]
@@ -365,11 +372,13 @@ def test_recovery_existing_cache_removes_all_superseded_siblings_and_logs_counts
         ),
     )
     monkeypatch.setattr(
-        shred, "_remove_plain_cache_directory", lambda path: actions.append(("remove", path))
+        _publication, "_remove_plain_cache_directory", lambda path: actions.append(("remove", path))
     )
-    monkeypatch.setattr(shred.logger, "info", lambda *args, **kwargs: logs.append((args, kwargs)))
+    monkeypatch.setattr(
+        _publication.logger, "info", lambda *args, **kwargs: logs.append((args, kwargs))
+    )
 
-    shred._recover_cache_publication(cache)
+    _publication._recover_cache_publication(cache)
     assert actions == [("remove", old), ("remove", staged)]
     assert logs == [
         (
@@ -392,14 +401,16 @@ def test_recovery_stage_only_cleanup_is_unlogged(
     actions: list[Path] = []
     logs: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     monkeypatch.setattr(
-        shred,
+        _publication,
         "_publication_siblings",
         lambda _cache, kind: [] if kind == "old" else [(staged, SimpleNamespace(st_mtime_ns=2))],
     )
-    monkeypatch.setattr(shred, "_remove_plain_cache_directory", actions.append)
-    monkeypatch.setattr(shred.logger, "info", lambda *args, **kwargs: logs.append((args, kwargs)))
+    monkeypatch.setattr(_publication, "_remove_plain_cache_directory", actions.append)
+    monkeypatch.setattr(
+        _publication.logger, "info", lambda *args, **kwargs: logs.append((args, kwargs))
+    )
 
-    shred._recover_cache_publication(cache)
+    _publication._recover_cache_publication(cache)
     assert actions == [staged]
     assert logs == []
 
@@ -411,7 +422,7 @@ def test_recovery_rejects_ambiguous_newest_backup(
     first.mkdir()
     second.mkdir()
     monkeypatch.setattr(
-        shred,
+        _publication,
         "_publication_siblings",
         lambda _cache, kind: (
             [(first, SimpleNamespace(st_mtime_ns=2)), (second, SimpleNamespace(st_mtime_ns=2))]
@@ -420,8 +431,8 @@ def test_recovery_rejects_ambiguous_newest_backup(
         ),
     )
 
-    with pytest.raises(shred.JsonCacheRecoveryError, match="ambiguous"):
-        shred._recover_cache_publication(cache)
+    with pytest.raises(_publication.JsonCacheRecoveryError, match="ambiguous"):
+        _publication._recover_cache_publication(cache)
 
 
 def test_recovery_restores_newest_of_three_backups_and_logs_discards(
@@ -434,7 +445,7 @@ def test_recovery_restores_newest_of_three_backups_and_logs_discards(
     actions: list[tuple[str, Path, Path | None]] = []
     logs: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     monkeypatch.setattr(
-        shred,
+        _publication,
         "_publication_siblings",
         lambda _cache, kind: (
             [
@@ -447,18 +458,20 @@ def test_recovery_restores_newest_of_three_backups_and_logs_discards(
         ),
     )
     monkeypatch.setattr(
-        shred,
+        _publication,
         "_rename_dir_with_retry",
         lambda source, destination: actions.append(("rename", source, destination)),
     )
     monkeypatch.setattr(
-        shred,
+        _publication,
         "_remove_plain_cache_directory",
         lambda path: actions.append(("remove", path, None)),
     )
-    monkeypatch.setattr(shred.logger, "info", lambda *args, **kwargs: logs.append((args, kwargs)))
+    monkeypatch.setattr(
+        _publication.logger, "info", lambda *args, **kwargs: logs.append((args, kwargs))
+    )
 
-    shred._recover_cache_publication(cache)
+    _publication._recover_cache_publication(cache)
     assert actions == [
         ("rename", newest, cache),
         ("remove", oldest, None),
@@ -481,19 +494,21 @@ def test_recovery_restores_newest_of_three_backups_and_logs_discards(
 def test_cache_build_lock_tracks_owner_depth_and_remaining_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    lock = shred._CacheBuildLock(tmp_path / "cache")
+    lock = _publication._CacheBuildLock(tmp_path / "cache")
     handle = SimpleNamespace(seek=lambda *_args: None, tell=lambda: 1, close=lambda: None)
     observed: list[dict[str, Any]] = []
-    monkeypatch.setattr(shred, "_assert_cache_path_ancestors_plain", lambda _path: None)
-    monkeypatch.setattr(shred, "_open_cache_lock_file", lambda _path: handle)
-    monkeypatch.setattr(shred, "_recover_cache_publication", lambda _path: None)
-    monkeypatch.setattr(shred, "_release_file_lock", lambda _handle: None)
+    monkeypatch.setattr(_publication, "_assert_cache_path_ancestors_plain", lambda _path: None)
+    monkeypatch.setattr(_publication, "_open_cache_lock_file", lambda _path: handle)
+    monkeypatch.setattr(_publication, "_recover_cache_publication", lambda _path: None)
+    monkeypatch.setattr(_publication, "_release_file_lock", lambda _handle: None)
     monkeypatch.setattr(
-        shred, "_acquire_file_lock", lambda _handle, **kwargs: observed.append(kwargs) or True
+        _publication,
+        "_acquire_file_lock",
+        lambda _handle, **kwargs: observed.append(kwargs) or True,
     )
-    monkeypatch.setattr(shred.threading, "get_ident", lambda: 101)
+    monkeypatch.setattr(threading, "get_ident", lambda: 101)
     ticks = iter((10.0, 10.25, 10.25, 10.25, 10.25))
-    monkeypatch.setattr(shred.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
 
     assert lock.acquire(timeout=1.0) is True
     assert observed == [{"blocking": True, "timeout_seconds": pytest.approx(0.75)}]
@@ -501,16 +516,16 @@ def test_cache_build_lock_tracks_owner_depth_and_remaining_deadline(
     assert lock.acquire() is True and lock._depth == 2
     lock.release()
     assert lock._depth == 1 and lock._owner_thread_id == 101
-    monkeypatch.setattr(shred.threading, "get_ident", lambda: 202)
+    monkeypatch.setattr(threading, "get_ident", lambda: 202)
     assert not lock.owned_by_current_thread()
     with pytest.raises(RuntimeError, match="un-acquired"):
         lock.release()
-    monkeypatch.setattr(shred.threading, "get_ident", lambda: 101)
+    monkeypatch.setattr(threading, "get_ident", lambda: 101)
     lock.release()
     assert lock._depth == 0 and lock._handle is None and lock._owner_thread_id is None
 
-    unbounded = shred._CacheBuildLock(tmp_path / "unbounded")
-    monkeypatch.setattr(shred, "_open_cache_lock_file", lambda _path: handle)
+    unbounded = _publication._CacheBuildLock(tmp_path / "unbounded")
+    monkeypatch.setattr(_publication, "_open_cache_lock_file", lambda _path: handle)
     assert unbounded.acquire(timeout=-1) is True
     assert observed[-1]["timeout_seconds"] is None
     unbounded.release()
@@ -519,14 +534,14 @@ def test_cache_build_lock_tracks_owner_depth_and_remaining_deadline(
 def test_cache_build_lock_owner_state_and_nonblocking_timeout_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    lock = shred._CacheBuildLock(tmp_path / "cache")
-    monkeypatch.setattr(shred.threading, "get_ident", lambda: 100)
+    lock = _publication._CacheBuildLock(tmp_path / "cache")
+    monkeypatch.setattr(threading, "get_ident", lambda: 100)
     lock._owner_thread_id = 100
     lock._depth = 0
     assert not lock.owned_by_current_thread()
     lock._depth = 1
     assert lock.owned_by_current_thread()
-    monkeypatch.setattr(shred.threading, "get_ident", lambda: 101)
+    monkeypatch.setattr(threading, "get_ident", lambda: 101)
     assert not lock.owned_by_current_thread()
 
     class ThreadLock:
@@ -555,7 +570,7 @@ def test_cache_build_lock_initialises_only_empty_lock_files(
     initial_position: int,
     expected_writes: list[bytes],
 ) -> None:
-    lock = shred._CacheBuildLock(tmp_path / f"cache-{initial_position}")
+    lock = _publication._CacheBuildLock(tmp_path / f"cache-{initial_position}")
     writes: list[bytes] = []
     flushes: list[None] = []
     handle = SimpleNamespace(
@@ -565,11 +580,11 @@ def test_cache_build_lock_initialises_only_empty_lock_files(
         flush=lambda: flushes.append(None),
         close=lambda: None,
     )
-    monkeypatch.setattr(shred, "_assert_cache_path_ancestors_plain", lambda _path: None)
-    monkeypatch.setattr(shred, "_open_cache_lock_file", lambda _path: handle)
-    monkeypatch.setattr(shred, "_acquire_file_lock", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(shred, "_recover_cache_publication", lambda _path: None)
-    monkeypatch.setattr(shred, "_release_file_lock", lambda _handle: None)
+    monkeypatch.setattr(_publication, "_assert_cache_path_ancestors_plain", lambda _path: None)
+    monkeypatch.setattr(_publication, "_open_cache_lock_file", lambda _path: handle)
+    monkeypatch.setattr(_publication, "_acquire_file_lock", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(_publication, "_recover_cache_publication", lambda _path: None)
+    monkeypatch.setattr(_publication, "_release_file_lock", lambda _handle: None)
 
     assert lock.acquire()
     assert writes == expected_writes
@@ -593,13 +608,13 @@ def test_cache_build_lock_process_contention_and_recovery_failure_release_everyt
         def close(self) -> None:
             self.closed = True
 
-    lock = shred._CacheBuildLock(tmp_path / "contention")
+    lock = _publication._CacheBuildLock(tmp_path / "contention")
     contention_handle = Handle()
-    monkeypatch.setattr(shred, "_assert_cache_path_ancestors_plain", lambda _path: None)
-    monkeypatch.setattr(shred, "_open_cache_lock_file", lambda _path: contention_handle)
-    monkeypatch.setattr(shred, "_acquire_file_lock", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(_publication, "_assert_cache_path_ancestors_plain", lambda _path: None)
+    monkeypatch.setattr(_publication, "_open_cache_lock_file", lambda _path: contention_handle)
+    monkeypatch.setattr(_publication, "_acquire_file_lock", lambda *_args, **_kwargs: False)
     released: list[Handle] = []
-    monkeypatch.setattr(shred, "_release_file_lock", released.append)
+    monkeypatch.setattr(_publication, "_release_file_lock", released.append)
 
     assert lock.acquire(blocking=False) is False
     assert released == []
@@ -607,13 +622,13 @@ def test_cache_build_lock_process_contention_and_recovery_failure_release_everyt
     assert lock._thread_lock.acquire(blocking=False)
     lock._thread_lock.release()
 
-    lock = shred._CacheBuildLock(tmp_path / "recovery")
+    lock = _publication._CacheBuildLock(tmp_path / "recovery")
     recovery_handle = Handle()
     released.clear()
-    monkeypatch.setattr(shred, "_open_cache_lock_file", lambda _path: recovery_handle)
-    monkeypatch.setattr(shred, "_acquire_file_lock", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(_publication, "_open_cache_lock_file", lambda _path: recovery_handle)
+    monkeypatch.setattr(_publication, "_acquire_file_lock", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
-        shred,
+        _publication,
         "_recover_cache_publication",
         lambda _path: (_ for _ in ()).throw(ValueError("recovery")),
     )

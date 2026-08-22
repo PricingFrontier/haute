@@ -31,13 +31,13 @@ from haute._api_input_schema import (
     parse_table_path,
     validate_v2_schema,
 )
-from haute._json_shred import (
+from haute._json_shred._cache import (
     build_per_port_cache,
     is_per_port_cache_valid,
     load_per_port_cache,
     read_per_port_cache_meta,
-    shred_to_buffers,
 )
+from haute._json_shred._shred import shred_to_buffers
 
 # ─── Path helpers ─────────────────────────────────────────────────
 

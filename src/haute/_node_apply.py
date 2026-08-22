@@ -103,7 +103,7 @@ def resolve_api_input_from_config(
                 "API Input has no v2 schema (tables[]). Open the node and click "
                 "'Infer Tables' to populate the schema mapping, then preview again."
             )
-        from haute._json_shred import load_v2_api_source
+        from haute._json_shred._cache import load_v2_api_source
 
         validate_v2_schema(config)
         return load_v2_api_source(path, config, port_columns=port_columns)

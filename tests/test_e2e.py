@@ -53,7 +53,7 @@ def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
     import json
 
     import haute._json_flatten as jf
-    from haute._json_shred import build_per_port_cache
+    from haute._json_shred._cache import build_per_port_cache
 
     # Keep the root supplied by _widen_sandbox_root: this fixture executes
     # both repository fixtures and absolute tmp_path-backed lifecycle graphs.

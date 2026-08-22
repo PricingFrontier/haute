@@ -1,5 +1,5 @@
 [cosmic-ray]
-module-path = "src/haute/_json_shred.py"
+module-path = "src/haute/_json_shred"
 timeout = 90.0
 excluded-modules = []
 test-command = "__HAUTE_PYTHON__ scripts/run_mutation_pytest.py --test-targets-file tests/mutation/json_shred_targets.txt -q -x"

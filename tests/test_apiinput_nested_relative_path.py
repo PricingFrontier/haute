@@ -4,7 +4,7 @@ pipeline lives at the project root or in a subdirectory, and regardless of cwd.
 
 THE BUG. The in-process executor's v2 apiInput source builder
 (``_builders._make_api_source_v2``) closed over the RAW relative ``path`` and
-handed it to ``_json_shred.load_v2_api_source``, whose cache-directory hash
+handed it to ``_json_shred._cache.load_v2_api_source``, whose cache-directory hash
 (``_json_flatten._path_hash``) resolves a relative path against ``cwd``
 (``Path(data_path).resolve()``).  The cache-build route
 (``routes.json_cache._resolve_data_path``) and codegen
@@ -49,7 +49,7 @@ from typing import Any
 import pytest
 
 from haute._json_flatten import _json_cache_dir
-from haute._json_shred import build_per_port_cache
+from haute._json_shred._cache import build_per_port_cache
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph

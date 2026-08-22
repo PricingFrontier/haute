@@ -296,7 +296,7 @@ def quotes() -> dict[str, pl.LazyFrame]:
 
     import orjson
 
-    from haute._json_shred import load_v2_api_source
+    from haute._json_shred._cache import load_v2_api_source
 
     _data_path = Path(__file__).parent.parent / "data/quotes/sample_quote.json"
     _config_path = Path("config/quote_input/quotes.json")

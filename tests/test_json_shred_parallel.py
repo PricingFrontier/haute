@@ -14,6 +14,7 @@ mechanism.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,27 +22,29 @@ import orjson
 import polars as pl
 import pytest
 
-from haute import _json_shred
 from haute._api_input_schema import ApiInputSchemaError
-from haute._json_shred import (
-    ShredSkipStats,
+from haute._json_shred import _inference, _records, _shred, _writer
+from haute._json_shred._cache import build_per_port_cache, load_per_port_cache
+from haute._json_shred._inference import (
     _assemble_inference_schema,
-    _assert_root_conservation,
-    _ChunkFailure,
-    _ChunkResult,
-    _EmittingTableSpec,
     _InferenceState,
+    infer_v2_schema_from_data,
+)
+from haute._json_shred._records import (
+    ShredSkipStats,
+    _ChunkFailure,
     _iter_range_records,
     _jsonl_byte_ranges,
-    _merge_chunk_skip_stats,
     _parallel_worker_count,
-    _raise_chunk_error,
     _raise_worker_failure,
     _should_shred_in_parallel,
+)
+from haute._json_shred._shred import _assert_root_conservation, _EmittingTableSpec
+from haute._json_shred._writer import (
+    _ChunkResult,
+    _merge_chunk_skip_stats,
+    _raise_chunk_error,
     _shred_chunk,
-    build_per_port_cache,
-    infer_v2_schema_from_data,
-    load_per_port_cache,
 )
 
 
@@ -54,11 +57,11 @@ def _write_jsonl(path: Path, records: list[Any]) -> Path:
 
 
 def _force_parallel(monkeypatch: pytest.MonkeyPatch, chunk_bytes: int = 200) -> None:
-    monkeypatch.setattr(_json_shred, "_PARALLEL_MIN_BYTES", 1)
-    monkeypatch.setattr(_json_shred, "_PARALLEL_CHUNK_BYTES", chunk_bytes)
+    monkeypatch.setattr(_records, "_PARALLEL_MIN_BYTES", 1)
+    monkeypatch.setattr(_records, "_PARALLEL_CHUNK_BYTES", chunk_bytes)
 
 
-def _records(n: int) -> list[dict[str, Any]]:
+def _sample_records(n: int) -> list[dict[str, Any]]:
     """Nested, ragged records: root scalars, a nullable 1-1 object, a child
     array of varying length, and a scalar array — so the comparison covers
     ancestor distribution and child tables, not just flat columns."""
@@ -84,7 +87,7 @@ def _records(n: int) -> list[dict[str, Any]]:
 def test_byte_ranges_tile_the_file_exactly(tmp_path: Path) -> None:
     """Ranges must be contiguous, gapless and cover every byte — anything else
     silently loses or duplicates records."""
-    p = _write_jsonl(tmp_path / "d.jsonl", _records(200))
+    p = _write_jsonl(tmp_path / "d.jsonl", _sample_records(200))
     size = p.stat().st_size
     ranges = _jsonl_byte_ranges(p, 256)
 
@@ -99,14 +102,14 @@ def test_byte_ranges_tile_the_file_exactly(tmp_path: Path) -> None:
 def test_byte_ranges_never_split_a_record(tmp_path: Path) -> None:
     """Every boundary must land immediately after a newline, so each range
     holds only whole lines."""
-    p = _write_jsonl(tmp_path / "d.jsonl", _records(200))
+    p = _write_jsonl(tmp_path / "d.jsonl", _sample_records(200))
     raw = p.read_bytes()
     for start, _end in _jsonl_byte_ranges(p, 256)[1:]:
         assert raw[start - 1 : start] == b"\n"
 
 
 def test_byte_ranges_read_back_every_record_in_order(tmp_path: Path) -> None:
-    p = _write_jsonl(tmp_path / "d.jsonl", _records(200))
+    p = _write_jsonl(tmp_path / "d.jsonl", _sample_records(200))
     raw = p.read_bytes()
     seen = [
         json.loads(line)
@@ -114,7 +117,7 @@ def test_byte_ranges_read_back_every_record_in_order(tmp_path: Path) -> None:
         for line in raw[start:end].splitlines()
         if line.strip()
     ]
-    assert seen == _records(200)
+    assert seen == _sample_records(200)
 
 
 def test_byte_ranges_of_small_or_empty_file(tmp_path: Path) -> None:
@@ -122,7 +125,7 @@ def test_byte_ranges_of_small_or_empty_file(tmp_path: Path) -> None:
     empty.write_text("", encoding="utf-8")
     assert _jsonl_byte_ranges(empty, 256) == []
 
-    small = _write_jsonl(tmp_path / "small.jsonl", _records(2))
+    small = _write_jsonl(tmp_path / "small.jsonl", _sample_records(2))
     assert _jsonl_byte_ranges(small, 1 << 20) == [(0, small.stat().st_size)]
 
 
@@ -158,14 +161,14 @@ def test_parallel_worker_count_respects_cpu_work_and_memory_caps(
     chunk_count: int,
     expected: int,
 ) -> None:
-    monkeypatch.setattr(_json_shred.os, "cpu_count", lambda: cpu_count)
+    monkeypatch.setattr(os, "cpu_count", lambda: cpu_count)
     assert _parallel_worker_count(chunk_count) == expected
 
 
 def test_parallel_eligibility_pins_suffix_size_boundary_and_stat_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(_json_shred, "_PARALLEL_MIN_BYTES", 3)
+    monkeypatch.setattr(_records, "_PARALLEL_MIN_BYTES", 3)
     exact = tmp_path / "exact.JSONL"
     exact.write_bytes(b"123")
     below = tmp_path / "below.ndjson"
@@ -194,15 +197,14 @@ def test_managed_parallel_shred_requires_descendant_wide_native_limit(
     backend: str | None,
     expected: bool,
 ) -> None:
-    from haute import _json_shred
 
     source = tmp_path / "data.jsonl"
     source.write_bytes(b"{}\n")
-    monkeypatch.setattr(_json_shred, "_PARALLEL_MIN_BYTES", 1)
-    monkeypatch.setattr(_json_shred, "current_execution_context", lambda: object())
-    monkeypatch.setattr(_json_shred, "current_native_memory_backend", lambda: backend)
+    monkeypatch.setattr(_records, "_PARALLEL_MIN_BYTES", 1)
+    monkeypatch.setattr(_records, "current_execution_context", lambda: object())
+    monkeypatch.setattr(_records, "current_native_memory_backend", lambda: backend)
 
-    assert _json_shred._should_shred_in_parallel(source) is expected
+    assert _records._should_shred_in_parallel(source) is expected
 
 
 def test_root_conservation_counts_emitted_and_skipped_rows() -> None:
@@ -265,7 +267,7 @@ def test_parallel_inference_matches_serial_with_late_schema_changes(
     def reject_serial_dispatch(*_args: object, **_kwargs: object) -> Any:
         raise AssertionError("large JSONL inference unexpectedly used the serial iterator")
 
-    monkeypatch.setattr(_json_shred, "_iter_records_for_inference", reject_serial_dispatch)
+    monkeypatch.setattr(_records, "_iter_records_for_inference", reject_serial_dispatch)
 
     assert infer_v2_schema_from_data(src) == serial
 
@@ -275,13 +277,13 @@ def test_explicitly_sampled_inference_stays_serial(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sample_size: int
 ) -> None:
     """Parallel dispatch must never turn an explicit bound into a full scan."""
-    src = _write_jsonl(tmp_path / "sampled.jsonl", _records(50))
+    src = _write_jsonl(tmp_path / "sampled.jsonl", _sample_records(50))
     _force_parallel(monkeypatch, chunk_bytes=100)
 
     def reject_range_scan(*_args: object, **_kwargs: object) -> Any:
         raise AssertionError("bounded inference unexpectedly partitioned the whole file")
 
-    monkeypatch.setattr(_json_shred, "_jsonl_byte_ranges", reject_range_scan)
+    monkeypatch.setattr(_records, "_jsonl_byte_ranges", reject_range_scan)
 
     schema = infer_v2_schema_from_data(src, sample_size=sample_size)
 
@@ -293,16 +295,16 @@ def test_non_positive_sample_size_keeps_unbounded_parallel_inference(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sample_size: int
 ) -> None:
     src = _write_jsonl(tmp_path / "unbounded.jsonl", [{"id": 1}, {"id": 2}])
-    state = _json_shred._InferenceState()
+    state = _inference._InferenceState()
     state.walk({"id": 1})
-    monkeypatch.setattr(_json_shred, "_should_shred_in_parallel", lambda _path: True)
-    monkeypatch.setattr(_json_shred, "_jsonl_byte_ranges", lambda *_args: [(0, 1), (1, 2)])
-    monkeypatch.setattr(_json_shred, "_infer_jsonl_in_parallel", lambda *_args: state)
+    monkeypatch.setattr(_records, "_should_shred_in_parallel", lambda _path: True)
+    monkeypatch.setattr(_records, "_jsonl_byte_ranges", lambda *_args: [(0, 1), (1, 2)])
+    monkeypatch.setattr(_inference, "_infer_jsonl_in_parallel", lambda *_args: state)
 
     def reject_serial_dispatch(*_args: object, **_kwargs: object) -> Any:
         raise AssertionError("non-positive sample size unexpectedly bounded inference")
 
-    monkeypatch.setattr(_json_shred, "_iter_records_for_inference", reject_serial_dispatch)
+    monkeypatch.setattr(_records, "_iter_records_for_inference", reject_serial_dispatch)
 
     assert infer_v2_schema_from_data(src, sample_size=sample_size)["tables"]
 
@@ -311,9 +313,9 @@ def test_single_range_inference_stays_serial(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     src = _write_jsonl(tmp_path / "single-range.jsonl", [{"id": 1}])
-    monkeypatch.setattr(_json_shred, "_should_shred_in_parallel", lambda _path: True)
+    monkeypatch.setattr(_records, "_should_shred_in_parallel", lambda _path: True)
     monkeypatch.setattr(
-        _json_shred,
+        _records,
         "_jsonl_byte_ranges",
         lambda path, _chunk_bytes: [(0, path.stat().st_size)],
     )
@@ -321,7 +323,7 @@ def test_single_range_inference_stays_serial(
     def reject_parallel_dispatch(*_args: object, **_kwargs: object) -> Any:
         raise AssertionError("one byte range unexpectedly started a process pool")
 
-    monkeypatch.setattr(_json_shred, "_infer_jsonl_in_parallel", reject_parallel_dispatch)
+    monkeypatch.setattr(_inference, "_infer_jsonl_in_parallel", reject_parallel_dispatch)
 
     assert infer_v2_schema_from_data(src)["tables"]
 
@@ -383,7 +385,7 @@ def test_parallel_inference_preserves_late_schema_error_context(
     def reject_serial_dispatch(*_args: object, **_kwargs: object) -> Any:
         raise AssertionError("large JSONL inference unexpectedly used the serial iterator")
 
-    monkeypatch.setattr(_json_shred, "_iter_records_for_inference", reject_serial_dispatch)
+    monkeypatch.setattr(_records, "_iter_records_for_inference", reject_serial_dispatch)
     with pytest.raises(ApiInputSchemaError) as parallel_exc:
         infer_v2_schema_from_data(src)
 
@@ -410,7 +412,7 @@ def test_parallel_inference_preserves_late_json_error_evidence(
     def reject_serial_dispatch(*_args: object, **_kwargs: object) -> Any:
         raise AssertionError("large JSONL inference unexpectedly used the serial iterator")
 
-    monkeypatch.setattr(_json_shred, "_iter_records_for_inference", reject_serial_dispatch)
+    monkeypatch.setattr(_records, "_iter_records_for_inference", reject_serial_dispatch)
     with pytest.raises(orjson.JSONDecodeError) as parallel_exc:
         infer_v2_schema_from_data(src)
 
@@ -427,20 +429,20 @@ def test_parallel_inference_rejects_a_source_changed_during_the_scan(
     """Ranges from different source generations must never be merged. Growth
     and truncation are separate cases: the identity comparison must reject any
     difference, not merely a source that got bigger."""
-    src = _write_jsonl(tmp_path / "changing.jsonl", _records(100))
+    src = _write_jsonl(tmp_path / "changing.jsonl", _sample_records(100))
     _force_parallel(monkeypatch, chunk_bytes=100)
 
     def mutate_source(
         data_path: Path, _ranges: list[tuple[int, int]]
-    ) -> _json_shred._InferenceState:
+    ) -> _inference._InferenceState:
         if change == "append":
             with data_path.open("ab") as output:
                 output.write(b'{"late": true}\n')
         else:
             data_path.write_bytes(data_path.read_bytes()[:-32])
-        return _json_shred._InferenceState()
+        return _inference._InferenceState()
 
-    monkeypatch.setattr(_json_shred, "_infer_jsonl_in_parallel", mutate_source)
+    monkeypatch.setattr(_inference, "_infer_jsonl_in_parallel", mutate_source)
 
     with pytest.raises(ApiInputSchemaError) as excinfo:
         infer_v2_schema_from_data(src)
@@ -455,7 +457,7 @@ def test_parallel_inference_runs_off_the_main_thread(
     """The HTTP route starts inference inside Starlette's worker thread."""
     from concurrent.futures import ThreadPoolExecutor
 
-    src = _write_jsonl(tmp_path / "threaded.jsonl", _records(300))
+    src = _write_jsonl(tmp_path / "threaded.jsonl", _sample_records(300))
     _force_parallel(monkeypatch, chunk_bytes=300)
 
     with ThreadPoolExecutor(max_workers=1) as thread_pool:
@@ -487,7 +489,7 @@ def test_parallel_build_matches_serial_build_exactly(
     shape-mismatched element so per-TABLE row skips (not just record skips)
     must survive the cross-chunk merge; both intruders sit in different chunks
     at the 200-byte chunk size."""
-    records = _records(300)
+    records = _sample_records(300)
     records[13]["claims"] = [{"amt": 130}, "stray", {"amt": 131}]
     records[257]["claims"] = [{"amt": 2570}, None]
     serial_src = _write_jsonl(tmp_path / "serial.jsonl", records)
@@ -503,7 +505,7 @@ def test_parallel_build_matches_serial_build_exactly(
 
     # Serial and parallel emit identical artifacts BY DESIGN, so only this
     # witness distinguishes a dispatch regression from a working parallel path.
-    monkeypatch.setattr(_json_shred, "_write_tables_streaming", reject_serial_shred)
+    monkeypatch.setattr(_writer, "_write_tables_streaming", reject_serial_shred)
     parallel_src = _write_jsonl(tmp_path / "parallel.jsonl", records)
     parallel_summary, parallel_frames = _build(parallel_src, tmp_path / "parallel_cache")
 
@@ -571,7 +573,7 @@ def test_parallel_build_handles_a_missing_trailing_newline(
     """The final record of an unterminated file ends at EOF, not at a newline.
     Pure serial/parallel equality cannot catch BOTH paths dropping it, so the
     root row count is asserted absolutely as well."""
-    records = _records(120)
+    records = _sample_records(120)
     body = "\n".join(json.dumps(r) for r in records)  # deliberately no final \n
     serial_src = tmp_path / "serial.jsonl"
     serial_src.write_text(body, encoding="utf-8")
@@ -592,14 +594,14 @@ def test_parallel_build_handles_a_missing_trailing_newline(
 def test_single_range_build_stays_serial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """One byte range means no split is possible; starting a process pool for
     it would pay spawn startup for nothing. Mirror of the inference witness."""
-    src = _write_jsonl(tmp_path / "single-range.jsonl", _records(3))
+    src = _write_jsonl(tmp_path / "single-range.jsonl", _sample_records(3))
     schema = infer_v2_schema_from_data(src)
     for table in schema["tables"]:
         table["emit"] = True
 
-    monkeypatch.setattr(_json_shred, "_should_shred_in_parallel", lambda _path: True)
+    monkeypatch.setattr(_records, "_should_shred_in_parallel", lambda _path: True)
     monkeypatch.setattr(
-        _json_shred,
+        _records,
         "_jsonl_byte_ranges",
         lambda path, _chunk_bytes: [(0, path.stat().st_size)],
     )
@@ -607,7 +609,7 @@ def test_single_range_build_stays_serial(tmp_path: Path, monkeypatch: pytest.Mon
     def reject_parallel_dispatch(*_args: object, **_kwargs: object) -> Any:
         raise AssertionError("one byte range unexpectedly started a process pool")
 
-    monkeypatch.setattr(_json_shred, "_write_tables_in_parallel", reject_parallel_dispatch)
+    monkeypatch.setattr(_writer, "_write_tables_in_parallel", reject_parallel_dispatch)
 
     summary = build_per_port_cache(src, schema, tmp_path / "cache")
 
@@ -857,7 +859,7 @@ def test_worker_does_not_disguise_process_control_signals(
     def interrupt_read(*_args: object, **_kwargs: object) -> Any:
         raise WorkerStop
 
-    monkeypatch.setattr(_json_shred, "_iter_range_records", interrupt_read)
+    monkeypatch.setattr(_records, "_iter_range_records", interrupt_read)
 
     with pytest.raises(WorkerStop):
         _shred_chunk((str(src), 0, src.stat().st_size, 0, schema, str(tmp_path)))
@@ -905,7 +907,7 @@ def test_shred_chunk_reports_constructor_and_cleanup_failures_without_a_writer(
     def fail_constructor(*_args: object, **_kwargs: object) -> object:
         raise RuntimeError("writer construction failed")
 
-    monkeypatch.setattr(_json_shred, "_BoundedParquetRowGroupWriter", fail_constructor)
+    monkeypatch.setattr(_writer, "_BoundedParquetRowGroupWriter", fail_constructor)
     failed = _shred_chunk(("missing", 0, 1, 0, schema, str(tmp_path)))
     assert failed.failure is not None
     assert failed.failure.message == "writer construction failed"
@@ -925,13 +927,13 @@ def test_shred_chunk_reports_constructor_and_cleanup_failures_without_a_writer(
         captured.append(exc)
         return _ChunkFailure("RuntimeError", "builtins", str(exc))
 
-    monkeypatch.setattr(_json_shred, "_BoundedParquetRowGroupWriter", ClosingWriter)
+    monkeypatch.setattr(_writer, "_BoundedParquetRowGroupWriter", ClosingWriter)
     monkeypatch.setattr(
-        _json_shred,
+        _records,
         "_iter_range_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("primary failed")),
     )
-    monkeypatch.setattr(_json_shred, "_failure_from_exception", capture_failure)
+    monkeypatch.setattr(_records, "_failure_from_exception", capture_failure)
     failed = _shred_chunk(("data", 0, 1, 0, schema, str(tmp_path)))
 
     assert failed.failure is not None
@@ -981,7 +983,7 @@ def test_parallel_assembly_rejects_missing_part_and_preserves_cleanup_evidence(
             }
         ]
     }
-    specs = _json_shred._emitting_table_specs(config)
+    specs = _shred._emitting_table_specs(config)
     result = _ChunkResult(
         index=3,
         record_count=1,
@@ -999,12 +1001,12 @@ def test_parallel_assembly_rejects_missing_part_and_preserves_cleanup_evidence(
         def close(self) -> None:
             raise OSError("assembly close failed")
 
-    monkeypatch.setattr(_json_shred, "_BoundedParquetRowGroupWriter", FailingCloseWriter)
+    monkeypatch.setattr(_writer, "_BoundedParquetRowGroupWriter", FailingCloseWriter)
     staging = tmp_path / "staging"
     staging.mkdir()
 
     with pytest.raises(RuntimeError, match="wrote no part") as exc_info:
-        _json_shred._write_tables_in_parallel(
+        _writer._write_tables_in_parallel(
             tmp_path / "source.jsonl", config, specs, staging, [(0, 1)]
         )
 
@@ -1037,7 +1039,7 @@ def test_parallel_assembly_rejects_worker_row_count_mismatch(
             }
         ]
     }
-    specs = _json_shred._emitting_table_specs(config)
+    specs = _shred._emitting_table_specs(config)
     part = tmp_path / "root.part.parquet"
     pl.DataFrame({"id": [1]}).write_parquet(part)
     result = _ChunkResult(
@@ -1053,7 +1055,7 @@ def test_parallel_assembly_rejects_worker_row_count_mismatch(
     staging.mkdir()
 
     with pytest.raises(RuntimeError, match="row-count mismatch"):
-        _json_shred._write_tables_in_parallel(
+        _writer._write_tables_in_parallel(
             tmp_path / "source.jsonl", config, specs, staging, [(0, 1)]
         )
 
@@ -1107,7 +1109,7 @@ def test_parallel_build_runs_off_the_main_thread(
     and fail in the server."""
     from concurrent.futures import ThreadPoolExecutor
 
-    src = _write_jsonl(tmp_path / "d.jsonl", _records(300))
+    src = _write_jsonl(tmp_path / "d.jsonl", _sample_records(300))
     schema = infer_v2_schema_from_data(src)
     for table in schema["tables"]:
         table["emit"] = True
@@ -1119,3 +1121,59 @@ def test_parallel_build_runs_off_the_main_thread(
     root_label = next(t["label"] for t in schema["tables"] if t["path"] == "$[:]")
     row_counts = {t["label"]: t["row_count"] for t in summary["tables"]}
     assert row_counts[root_label] == 300
+
+
+def test_failure_transport_preserves_schema_and_decode_evidence() -> None:
+    """Both typed worker failures round-trip their stable evidence fields."""
+    schema_error = ApiInputSchemaError("bad path", table="root")
+    schema_failure = _records._failure_from_exception(schema_error)
+    assert schema_failure.type_name == "ApiInputSchemaError"
+    assert schema_failure.message == "bad path"
+    assert schema_failure.context == {"table": "root"}
+
+    try:
+        orjson.loads("{bad")
+    except orjson.JSONDecodeError as exc:
+        decode_failure = _records._failure_from_exception(exc)
+    assert decode_failure.type_name == "JSONDecodeError"
+    assert decode_failure.message
+
+
+def test_infer_chunk_runs_one_range_in_process(tmp_path: Path) -> None:
+    source = tmp_path / "rows.jsonl"
+    source.write_text('{"id": 1}\n{"id": 2}\n', encoding="utf-8")
+    size = source.stat().st_size
+
+    result = _inference._infer_chunk((str(source), 0, size, 3))
+
+    assert result.index == 3
+    assert result.failure is None
+    assert result.state is not None
+
+
+def test_infer_chunk_captures_a_worker_failure_envelope(tmp_path: Path) -> None:
+    source = tmp_path / "rows.jsonl"
+    source.write_text("{broken\n", encoding="utf-8")
+
+    result = _inference._infer_chunk((str(source), 0, source.stat().st_size, 0))
+
+    assert result.state is None
+    assert result.failure is not None and result.failure.type_name == "JSONDecodeError"
+
+
+def test_iter_range_records_skips_blanks_and_counts_non_objects(tmp_path: Path) -> None:
+    source = tmp_path / "rows.jsonl"
+    source.write_text('{"id": 1}\n\n[1, 2]\n{"id": 2}\n', encoding="utf-8")
+    size = source.stat().st_size
+    stats = _records.ShredSkipStats()
+
+    rows = list(_records._iter_range_records(source, 0, size, stats))
+
+    assert rows == [{"id": 1}, {"id": 2}]
+    assert stats.skipped_records == 1
+
+    # A range boundary stops iteration exactly at its byte budget, and a
+    # stats-free caller simply drops non-object lines.
+    first_line_end = len('{"id": 1}\n')
+    assert list(_records._iter_range_records(source, 0, first_line_end)) == [{"id": 1}]
+    assert list(_records._iter_range_records(source, 0, size)) == [{"id": 1}, {"id": 2}]

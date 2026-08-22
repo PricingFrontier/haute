@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import os
 import threading
@@ -11,23 +12,23 @@ from typing import Any
 
 import pytest
 
-import haute._json_shred as shred
+from haute._json_shred import _runtime_storage, _source_proof
 
 
 @pytest.fixture
 def snapshot_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make module-global snapshot ownership deterministic and test-local."""
-    monkeypatch.setattr(shred, "_RUNTIME_SNAPSHOT_DIRS", set())
-    monkeypatch.setattr(shred, "_RUNTIME_SNAPSHOT_REFERENCES", {})
-    monkeypatch.setattr(shred, "_RUNTIME_SNAPSHOT_PROCESS_PINS", set())
-    monkeypatch.setattr(shred, "_RUNTIME_SNAPSHOT_LOCK", threading.Lock())
-    monkeypatch.setattr(shred, "_RUNTIME_SNAPSHOT_PROCESS_ID", os.getpid())
-    monkeypatch.setattr(shred, "_RUNTIME_SNAPSHOT_PROCESS_TOKEN", "mutation-owner")
-    monkeypatch.setattr(shred, "_RUNTIME_SNAPSHOT_ATEXIT_REGISTERED", False)
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_DIRS", set())
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_REFERENCES", {})
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_PROCESS_PINS", set())
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_LOCK", threading.Lock())
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_PROCESS_ID", os.getpid())
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_PROCESS_TOKEN", "mutation-owner")
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_ATEXIT_REGISTERED", False)
     monkeypatch.setattr(
-        shred,
+        _runtime_storage,
         "_VERIFIED_RUNTIME_SNAPSHOT_CACHE",
-        shred._VerifiedRuntimeSnapshotCache(max_entries=8, max_bytes=1024),
+        _runtime_storage._VerifiedRuntimeSnapshotCache(max_entries=8, max_bytes=1024),
     )
 
 
@@ -84,11 +85,11 @@ def test_stream_copy_requests_exact_chunks_hashes_in_order_and_cleans_up(
 
     if failure:
         with pytest.raises(OSError, match=failure):
-            shred._stream_copy_with_signature(source, target)  # type: ignore[arg-type]
+            _runtime_storage._stream_copy_with_signature(source, target)  # type: ignore[arg-type]
         assert target.unlinks == [True]
         return
 
-    size, digest = shred._stream_copy_with_signature(source, target)  # type: ignore[arg-type]
+    size, digest = _runtime_storage._stream_copy_with_signature(source, target)  # type: ignore[arg-type]
     assert source.modes == ["rb"]
     assert target.modes == ["xb"]
     assert source_file.requests == [1 << 20, 1 << 20, 1 << 20]
@@ -108,33 +109,33 @@ def test_release_snapshot_reference_truth_table_and_pins(
     path.parent.mkdir()
     path.write_bytes(b"data")
     if invalid_references:
-        shred._RUNTIME_SNAPSHOT_REFERENCES[path] = invalid_references
+        _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[path] = invalid_references
     with pytest.raises(RuntimeError, match="released twice"):
-        shred._release_runtime_snapshot(path)
+        _runtime_storage._release_runtime_snapshot(path)
 
-    shred._RUNTIME_SNAPSHOT_REFERENCES[path] = 4
-    shred._release_runtime_snapshot(path)
-    assert shred._RUNTIME_SNAPSHOT_REFERENCES[path] == 3
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[path] = 4
+    _runtime_storage._release_runtime_snapshot(path)
+    assert _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[path] == 3
     assert path.exists()
-    shred._RUNTIME_SNAPSHOT_REFERENCES[path] = 1
-    shred._release_runtime_snapshot(path)
-    assert path not in shred._RUNTIME_SNAPSHOT_REFERENCES
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[path] = 1
+    _runtime_storage._release_runtime_snapshot(path)
+    assert path not in _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES
     assert not path.exists() and not path.parent.exists()
 
     path.parent.mkdir()
     path.write_bytes(b"pinned")
-    shred._RUNTIME_SNAPSHOT_REFERENCES[path] = 1
-    shred._RUNTIME_SNAPSHOT_PROCESS_PINS.add(path)
-    shred._release_runtime_snapshot(path)
-    assert path.exists() and path not in shred._RUNTIME_SNAPSHOT_REFERENCES
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[path] = 1
+    _runtime_storage._RUNTIME_SNAPSHOT_PROCESS_PINS.add(path)
+    _runtime_storage._release_runtime_snapshot(path)
+    assert path.exists() and path not in _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES
 
-    shred._RUNTIME_SNAPSHOT_PROCESS_PINS.clear()
-    shred._RUNTIME_SNAPSHOT_REFERENCES[path] = 1
+    _runtime_storage._RUNTIME_SNAPSHOT_PROCESS_PINS.clear()
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[path] = 1
     monkeypatch.setattr(
-        shred._VERIFIED_RUNTIME_SNAPSHOT_CACHE, "is_pinned", lambda value: value == path
+        _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE, "is_pinned", lambda value: value == path
     )
-    shred._release_runtime_snapshot(path)
-    assert path.exists() and path not in shred._RUNTIME_SNAPSHOT_REFERENCES
+    _runtime_storage._release_runtime_snapshot(path)
+    assert path.exists() and path not in _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES
 
 
 @pytest.mark.parametrize("references", [-1, 0, 1, 2, 3])
@@ -143,17 +144,17 @@ def test_unmanaged_retain_pins_once_and_consumes_exactly_one_reference(
 ) -> None:
     path = tmp_path / "snapshot.parquet"
     if references:
-        shred._RUNTIME_SNAPSHOT_REFERENCES[path] = references
+        _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[path] = references
     if references <= 0:
         with pytest.raises(RuntimeError, match="no transient owner"):
-            shred._retain_runtime_snapshot(path)
+            _runtime_storage._retain_runtime_snapshot(path)
         return
-    shred._retain_runtime_snapshot(path)
-    assert path in shred._RUNTIME_SNAPSHOT_PROCESS_PINS
+    _runtime_storage._retain_runtime_snapshot(path)
+    assert path in _runtime_storage._RUNTIME_SNAPSHOT_PROCESS_PINS
     if references == 1:
-        assert path not in shred._RUNTIME_SNAPSHOT_REFERENCES
+        assert path not in _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES
     else:
-        assert shred._RUNTIME_SNAPSHOT_REFERENCES[path] == references - 1
+        assert _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[path] == references - 1
 
 
 def test_managed_retain_registers_one_release_and_failure_releases_once(
@@ -161,7 +162,7 @@ def test_managed_retain_registers_one_release_and_failure_releases_once(
 ) -> None:
     path = tmp_path / "snapshot.parquet"
     path.write_bytes(b"data")
-    shred._RUNTIME_SNAPSHOT_REFERENCES[path] = 1
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[path] = 1
 
     class Context:
         callbacks: list[Any] = []
@@ -170,17 +171,17 @@ def test_managed_retain_registers_one_release_and_failure_releases_once(
             self.callbacks.append(callback)
 
     context = Context()
-    monkeypatch.setattr(shred, "current_execution_context", lambda: context)
-    shred._retain_runtime_snapshot(path)
-    assert len(context.callbacks) == 1 and shred._RUNTIME_SNAPSHOT_REFERENCES[path] == 1
+    monkeypatch.setattr(_runtime_storage, "current_execution_context", lambda: context)
+    _runtime_storage._retain_runtime_snapshot(path)
+    assert len(context.callbacks) == 1 and _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[path] == 1
     context.callbacks[0]()
-    assert not path.exists() and path not in shred._RUNTIME_SNAPSHOT_REFERENCES
+    assert not path.exists() and path not in _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES
 
     path.parent.mkdir(exist_ok=True)
     path.write_bytes(b"data")
-    shred._RUNTIME_SNAPSHOT_REFERENCES[path] = 1
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[path] = 1
     releases = 0
-    original_release = shred._release_runtime_snapshot
+    original_release = _runtime_storage._release_runtime_snapshot
 
     class BrokenContext:
         def add_cleanup(self, _callback: Any) -> None:
@@ -191,15 +192,15 @@ def test_managed_retain_registers_one_release_and_failure_releases_once(
         releases += 1
         original_release(value)
 
-    monkeypatch.setattr(shred, "current_execution_context", lambda: BrokenContext())
-    monkeypatch.setattr(shred, "_release_runtime_snapshot", counting_release)
+    monkeypatch.setattr(_runtime_storage, "current_execution_context", lambda: BrokenContext())
+    monkeypatch.setattr(_runtime_storage, "_release_runtime_snapshot", counting_release)
     with pytest.raises(ValueError, match="registration failed"):
-        shred._retain_runtime_snapshot(path)
+        _runtime_storage._retain_runtime_snapshot(path)
     assert releases == 1 and not path.exists()
 
 
 def test_snapshot_cache_finish_store_boundaries_shared_paths_and_lru() -> None:
-    cache = shred._VerifiedRuntimeSnapshotCache(max_entries=2, max_bytes=10)
+    cache = _runtime_storage._VerifiedRuntimeSnapshotCache(max_entries=2, max_bytes=10)
     key, other = ("a", 1, "x"), ("b", 1, "x")
     gate = cache.begin(key)
     gate.participants = 2
@@ -207,21 +208,24 @@ def test_snapshot_cache_finish_store_boundaries_shared_paths_and_lru() -> None:
     assert gate.participants == 1 and cache._gates[key] is gate
     cache.finish(key, gate)
     assert key not in cache._gates
-    retained_gate, wrong_gate = cache.begin(key), shred._VerifiedRuntimeSnapshotLoadGate()
+    retained_gate, wrong_gate = (
+        cache.begin(key),
+        _runtime_storage._VerifiedRuntimeSnapshotLoadGate(),
+    )
     wrong_gate.participants = 1
-    cache._entries[key] = shred._VerifiedRuntimeSnapshot(None, Path("kept"), 1)  # type: ignore[arg-type]
+    cache._entries[key] = _runtime_storage._VerifiedRuntimeSnapshot(None, Path("kept"), 1)  # type: ignore[arg-type]
     cache.finish(key, wrong_gate)
     assert cache._gates[key] is retained_gate
     cache.finish(key, retained_gate)
     assert cache._gates[key] is retained_gate
 
-    negative_gate = shred._VerifiedRuntimeSnapshotLoadGate()
+    negative_gate = _runtime_storage._VerifiedRuntimeSnapshotLoadGate()
     cache._gates[other] = negative_gate
     cache.finish(other, negative_gate)
     assert negative_gate.participants == -1 and cache._gates[other] is negative_gate
 
-    cache = shred._VerifiedRuntimeSnapshotCache(max_entries=2, max_bytes=10)
-    revision = shred._StrongFileRevision((1, 2), 5, 0, 0)
+    cache = _runtime_storage._VerifiedRuntimeSnapshotCache(max_entries=2, max_bytes=10)
+    revision = _source_proof._StrongFileRevision((1, 2), 5, 0, 0)
     shared = Path("shared")
     assert cache.store(key, revision, shared, 10) == (True, [])
     assert cache.store(other, revision, shared, 10) == (True, [])
@@ -236,14 +240,16 @@ def test_snapshot_cache_finish_store_boundaries_shared_paths_and_lru() -> None:
 def test_snapshot_cache_store_retains_each_independent_live_gate_reason(
     participants: int, has_entry: bool
 ) -> None:
-    cache = shred._VerifiedRuntimeSnapshotCache(max_entries=2, max_bytes=10)
-    revision = shred._StrongFileRevision((1, 2), 1, 1, 1)
+    cache = _runtime_storage._VerifiedRuntimeSnapshotCache(max_entries=2, max_bytes=10)
+    revision = _source_proof._StrongFileRevision((1, 2), 1, 1, 1)
     live_key, stored_key = ("live", 1, "x"), ("stored", 1, "x")
-    gate = shred._VerifiedRuntimeSnapshotLoadGate()
+    gate = _runtime_storage._VerifiedRuntimeSnapshotLoadGate()
     gate.participants = participants
     cache._gates[live_key] = gate
     if has_entry:
-        cache._entries[live_key] = shred._VerifiedRuntimeSnapshot(revision, Path("live"), 1)
+        cache._entries[live_key] = _runtime_storage._VerifiedRuntimeSnapshot(
+            revision, Path("live"), 1
+        )
         cache._path_counts[Path("live")] = 1
         cache._path_sizes[Path("live")] = 1
         cache._bytes = 1
@@ -258,23 +264,25 @@ def test_runtime_snapshot_dir_registers_atexit_once_and_cleans_owner_on_budget_e
     tmp_path: Path, snapshot_state: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registrations: list[Any] = []
-    monkeypatch.setattr(shred.atexit, "register", registrations.append)
-    monkeypatch.setattr(shred, "_runtime_disk_budget_transaction", lambda *_a, **_k: nullcontext())
-    first = shred._runtime_snapshot_dir(tmp_path / "cache")
-    second = shred._runtime_snapshot_dir(tmp_path / "cache")
-    assert first == second and shred._RUNTIME_SNAPSHOT_DIRS == {first}
-    assert registrations == [shred._cleanup_runtime_snapshot_dirs]
+    monkeypatch.setattr(atexit, "register", registrations.append)
+    monkeypatch.setattr(
+        _runtime_storage, "_runtime_disk_budget_transaction", lambda *_a, **_k: nullcontext()
+    )
+    first = _runtime_storage._runtime_snapshot_dir(tmp_path / "cache")
+    second = _runtime_storage._runtime_snapshot_dir(tmp_path / "cache")
+    assert first == second and _runtime_storage._RUNTIME_SNAPSHOT_DIRS == {first}
+    assert registrations == [_runtime_storage._cleanup_runtime_snapshot_dirs]
 
     removed: list[Path] = []
     monkeypatch.setattr(
-        shred,
+        _runtime_storage,
         "_runtime_disk_budget_transaction",
         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("budget exceeded")),
     )
-    monkeypatch.setattr(shred, "_remove_empty_runtime_owner_dir", removed.append)
+    monkeypatch.setattr(_runtime_storage, "_remove_empty_runtime_owner_dir", removed.append)
     with pytest.raises(RuntimeError, match="budget exceeded"):
-        shred._runtime_snapshot_dir(tmp_path / "other-cache")
-    assert removed == [tmp_path / shred._RUNTIME_SNAPSHOT_DIRNAME / "mutation-owner"]
+        _runtime_storage._runtime_snapshot_dir(tmp_path / "other-cache")
+    assert removed == [tmp_path / _runtime_storage._RUNTIME_SNAPSHOT_DIRNAME / "mutation-owner"]
 
 
 @pytest.mark.parametrize("expected_size, expected_digest", [(4, "0" * 64), (3, "f" * 64)])
@@ -285,7 +293,7 @@ def test_capture_mismatch_removes_candidate(
     directory = tmp_path / "snapshots"
     source.write_bytes(b"data")
     assert (
-        shred._capture_runtime_snapshot(
+        _runtime_storage._capture_runtime_snapshot(
             tmp_path / "cache", source, directory, expected_size, expected_digest, None
         )
         is None
@@ -300,16 +308,16 @@ def test_capture_copy_fallback_logs_exact_fields_and_only_caches_stable_visible_
     directory = tmp_path / "snapshots"
     payload = b"copy-data"
     source.write_bytes(payload)
-    revision = shred._StrongFileRevision((1, 2), len(payload), 1, 1)
+    revision = _source_proof._StrongFileRevision((1, 2), len(payload), 1, 1)
     calls: list[tuple[str, dict[str, Any]]] = []
-    monkeypatch.setattr(shred.os, "link", lambda *_a: (_ for _ in ()).throw(OSError("no links")))
+    monkeypatch.setattr(os, "link", lambda *_a: (_ for _ in ()).throw(OSError("no links")))
     monkeypatch.setattr(
-        shred.logger, "warning", lambda event, **fields: calls.append((event, fields))
+        _runtime_storage.logger, "warning", lambda event, **fields: calls.append((event, fields))
     )
     monkeypatch.setattr(
-        shred,
+        _source_proof,
         "_strong_file_revision",
-        lambda _path: shred._StrongFileRevision(
+        lambda _path: _source_proof._StrongFileRevision(
             revision.file_identity,
             revision.size,
             revision.mtime_ns,
@@ -317,10 +325,13 @@ def test_capture_copy_fallback_logs_exact_fields_and_only_caches_stable_visible_
         ),
     )
     digest = hashlib.sha256(payload).hexdigest()
-    snapshot = shred._capture_runtime_snapshot(
+    snapshot = _runtime_storage._capture_runtime_snapshot(
         tmp_path / "cache", source, directory, len(payload), digest, ("k", 1, digest), revision
     )
-    assert snapshot is not None and shred._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 1
+    assert (
+        snapshot is not None
+        and _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 1
+    )
     assert calls == [
         (
             "json_shred_runtime_snapshot_copy_fallback",
@@ -331,7 +342,7 @@ def test_capture_copy_fallback_logs_exact_fields_and_only_caches_stable_visible_
             },
         )
     ]
-    shred._release_runtime_snapshot(snapshot)
+    _runtime_storage._release_runtime_snapshot(snapshot)
 
 
 @pytest.mark.parametrize("moved_size", [8, 10])
@@ -345,17 +356,20 @@ def test_capture_copy_fallback_rejects_cache_when_visible_identity_or_size_moves
     directory = tmp_path / "snapshots"
     payload = b"copy-race"
     source.write_bytes(payload)
-    revision = shred._StrongFileRevision((1, 2), len(payload), 1, 1)
-    moved = shred._StrongFileRevision(revision.file_identity, moved_size, 2, 2)
+    revision = _source_proof._StrongFileRevision((1, 2), len(payload), 1, 1)
+    moved = _source_proof._StrongFileRevision(revision.file_identity, moved_size, 2, 2)
     observed = iter((revision, moved))
     digest = hashlib.sha256(payload).hexdigest()
-    monkeypatch.setattr(shred.os, "link", lambda *_a: (_ for _ in ()).throw(OSError("no links")))
-    monkeypatch.setattr(shred, "_strong_file_revision", lambda _path: next(observed))
-    snapshot = shred._capture_runtime_snapshot(
+    monkeypatch.setattr(os, "link", lambda *_a: (_ for _ in ()).throw(OSError("no links")))
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: next(observed))
+    snapshot = _runtime_storage._capture_runtime_snapshot(
         tmp_path / "cache", source, directory, len(payload), digest, ("k", 1, digest), revision
     )
-    assert snapshot is not None and shred._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
-    shred._release_runtime_snapshot(snapshot)
+    assert (
+        snapshot is not None
+        and _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
+    )
+    _runtime_storage._release_runtime_snapshot(snapshot)
     assert not snapshot.exists()
 
 
@@ -370,15 +384,15 @@ def test_capture_hardlink_rejects_cache_when_visible_size_moves_both_directions(
     directory = tmp_path / "snapshots"
     payload = b"copy-race"
     source.write_bytes(payload)
-    captured = shred._StrongFileRevision((1, 2), len(payload), 1, 1)
-    moved = shred._StrongFileRevision(captured.file_identity, moved_size, 2, 2)
+    captured = _source_proof._StrongFileRevision((1, 2), len(payload), 1, 1)
+    moved = _source_proof._StrongFileRevision(captured.file_identity, moved_size, 2, 2)
 
-    def revision_for(path: Path) -> shred._StrongFileRevision:
+    def revision_for(path: Path) -> _source_proof._StrongFileRevision:
         return moved if path == source else captured
 
-    monkeypatch.setattr(shred, "_strong_file_revision", revision_for)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", revision_for)
     digest = hashlib.sha256(payload).hexdigest()
-    snapshot = shred._capture_runtime_snapshot(
+    snapshot = _runtime_storage._capture_runtime_snapshot(
         tmp_path / "cache",
         source,
         directory,
@@ -389,8 +403,8 @@ def test_capture_hardlink_rejects_cache_when_visible_size_moves_both_directions(
     )
 
     assert snapshot is not None
-    assert shred._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
-    shred._release_runtime_snapshot(snapshot)
+    assert _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
+    _runtime_storage._release_runtime_snapshot(snapshot)
 
 
 def test_capture_hardlink_collision_and_reference_increment_are_exact(
@@ -402,27 +416,31 @@ def test_capture_hardlink_collision_and_reference_increment_are_exact(
     source.write_bytes(payload)
     digest = hashlib.sha256(payload).hexdigest()
     monkeypatch.setattr(
-        shred,
+        _runtime_storage,
         "_stream_copy_with_signature",
         lambda *_args: (_ for _ in ()).throw(AssertionError("hardlink must not copy")),
     )
     directory.mkdir()
     named = (
-        tmp_path / "snapshots" / f"{digest[: shred._RUNTIME_SNAPSHOT_DIGEST_PREFIX_HEX]}.parquet"
+        tmp_path
+        / "snapshots"
+        / f"{digest[: _runtime_storage._RUNTIME_SNAPSHOT_DIGEST_PREFIX_HEX]}.parquet"
     )
     named.write_bytes(b"different")
-    snapshot = shred._capture_runtime_snapshot(
+    snapshot = _runtime_storage._capture_runtime_snapshot(
         tmp_path / "cache", source, directory, len(payload), digest, None
     )
     assert snapshot is not None and snapshot != named and snapshot.read_bytes() == payload
-    assert shred._RUNTIME_SNAPSHOT_REFERENCES[snapshot] == 1
+    assert _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[snapshot] == 1
 
     reusable_dir = tmp_path / "reusable"
     reusable_dir.mkdir()
-    reusable = reusable_dir / f"{digest[: shred._RUNTIME_SNAPSHOT_DIGEST_PREFIX_HEX]}.parquet"
+    reusable = (
+        reusable_dir / f"{digest[: _runtime_storage._RUNTIME_SNAPSHOT_DIGEST_PREFIX_HEX]}.parquet"
+    )
     os.link(source, reusable)
-    shred._RUNTIME_SNAPSHOT_REFERENCES[reusable] = 7
-    reused = shred._capture_runtime_snapshot(
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[reusable] = 7
+    reused = _runtime_storage._capture_runtime_snapshot(
         tmp_path / "cache", source, reusable_dir, len(payload), digest, None
     )
-    assert reused == reusable and shred._RUNTIME_SNAPSHOT_REFERENCES[reusable] == 8
+    assert reused == reusable and _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[reusable] == 8

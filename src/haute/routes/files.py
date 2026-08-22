@@ -136,7 +136,7 @@ def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:
     from haute.schemas import ColumnInfo
 
     if target.suffix.casefold() == ".xml":
-        from haute._json_shred import _iter_xml_records
+        from haute._json_shred._records import _iter_xml_records
 
         lf = pl.DataFrame(list(_iter_xml_records(target)), strict=False).lazy()
     else:
@@ -209,7 +209,7 @@ def _read_schema_only_blocking(path: str, target: Path) -> dict[str, object]:
     from haute import graph_utils
 
     if target.suffix.casefold() == ".xml":
-        from haute._json_shred import _iter_xml_records
+        from haute._json_shred._records import _iter_xml_records
 
         lazy_frame = pl.DataFrame(list(_iter_xml_records(target)), strict=False).lazy()
     else:

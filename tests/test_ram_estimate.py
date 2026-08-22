@@ -2237,7 +2237,7 @@ def json_api_input(tmp_path, monkeypatch):
     import json as _json
 
     from haute._json_flatten import _json_cache_dir
-    from haute._json_shred import build_per_port_cache
+    from haute._json_shred._cache import build_per_port_cache
     from haute._sandbox import _get_project_root, set_project_root
 
     monkeypatch.chdir(tmp_path)
@@ -2342,14 +2342,14 @@ class TestJsonApiInputPortMetadata:
     ) -> None:
         """Planner metadata and loading reuse the persisted cache-build source proof."""
 
-        import haute._json_shred as shred_mod
-        from haute._json_shred import load_v2_api_source
+        from haute._json_shred import _source_proof
+        from haute._json_shred._cache import load_v2_api_source
         from haute._ram_estimate import _json_api_input_port_metadata
 
         data_path, config, _cache_dir, _committed_dir = json_api_input
         node = _make_source_node(node_type="apiInput", config=config)
-        shred_mod._clear_data_file_signature_memo()
-        real_hash_file = shred_mod._hash_file
+        _source_proof._clear_data_file_signature_memo()
+        real_hash_file = _source_proof._hash_file
         raw_hashes = 0
 
         def counting_hash_file(path):
@@ -2358,7 +2358,7 @@ class TestJsonApiInputPortMetadata:
                 raw_hashes += 1
             return real_hash_file(path)
 
-        monkeypatch.setattr(shred_mod, "_hash_file", counting_hash_file)
+        monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
 
         metadata = _json_api_input_port_metadata(node, "policies")
         frames = load_v2_api_source(
@@ -2410,7 +2410,7 @@ class TestJsonApiInputPortMetadata:
 
         import orjson
 
-        import haute._json_shred as shred_mod
+        from haute._json_shred import _source_proof
         from haute._ram_estimate import _json_api_input_port_metadata
 
         _data_path, config, working_dir, committed_dir = json_api_input
@@ -2421,7 +2421,7 @@ class TestJsonApiInputPortMetadata:
         working_meta["data_file"]["sha256"] = "0" * 64
         working_meta_path.write_bytes(orjson.dumps(working_meta))
         node = _make_source_node(node_type="apiInput", config=config)
-        real_source_proof = shred_mod._data_file_signature
+        real_source_proof = _source_proof._data_file_signature
         source_proof_calls = 0
 
         def counting_source_proof(path):
@@ -2430,7 +2430,7 @@ class TestJsonApiInputPortMetadata:
             return real_source_proof(path)
 
         monkeypatch.setattr(
-            "haute._json_shred._data_file_signature",
+            "haute._json_shred._source_proof._data_file_signature",
             counting_source_proof,
         )
 
@@ -2487,10 +2487,10 @@ class TestJsonApiInputPortMetadata:
 
         with (
             patch(
-                "haute._json_shred._snapshot_cache_artifact_locked",
+                "haute._json_shred._runtime_storage._snapshot_cache_artifact_locked",
                 return_value=incompatible_snapshot,
             ),
-            patch("haute._json_shred._release_runtime_snapshot") as release,
+            patch("haute._json_shred._runtime_storage._release_runtime_snapshot") as release,
         ):
             assert _json_api_input_port_metadata(node, "policies") is None
 
@@ -2534,7 +2534,7 @@ class TestJsonApiInputPortMetadata:
             raise AssertionError("an absent cache must not require a source hash")
 
         monkeypatch.setattr(
-            "haute._json_shred._data_file_signature",
+            "haute._json_shred._source_proof._data_file_signature",
             unexpected_source_proof,
         )
 
@@ -2550,7 +2550,7 @@ class TestJsonApiInputPortMetadata:
         node = _make_source_node(node_type="apiInput", config=config)
 
         with patch(
-            "haute._json_shred._data_file_signature",
+            "haute._json_shred._source_proof._data_file_signature",
             side_effect=OSError("cache device is gone"),
         ):
             with capture_logs() as logs:

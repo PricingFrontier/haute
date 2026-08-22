@@ -44,7 +44,7 @@ from haute._json_flatten import (
     clear_json_cache,
     mirror_cache_to_committed,
 )
-from haute._json_shred import build_per_port_cache
+from haute._json_shred._cache import build_per_port_cache
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -439,7 +439,7 @@ class TestMirrorCacheToCommitted:
         promotion of that cache."""
         import shutil as _shutil
 
-        from haute._json_shred import _build_lock_for
+        from haute._json_shred._publication import _build_lock_for
 
         data_path, v2_config = mirror_case
         _mark_working_consulted(data_path)
@@ -758,7 +758,7 @@ class TestInferExceptions:
         data_dir.mkdir()
         (data_dir / "ok.json").write_bytes(orjson.dumps([{"x": 1}]))
         with patch(
-            "haute._json_shred.infer_v2_schema_from_data",
+            "haute._json_shred._inference.infer_v2_schema_from_data",
             side_effect=RuntimeError("infer boom"),
         ):
             resp = client.post("/api/json-cache/infer", json={"path": "data/ok.json"})
@@ -900,7 +900,7 @@ class TestStatusAndDispatchBranches:
         (data_dir / "ok.json").write_bytes(orjson.dumps([{"x": 1}]))
         # Patch at the source module since the route imports lazily.
         with patch(
-            "haute._json_shred.infer_v2_schema_from_data",
+            "haute._json_shred._inference.infer_v2_schema_from_data",
             side_effect=RuntimeError("polars panic during inference"),
         ):
             resp = client.post("/api/json-cache/infer", json={"path": "data/ok.json"})

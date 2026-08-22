@@ -13,22 +13,22 @@ from typing import Any
 import pytest
 import structlog
 
-import haute._json_shred as shred_mod
+from haute._json_shred import _runtime_storage, _source_proof
 
 
 @pytest.fixture
 def isolated_snapshot_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace process-global snapshot bookkeeping with test-local containers."""
-    monkeypatch.setattr(shred_mod, "_RUNTIME_SNAPSHOT_DIRS", set())
-    monkeypatch.setattr(shred_mod, "_RUNTIME_SNAPSHOT_REFERENCES", {})
-    monkeypatch.setattr(shred_mod, "_RUNTIME_SNAPSHOT_PROCESS_PINS", set())
-    monkeypatch.setattr(shred_mod, "_RUNTIME_SNAPSHOT_PROCESS_ID", os.getpid())
-    monkeypatch.setattr(shred_mod, "_RUNTIME_SNAPSHOT_PROCESS_TOKEN", "test-owner")
-    monkeypatch.setattr(shred_mod, "_RUNTIME_SNAPSHOT_ATEXIT_REGISTERED", True)
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_DIRS", set())
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_REFERENCES", {})
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_PROCESS_PINS", set())
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_PROCESS_ID", os.getpid())
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_PROCESS_TOKEN", "test-owner")
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_ATEXIT_REGISTERED", True)
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_VERIFIED_RUNTIME_SNAPSHOT_CACHE",
-        shred_mod._VerifiedRuntimeSnapshotCache(
+        _runtime_storage._VerifiedRuntimeSnapshotCache(
             max_entries=8,
             max_bytes=1024 * 1024,
         ),
@@ -45,24 +45,24 @@ def _signature(payload: bytes) -> dict[str, Any]:
 def test_cleanup_owned_snapshots_clears_bookkeeping_and_keeps_nonempty_parent(
     tmp_path: Path, isolated_snapshot_state: None
 ) -> None:
-    parent = tmp_path / shred_mod._RUNTIME_SNAPSHOT_DIRNAME
+    parent = tmp_path / _runtime_storage._RUNTIME_SNAPSHOT_DIRNAME
     owned_dir = parent / "test-owner"
     owned_file = owned_dir / "owned.parquet"
     owned_dir.mkdir(parents=True)
     owned_file.write_bytes(b"owned")
     (parent / "other-process").mkdir()
 
-    shred_mod._RUNTIME_SNAPSHOT_DIRS.add(owned_dir)
-    shred_mod._RUNTIME_SNAPSHOT_REFERENCES[owned_file] = 2
-    shred_mod._RUNTIME_SNAPSHOT_PROCESS_PINS.add(owned_file)
+    _runtime_storage._RUNTIME_SNAPSHOT_DIRS.add(owned_dir)
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[owned_file] = 2
+    _runtime_storage._RUNTIME_SNAPSHOT_PROCESS_PINS.add(owned_file)
 
-    shred_mod._cleanup_runtime_snapshot_dirs()
+    _runtime_storage._cleanup_runtime_snapshot_dirs()
 
     assert not owned_dir.exists()
     assert parent.exists()
-    assert shred_mod._RUNTIME_SNAPSHOT_DIRS == set()
-    assert shred_mod._RUNTIME_SNAPSHOT_REFERENCES == {}
-    assert shred_mod._RUNTIME_SNAPSHOT_PROCESS_PINS == set()
+    assert _runtime_storage._RUNTIME_SNAPSHOT_DIRS == set()
+    assert _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES == {}
+    assert _runtime_storage._RUNTIME_SNAPSHOT_PROCESS_PINS == set()
 
 
 def test_cleanup_in_inherited_pid_leaves_parent_snapshot_state_untouched(
@@ -72,17 +72,17 @@ def test_cleanup_in_inherited_pid_leaves_parent_snapshot_state_untouched(
     snapshot_path = snapshot_dir / "snapshot.parquet"
     snapshot_dir.mkdir()
     snapshot_path.write_bytes(b"data")
-    shred_mod._RUNTIME_SNAPSHOT_DIRS.add(snapshot_dir)
-    shred_mod._RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = 1
-    shred_mod._RUNTIME_SNAPSHOT_PROCESS_PINS.add(snapshot_path)
-    monkeypatch.setattr(shred_mod, "_RUNTIME_SNAPSHOT_PROCESS_ID", os.getpid() + 1)
+    _runtime_storage._RUNTIME_SNAPSHOT_DIRS.add(snapshot_dir)
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = 1
+    _runtime_storage._RUNTIME_SNAPSHOT_PROCESS_PINS.add(snapshot_path)
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_PROCESS_ID", os.getpid() + 1)
 
-    shred_mod._cleanup_runtime_snapshot_dirs()
+    _runtime_storage._cleanup_runtime_snapshot_dirs()
 
     assert snapshot_path.exists()
-    assert shred_mod._RUNTIME_SNAPSHOT_DIRS == {snapshot_dir}
-    assert shred_mod._RUNTIME_SNAPSHOT_REFERENCES == {snapshot_path: 1}
-    assert shred_mod._RUNTIME_SNAPSHOT_PROCESS_PINS == {snapshot_path}
+    assert _runtime_storage._RUNTIME_SNAPSHOT_DIRS == {snapshot_dir}
+    assert _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES == {snapshot_path: 1}
+    assert _runtime_storage._RUNTIME_SNAPSHOT_PROCESS_PINS == {snapshot_path}
 
 
 def test_runtime_snapshot_dir_resets_inherited_state_for_new_pid(
@@ -90,19 +90,19 @@ def test_runtime_snapshot_dir_resets_inherited_state_for_new_pid(
 ) -> None:
     old_dir = tmp_path / "old"
     old_path = old_dir / "old.parquet"
-    shred_mod._RUNTIME_SNAPSHOT_DIRS.add(old_dir)
-    shred_mod._RUNTIME_SNAPSHOT_REFERENCES[old_path] = 1
-    shred_mod._RUNTIME_SNAPSHOT_PROCESS_PINS.add(old_path)
-    monkeypatch.setattr(shred_mod, "_RUNTIME_SNAPSHOT_PROCESS_ID", os.getpid() + 1)
+    _runtime_storage._RUNTIME_SNAPSHOT_DIRS.add(old_dir)
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[old_path] = 1
+    _runtime_storage._RUNTIME_SNAPSHOT_PROCESS_PINS.add(old_path)
+    monkeypatch.setattr(_runtime_storage, "_RUNTIME_SNAPSHOT_PROCESS_ID", os.getpid() + 1)
 
-    snapshot_dir = shred_mod._runtime_snapshot_dir(tmp_path / "cache")
+    snapshot_dir = _runtime_storage._runtime_snapshot_dir(tmp_path / "cache")
 
     assert snapshot_dir.exists()
-    assert snapshot_dir in shred_mod._RUNTIME_SNAPSHOT_DIRS
-    assert old_dir not in shred_mod._RUNTIME_SNAPSHOT_DIRS
-    assert shred_mod._RUNTIME_SNAPSHOT_REFERENCES == {}
-    assert shred_mod._RUNTIME_SNAPSHOT_PROCESS_PINS == set()
-    assert shred_mod._RUNTIME_SNAPSHOT_PROCESS_TOKEN.startswith(f"{os.getpid()}-")
+    assert snapshot_dir in _runtime_storage._RUNTIME_SNAPSHOT_DIRS
+    assert old_dir not in _runtime_storage._RUNTIME_SNAPSHOT_DIRS
+    assert _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES == {}
+    assert _runtime_storage._RUNTIME_SNAPSHOT_PROCESS_PINS == set()
+    assert _runtime_storage._RUNTIME_SNAPSHOT_PROCESS_TOKEN.startswith(f"{os.getpid()}-")
 
 
 def test_runtime_snapshot_creation_preserves_primary_error_when_cleanup_fails(
@@ -111,23 +111,23 @@ def test_runtime_snapshot_creation_preserves_primary_error_when_cleanup_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_runtime_disk_budget_transaction",
         lambda *_args, **_kwargs: nullcontext(),
     )
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_ensure_runtime_owner_metadata",
         lambda _path: (_ for _ in ()).throw(ValueError("invalid owner metadata")),
     )
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_remove_empty_runtime_owner_dir",
         lambda _path: (_ for _ in ()).throw(OSError("cleanup denied")),
     )
 
     with pytest.raises(ValueError, match="invalid owner metadata"):
-        shred_mod._runtime_snapshot_dir(tmp_path / "cache")
+        _runtime_storage._runtime_snapshot_dir(tmp_path / "cache")
 
 
 def test_stream_copy_removes_partial_target_when_copy_fails(
@@ -159,7 +159,7 @@ def test_stream_copy_removes_partial_target_when_copy_fails(
     monkeypatch.setattr(Path, "open", open_with_failing_target)
 
     with pytest.raises(OSError, match="disk full"):
-        shred_mod._stream_copy_with_signature(source, target)
+        _runtime_storage._stream_copy_with_signature(source, target)
 
     assert not target.exists()
 
@@ -169,18 +169,18 @@ def test_release_rejects_double_release_and_tolerates_missing_final_file(
 ) -> None:
     snapshot_path = tmp_path / "snapshot.parquet"
     snapshot_path.write_bytes(b"data")
-    shred_mod._RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = 1
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = 1
 
-    shred_mod._release_runtime_snapshot(snapshot_path)
+    _runtime_storage._release_runtime_snapshot(snapshot_path)
 
     assert not snapshot_path.exists()
     with pytest.raises(RuntimeError, match="released twice"):
-        shred_mod._release_runtime_snapshot(snapshot_path)
+        _runtime_storage._release_runtime_snapshot(snapshot_path)
 
     missing_path = tmp_path / "missing.parquet"
-    shred_mod._RUNTIME_SNAPSHOT_REFERENCES[missing_path] = 1
-    shred_mod._release_runtime_snapshot(missing_path)
-    assert missing_path not in shred_mod._RUNTIME_SNAPSHOT_REFERENCES
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[missing_path] = 1
+    _runtime_storage._release_runtime_snapshot(missing_path)
+    assert missing_path not in _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES
 
 
 def test_release_of_process_pinned_snapshot_keeps_file_but_clears_reference(
@@ -188,14 +188,14 @@ def test_release_of_process_pinned_snapshot_keeps_file_but_clears_reference(
 ) -> None:
     snapshot_path = tmp_path / "snapshot.parquet"
     snapshot_path.write_bytes(b"data")
-    shred_mod._RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = 1
-    shred_mod._RUNTIME_SNAPSHOT_PROCESS_PINS.add(snapshot_path)
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = 1
+    _runtime_storage._RUNTIME_SNAPSHOT_PROCESS_PINS.add(snapshot_path)
 
-    shred_mod._release_runtime_snapshot(snapshot_path)
+    _runtime_storage._release_runtime_snapshot(snapshot_path)
 
     assert snapshot_path.exists()
-    assert shred_mod._RUNTIME_SNAPSHOT_REFERENCES == {}
-    assert shred_mod._RUNTIME_SNAPSHOT_PROCESS_PINS == {snapshot_path}
+    assert _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES == {}
+    assert _runtime_storage._RUNTIME_SNAPSHOT_PROCESS_PINS == {snapshot_path}
 
 
 def test_unmanaged_retain_requires_owner_and_pins_one_of_many_references(
@@ -203,13 +203,13 @@ def test_unmanaged_retain_requires_owner_and_pins_one_of_many_references(
 ) -> None:
     snapshot_path = tmp_path / "snapshot.parquet"
     with pytest.raises(RuntimeError, match="no transient owner"):
-        shred_mod._retain_runtime_snapshot(snapshot_path)
+        _runtime_storage._retain_runtime_snapshot(snapshot_path)
 
-    shred_mod._RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = 2
-    shred_mod._retain_runtime_snapshot(snapshot_path)
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = 2
+    _runtime_storage._retain_runtime_snapshot(snapshot_path)
 
-    assert shred_mod._RUNTIME_SNAPSHOT_REFERENCES == {snapshot_path: 1}
-    assert shred_mod._RUNTIME_SNAPSHOT_PROCESS_PINS == {snapshot_path}
+    assert _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES == {snapshot_path: 1}
+    assert _runtime_storage._RUNTIME_SNAPSHOT_PROCESS_PINS == {snapshot_path}
 
 
 def test_managed_retain_releases_transient_snapshot_when_registration_fails(
@@ -217,19 +217,19 @@ def test_managed_retain_releases_transient_snapshot_when_registration_fails(
 ) -> None:
     snapshot_path = tmp_path / "snapshot.parquet"
     snapshot_path.write_bytes(b"data")
-    shred_mod._RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = 1
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[snapshot_path] = 1
 
     class _FailingContext:
         def add_cleanup(self, _callback: Any) -> None:
             raise RuntimeError("cleanup registration failed")
 
-    monkeypatch.setattr(shred_mod, "current_execution_context", lambda: _FailingContext())
+    monkeypatch.setattr(_runtime_storage, "current_execution_context", lambda: _FailingContext())
 
     with pytest.raises(RuntimeError, match="cleanup registration failed"):
-        shred_mod._retain_runtime_snapshot(snapshot_path)
+        _runtime_storage._retain_runtime_snapshot(snapshot_path)
 
     assert not snapshot_path.exists()
-    assert shred_mod._RUNTIME_SNAPSHOT_REFERENCES == {}
+    assert _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES == {}
 
 
 def test_hard_link_signature_failure_removes_candidate_and_reraises(
@@ -239,19 +239,19 @@ def test_hard_link_signature_failure_removes_candidate_and_reraises(
     source = tmp_path / "source.parquet"
     source.write_bytes(b"payload")
     monkeypatch.setattr(
-        shred_mod,
+        _source_proof,
         "_file_content_signature",
         lambda _path: (_ for _ in ()).throw(RuntimeError("cannot hash candidate")),
     )
 
     with pytest.raises(RuntimeError, match="cannot hash candidate"):
-        shred_mod._snapshot_cache_artifact(
+        _runtime_storage._snapshot_cache_artifact(
             cache_dir,
             source,
             {"size": len(b"payload"), "sha256": "0" * 64},
         )
 
-    snapshot_root = cache_dir.parent / shred_mod._RUNTIME_SNAPSHOT_DIRNAME / "test-owner"
+    snapshot_root = cache_dir.parent / _runtime_storage._RUNTIME_SNAPSHOT_DIRNAME / "test-owner"
     assert list(snapshot_root.glob("*.tmp")) == []
 
 
@@ -268,11 +268,11 @@ def test_hard_link_missing_source_reraises_without_leaving_candidate(
 
     # Reach the capture seam on every platform. POSIX otherwise raises while
     # obtaining the initial native revision, before a candidate is allocated.
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: None)
-    monkeypatch.setattr(shred_mod.os, "link", missing_link)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: None)
+    monkeypatch.setattr(os, "link", missing_link)
 
     with pytest.raises(FileNotFoundError, match="source vanished"):
-        shred_mod._snapshot_cache_artifact(
+        _runtime_storage._snapshot_cache_artifact(
             cache_dir,
             source,
             {"size": 0, "sha256": "0" * 64},
@@ -291,10 +291,10 @@ def test_unchanged_artifact_reuses_one_verified_snapshot_without_rehashing(
     source = tmp_path / "source.parquet"
     payload = b"verified-payload"
     source.write_bytes(payload)
-    if shred_mod._strong_file_revision(source) is None:
+    if _source_proof._strong_file_revision(source) is None:
         pytest.skip("filesystem has no strong native file revision")
 
-    real_signature = shred_mod._file_content_signature
+    real_signature = _source_proof._file_content_signature
     hash_calls = 0
 
     def counting_signature(path: Path) -> dict[str, Any]:
@@ -302,26 +302,26 @@ def test_unchanged_artifact_reuses_one_verified_snapshot_without_rehashing(
         hash_calls += 1
         return real_signature(path)
 
-    monkeypatch.setattr(shred_mod, "_file_content_signature", counting_signature)
+    monkeypatch.setattr(_source_proof, "_file_content_signature", counting_signature)
 
-    first = shred_mod._snapshot_cache_artifact(cache_dir, source, _signature(payload))
+    first = _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(payload))
     assert first is not None
-    shred_mod._release_runtime_snapshot(first)
+    _runtime_storage._release_runtime_snapshot(first)
     assert first.exists()
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_runtime_snapshot_dir",
         lambda _cache_dir: (_ for _ in ()).throw(
             AssertionError("a verified warm hit must not allocate or scan runtime storage")
         ),
     )
 
-    second = shred_mod._snapshot_cache_artifact(cache_dir, source, _signature(payload))
+    second = _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(payload))
     assert second == first
-    shred_mod._release_runtime_snapshot(second)
+    _runtime_storage._release_runtime_snapshot(second)
 
     assert hash_calls == 1
-    assert shred_mod._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats() == {
+    assert _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats() == {
         "entries": 1,
         "bytes": len(payload),
         "inflight": 0,
@@ -339,10 +339,10 @@ def test_same_stat_artifact_corruption_invalidates_retained_snapshot(
     corrupted = b"corrupt!"
     assert len(original) == len(corrupted)
     source.write_bytes(original)
-    if shred_mod._strong_file_revision(source) is None:
+    if _source_proof._strong_file_revision(source) is None:
         pytest.skip("filesystem has no strong native file revision")
 
-    real_signature = shred_mod._file_content_signature
+    real_signature = _source_proof._file_content_signature
     hash_calls = 0
 
     def counting_signature(path: Path) -> dict[str, Any]:
@@ -350,20 +350,20 @@ def test_same_stat_artifact_corruption_invalidates_retained_snapshot(
         hash_calls += 1
         return real_signature(path)
 
-    monkeypatch.setattr(shred_mod, "_file_content_signature", counting_signature)
-    first = shred_mod._snapshot_cache_artifact(cache_dir, source, _signature(original))
+    monkeypatch.setattr(_source_proof, "_file_content_signature", counting_signature)
+    first = _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(original))
     assert first is not None
-    shred_mod._release_runtime_snapshot(first)
+    _runtime_storage._release_runtime_snapshot(first)
     original_stat = source.stat()
 
     source.write_bytes(corrupted)
     os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
-    rejected = shred_mod._snapshot_cache_artifact(cache_dir, source, _signature(original))
+    rejected = _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(original))
 
     assert rejected is None
     assert hash_calls == 2
     assert not first.exists()
-    assert shred_mod._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
+    assert _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
 
 
 def test_verified_snapshot_cache_enforces_entry_bound_and_active_lease(
@@ -372,9 +372,9 @@ def test_verified_snapshot_cache_enforces_entry_bound_and_active_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_VERIFIED_RUNTIME_SNAPSHOT_CACHE",
-        shred_mod._VerifiedRuntimeSnapshotCache(max_entries=1, max_bytes=1024),
+        _runtime_storage._VerifiedRuntimeSnapshotCache(max_entries=1, max_bytes=1024),
     )
     cache_dir = tmp_path / "cache"
     first_source = tmp_path / "first.parquet"
@@ -382,12 +382,12 @@ def test_verified_snapshot_cache_enforces_entry_bound_and_active_lease(
     first_source.write_bytes(b"first")
     second_source.write_bytes(b"second")
 
-    first = shred_mod._snapshot_cache_artifact(
+    first = _runtime_storage._snapshot_cache_artifact(
         cache_dir,
         first_source,
         _signature(b"first"),
     )
-    second = shred_mod._snapshot_cache_artifact(
+    second = _runtime_storage._snapshot_cache_artifact(
         cache_dir,
         second_source,
         _signature(b"second"),
@@ -395,11 +395,11 @@ def test_verified_snapshot_cache_enforces_entry_bound_and_active_lease(
     assert first is not None and second is not None
     assert first.exists(), "entry eviction must not break an active execution lease"
 
-    shred_mod._release_runtime_snapshot(first)
+    _runtime_storage._release_runtime_snapshot(first)
     assert not first.exists()
-    shred_mod._release_runtime_snapshot(second)
+    _runtime_storage._release_runtime_snapshot(second)
     assert second.exists()
-    assert shred_mod._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 1
+    assert _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 1
 
 
 def test_oversized_verified_snapshot_is_not_retained(
@@ -408,20 +408,20 @@ def test_oversized_verified_snapshot_is_not_retained(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_VERIFIED_RUNTIME_SNAPSHOT_CACHE",
-        shred_mod._VerifiedRuntimeSnapshotCache(max_entries=8, max_bytes=3),
+        _runtime_storage._VerifiedRuntimeSnapshotCache(max_entries=8, max_bytes=3),
     )
     cache_dir = tmp_path / "cache"
     source = tmp_path / "source.parquet"
     source.write_bytes(b"four")
 
-    snapshot = shred_mod._snapshot_cache_artifact(cache_dir, source, _signature(b"four"))
+    snapshot = _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(b"four"))
     assert snapshot is not None
-    shred_mod._release_runtime_snapshot(snapshot)
+    _runtime_storage._release_runtime_snapshot(snapshot)
 
     assert not snapshot.exists()
-    assert shred_mod._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
+    assert _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
 
 
 def test_verified_snapshot_cache_enforces_aggregate_byte_bound_and_lru_recency(
@@ -429,8 +429,8 @@ def test_verified_snapshot_cache_enforces_aggregate_byte_bound_and_lru_recency(
     isolated_snapshot_state: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cache = shred_mod._VerifiedRuntimeSnapshotCache(max_entries=8, max_bytes=8)
-    monkeypatch.setattr(shred_mod, "_VERIFIED_RUNTIME_SNAPSHOT_CACHE", cache)
+    cache = _runtime_storage._VerifiedRuntimeSnapshotCache(max_entries=8, max_bytes=8)
+    monkeypatch.setattr(_runtime_storage, "_VERIFIED_RUNTIME_SNAPSHOT_CACHE", cache)
     cache_dir = tmp_path / "cache"
     first_source = tmp_path / "first.parquet"
     second_source = tmp_path / "second.parquet"
@@ -439,19 +439,23 @@ def test_verified_snapshot_cache_enforces_aggregate_byte_bound_and_lru_recency(
     second_source.write_bytes(b"twos")
     third_source.write_bytes(b"five!")
 
-    first = shred_mod._snapshot_cache_artifact(cache_dir, first_source, _signature(b"one"))
-    second = shred_mod._snapshot_cache_artifact(cache_dir, second_source, _signature(b"twos"))
+    first = _runtime_storage._snapshot_cache_artifact(cache_dir, first_source, _signature(b"one"))
+    second = _runtime_storage._snapshot_cache_artifact(
+        cache_dir, second_source, _signature(b"twos")
+    )
     assert first is not None and second is not None
-    shred_mod._release_runtime_snapshot(first)
-    shred_mod._release_runtime_snapshot(second)
+    _runtime_storage._release_runtime_snapshot(first)
+    _runtime_storage._release_runtime_snapshot(second)
 
     # Touch the first generation so the second becomes the byte-pressure victim.
-    first_hit = shred_mod._snapshot_cache_artifact(cache_dir, first_source, _signature(b"one"))
+    first_hit = _runtime_storage._snapshot_cache_artifact(
+        cache_dir, first_source, _signature(b"one")
+    )
     assert first_hit == first
-    shred_mod._release_runtime_snapshot(first_hit)
-    third = shred_mod._snapshot_cache_artifact(cache_dir, third_source, _signature(b"five!"))
+    _runtime_storage._release_runtime_snapshot(first_hit)
+    third = _runtime_storage._snapshot_cache_artifact(cache_dir, third_source, _signature(b"five!"))
     assert third is not None
-    shred_mod._release_runtime_snapshot(third)
+    _runtime_storage._release_runtime_snapshot(third)
 
     assert first.exists()
     assert not second.exists()
@@ -468,10 +472,10 @@ def test_concurrent_snapshot_requests_share_one_verification(
     source = tmp_path / "source.parquet"
     payload = b"concurrent"
     source.write_bytes(payload)
-    if shred_mod._strong_file_revision(source) is None:
+    if _source_proof._strong_file_revision(source) is None:
         pytest.skip("filesystem has no strong native file revision")
 
-    real_signature = shred_mod._file_content_signature
+    real_signature = _source_proof._file_content_signature
     hash_calls = 0
 
     def counting_signature(path: Path) -> dict[str, Any]:
@@ -479,11 +483,11 @@ def test_concurrent_snapshot_requests_share_one_verification(
         hash_calls += 1
         return real_signature(path)
 
-    monkeypatch.setattr(shred_mod, "_file_content_signature", counting_signature)
+    monkeypatch.setattr(_source_proof, "_file_content_signature", counting_signature)
     with ThreadPoolExecutor(max_workers=8) as pool:
         snapshots = list(
             pool.map(
-                lambda _index: shred_mod._snapshot_cache_artifact(
+                lambda _index: _runtime_storage._snapshot_cache_artifact(
                     cache_dir,
                     source,
                     _signature(payload),
@@ -497,7 +501,7 @@ def test_concurrent_snapshot_requests_share_one_verification(
     assert hash_calls == 1
     for snapshot in snapshots:
         assert snapshot is not None
-        shred_mod._release_runtime_snapshot(snapshot)
+        _runtime_storage._release_runtime_snapshot(snapshot)
 
 
 def test_unavailable_artifact_revision_falls_back_to_hash_every_time(
@@ -509,7 +513,7 @@ def test_unavailable_artifact_revision_falls_back_to_hash_every_time(
     source = tmp_path / "source.parquet"
     payload = b"fallback"
     source.write_bytes(payload)
-    real_signature = shred_mod._file_content_signature
+    real_signature = _source_proof._file_content_signature
     hash_calls = 0
 
     def counting_signature(path: Path) -> dict[str, Any]:
@@ -517,24 +521,24 @@ def test_unavailable_artifact_revision_falls_back_to_hash_every_time(
         hash_calls += 1
         return real_signature(path)
 
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: None)
-    monkeypatch.setattr(shred_mod, "_file_content_signature", counting_signature)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: None)
+    monkeypatch.setattr(_source_proof, "_file_content_signature", counting_signature)
 
     for _ in range(2):
-        snapshot = shred_mod._snapshot_cache_artifact(cache_dir, source, _signature(payload))
+        snapshot = _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(payload))
         assert snapshot is not None
-        shred_mod._release_runtime_snapshot(snapshot)
+        _runtime_storage._release_runtime_snapshot(snapshot)
 
     assert hash_calls == 2
-    assert shred_mod._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
+    assert _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
 
 
 def test_store_records_first_lease_before_another_key_can_evict_it(
     tmp_path: Path, isolated_snapshot_state: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Admission and first lease are indivisible from a competing eviction."""
-    cache = shred_mod._VerifiedRuntimeSnapshotCache(max_entries=1, max_bytes=1024)
-    monkeypatch.setattr(shred_mod, "_VERIFIED_RUNTIME_SNAPSHOT_CACHE", cache)
+    cache = _runtime_storage._VerifiedRuntimeSnapshotCache(max_entries=1, max_bytes=1024)
+    monkeypatch.setattr(_runtime_storage, "_VERIFIED_RUNTIME_SNAPSHOT_CACHE", cache)
     cache_dir = tmp_path / "cache"
     first_source = tmp_path / "first.parquet"
     second_source = tmp_path / "second.parquet"
@@ -554,20 +558,23 @@ def test_store_records_first_lease_before_another_key_can_evict_it(
     monkeypatch.setattr(cache, "store", pausing_store)
     with ThreadPoolExecutor(max_workers=2) as pool:
         first_future = pool.submit(
-            shred_mod._snapshot_cache_artifact, cache_dir, first_source, _signature(b"first")
+            _runtime_storage._snapshot_cache_artifact, cache_dir, first_source, _signature(b"first")
         )
         assert entered.wait(timeout=5)
         second_future = pool.submit(
-            shred_mod._snapshot_cache_artifact, cache_dir, second_source, _signature(b"second")
+            _runtime_storage._snapshot_cache_artifact,
+            cache_dir,
+            second_source,
+            _signature(b"second"),
         )
         release_store.set()
         first = first_future.result(timeout=5)
         second = second_future.result(timeout=5)
     assert first is not None and second is not None
     assert first.exists()
-    shred_mod._release_runtime_snapshot(first)
+    _runtime_storage._release_runtime_snapshot(first)
     assert not first.exists()
-    shred_mod._release_runtime_snapshot(second)
+    _runtime_storage._release_runtime_snapshot(second)
 
 
 def test_identical_digest_different_keys_keep_their_verified_inodes_concurrently(
@@ -582,10 +589,10 @@ def test_identical_digest_different_keys_keep_their_verified_inodes_concurrently
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         first_future = pool.submit(
-            shred_mod._snapshot_cache_artifact, cache_dir, first_source, _signature(payload)
+            _runtime_storage._snapshot_cache_artifact, cache_dir, first_source, _signature(payload)
         )
         second_future = pool.submit(
-            shred_mod._snapshot_cache_artifact, cache_dir, second_source, _signature(payload)
+            _runtime_storage._snapshot_cache_artifact, cache_dir, second_source, _signature(payload)
         )
         first = first_future.result(timeout=5)
         second = second_future.result(timeout=5)
@@ -594,8 +601,8 @@ def test_identical_digest_different_keys_keep_their_verified_inodes_concurrently
     assert first != second
     assert first.read_bytes() == payload
     assert second.read_bytes() == payload
-    shred_mod._release_runtime_snapshot(first)
-    shred_mod._release_runtime_snapshot(second)
+    _runtime_storage._release_runtime_snapshot(first)
+    _runtime_storage._release_runtime_snapshot(second)
 
 
 def test_hard_link_mutation_during_hash_rejects_unstable_capture(
@@ -605,18 +612,18 @@ def test_hard_link_mutation_during_hash_rejects_unstable_capture(
     source = tmp_path / "source.parquet"
     payload = b"original"
     source.write_bytes(payload)
-    if shred_mod._strong_file_revision(source) is None:
+    if _source_proof._strong_file_revision(source) is None:
         pytest.skip("filesystem has no strong native file revision")
-    real_signature = shred_mod._file_content_signature
+    real_signature = _source_proof._file_content_signature
 
     def mutate_after_hash(path: Path) -> dict[str, Any]:
         signature = real_signature(path)
         source.write_bytes(b"corrupt!")
         return signature
 
-    monkeypatch.setattr(shred_mod, "_file_content_signature", mutate_after_hash)
-    assert shred_mod._snapshot_cache_artifact(cache_dir, source, _signature(payload)) is None
-    assert shred_mod._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
+    monkeypatch.setattr(_source_proof, "_file_content_signature", mutate_after_hash)
+    assert _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(payload)) is None
+    assert _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
 
 
 @pytest.mark.parametrize(
@@ -628,15 +635,15 @@ def test_verified_snapshot_cache_rejects_invalid_bounds(
     max_bytes: object,
 ) -> None:
     with pytest.raises(ValueError, match="positive integer"):
-        shred_mod._VerifiedRuntimeSnapshotCache(  # type: ignore[arg-type]
+        _runtime_storage._VerifiedRuntimeSnapshotCache(  # type: ignore[arg-type]
             max_entries=max_entries,
             max_bytes=max_bytes,
         )
 
 
 def test_verified_snapshot_cache_discards_inherited_process_state(tmp_path: Path) -> None:
-    cache = shred_mod._VerifiedRuntimeSnapshotCache(max_entries=2, max_bytes=10)
-    revision = shred_mod._StrongFileRevision((1, 2), 1, 3, 4)
+    cache = _runtime_storage._VerifiedRuntimeSnapshotCache(max_entries=2, max_bytes=10)
+    revision = _source_proof._StrongFileRevision((1, 2), 1, 3, 4)
     snapshot = tmp_path / "snapshot.parquet"
     snapshot.write_bytes(b"x")
     cache.store(("path", 1, "digest"), revision, snapshot, 1)
@@ -648,7 +655,7 @@ def test_verified_snapshot_cache_discards_inherited_process_state(tmp_path: Path
 
 
 def test_verified_snapshot_revision_warning_history_is_bounded(tmp_path: Path) -> None:
-    cache = shred_mod._VerifiedRuntimeSnapshotCache(max_entries=1, max_bytes=10)
+    cache = _runtime_storage._VerifiedRuntimeSnapshotCache(max_entries=1, max_bytes=10)
     first = tmp_path / "first.parquet"
     second = tmp_path / "second.parquet"
 
@@ -667,8 +674,8 @@ def test_verified_snapshot_revision_warning_history_is_bounded(tmp_path: Path) -
 def test_verified_snapshot_cache_replaces_key_and_counts_shared_path_once(
     tmp_path: Path,
 ) -> None:
-    cache = shred_mod._VerifiedRuntimeSnapshotCache(max_entries=2, max_bytes=10)
-    revision = shred_mod._StrongFileRevision((1, 2), 1, 3, 4)
+    cache = _runtime_storage._VerifiedRuntimeSnapshotCache(max_entries=2, max_bytes=10)
+    revision = _source_proof._StrongFileRevision((1, 2), 1, 3, 4)
     snapshot = tmp_path / "snapshot.parquet"
     snapshot.write_bytes(b"x")
     first_key = ("first", 1, "digest")
@@ -687,7 +694,7 @@ def test_remove_unpinned_snapshot_accepts_already_missing_file(
     snapshot_dir = tmp_path / "snapshots"
     snapshot_dir.mkdir()
 
-    shred_mod._remove_unpinned_runtime_snapshot(snapshot_dir / "missing.parquet")
+    _runtime_storage._remove_unpinned_runtime_snapshot(snapshot_dir / "missing.parquet")
 
     assert not snapshot_dir.exists()
 
@@ -703,14 +710,14 @@ def test_capture_reuses_existing_snapshot_only_for_the_same_inode(
     source.write_bytes(payload)
     signature = _signature(payload)
     snapshot_path = snapshot_dir / (
-        f"{signature['sha256'][: shred_mod._RUNTIME_SNAPSHOT_DIGEST_PREFIX_HEX]}.parquet"
+        f"{signature['sha256'][: _runtime_storage._RUNTIME_SNAPSHOT_DIGEST_PREFIX_HEX]}.parquet"
     )
     try:
         os.link(source, snapshot_path)
     except OSError:
         pytest.skip("filesystem does not support hard links")
 
-    captured = shred_mod._capture_runtime_snapshot(
+    captured = _runtime_storage._capture_runtime_snapshot(
         cache_dir,
         source,
         snapshot_dir,
@@ -720,7 +727,7 @@ def test_capture_reuses_existing_snapshot_only_for_the_same_inode(
     )
 
     assert captured == snapshot_path
-    shred_mod._release_runtime_snapshot(snapshot_path)
+    _runtime_storage._release_runtime_snapshot(snapshot_path)
 
 
 def test_snapshot_publication_name_fits_bounded_windows_path_headroom(
@@ -744,7 +751,7 @@ def test_snapshot_publication_name_fits_bounded_windows_path_headroom(
 
     monkeypatch.setattr(Path, "rename", reject_overlong_destination)
 
-    snapshot = shred_mod._capture_runtime_snapshot(
+    snapshot = _runtime_storage._capture_runtime_snapshot(
         cache_dir,
         source,
         snapshot_dir,
@@ -756,7 +763,7 @@ def test_snapshot_publication_name_fits_bounded_windows_path_headroom(
     assert snapshot is not None
     assert len(str(snapshot)) <= path_budget
     assert signature["sha256"] not in snapshot.name
-    shred_mod._release_runtime_snapshot(snapshot)
+    _runtime_storage._release_runtime_snapshot(snapshot)
 
 
 def test_copy_capture_is_not_cached_when_revision_moves_during_copy(
@@ -766,10 +773,10 @@ def test_copy_capture_is_not_cached_when_revision_moves_during_copy(
     source = tmp_path / "source.parquet"
     payload = b"copy-race"
     source.write_bytes(payload)
-    revision = shred_mod._strong_file_revision(source)
+    revision = _source_proof._strong_file_revision(source)
     if revision is None:
         pytest.skip("filesystem has no strong native file revision")
-    changed = shred_mod._StrongFileRevision(
+    changed = _source_proof._StrongFileRevision(
         revision.file_identity,
         revision.size,
         revision.mtime_ns,
@@ -780,15 +787,15 @@ def test_copy_capture_is_not_cached_when_revision_moves_during_copy(
     def reject_link(_source: Path, _target: Path) -> None:
         raise OSError("links unavailable")
 
-    monkeypatch.setattr(shred_mod.os, "link", reject_link)
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: next(observations))
+    monkeypatch.setattr(os, "link", reject_link)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: next(observations))
 
-    snapshot = shred_mod._snapshot_cache_artifact(cache_dir, source, _signature(payload))
+    snapshot = _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(payload))
 
     assert snapshot is not None
-    shred_mod._release_runtime_snapshot(snapshot)
+    _runtime_storage._release_runtime_snapshot(snapshot)
     assert not snapshot.exists()
-    assert shred_mod._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
+    assert _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
 
 
 def test_copy_capture_is_not_cached_when_revision_moves_at_admission(
@@ -798,10 +805,10 @@ def test_copy_capture_is_not_cached_when_revision_moves_at_admission(
     source = tmp_path / "source.parquet"
     payload = b"copy-admission-race"
     source.write_bytes(payload)
-    revision = shred_mod._strong_file_revision(source)
+    revision = _source_proof._strong_file_revision(source)
     if revision is None:
         pytest.skip("filesystem has no strong native file revision")
-    changed = shred_mod._StrongFileRevision(
+    changed = _source_proof._StrongFileRevision(
         revision.file_identity,
         revision.size,
         revision.mtime_ns,
@@ -812,15 +819,15 @@ def test_copy_capture_is_not_cached_when_revision_moves_at_admission(
     def reject_link(_source: Path, _target: Path) -> None:
         raise OSError("links unavailable")
 
-    monkeypatch.setattr(shred_mod.os, "link", reject_link)
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", lambda _path: next(observations))
+    monkeypatch.setattr(os, "link", reject_link)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: next(observations))
 
-    snapshot = shred_mod._snapshot_cache_artifact(cache_dir, source, _signature(payload))
+    snapshot = _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(payload))
 
     assert snapshot is not None
-    shred_mod._release_runtime_snapshot(snapshot)
+    _runtime_storage._release_runtime_snapshot(snapshot)
     assert not snapshot.exists()
-    assert shred_mod._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
+    assert _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
 
 
 def test_hard_link_capture_is_not_cached_when_visible_identity_moves_at_admission(
@@ -830,10 +837,10 @@ def test_hard_link_capture_is_not_cached_when_visible_identity_moves_at_admissio
     source = tmp_path / "source.parquet"
     payload = b"link-admission-race"
     source.write_bytes(payload)
-    revision = shred_mod._strong_file_revision(source)
+    revision = _source_proof._strong_file_revision(source)
     if revision is None:
         pytest.skip("filesystem has no strong native file revision")
-    changed = shred_mod._StrongFileRevision(
+    changed = _source_proof._StrongFileRevision(
         (revision.file_identity[0], b"z" * 16),
         revision.size,
         revision.mtime_ns,
@@ -844,14 +851,14 @@ def test_hard_link_capture_is_not_cached_when_visible_identity_moves_at_admissio
     def moving_revision(path: Path) -> Any:
         return next(source_observations) if path == source else revision
 
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", moving_revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", moving_revision)
 
-    snapshot = shred_mod._snapshot_cache_artifact(cache_dir, source, _signature(payload))
+    snapshot = _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(payload))
 
     assert snapshot is not None
-    shred_mod._release_runtime_snapshot(snapshot)
+    _runtime_storage._release_runtime_snapshot(snapshot)
     assert not snapshot.exists()
-    assert shred_mod._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
+    assert _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
 
 
 def test_artifact_revision_becoming_unavailable_inside_singleflight_falls_back(
@@ -861,7 +868,7 @@ def test_artifact_revision_becoming_unavailable_inside_singleflight_falls_back(
     source = tmp_path / "source.parquet"
     payload = b"revision-disappears"
     source.write_bytes(payload)
-    revision = shred_mod._strong_file_revision(source)
+    revision = _source_proof._strong_file_revision(source)
     if revision is None:
         pytest.skip("filesystem has no strong native file revision")
     source_observations = iter((revision, None))
@@ -869,11 +876,11 @@ def test_artifact_revision_becoming_unavailable_inside_singleflight_falls_back(
     def disappearing_revision(path: Path) -> Any:
         return next(source_observations) if path == source else None
 
-    monkeypatch.setattr(shred_mod, "_strong_file_revision", disappearing_revision)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", disappearing_revision)
 
-    snapshot = shred_mod._snapshot_cache_artifact(cache_dir, source, _signature(payload))
+    snapshot = _runtime_storage._snapshot_cache_artifact(cache_dir, source, _signature(payload))
 
     assert snapshot is not None
-    shred_mod._release_runtime_snapshot(snapshot)
+    _runtime_storage._release_runtime_snapshot(snapshot)
     assert not snapshot.exists()
-    assert shred_mod._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0
+    assert _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()["entries"] == 0

@@ -19,7 +19,7 @@ import pytest
 
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._json_flatten import _json_cache_dir
-from haute._json_shred import build_per_port_cache, load_v2_api_source
+from haute._json_shred._cache import build_per_port_cache, load_v2_api_source
 from haute._polars_utils import execution_collect
 from haute._ram_estimate import estimate_materialisation_boundaries
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -535,7 +535,7 @@ def test_unchanged_source_signature_reuses_one_complete_content_proof(
     request: pytest.FixtureRequest,
 ) -> None:
     """Certify the warm path against the exact full-hash control it replaces."""
-    import haute._json_shred as shred_mod
+    from haute._json_shred import _source_proof
 
     source_path = tmp_path / "signature-source.jsonl"
     block = bytes(range(256)) * 4_096
@@ -544,10 +544,10 @@ def test_unchanged_source_signature_reuses_one_complete_content_proof(
         for _ in range(_SIGNATURE_SOURCE_BYTES // len(block)):
             stream.write(block)
     assert source_path.stat().st_size == _SIGNATURE_SOURCE_BYTES
-    assert shred_mod._strong_file_revision(source_path) is not None
+    assert _source_proof._strong_file_revision(source_path) is not None
 
-    shred_mod._clear_data_file_signature_memo()
-    real_hash_file = shred_mod._hash_file
+    _source_proof._clear_data_file_signature_memo()
+    real_hash_file = _source_proof._hash_file
     source_hashes = 0
 
     def counting_hash_file(path: Path) -> str:
@@ -556,14 +556,14 @@ def test_unchanged_source_signature_reuses_one_complete_content_proof(
             source_hashes += 1
         return real_hash_file(path)
 
-    monkeypatch.setattr(shred_mod, "_hash_file", counting_hash_file)
+    monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
     cold_started = time.perf_counter_ns()
-    expected = shred_mod._data_file_signature(source_path)
+    expected = _source_proof._data_file_signature(source_path)
     cold_ns = time.perf_counter_ns() - cold_started
     warm_ns: list[int] = []
     for _ in range(_SIGNATURE_WARM_SAMPLES):
         started = time.perf_counter_ns()
-        assert shred_mod._data_file_signature(source_path) == expected
+        assert _source_proof._data_file_signature(source_path) == expected
         warm_ns.append(time.perf_counter_ns() - started)
 
     warm_median_ns = int(statistics.median(warm_ns))
@@ -608,7 +608,7 @@ def test_unchanged_cached_artifact_reuses_one_complete_content_proof(
 ) -> None:
     """Certify bounded verified-snapshot reuse against a full-hash control."""
 
-    import haute._json_shred as shred_mod
+    from haute._json_shred import _runtime_storage, _source_proof
 
     cache_dir = tmp_path / "cache"
     artifact_path = tmp_path / "artifact.parquet"
@@ -623,10 +623,10 @@ def test_unchanged_cached_artifact_reuses_one_complete_content_proof(
         "sha256": expected_digest.hexdigest(),
     }
     assert artifact_path.stat().st_size == _ARTIFACT_PROOF_BYTES
-    assert shred_mod._strong_file_revision(artifact_path) is not None
+    assert _source_proof._strong_file_revision(artifact_path) is not None
 
-    shred_mod._cleanup_runtime_snapshot_dirs()
-    real_signature = shred_mod._file_content_signature
+    _runtime_storage._cleanup_runtime_snapshot_dirs()
+    real_signature = _source_proof._file_content_signature
     artifact_hashes = 0
 
     def counting_signature(path: Path) -> dict[str, Any]:
@@ -634,31 +634,31 @@ def test_unchanged_cached_artifact_reuses_one_complete_content_proof(
         artifact_hashes += 1
         return real_signature(path)
 
-    monkeypatch.setattr(shred_mod, "_file_content_signature", counting_signature)
+    monkeypatch.setattr(_source_proof, "_file_content_signature", counting_signature)
     cold_started = time.perf_counter_ns()
-    cold_snapshot = shred_mod._snapshot_cache_artifact(
+    cold_snapshot = _runtime_storage._snapshot_cache_artifact(
         cache_dir,
         artifact_path,
         recorded_signature,
     )
     cold_ns = time.perf_counter_ns() - cold_started
     assert cold_snapshot is not None
-    shred_mod._release_runtime_snapshot(cold_snapshot)
+    _runtime_storage._release_runtime_snapshot(cold_snapshot)
 
     warm_ns: list[int] = []
     for _ in range(_ARTIFACT_WARM_SAMPLES):
         started = time.perf_counter_ns()
-        warm_snapshot = shred_mod._snapshot_cache_artifact(
+        warm_snapshot = _runtime_storage._snapshot_cache_artifact(
             cache_dir,
             artifact_path,
             recorded_signature,
         )
         warm_ns.append(time.perf_counter_ns() - started)
         assert warm_snapshot == cold_snapshot
-        shred_mod._release_runtime_snapshot(warm_snapshot)
+        _runtime_storage._release_runtime_snapshot(warm_snapshot)
 
     warm_median_ns = int(statistics.median(warm_ns))
-    cache_stats = shred_mod._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()
+    cache_stats = _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()
     assert artifact_hashes == 1
     assert cache_stats == {
         "entries": 1,
@@ -667,7 +667,7 @@ def test_unchanged_cached_artifact_reuses_one_complete_content_proof(
     }
     assert warm_median_ns <= cold_ns * _MAX_ARTIFACT_WARM_FRACTION
     assert cold_snapshot.exists()
-    shred_mod._cleanup_runtime_snapshot_dirs()
+    _runtime_storage._cleanup_runtime_snapshot_dirs()
     assert not cold_snapshot.exists()
 
     request.node.user_properties.append(
@@ -708,8 +708,8 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
     request: pytest.FixtureRequest,
 ) -> None:
     """Certify that planning, preview identity, and loading share JSON proof."""
-    import haute._json_shred as shred_mod
     import haute.execution as execution_mod
+    from haute._json_shred import _source_proof
 
     monkeypatch.chdir(tmp_path)
     source_path = tmp_path / "source.json"
@@ -767,12 +767,12 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
         ],
     )
     resolved = source_path.resolve()
-    shred_mod._clear_data_file_signature_memo()
+    _source_proof._clear_data_file_signature_memo()
     execution_mod._runtime_path_fingerprint_cache.clear()
     _preview_cache.clear()
     source_hashes = 0
     generic_hashes = 0
-    real_source_hash = shred_mod._hash_file
+    real_source_hash = _source_proof._hash_file
     real_generic_hash = execution_mod.content_hash
     import haute.projection as projection_mod
 
@@ -805,7 +805,7 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
 
         return wrapped
 
-    monkeypatch.setattr(shred_mod, "_hash_file", counting_source_hash)
+    monkeypatch.setattr(_source_proof, "_hash_file", counting_source_hash)
     monkeypatch.setattr(execution_mod, "content_hash", counting_generic_hash)
     monkeypatch.setattr(execution_mod, "prepare_graph", timed_prepare(real_execution_prepare))
     monkeypatch.setattr(projection_mod, "prepare_graph", timed_prepare(real_projection_prepare))
@@ -893,9 +893,9 @@ def test_preview_cache_hit_reuses_strategy_without_planning_or_execution(
 ) -> None:
     """Certify that a complete preview hit is lookup/serialization work only."""
 
-    import haute._json_shred as shred_mod
     import haute.execution as execution_mod
     import haute.executor as executor_mod
+    from haute._json_shred import _source_proof
 
     monkeypatch.chdir(tmp_path)
     source_path = tmp_path / "preview-hit.json"
@@ -923,7 +923,7 @@ def test_preview_cache_hit_reuses_strategy_without_planning_or_execution(
         ],
         edges=[],
     )
-    shred_mod._clear_data_file_signature_memo()
+    _source_proof._clear_data_file_signature_memo()
     execution_mod._runtime_path_fingerprint_cache.clear()
     _preview_cache.clear()
     real_plan = executor_mod.execution_facade.plan_execution_strategy
@@ -1115,9 +1115,9 @@ def test_cached_api_port_projection_is_physical_and_snapshot_bounded(
     metrics = context.metrics_payload(status="completed")
     context.release_admission()
     assert snapshots[0].exists()
-    import haute._json_shred as shred_mod
+    from haute._json_shred import _runtime_storage
 
-    shred_mod._cleanup_runtime_snapshot_dirs()
+    _runtime_storage._cleanup_runtime_snapshot_dirs()
     assert not snapshots[0].exists()
 
     request.node.user_properties.append(

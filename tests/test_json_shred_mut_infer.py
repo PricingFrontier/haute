@@ -1,7 +1,7 @@
 """Mutation-killing witness tests for ``infer_v2_schema_from_data`` / ``_walk``.
 
 Targets specific Cosmic Ray survivors in the schema-inference walk of
-``src/haute/_json_shred.py`` (the v2 relational decomposition of an
+``src/haute/_json_shred/`` (the v2 relational decomposition of an
 array-outer JSON document). Each test below is constructed so that the
 documented mutation flips an OBSERVABLE field of the returned
 ``{"tables": [...]}`` structure.
@@ -17,8 +17,9 @@ from typing import Any
 
 import pytest
 
+from haute._api_input_schema import _RESERVED_LEAF as _SCALAR_VALUE_LEAF
 from haute._api_input_schema import ApiInputSchemaError
-from haute._json_shred import _SCALAR_VALUE_LEAF, infer_v2_schema_from_data
+from haute._json_shred._inference import infer_v2_schema_from_data
 
 
 def _infer(tmp_path: Path, data: list[dict[str, Any]], name: str = "data.json") -> dict[str, Any]:

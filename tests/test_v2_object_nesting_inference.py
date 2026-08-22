@@ -23,7 +23,8 @@ from haute._api_input_schema import (
     parse_column_path_full,
     parse_table_path,
 )
-from haute._json_shred import infer_v2_schema_from_data, shred_to_buffers
+from haute._json_shred._inference import infer_v2_schema_from_data
+from haute._json_shred._shred import shred_to_buffers
 from haute._output_assembler import assemble_output_from_mapping
 from haute.errors import HauteError
 

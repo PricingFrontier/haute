@@ -8,6 +8,7 @@ import errno
 import json
 import operator
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -16,12 +17,9 @@ from typing import Any
 import orjson
 
 from haute._interactive_workers import InteractiveWorkerCrashedError, InteractiveWorkerPool
-from haute._json_shred import (
-    _BoundedParquetRowGroupWriter,
-    _build_lock_for,
-    build_per_port_cache,
-    is_per_port_cache_valid,
-)
+from haute._json_shred._cache import build_per_port_cache, is_per_port_cache_valid
+from haute._json_shred._publication import _build_lock_for
+from haute._json_shred._writer import _BoundedParquetRowGroupWriter
 from haute._process_memory import process_rss_bytes
 
 _SCALES = {"ci": (120, 8, 4), "1m": (2_000, 100, 12), "10m": (10_000, 1_000, 32)}
@@ -100,25 +98,25 @@ def _siblings(cache: Path) -> list[Path]:
 
 
 def _run_phase_child(phase: str, source: Path, cache: Path, config: dict[str, Any]) -> int:
-    import haute._json_shred as shred
+    from haute._json_shred import _cache, _publication, _writer
 
     if phase == "row_group_emission":
-        original = shred._BoundedParquetRowGroupWriter.flush
+        original = _writer._BoundedParquetRowGroupWriter.flush
 
         def crash_after_flush(writer: Any) -> None:
             original(writer)
             os._exit(91)
 
-        shred._BoundedParquetRowGroupWriter.flush = crash_after_flush
+        _writer._BoundedParquetRowGroupWriter.flush = crash_after_flush
     elif phase == "after_private_staging":
-        original = shred.commit_prepared_per_port_cache
+        original = _cache.commit_prepared_per_port_cache
 
         def crash_after_staging(*args: Any, **kwargs: Any) -> Any:
             os._exit(91)
 
-        shred.commit_prepared_per_port_cache = crash_after_staging
+        _cache.commit_prepared_per_port_cache = crash_after_staging
     else:
-        original = shred._rename_dir_with_retry
+        original = _publication._rename_dir_with_retry
 
         def crash_after_rename(source_dir: Path, target: Path) -> None:
             original(source_dir, target)
@@ -127,16 +125,16 @@ def _run_phase_child(phase: str, source: Path, cache: Path, config: dict[str, An
             if phase == "after_staged_live_rename" and target == cache:
                 os._exit(91)
 
-        shred._rename_dir_with_retry = crash_after_rename
+        _publication._rename_dir_with_retry = crash_after_rename
         if phase == "obsolete_backup_cleanup":
-            original_rmtree = shred.shutil.rmtree
+            original_rmtree = shutil.rmtree
 
             def crash_on_backup_cleanup(path: Any, *args: Any, **kwargs: Any) -> Any:
                 if Path(path).name.startswith(f"{cache.name}.build-old-"):
                     os._exit(91)
                 return original_rmtree(path, *args, **kwargs)
 
-            shred.shutil.rmtree = crash_on_backup_cleanup
+            shutil.rmtree = crash_on_backup_cleanup
     build_per_port_cache(source, config, cache)
     return 0
 
@@ -200,9 +198,9 @@ def _cache_resilience(root: Path, contenders: int) -> dict[str, Any]:
         original_flush(writer)
         raise OSError(errno.ENOSPC, "simulated full disk")
 
-    import haute._json_shred as shred
+    from haute._json_shred import _writer
 
-    shred._BoundedParquetRowGroupWriter.flush = full_disk
+    _writer._BoundedParquetRowGroupWriter.flush = full_disk
     try:
         try:
             build_per_port_cache(source, new, cache)
@@ -212,7 +210,7 @@ def _cache_resilience(root: Path, contenders: int) -> dict[str, Any]:
         else:
             raise RuntimeError("ENOSPC injection did not fail")
     finally:
-        shred._BoundedParquetRowGroupWriter.flush = original_flush
+        _writer._BoundedParquetRowGroupWriter.flush = original_flush
     current = {
         path.relative_to(cache).as_posix(): path.read_bytes()
         for path in cache.rglob("*")

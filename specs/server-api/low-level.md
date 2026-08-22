@@ -408,7 +408,7 @@ memory errors retain their existing 422/507 mappings; arbitrary remote failures 
 Explicit thread compatibility mode uses the existing deferred-release helper and is never an
 automatic fallback.
 
-**JSON cache build** (`routes/json_cache.py`, `_json_shred.py`): the parent resolves and
+**JSON cache build** (`routes/json_cache.py`, the `_json_shred/` package): the parent resolves and
 validates paths/config, acquires the cross-process cache build lock off the event loop, chooses
 one unique sibling staging directory, and holds the admitted reservation. A one-shot process
 streams the source into that exact directory and returns a pickle-safe signed manifest. Before

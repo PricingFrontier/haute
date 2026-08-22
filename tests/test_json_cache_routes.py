@@ -84,7 +84,7 @@ class TestBuildJsonCache:
             json_cache, "create_isolated_execution_context", lambda _budget: context
         )
         monkeypatch.setattr(
-            "haute._json_shred.prepare_per_port_cache",
+            "haute._json_shred._cache.prepare_per_port_cache",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(raised),
         )
 
@@ -101,7 +101,7 @@ class TestBuildJsonCache:
     ) -> None:
         from haute._api_input_schema import ApiInputSchemaError
         from haute._execution_context import ExecutionMemoryLimitExceededError
-        from haute._json_shred import SourceChangedDuringCacheBuildError
+        from haute._json_shred._cache import SourceChangedDuringCacheBuildError
         from haute.routes import json_cache
 
         failures: dict[str, BaseException] = {
@@ -120,7 +120,7 @@ class TestBuildJsonCache:
             json_cache, "create_isolated_execution_context", lambda _budget: context
         )
         monkeypatch.setattr(
-            "haute._json_shred.prepare_per_port_cache",
+            "haute._json_shred._cache.prepare_per_port_cache",
             Mock(side_effect=failures[kind]),
         )
 
@@ -145,7 +145,7 @@ class TestBuildJsonCache:
             json_cache, "create_isolated_execution_context", lambda _budget: context
         )
         monkeypatch.setattr(
-            "haute._json_shred.prepare_per_port_cache",
+            "haute._json_shred._cache.prepare_per_port_cache",
             Mock(return_value=prepared),
         )
 
@@ -166,7 +166,7 @@ class TestBuildJsonCache:
         staging = tmp_path / "staging"
         budget = IsolatedExecutionBudget("x", ExecutionProfile.LAZY_SINK, 1, "x", "x")
         monkeypatch.setattr(
-            "haute._json_shred.new_per_port_cache_staging_dir", lambda _path: staging
+            "haute._json_shred._publication.new_per_port_cache_staging_dir", lambda _path: staging
         )
         monkeypatch.setattr(
             json_cache,
@@ -174,7 +174,7 @@ class TestBuildJsonCache:
             lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("primary")),
         )
         monkeypatch.setattr(
-            "haute._json_shred.discard_per_port_cache_staging",
+            "haute._json_shred._cache.discard_per_port_cache_staging",
             lambda *_args: (_ for _ in ()).throw(OSError("cleanup")),
         )
 
@@ -243,7 +243,7 @@ class TestBuildJsonCache:
         mutate: Any,
         error: type[Exception],
     ) -> None:
-        from haute._json_shred import PreparedPerPortCacheBuild
+        from haute._json_shred._cache import PreparedPerPortCacheBuild
         from haute.routes.json_cache import _validate_worker_prepared_manifest
 
         data_path = str((tmp_path / "data.json").resolve())
@@ -282,7 +282,7 @@ class TestBuildJsonCache:
     ) -> None:
         from haute._execution_admission import IsolatedExecutionBudget
         from haute._execution_context import ExecutionProfile
-        from haute._json_shred import PreparedPerPortCacheBuild
+        from haute._json_shred._cache import PreparedPerPortCacheBuild
         from haute.routes import json_cache
 
         data_path = str((tmp_path / "data.json").resolve())
@@ -309,7 +309,7 @@ class TestBuildJsonCache:
 
         with (
             patch(
-                "haute._json_shred.new_per_port_cache_staging_dir",
+                "haute._json_shred._publication.new_per_port_cache_staging_dir",
                 return_value=parent_staging,
             ),
             patch.object(
@@ -317,8 +317,8 @@ class TestBuildJsonCache:
                 "run_isolated_worker",
                 return_value=json_cache._JsonCacheWorkerOutcome(prepared=malformed),
             ),
-            patch("haute._json_shred.commit_prepared_per_port_cache", commit),
-            patch("haute._json_shred.discard_per_port_cache_staging", discard),
+            patch("haute._json_shred._cache.commit_prepared_per_port_cache", commit),
+            patch("haute._json_shred._cache.discard_per_port_cache_staging", discard),
         ):
             with pytest.raises(ValueError, match="staging directory"):
                 json_cache._json_cache_build_transaction(
@@ -338,7 +338,7 @@ class TestBuildJsonCache:
     ) -> None:
         from haute._execution_admission import IsolatedExecutionBudget
         from haute._execution_context import ExecutionProfile
-        from haute._json_shred import PreparedPerPortCacheBuild
+        from haute._json_shred._cache import PreparedPerPortCacheBuild
         from haute._worker_isolation import IsolatedWorkerStoppedError
         from haute.routes import json_cache
 
@@ -379,7 +379,7 @@ class TestBuildJsonCache:
 
         with (
             patch(
-                "haute._json_shred.new_per_port_cache_staging_dir",
+                "haute._json_shred._publication.new_per_port_cache_staging_dir",
                 return_value=parent_staging,
             ),
             patch.object(
@@ -387,8 +387,8 @@ class TestBuildJsonCache:
                 "run_isolated_worker",
                 side_effect=return_after_cancellation,
             ),
-            patch("haute._json_shred.commit_prepared_per_port_cache", commit),
-            patch("haute._json_shred.discard_per_port_cache_staging", discard),
+            patch("haute._json_shred._cache.commit_prepared_per_port_cache", commit),
+            patch("haute._json_shred._cache.discard_per_port_cache_staging", discard),
         ):
             with pytest.raises(IsolatedWorkerStoppedError):
                 json_cache._json_cache_build_transaction(
@@ -432,11 +432,11 @@ class TestBuildJsonCache:
 
         with (
             patch(
-                "haute._json_shred.new_per_port_cache_staging_dir",
+                "haute._json_shred._publication.new_per_port_cache_staging_dir",
                 return_value=staging,
             ),
             patch.object(json_cache, "run_isolated_worker", return_value=returned),
-            patch("haute._json_shred.discard_per_port_cache_staging"),
+            patch("haute._json_shred._cache.discard_per_port_cache_staging"),
         ):
             with pytest.raises(RuntimeError, match=message):
                 json_cache._json_cache_build_transaction(
@@ -466,7 +466,7 @@ class TestBuildJsonCache:
         )
         with (
             patch(
-                "haute._json_shred.new_per_port_cache_staging_dir",
+                "haute._json_shred._publication.new_per_port_cache_staging_dir",
                 return_value=staging,
             ),
             patch.object(
@@ -477,7 +477,7 @@ class TestBuildJsonCache:
                     detail="schema failed",
                 ),
             ),
-            patch("haute._json_shred.discard_per_port_cache_staging"),
+            patch("haute._json_shred._cache.discard_per_port_cache_staging"),
         ):
             with pytest.raises(json_cache._JsonCacheBuildError, match="schema failed"):
                 json_cache._json_cache_build_transaction(
@@ -494,7 +494,7 @@ class TestBuildJsonCache:
     ) -> None:
         from haute._execution_admission import IsolatedExecutionBudget
         from haute._execution_context import ExecutionProfile
-        from haute._json_shred import PreparedPerPortCacheBuild
+        from haute._json_shred._cache import PreparedPerPortCacheBuild
         from haute._worker_isolation import IsolatedWorkerStoppedError
         from haute.routes import json_cache
 
@@ -513,11 +513,11 @@ class TestBuildJsonCache:
 
         with (
             patch(
-                "haute._json_shred.new_per_port_cache_staging_dir",
+                "haute._json_shred._publication.new_per_port_cache_staging_dir",
                 return_value=staging,
             ),
             patch.object(json_cache, "run_isolated_worker", worker),
-            patch("haute._json_shred.discard_per_port_cache_staging"),
+            patch("haute._json_shred._cache.discard_per_port_cache_staging"),
         ):
             with pytest.raises(IsolatedWorkerStoppedError):
                 json_cache._json_cache_build_transaction(
@@ -539,7 +539,7 @@ class TestBuildJsonCache:
         )
         with (
             patch(
-                "haute._json_shred.new_per_port_cache_staging_dir",
+                "haute._json_shred._publication.new_per_port_cache_staging_dir",
                 return_value=staging,
             ),
             patch.object(
@@ -548,11 +548,11 @@ class TestBuildJsonCache:
                 return_value=json_cache._JsonCacheWorkerOutcome(prepared=prepared),
             ),
             patch(
-                "haute._json_shred.commit_prepared_per_port_cache",
+                "haute._json_shred._cache.commit_prepared_per_port_cache",
                 return_value={"schema_mode": "v2"},
             ),
             patch(
-                "haute._json_shred.discard_per_port_cache_staging",
+                "haute._json_shred._cache.discard_per_port_cache_staging",
                 side_effect=OSError("cleanup failed"),
             ),
         ):
@@ -1058,8 +1058,8 @@ class TestJsonCacheStatus:
         data_file.write_text('[{"a":1}]', encoding="utf-8")
 
         with (
-            patch("haute._json_shred.is_per_port_cache_valid", return_value=True),
-            patch("haute._json_shred.read_per_port_cache_meta", return_value=None),
+            patch("haute._json_shred._cache.is_per_port_cache_valid", return_value=True),
+            patch("haute._json_shred._cache.read_per_port_cache_meta", return_value=None),
         ):
             resp = client.post(
                 "/api/json-cache/status",
@@ -1081,7 +1081,7 @@ class TestJsonCacheStatus:
         data_file.write_text('[{"a":1}]', encoding="utf-8")
 
         with patch(
-            "haute._json_shred.is_per_port_cache_valid",
+            "haute._json_shred._cache.is_per_port_cache_valid",
             side_effect=ApiInputSchemaError("status schema mismatch"),
         ):
             resp = client.post(

@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from haute._json_shred import _rename_dir_with_retry
+from haute._json_shred._publication import _rename_dir_with_retry
 
 
 def test_rename_retries_on_permission_error_then_succeeds(

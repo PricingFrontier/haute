@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import xml.etree.ElementTree as ET
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
@@ -12,17 +15,17 @@ import polars as pl
 import pyarrow.parquet as pq
 import pytest
 
-import haute._json_shred as shred_mod
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_flatten import _json_cache_dir
+from haute._json_shred import _cache, _records, _runtime_storage, _shred, _source_proof, _writer
 
 
 @pytest.fixture(autouse=True)
 def _isolated_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    shred_mod._cleanup_direct_spill_dirs()
+    _runtime_storage._cleanup_direct_spill_dirs()
     yield
-    shred_mod._cleanup_direct_spill_dirs()
+    _runtime_storage._cleanup_direct_spill_dirs()
 
 
 def _col(name: str, path: str, type_token: str = "int") -> dict[str, Any]:
@@ -55,16 +58,16 @@ def test_root_array_streams_without_read_bytes_and_validates_tail(
 
     monkeypatch.setattr(Path, "read_bytes", _no_source_read_bytes)
     with pytest.raises(Exception, match="trailing"):
-        shred_mod.load_v2_api_source(str(data), config)
+        _cache.load_v2_api_source(str(data), config)
 
 
 def test_root_array_parser_accepts_empty_input_and_whitespace_array(tmp_path: Path) -> None:
     blank = tmp_path / "blank.json"
     blank.write_bytes(b" \n\t")
-    assert list(shred_mod._iter_records(blank)) == []
+    assert list(_records._iter_records(blank)) == []
     empty = tmp_path / "empty.json"
     empty.write_bytes(b" [ ] \r\n")
-    assert list(shred_mod._iter_records(empty)) == []
+    assert list(_records._iter_records(empty)) == []
 
 
 def test_root_array_value_counts_quote_and_nested_delimiters_at_the_exact_limit() -> None:
@@ -77,7 +80,7 @@ def test_root_array_value_counts_quote_and_nested_delimiters_at_the_exact_limit(
     encoded = b'{"note":"x","nested":[1]}'
     remaining = iter(bytes((byte,)) for byte in encoded[1:] + b",")
 
-    value, delimiter = shred_mod._read_root_array_value(
+    value, delimiter = _records._read_root_array_value(
         encoded[:1], lambda: next(remaining, b""), lambda: len(encoded), max_bytes=len(encoded)
     )
 
@@ -100,7 +103,7 @@ def test_root_array_value_rejects_each_structural_append_beyond_limit(
     source = iter(bytes((byte,)) for byte in remainder)
 
     with pytest.raises(ApiInputSchemaError, match="JSON array element exceeds"):
-        shred_mod._read_root_array_value(
+        _records._read_root_array_value(
             first,
             lambda: next(source, b""),
             lambda: 1,
@@ -113,9 +116,9 @@ def test_bounded_writer_rejects_unknown_labels_flushes_before_arrow_and_requires
 ) -> None:
     """Direct Arrow writes cannot overtake buffered JSON rows or forge tables."""
     config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
-    spec = shred_mod._emitting_table_specs(config)
+    spec = _shred._emitting_table_specs(config)
     monkeypatch.setenv("HAUTE_JSON_DIRECT_SPILL_MAX_ROWS", "2")
-    writer = shred_mod._BoundedParquetRowGroupWriter(tmp_path, spec)
+    writer = _writer._BoundedParquetRowGroupWriter(tmp_path, spec)
     try:
         with pytest.raises(RuntimeError, match="unknown table 'other'"):
             writer.emit("other", {"id": 1})
@@ -142,7 +145,7 @@ def test_streaming_cache_writer_preserves_primary_failure_and_cleanup_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
-    specs = shred_mod._emitting_table_specs(config)
+    specs = _shred._emitting_table_specs(config)
 
     class FailingCloseWriter:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -154,15 +157,15 @@ def test_streaming_cache_writer_preserves_primary_failure_and_cleanup_evidence(
         def close(self) -> None:
             raise OSError("writer close failed")
 
-    monkeypatch.setattr(shred_mod, "_BoundedParquetRowGroupWriter", FailingCloseWriter)
+    monkeypatch.setattr(_writer, "_BoundedParquetRowGroupWriter", FailingCloseWriter)
     monkeypatch.setattr(
-        shred_mod,
+        _records,
         "_iter_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("source failed")),
     )
 
     with pytest.raises(RuntimeError, match="source failed") as exc_info:
-        shred_mod._write_tables_streaming(tmp_path / "source.json", config, specs, tmp_path)
+        _writer._write_tables_streaming(tmp_path / "source.json", config, specs, tmp_path)
 
     assert exc_info.value.__notes__ == ["bounded cache writer cleanup failed: writer close failed"]
 
@@ -174,14 +177,14 @@ def test_cold_direct_spill_does_not_hash_source_before_parsing(
     data.write_text('{"id": 1}\n{"id": 2}\n', encoding="utf-8")
     config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     monkeypatch.setattr(
-        shred_mod,
+        _source_proof,
         "_data_file_signature",
         lambda _path: (_ for _ in ()).throw(
             AssertionError("an absent cache must not trigger a full source hash")
         ),
     )
 
-    result = shred_mod.load_v2_api_source(str(data), config)
+    result = _cache.load_v2_api_source(str(data), config)
 
     assert result["root"].collect().to_dict(as_series=False) == {"id": [1, 2]}
 
@@ -205,7 +208,7 @@ def test_root_array_streaming_preserves_nested_values_and_escaped_delimiters(
         ]
     }
 
-    out = shred_mod.load_v2_api_source(str(data), config)
+    out = _cache.load_v2_api_source(str(data), config)
 
     assert out["root"].collect().to_dict(as_series=False) == {
         "id": [1, 2],
@@ -231,7 +234,7 @@ def test_root_array_streaming_rejects_malformed_documents(
     config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
 
     with pytest.raises(orjson.JSONDecodeError, match=message):
-        shred_mod.load_v2_api_source(str(data), config)
+        _cache.load_v2_api_source(str(data), config)
 
 
 @pytest.mark.parametrize(
@@ -256,7 +259,7 @@ def test_structured_json_records_fail_before_exceeding_hard_record_limit(
         ApiInputSchemaError,
         match="exceeds HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES=64",
     ):
-        list(shred_mod._iter_records(data))
+        list(_records._iter_records(data))
 
 
 @pytest.mark.parametrize("value", ["invalid", "0", "-1"])
@@ -273,7 +276,7 @@ def test_structured_record_limit_rejects_invalid_configuration(
         RuntimeError,
         match="HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES must be a positive integer",
     ):
-        list(shred_mod._iter_records(data))
+        list(_records._iter_records(data))
 
 
 @pytest.mark.parametrize(
@@ -290,7 +293,7 @@ def test_direct_spill_rejects_invalid_or_non_positive_limits(
     monkeypatch.setenv(name, value)
 
     with pytest.raises(RuntimeError, match=rf"{name} must be a positive integer"):
-        shred_mod.load_v2_api_source(str(data), config)
+        _cache.load_v2_api_source(str(data), config)
 
 
 def test_direct_spill_flushes_aggregate_bound_and_preserves_nested_order(
@@ -311,15 +314,15 @@ def test_direct_spill_flushes_aggregate_bound_and_preserves_nested_order(
     }
     monkeypatch.setenv("HAUTE_JSON_DIRECT_SPILL_MAX_ROWS", "2")
     flushes = 0
-    original_flush = shred_mod._DirectSpillBundle.flush
+    original_flush = _writer._DirectSpillBundle.flush
 
     def _count_flush(bundle: Any) -> None:
         nonlocal flushes
         flushes += 1
         original_flush(bundle)
 
-    monkeypatch.setattr(shred_mod._DirectSpillBundle, "flush", _count_flush)
-    out = shred_mod.load_v2_api_source(str(data), config)
+    monkeypatch.setattr(_writer._DirectSpillBundle, "flush", _count_flush)
+    out = _cache.load_v2_api_source(str(data), config)
 
     assert all(isinstance(frame, pl.LazyFrame) for frame in out.values())
     assert flushes > 2
@@ -349,7 +352,7 @@ def test_persistent_cache_uses_shared_aggregate_bounded_writer(
     }
     monkeypatch.setenv("HAUTE_JSON_DIRECT_SPILL_MAX_ROWS", "3")
     flushes: list[tuple[int, int]] = []
-    writer_type = shred_mod._BoundedParquetRowGroupWriter
+    writer_type = _writer._BoundedParquetRowGroupWriter
     original_flush = writer_type.flush
 
     def _observe_flush(writer: Any) -> None:
@@ -358,8 +361,8 @@ def test_persistent_cache_uses_shared_aggregate_bounded_writer(
 
     monkeypatch.setattr(writer_type, "flush", _observe_flush)
     cache_dir = tmp_path / "cache"
-    shred_mod.build_per_port_cache(data, config, cache_dir)
-    out = shred_mod.load_per_port_cache(cache_dir, config)
+    _cache.build_per_port_cache(data, config, cache_dir)
+    out = _cache.load_per_port_cache(cache_dir, config)
 
     assert len([rows for rows, _bytes in flushes if rows]) > 2
     assert all(rows <= 3 for rows, _bytes in flushes if rows)
@@ -384,14 +387,14 @@ def test_direct_spill_enforces_aggregate_buffer_limit_across_tables(
     monkeypatch.setenv("HAUTE_JSON_DIRECT_SPILL_MAX_ROWS", "100")
     monkeypatch.setenv("HAUTE_JSON_DIRECT_SPILL_MAX_BYTES", "22")
     observed_buffers: list[tuple[int, int]] = []
-    original_flush = shred_mod._DirectSpillBundle.flush
+    original_flush = _writer._DirectSpillBundle.flush
 
     def _observe_flush(bundle: Any) -> None:
         observed_buffers.append((bundle.buffered_rows, bundle.buffered_bytes))
         original_flush(bundle)
 
-    monkeypatch.setattr(shred_mod._DirectSpillBundle, "flush", _observe_flush)
-    out = shred_mod.load_v2_api_source(str(data), config)
+    monkeypatch.setattr(_writer._DirectSpillBundle, "flush", _observe_flush)
+    out = _cache.load_v2_api_source(str(data), config)
 
     assert any(rows == 2 for rows, _ in observed_buffers)
     assert all(buffered_bytes <= 22 or rows == 1 for rows, buffered_bytes in observed_buffers)
@@ -409,7 +412,7 @@ def test_direct_spill_keeps_projected_carrier_and_empty_table_schema(tmp_path: P
         ]
     }
 
-    out = shred_mod.load_v2_api_source(
+    out = _cache.load_v2_api_source(
         str(data), config, port_columns={"root": frozenset(), "items": None}
     )
 
@@ -425,16 +428,16 @@ def test_direct_spill_type_failure_cleans_partial_bundle(
     data.write_text('[{"id": "not-an-int"}]', encoding="utf-8")
     config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     created: list[Path] = []
-    original = shred_mod._new_direct_spill_dir
+    original = _runtime_storage._new_direct_spill_dir
 
     def _capture(cache_dir: Path) -> Path:
         path = original(cache_dir)
         created.append(path)
         return path
 
-    monkeypatch.setattr(shred_mod, "_new_direct_spill_dir", _capture)
+    monkeypatch.setattr(_runtime_storage, "_new_direct_spill_dir", _capture)
     with pytest.raises(ApiInputSchemaError):
-        shred_mod.load_v2_api_source(str(data), config)
+        _cache.load_v2_api_source(str(data), config)
     assert created and not created[0].exists()
 
 
@@ -446,14 +449,14 @@ def test_direct_spill_writer_failures_clean_partial_bundle(
     data.write_text('[{"id": 1}]', encoding="utf-8")
     config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     created: list[Path] = []
-    original_new_dir = shred_mod._new_direct_spill_dir
+    original_new_dir = _runtime_storage._new_direct_spill_dir
 
     def _capture(cache_dir: Path) -> Path:
         path = original_new_dir(cache_dir)
         created.append(path)
         return path
 
-    monkeypatch.setattr(shred_mod, "_new_direct_spill_dir", _capture)
+    monkeypatch.setattr(_runtime_storage, "_new_direct_spill_dir", _capture)
     if failure == "writer construction":
 
         def _fail_construction(*args: Any, **kwargs: Any) -> Any:
@@ -478,7 +481,7 @@ def test_direct_spill_writer_failures_clean_partial_bundle(
         monkeypatch.setattr(pq, "ParquetWriter", _FailingWriter)
 
     with pytest.raises(OSError, match="parquet"):
-        shred_mod.load_v2_api_source(str(data), config)
+        _cache.load_v2_api_source(str(data), config)
     assert created and not created[0].exists()
 
 
@@ -486,23 +489,23 @@ def test_direct_spill_creation_preserves_primary_error_when_owner_cleanup_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_runtime_disk_budget_transaction",
         lambda *_args, **_kwargs: nullcontext(),
     )
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_ensure_runtime_owner_metadata",
         lambda _path: (_ for _ in ()).throw(ValueError("invalid owner metadata")),
     )
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_remove_empty_runtime_owner_dir",
         lambda _path: (_ for _ in ()).throw(OSError("cleanup denied")),
     )
 
     with pytest.raises(ValueError, match="invalid owner metadata") as raised:
-        shred_mod._new_direct_spill_dir(tmp_path / "cache")
+        _runtime_storage._new_direct_spill_dir(tmp_path / "cache")
 
     assert any(
         "direct spill owner cleanup failed: cleanup denied" in note
@@ -521,25 +524,27 @@ def test_direct_spill_creation_notes_staging_cleanup_failure(
         yield
         raise ValueError("budget commit failed")
 
-    original_rmtree = shred_mod.shutil.rmtree
+    original_rmtree = shutil.rmtree
 
     def fail_spill_cleanup(path: Path, *args: Any, **kwargs: Any) -> None:
-        if path.parent.name == shred_mod._DIRECT_SPILL_PROCESS_TOKEN:
+        if path.parent.name == _runtime_storage._DIRECT_SPILL_PROCESS_TOKEN:
             raise OSError("spill cleanup denied")
         original_rmtree(path, *args, **kwargs)
 
-    monkeypatch.setattr(shred_mod, "_runtime_storage_root_for_cache", lambda _path: cache_root)
-    monkeypatch.setattr(shred_mod, "_runtime_disk_budget_transaction", fail_after_creation)
-    monkeypatch.setattr(shred_mod.shutil, "rmtree", fail_spill_cleanup)
+    monkeypatch.setattr(
+        _runtime_storage, "_runtime_storage_root_for_cache", lambda _path: cache_root
+    )
+    monkeypatch.setattr(_runtime_storage, "_runtime_disk_budget_transaction", fail_after_creation)
+    monkeypatch.setattr(shutil, "rmtree", fail_spill_cleanup)
 
     with pytest.raises(ValueError, match="budget commit failed") as raised:
-        shred_mod._new_direct_spill_dir(tmp_path / "cache")
+        _runtime_storage._new_direct_spill_dir(tmp_path / "cache")
 
     assert any(
         "direct spill staging cleanup failed: spill cleanup denied" in note
         for note in getattr(raised.value, "__notes__", [])
     )
-    monkeypatch.setattr(shred_mod.shutil, "rmtree", original_rmtree)
+    monkeypatch.setattr(shutil, "rmtree", original_rmtree)
     original_rmtree(cache_root)
 
 
@@ -554,21 +559,27 @@ def test_direct_spill_creation_tolerates_staging_cleanup_race(
         yield
         raise ValueError("budget commit failed")
 
-    original_rmtree = shred_mod.shutil.rmtree
+    original_rmtree = shutil.rmtree
 
     def remove_then_report_missing(path: Path, *args: Any, **kwargs: Any) -> None:
         original_rmtree(path, *args, **kwargs)
         raise FileNotFoundError(path)
 
-    monkeypatch.setattr(shred_mod, "_runtime_storage_root_for_cache", lambda _path: cache_root)
-    monkeypatch.setattr(shred_mod, "_runtime_disk_budget_transaction", fail_after_creation)
-    monkeypatch.setattr(shred_mod.shutil, "rmtree", remove_then_report_missing)
+    monkeypatch.setattr(
+        _runtime_storage, "_runtime_storage_root_for_cache", lambda _path: cache_root
+    )
+    monkeypatch.setattr(_runtime_storage, "_runtime_disk_budget_transaction", fail_after_creation)
+    monkeypatch.setattr(shutil, "rmtree", remove_then_report_missing)
 
     with pytest.raises(ValueError, match="budget commit failed") as raised:
-        shred_mod._new_direct_spill_dir(tmp_path / "cache")
+        _runtime_storage._new_direct_spill_dir(tmp_path / "cache")
 
     assert not getattr(raised.value, "__notes__", [])
-    owner_dir = cache_root / shred_mod._DIRECT_SPILL_DIRNAME / shred_mod._DIRECT_SPILL_PROCESS_TOKEN
+    owner_dir = (
+        cache_root
+        / _runtime_storage._DIRECT_SPILL_DIRNAME
+        / _runtime_storage._DIRECT_SPILL_PROCESS_TOKEN
+    )
     assert not owner_dir.exists()
     original_rmtree(cache_root)
 
@@ -582,36 +593,36 @@ def test_direct_spill_constructor_notes_writer_cleanup_failure(
             _table("$[:]", "second", [_col("value", "$[:].value")]),
         ]
     }
-    table_specs = shred_mod._emitting_table_specs(config)
+    table_specs = _shred._emitting_table_specs(config)
     calls = 0
 
     class _FirstWriter:
         def close(self) -> None:
             raise OSError("first writer would not close")
 
-    def _writer(*_args: Any, **_kwargs: Any) -> _FirstWriter:
+    def _writer_factory(*_args: Any, **_kwargs: Any) -> _FirstWriter:
         nonlocal calls
         calls += 1
         if calls == 2:
             raise ValueError("second writer construction failed")
         return _FirstWriter()
 
-    monkeypatch.setattr(pq, "ParquetWriter", _writer)
+    monkeypatch.setattr(pq, "ParquetWriter", _writer_factory)
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_runtime_disk_budget_transaction",
         lambda *_args, **_kwargs: nullcontext(),
     )
-    real_release = shred_mod._release_direct_spill_dir
+    real_release = _runtime_storage._release_direct_spill_dir
 
     def _failing_release(path: Path) -> None:
         real_release(path)
         raise OSError("spill directory cleanup failed")
 
-    monkeypatch.setattr(shred_mod, "_release_direct_spill_dir", _failing_release)
+    monkeypatch.setattr(_runtime_storage, "_release_direct_spill_dir", _failing_release)
 
     with pytest.raises(ValueError, match="second writer construction failed") as raised:
-        shred_mod._DirectSpillBundle(tmp_path / "cache", table_specs)
+        _writer._DirectSpillBundle(tmp_path / "cache", table_specs)
 
     notes = getattr(raised.value, "__notes__", [])
     assert any("first writer would not close" in note for note in notes)
@@ -624,10 +635,10 @@ def test_direct_shred_notes_writer_cleanup_failure_on_primary_error(
     data = tmp_path / "records.json"
     data.write_text('[{"id": 1}]', encoding="utf-8")
     config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
-    table_specs = shred_mod._emitting_table_specs(config)
+    table_specs = _shred._emitting_table_specs(config)
     spill_dir = tmp_path / "spill"
     spill_dir.mkdir()
-    shred_mod._DIRECT_SPILL_DIRS.add(spill_dir)
+    _runtime_storage._DIRECT_SPILL_DIRS.add(spill_dir)
 
     class _FailingBundle:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
@@ -639,22 +650,22 @@ def test_direct_shred_notes_writer_cleanup_failure_on_primary_error(
         def close(self) -> None:
             raise OSError("writer cleanup failed")
 
-    monkeypatch.setattr(shred_mod, "_DirectSpillBundle", _FailingBundle)
+    monkeypatch.setattr(_writer, "_DirectSpillBundle", _FailingBundle)
     monkeypatch.setattr(
-        shred_mod,
+        _shred,
         "shred_to_buffers",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("primary shred failure")),
     )
-    real_release = shred_mod._release_direct_spill_dir
+    real_release = _runtime_storage._release_direct_spill_dir
 
     def _failing_release(path: Path) -> None:
         real_release(path)
         raise OSError("spill directory cleanup failed")
 
-    monkeypatch.setattr(shred_mod, "_release_direct_spill_dir", _failing_release)
+    monkeypatch.setattr(_runtime_storage, "_release_direct_spill_dir", _failing_release)
 
     with pytest.raises(ValueError, match="primary shred failure") as raised:
-        shred_mod._shred_data_file_to_direct_spill(
+        _writer._shred_data_file_to_direct_spill(
             data,
             config,
             table_specs,
@@ -674,7 +685,7 @@ def test_direct_spill_cleanup_registration_failure_removes_bundle(
     data.write_text('[{"id": 1}]', encoding="utf-8")
     config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     created: list[Path] = []
-    original_new_dir = shred_mod._new_direct_spill_dir
+    original_new_dir = _runtime_storage._new_direct_spill_dir
 
     def _capture(cache_dir: Path) -> Path:
         path = original_new_dir(cache_dir)
@@ -692,11 +703,11 @@ def test_direct_spill_cleanup_registration_failure_removes_bundle(
         def record_cache_proof_miss(self, reason: Any) -> None:
             del reason
 
-    monkeypatch.setattr(shred_mod, "_new_direct_spill_dir", _capture)
-    monkeypatch.setattr(shred_mod, "current_execution_context", lambda: _FailingContext())
+    monkeypatch.setattr(_runtime_storage, "_new_direct_spill_dir", _capture)
+    monkeypatch.setattr(_writer, "current_execution_context", lambda: _FailingContext())
 
     with pytest.raises(RuntimeError, match="cannot register cleanup"):
-        shred_mod.load_v2_api_source(str(data), config)
+        _cache.load_v2_api_source(str(data), config)
     assert created and not created[0].exists()
 
 
@@ -724,28 +735,28 @@ def test_direct_spill_managed_cleanup_and_unmanaged_fork_isolation(
             pass
 
     context = _Context()
-    monkeypatch.setattr(shred_mod, "current_execution_context", lambda: context)
-    shred_mod.load_v2_api_source(str(data), config)
+    monkeypatch.setattr(_writer, "current_execution_context", lambda: context)
+    _cache.load_v2_api_source(str(data), config)
     assert len(context.cleanups) == 1
-    managed_path = next(iter(shred_mod._DIRECT_SPILL_DIRS))
+    managed_path = next(iter(_runtime_storage._DIRECT_SPILL_DIRS))
     context.cleanups[0]()
     assert not managed_path.exists()
 
-    monkeypatch.setattr(shred_mod, "current_execution_context", lambda: None)
-    shred_mod.load_v2_api_source(str(data), config)
-    unmanaged_path = next(iter(shred_mod._DIRECT_SPILL_DIRS))
-    monkeypatch.setattr(shred_mod.os, "getpid", lambda: shred_mod._DIRECT_SPILL_PROCESS_ID + 1)
-    shred_mod._cleanup_direct_spill_dirs()
+    monkeypatch.setattr(_writer, "current_execution_context", lambda: None)
+    _cache.load_v2_api_source(str(data), config)
+    unmanaged_path = next(iter(_runtime_storage._DIRECT_SPILL_DIRS))
+    monkeypatch.setattr(os, "getpid", lambda: _runtime_storage._DIRECT_SPILL_PROCESS_ID + 1)
+    _runtime_storage._cleanup_direct_spill_dirs()
     assert unmanaged_path.exists()
     monkeypatch.undo()
-    shred_mod._cleanup_direct_spill_dirs()
+    _runtime_storage._cleanup_direct_spill_dirs()
     assert not unmanaged_path.exists()
 
 
 def test_direct_spill_close_preserves_first_writer_error_and_notes_rest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bundle = object.__new__(shred_mod._DirectSpillBundle)
+    bundle = object.__new__(_writer._DirectSpillBundle)
     bundle.cache_root = tmp_path
 
     class FailingWriter:
@@ -760,7 +771,9 @@ def test_direct_spill_close_preserves_first_writer_error_and_notes_rest(
         "second": FailingWriter("second failure"),
     }
     monkeypatch.setattr(
-        shred_mod, "_runtime_disk_budget_transaction", lambda *_args, **_kwargs: nullcontext()
+        _runtime_storage,
+        "_runtime_disk_budget_transaction",
+        lambda *_args, **_kwargs: nullcontext(),
     )
 
     with pytest.raises(OSError, match="first failure") as raised:
@@ -773,14 +786,14 @@ def test_direct_spill_close_preserves_first_writer_error_and_notes_rest(
 def test_direct_spill_fork_reset_and_cleanup_failures_are_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original_process_id = shred_mod._DIRECT_SPILL_PROCESS_ID
-    original_process_token = shred_mod._DIRECT_SPILL_PROCESS_TOKEN
-    original_lock = shred_mod._DIRECT_SPILL_LOCK
+    original_process_id = _runtime_storage._DIRECT_SPILL_PROCESS_ID
+    original_process_token = _runtime_storage._DIRECT_SPILL_PROCESS_TOKEN
+    original_lock = _runtime_storage._DIRECT_SPILL_LOCK
     parent = tmp_path / "spills"
     spill = parent / "bundle"
     spill.mkdir(parents=True)
-    shred_mod._DIRECT_SPILL_DIRS.add(spill)
-    original_rmtree = shred_mod.shutil.rmtree
+    _runtime_storage._DIRECT_SPILL_DIRS.add(spill)
+    original_rmtree = shutil.rmtree
     warnings: list[tuple[str, dict[str, Any]]] = []
 
     def fail_parent(path: Path, *args: Any, **kwargs: Any) -> None:
@@ -788,13 +801,13 @@ def test_direct_spill_fork_reset_and_cleanup_failures_are_reported(
             raise OSError("busy")
         original_rmtree(path, *args, **kwargs)
 
-    monkeypatch.setattr(shred_mod.shutil, "rmtree", fail_parent)
+    monkeypatch.setattr(shutil, "rmtree", fail_parent)
     monkeypatch.setattr(
-        shred_mod.logger,
+        _runtime_storage.logger,
         "warning",
         lambda event, **fields: warnings.append((event, fields)),
     )
-    shred_mod._cleanup_direct_spill_dirs()
+    _runtime_storage._cleanup_direct_spill_dirs()
     assert not spill.exists()
     assert warnings == [
         (
@@ -803,16 +816,18 @@ def test_direct_spill_fork_reset_and_cleanup_failures_are_reported(
         )
     ]
 
-    shred_mod._DIRECT_SPILL_DIRS.add(tmp_path / "inherited")
-    monkeypatch.setattr(shred_mod.os, "getpid", lambda: shred_mod._DIRECT_SPILL_PROCESS_ID + 1)
-    monkeypatch.setattr(shred_mod, "_runtime_disk_budget_transaction", lambda *_args: nullcontext())
-    fresh = shred_mod._new_direct_spill_dir(tmp_path / "cache")
-    assert fresh in shred_mod._DIRECT_SPILL_DIRS
-    assert tmp_path / "inherited" not in shred_mod._DIRECT_SPILL_DIRS
-    shred_mod._release_direct_spill_dir(fresh)
-    shred_mod._DIRECT_SPILL_PROCESS_ID = original_process_id
-    shred_mod._DIRECT_SPILL_PROCESS_TOKEN = original_process_token
-    shred_mod._DIRECT_SPILL_LOCK = original_lock
+    _runtime_storage._DIRECT_SPILL_DIRS.add(tmp_path / "inherited")
+    monkeypatch.setattr(os, "getpid", lambda: _runtime_storage._DIRECT_SPILL_PROCESS_ID + 1)
+    monkeypatch.setattr(
+        _runtime_storage, "_runtime_disk_budget_transaction", lambda *_args: nullcontext()
+    )
+    fresh = _runtime_storage._new_direct_spill_dir(tmp_path / "cache")
+    assert fresh in _runtime_storage._DIRECT_SPILL_DIRS
+    assert tmp_path / "inherited" not in _runtime_storage._DIRECT_SPILL_DIRS
+    _runtime_storage._release_direct_spill_dir(fresh)
+    _runtime_storage._DIRECT_SPILL_PROCESS_ID = original_process_id
+    _runtime_storage._DIRECT_SPILL_PROCESS_TOKEN = original_process_token
+    _runtime_storage._DIRECT_SPILL_LOCK = original_lock
 
 
 def test_direct_spill_orderly_cleanup_reports_bundle_failure(
@@ -822,8 +837,8 @@ def test_direct_spill_orderly_cleanup_reports_bundle_failure(
     owner = tmp_path / "owner"
     spill = owner / "spill"
     spill.mkdir(parents=True)
-    shred_mod._DIRECT_SPILL_DIRS.add(spill)
-    original_rmtree = shred_mod.shutil.rmtree
+    _runtime_storage._DIRECT_SPILL_DIRS.add(spill)
+    original_rmtree = shutil.rmtree
     warnings: list[tuple[str, dict[str, Any]]] = []
 
     def fail_spill(path: Path, *args: Any, **kwargs: Any) -> None:
@@ -831,14 +846,14 @@ def test_direct_spill_orderly_cleanup_reports_bundle_failure(
             raise OSError("bundle busy")
         original_rmtree(path, *args, **kwargs)
 
-    monkeypatch.setattr(shred_mod.shutil, "rmtree", fail_spill)
+    monkeypatch.setattr(shutil, "rmtree", fail_spill)
     monkeypatch.setattr(
-        shred_mod.logger,
+        _runtime_storage.logger,
         "warning",
         lambda event, **fields: warnings.append((event, fields)),
     )
 
-    shred_mod._cleanup_direct_spill_dirs()
+    _runtime_storage._cleanup_direct_spill_dirs()
 
     assert warnings == [
         (
@@ -851,11 +866,11 @@ def test_direct_spill_orderly_cleanup_reports_bundle_failure(
 
 def test_direct_spill_orderly_cleanup_tolerates_already_vanished_paths(tmp_path: Path) -> None:
     missing = tmp_path / "owner" / "missing"
-    shred_mod._DIRECT_SPILL_DIRS.add(missing)
+    _runtime_storage._DIRECT_SPILL_DIRS.add(missing)
 
-    shred_mod._cleanup_direct_spill_dirs()
+    _runtime_storage._cleanup_direct_spill_dirs()
 
-    assert missing not in shred_mod._DIRECT_SPILL_DIRS
+    assert missing not in _runtime_storage._DIRECT_SPILL_DIRS
 
 
 def test_direct_spill_release_tolerates_vanished_owner_directory(
@@ -863,16 +878,16 @@ def test_direct_spill_release_tolerates_vanished_owner_directory(
 ) -> None:
     spill_dir = tmp_path / "owner" / "spill"
     spill_dir.mkdir(parents=True)
-    shred_mod._DIRECT_SPILL_DIRS.add(spill_dir)
+    _runtime_storage._DIRECT_SPILL_DIRS.add(spill_dir)
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_remove_empty_runtime_owner_dir",
         lambda _path: (_ for _ in ()).throw(FileNotFoundError("owner vanished")),
     )
 
-    shred_mod._release_direct_spill_dir(spill_dir)
+    _runtime_storage._release_direct_spill_dir(spill_dir)
 
-    assert spill_dir not in shred_mod._DIRECT_SPILL_DIRS
+    assert spill_dir not in _runtime_storage._DIRECT_SPILL_DIRS
     assert not spill_dir.exists()
 
 
@@ -880,29 +895,29 @@ def test_xml_bounded_parser_rejects_oversize_invalid_and_empty_documents(tmp_pat
     oversized = tmp_path / "large.xml"
     oversized.write_text("<root>0123456789</root>", encoding="utf-8")
     with pytest.raises(ApiInputSchemaError, match="exceeds"):
-        shred_mod._parse_bounded_xml_root(oversized, 5)
+        _records._parse_bounded_xml_root(oversized, 5)
 
     invalid = tmp_path / "invalid.xml"
     invalid.write_text("<root>", encoding="utf-8")
     with pytest.raises(ApiInputSchemaError, match="Invalid XML"):
-        shred_mod._parse_bounded_xml_root(invalid, 100)
+        _records._parse_bounded_xml_root(invalid, 100)
 
     empty = tmp_path / "empty.xml"
     empty.write_bytes(b"")
     with pytest.raises(ApiInputSchemaError, match="Invalid XML"):
-        shred_mod._parse_bounded_xml_root(empty, 100)
+        _records._parse_bounded_xml_root(empty, 100)
 
 
 def test_repeated_xml_emission_rejects_shape_drift_and_malformed_tail(tmp_path: Path) -> None:
     scalar_record = tmp_path / "scalar-record.xml"
     scalar_record.write_text("<root><row>scalar</row></root>", encoding="utf-8")
     with pytest.raises(RuntimeError, match="shape changed"):
-        list(shred_mod._iter_repeated_xml_records(scalar_record, 1_000))
+        list(_records._iter_repeated_xml_records(scalar_record, 1_000))
 
     malformed = tmp_path / "malformed-repeated.xml"
     malformed.write_text("<root><row><id>1</id></row>", encoding="utf-8")
     with pytest.raises(ApiInputSchemaError, match="Invalid XML"):
-        list(shred_mod._iter_repeated_xml_records(malformed, 1_000))
+        list(_records._iter_repeated_xml_records(malformed, 1_000))
 
 
 def test_xml_root_invariant_and_missing_document_fail_closed(
@@ -911,21 +926,21 @@ def test_xml_root_invariant_and_missing_document_fail_closed(
 ) -> None:
     source = tmp_path / "records.xml"
     source.write_text("<root><row><id>1</id></row></root>", encoding="utf-8")
-    root = shred_mod.ET.fromstring("<root />")
-    assert shred_mod._require_xml_root(root) is root
+    root = ET.fromstring("<root />")
+    assert _records._require_xml_root(root) is root
     with pytest.raises(RuntimeError, match="direct child before the document root"):
-        shred_mod._require_xml_root(None)
+        _records._require_xml_root(None)
 
-    monkeypatch.setattr(shred_mod, "_read_xml_events", lambda _parser: iter(()))
+    monkeypatch.setattr(_records, "_read_xml_events", lambda _parser: iter(()))
     with pytest.raises(ApiInputSchemaError, match="no document element"):
-        shred_mod._parse_bounded_xml_root(source, 1_000)
+        _records._parse_bounded_xml_root(source, 1_000)
 
 
 def test_root_array_value_scanner_covers_string_nested_and_scalar_terminators() -> None:
     def scanner(payload: bytes, position: int) -> tuple[bytes, bytes]:
         source = iter(payload)
         first = bytes((next(source),))
-        return shred_mod._read_root_array_value(
+        return _records._read_root_array_value(
             first,
             lambda: bytes((next(source, 0),)),
             current_pos=lambda: position,
@@ -943,7 +958,7 @@ def test_root_array_value_scanner_covers_string_nested_and_scalar_terminators() 
         with pytest.raises(ApiInputSchemaError, match="JSON array element exceeds"):
             first = payload[:1]
             rest = iter(payload[1:])
-            shred_mod._read_root_array_value(
+            _records._read_root_array_value(
                 first,
                 lambda: bytes((next(rest, 0),)),
                 current_pos=lambda: 4,
@@ -957,17 +972,17 @@ def test_runtime_snapshot_release_ignores_nonempty_owner_cleanup_errors(
     snapshot = tmp_path / "owner" / "snapshot.parquet"
     snapshot.parent.mkdir()
     snapshot.write_bytes(b"snapshot")
-    shred_mod._RUNTIME_SNAPSHOT_REFERENCES[snapshot] = 1
+    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[snapshot] = 1
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_remove_empty_runtime_owner_dir",
         lambda _path: (_ for _ in ()).throw(OSError("still occupied")),
     )
 
-    shred_mod._release_runtime_snapshot(snapshot)
+    _runtime_storage._release_runtime_snapshot(snapshot)
 
     assert not snapshot.exists()
-    assert snapshot not in shred_mod._RUNTIME_SNAPSHOT_REFERENCES
+    assert snapshot not in _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES
 
 
 def test_unpinned_runtime_snapshot_ignores_owner_cleanup_error(
@@ -977,16 +992,16 @@ def test_unpinned_runtime_snapshot_ignores_owner_cleanup_error(
     snapshot.parent.mkdir()
     snapshot.write_bytes(b"snapshot")
     monkeypatch.setattr(
-        shred_mod,
+        _runtime_storage,
         "_remove_empty_runtime_owner_dir",
         lambda _path: (_ for _ in ()).throw(OSError("occupied")),
     )
 
-    shred_mod._remove_unpinned_runtime_snapshot(snapshot)
+    _runtime_storage._remove_unpinned_runtime_snapshot(snapshot)
 
     assert not snapshot.exists()
 
 
 def test_xml_record_size_validation_fails_closed() -> None:
     with pytest.raises(ApiInputSchemaError, match="XML record exceeds"):
-        shred_mod._validate_xml_record_value_size({"value": "x" * 100}, 10)
+        _records._validate_xml_record_value_size({"value": "x" * 100}, 10)

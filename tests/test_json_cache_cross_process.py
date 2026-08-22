@@ -4,14 +4,16 @@ import multiprocessing as mp
 import os
 import queue
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-import haute._json_shred as shred_mod
-from haute._json_shred import JsonCacheRecoveryError, _build_lock_for, _cache_lock_path
+from haute._json_shred import _publication
+from haute._json_shred._publication import JsonCacheRecoveryError, _build_lock_for, _cache_lock_path
 
 
 def _hold_cache_lock(
@@ -103,7 +105,7 @@ def test_recovery_removes_superseded_siblings_beside_published_generation(
     old_generation.mkdir()
     staged_generation.mkdir()
 
-    shred_mod._recover_cache_publication(cache_dir)
+    _publication._recover_cache_publication(cache_dir)
 
     assert (cache_dir / "current.txt").read_text(encoding="utf-8") == "current"
     assert not old_generation.exists()
@@ -111,7 +113,7 @@ def test_recovery_removes_superseded_siblings_beside_published_generation(
 
 
 def test_publication_sibling_scan_accepts_missing_parent(tmp_path: Path) -> None:
-    assert shred_mod._publication_siblings(tmp_path / "missing" / "cache", "old") == []
+    assert _publication._publication_siblings(tmp_path / "missing" / "cache", "old") == []
 
 
 def test_cache_recovery_fails_closed_on_ambiguous_or_non_plain_siblings(
@@ -176,13 +178,13 @@ def test_open_cache_lock_file_fails_closed_on_open_error_and_inode_race(
     def reject_open(*_args: Any, **_kwargs: Any) -> int:
         raise OSError("no")
 
-    monkeypatch.setattr(shred_mod.os, "open", reject_open)
+    monkeypatch.setattr(os, "open", reject_open)
     with pytest.raises(JsonCacheRecoveryError, match="could not be opened safely"):
-        shred_mod._open_cache_lock_file(lock_path)
+        _publication._open_cache_lock_file(lock_path)
 
     monkeypatch.undo()
     lock_path.write_bytes(b"x")
-    original_fstat = shred_mod.os.fstat
+    original_fstat = os.fstat
 
     def different_inode(fd: int) -> Any:
         result = original_fstat(fd)
@@ -193,9 +195,9 @@ def test_open_cache_lock_file_fails_closed_on_open_error_and_inode_race(
             st_ino=result.st_ino + 1,
         )
 
-    monkeypatch.setattr(shred_mod.os, "fstat", different_inode)
+    monkeypatch.setattr(os, "fstat", different_inode)
     with pytest.raises(JsonCacheRecoveryError, match="identity"):
-        shred_mod._open_cache_lock_file(lock_path)
+        _publication._open_cache_lock_file(lock_path)
 
 
 def test_open_cache_lock_file_closes_descriptor_when_path_disappears_mid_open(
@@ -216,20 +218,20 @@ def test_open_cache_lock_file_closes_descriptor_when_path_disappears_mid_open(
 
     monkeypatch.setattr(Path, "lstat", disappears)
     with pytest.raises(JsonCacheRecoveryError, match="changed while"):
-        shred_mod._open_cache_lock_file(lock_path)
+        _publication._open_cache_lock_file(lock_path)
 
 
 def test_cache_path_ancestor_scan_handles_path_without_cache_root(tmp_path: Path) -> None:
     # A path named .haute_cache has no descendant cache-root boundary, so the
     # upward scan must stop safely at the filesystem root.
-    shred_mod._assert_cache_path_ancestors_plain(tmp_path / ".haute_cache")
+    _publication._assert_cache_path_ancestors_plain(tmp_path / ".haute_cache")
 
 
 def test_cache_build_lock_nonblocking_timeout_and_release_error_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cache_dir = tmp_path / "cache"
-    lock = shred_mod._CacheBuildLock(cache_dir)
+    lock = _publication._CacheBuildLock(cache_dir)
     handles: list[Any] = []
 
     class Handle:
@@ -250,18 +252,18 @@ def test_cache_build_lock_nonblocking_timeout_and_release_error_contract(
         handles.append(handle)
         return handle
 
-    monkeypatch.setattr(shred_mod, "_open_cache_lock_file", open_handle)
-    monkeypatch.setattr(shred_mod, "_assert_cache_path_ancestors_plain", lambda _path: None)
-    monkeypatch.setattr(shred_mod, "_recover_cache_publication", lambda _path: None)
-    monkeypatch.setattr(shred_mod, "_acquire_file_lock", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(shred_mod, "_release_file_lock", lambda _handle: None)
+    monkeypatch.setattr(_publication, "_open_cache_lock_file", open_handle)
+    monkeypatch.setattr(_publication, "_assert_cache_path_ancestors_plain", lambda _path: None)
+    monkeypatch.setattr(_publication, "_recover_cache_publication", lambda _path: None)
+    monkeypatch.setattr(_publication, "_acquire_file_lock", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(_publication, "_release_file_lock", lambda _handle: None)
     assert lock.acquire(blocking=False) is False
     assert handles[-1].closed
     assert lock._depth == 0 and lock._owner_thread_id is None
     with pytest.raises(ValueError, match="timeout"):
         lock.acquire(blocking=False, timeout=0)
 
-    monkeypatch.setattr(shred_mod, "_acquire_file_lock", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(_publication, "_acquire_file_lock", lambda *_args, **_kwargs: True)
     with lock:
         assert lock.acquire() is True
         lock.release()
@@ -272,7 +274,7 @@ def test_cache_build_lock_nonblocking_timeout_and_release_error_contract(
 
     assert lock.acquire()
     monkeypatch.setattr(
-        shred_mod, "_release_file_lock", lambda _handle: (_ for _ in ()).throw(OSError("unlock"))
+        _publication, "_release_file_lock", lambda _handle: (_ for _ in ()).throw(OSError("unlock"))
     )
     with pytest.raises(OSError, match="unlock"):
         lock.release()
@@ -309,11 +311,11 @@ def test_file_lock_polling_handles_nonblocking_and_finite_timeout(
         module.flock = contention
         monkeypatch.setitem(sys.modules, "fcntl", module)
 
-    assert shred_mod._acquire_file_lock(Handle(), blocking=False) is False
+    assert _publication._acquire_file_lock(Handle(), blocking=False) is False
     ticks = iter((0.0, 0.0, 0.02))
-    monkeypatch.setattr(shred_mod.time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(shred_mod.time, "sleep", lambda _seconds: None)
-    assert shred_mod._acquire_file_lock(Handle(), timeout_seconds=0.01) is False
+    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    assert _publication._acquire_file_lock(Handle(), timeout_seconds=0.01) is False
     assert len(calls) >= 2
 
 
@@ -329,7 +331,7 @@ def test_file_lock_posix_release_and_unexpected_error_propagate(
             raise OSError(5, "disk failure")
 
     module.flock = flock
-    monkeypatch.setattr(shred_mod.os, "name", "posix")
+    monkeypatch.setattr(os, "name", "posix")
     monkeypatch.setitem(sys.modules, "fcntl", module)
 
     class Handle:
@@ -337,8 +339,8 @@ def test_file_lock_posix_release_and_unexpected_error_propagate(
             return 11
 
     with pytest.raises(OSError, match="disk failure"):
-        shred_mod._acquire_file_lock(Handle(), blocking=False)
-    shred_mod._release_file_lock(Handle())
+        _publication._acquire_file_lock(Handle(), blocking=False)
+    _publication._release_file_lock(Handle())
     assert calls[-1] == (11, module.LOCK_UN)
 
 
@@ -346,15 +348,15 @@ def test_file_lock_posix_success_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     operations: list[tuple[int, int]] = []
     module = SimpleNamespace(LOCK_EX=1, LOCK_NB=2, LOCK_UN=4)
     module.flock = lambda fd, operation: operations.append((fd, operation))
-    monkeypatch.setattr(shred_mod.os, "name", "posix")
+    monkeypatch.setattr(os, "name", "posix")
     monkeypatch.setitem(sys.modules, "fcntl", module)
 
     class Handle:
         def fileno(self) -> int:
             return 12
 
-    assert shred_mod._acquire_file_lock(Handle()) is True
-    assert shred_mod._acquire_file_lock(Handle(), blocking=False) is True
+    assert _publication._acquire_file_lock(Handle()) is True
+    assert _publication._acquire_file_lock(Handle(), blocking=False) is True
     assert operations == [(12, module.LOCK_EX), (12, module.LOCK_EX | module.LOCK_NB)]
 
 
@@ -363,17 +365,17 @@ def test_file_lock_posix_contention_times_out_without_waiting_long(
 ) -> None:
     module = SimpleNamespace(LOCK_EX=1, LOCK_NB=2, LOCK_UN=4)
     module.flock = lambda *_args: (_ for _ in ()).throw(OSError(11, "busy"))
-    monkeypatch.setattr(shred_mod.os, "name", "posix")
+    monkeypatch.setattr(os, "name", "posix")
     monkeypatch.setitem(sys.modules, "fcntl", module)
     ticks = iter((0.0, 0.0, 0.02))
-    monkeypatch.setattr(shred_mod.time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(shred_mod.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
     class Handle:
         def fileno(self) -> int:
             return 13
 
-    assert shred_mod._acquire_file_lock(Handle(), timeout_seconds=0.01) is False
+    assert _publication._acquire_file_lock(Handle(), timeout_seconds=0.01) is False
 
 
 def test_file_lock_windows_unexpected_error_is_not_treated_as_contention(
@@ -381,7 +383,7 @@ def test_file_lock_windows_unexpected_error_is_not_treated_as_contention(
 ) -> None:
     module = SimpleNamespace(LK_NBLCK=1, LK_UNLCK=2)
     module.locking = lambda *_args: (_ for _ in ()).throw(OSError(5, "disk failure"))
-    monkeypatch.setattr(shred_mod.os, "name", "nt")
+    monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setitem(sys.modules, "msvcrt", module)
 
     class Handle:
@@ -392,14 +394,14 @@ def test_file_lock_windows_unexpected_error_is_not_treated_as_contention(
             return None
 
     with pytest.raises(OSError, match="disk failure"):
-        shred_mod._acquire_file_lock(Handle(), blocking=False)
+        _publication._acquire_file_lock(Handle(), blocking=False)
 
 
 def test_file_lock_windows_success_and_release(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[int, int, int]] = []
     module = SimpleNamespace(LK_NBLCK=1, LK_UNLCK=2)
     module.locking = lambda *args: calls.append(args)
-    monkeypatch.setattr(shred_mod.os, "name", "nt")
+    monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setitem(sys.modules, "msvcrt", module)
 
     class Handle:
@@ -410,8 +412,8 @@ def test_file_lock_windows_success_and_release(monkeypatch: pytest.MonkeyPatch) 
             return None
 
     handle = Handle()
-    assert shred_mod._acquire_file_lock(handle, blocking=False) is True
-    shred_mod._release_file_lock(handle)
+    assert _publication._acquire_file_lock(handle, blocking=False) is True
+    _publication._release_file_lock(handle)
     assert calls == [(15, module.LK_NBLCK, 1), (15, module.LK_UNLCK, 1)]
 
 
@@ -428,9 +430,9 @@ def test_file_lock_windows_recognises_contention_for_nonblocking_and_retrying_ca
             raise OSError(13, "busy", None, 33)
 
     module.locking = locking
-    monkeypatch.setattr(shred_mod.os, "name", "nt")
+    monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setitem(sys.modules, "msvcrt", module)
-    monkeypatch.setattr(shred_mod.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
     class Handle:
         def fileno(self) -> int:
@@ -440,29 +442,29 @@ def test_file_lock_windows_recognises_contention_for_nonblocking_and_retrying_ca
             return None
 
     handle = Handle()
-    assert shred_mod._acquire_file_lock(handle, blocking=False) is False
+    assert _publication._acquire_file_lock(handle, blocking=False) is False
     ticks = iter((0.0, 0.0))
-    monkeypatch.setattr(shred_mod.time, "monotonic", lambda: next(ticks))
-    assert shred_mod._acquire_file_lock(handle, timeout_seconds=0.01) is True
+    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
+    assert _publication._acquire_file_lock(handle, timeout_seconds=0.01) is True
     assert len(attempts) == 3
 
 
 def test_build_lock_registry_discards_inherited_locks_after_fork(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old_lock = shred_mod._build_lock_for(tmp_path / "cache")
-    monkeypatch.setattr(shred_mod, "_BUILD_LOCKS_PROCESS_ID", os.getpid() + 1)
+    old_lock = _publication._build_lock_for(tmp_path / "cache")
+    monkeypatch.setattr(_publication, "_BUILD_LOCKS_PROCESS_ID", os.getpid() + 1)
 
-    child_lock = shred_mod._build_lock_for(tmp_path / "cache")
+    child_lock = _publication._build_lock_for(tmp_path / "cache")
 
     assert child_lock is not old_lock
-    assert shred_mod._BUILD_LOCKS_PROCESS_ID == os.getpid()
+    assert _publication._BUILD_LOCKS_PROCESS_ID == os.getpid()
 
 
 def test_cache_build_lock_uses_thread_timeout_and_preserves_primary_exception_note(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    lock = shred_mod._CacheBuildLock(tmp_path / "cache")
+    lock = _publication._CacheBuildLock(tmp_path / "cache")
 
     class RefusingLock:
         def acquire(self, **kwargs: Any) -> bool:
@@ -472,14 +474,14 @@ def test_cache_build_lock_uses_thread_timeout_and_preserves_primary_exception_no
     lock._thread_lock = RefusingLock()  # type: ignore[assignment]
     assert lock.acquire(timeout=0.0) is False
 
-    lock = shred_mod._CacheBuildLock(tmp_path / "other")
+    lock = _publication._CacheBuildLock(tmp_path / "other")
     handle = SimpleNamespace(seek=lambda *_args: None, tell=lambda: 1, close=lambda: None)
-    monkeypatch.setattr(shred_mod, "_assert_cache_path_ancestors_plain", lambda _path: None)
-    monkeypatch.setattr(shred_mod, "_open_cache_lock_file", lambda _path: handle)
-    monkeypatch.setattr(shred_mod, "_acquire_file_lock", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(shred_mod, "_recover_cache_publication", lambda _path: None)
+    monkeypatch.setattr(_publication, "_assert_cache_path_ancestors_plain", lambda _path: None)
+    monkeypatch.setattr(_publication, "_open_cache_lock_file", lambda _path: handle)
+    monkeypatch.setattr(_publication, "_acquire_file_lock", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(_publication, "_recover_cache_publication", lambda _path: None)
     monkeypatch.setattr(
-        shred_mod, "_release_file_lock", lambda _handle: (_ for _ in ()).throw(OSError("unlock"))
+        _publication, "_release_file_lock", lambda _handle: (_ for _ in ()).throw(OSError("unlock"))
     )
     with pytest.raises(ValueError, match="primary") as raised:
         with lock:
@@ -490,7 +492,7 @@ def test_cache_build_lock_uses_thread_timeout_and_preserves_primary_exception_no
 def test_cache_build_lock_preserves_recovery_error_when_unlock_also_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    lock = shred_mod._CacheBuildLock(tmp_path / "cache")
+    lock = _publication._CacheBuildLock(tmp_path / "cache")
 
     class Handle:
         closed = False
@@ -505,16 +507,16 @@ def test_cache_build_lock_preserves_recovery_error_when_unlock_also_fails(
             self.closed = True
 
     handle = Handle()
-    monkeypatch.setattr(shred_mod, "_assert_cache_path_ancestors_plain", lambda _path: None)
-    monkeypatch.setattr(shred_mod, "_open_cache_lock_file", lambda _path: handle)
-    monkeypatch.setattr(shred_mod, "_acquire_file_lock", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(_publication, "_assert_cache_path_ancestors_plain", lambda _path: None)
+    monkeypatch.setattr(_publication, "_open_cache_lock_file", lambda _path: handle)
+    monkeypatch.setattr(_publication, "_acquire_file_lock", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
-        shred_mod,
+        _publication,
         "_recover_cache_publication",
         lambda _path: (_ for _ in ()).throw(ValueError("recovery failed")),
     )
     monkeypatch.setattr(
-        shred_mod,
+        _publication,
         "_release_file_lock",
         lambda _handle: (_ for _ in ()).throw(OSError("unlock failed")),
     )
@@ -530,26 +532,26 @@ def test_cache_build_lock_preserves_recovery_error_when_unlock_also_fails(
 def test_cache_build_lock_passes_remaining_finite_timeout_and_detects_lost_handle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    lock = shred_mod._CacheBuildLock(tmp_path / "cache")
+    lock = _publication._CacheBuildLock(tmp_path / "cache")
     handle = SimpleNamespace(seek=lambda *_args: None, tell=lambda: 1, close=lambda: None)
     observed: list[float | None] = []
-    monkeypatch.setattr(shred_mod, "_assert_cache_path_ancestors_plain", lambda _path: None)
-    monkeypatch.setattr(shred_mod, "_open_cache_lock_file", lambda _path: handle)
-    monkeypatch.setattr(shred_mod, "_recover_cache_publication", lambda _path: None)
-    monkeypatch.setattr(shred_mod, "_release_file_lock", lambda _handle: None)
+    monkeypatch.setattr(_publication, "_assert_cache_path_ancestors_plain", lambda _path: None)
+    monkeypatch.setattr(_publication, "_open_cache_lock_file", lambda _path: handle)
+    monkeypatch.setattr(_publication, "_recover_cache_publication", lambda _path: None)
+    monkeypatch.setattr(_publication, "_release_file_lock", lambda _handle: None)
     monkeypatch.setattr(
-        shred_mod,
+        _publication,
         "_acquire_file_lock",
         lambda _handle, **kwargs: observed.append(kwargs["timeout_seconds"]) or True,
     )
     ticks = iter((10.0, 10.25))
-    monkeypatch.setattr(shred_mod.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
     assert lock.acquire(timeout=1.0)
     assert observed == [pytest.approx(0.75)]
     lock.release()
 
     assert lock._thread_lock.acquire()
     lock._depth = 1
-    lock._owner_thread_id = shred_mod.threading.get_ident()
+    lock._owner_thread_id = threading.get_ident()
     with pytest.raises(RuntimeError, match="lost"):
         lock.release()

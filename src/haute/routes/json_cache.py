@@ -72,7 +72,7 @@ from haute.schemas import (
 )
 
 if TYPE_CHECKING:
-    from haute._json_shred import PreparedPerPortCacheBuild
+    from haute._json_shred._cache import PreparedPerPortCacheBuild
 
 logger = get_logger(component="server.json_cache")
 
@@ -129,7 +129,7 @@ def _validate_worker_prepared_manifest(
     rather than normalising child-controlled values: normalising first would
     make an untrusted path suitable for later filesystem use.
     """
-    from haute._json_shred import PreparedPerPortCacheBuild
+    from haute._json_shred._cache import PreparedPerPortCacheBuild
 
     if not isinstance(candidate, PreparedPerPortCacheBuild):
         raise TypeError("JSON cache worker returned an invalid prepared manifest")
@@ -158,10 +158,7 @@ def _prepare_json_cache_worker(
     budget: IsolatedExecutionBudget,
 ) -> _JsonCacheWorkerOutcome:
     """Prepare one private cache generation without selecting it."""
-    from haute._json_shred import (
-        SourceChangedDuringCacheBuildError,
-        prepare_per_port_cache,
-    )
+    from haute._json_shred._cache import SourceChangedDuringCacheBuildError, prepare_per_port_cache
 
     context = create_isolated_execution_context(budget)
     try:
@@ -200,9 +197,11 @@ def _json_cache_build_transaction(
     cancellation_requested: WorkerCancellationGate,
 ) -> dict[str, Any]:
     """Own locking, child lifetime, validation, publication, and cleanup."""
-    from haute._json_shred import (
+    from haute._json_shred._cache import (
         commit_prepared_per_port_cache,
         discard_per_port_cache_staging,
+    )
+    from haute._json_shred._publication import (
         new_per_port_cache_staging_dir,
         per_port_cache_publication_lock,
     )
@@ -753,11 +752,8 @@ def _v2_status_response(
     """
     from haute._api_input_schema import validate_v2_schema
     from haute._json_flatten import _json_cache_dir
-    from haute._json_shred import (
-        _build_lock_for,
-        is_per_port_cache_valid,
-        read_per_port_cache_meta,
-    )
+    from haute._json_shred._cache import is_per_port_cache_valid, read_per_port_cache_meta
+    from haute._json_shred._publication import _build_lock_for
 
     validate_v2_schema(v2_config)
     # Resolve working/ then committed/ — the SAME order ``load_v2_api_source``
@@ -842,7 +838,7 @@ async def infer_json_cache_schema(body: JsonCacheInferRequest) -> Any:
     """
     data_path = _resolve_data_path(body.path)
     try:
-        from haute._json_shred import infer_v2_schema_from_data
+        from haute._json_shred._inference import infer_v2_schema_from_data
 
         result = await run_in_threadpool(
             infer_v2_schema_from_data,

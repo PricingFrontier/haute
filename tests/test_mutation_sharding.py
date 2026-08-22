@@ -32,7 +32,7 @@ from scripts.run_mutation_suite import (
     _validate_shard_matrix_capacity,
 )
 
-MODULE_PATH = str((REPO_ROOT / "src" / "haute" / "_json_shred.py").resolve())
+MODULE_PATH = str((REPO_ROOT / "src" / "haute" / "_json_shred" / "_shred.py").resolve())
 
 
 def _create_session(path: Path, job_ids: list[str]) -> None:

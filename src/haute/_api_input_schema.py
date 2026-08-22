@@ -73,7 +73,8 @@ ColumnStatus = Literal["Confirmed", "Inferred"]
 
 _ALLOWED_COLUMN_TYPES: frozenset[str] = frozenset({"int", "float", "str", "bool", "date"})
 
-# Filesystem-safe label form, shared with `_json_shred._sanitise_label`
+# Filesystem-safe label form, shared with the `_json_shred` package's
+# `_sanitise_label` alias
 # (which imports this regex). Lives here because v2-schema validation
 # (B2: sanitised-label collision detection) is the structural use of it
 # — the parquet-file-write site in `_json_shred` is the downstream
@@ -384,7 +385,7 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
     Additional invariants:
     - Each column's ``type`` value must be one of
       ``int|float|str|bool|date``. Today's silent downgrade to ``str``
-      (in ``_json_shred.py``) loses information; loud-fail at validate
+      (in ``_json_shred/_shred.py``) loses information; loud-fail at validate
       time forces the user to correct typos before the cache build.
     - Two table labels whose filesystem-safe sanitisation
       produces the same parquet filename are rejected. Without this,

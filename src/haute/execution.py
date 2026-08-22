@@ -722,7 +722,7 @@ def _json_source_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
     if not resolved.is_file():
         return _runtime_path_fingerprint(resolved)
 
-    from haute._json_shred import _data_file_signature
+    from haute._json_shred._source_proof import _data_file_signature
 
     signature = _data_file_signature(resolved)
     return {
