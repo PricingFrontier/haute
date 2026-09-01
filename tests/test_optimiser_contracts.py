@@ -23,6 +23,7 @@ from tests.conftest import (
     make_node,
     make_ready_file_input_config,
 )
+from tests.job_store_support import seed_job
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,10 +47,9 @@ def test_optimiser_service_never_reads_job_store_backing_mapping() -> None:
 def clean_job_store():
     from haute.routes.optimiser import _store
 
-    snapshot = dict(_store.jobs)
+    _store.clear_all()
     yield _store
-    _store.jobs.clear()
-    _store.jobs.update(snapshot)
+    _store.clear_all()
 
 
 def _poll_solve_status(client, job_id: str, timeout: float = 10.0) -> dict:
@@ -713,13 +713,17 @@ def test_explicit_frontier_route_rejects_bad_ranges_without_calling_solver(
     the duplicated runtime check that has now been removed.
     """
     solver = MagicMock()
-    clean_job_store.jobs["frontier_bad_ranges"] = {
-        "status": "completed",
-        "solver": solver,
-        "quote_grid": MagicMock(),
-        "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
-        "created_at": time.time(),
-    }
+    seed_job(
+        clean_job_store,
+        "frontier_bad_ranges",
+        {
+            "status": "completed",
+            "solver": solver,
+            "quote_grid": MagicMock(),
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "created_at": time.time(),
+        },
+    )
 
     resp = client.post(
         "/api/optimiser/frontier",

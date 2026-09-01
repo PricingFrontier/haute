@@ -27,6 +27,8 @@ import {
 import { X, History, AlertTriangle, Loader2, Columns2, Rows2 } from "lucide-react"
 
 import { getCommitPipeline, getCommitContext } from "../api/client"
+import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 import { nodeTypes } from "../utils/nodeTypeRegistry"
 import { diffPipelineNodes, type GraphDiff } from "../utils/graphDiff"
 import useGitStore, { type GitComparison } from "../stores/useGitStore"
@@ -40,6 +42,7 @@ const defaultEdgeOptions = {
   animated: false,
   style: { stroke: "rgba(255,255,255,.25)", strokeWidth: 1.5 },
 }
+const noReservedApiInputFrameLabels: string[] = []
 
 type DiffSide = "historical" | "current"
 
@@ -306,6 +309,14 @@ export default function ComparisonView({
   // is edited (toolbar/websocket) while comparing. Re-snapshots on remount, which
   // is keyed by comparison.sha at the call site.
   const [current] = useState(() => ({ nodes: currentNodes, edges: currentEdges }))
+  const reservedApiInputFrameLabels = useDocumentStatusStore(
+    (state) => state.capabilities?.reserved_api_input_frame_labels
+      ?? noReservedApiInputFrameLabels,
+  )
+  const reservedApiInputFrameLabelSet = useMemo(
+    () => new Set(reservedApiInputFrameLabels),
+    [reservedApiInputFrameLabels],
+  )
   const [historical, setHistorical] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
   // The focused node id, highlighted on BOTH canvases (its counterpart too).
@@ -354,14 +365,20 @@ export default function ComparisonView({
     const ctrl = new AbortController()
     const load = async () => {
       const graph = await getCommitPipeline(comparison.sha, { signal: ctrl.signal })
-      if (!ctrl.signal.aborted) setHistorical({ nodes: graph.nodes, edges: graph.edges })
+      const resolved = await resolveEditorGraphIdentities({
+        nodes: graph.nodes,
+        edges: graph.edges,
+        submodels: graph.submodels ?? {},
+        reservedApiInputFrameLabels: reservedApiInputFrameLabelSet,
+      })
+      if (!ctrl.signal.aborted) setHistorical(resolved)
     }
     load().catch((err) => {
       if (ctrl.signal.aborted) return
       setError(err instanceof Error ? err.message : "Could not load this version.")
     })
     return () => ctrl.abort()
-  }, [comparison.sha])
+  }, [comparison.sha, reservedApiInputFrameLabelSet])
 
   // Breadcrumb context for the historical (inspected) commit. Best-effort — a
   // failure just leaves the fallback label.

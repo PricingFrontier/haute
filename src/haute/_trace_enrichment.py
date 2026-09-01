@@ -54,6 +54,7 @@ from haute._rating import (
 from haute._rating_step_config import normalise_rating_tables
 
 if TYPE_CHECKING:
+    from haute._types import GraphNode
     from haute.trace import TraceStep
 
 logger = get_logger(component="trace_enrichment")
@@ -959,6 +960,26 @@ def _wrap_node_code(raw_code: str) -> str:
     return raw_code
 
 
+def _effective_node_code(
+    config: Mapping[str, Any],
+    node_map: Mapping[str, GraphNode],
+) -> str:
+    """Return the code enrichment must attribute to one graph node.
+
+    Instances inherit the referenced original's code unless they carry an
+    explicit ``.with_columns(`` expression of their own. A missing reference
+    leaves the local code intact; an existing code-less original is
+    authoritative and therefore resolves to an empty string.
+    """
+    local_code = config.get("code", "") or ""
+    instance_of = config.get("instanceOf", "")
+    if instance_of and ".with_columns(" not in local_code and instance_of in node_map:
+        original_config = node_map[instance_of].data.config
+        if isinstance(original_config, dict):
+            return original_config.get("code", "") or ""
+    return local_code
+
+
 def _build_input_sources(
     ref_cols: list[str],
     current_step: TraceStep,
@@ -1067,17 +1088,7 @@ def _build_input_sources(
                             # its expression/substituted/result values
                             # clobbered by the generic parse/eval below.
                             banding_lineage_applied = True
-                    raw = cfg.get("code", "") or ""
-
-                    # Instance resolution: if this node is an instance
-                    # and its code doesn't contain with_columns, use the
-                    # original node's code instead.
-                    instance_of = cfg.get("instanceOf", "")
-                    if instance_of and ".with_columns(" not in raw and instance_of in node_map:
-                        orig_cfg = node_map[instance_of].data.config
-                        if isinstance(orig_cfg, dict):
-                            raw = orig_cfg.get("code", "") or ""
-
+                    raw = _effective_node_code(cfg, node_map)
                     other_code = _wrap_node_code(raw)
                 if other_code and not banding_lineage_applied:
                     parsed = parse_expression(other_code, ref_col)
@@ -1416,19 +1427,7 @@ def enrich_steps(
         try:
             node_data = node_map[step.node_id].data
             cfg = node_data.config if isinstance(node_data.config, dict) else {}
-            raw_code = cfg.get("code", "") or ""
-
-            # Instance resolution: if this node is an instance and its
-            # code doesn't contain with_columns, use the original node's
-            # code.  This ensures the step that CREATED the column gets
-            # the correct expression, not just the target step.
-            instance_of = cfg.get("instanceOf", "")
-            if instance_of and ".with_columns(" not in raw_code and instance_of in node_map:
-                orig_cfg = node_map[instance_of].data.config
-                if isinstance(orig_cfg, dict):
-                    orig_code = orig_cfg.get("code", "") or ""
-                    if orig_code:
-                        raw_code = orig_code
+            raw_code = _effective_node_code(cfg, node_map)
 
             # The executor wraps dot-chain syntax (e.g. ".filter(...)") as
             # "df = (df\n.filter(...))".  Apply the same wrapping so the
@@ -1468,13 +1467,7 @@ def enrich_steps(
                             if isinstance(node_map[upstream.node_id].data.config, dict)
                             else {}
                         )
-                        u_raw = u_cfg.get("code", "") or ""
-                        # Instance resolution
-                        u_inst = u_cfg.get("instanceOf", "")
-                        if u_inst and ".with_columns(" not in u_raw and u_inst in node_map:
-                            u_orig = node_map[u_inst].data.config
-                            if isinstance(u_orig, dict):
-                                u_raw = u_orig.get("code", "") or ""
+                        u_raw = _effective_node_code(u_cfg, node_map)
                         u_code = _wrap_node_code(u_raw)
                         if u_code:
                             try:

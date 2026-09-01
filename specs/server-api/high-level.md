@@ -66,8 +66,8 @@ native commit in the worker.
 - Long-running job polling (training, optimiser solves, Explore materialisation, frontier
   auto-range) — see [background-jobs](../background-jobs/high-level.md). The response
   *shapes* for those jobs (`TrainResponse`, `OptimiserStatusResponse`, `ExploreStatusResponse`,
-  etc.) live in `schemas.py` because every route needs one shared contract module, but the
-  job-runner mechanics are a separate component.
+  etc.) are available through the stable `haute.schemas` surface, while cohesive private
+  domain modules may own their definitions. The job-runner mechanics are a separate component.
 - `routes/git.py` and all git domain logic — see
   [git-integration](../git-integration/high-level.md). This component defines the `Git*`
   Pydantic schemas (git-integration returns them directly) and exposes `pause_watcher()` /
@@ -162,6 +162,13 @@ ready document only when the project genuinely has no authored pipeline content.
 permission, transport, and unreadable-source failures remain ordinary HTTP failures.
 Recovery nodes deliberately do not have the canonical `GraphNode` wire shape, and recovery
 documents are rejected by graph-consuming request models.
+Every editor-document node carries server-owned function, default-input,
+source-handle, and optional config-reference identities; every ready edge carries
+its resolved executable input name. Recovery edges retain the field but may use
+`null` when an unavailable source prevents resolution. Capabilities include the
+sorted reserved API-input frame-label set. Prospective browser-created or renamed
+nodes use the bounded, side-effect-free `POST /api/pipeline/editor-identities`
+contract, whose response preserves request order and never reads or writes project state.
 `POST /api/pipeline/save` is the single write path for a pipeline's `.py` source, its
 per-node config JSON sidecars, and its `.haute.json` position sidecar — described in detail
 below. Before changing an existing named document, Save and submodel create/dissolve reread
@@ -250,11 +257,13 @@ become diagnostic-unavailable rather than a fabricated success.
 
 ## Design rationale
 
-- **One shared schema module, one shared error hierarchy.** Nearly every route in the product —
+- **One stable schema surface, one shared error hierarchy.** Nearly every route in the product —
   including the ones owned by other components — imports its Pydantic models from
-  `schemas.py` and raises through `errors.py`'s `HauteError` family. A single contract module
-  means the frontend's TypeScript types (generated from these schemas) can never drift
-  between route families, and a single `except HauteError` at any boundary catches the
+  `schemas.py`, which may re-export cohesive private domain modules, and raises through
+  `errors.py`'s `HauteError` family. The execution-diagnostic and Explore-chart pilots generate
+  reviewed browser declarations and standalone validators from their canonical Pydantic models;
+  other frontend contracts remain explicitly maintained rather than being claimed as generated.
+  A single `except HauteError` at any boundary catches the
   entire product's domain-error surface (with the documented exceptions — the OUTPUT
   dry-run request/response models are route-local, and resource-exhaustion
   and deadline errors deliberately extend stdlib bases instead, so existing `except
@@ -311,7 +320,7 @@ become diagnostic-unavailable rather than a fabricated success.
   come from a different trust boundary (generated strings, not direct user path input) and
   need a narrower allowlist than general file browsing.
 
-## Approved change contract — assistant plan authority
+## Assistant plan authority
 
 The server exposes the assistant application service inside the running
 process; it adds no headless or serverless mutation API. GUI saves and
@@ -474,7 +483,7 @@ be read or built, the server logs the underlying exception and sends a sanitized
 `parse_error`; that frame carries only document transport failure — authored errors always
 arrive as degraded or source-only documents.
 
-## Approved change contract — minimal transactional pipeline repair
+## Minimal transactional pipeline repair
 
 The only structured repair action is `Remove unavailable node`. It is not a
 recovery-graph Save and does not accept source bytes, source spans, replacement

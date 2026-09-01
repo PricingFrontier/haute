@@ -22,7 +22,7 @@ import {
 } from "./outputPathTools"
 import { parsePath } from "./jsonpath"
 import { NODE_TYPES } from "../../utils/nodeTypes"
-import { apiInputFrameLabels, edgeInputName } from "../../utils/apiInputPorts"
+import { authoritativeSourceHandles, edgeInputName } from "../../utils/apiInputPorts"
 
 // ─── Preview chunk size ───────────────────────────────────────────
 //
@@ -53,13 +53,13 @@ import {
 // single-frame sources have a null handle, in which case the frame resolves to
 // the sanitised source-node label — exactly what the backend executor uses as
 // the positional frame key (`edge.sourceHandle or sanitize(node-label)`, see
-// `_execute_lazy.py` build_node_fns + `_graph_utils.py::_sanitize_func_name`).
+// `_execute_lazy.py` build_node_fns + backend identity derivation).
 // The user-facing name still shows the raw label.
 
 /**
  * The persisted `source_port` for an edge — the backend's frame key:
  *   - its `sourceHandle` (multi-frame apiInput / per-table handle), else
- *   - `sanitizeName(source node label)` (single-frame source, null handle).
+ *   - backend-derived source identity (single-frame source, null handle).
  * NEVER "" for a resolvable edge: two distinct single-frame sources must persist
  * DISTINCT, non-empty ports so a genuine >=2-frame OUTPUT binds (the old `""`
  * fallback collapsed them and tripped `OutputMappingSchemaError`). Falls back
@@ -73,6 +73,18 @@ function framePortId(
   if (!sourceNode) {
     throw new Error(`Cannot derive output frame name for edge ${edge.id}: source node ${edge.source} is missing`)
   }
+  if (
+    sourceNode.data.nodeType === NODE_TYPES.API_INPUT
+    && typeof edge.sourceHandle === "string"
+    && edge.sourceHandle.length > 0
+  ) {
+    // Persist the authored per-table handle even while it dangles (the frame
+    // is separately warned unresolved): server identities map eligible handles
+    // to themselves, and the `<unresolved>` sentinel would both lose the
+    // user-repairable reference and collapse distinct stale frames onto one
+    // colliding port key.
+    return edge.sourceHandle
+  }
   return edgeInputName(edge, sourceNode, submodels)
 }
 
@@ -80,7 +92,7 @@ function frameIsUnresolved(edge: SimpleEdge, sourceNode: SimpleNode | undefined)
   return sourceNode?.data.nodeType === NODE_TYPES.API_INPUT
     && (edge.sourceHandle === null
       || edge.sourceHandle === undefined
-      || !apiInputFrameLabels(sourceNode.data.config).includes(edge.sourceHandle))
+      || !authoritativeSourceHandles(sourceNode).includes(edge.sourceHandle))
 }
 
 /**

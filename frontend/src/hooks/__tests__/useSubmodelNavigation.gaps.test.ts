@@ -70,6 +70,8 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
     preservedBlocksRef: { current: [] as string[] },
     pipelineNameRef: { current: "test" },
     fitView: vi.fn(),
+    reservedApiInputFrameLabels: new Set<string>(),
+    resolveGraphIdentities: vi.fn(async ({ nodes, edges }) => ({ nodes: [...nodes], edges: [...edges] })),
     ...overrides,
   }
 }

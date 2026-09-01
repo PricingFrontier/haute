@@ -278,15 +278,6 @@ running heavy work in a child process the parent can kill on timeout or memory l
   correctness. The current assistant mutation service declares structural
   verification after save; it does not claim that this schema read ran for every
   mutation.
-- **Assistant schema inspection is plan-only.** `get_node_schema` performs the
-  same flattening, preamble compilation, active-source selection, node building,
-  and contract enforcement as production lazy execution up to the requested
-  top-level node, then calls `collect_schema()` on the preserved lazy result.
-  It never collects rows. Multi-frame results report one schema per output port.
-  This is execution-plan evidence, not proof of row values or commercial
-  correctness. The current assistant mutation service declares structural
-  verification after save; it does not claim that this schema read ran for every
-  mutation.
 - **Partitioned Parquet remains lazy and projected.** Directory-backed inputs retain
   Hive-partition predicates and required columns in the optimized scan, pruning
   irrelevant files/columns before checkpointing, caching, or response materialisation.

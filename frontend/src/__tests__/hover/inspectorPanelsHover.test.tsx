@@ -75,7 +75,7 @@
  * The suite combines structural scanning with behavioural assertions.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import { readFileSync, existsSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -466,18 +466,16 @@ describe("NodePanel standalone hover/focus sites", () => {
     expect(labelInput.style.boxShadow).toBe(shadowBefore)
   })
 
-  it("typing in the label input still propagates to onUpdateNode (non-styling side-effect preserved)", () => {
+  it("typing in the label input still propagates to onRenameNode (non-styling side-effect preserved)", async () => {
     // Sanity: the migration must not strip the onChange handler — only
-    // the inline style mutations should be gone.
-    const onUpdateNode = vi.fn(() => ({ ok: true as const }))
-    renderNodePanel({ onUpdateNode })
+    // the inline style mutations should be gone. Renames flow through the
+    // async identity-resolving rename session, not onUpdateNode.
+    const onRenameNode = vi.fn(() => Promise.resolve({ ok: true as const }))
+    renderNodePanel({ onRenameNode })
     const labelInput = screen.getByDisplayValue("My Node") as HTMLInputElement
     fireEvent.change(labelInput, { target: { value: "Renamed" } })
     fireEvent.blur(labelInput)
-    expect(onUpdateNode).toHaveBeenCalledWith(
-      "node_1",
-      expect.objectContaining({ label: "Renamed" }),
-    )
+    await waitFor(() => expect(onRenameNode).toHaveBeenCalledWith("node_1", "Renamed"))
   })
 })
 

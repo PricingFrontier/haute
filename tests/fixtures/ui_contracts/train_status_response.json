@@ -180,7 +180,7 @@
     }
   },
   "warning": null,
-  "terminal_reason": null,
+  "terminal_reason": "completed",
   "error_code": null,
   "http_status_code": null,
   "error_detail": null,

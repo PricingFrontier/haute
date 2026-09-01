@@ -1,128 +1,102 @@
-# Hosted Databricks App Mode — High-Level Specification (DRAFT)
-
-Status: DRAFT for review — proposes new functionality validated by the
-deployment spike in `databricks_app/` (see its LEARNINGS.md for measured
-runtime facts). Nothing in this spec is implemented in `src/haute` yet;
-the spike ships as an out-of-tree bundle precisely so haute's local-only
-security posture stays intact until this design is agreed.
+# Hosted Databricks App Mode — High-Level Specification
 
 ## Purpose
 
-Haute today is a local single-user UI: loopback-only binding, per-process
-session token, and rejection of any proxied traffic. Databricks Apps is a
-hosting surface that puts a workspace-SSO reverse proxy in front of an
-app container, forwarding requests with `X-Forwarded-*` identity headers.
-This component defines how haute runs correctly and safely behind such a
-platform proxy without weakening the local posture that every other
-deployment keeps.
+Hosted Databricks App mode runs Haute behind the workspace-authenticated
+Databricks Apps reverse proxy without weakening the default local-only server
+posture. It makes the platform trust decision explicit, adapts proxied HTTP and
+WebSocket traffic at one ASGI boundary, and retains the forwarded workspace
+identity for attribution.
 
 ## Scope
 
 In scope:
 
-- Runtime detection of the Databricks Apps container.
-- The trusted-boundary adaptation currently performed by the out-of-tree
-  shim (`databricks_app/app.py`): forwarded-header handling and host
-  identity when a platform proxy has already authenticated the user.
-- Service-principal OAuth support in Databricks data IO (today PAT-only
-  via `DATABRICKS_TOKEN` — the container injects
-  `DATABRICKS_CLIENT_ID`/`_SECRET` instead).
-- First-boot project seeding and git enablement on ephemeral storage.
+- Complete, fail-loud detection of the Databricks Apps environment contract.
+- Forwarded-header removal, loopback host adaptation, and request-scope user
+  attribution after the platform proxy has authenticated the request.
+- The hosted application factory and container entry/bootstrap boundary.
+- Integration with the Databricks personal-access-token or service-principal
+  credential forms supplied to the data-IO component.
 
-Out of scope: Databricks SQL IO mechanics (specs/databricks-io), deploy
-targets and CI scaffolds (specs/deploy), running haute pipelines as
-Databricks jobs (future component), any multi-user collaboration model.
+Project binding, durable Unity Catalog bundle storage, claims, and restore are
+owned by [hosted project storage](../hosted-project-storage/high-level.md).
+Databricks SQL mechanics are owned by
+[Databricks IO](../databricks-io/high-level.md), deployment scaffolds by
+[deploy](../deploy/high-level.md), and local session-token/loopback policy by
+[sandbox security](../sandbox-security/high-level.md). Multi-user live
+collaboration and running pipelines as Databricks jobs are out of scope.
 
 ## Behaviour
 
-- In a Databricks Apps container (detected via `DATABRICKS_APP_NAME` +
-  `DATABRICKS_APP_URL` + `DATABRICKS_WORKSPACE_ID`), haute serves proxied
-  traffic: platform-forwarded requests reach the API and WebSocket
-  endpoints instead of being rejected with 400.
-- Outside such a container, behaviour is byte-for-byte today's local
-  posture; hosted mode is never inferred from anything but the platform
-  environment contract.
-- The platform proxy is the authentication boundary. Haute does not
-  re-authenticate, but it consumes (never blindly trusts elsewhere) the
-  forwarded identity — at minimum surfacing `X-Forwarded-Email` for
-  attribution (git identity, logs) rather than discarding it.
-- Databricks data IO works with the app's service-principal OAuth
-  credentials out of the box; `DATABRICKS_TOKEN` remains supported and
-  takes precedence where set.
-- First boot in an empty container yields a working project (standard
-  `haute init` scaffold, databricks target) with git initialised and an
-  identity configured, so the editor, values table, and git topbar are
-  functional immediately.
+- Hosted mode requires non-empty `DATABRICKS_APP_NAME`, `DATABRICKS_APP_URL`,
+  and `DATABRICKS_WORKSPACE_ID`. All three present selects hosted mode; none is
+  the ordinary local environment; any partial combination is invalid.
+- `haute.hosted.create_app()` is an explicit hosted entry point. It requires the
+  complete environment, records the hosted trust decision before the server
+  middleware is imported, and returns the normal server wrapped by the proxy
+  boundary. It never silently becomes the local entry point.
+- For HTTP and WebSocket traffic, the boundary records a non-empty
+  `X-Forwarded-Email` on the ASGI scope, removes `Forwarded` and every
+  `X-Forwarded-*` header, and replaces `Host` with the loopback authority that
+  the server expects. Lifespan and other non-request scopes pass through.
+- The boundary alone grants no authority. If the explicit hosted trust
+  decision has not disabled the local session gate, rewritten proxied traffic
+  remains unauthorized. Outside the hosted entry point, local behavior is
+  unchanged.
+- Databricks browsing and SQL acquisition accept `DATABRICKS_HOST` plus either
+  `DATABRICKS_TOKEN` or the complete
+  `DATABRICKS_CLIENT_ID`/`DATABRICKS_CLIENT_SECRET` pair. The token takes
+  precedence. Secret values never enter API responses or logs.
+- The container bootstrap restores a bound durable project when configured or
+  seeds a volatile project, configures Git, changes to the selected project,
+  and only then imports/serves the hosted application. Interpreter resolution
+  is made absolute before that directory change so worker processes remain
+  spawnable.
 
-Invariants:
-
-- No hosted-mode branch may relax loopback rules when the hosted
-  environment contract is absent.
-- Header-rewriting alone must never bypass the local session token gate
-  (pinned by `tests/test_hosted.py`).
-- Secrets injected by the platform (`DATABRICKS_CLIENT_SECRET`) must
-  never be logged or surfaced through the API.
+Repository tests recursively inspect registered response schemas for
+secret-shaped fields and restrict secret-bearing environment-variable
+references to reviewed modules.
 
 ## Design rationale
 
-- The spike proved the boundary can be adapted entirely at the ASGI seam
-  (strip forwarded metadata, rewrite host); the open design choice is
-  whether that seam graduates into `src/haute` as an explicit hosted mode
-  or remains a deployment artefact. Graduating it makes the trust
-  decision inspectable and testable in-tree; keeping it external keeps
-  haute's core posture untouched. This spec proposes graduating it.
-- Ephemeral container storage means seeded git history and any local data
-  die on redeploy. Retaining git *durably* requires an external remote or
-  UC-volume persistence — deliberately deferred; the seeded repo is a
-  session workspace, and the UI should be able to say so (which requires
-  distinguishing "no git binary" from "no repo", a gap found in the
-  spike).
-- The app filesystem is invisible to the rest of the workspace (no
-  /Workspace, /Volumes or /dbfs mounts — measured); Unity Catalog APIs
-  are the only shared data plane, which is why SP-OAuth in the IO layer
-  is the keystone rather than any filesystem arrangement.
+The platform proxy is the authentication boundary; Haute's ASGI wrapper owns
+only the narrow translation from that trusted platform shape to the already
+tested local server shape. Keeping detection closed and the hosted factory
+separate prevents an ordinary `haute serve` process from inferring a weaker
+posture from a stray header or single environment variable.
 
-## Performance considerations (deferred, recorded)
+Removing forwarded metadata after extracting the one attribution field avoids
+letting downstream middleware reinterpret proxy assertions. Recording absence
+as an absent scope key, rather than an empty user, keeps attribution consumers
+from inventing identity.
 
-Hosted containers invert haute's local storage economics: ~175 GB of fast
-local disk (measured) that is guaranteed disposable, while every byte of
-real data crosses HTTPS to Unity Catalog via a warehouse. The right
-posture is therefore aggressive local caching of query results and
-intermediate artefacts with thresholds sized for the hosted case (larger
-caches, longer retention within a container's lifetime), treating cache
-loss on redeploy as routine. No caching mechanism changes are specified
-yet; when cache thresholds are next revisited, the hosted profile should
-be a first-class input rather than inheriting laptop-sized defaults.
-
-## Secret-surface backstop
-
-Two structural checks (implemented as repo tests) back the "secrets are
-never surfaced" invariant without pinning API shape:
-
-- A recursive walk of every registered route's response-model schema,
-  failing on field names matching secret patterns (secret/token/
-  password/credential/key) unless explicitly allowlisted with a
-  justification.
-- An AST scan of `src/haute` asserting secret-bearing environment
-  variable names are referenced only from allowlisted modules.
+Databricks Apps local disk is disposable. Runtime caches may use it, but durable
+project state crosses the explicit hosted-storage boundary; no filesystem mount
+is treated as an implicit shared data plane.
 
 ## Interactions
 
-- [specs/hosted-project-storage](../hosted-project-storage/high-level.md) —
-  answers this spec's ephemeral-storage constraint: durable saves via a
-  bound git remote (DRAFT).
-- specs/databricks-io — gains the SP-OAuth credential path.
-- specs/deploy — already owns the `databricks` scaffold target the seeded
-  project uses.
-- `src/haute/_local_security.py` — owns every trust decision this mode
-  touches; changes land there, not around it.
+- [Hosted project storage](../hosted-project-storage/high-level.md) prepares the
+  project directory before the application factory is imported.
+- [Databricks IO](../databricks-io/high-level.md) owns credential resolution and
+  SQL/Workspace client behavior for both supported authentication forms.
+- [Sandbox security](../sandbox-security/high-level.md) owns the local trust and
+  session-token policy that the explicit hosted factory configures.
+- [Execution engine](../execution-engine/high-level.md) owns spawnable worker
+  interpreter resolution used before the bootstrap changes directory.
 
 ## Failure model
 
-- Hosted-mode detection with a partial environment contract (some vars
-  missing) fails loud at startup rather than guessing.
-- Missing git binary in a hosted container degrades to explicit
-  "git unavailable" UI state, not the misleading "not initialised".
-- IO credential resolution failure reports which of the three sources
-  (explicit token, SP OAuth pair, .env) were consulted, without echoing
-  secret values.
+- A partial or whitespace-only hosted environment fails at startup and names
+  the missing contract variables without exposing their values.
+- Calling the hosted factory outside the complete environment fails rather than
+  falling back to a local server.
+- Missing Databricks authentication identifies the accepted credential forms;
+  incomplete service-principal credentials are rejected and no supplied value
+  is echoed.
+- Proxy-boundary processing adds no recovery fallback: downstream server
+  failures retain the normal API/WebSocket error behavior.
+- Live platform-proxy behavior is simulated from the observed header contract
+  in repository tests; the platform probe record is operational evidence, not
+  a replacement for these invariants.

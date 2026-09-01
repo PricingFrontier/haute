@@ -306,7 +306,7 @@ class TestValidateDeployFailsOnTestQuotes:
             output_node_id="output",
             config=config,
         )
-        assert validate_deploy(resolved) is None
+        assert validate_deploy(resolved) == []
 
     def test_validate_deploy_aggregates_structural_and_test_errors(self, tmp_path: Path) -> None:
         """If there are BOTH structural errors AND failing test quotes, the

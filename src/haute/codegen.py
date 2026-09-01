@@ -10,8 +10,6 @@ single-node dispatcher that drives the unified
 from __future__ import annotations
 
 import ast
-import io
-import tokenize
 from collections.abc import Callable
 
 from haute._codegen_builders import (
@@ -38,6 +36,7 @@ from haute._graph_utils import (
     edge_input_name,
 )
 from haute._logging import get_logger
+from haute._python_syntax import inject_decorator_keyword
 from haute._registry import NODE_REGISTRY
 from haute._submodel_instances import canonical_downstream_identity, resolve_submodel_instances
 from haute._topo import topo_sort_ids
@@ -226,117 +225,22 @@ def _parent_name_by_id(
     }
 
 
-def _matching_close_paren(code: str, open_line: int, open_col: int) -> tuple[int, int]:
-    """Locate the ``)`` matching the ``(`` at (*open_line*, *open_col*).
-
-    Uses :mod:`tokenize` rather than a character scan so parentheses
-    inside string literals and comments are invisible: user-controlled
-    decorator kwargs (a column named ``"price (gbp)"`` or ``":)"``)
-    must not shift the injection point into the middle of a string —
-    that mis-positioning silently corrupted the emitted file.
-
-    Token consumption is lazy: iteration stops at the matching paren,
-    so malformed *body* code after the decorator (rejected later by
-    the final-emission parse gate) cannot make this helper fail.
-
-    *open_line* / the returned line are 0-based indices into
-    ``code.split("\\n")``; columns are 0-based.  Raises
-    :class:`HauteError` when the decorator argument list never closes
-    or its region cannot be tokenized — both mean codegen emitted a
-    malformed decorator.
-    """
-    depth = 0
-    seen_open = False
-    try:
-        for tok in tokenize.generate_tokens(io.StringIO(code).readline):
-            if tok.type != tokenize.OP or tok.string not in {"(", ")"}:
-                continue
-            row = tok.start[0] - 1  # tokenize rows are 1-based
-            if not seen_open:
-                if row == open_line and tok.start[1] == open_col and tok.string == "(":
-                    seen_open = True
-                    depth = 1
-                continue
-            if tok.string == "(":
-                depth += 1
-            else:
-                depth -= 1
-                if depth == 0:
-                    return row, tok.start[1]
-    except (tokenize.TokenError, IndentationError, SyntaxError) as exc:
-        raise HauteError(
-            "contract injection failed: decorator argument list does not "
-            "tokenize — this is a codegen bug",
-            reason="decorator_untokenizable",
-            error=str(exc),
-        ) from exc
-    raise HauteError(
-        "contract injection failed: decorator argument list has no "
-        "matching closing paren — this is a codegen bug",
-        reason="no_closing_paren",
-    )
-
-
 def _inject_contract_kwarg(code: str, contract_kwarg: str) -> str:
-    """Insert *contract_kwarg* into the first ``@pipeline.<type>(...)`` call.
-
-    Finds the opening ``(`` of the decorator argument list on the first
-    decorator line and inserts the kwarg just before the matching closing
-    ``)`` (located with a string- and comment-aware token scan — see
-    :func:`_matching_close_paren`).  Preserves any existing kwargs.
-
-    Decorators without parentheses (``@pipeline.polars``) are rewritten
-    to ``@pipeline.polars(contract=...)`` so the kwarg survives.
-    """
-    # split("\n") (not splitlines) so indices line up with tokenize's row
-    # numbering: Python source only breaks lines at newlines, while
-    # str.splitlines also splits at form-feed / NEL / LINE SEPARATOR --
-    # characters that can legally appear inside emitted string literals.
-    lines = code.split("\n")
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if not stripped.startswith("@pipeline.") and not stripped.startswith("@submodel."):
-            continue
-
-        if "(" not in stripped:
-            # Bare decorator like "@pipeline.polars" — add parens + kwarg.
-            lines[i] = line.rstrip() + f"({contract_kwarg})"
-            return "\n".join(lines)
-
-        # Decorator with args — find the matching closing paren.  This
-        # might span multiple lines (e.g. factors=[{...}]).
-        open_idx = stripped.index("(")
-        leading = len(line) - len(stripped)
-        end_line, end_col = _matching_close_paren(code, i, leading + open_idx)
-
-        target = lines[end_line]
-        # Determine whether the decorator currently has any arguments so
-        # we know if we need a leading comma.  If the range between the
-        # opening ``(`` and closing ``)`` is empty (only whitespace or
-        # newlines), there are no existing kwargs.
-        if end_line == i:
-            between = target[leading + open_idx + 1 : end_col]
-        else:
-            parts = [lines[i][leading + open_idx + 1 :]]
-            parts.extend(lines[i + 1 : end_line])
-            parts.append(lines[end_line][:end_col])
-            between = "\n".join(parts)
-        has_args = bool(between.strip())
-
-        prefix = ", " if has_args else ""
-        lines[end_line] = target[:end_col] + prefix + contract_kwarg + target[end_col:]
-        return "\n".join(lines)
-
-    # Same reasoning as the no-closing-paren branch above: reaching
-    # this point means the generated code had no ``@pipeline.*`` or
-    # ``@submodel.*`` decorator at all.  Silently returning the code
-    # unchanged would emit a file with no contract kwarg and surface
-    # as an opaque downstream failure — raise instead.
-    raise HauteError(
-        "contract injection failed: no @pipeline.* or @submodel.* "
-        "decorator found in generated code — this is a codegen bug",
-        reason="no_decorator",
-    )
+    """Insert *contract_kwarg* into the first pipeline/submodel decorator."""
+    try:
+        return inject_decorator_keyword(
+            code,
+            contract_kwarg,
+            decorator_roots=frozenset({"pipeline", "submodel"}),
+        )
+    except HauteError as exc:
+        if exc.context.get("reason") != "decorator_not_found":
+            raise
+        raise HauteError(
+            "contract injection failed: no @pipeline.* or @submodel.* "
+            "decorator found in generated code — this is a codegen bug",
+            reason="no_decorator",
+        ) from exc
 
 
 def _node_to_code(

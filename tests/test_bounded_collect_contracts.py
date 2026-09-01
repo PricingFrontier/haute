@@ -9,7 +9,7 @@ BOUNDED_EXECUTION_MODULES = (
     "src/haute/_output_assembler.py",
     "src/haute/chunking.py",
     "src/haute/routes/_optimiser_service.py",
-    "src/haute/routes/_train_service.py",
+    "src/haute/routes/_training_lifecycle.py",
     "src/haute/deploy/_scorer.py",
     "src/haute/_model_scorer.py",
 )

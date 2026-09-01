@@ -47,6 +47,7 @@ function makeParams() {
     clearTrace: vi.fn(),
     screenToFlowPosition: vi.fn((pos: { x: number; y: number }) => pos),
     graphRefreshingRef: { current: 0 },
+    resolveGraphIdentities: vi.fn(async (nodes: readonly Node[], edges: readonly Edge[]) => ({ nodes: [...nodes], edges: [...edges] })),
   }
 }
 
@@ -118,7 +119,7 @@ describe("useEdgeHandlers.onDrop — malformed drag JSON fails loudly (#35)", ()
     expect(setNodesCalled === false || hasErrorToast).toBe(true)
   })
 
-  it("well-formed drag-config JSON still creates node successfully", () => {
+  it("well-formed drag-config JSON still creates node successfully", async () => {
     // Regression guard: the fix must not break the happy path.
     const params = makeParams()
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -127,8 +128,9 @@ describe("useEdgeHandlers.onDrop — malformed drag JSON fails loudly (#35)", ()
       JSON.stringify({ expression: "df" }),
     )
 
-    act(() => {
+    await act(async () => {
       result.current.onDrop(event)
+      await Promise.resolve()
     })
 
     expect(params.setNodes).toHaveBeenCalledOnce()
@@ -139,7 +141,7 @@ describe("useEdgeHandlers.onDrop — malformed drag JSON fails loudly (#35)", ()
     expect(result_nodes[0].data).toMatchObject({ config: { expression: "df" } })
   })
 
-  it("empty drag-config string (default) creates a node with {} config", () => {
+  it("empty drag-config string (default) creates a node with {} config", async () => {
     // Edge case: the drag source intentionally sent an empty string for
     // the config blob.  Post-fix, this must still work because "" falls
     // back to "{}" via `|| "{}"` before parsing.
@@ -147,8 +149,9 @@ describe("useEdgeHandlers.onDrop — malformed drag JSON fails loudly (#35)", ()
     const { result } = renderHook(() => useEdgeHandlers(params))
     const event = makeDragEvent(NODE_TYPES.POLARS, "")
 
-    act(() => {
+    await act(async () => {
       result.current.onDrop(event)
+      await Promise.resolve()
     })
 
     expect(params.setNodes).toHaveBeenCalledOnce()

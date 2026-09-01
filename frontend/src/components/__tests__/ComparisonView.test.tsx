@@ -89,6 +89,7 @@ vi.mock("@xyflow/react", async () => {
 })
 
 const mockGetCommitPipeline = vi.fn()
+const mockResolveEditorGraphIdentities = vi.fn()
 vi.mock("../../api/client", () => ({
   getCommitPipeline: (...a: unknown[]) => mockGetCommitPipeline(...a),
   // Breadcrumb context — resolve a save context carrying a historic↔current
@@ -113,6 +114,10 @@ vi.mock("../../api/client", () => ({
       distance: 5,
       delta_from_base: 4,
     }),
+}))
+vi.mock("../../utils/editorIdentities", () => ({
+  resolveEditorGraphIdentities: (options: unknown) =>
+    mockResolveEditorGraphIdentities(options),
 }))
 
 import ComparisonView from "../ComparisonView"
@@ -143,6 +148,10 @@ function renderView(
 
 beforeEach(() => {
   mockGetCommitPipeline.mockReset()
+  mockResolveEditorGraphIdentities.mockReset()
+  mockResolveEditorGraphIdentities.mockImplementation(async (
+    options: { nodes: unknown[]; edges: unknown[] },
+  ) => ({ nodes: [...options.nodes], edges: [...options.edges] }))
   mockFitView.mockClear()
   resizeObservers.length = 0
   // The current-side breadcrumb fetches context for the working branch's latest
@@ -155,6 +164,38 @@ afterEach(() => {
 })
 
 describe("ComparisonView", () => {
+  it("restores transient server identities before rendering historical nodes", async () => {
+    const rawHistorical = {
+      nodes: [node("quotes")],
+      edges: [],
+      submodels: { pricing: { definitionId: "pricing" } },
+    }
+    mockGetCommitPipeline.mockResolvedValue(rawHistorical)
+    mockResolveEditorGraphIdentities.mockResolvedValue({
+      nodes: [{
+        ...rawHistorical.nodes[0],
+        data: {
+          ...rawHistorical.nodes[0].data,
+          _functionName: "quotes",
+          _defaultInputName: "quotes",
+          _sourceHandleInputNames: {},
+        },
+      }],
+      edges: [],
+    })
+
+    renderView()
+
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument(),
+    )
+    expect(mockResolveEditorGraphIdentities).toHaveBeenCalledWith(expect.objectContaining({
+      nodes: rawHistorical.nodes,
+      edges: rawHistorical.edges,
+      submodels: rawHistorical.submodels,
+    }))
+  })
+
   it("shows a loading state, then both canvases once the historical version loads", async () => {
     mockGetCommitPipeline.mockResolvedValue({ nodes: [], edges: [] })
     renderView()

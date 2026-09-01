@@ -81,7 +81,7 @@ def handle_deploy(config: DeployCliConfig) -> None:
     import os
 
     from haute.deploy._config import DeployConfig, resolve_config
-    from haute.deploy._validators import score_test_quotes, validate_deploy
+    from haute.deploy._validators import validate_deploy
 
     # 1. Load config — prefer haute.toml when present, else build from CLI.
     toml_path = Path.cwd() / "haute.toml"
@@ -160,7 +160,7 @@ def handle_deploy(config: DeployCliConfig) -> None:
 
     # 3. Validate
     try:
-        validate_deploy(resolved_deploy)
+        tq_results = validate_deploy(resolved_deploy)
     except DeployError as exc:
         click.echo("\n  \u2717 Validation failed:", err=True)
         context = getattr(exc, "context", {})
@@ -179,12 +179,7 @@ def handle_deploy(config: DeployCliConfig) -> None:
         raise
     click.echo("  \u2713 Validation passed")
 
-    # 4. Score test quotes
-    try:
-        tq_results = score_test_quotes(resolved_deploy)
-    except BaseException:
-        resolved_deploy.close()
-        raise
+    # 4. Render the quote results produced by the validation gate.
     if tq_results:
         all_ok = True
         for r in tq_results:

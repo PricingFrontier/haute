@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from haute._topo import CycleError, ancestors, topo_sort_ids
+from haute._topo import (
+    CycleError,
+    UnknownEdgeEndpointError,
+    ancestors,
+    topo_sort_ids,
+    topo_sort_ids_filtered,
+)
 from haute._types import GraphEdge
 
 
@@ -46,10 +52,27 @@ class TestTopoSortIds:
         order = topo_sort_ids([], [])
         assert order == []
 
-    def test_unknown_edge_endpoints_ignored(self):
-        """Edges referencing unknown nodes are silently skipped."""
-        order = topo_sort_ids(["a", "b"], [_e("a", "b"), _e("x", "y")])
-        assert set(order) == {"a", "b"}
+    def test_unknown_edge_endpoints_fail_with_deterministic_evidence(self):
+        edges = [_e("a", "b"), _e("x", "y")]
+
+        with pytest.raises(UnknownEdgeEndpointError) as exc_info:
+            topo_sort_ids(["a", "b"], edges)
+
+        assert exc_info.value.unknown_node_ids == ("x", "y")
+        assert exc_info.value.dropped_edges == (edges[1],)
+
+    def test_explicit_filtered_sort_reports_every_dropped_endpoint(self):
+        edges = [
+            _e("a", "b"),
+            _e("ghost", "a"),
+            _e("b", "phantom"),
+        ]
+
+        result = topo_sort_ids_filtered(["a", "b"], edges)
+
+        assert result.order == ["a", "b"]
+        assert result.dropped_edges == tuple(edges[1:])
+        assert result.unknown_node_ids == ("ghost", "phantom")
 
     def test_duplicate_edges_handled(self):
         edges = [_e("a", "b"), _e("a", "b")]

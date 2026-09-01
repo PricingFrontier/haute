@@ -1,9 +1,8 @@
 # Hosted Project Storage — High-Level Specification
 
-Status: DELIVERED; this spec describes shipped behaviour. The change
-contract lives in [low-level.md](low-level.md) §Approved change contract.
-Companion to [specs/hosted-databricks-app](../hosted-databricks-app/high-level.md),
-which established the constraint this component answers: the app
+This specification is a companion to
+[specs/hosted-databricks-app](../hosted-databricks-app/high-level.md),
+which defines the constraint this component answers: the app
 container's filesystem — including the seeded git repository — is
 destroyed by every redeploy, platform restart, and app stop. There is no
 development cycle on the hosted platform without durable saves.
@@ -23,18 +22,16 @@ In scope: the storage lifecycle for hosted mode (bind, restore,
 push-on-save, sync-state visibility, failure handling); credential
 handling for the remote; the transport seam.
 
-Out of scope: parallel multi-user editing against one project (unsolved
-independently of storage; an external remote at least gives it a future
-shape — branch-per-user — that container-local git never could);
-MLflow/model-artefact persistence (own follow-up); any behaviour change
-in local (non-hosted) mode, which remains byte-identical.
+Out of scope: parallel multi-user editing against one project;
+MLflow/model-artefact persistence; and any behaviour change in local
+(non-hosted) mode, which remains byte-identical.
 
 ## Behaviour
 
 The session lifecycle, from the user's chair:
 
-1. **Open, no binding**: the startup flow (the same surface that today
-   handles git readiness states) reports the project is **volatile** and
+1. **Open, no binding**: the startup flow, through the git-readiness
+   surface, reports the project is **volatile** and
    offers to bind a storage location — either a git remote URL or a
    Unity Catalog volume location (`uc://catalog.schema.volume/path`).
    The user may decline; the session then runs with a persistent "work
@@ -61,8 +58,8 @@ The session lifecycle, from the user's chair:
    *n* saves pending / sync failed — beside the branch indicator.
 4. **Close**: nothing. Anything committed-and-pushed is durable;
    anything mid-edit is lost with the container, the same connection-loss
-   exposure a laptop session does not have. Ruled acceptable (Nick,
-   30 July 2026): the delta is real, small, and irreducible.
+   exposure a laptop session does not have. The persistent volatile-state
+   indicator makes that exposure explicit while the session is open.
 5. **Reopen (new container)**: a recorded binding restores the project
    automatically before the server accepts traffic — clone from
    `origin`, resume on the recorded working branch.
@@ -109,7 +106,7 @@ the lock; the slow part — the upload — runs outside it.
   volume via the Files API) was rejected as the primary design: haute's
   save/commit model is already git, teams get a repo they can clone
   locally, and the scaffold already generates CI for exactly that world.
-  The hosted app becomes a client of the project repo, converging with
+  The hosted app is a client of the project repo, converging with
   normal usage rather than diverging.
 - **Transport constraint (measured, not assumed).** The app container
   has no `/Volumes`, `/Workspace` or `/dbfs` mounts; UC volumes are
@@ -118,17 +115,25 @@ the lock; the slow part — the upload — runs outside it.
   plain git remote*. Transport #1 is an HTTPS git host. Transport #2
   keeps everything inside the workspace: the repository is mirrored to
   a UC volume as `git bundle` artefacts — git-native content over the
-  only available channel. (The original sketch was a custom git remote
-  helper, `uc::`; the delivered shape is simpler — the storage module
-  owns both ends of the channel, so no helper protocol is needed and
-  git only ever sees local bundle files.)
+  only available channel. The storage module owns both ends of this
+  transport, so no custom remote-helper protocol is involved and git
+  only ever sees local bundle files.
 - **Full bundles, not incremental.** Each published generation is a
   complete `git bundle create --all` — O(history), not O(diff) — which
   for a pricing project (code plus config JSON; data is gitignored) is
   small, and every generation being independently complete removes a
-  whole class of partial-chain failure. The bundle size is logged on
-  every publish so growth is visible; incremental chains are a
-  possible future optimisation only if that log shows real growth.
+  whole class of partial-chain failure. Every publish attempt records bundle
+  creation/verification, Files API phases, local record writing, pruning,
+  total time, and the compressed bundle size when one was produced. A
+  reproducible 10/100/500-commit certificate gates the representative
+  500-commit bundle at 25 MiB, local creation at 5 seconds, and verification
+  at 2 seconds; production records, rather than the in-memory Files API fake,
+  own real network-latency evidence, with 30 seconds p95 for a bundle upload at
+  or below the size gate as the operational decision threshold. The newest five
+  complete generations remain the hard storage bound. Incremental/checkpoint
+  chains stay rejected until representative growth crosses one of those gates:
+  their dependency, retry, recovery, and retention complexity is not justified
+  by an unmeasured possibility.
 - **Pointer written last.** The Files API offers upload-with-overwrite
   but no atomic rename, so the volume layout is generation-numbered
   bundles plus a small `HEAD.json` pointer written only after its
@@ -175,14 +180,12 @@ the lock; the slow part — the upload — runs outside it.
   ancestry and git can measure the distance between them. A fork
   therefore reports how far ahead and behind its parent it is, and can
   fast-forward onto the parent when it has no work of its own. What it
-  will NOT do is merge divergent history — that is the existing
+  does not merge divergent history — that is the existing
   never-merge-locally rule (`fast_forward_pair`), and honouring it here
   keeps one rule across both transports instead of two. When both sides
-  have moved, the fork says so plainly and stops. Merging them is a
-  later, separately specified feature: doing it well means merging at
-  the level of pipeline NODES, because a text conflict inside a
-  generated pipeline file is not something this product's users can
-  resolve.
+  have moved, the fork says so plainly and stops. A text conflict inside
+  a generated pipeline file is not something this product's users can
+  resolve, so node-level merge semantics remain explicitly out of scope.
 - **Async push** honours the ruling that close requires no action: if
   close needed a flush, close would become a failure point. The pending
   counter makes the exposure visible instead.

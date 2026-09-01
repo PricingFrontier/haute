@@ -85,6 +85,7 @@ export type SimpleEdge = {
   target: string
   sourceHandle?: string | null
   targetHandle?: string | null
+  data?: Record<string, unknown>
 }
 
 // ─── MlflowStatusBadge ───────────────────────────────────────────

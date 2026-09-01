@@ -21,6 +21,7 @@ function makeParams() {
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
     fitView: vi.fn(),
+    resolveNodeIdentities: vi.fn(async (nodes: readonly Node[]) => [...nodes]),
   }
 }
 
@@ -187,14 +188,18 @@ describe("useNodeHandlers", () => {
     expect(updater(n2)).toBe(n2)
   })
 
-  it("handleDuplicateNode creates a copy with offset position", () => {
+  it("handleDuplicateNode creates a copy with offset position", async () => {
     const params = makeParams()
+    params.resolveNodeIdentities = vi.fn(async ([candidate]) => [{
+      ...candidate!,
+      data: { ...candidate!.data, _functionName: "authoritative_copy" },
+    }])
     const n1 = makeNode("n1")
     n1.position = { x: 100, y: 200 }
     params.graphRef.current = { nodes: [n1], edges: [] }
     const { result } = renderHook(() => useNodeHandlers(params))
-    act(() => {
-      result.current.handleDuplicateNode("n1")
+    await act(async () => {
+      await result.current.handleDuplicateNode("n1")
     })
     expect(params.setNodes).toHaveBeenCalledOnce()
     expect(params.nodeIdCounter.current).toBe(11)
@@ -202,6 +207,49 @@ describe("useNodeHandlers", () => {
     const newNode = params.setSelectedNode.mock.calls[0][0] as Node
     expect(newNode.position).toEqual({ x: 140, y: 240 })
     expect(newNode.data.label).toContain("copy")
+    expect(newNode.data._functionName).toBe("authoritative_copy")
+  })
+
+  it("leaves duplicate creation untouched when identity resolution rejects", async () => {
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    params.resolveNodeIdentities = vi.fn(async () => { throw new Error("identity service unavailable") })
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    await act(async () => { await result.current.handleDuplicateNode("n1") })
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/Create node failed: identity service unavailable/)
+  })
+
+  it("rejects malformed duplicate identity output atomically", async () => {
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    params.resolveNodeIdentities = vi.fn(async () => [makeNode("wrong")])
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    await act(async () => { await result.current.handleDuplicateNode("n1") })
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/invalid node/)
+  })
+
+  it("rejects a stale duplicate identity result after graph replacement", async () => {
+    let resolve!: (nodes: Node[]) => void
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    params.resolveNodeIdentities = vi.fn(() => new Promise<Node[]>((done) => { resolve = done }))
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    const pending = result.current.handleDuplicateNode("n1")
+    params.graphRef.current = { nodes: [makeNode("replacement")], edges: [] }
+    await act(async () => { resolve([makeNode("polars_11")]); await pending })
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/graph changed/i)
   })
 
   it("refuses generic duplication of a submodel occurrence", () => {
@@ -258,19 +306,24 @@ describe("useNodeHandlers", () => {
     expect(params.setNodes).not.toHaveBeenCalled()
   })
 
-  it("handleCreateInstance creates an instance node with toast", () => {
+  it("handleCreateInstance creates an instance node with toast", async () => {
     const params = makeParams()
+    params.resolveNodeIdentities = vi.fn(async ([candidate]) => [{
+      ...candidate!,
+      data: { ...candidate!.data, _functionName: "authoritative_instance" },
+    }])
     const n1 = makeNode("n1")
     params.graphRef.current = { nodes: [n1], edges: [] }
     const { result } = renderHook(() => useNodeHandlers(params))
-    act(() => {
-      result.current.handleCreateInstance("n1")
+    await act(async () => {
+      await result.current.handleCreateInstance("n1")
     })
     expect(params.setNodes).toHaveBeenCalledOnce()
     expect(params.setSelectedNode).toHaveBeenCalledOnce()
     const newNode = params.setSelectedNode.mock.calls[0][0] as Node
     expect(newNode.data.config).toEqual({ instanceOf: "n1" })
     expect(newNode.data.label).toContain("instance")
+    expect(newNode.data._functionName).toBe("authoritative_instance")
     const toasts = useToastStore.getState().toasts
     expect(toasts[toasts.length - 1]).toMatchObject({ type: "info" })
   })
@@ -297,15 +350,15 @@ describe("useNodeHandlers", () => {
   // Instancing an instance must produce a SIBLING, not a chain: resolveInstanceOriginal
   // does no chain-walking, so a chained instanceOf would resolve the "original" to
   // another pointer with no content of its own.
-  it("handleCreateInstance points a new instance at the original, not at the instance", () => {
+  it("handleCreateInstance points a new instance at the original, not at the instance", async () => {
     const params = makeParams()
     const original = makeNode("polars_1")
     const existing = makeNode("polars_2")
     existing.data = { ...existing.data, config: { instanceOf: "polars_1" } }
     params.graphRef.current = { nodes: [original, existing], edges: [] }
     const { result } = renderHook(() => useNodeHandlers(params))
-    act(() => {
-      result.current.handleCreateInstance("polars_2")
+    await act(async () => {
+      await result.current.handleCreateInstance("polars_2")
     })
     const newNode = params.setSelectedNode.mock.calls[0][0] as Node
     expect(newNode.data.config).toEqual({ instanceOf: "polars_1" })
@@ -357,7 +410,7 @@ describe("useNodeHandlers", () => {
     })
   })
 
-  it("creates a SUBMODEL occurrence without copying its shared definition", () => {
+  it("creates a SUBMODEL occurrence without copying its shared definition", async () => {
     const params = makeParams()
     const source = makeNode("submodel_10", "submodel", {
       position: { x: 100, y: 200 },
@@ -386,8 +439,8 @@ describe("useNodeHandlers", () => {
     params.graphRef.current = { nodes: [source, existing], edges: [] }
     const { result } = renderHook(() => useNodeHandlers(params))
 
-    act(() => {
-      result.current.handleCreateInstance(source.id)
+    await act(async () => {
+      await result.current.handleCreateInstance(source.id)
     })
 
     expect(params.setNodes).toHaveBeenCalledOnce()
@@ -408,7 +461,7 @@ describe("useNodeHandlers", () => {
     expect(created.data.config).not.toHaveProperty("childNodeIds")
   })
 
-  it("continues copy numbering past nine instead of nesting suffixes", () => {
+  it("continues copy numbering past nine instead of nesting suffixes", async () => {
     const params = makeParams()
     const owner = makeNode("instance_owner", "submodel", {
       data: {
@@ -432,8 +485,8 @@ describe("useNodeHandlers", () => {
     params.graphRef.current = { nodes: [owner, ...copies], edges: [] }
     const { result } = renderHook(() => useNodeHandlers(params))
 
-    act(() => {
-      result.current.handleCreateInstance("instance_copy_10")
+    await act(async () => {
+      await result.current.handleCreateInstance("instance_copy_10")
     })
 
     const created = params.setNodes.mock.calls[0][0](params.graphRef.current.nodes)
@@ -441,7 +494,7 @@ describe("useNodeHandlers", () => {
     expect((created?.data.config as { alias?: string }).alias).toBe("scoring_11")
   })
 
-  it("allocates occurrence ids and aliases across the combined identity namespace", () => {
+  it("allocates occurrence ids and aliases across the combined identity namespace", async () => {
     const params = makeParams()
     const source = makeNode("instance_source", "submodel", {
       data: {
@@ -464,8 +517,8 @@ describe("useNodeHandlers", () => {
     }
     const { result } = renderHook(() => useNodeHandlers(params))
 
-    act(() => {
-      result.current.handleCreateInstance(source.id)
+    await act(async () => {
+      await result.current.handleCreateInstance(source.id)
     })
 
     const created = params.setSelectedNode.mock.calls[0][0] as Node
@@ -523,7 +576,7 @@ describe("useNodeHandlers", () => {
     )
   })
 
-  it("normalises a suffixed source alias before choosing the next occurrence alias", () => {
+  it("normalises a suffixed source alias before choosing the next occurrence alias", async () => {
     const params = makeParams()
     const base = makeNode("submodel_10", "submodel", {
       data: {
@@ -549,8 +602,8 @@ describe("useNodeHandlers", () => {
     params.graphRef.current = { nodes: [base, source], edges: [] }
     const { result } = renderHook(() => useNodeHandlers(params))
 
-    act(() => {
-      result.current.handleCreateInstance(source.id)
+    await act(async () => {
+      await result.current.handleCreateInstance(source.id)
     })
 
     const created = params.setSelectedNode.mock.calls[0][0] as Node

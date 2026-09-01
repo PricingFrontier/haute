@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import haute._git as git_mod
+import haute._git_core as git_core
 from haute._git import (
     _commit_parents,
     _first_parent_spine,
@@ -69,30 +70,15 @@ def repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def git_spy(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
-    """Count every git subprocess launched through the module's entry points.
-
-    ``_run_git`` / ``_run_git_ok`` / ``_run_git_rc`` each run their own
-    ``subprocess.run`` (no delegation between them), so wrapping all three
-    counts each git launch exactly once.
-    """
+    """Count every Git process through core's sole subprocess boundary."""
     counts = {"n": 0}
-    real_run, real_ok, real_rc = git_mod._run_git, git_mod._run_git_ok, git_mod._run_git_rc
+    real_run = git_core.subprocess.run
 
     def spy_run(*args, **kwargs):
         counts["n"] += 1
         return real_run(*args, **kwargs)
 
-    def spy_ok(*args, **kwargs):
-        counts["n"] += 1
-        return real_ok(*args, **kwargs)
-
-    def spy_rc(*args, **kwargs):
-        counts["n"] += 1
-        return real_rc(*args, **kwargs)
-
-    monkeypatch.setattr(git_mod, "_run_git", spy_run)
-    monkeypatch.setattr(git_mod, "_run_git_ok", spy_ok)
-    monkeypatch.setattr(git_mod, "_run_git_rc", spy_rc)
+    monkeypatch.setattr(git_core.subprocess, "run", spy_run)
     return counts
 
 
@@ -138,14 +124,14 @@ class TestMilestoneLabels:
         _save(repo, WORKING, "m1")
         _milestone(repo, "Milestone 1")
 
-        real_ok = git_mod._run_git_ok
+        real_ok = git_core._run_git_ok
 
         def failing_log(*args, **kwargs):
             if args and args[0] == "log":
                 return (False, "")
             return real_ok(*args, **kwargs)
 
-        monkeypatch.setattr(git_mod, "_run_git_ok", failing_log)
+        monkeypatch.setattr(git_core, "_run_git_ok", failing_log)
         assert working_milestones(repo, cwd=repo).entries == []
         # The failure was never memoised: with git healthy again, the same
         # (tip, limit) key serves the real page.
@@ -521,7 +507,7 @@ class TestListBranchesEnumeration:
     def test_malformed_ref_line_is_skipped(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        real_ok = git_mod._run_git_ok
+        real_ok = git_core._run_git_ok
 
         def with_garbage_line(*args, **kwargs):
             ok, out = real_ok(*args, **kwargs)
@@ -529,7 +515,7 @@ class TestListBranchesEnumeration:
                 out = f"garbage-no-tabs\n{out}"
             return ok, out
 
-        monkeypatch.setattr(git_mod, "_run_git_ok", with_garbage_line)
+        monkeypatch.setattr(git_core, "_run_git_ok", with_garbage_line)
         listing, tips = git_mod._list_branches_with_tips(cwd=repo)
         assert "garbage-no-tabs" not in tips
         assert "garbage-no-tabs" not in {b.name for b in listing.branches}

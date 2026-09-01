@@ -433,15 +433,20 @@ def test_live_switch_generated_body_scenario_aware_both_directions(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_modelling_run_matches_executor_batch(tmp_path):
-    src = _const("c", "features", [{"name": "x", "value": 3}])
+def test_modelling_shared_first_input_semantics_match_executor_batch(tmp_path):
+    first = _const("c1", "features", [{"name": "x", "value": 3}])
+    second = _const("c2", "alternate", [{"name": "x", "value": 9}])
     train = _node("m", "train", NodeType.MODELLING, {"target": "loss", "algorithm": "catboost"})
-    graph = PipelineGraph(nodes=[src, train], edges=[_edge("c", "m")])
+    graph = PipelineGraph(
+        nodes=[first, second, train],
+        edges=[_edge("c1", "m"), _edge("c2", "m")],
+    )
 
     module = _write_and_import(graph, tmp_path)
     standalone = _collect(module.pipeline.run())
     reference = _executor_frame(graph, "m", source="batch")
     assert_frame_equal(standalone, reference)
+    assert standalone["x"].to_list() == [3]
 
 
 # ---------------------------------------------------------------------------

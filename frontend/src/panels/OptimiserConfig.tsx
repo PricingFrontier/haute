@@ -1,13 +1,7 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from "react"
-import { Loader2, ChevronDown, ChevronRight, AlertTriangle, Plus, X, Target, Layers, RefreshCw } from "lucide-react"
+import { useState, useCallback, useEffect, useMemo } from "react"
+import { ChevronDown, ChevronRight, Plus, Layers } from "lucide-react"
 import type { SimpleNode, SimpleEdge, OnUpdateConfig } from "./editors"
-import {
-  cancelOptimiserFrontierAutoRange,
-  solveOptimiser,
-  estimateOptimiserSolve,
-  getOptimiserFrontierAutoRangeStatus,
-  startOptimiserFrontierAutoRange,
-} from "../api/client"
+import { solveOptimiser, estimateOptimiserSolve } from "../api/client"
 import { useDataInputColumns } from "../hooks/useDataInputColumns"
 import { useConstraintHandlers } from "../hooks/useConstraintHandlers"
 import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
@@ -20,10 +14,7 @@ import {
 } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore from "../stores/useGraphStore"
-import { formatElapsed } from "../utils/formatValue"
-import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
 import {
-  buildExecutionFailureMessage,
   executionErrorDetailMessage,
   executionJobStatusFromReason,
   executionMetricsFromError,
@@ -36,7 +27,8 @@ import { classifyBandingNode } from "../utils/banding"
 import { buildGraph } from "../utils/buildGraph"
 import { useGraph } from "./useGraph"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
-import type { ExecutionMetrics, FrontierAutoRangeStatusResponse } from "../api/types"
+import OptimiserConstraintSettings, { type FrontierRangeConfig } from "./optimiser/OptimiserConstraintSettings"
+import OptimiserSolveStatus from "./optimiser/OptimiserSolveStatus"
 
 // ─── Banding factor extraction ───
 
@@ -76,14 +68,6 @@ type OptimiserConfigProps = {
   deferColumnFetch?: boolean
 }
 
-const CONSTRAINT_TYPES = [
-  { value: "min", label: "Minimum" },
-  { value: "max", label: "Maximum" },
-]
-
-type FrontierRangeConfig = { min?: number; max?: number }
-const AUTO_RANGE_POLL_INTERVAL_MS = 1_000
-
 function requestErrorDetail(error: unknown): string {
   const detailMessage = executionErrorDetailMessage(error)
   if (detailMessage) return detailMessage
@@ -106,68 +90,6 @@ function solveFailureStatus(error: unknown, message: string): SolveProgress | un
     terminal_reason: terminalReason,
     execution_metrics: metrics,
   }
-}
-
-function autoRangeStatusDetail(detail: unknown): string | null {
-  if (typeof detail === "string" && detail.trim()) return detail
-  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return null
-  const fields = detail as Record<string, unknown>
-  for (const key of ["message", "detail", "reason", "error_code"]) {
-    const value = fields[key]
-    if (typeof value === "string" && value.trim()) return value
-  }
-  return null
-}
-
-function autoRangeFailureMessage(status: FrontierAutoRangeStatusResponse): string {
-  const message = status.message.trim()
-  const detail = autoRangeStatusDetail(status.error_detail)
-  const fallback = status.error_code?.trim() ? `Auto range failed (${status.error_code})` : "Auto range failed"
-  const baseMessage = message || detail || fallback
-  if (status.status === "memory_limited" || status.terminal_reason === "memory_limited" || status.error_code === "memory_limit" || status.error_code === "memory_limited") {
-    return buildExecutionFailureMessage(baseMessage, status.execution_metrics, {
-      prefix: "Auto range failed",
-      status: status.status,
-      terminalReason: status.terminal_reason,
-      errorCode: status.error_code,
-    })
-  }
-  if (message) return message
-  if (detail) return detail
-  return fallback
-}
-
-function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new DOMException("Aborted", "AbortError"))
-      return
-    }
-    const timeoutId = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort)
-      resolve()
-    }, ms)
-    const onAbort = () => {
-      clearTimeout(timeoutId)
-      reject(new DOMException("Aborted", "AbortError"))
-    }
-    signal.addEventListener("abort", onAbort, { once: true })
-  })
-}
-
-function parseOptionalNumber(raw: string): number | undefined {
-  const trimmed = raw.trim()
-  if (trimmed === "") return undefined
-  const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? parsed : undefined
-}
-
-function formatScenariosPerQuote(min?: number | null, max?: number | null, mean?: number | null): string {
-  if (min == null && max == null) return mean == null ? "" : mean.toLocaleString(undefined, { maximumFractionDigits: 1 })
-  if (min != null && max != null) {
-    return min === max ? min.toLocaleString() : `${min.toLocaleString()}-${max.toLocaleString()}`
-  }
-  return (min ?? max)?.toLocaleString() ?? ""
 }
 
 function singleFactorColumnsFromLevels(levels: Record<string, string[]>): string[][] {
@@ -198,27 +120,6 @@ export default function OptimiserConfig({
 
   // ── Local UI state (cheap, ok to recreate) ──
   const [submitting, setSubmitting] = useState(false)
-  const [autoRangeLoading, setAutoRangeLoading] = useState(false)
-  const [autoRangeError, setAutoRangeError] = useState<string | null>(null)
-  const [autoRangeTerminalMetrics, setAutoRangeTerminalMetrics] = useState<ExecutionMetrics | null>(null)
-  const [autoRangeTerminalStatus, setAutoRangeTerminalStatus] = useState<string | null>(null)
-  const [autoRangeTerminalReason, setAutoRangeTerminalReason] = useState<string | null>(null)
-  const [autoRangeTerminalErrorCode, setAutoRangeTerminalErrorCode] = useState<string | null>(null)
-  const autoRangeAbortRef = useRef<AbortController | null>(null)
-  const autoRangeJobRef = useRef<string | null>(null)
-
-  useEffect(() => () => {
-    const jobId = autoRangeJobRef.current
-    autoRangeAbortRef.current?.abort()
-    autoRangeAbortRef.current = null
-    autoRangeJobRef.current = null
-    if (jobId) {
-      void cancelOptimiserFrontierAutoRange(jobId).catch((err) => {
-        // Best-effort unmount cleanup: panel is gone, no toast surface remains.
-        console.warn("cancel_optimiser_frontier_auto_range_failed", { jobId, err })
-      })
-    }
-  }, [])
 
   const solving = submitting || !!solveJob
   const solveProgress = solveJob?.progress ?? null
@@ -258,9 +159,6 @@ export default function OptimiserConfig({
 
   // Data input selection — which connected input provides objectives & constraints
   const dataInput = configField(config, "data_input", "")
-  const constraintEntries = Object.entries(constraints)
-  const constraintCount = constraintEntries.length
-
   // Prefer the configured data-input node's cached columns so multi-input
   // optimisers do not mix factor-table fields into objective/constraint menus.
   // Fall back to the panel's upstream column union until that node has schema.
@@ -372,7 +270,7 @@ export default function OptimiserConfig({
     } finally {
       setSubmitting(false)
     }
-  }, [nodeId, allNodes, buildGraphCb, constraints, currentConfigHash, startSolveJob])
+  }, [allNodes, buildGraphCb, constraints, currentConfigHash, nodeId, startSolveJob])
 
   // Banding node selection — only from connected inputs
   const bandingNodes = useMemo(
@@ -457,199 +355,6 @@ export default function OptimiserConfig({
 
   const canSolve = !!objective &&
     (mode !== "ratebook" || factorColumns.length > 0)
-
-  const rangeForConstraint = useCallback(
-    (name: string): FrontierRangeConfig => {
-      const configured = frontierRanges[name]
-      return {
-        min: typeof configured?.min === "number" && Number.isFinite(configured.min) ? configured.min : undefined,
-        max: typeof configured?.max === "number" && Number.isFinite(configured.max) ? configured.max : undefined,
-      }
-    },
-    [frontierRanges],
-  )
-
-  const handleFrontierRangeChange = useCallback(
-    (name: string, key: keyof FrontierRangeConfig, value: number | undefined) => {
-      const nextRange: FrontierRangeConfig = { ...rangeForConstraint(name) }
-      if (value === undefined) {
-        delete nextRange[key]
-      } else {
-        nextRange[key] = value
-      }
-      const nextRanges = { ...frontierRanges }
-      if (nextRange.min === undefined && nextRange.max === undefined) {
-        delete nextRanges[name]
-      } else {
-        nextRanges[name] = nextRange
-      }
-      onUpdate({ frontier_ranges: nextRanges })
-    },
-    [frontierRanges, onUpdate, rangeForConstraint],
-  )
-
-  const handleAutoRange = useCallback(async () => {
-    const documentFence = captureDocumentExecutionFence()
-    if (!isDocumentExecutionFenceCurrent(documentFence)) return
-    const previousJobId = autoRangeJobRef.current
-    autoRangeAbortRef.current?.abort()
-    autoRangeAbortRef.current = null
-    autoRangeJobRef.current = null
-    if (previousJobId) {
-      void cancelOptimiserFrontierAutoRange(previousJobId).catch((err) => {
-        // Best-effort supersede cleanup: a new auto-range run is starting, so
-        // failures here have no user-visible action to recommend.
-        console.warn("cancel_optimiser_frontier_auto_range_failed", { jobId: previousJobId, err })
-      })
-    }
-    const controller = new AbortController()
-    autoRangeAbortRef.current = controller
-    setAutoRangeLoading(true)
-    setAutoRangeError(null)
-    setAutoRangeTerminalMetrics(null)
-    setAutoRangeTerminalStatus(null)
-    setAutoRangeTerminalReason(null)
-    setAutoRangeTerminalErrorCode(null)
-    let jobId: string | null = null
-    const stopForStaleDocument = (): boolean => {
-      if (isDocumentExecutionFenceCurrent(documentFence)) return false
-      controller.abort()
-      if (jobId) {
-        void cancelOptimiserFrontierAutoRange(jobId).catch((err) => {
-          // Best-effort stale-document cancellation has no user action, so console-only diagnostics are intentional.
-          console.warn("cancel_optimiser_frontier_auto_range_failed", { jobId, err })
-        })
-      }
-      setAutoRangeLoading(false)
-      return true
-    }
-    try {
-      const start = await startOptimiserFrontierAutoRange({
-        graph: buildGraphCb(),
-        node_id: nodeId,
-        streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
-        signal: controller.signal,
-      })
-      if (stopForStaleDocument()) return
-      if (start.status === "error" || !start.job_id) {
-        throw new Error(start.error || "Auto range failed to start")
-      }
-      jobId = start.job_id
-      autoRangeJobRef.current = jobId
-
-      let status = await getOptimiserFrontierAutoRangeStatus(
-        jobId,
-        { signal: controller.signal },
-      )
-      if (stopForStaleDocument()) return
-      while (status.status === "running") {
-        await abortableDelay(AUTO_RANGE_POLL_INTERVAL_MS, controller.signal)
-        if (stopForStaleDocument()) return
-        status = await getOptimiserFrontierAutoRangeStatus(
-          jobId,
-          { signal: controller.signal },
-        )
-        if (stopForStaleDocument()) return
-      }
-      if (status.status === "cancelled" || status.status === "superseded") {
-        if (!controller.signal.aborted) {
-          setAutoRangeTerminalMetrics(status.execution_metrics ?? null)
-          setAutoRangeTerminalStatus(status.status)
-          setAutoRangeTerminalReason(status.terminal_reason ?? status.status)
-          setAutoRangeTerminalErrorCode(status.error_code ?? null)
-          setAutoRangeError(
-            status.message || autoRangeStatusDetail(status.error_detail) || "Auto range was cancelled",
-          )
-        }
-        return
-      }
-      if (status.status !== "completed") {
-        setAutoRangeTerminalMetrics(status.execution_metrics ?? null)
-        setAutoRangeTerminalStatus(status.status)
-        setAutoRangeTerminalReason(status.terminal_reason ?? status.status)
-        setAutoRangeTerminalErrorCode(status.error_code ?? null)
-        setAutoRangeError(autoRangeFailureMessage(status))
-        return
-      }
-      const response = status.result
-      if (!response) {
-        throw new Error("Auto range completed without ranges")
-      }
-      const nextRanges: Record<string, FrontierRangeConfig> = {}
-      const missingRanges: string[] = []
-      for (const [name] of constraintEntries) {
-        const range = response.ranges[name]
-        if (range) {
-          nextRanges[name] = range
-        } else {
-          missingRanges.push(name)
-        }
-      }
-      if (missingRanges.length > 0) {
-        throw new Error(`No ranges returned for: ${missingRanges.join(", ")}`)
-      }
-      if (Object.keys(nextRanges).length === 0) {
-        throw new Error("No ranges returned for the selected constraints")
-      }
-      onUpdate({ frontier_ranges: nextRanges })
-      if (response.warning) setAutoRangeError(response.warning)
-    } catch (err) {
-      if (!controller.signal.aborted && isDocumentExecutionFenceCurrent(documentFence)) {
-        const metrics = executionMetricsFromError(err)
-        if (metrics) setAutoRangeTerminalMetrics(metrics)
-        setAutoRangeTerminalStatus(executionJobStatusFromReason(executionTerminalReasonFromError(err)))
-        setAutoRangeTerminalReason(executionTerminalReasonFromError(err))
-        setAutoRangeTerminalErrorCode(null)
-        setAutoRangeError(
-          buildExecutionFailureMessage(requestErrorDetail(err), metrics, {
-            prefix: "Auto range failed",
-            terminalReason: executionTerminalReasonFromError(err),
-          }),
-        )
-      }
-    } finally {
-      if (autoRangeAbortRef.current === controller) {
-        autoRangeAbortRef.current = null
-      }
-      if (jobId && autoRangeJobRef.current === jobId) {
-        autoRangeJobRef.current = null
-      }
-      if (!controller.signal.aborted) {
-        setAutoRangeLoading(false)
-      }
-    }
-  }, [buildGraphCb, constraintEntries, nodeId, onUpdate])
-
-  const renderConstraintBoundRows = () => (
-    <div className="space-y-1.5">
-      {constraintEntries.map(([name, spec]) => {
-        const constraintType = Object.keys(spec).find(key => key === "min" || key === "max") || "min"
-        const constraintValue = spec[constraintType] ?? 0
-        return (
-          <div key={name} data-testid="constraint-bound-row" className="grid grid-cols-[90px_64px] items-center gap-1.5">
-            <select
-              aria-label={`${name} constraint bound type`}
-              value={constraintType}
-              onChange={(e) => handleConstraintValueChange(name, e.target.value, constraintValue)}
-              className="px-1 py-1 rounded text-[10px]"
-              style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
-            >
-              {CONSTRAINT_TYPES.map(ct => <option key={ct.value} value={ct.value}>{ct.label}</option>)}
-            </select>
-            <input
-              aria-label={`${name} constraint value`}
-              type="number"
-              step="any"
-              value={constraintValue}
-              onChange={(e) => handleConstraintValueChange(name, constraintType, safeParseFloat(e.target.value, 0))}
-              className="w-full px-1.5 py-1 rounded text-[11px] font-mono text-right"
-              style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-            />
-          </div>
-        )
-      })}
-    </div>
-  )
 
   return (
     <div className="px-4 py-3 space-y-4">
@@ -825,7 +530,7 @@ export default function OptimiserConfig({
       <div>
         <div className="flex items-center justify-between">
           <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-            Constraints ({constraintCount})
+            Constraints ({Object.keys(constraints).length})
           </label>
           <button
             onClick={handleAddConstraint}
@@ -835,173 +540,23 @@ export default function OptimiserConfig({
             <Plus size={10} /> Add
           </button>
         </div>
-        <div className="mt-1.5" data-testid="constraints-settings">
-          {constraintCount > 0 && (
-            <div
-              data-testid="constraint-settings-card"
-              className="p-2 rounded-lg space-y-2"
-              style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}
-            >
-              <div className="space-y-1.5">
-                {constraintEntries.map(([name]) => {
-                  return (
-                    <div key={name} data-testid="constraint-row" className="flex items-center gap-1.5">
-                      <select
-                        aria-label={`${name} constraint column`}
-                        value={name}
-                        onChange={(e) => handleConstraintColumnChange(name, e.target.value)}
-                        className="flex-1 min-w-0 px-1.5 py-1 rounded text-[11px] font-mono"
-                        style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                      >
-                        <option value={name}>{name}</option>
-                        {dataInputColumns.filter(c => c.name !== name && c.name !== objective && !constraints[c.name]).map(c => (
-                          <option key={c.name} value={c.name}>{c.name}</option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        aria-label={`Remove ${name} constraint`}
-                        onClick={() => handleRemoveConstraint(name)}
-                        className="p-0.5 rounded transition-colors shrink-0"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                  )
-                })}
-              </div>
-
-              <div className="pt-2 space-y-2" style={{ borderTop: "1px solid var(--border)" }}>
-                <div>
-                  <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Result type</label>
-                  <div className="mt-1 flex gap-1">
-                    {[
-                      { enabled: false, label: "Individual point" },
-                      { enabled: true, label: "Efficient frontier" },
-                    ].map(option => (
-                      <button
-                        key={option.label}
-                        onClick={() => onUpdate("frontier_enabled", option.enabled)}
-                        className="flex-1 px-2 py-1 rounded text-[11px] font-medium transition-colors"
-                        style={{
-                          background: frontierEnabled === option.enabled ? withAlpha(accentColor, 0.15) : "var(--chrome-hover)",
-                          color: frontierEnabled === option.enabled ? accentColor : "var(--text-muted)",
-                          border: `1px solid ${frontierEnabled === option.enabled ? withAlpha(accentColor, 0.3) : "transparent"}`,
-                        }}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {!frontierEnabled ? (
-                  <div data-testid="individual-point-settings" className="space-y-2">
-                    {renderConstraintBoundRows()}
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="flex justify-end">
-                      <button
-                        type="button"
-                        onClick={handleAutoRange}
-                        disabled={constraintCount === 0 || !canSolve}
-                        className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium disabled:opacity-50"
-                        style={{ background: withAlpha(accentColor, 0.12), color: accentColor }}
-                      >
-                        {autoRangeLoading ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
-                        {autoRangeLoading ? "Restart auto range" : "Auto range"}
-                      </button>
-                    </div>
-                    <div className="space-y-1.5">
-                      {constraintEntries.map(([name]) => {
-                        const range = rangeForConstraint(name)
-                        const minMissing = range.min === undefined
-                        const maxMissing = range.max === undefined
-                        return (
-                          <div
-                            key={name}
-                            data-testid="frontier-range-row"
-                            className={constraintCount > 1 ? "grid grid-cols-[minmax(0,1fr)_80px_80px] items-end gap-1.5" : "grid grid-cols-2 gap-2"}
-                          >
-                            {constraintCount > 1 && (
-                              <span className="min-w-0 truncate pb-1.5 text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>
-                                {name}
-                              </span>
-                            )}
-                            <div>
-                              <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Min value</label>
-                              <input
-                                type="number"
-                                step="any"
-                                value={range.min ?? ""}
-                                aria-label={`${name} min value`}
-                                aria-invalid={minMissing || undefined}
-                                placeholder="Required"
-                                onChange={(e) => handleFrontierRangeChange(name, "min", parseOptionalNumber(e.target.value))}
-                                className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
-                                style={{
-                                  background: minMissing ? "var(--warning-soft)" : "var(--bg-input)",
-                                  border: `1px solid ${minMissing ? "var(--warning-border-strong)" : "var(--border)"}`,
-                                  color: "var(--text-primary)",
-                                }}
-                              />
-                            </div>
-                            <div>
-                              <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Max value</label>
-                              <input
-                                type="number"
-                                step="any"
-                                value={range.max ?? ""}
-                                aria-label={`${name} max value`}
-                                aria-invalid={maxMissing || undefined}
-                                placeholder="Required"
-                                onChange={(e) => handleFrontierRangeChange(name, "max", parseOptionalNumber(e.target.value))}
-                                className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
-                                style={{
-                                  background: maxMissing ? "var(--warning-soft)" : "var(--bg-input)",
-                                  border: `1px solid ${maxMissing ? "var(--warning-border-strong)" : "var(--border)"}`,
-                                  color: "var(--text-primary)",
-                                }}
-                              />
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                    <div>
-                      <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Steps</label>
-                      <CommittedTextField
-                        type="number"
-                        min={2}
-                        step={1}
-                        value={String(frontierSteps)}
-                        onCommit={(v) => onUpdate("frontier_steps", safeParseInt(v, 15))}
-                        className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
-                        style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                      />
-                    </div>
-                    {autoRangeError && (
-                      <div className="space-y-1">
-                        <div className="text-[11px]" style={{ color: "var(--warning)" }}>
-                          {autoRangeError}
-                        </div>
-                        <ExecutionDiagnosticsSummary
-                          metrics={autoRangeTerminalMetrics}
-                          status={autoRangeTerminalStatus}
-                          terminalReason={autoRangeTerminalReason}
-                          errorCode={autoRangeTerminalErrorCode}
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+        <OptimiserConstraintSettings
+          constraints={constraints}
+          frontierRanges={frontierRanges}
+          frontierEnabled={frontierEnabled}
+          frontierSteps={frontierSteps}
+          dataInputColumns={dataInputColumns}
+          objective={objective}
+          canSolve={canSolve}
+          accentColor={accentColor}
+          buildGraph={buildGraphCb}
+          nodeId={nodeId}
+          onUpdate={onUpdate}
+          onRemoveConstraint={handleRemoveConstraint}
+          onConstraintColumnChange={handleConstraintColumnChange}
+          onConstraintValueChange={handleConstraintValueChange}
+        />
       </div>
-
       {/* Solver Tuning */}
       <div>
         <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Solver</label>
@@ -1120,145 +675,20 @@ export default function OptimiserConfig({
         )}
       </div>
 
-      {/* Staleness indicator */}
-      {isStale && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft)", border: "1px solid var(--warning-border)" }}>
-          <RefreshCw size={12} style={{ color: "var(--warning-strong)" }} className="shrink-0" />
-          <span style={{ color: "var(--warning)" }}>Config changed since last solve</span>
-          <button
-            onClick={handleSolve}
-            disabled={solving || !canSolve}
-            className="ml-auto px-2 py-0.5 rounded text-[11px] font-medium"
-            style={{ background: withAlpha(accentColor, 0.15), color: accentColor }}
-          >
-            Re-run
-          </button>
-        </div>
-      )}
-
-      {/* Source size preview (hidden when unreadable — metadata isn't available for live data) */}
-      {solveEstimate && solveEstimate.quote_count != null && solveEstimate.expanded_row_count != null && (
-        <div className="grid grid-cols-3 gap-2 px-3 py-2 rounded-lg text-[11px]" style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}>
-          <div className="min-w-0">
-            <div style={{ color: "var(--text-muted)" }}>Quotes</div>
-            <div className="font-mono truncate" style={{ color: "var(--text-primary)" }}>
-              {solveEstimate.quote_count.toLocaleString()}
-            </div>
-          </div>
-          <div className="min-w-0">
-            <div style={{ color: "var(--text-muted)" }}>Scenarios / quote</div>
-            <div className="font-mono truncate" style={{ color: "var(--text-primary)" }}>
-              {formatScenariosPerQuote(
-                solveEstimate.scenarios_per_quote_min,
-                solveEstimate.scenarios_per_quote_max,
-                solveEstimate.scenarios_per_quote_mean,
-              )}
-            </div>
-          </div>
-          <div className="min-w-0">
-            <div style={{ color: "var(--text-muted)" }}>Total rows</div>
-            <div className="font-mono truncate" style={{ color: "var(--text-primary)" }}>
-              {solveEstimate.expanded_row_count.toLocaleString()}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Actions */}
-      <div className="space-y-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-        {solving ? (
-          <div className="px-3 py-2.5 rounded-lg text-xs space-y-2" style={{ background: withAlpha(accentColor, 0.06), border: `1px solid ${withAlpha(accentColor, 0.2)}` }}>
-            {solveProgress ? (
-              <div className="space-y-1">
-                <div className="flex justify-between text-[11px]">
-                  <span className="flex items-center gap-1.5" style={{ color: accentColor }}>
-                    <Loader2 size={12} className="animate-spin shrink-0" />
-                    {solveProgress.message || "Solving..."}
-                  </span>
-                  <span style={{ color: "var(--text-muted)" }}>{formatElapsed(solveProgress.elapsed_seconds)}</span>
-                </div>
-                <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: withAlpha(accentColor, 0.15) }}>
-                  <div
-                    className="h-full rounded-full transition-all duration-300"
-                    style={{ width: `${Math.max(solveProgress.progress * 100, 2)}%`, background: accentColor }}
-                  />
-                </div>
-                <ExecutionDiagnosticsSummary
-                  metrics={solveProgress.execution_metrics}
-                  status={solveProgress.status}
-                  terminalReason={solveProgress.terminal_reason}
-                />
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <Loader2 size={12} className="animate-spin shrink-0" style={{ color: accentColor }} />
-                <span style={{ color: accentColor }}>Executing pipeline...</span>
-              </div>
-            )}
-          </div>
-        ) : (
-          <button
-            onClick={handleSolve}
-            disabled={!canSolve}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
-            style={{
-              background: accentColor,
-              color: "var(--text-on-accent)",
-              opacity: !canSolve ? 0.5 : 1,
-            }}
-          >
-            <Target size={14} />
-            Optimise
-          </button>
-        )}
-      </div>
-
-      {/* Error */}
-      {solveError && (
-        <div className="px-3 py-2.5 rounded-lg text-xs space-y-1.5" style={{ background: "var(--danger-soft-subtle)", border: "1px solid var(--danger-border)" }}>
-          <div className="flex items-start gap-2">
-            <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "var(--danger)" }} />
-            <div className="space-y-1 min-w-0">
-              <div className="font-semibold" style={{ color: "var(--danger)" }}>Optimisation failed</div>
-              <div style={{ color: "var(--danger-text-soft)", lineHeight: "1.5" }}>{solveError}</div>
-              <ExecutionDiagnosticsSummary
-                metrics={solveTerminalMetrics}
-                status={solveTerminalStatus?.status}
-                terminalReason={solveTerminalStatus?.terminal_reason}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Results */}
-      {solveResult && (
-        <div className="space-y-2">
-          {/* Non-convergence warning banner */}
-          {!solveResult.converged && (
-            <div className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-strong)", border: "1px solid var(--warning-border-strong)" }}>
-              <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "var(--warning-strong)" }} />
-              <div>
-                <div className="font-semibold" style={{ color: "var(--warning-strong)" }}>Solver did not converge</div>
-                <div style={{ color: "var(--warning)", lineHeight: "1.5" }}>
-                  {solveResult.warning || "Try increasing max iterations or relaxing the tolerance."}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Convergence status */}
-          <div className="px-3 py-2 rounded-lg text-xs space-y-1" style={{ background: solveResult.converged ? "var(--banner-success-bg)" : "var(--warning-soft-subtle)", border: `1px solid ${solveResult.converged ? "var(--banner-success-border)" : "var(--warning-soft-selected)"}` }}>
-            <div style={{ color: solveResult.converged ? "var(--banner-success-text)" : "var(--warning-strong)" }}>
-              {solveResult.converged ? "Converged" : "Did not converge"}
-              {solveIterationSummary ? ` in ${solveIterationSummary.long}` : ""}
-              {solveResult.n_quotes != null && solveResult.n_steps != null && (
-                <> ({solveResult.n_quotes.toLocaleString()} quotes, {solveResult.n_steps} steps)</>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <OptimiserSolveStatus
+        isStale={isStale}
+        onSolve={handleSolve}
+        solving={solving}
+        canSolve={canSolve}
+        accentColor={accentColor}
+        estimate={solveEstimate}
+        progress={solveProgress}
+        error={solveError}
+        terminalMetrics={solveTerminalMetrics}
+        terminalStatus={solveTerminalStatus}
+        result={solveResult}
+        iterationSummary={solveIterationSummary}
+      />
     </div>
   )
 }

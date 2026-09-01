@@ -83,6 +83,10 @@ export interface HauteNodeData extends Record<string, unknown> {
   _authoredDecorator?: string
   /** Decorator receiver of the authoring file: @pipeline.* vs @submodel.*. */
   _authoredReceiver?: "pipeline" | "submodel"
+  /** Server-owned executable and persistence identities for this editor node. */
+  _functionName?: string
+  _defaultInputName?: string | null
+  _sourceHandleInputNames?: Record<string, string>
   _configReference?: string
   _sourceFile?: string
   _sourceSpan?: {
@@ -113,7 +117,7 @@ export type PipelineFlowNode = Node<PipelineNodeData>
  * the authored connect ports alive until the backend flattens or regenerates
  * the graph.
  */
-export type PipelineEdge = Edge & {
+export type PipelineEdge = Edge<Record<string, unknown>> & {
   sourcePort?: string | null
   targetPort?: string | null
 }
@@ -143,6 +147,8 @@ export interface SubmodelDefinition {
   graph: { nodes: Node[]; edges: Edge[] }
   inputPorts: SubmodelInputPort[]
   outputPorts: SubmodelOutputPort[]
+  /** Server-owned executable input identity for each public input port. */
+  _inputPortInputNames?: Record<string, string>
 }
 
 const isNonBlankText = (value: unknown): value is string =>

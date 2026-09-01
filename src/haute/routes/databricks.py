@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from haute._databricks_credentials import DatabricksConfigError, resolve_databricks_credentials
 from haute._logging import get_logger
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.schemas import (
@@ -35,25 +35,21 @@ def _get_databricks_client() -> Any:
             detail="databricks-sdk is not installed. Install with: pip install haute[databricks]",
         )
 
-    host = os.getenv("DATABRICKS_HOST", "")
-    token = os.getenv("DATABRICKS_TOKEN", "")
-    client_id = os.getenv("DATABRICKS_CLIENT_ID", "")
-    client_secret = os.getenv("DATABRICKS_CLIENT_SECRET", "")
+    try:
+        credentials = resolve_databricks_credentials()
+    except DatabricksConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    if host and token:
-        return WorkspaceClient(host=host, token=token)
-    if host and client_id and client_secret:
-        # Service-principal OAuth M2M — the credential shape injected into a
-        # Databricks App container.
-        return WorkspaceClient(host=host, client_id=client_id, client_secret=client_secret)
+    if credentials.auth_mode == "pat":
+        assert credentials.token is not None
+        return WorkspaceClient(host=credentials.workspace_host, token=credentials.token)
 
-    raise HTTPException(
-        status_code=503,
-        detail=(
-            "DATABRICKS_HOST plus either DATABRICKS_TOKEN or "
-            "DATABRICKS_CLIENT_ID/DATABRICKS_CLIENT_SECRET must be set "
-            "(.env locally; injected automatically in a Databricks App)"
-        ),
+    assert credentials.client_id is not None
+    assert credentials.client_secret is not None
+    return WorkspaceClient(
+        host=credentials.workspace_host,
+        client_id=credentials.client_id,
+        client_secret=credentials.client_secret,
     )
 
 

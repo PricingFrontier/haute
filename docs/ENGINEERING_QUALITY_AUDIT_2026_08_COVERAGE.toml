@@ -1,0 +1,322 @@
+# Point-in-time coverage ledger for the August 2026 engineering quality audit
+# (see ENGINEERING_QUALITY_AUDIT_2026_08.md beside this file). It records the
+# specification corpus as discoverable by scripts/spec_corpus_inventory.py at
+# audit completion on 2026-08-31; file states are not maintained after that
+# date. The audit also fully read specs/optimiser/error-detail-policy.md, which
+# the audit-time inventory omitted; ENG-CX01 owns making such omissions
+# impossible. The specs/roadmap/engineering-quality.md row refers to that
+# document as written by the audit, before its narrative was extracted into
+# this report.
+version = 1
+
+[[file]]
+path = 'specs/README.md'
+state = 'full'
+
+[[file]]
+path = 'specs/TEMPLATE.md'
+state = 'full'
+
+[[file]]
+path = 'specs/assistant/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/assistant/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/background-jobs/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/background-jobs/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/build-and-distribution/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/build-and-distribution/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/caching/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/caching/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/cli/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/cli/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/codegen/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/codegen/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/databricks-io/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/databricks-io/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/deploy/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/deploy/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/engineering-quality/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/engineering-quality/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/execution-engine/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/execution-engine/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/explore-eda/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/explore-eda/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/expression-parsing/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/expression-parsing/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-assistant-ui/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-assistant-ui/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-git-ui/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-git-ui/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-graph-canvas/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-graph-canvas/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-modelling-optimiser-ui/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-modelling-optimiser-ui/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-node-editors/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-node-editors/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-preview-explore/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-preview-explore/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-shared/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-shared/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-trace-ui/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/frontend-trace-ui/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/git-integration/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/git-integration/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/hosted-databricks-app/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/hosted-databricks-app/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/hosted-project-storage/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/hosted-project-storage/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/io-layer/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/io-layer/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/json-shredding/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/json-shredding/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/mlflow-model-registry/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/mlflow-model-registry/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/modelling/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/modelling/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/optimiser/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/optimiser/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/ownership.toml'
+state = 'full'
+
+[[file]]
+path = 'specs/pipeline-config/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/pipeline-config/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/rating/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/rating/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/reference-pipeline/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/reference-pipeline/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/roadmap/README.md'
+state = 'full'
+
+[[file]]
+path = 'specs/roadmap/background-jobs-api.md'
+state = 'full'
+
+[[file]]
+path = 'specs/roadmap/engineering-quality.md'
+state = 'full'
+
+[[file]]
+path = 'specs/roadmap/explore-eda.md'
+state = 'full'
+
+[[file]]
+path = 'specs/roadmap/optimiser.md'
+state = 'full'
+
+[[file]]
+path = 'specs/sandbox-security/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/sandbox-security/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/server-api/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/server-api/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/submodels/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/submodels/low-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/tracing/high-level.md'
+state = 'full'
+
+[[file]]
+path = 'specs/tracing/low-level.md'
+state = 'full'

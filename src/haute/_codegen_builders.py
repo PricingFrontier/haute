@@ -44,7 +44,9 @@ from haute._graph_utils import (
 from haute._rating import _normalise_combined_outputs
 from haute._rating_step_config import normalise_rating_tables
 from haute._registry import (
+    MODELLING_NODE_SEMANTICS,
     CodegenFn,
+    NodeInputPolicy,
 )
 from haute._registry import (
     register_codegen as _register_codegen_in_registry,
@@ -53,7 +55,6 @@ from haute._registry import (
     set_codegen as _set_codegen_in_registry,
 )
 from haute._types import (
-    MODELLING_CONFIG_KEYS,
     OPTIMISER_APPLY_CONFIG_KEYS,
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
@@ -306,13 +307,6 @@ def {func_name}({params}) -> pl.LazyFrame:
         {args}, config={config_path_repr}, base_dir=base,
         source_names={source_names_repr}, source_ids={source_ids_repr},
     )
-'''
-
-_MODELLING = '''\
-@pipeline.modelling({dec_kwargs})
-def {func_name}({params}) -> pl.LazyFrame:
-    """{description}"""
-    return {first}
 '''
 
 _EXPLORE = '''\
@@ -695,17 +689,28 @@ def _gen_optimiser(node: GraphNode, source_names: list[str]) -> str:
     )
 
 
-@_register_codegen(NodeType.MODELLING)
+def _modelling_first_source(source_names: list[str]) -> str:
+    """Select modelling's generated return frame from its shared semantics."""
+    if MODELLING_NODE_SEMANTICS.input_policy is NodeInputPolicy.FIRST_CONNECTED:
+        return _first_source(source_names)
+    raise RuntimeError(
+        f"Unsupported modelling input policy: {MODELLING_NODE_SEMANTICS.input_policy!r}"
+    )
+
+
+@_register_codegen(MODELLING_NODE_SEMANTICS.node_type)
 def _gen_modelling(node: GraphNode, source_names: list[str]) -> str:
     # Genuine passthrough in the executor (training happens via the modelling
     # train route) — the first-frame body is runtime-equivalent.
     func_name, description, config = _common_node_fields(node)
-    return _MODELLING.format(
-        func_name=func_name,
-        description=description,
-        params=_build_params(source_names),
-        first=_first_source(source_names),
-        dec_kwargs=_passthrough_decorator_kwargs(config, MODELLING_CONFIG_KEYS),
+    dec_kwargs = _passthrough_decorator_kwargs(
+        config, MODELLING_NODE_SEMANTICS.decorator_config_keys
+    )
+    return (
+        f"@pipeline.modelling({dec_kwargs})\n"
+        f"def {func_name}({_build_params(source_names)}) -> pl.LazyFrame:\n"
+        f'    """{description}"""\n'
+        f"    return {_modelling_first_source(source_names)}\n"
     )
 
 

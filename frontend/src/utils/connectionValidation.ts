@@ -1,7 +1,6 @@
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
-import { isSubmodelInstanceConfig } from "../types/node"
+import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../types/node"
 import { NODE_TYPES } from "./nodeTypes"
-import { sanitizeName } from "./sanitizeName"
 import {
   edgeInputName,
   incomingEdgeInputNames,
@@ -186,11 +185,22 @@ export function validatePipelineConnection(
         if (!portId) {
           throw new Error("Canonical submodel input handle is malformed")
         }
+        const config = targetNode.data.config
+        const definition = isSubmodelInstanceConfig(config)
+          ? submodels?.[config.definitionId]
+          : undefined
+        if (!isSubmodelDefinition(definition, config?.definitionId)) {
+          throw new Error("Canonical submodel definition is unavailable")
+        }
+        const inputName = definition._inputPortInputNames?.[portId]
+        if (typeof inputName !== "string" || inputName.length === 0) {
+          throw new Error(`Canonical submodel input ${portId} has no authoritative identity`)
+        }
         return {
           ok: false,
           reason: {
             kind: "duplicate-input-name",
-            inputName: sanitizeName(portId),
+            inputName,
           },
         }
       }

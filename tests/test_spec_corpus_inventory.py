@@ -11,6 +11,7 @@ from scripts.spec_corpus_inventory import (
     SpecCorpusError,
     build_inventory,
     discover_spec_files,
+    load_corpus_manifest,
     load_coverage,
 )
 
@@ -23,11 +24,21 @@ def write(path: Path, text: str = "one\ntwo\nthree\n") -> None:
 def corpus(tmp_path: Path) -> None:
     write(tmp_path / "specs/auth/high-level.md")
     write(tmp_path / "specs/auth/low-level.md")
+    write(tmp_path / "specs/auth/policy.md", "## Context\nText.\n## Decision\nText.\n")
     write(tmp_path / "specs/GOVERNANCE.md")
     write(tmp_path / "specs/config.toml", "x = 1\n")
+    write(
+        tmp_path / "specs/corpus.toml",
+        """version = 1
+
+[[supplemental_document]]
+path = "specs/auth/policy.md"
+kind = "decision"
+required_headings = ["Context", "Decision"]
+""",
+    )
     write(tmp_path / "specs/roadmap/next.md")
     write(tmp_path / "specs/roadmap/ignored.txt")
-    write(tmp_path / "specs/auth/ignored.md")
 
 
 def test_scope_categories_and_complete_component_pairs(tmp_path: Path) -> None:
@@ -37,14 +48,105 @@ def test_scope_categories_and_complete_component_pairs(tmp_path: Path) -> None:
         ("specs/GOVERNANCE.md", "governance"),
         ("specs/auth/high-level.md", "component_high"),
         ("specs/auth/low-level.md", "component_low"),
+        ("specs/auth/policy.md", "component_supplemental"),
         ("specs/config.toml", "governance"),
+        ("specs/corpus.toml", "governance"),
         ("specs/roadmap/next.md", "roadmap"),
     ]
     assert inventory["summary"]["components"] == {"pairs": 1, "high": 1, "low": 1}
-    assert inventory["summary"]["markdown"]["total"] == {"files": 4, "lines": 12}
+    assert inventory["summary"]["markdown"]["component_supplemental"] == {
+        "files": 1,
+        "lines": 4,
+    }
+    assert inventory["summary"]["markdown"]["total"] == {"files": 5, "lines": 16}
     (tmp_path / "specs/auth/low-level.md").unlink()
     with pytest.raises(SpecCorpusError, match="both"):
         discover_spec_files(tmp_path)
+
+
+@pytest.mark.parametrize("name", ["escape.md", "escape.MD"])
+def test_undeclared_nested_spec_document_fails_loudly(tmp_path: Path, name: str) -> None:
+    corpus(tmp_path)
+    write(tmp_path / f"specs/auth/{name}")
+
+    with pytest.raises(SpecCorpusError, match=r"undeclared specification file.*escape[.](?:md|MD)"):
+        discover_spec_files(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("manifest", "message"),
+    [
+        (
+            """version = 1
+[[supplemental_document]]
+path = "specs/auth/missing.md"
+kind = "decision"
+required_headings = ["Decision"]
+""",
+            "does not exist",
+        ),
+        (
+            """version = 1
+[[supplemental_document]]
+path = "specs/auth/policy.md"
+kind = "decision"
+required_headings = ["Decision"]
+[[supplemental_document]]
+path = "specs/auth/policy.md"
+kind = "decision"
+required_headings = ["Decision"]
+""",
+            "duplicate supplemental",
+        ),
+        (
+            """version = 1
+[[supplemental_document]]
+path = "specs/auth/../outside.md"
+kind = "decision"
+required_headings = ["Decision"]
+""",
+            "canonical repository-relative",
+        ),
+        (
+            """version = 1
+[[supplemental_document]]
+path = "specs/auth/policy.md"
+kind = "memo"
+required_headings = ["Decision"]
+""",
+            "unsupported supplemental document kind",
+        ),
+        (
+            """version = 1
+[[supplemental_document]]
+path = "specs/auth/policy.md"
+kind = []
+required_headings = ["Decision"]
+""",
+            "unsupported supplemental document kind",
+        ),
+        (
+            """version = 1
+[[supplemental_document]]
+path = "specs/auth/policy.md"
+kind = "decision"
+required_headings = ["Decision", "Decision"]
+""",
+            "required_headings must contain unique",
+        ),
+    ],
+    ids=["missing", "duplicate", "traversal", "kind", "non-string-kind", "headings"],
+)
+def test_corpus_manifest_rejects_invalid_supplemental_declarations(
+    tmp_path: Path,
+    manifest: str,
+    message: str,
+) -> None:
+    corpus(tmp_path)
+    (tmp_path / "specs/corpus.toml").write_text(manifest, encoding="utf-8")
+
+    with pytest.raises(SpecCorpusError, match=message):
+        load_corpus_manifest(tmp_path)
 
 
 def test_digest_reflects_working_tree_add_modify_and_delete(tmp_path: Path) -> None:
@@ -168,3 +270,15 @@ def test_cli_json_is_deterministic(tmp_path: Path) -> None:
         "working-tree on-disk bytes; staged and unstaged content present "
         "there plus untracked in-scope files are included"
     )
+
+
+def test_repository_inventory_matches_every_supported_suffix_file() -> None:
+    root = Path(__file__).parents[1]
+    inventory_paths = {item["path"] for item in build_inventory(root)["files"]}
+    literal_paths = {
+        path.relative_to(root).as_posix()
+        for path in (root / "specs").rglob("*")
+        if path.is_file() and path.suffix.casefold() in {".md", ".toml"}
+    }
+
+    assert inventory_paths == literal_paths

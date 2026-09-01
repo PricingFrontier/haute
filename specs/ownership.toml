@@ -78,6 +78,48 @@ consumers = ["frontend-node-editors"]
 reason = "Shared UI owns the public form-primitive barrel used by node editors."
 
 [[shared_file]]
+path = "frontend/src/generated/api-contracts.constants.generated.ts"
+primary = "engineering-quality"
+consumers = ["frontend-shared"]
+reason = "Engineering quality owns deterministic generation; shared UI consumes the reviewed schema constants."
+
+[[shared_file]]
+path = "frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.d.mts"
+primary = "engineering-quality"
+consumers = ["frontend-shared"]
+reason = "Engineering quality owns deterministic generation; shared UI consumes the execution validator declaration."
+
+[[shared_file]]
+path = "frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.mjs"
+primary = "engineering-quality"
+consumers = ["frontend-shared"]
+reason = "Engineering quality owns deterministic generation; shared UI consumes the eager execution validator."
+
+[[shared_file]]
+path = "frontend/src/generated/api-contracts.explore-charts.validators.d.mts"
+primary = "engineering-quality"
+consumers = ["frontend-shared"]
+reason = "Engineering quality owns deterministic generation; shared UI documents the lazy Explore validator declaration."
+
+[[shared_file]]
+path = "frontend/src/generated/api-contracts.explore-charts.validators.mjs"
+primary = "engineering-quality"
+consumers = ["frontend-shared"]
+reason = "Engineering quality owns deterministic generation; shared UI documents the lazy Explore validator."
+
+[[shared_file]]
+path = "frontend/src/generated/api-contracts.generated.ts"
+primary = "engineering-quality"
+consumers = ["frontend-shared"]
+reason = "Engineering quality owns deterministic generation; shared UI consumes the reviewed static declarations."
+
+[[shared_file]]
+path = "frontend/src/generated/api-contracts.schema.json"
+primary = "engineering-quality"
+consumers = ["frontend-shared"]
+reason = "Engineering quality owns the Pydantic-derived bundle; shared UI consumes its generated browser contracts."
+
+[[shared_file]]
 path = "frontend/src/panels/NodePanel.tsx"
 primary = "frontend-node-editors"
 consumers = ["frontend-modelling-optimiser-ui"]
@@ -201,7 +243,7 @@ reason = "Pipeline configuration owns the column-contract model and lookup consu
 path = "src/haute/_git.py"
 primary = "git-integration"
 consumers = ["hosted-project-storage"]
-reason = "The git chokepoint also supplies the bundle and clone primitives durable storage publishes through."
+reason = "The stable Git facade supplies the bundle and clone primitives durable storage publishes through."
 
 [[shared_file]]
 path = "src/haute/_gitignore_guard.py"
@@ -250,6 +292,12 @@ path = "src/haute/_polars_utils.py"
 primary = "io-layer"
 consumers = ["execution-engine", "explore-eda"]
 reason = "The I/O layer owns profiled Polars materialisation primitives; execution and Explore consume native cancellable collection and sink seams."
+
+[[shared_file]]
+path = "src/haute/_python_syntax.py"
+primary = "codegen"
+consumers = ["tracing"]
+reason = "Codegen owns the formatting-preserving valid-Python syntax boundary; tracing consumes its structured method-call projection for row-identity classification."
 
 [[shared_file]]
 path = "src/haute/_registry.py"

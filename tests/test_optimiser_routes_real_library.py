@@ -399,7 +399,7 @@ class TestRatebookApplyDetailContract:
         # The gate fires before any materialisation work: no frontier apply
         # artifact appears and no frontier point gets selected as a side
         # effect of the rejected detail request.
-        job = clean_job_store.jobs[job_id]
+        job = clean_job_store.require_job(job_id)
         assert "frontier_apply_result:0" not in job.get("artifact_handles", {})
         assert job.get("selected_frontier_point") is None
 

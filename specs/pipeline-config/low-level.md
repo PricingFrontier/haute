@@ -58,6 +58,11 @@
   is_behavioural flag)`. Both `_config_builder.py`'s parse-time contract check and (out of
   scope here) the executor/codegen read this registry; a `NodeType` with no exec entry is
   treated as a registration bug (`KeyError`), never silently skipped.
+- **`SharedNodeSemantics` / `MODELLING_NODE_SEMANTICS`** (`src/haute/_registry.py`) —
+  the closed first-connected-input passthrough policy and decorator config keys
+  shared by the modelling runtime/codegen pair. Both builders consume this one
+  declaration; no other node type inherits the policy without a cross-path
+  result contract.
 - **`VALID_KEYS`** (`_config_validation.py`) — `dict[NodeType, frozenset[str]]`, precomputed
   at import time from each node type's config `TypedDict.__annotations__` plus
   `_UNIVERSAL_KEYS` (`instanceOf`, `inputMapping`, `selected_columns`, `column_renames`,

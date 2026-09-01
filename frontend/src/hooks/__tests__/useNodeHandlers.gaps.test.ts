@@ -1,10 +1,5 @@
 /**
- * Gap tests for useNodeHandlers — handleRenameNode is exported but has no tests.
- *
- * Tests cover:
- * 1. handleRenameNode opens the rename dialog with correct nodeId and currentLabel
- * 2. handleRenameNode does nothing when the node is not found
- * 3. handleRenameNode uses node.data.label (coerced to string)
+ * Focused behavioral tests for less common useNodeHandlers paths.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act } from "@testing-library/react"
@@ -12,6 +7,7 @@ import type { Node, Edge } from "@xyflow/react"
 import useNodeHandlers from "../useNodeHandlers"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useUIStore from "../../stores/useUIStore"
+import useToastStore from "../../stores/useToastStore"
 import { makeNode } from "../../test-utils/factories"
 
 vi.mock("../../utils/layout", () => ({
@@ -28,6 +24,7 @@ function makeParams() {
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
     fitView: vi.fn(),
+    resolveNodeIdentities: vi.fn(async (nodes: readonly Node[]) => [...nodes]),
   }
 }
 
@@ -35,6 +32,7 @@ describe("useNodeHandlers — handleRenameNode", () => {
   beforeEach(() => {
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     useUIStore.setState({ renameDialog: null, submodelDialog: null })
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
   })
 
   afterEach(() => {
@@ -194,5 +192,51 @@ describe("useNodeHandlers — handleRenameNode", () => {
 
     expect(useUIStore.getState().submodelDialog).toBeNull()
     expect(useUIStore.getState().renameDialog).toBeNull()
+  })
+
+  it("rejects an instance whose resolved identity does not match", async () => {
+    const params = makeParams()
+    const source = makeNode("source", "submodel", { data: { label: "Score", nodeType: "submodel", config: { definitionId: "def", alias: "score" } } })
+    params.graphRef.current = { nodes: [source], edges: [] }
+    params.resolveNodeIdentities = vi.fn(async () => [makeNode("wrong")])
+    const { result } = renderHook(() => useNodeHandlers(params))
+    await act(async () => { await result.current.handleCreateInstance("source") })
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/invalid node/)
+  })
+
+  it("applies automatic layout to a non-empty graph", async () => {
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("layout")], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+    await act(async () => { await result.current.handleAutoLayout() })
+    expect(params.setNodes).toHaveBeenCalled()
+  })
+
+  it("does not apply a resolved instance after the graph changes", async () => {
+    const params = makeParams()
+    const source = makeNode("source")
+    params.graphRef.current = { nodes: [source], edges: [] }
+    let resolveIdentity!: (nodes: Node[]) => void
+    params.resolveNodeIdentities = vi.fn(() => new Promise((resolve) => {
+      resolveIdentity = resolve
+    }))
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    let creation!: Promise<void>
+    act(() => {
+      creation = result.current.handleCreateInstance("source")
+    })
+    await vi.waitFor(() => expect(params.resolveNodeIdentities).toHaveBeenCalledOnce())
+
+    act(() => {
+      params.graphRef.current = { nodes: [source, makeNode("newer-edit")], edges: [] }
+      resolveIdentity([makeNode("polars_11")])
+    })
+    await act(async () => {
+      await creation
+    })
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/graph changed/)
   })
 })

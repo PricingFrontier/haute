@@ -293,7 +293,28 @@ tracking backend and builds a client (`Exception` → `502`, logged).
 so each candidate run gets its own `client.list_artifacts` call to check
 for a matching model/optimiser-result artifact; a run whose artifact
 listing itself fails is logged and skipped rather than failing the whole
-response. `list_model_versions` fetches each version's backing-run params
+response. The route emits exactly one `mlflow_run_discovery_completed`
+measurement after every attempted search (including a failed search), with
+`outcome`, `max_results`, `search_calls`, `artifact_calls`, `runs_scanned`,
+`runs_returned`, `artifact_failures`, `search_ms`, aggregate `artifact_ms`,
+local `assembly_ms`, and `total_ms`. The record is constant-space and contains
+no experiment id, run id, artifact path, parameter, metric, error text, or
+other provider payload. Tracking-client setup failures remain owned by the
+existing setup event because no run search was attempted.
+
+The representative certificate uses the public route implementation with the
+maximum 100 candidates. It requires exactly one search and no more than 100
+artifact calls, local handler time (total less measured provider calls) below
+500 ms, response-model JSON serialization below 250 ms, and a representative
+payload below 1 MiB. Provider latency is deliberately not replaced with a
+machine-local claim: production phase measurements provide that evidence, with
+5,000 ms p95 total time at the 100-candidate cap as the operational decision
+gate. The bounded N+1 path is retained; provider-side artifact
+metadata/filtering or a bounded index becomes justified only if those live
+measurements breach that gate. No speculative cache, retry fan-out, or
+concurrent request burst is added.
+
+`list_model_versions` fetches each version's backing-run params
 via `_model_version_run_params`, which swallows (and logs with a full
 traceback) a failed `client.get_run` — a deleted/inaccessible backing run
 degrades that one version's `params` to `{}` rather than failing the

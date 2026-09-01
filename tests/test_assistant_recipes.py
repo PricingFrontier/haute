@@ -114,29 +114,6 @@ def test_imperative_requests_still_route_past_the_explanation_guard(
     assert route_recipe_request(prompt) == expected
 
 
-@pytest.mark.parametrize(
-    ("recipe_id", "user_text", "expected"),
-    [
-        ("continuous_banding", "After quotes, add age_band: band driver_age.", "age_band"),
-        (
-            "categorical_banding",
-            "Add a categorical banding node named region_band.",
-            "region_band",
-        ),
-        ("rating_step", "Add a rating step named age_rating.", "age_rating"),
-        ("reference_join", "Add an edge join named quote_join.", "quote_join"),
-        ("response_output", "Add a response output named quote_response.", "quote_response"),
-        ("parquet_showcase", "Build a Parquet showcase pipeline.", None),
-    ],
-)
-def test_explicit_primary_recipe_name_uses_only_closed_forms(
-    recipe_id: str, user_text: str, expected: str | None
-) -> None:
-    from haute.assistant._recipes import explicit_primary_recipe_name
-
-    assert explicit_primary_recipe_name(user_text, recipe_id) == expected
-
-
 def test_explicitly_withheld_rating_material_requires_clarification() -> None:
     from haute.assistant._recipes import request_requires_material_clarification
 

@@ -80,7 +80,7 @@ vi.mock("../LazyNodeEditors", () => ({
 // ─── Fixtures ─────────────────────────────────────────────────────
 
 function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
-  return {
+  const candidate = {
     id: "node_1",
     data: {
       label: "My Node",
@@ -89,6 +89,15 @@ function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
       config: {},
     },
     ...overrides,
+  }
+  return {
+    ...candidate,
+    data: {
+      ...candidate.data,
+      _defaultInputName: candidate.data._defaultInputName
+        ?? candidate.data.label.replaceAll(" ", "_"),
+      _sourceHandleInputNames: candidate.data._sourceHandleInputNames ?? {},
+    },
   }
 }
 
@@ -128,6 +137,7 @@ function renderWithGraph(opts: {
         node={node}
         onClose={onClose}
         onUpdateNode={onUpdateNode}
+        onRenameNode={vi.fn(async () => ({ ok: true as const }))}
         onDeleteEdge={onDeleteEdge}
       />
     </GraphProvider>,

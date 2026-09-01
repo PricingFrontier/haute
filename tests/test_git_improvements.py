@@ -14,6 +14,9 @@ from types import SimpleNamespace
 import pytest
 
 import haute._git as git_mod
+import haute._git_core as git_core
+import haute._git_history as git_history
+import haute._git_remote as git_remote
 from haute._git import (
     GitDomainError,
     GitHistoryReadError,
@@ -273,7 +276,7 @@ class TestGitOutputIntegrity:
             calls.append(kwargs)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        monkeypatch.setattr(git_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(git_core.subprocess, "run", fake_run)
         git_mod._run_git_ok("status", cwd=repo)
 
         env = calls[0]["env"]
@@ -303,7 +306,7 @@ class TestGitOutputIntegrity:
         def per_item_probe(*_args: object, **_kwargs: object) -> str:
             raise AssertionError("commit context must batch milestone parent metadata")
 
-        monkeypatch.setattr(git_mod, "_ledger_point", per_item_probe)
+        monkeypatch.setattr(git_history, "_ledger_point", per_item_probe)
         commit_context(repo, save, cwd=repo)
 
     def test_replay_refuses_to_linearise_a_merge(self, repo: Path) -> None:
@@ -338,7 +341,7 @@ class TestRoutineRemoteReads:
         def unexpected_fetch(*_args: object, **_kwargs: object) -> bool:
             raise AssertionError("routine remote listing must not fetch")
 
-        monkeypatch.setattr(git_mod, "fetch_pair", unexpected_fetch)
+        monkeypatch.setattr(git_remote, "fetch_pair", unexpected_fetch)
         response = list_remotes(repo, cwd=repo)
 
         assert [remote.name for remote in response.remotes] == ["origin"]
@@ -412,7 +415,7 @@ class TestHistoricalPipelineReads:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(
-            git_mod,
+            git_history,
             "_HISTORY_ARCHIVE_MAX_MEMBERS",
             2,
             raising=False,
@@ -432,7 +435,7 @@ class TestHistoricalPipelineReads:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(
-            git_mod,
+            git_history,
             "_HISTORY_ARCHIVE_MAX_BYTES",
             4,
             raising=False,
@@ -452,13 +455,13 @@ class TestHistoricalPipelineReads:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(
-            git_mod,
+            git_history,
             "_HISTORY_ARCHIVE_MAX_MEMBERS",
             2,
             raising=False,
         )
         monkeypatch.setattr(
-            git_mod,
+            git_history,
             "_HISTORY_ARCHIVE_MAX_BYTES",
             4,
             raising=False,

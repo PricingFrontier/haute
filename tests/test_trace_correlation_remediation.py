@@ -254,6 +254,7 @@ def test_trace_row_serialization_is_the_preview_json_safe_boundary() -> None:
         "opaque": object(),
     }
 
+    assert _jsonify_row is row_to_json_safe
     assert _jsonify_row(row) == row_to_json_safe(row)
 
 

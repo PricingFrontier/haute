@@ -18,6 +18,12 @@ part of the critical section after `git init`, while linked worktrees additional
 their common-Git-directory key, so the initialization transition cannot split one project's
 mutations across two locks.
 
+The stable `haute._git` import is an orchestration facade. One lower-level command core owns
+every Git subprocess and repository-lock entry, while repository setup, branch-pair
+transactions, immutable read models, history/archive reads, remote synchronization, and
+local archive lifecycle each have a single cohesive module. Domain modules never call back
+through the facade, so the split does not create hidden state or circular imports.
+
 The component owns the full lifecycle of a "working branch": creating one, saving
 incremental progress to it, promoting saves to a named milestone, forking a parallel
 version line, moving to read a historical version, archiving/deleting/restoring branches,

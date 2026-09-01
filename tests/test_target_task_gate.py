@@ -717,7 +717,7 @@ class TestPreDispatchServiceGate:
             patch.object(service, "_estimate_ram", return_value=(None, None, 3, 2)),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch(
-                "haute.routes._train_service.create_admitted_execution_context",
+                "haute.routes._training_lifecycle.create_admitted_execution_context",
                 return_value=context,
             ),
             patch.object(service, "_execute_and_sink", return_value=str(tmp_parquet)),

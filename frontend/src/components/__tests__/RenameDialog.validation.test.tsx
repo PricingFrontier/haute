@@ -24,7 +24,7 @@ afterEach(cleanup)
 function renderDialog(overrides: Partial<Parameters<typeof RenameDialog>[0]> = {}) {
   const props = {
     defaultValue: "My Node",
-    onConfirm: vi.fn(),
+    onConfirm: vi.fn(async () => ({ ok: true as const })),
     onCancel: vi.fn(),
     ...overrides,
   }
@@ -99,7 +99,7 @@ describe("RenameDialog — controlled input & validation (#36)", () => {
 
   it("accepts names with spaces, dashes, underscores, numbers, mixed case", () => {
     // Positive case: normal labels work.  Our sanitisation happens at
-    // code-gen time (sanitizeName), not in the display label — so the
+    // code-gen time, not in the display label — so the
     // dialog should accept human-readable labels freely.
     const { props } = renderDialog()
     const input = screen.getByLabelText("Node name") as HTMLInputElement

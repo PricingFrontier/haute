@@ -11,7 +11,10 @@ from typing import Any
 import httpx
 import polars as pl
 import pytest
+import structlog
 
+from haute._json_safe import to_json_safe
+from haute._trace_correlation import CorrelationWork, _correlate_rows_posthoc
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
 from haute.schemas import NodeResult, TraceResponse
@@ -21,10 +24,17 @@ from tests.conftest import build_test_input_snapshot
 
 pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
 
-_ROW_LIMIT = 3_000
+_ROW_LIMIT = 10_000
 _MAX_PREVIEW_ROWS = 128
 _TARGET_NODE = "premium"
 _EXPECTED_NODE_IDS = ("source", "features", "freq", "sev", "join", "premium")
+_CORRELATION_WORK_LIMITS = {
+    "candidate_frames_considered": 8,
+    "match_scans": 16,
+    "rows_scanned": 160_000,
+    "key_columns_scanned": 128,
+    "comparison_cells": 1_280_000,
+}
 
 
 def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNode:
@@ -185,6 +195,20 @@ def _record_perf_evidence(
     request.node.user_properties.append(("haute_perf_evidence", evidence))
 
 
+def _correlation_work_evidence(work: CorrelationWork) -> dict[str, int]:
+    return {
+        field: int(getattr(work, field)) for field in (*_CORRELATION_WORK_LIMITS, "ambiguity_count")
+    }
+
+
+def _assert_correlation_work_bounds(work: CorrelationWork) -> None:
+    for field, limit in _CORRELATION_WORK_LIMITS.items():
+        assert getattr(work, field) <= limit, (
+            f"correlation {field}={getattr(work, field)} exceeded {limit}"
+        )
+    assert not hasattr(work, "__dict__"), "work telemetry must remain constant-space"
+
+
 def _serialize_and_validate_trace(result: TraceResult) -> dict[str, Any]:
     payload = trace_result_to_dict(result)
     TraceResponse.model_validate({"status": "ok", "trace": payload})
@@ -314,15 +338,16 @@ def test_trace_cold_execution_records_stage_costs(
 
     monkeypatch.setattr(trace_mod, "_correlate_rows_posthoc", timed_correlate)
 
-    start = time.perf_counter()
-    result = execute_trace(
-        graph,
-        row_index=37,
-        target_node_id=target_node_id,
-        column=column,
-        row_limit=_ROW_LIMIT,
-    )
-    total_seconds = time.perf_counter() - start
+    with structlog.testing.capture_logs() as logs:
+        start = time.perf_counter()
+        result = execute_trace(
+            graph,
+            row_index=37,
+            target_node_id=target_node_id,
+            column=column,
+            row_limit=_ROW_LIMIT,
+        )
+        total_seconds = time.perf_counter() - start
 
     start = time.perf_counter()
     payload = _serialize_and_validate_trace(result)
@@ -331,6 +356,20 @@ def test_trace_cold_execution_records_stage_costs(
     assert result.execution_origin == "fresh_execution"
     assert payload["output_value"] == result.output_value
     assert result.steps
+    correlation_events = [
+        record for record in logs if record.get("event") == "trace_correlation_completed"
+    ]
+    assert len(correlation_events) == 1
+    correlation_event = correlation_events[0]
+    assert correlation_event["execution_origin"] == "fresh_execution"
+    assert correlation_event["duration_ms"] >= 0
+    work = CorrelationWork(
+        **{
+            field: correlation_event[field]
+            for field in (*_CORRELATION_WORK_LIMITS, "ambiguity_count")
+        }
+    )
+    _assert_correlation_work_bounds(work)
     _record_perf_evidence(
         request,
         graph_shape=graph_shape,
@@ -339,6 +378,7 @@ def test_trace_cold_execution_records_stage_costs(
         correlation_ms=round(correlation_seconds * 1000, 3),
         serialization_ms=round(serialization_seconds * 1000, 3),
         steps=len(result.steps),
+        **_correlation_work_evidence(work),
     )
 
     assert total_seconds < 2.0, f"{graph_shape} cold trace took {total_seconds:.3f}s"
@@ -396,32 +436,34 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
     monkeypatch.setattr(trace_mod, "_execute_eager_core", forbidden_cold_execute)
     monkeypatch.setattr(trace_mod, "_correlate_rows_posthoc", timed_correlate)
 
-    start = time.perf_counter()
-    first = execute_trace(
-        graph,
-        row_index=7,
-        target_node_id=_TARGET_NODE,
-        column="premium",
-        row_limit=_ROW_LIMIT,
-        row_values=preview[_TARGET_NODE].preview[7],
-        preview=preview_reader,
-    )
-    first_seconds = time.perf_counter() - start
+    with structlog.testing.capture_logs() as first_logs:
+        start = time.perf_counter()
+        first = execute_trace(
+            graph,
+            row_index=7,
+            target_node_id=_TARGET_NODE,
+            column="premium",
+            row_limit=_ROW_LIMIT,
+            row_values=preview[_TARGET_NODE].preview[7],
+            preview=preview_reader,
+        )
+        first_seconds = time.perf_counter() - start
     start = time.perf_counter()
     first_payload = _serialize_and_validate_trace(first)
     first_serialization_seconds = time.perf_counter() - start
 
-    start = time.perf_counter()
-    second = execute_trace(
-        graph,
-        row_index=19,
-        target_node_id=_TARGET_NODE,
-        column="risk_bucket",
-        row_limit=_ROW_LIMIT,
-        row_values=preview[_TARGET_NODE].preview[19],
-        preview=preview_reader,
-    )
-    second_seconds = time.perf_counter() - start
+    with structlog.testing.capture_logs() as second_logs:
+        start = time.perf_counter()
+        second = execute_trace(
+            graph,
+            row_index=19,
+            target_node_id=_TARGET_NODE,
+            column="risk_bucket",
+            row_limit=_ROW_LIMIT,
+            row_values=preview[_TARGET_NODE].preview[19],
+            preview=preview_reader,
+        )
+        second_seconds = time.perf_counter() - start
     start = time.perf_counter()
     second_payload = _serialize_and_validate_trace(second)
     second_serialization_seconds = time.perf_counter() - start
@@ -435,6 +477,21 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
     assert second_payload["output_value"] == second.output_value
     assert first.execution_origin == "preview_cache"
     assert second.execution_origin == "trace_cache"
+    first_correlation = [
+        record for record in first_logs if record.get("event") == "trace_correlation_completed"
+    ]
+    second_correlation = [
+        record for record in second_logs if record.get("event") == "trace_correlation_completed"
+    ]
+    assert len(first_correlation) == len(second_correlation) == 1
+    assert first_correlation[0]["execution_origin"] == "preview_cache"
+    assert second_correlation[0]["execution_origin"] == "trace_cache"
+    for event in (*first_correlation, *second_correlation):
+        _assert_correlation_work_bounds(
+            CorrelationWork(
+                **{field: event[field] for field in (*_CORRELATION_WORK_LIMITS, "ambiguity_count")}
+            )
+        )
     assert {"source", "features", "freq", "sev", "join", "premium"}.issubset(
         {step.node_id for step in first.steps}
     )
@@ -459,8 +516,6 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
 def test_multi_frame_correlation_records_cost(
     request: pytest.FixtureRequest,
 ) -> None:
-    from haute._trace_correlation import _correlate_rows_posthoc
-
     policies = pl.DataFrame(
         {
             "policy_id": list(range(_ROW_LIMIT)),
@@ -486,6 +541,7 @@ def test_multi_frame_correlation_records_cost(
     }
     diagnostics: list[dict[str, Any]] = []
     unresolved: dict[str, tuple[str, int]] = {}
+    work = CorrelationWork()
 
     start = time.perf_counter()
     rows = _correlate_rows_posthoc(
@@ -497,8 +553,9 @@ def test_multi_frame_correlation_records_cost(
         node_map=node_map,
         diagnostics=diagnostics,
         unresolved=unresolved,
-        source_frames_of={("api", "target"): ["policies"]},
+        source_frames_of={("api", "target"): ["policies", "drivers"]},
         traced_column="premium",
+        work=work,
     )
     correlation_seconds = time.perf_counter() - start
 
@@ -508,14 +565,140 @@ def test_multi_frame_correlation_records_cost(
     }
     assert diagnostics == []
     assert unresolved == {}
+    assert work.candidate_frames_considered == 2
+    _assert_correlation_work_bounds(work)
     _record_perf_evidence(
         request,
         graph_shape="multi-frame",
         rows=_ROW_LIMIT,
         frames=2,
         correlation_ms=round(correlation_seconds * 1000, 3),
+        **_correlation_work_evidence(work),
     )
     assert correlation_seconds < 0.5, f"multi-frame correlation took {correlation_seconds:.3f}s"
+
+
+@pytest.mark.parametrize(
+    ("case", "special_value"),
+    [
+        ("null", None),
+        ("nan", float("nan")),
+        ("positive_infinity", float("inf")),
+        ("negative_infinity", float("-inf")),
+    ],
+)
+def test_reordered_typed_correlation_10k_bounds(
+    case: str,
+    special_value: float | None,
+    request: pytest.FixtureRequest,
+) -> None:
+    signals: list[float | None] = [float(index) for index in range(_ROW_LIMIT)]
+    signals[-1] = special_value
+    parent = pl.DataFrame(
+        {
+            "policy_id": list(range(_ROW_LIMIT)),
+            "signal": signals,
+        }
+    )
+    target = parent.sort("policy_id", descending=True).with_columns(observed=pl.col("signal"))
+    work = CorrelationWork()
+    diagnostics: list[dict[str, Any]] = []
+
+    start = time.perf_counter()
+    rows = _correlate_rows_posthoc(
+        {"source": parent, "target": target},
+        ["source", "target"],
+        {"source": [], "target": ["source"]},
+        "target",
+        0,
+        node_map={
+            "source": _node("source", NodeType.DATA_INPUT, {}),
+            "target": _node(
+                "target",
+                NodeType.POLARS,
+                {"code": 'df = source.sort("policy_id", descending=True)'},
+            ),
+        },
+        diagnostics=diagnostics,
+        work=work,
+    )
+    correlation_seconds = time.perf_counter() - start
+
+    assert rows["source"] == {
+        "policy_id": _ROW_LIMIT - 1,
+        "signal": to_json_safe(special_value),
+    }
+    assert diagnostics == []
+    assert work == CorrelationWork(
+        candidate_frames_considered=1,
+        match_scans=2,
+        rows_scanned=2 * _ROW_LIMIT,
+        key_columns_scanned=4,
+        comparison_cells=4 * _ROW_LIMIT,
+        ambiguity_count=0,
+    )
+    _assert_correlation_work_bounds(work)
+    _record_perf_evidence(
+        request,
+        graph_shape="reordered-typed",
+        typed_case=case,
+        rows=_ROW_LIMIT,
+        correlation_ms=round(correlation_seconds * 1000, 3),
+        **_correlation_work_evidence(work),
+    )
+    assert correlation_seconds < 0.5, (
+        f"{case} reordered correlation took {correlation_seconds:.3f}s"
+    )
+
+
+def test_ambiguous_correlation_10k_bounds(request: pytest.FixtureRequest) -> None:
+    parent = pl.DataFrame({"bucket": ["same"] * _ROW_LIMIT})
+    target = parent.sort("bucket").with_columns(observed=pl.col("bucket"))
+    work = CorrelationWork()
+    diagnostics: list[dict[str, Any]] = []
+    unresolved: dict[str, tuple[str, int]] = {}
+
+    start = time.perf_counter()
+    rows = _correlate_rows_posthoc(
+        {"source": parent, "target": target},
+        ["source", "target"],
+        {"source": [], "target": ["source"]},
+        "target",
+        0,
+        node_map={
+            "source": _node("source", NodeType.DATA_INPUT, {}),
+            "target": _node(
+                "target",
+                NodeType.POLARS,
+                {"code": 'df = source.sort("bucket")'},
+            ),
+        },
+        diagnostics=diagnostics,
+        unresolved=unresolved,
+        work=work,
+    )
+    correlation_seconds = time.perf_counter() - start
+
+    assert rows["source"] is None
+    assert diagnostics[0]["code"] == "ambiguous_row_match"
+    assert unresolved["source"][0] == "duplicate_exact_match"
+    assert work == CorrelationWork(
+        candidate_frames_considered=1,
+        match_scans=2,
+        rows_scanned=2 * _ROW_LIMIT,
+        key_columns_scanned=2,
+        comparison_cells=2 * _ROW_LIMIT,
+        ambiguity_count=2,
+    )
+    _assert_correlation_work_bounds(work)
+    _record_perf_evidence(
+        request,
+        graph_shape="ambiguous",
+        rows=_ROW_LIMIT,
+        correlation_ms=round(correlation_seconds * 1000, 3),
+        **_correlation_work_evidence(work),
+    )
+    assert correlation_seconds < 0.5, f"ambiguous correlation took {correlation_seconds:.3f}s"
 
 
 async def _wait_for_thread_event(event: threading.Event, label: str) -> None:

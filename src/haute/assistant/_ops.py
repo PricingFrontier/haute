@@ -974,6 +974,23 @@ class GraphEditPlan:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedGraphEdit:
+    """The canonical, validated edit facts shared by plan finalisation.
+
+    This deliberately stops before validation warnings and verification
+    evidence, which belong to the application layer.  Everything describing
+    the user-authored edit itself is computed once here.
+    """
+
+    snapshot: ProjectSnapshot
+    result_graph: PipelineGraph
+    normalized_operations: tuple[object, ...]
+    diff: SemanticDiff
+    affected_capabilities: tuple[str, ...]
+    postconditions: tuple[object, ...]
+
+
 def _resolve_postcondition_refs(
     condition: Mapping[str, Any],
     refs: Mapping[str, str],
@@ -1539,15 +1556,12 @@ def _validate_assistant_authored_graph(
         )
 
 
-def build_graph_edit_plan(
+def prepare_graph_edit(
     snapshot: ProjectSnapshot,
     raw_ops: Sequence[Mapping[str, Any]],
     postconditions: Sequence[Mapping[str, Any]] = (),
-    validation_warnings: Sequence[str] = (),
-    verification_tier: Literal["structural", "schema"] = "structural",
-    verification_evidence: Sequence[Mapping[str, object]] = (),
-) -> GraphEditPlan:
-    """Normalize and authorize a pure graph edit against one exact snapshot."""
+) -> PreparedGraphEdit:
+    """Parse, apply, and validate an edit once against one exact snapshot."""
 
     ops = parse_ops(raw_ops)
     result, refs, authored_added = _apply_ops_with_refs(snapshot.graph, ops)
@@ -1563,6 +1577,26 @@ def build_graph_edit_plan(
     all_conditions = supplied_conditions or _automatic_postconditions(result, diff)
     verify_postconditions(result, all_conditions)
     capability_ids = _affected_capabilities(snapshot.graph, result, diff, ops, refs)
+    return PreparedGraphEdit(
+        snapshot=snapshot,
+        result_graph=result,
+        normalized_operations=normalized,
+        diff=diff,
+        affected_capabilities=capability_ids,
+        postconditions=all_conditions,
+    )
+
+
+def finalize_graph_edit_plan(
+    prepared: PreparedGraphEdit,
+    *,
+    validation_warnings: Sequence[str] = (),
+    verification_tier: Literal["structural", "schema"] = "structural",
+    verification_evidence: Sequence[Mapping[str, object]] = (),
+) -> GraphEditPlan:
+    """Seal one prepared edit with application-layer verification facts."""
+
+    snapshot = prepared.snapshot
     frozen_evidence_values = tuple(_frozen_json(item) for item in verification_evidence)
     if not all(isinstance(item, Mapping) for item in frozen_evidence_values):
         raise AssistantOperationError(
@@ -1583,32 +1617,56 @@ def build_graph_edit_plan(
         "base_revision": snapshot.revision,
         "capability_hash": snapshot.capability_hash,
         "revision_sources": dict(snapshot.source_manifest),
-        "normalized_operations": _wire_json(normalized),
-        "semantic_diff_hash": diff.complete_hash,
-        "postconditions": _wire_json(all_conditions),
+        "normalized_operations": _wire_json(prepared.normalized_operations),
+        "semantic_diff_hash": prepared.diff.complete_hash,
+        "postconditions": _wire_json(prepared.postconditions),
         "validation_warnings": list(validation_warnings),
-        "resulting_graph_shape": {"nodes": len(result.nodes), "edges": len(result.edges)},
+        "resulting_graph_shape": {
+            "nodes": len(prepared.result_graph.nodes),
+            "edges": len(prepared.result_graph.edges),
+        },
         "egress": "none",
         "verification_tier": verification_tier,
         "verification_evidence": _wire_json(frozen_evidence),
-        "affected_capabilities": capability_ids,
+        "affected_capabilities": prepared.affected_capabilities,
     }
     return GraphEditPlan(
         base_revision=snapshot.revision,
         capability_hash=snapshot.capability_hash,
         source_manifest=snapshot.source_manifest,
-        normalized_operations=normalized,
-        diff=diff,
-        affected_capabilities=capability_ids,
-        postconditions=all_conditions,
+        normalized_operations=prepared.normalized_operations,
+        diff=prepared.diff,
+        affected_capabilities=prepared.affected_capabilities,
+        postconditions=prepared.postconditions,
         validation_warnings=tuple(validation_warnings),
         resulting_graph_shape=MappingProxyType(
-            {"nodes": len(result.nodes), "edges": len(result.edges)}
+            {
+                "nodes": len(prepared.result_graph.nodes),
+                "edges": len(prepared.result_graph.edges),
+            }
         ),
         egress="none",
         verification_tier=verification_tier,
         verification_evidence=frozen_evidence,
         plan_hash=_digest(authority),
+    )
+
+
+def build_graph_edit_plan(
+    snapshot: ProjectSnapshot,
+    raw_ops: Sequence[Mapping[str, Any]],
+    postconditions: Sequence[Mapping[str, Any]] = (),
+    validation_warnings: Sequence[str] = (),
+    verification_tier: Literal["structural", "schema"] = "structural",
+    verification_evidence: Sequence[Mapping[str, object]] = (),
+) -> GraphEditPlan:
+    """Build a sealed plan, retaining the established public API."""
+
+    return finalize_graph_edit_plan(
+        prepare_graph_edit(snapshot, raw_ops, postconditions),
+        validation_warnings=validation_warnings,
+        verification_tier=verification_tier,
+        verification_evidence=verification_evidence,
     )
 
 
@@ -1728,6 +1786,7 @@ __all__ = [
     "GraphEditPlan",
     "OpValidationError",
     "PlanStore",
+    "PreparedGraphEdit",
     "ProjectSourceEvidence",
     "ProjectSnapshot",
     "RenameNodeOp",
@@ -1738,6 +1797,8 @@ __all__ = [
     "build_project_snapshot",
     "dataset_schema_digest",
     "parse_ops",
+    "prepare_graph_edit",
+    "finalize_graph_edit_plan",
     "SemanticDiff",
     "semantic_diff",
     "verify_postconditions",

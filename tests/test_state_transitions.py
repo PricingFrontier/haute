@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from fastapi import HTTPException
 
-from haute.routes._job_store import JobStore
+from haute.routes._job_lifecycle import JobLifecycle
+from haute.routes._job_store import TERMINAL_REASONS, JobStore, TerminalReason
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -30,16 +31,25 @@ if TYPE_CHECKING:
 
 
 def _inject_job(store: JobStore, status: str, **extra) -> str:
-    """Create a fake job in the given store with the specified status."""
+    """Create a fake job and reach terminal states through the lifecycle API."""
     fields = {
-        "status": status,
         "progress": 1.0 if status == "completed" else 0.5,
         "message": status.capitalize(),
         "config": {},
         "node_label": "test_node",
         **extra,
     }
-    return store.create_job(fields)
+    job_id = store.create_job({"status": "running", **fields})
+    if status != "running":
+        if status not in TERMINAL_REASONS:
+            raise ValueError(f"Unsupported injected job status: {status!r}")
+        transitioned = JobLifecycle(store).transition(
+            job_id,
+            to=cast(TerminalReason, status),
+        )
+        if transitioned is None:
+            raise AssertionError(f"Failed to prepare terminal test job: {status!r}")
+    return job_id
 
 
 def _random_single_evaluation() -> dict:
@@ -406,10 +416,9 @@ class TestOptimiserTimeoutDetection:
         from haute.routes.optimiser import _store
 
         self._store = _store
-        self._snapshot = dict(_store.jobs)
+        _store.clear_all()
         yield
-        _store.jobs.clear()
-        _store.jobs.update(self._snapshot)
+        _store.clear_all()
 
     def test_timeout_detection_on_poll(self, client: TestClient) -> None:
         # Create a running job with start_time far in the past
@@ -445,7 +454,7 @@ class TestJobStoreEdgeCases:
     def test_atomic_update_preserves_existing_fields(self) -> None:
         store = JobStore()
         job_id = store.create_job({"status": "running", "progress": 0.0, "extra": "keep"})
-        store.atomic_update(job_id, {"status": "completed", "progress": 1.0})
+        JobLifecycle(store).transition(job_id, to="completed", fields={"progress": 1.0})
         job = store.require_job(job_id)
         assert job["status"] == "completed"
         assert job["extra"] == "keep"
@@ -453,14 +462,14 @@ class TestJobStoreEdgeCases:
     def test_status_transitions_running_to_completed(self) -> None:
         store = JobStore()
         job_id = store.create_job({"status": "running"})
-        store.atomic_update(job_id, {"status": "completed"})
+        JobLifecycle(store).transition(job_id, to="completed")
         job = store.require_completed_job(job_id)
         assert job["status"] == "completed"
 
     def test_status_transitions_running_to_error(self) -> None:
         store = JobStore()
         job_id = store.create_job({"status": "running"})
-        store.atomic_update(job_id, {"status": "error", "message": "boom"})
+        JobLifecycle(store).transition(job_id, to="error", message="boom")
         job = store.require_job(job_id)
         assert job["status"] == "error"
         with pytest.raises(HTTPException) as exc_info:
@@ -469,7 +478,8 @@ class TestJobStoreEdgeCases:
 
     def test_error_job_stays_error_after_repeated_access(self) -> None:
         store = JobStore()
-        job_id = store.create_job({"status": "error", "message": "fail"})
+        job_id = store.create_job({"status": "running", "message": "Starting"})
+        JobLifecycle(store).transition(job_id, to="error", message="fail")
         for _ in range(10):
             job = store.require_job(job_id)
             assert job["status"] == "error"

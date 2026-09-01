@@ -69,6 +69,18 @@ def test_token_authenticates_and_takes_precedence(
 
 
 @pytest.mark.usefixtures("_clean_env")
+def test_workspace_host_is_normalised_without_stripping_protocol(
+    workspace_client_stub: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABRICKS_HOST", " https://workspace.example/ ")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "pat")
+
+    assert _get_databricks_client() == "client"
+    assert workspace_client_stub == {"host": "https://workspace.example", "token": "pat"}
+
+
+@pytest.mark.usefixtures("_clean_env")
 def test_service_principal_pair_authenticates_without_token(
     workspace_client_stub: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,

@@ -532,12 +532,7 @@ def client():
 
 def _clear_job_store_jobs(store) -> None:
     """Empty a route JobStore through its public cleanup path."""
-    for job_id in list(store.jobs):
-        store.delete_job(job_id)
-    store._running_activity_at.clear()
-    for timer in list(store._heavy_object_timers.values()):
-        timer.cancel()
-    store._heavy_object_timers.clear()
+    store.clear_all()
 
 
 def _clear_loaded_route_job_store(module_name: str) -> None:
@@ -590,12 +585,10 @@ def clean_training_job_store():
 
 @pytest.fixture()
 def clean_job_store():
-    """Snapshot and restore the optimiser job store around each test.
+    """Provide an empty optimiser job store for one test.
 
-    Tests that inject fake jobs into ``_store.jobs`` no longer need a
-    manual try/finally; the snapshot/restore here keeps test isolation
-    on the module-level job store without requiring per-file fixture
-    duplication.
+    The store is cleared through its public cleanup operation on both sides
+    of the test, so timers and owned artifacts cannot leak between cases.
 
     Single source of truth for the optimiser job-store fixture; previously
     each optimiser test file (``test_optimiser_routes.py``,
@@ -604,10 +597,9 @@ def clean_job_store():
     """
     from haute.routes.optimiser import _store
 
-    snapshot = dict(_store.jobs)
+    _store.clear_all()
     yield _store
-    _store.jobs.clear()
-    _store.jobs.update(snapshot)
+    _store.clear_all()
 
 
 # ---------------------------------------------------------------------------

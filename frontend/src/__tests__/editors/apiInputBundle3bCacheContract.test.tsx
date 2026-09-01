@@ -20,6 +20,14 @@ import { render, screen, cleanup } from "@testing-library/react"
 
 import ApiInputEditor from "../../panels/editors/ApiInputEditor"
 
+const RESERVED_FRAME_LABELS = new Set([
+  "False", "None", "True", "and", "as", "assert", "async", "await",
+  "break", "class", "continue", "def", "del", "elif", "else", "except",
+  "finally", "for", "from", "global", "if", "import", "in", "is",
+  "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
+  "while", "with", "yield",
+])
+
 vi.mock("../../panels/editors/_shared", async () => {
   const actual = await vi.importActual("../../panels/editors/_shared")
   return {
@@ -99,6 +107,7 @@ describe("Bundle 3b — cache button positioned above the Tables editor", () => 
         config={config as Record<string, unknown>}
         onUpdate={vi.fn()}
         accentColor="#10b981"
+        reservedFrameLabels={RESERVED_FRAME_LABELS}
         configPath="rating/config/quote_input/sample.json"
       />,
     )

@@ -6,6 +6,7 @@ import PipelineNode from "../PipelineNode"
 import type { PipelineFlowNode, PipelineNodeData } from "../../types/node"
 import { NODE_TYPES, nodeTypeColors, nodeTypeLabels } from "../../utils/nodeTypes"
 import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
+import { apiInputFrameLabels } from "../../utils/apiInputPorts"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { STATUS_COLORS } from "../../theme/colors"
 
@@ -45,6 +46,15 @@ function renderNode(
   const fullData: PipelineNodeData = {
     description: "",
     ...data,
+    ...(data.nodeType === NODE_TYPES.API_INPUT && data._sourceHandleInputNames === undefined
+      ? {
+          _sourceHandleInputNames: Object.fromEntries(
+            apiInputFrameLabels((data.config as Record<string, unknown>) ?? {}, new Set()).map(
+              (label) => [label, label],
+            ),
+          ),
+        }
+      : {}),
   }
   // NodeProps expects `id`, `data`, `type`, plus some internals.
   // We cast to `any` to satisfy the memo wrapper while testing render output.

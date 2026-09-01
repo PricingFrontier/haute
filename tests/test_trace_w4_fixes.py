@@ -13,7 +13,9 @@ import polars as pl
 import pytest
 import structlog.testing
 
+from haute._python_syntax import method_call_sites
 from haute._trace_correlation import (
+    _child_transform_may_reorder,
     _correlate_rows_posthoc,
     _trace_values_match,
 )
@@ -71,6 +73,66 @@ def _step(
 
 
 class TestPositionalFastPath:
+    def test_method_call_sites_report_exact_spans_in_source_order(self):
+        sites = method_call_sites('left = df.join(other)\nright = df.sort("x")\n')
+
+        assert [
+            (
+                site.name,
+                site.start_line,
+                site.start_column,
+                site.end_line,
+                site.end_column,
+            )
+            for site in sites
+        ] == [
+            ("join", 1, 7, 1, 21),
+            ("sort", 2, 8, 2, 20),
+        ]
+
+    def test_reorder_classifier_ignores_comments_strings_and_longer_attributes(self):
+        node = _node(
+            "c",
+            "polars",
+            {
+                "code": (
+                    "note = '.sort( and .join('\n"
+                    "# df = df.group_by('region').agg(pl.len())\n"
+                    "method = df.sort\n"
+                    "df = df.sorting_hat('label')\n"
+                )
+            },
+        )
+
+        assert _child_transform_may_reorder(node) is False
+
+    def test_reorder_classifier_detects_exact_structured_calls(self):
+        for method in (
+            "sort",
+            "sort_by",
+            "reverse",
+            "gather",
+            "take",
+            "sample",
+            "shuffle",
+            "join",
+            "group_by",
+            "groupby",
+            "unique",
+            "top_k",
+            "bottom_k",
+            "explode",
+            "pivot",
+            "cross_join",
+        ):
+            node = _node("c", "polars", {"code": f"df = df.{method}()"})
+            assert _child_transform_may_reorder(node) is True, method
+
+    def test_reorder_classifier_treats_invalid_source_as_unknown(self):
+        node = _node("c", "polars", {"code": "df = ("})
+
+        assert _child_transform_may_reorder(node) is True
+
     def test_reorder_with_no_shared_columns_marks_unresolved(self):
         """A rename that also reorders rows shares no column name with its
         parent; the old positional fast-path returned the wrong parent row.

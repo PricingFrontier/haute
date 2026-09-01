@@ -6,8 +6,8 @@
 | --- | --- |
 | `src/haute/_artifact_housekeeping.py` | Creates versioned ownership markers for crash-surviving artifact directories and safely reaps only stale, marked, direct children of an explicitly supplied root. |
 | `src/haute/_worker_protocol.py` | Owns the bounded version-1 spawn request, progress, result, failure, and artifact-manifest transport plus parent-side validation and cleanup. |
-| `src/haute/routes/_job_store.py` | Thread-safe, TTL-evicting, dict-backed `JobStore`; per-prefix singleton factory `get_job_store`; artifact-cleanup hook registry. |
-| `src/haute/routes/_job_lifecycle.py` | `JobLifecycle.transition()` — the single race-safe path from `running` to a terminal status, with reason precedence; `require_job_status`; `bind_running_execution_metrics_publisher`. |
+| `src/haute/routes/_job_store.py` | Thread-safe, TTL-evicting `JobStore`; immutable `JobSnapshot` records; public atomic update, terminal-transition, completion-publication, query, and cleanup operations; per-prefix singleton factory `get_job_store`; artifact-cleanup hook registry. |
+| `src/haute/routes/_job_lifecycle.py` | Typed lifecycle facade over the store-owned terminal-transition and completion-publication operations; `require_job_status`; `bind_running_execution_metrics_publisher`. |
 | `src/haute/routes/_background_jobs.py` | `CancellableJobRegistry` (latest-wins supersession + cooperative cancellation), `SingleFlightCoordinator` (mutual exclusion per key), `IsolatedJobSupervisor` (isolated-worker → lifecycle adapter), `BackgroundJobStoppedError`. |
 | `src/haute/routes/_timeouts.py` | `run_blocking_with_response_timeout` / `BlockingWorkTimeoutError` — bounds HTTP response latency for thread-backed blocking work without abandoning it. |
 
@@ -15,16 +15,29 @@
 
 ### `_job_store.py`
 
-- **`JobStore`** — wraps `_jobs: dict[str, dict[str, Any]]` plus `_running_activity_at:
-  dict[str, float]` (per-job last-active timestamp, used only while `status ==
-  "running"`), guarded by a single `_write_lock: threading.RLock`. Invariant: every
-  inserted job has a numeric `created_at`; a completed job with retained heavy objects has
-  a numeric `completed_at`; and every value in optional `artifact_handles` is a current
-  typed handle dict. Internal consumers access those required fields directly and do not
-  support missing-timestamp or malformed-handle record variants. Every
-  store mutation method replaces the job's dict object wholesale
-  (`_store_merged_job_locked`) — never mutates an existing dict in place — so a reader's
-  previous reference is never torn by those methods.
+- **`JobCommonFields`** — the typed common record envelope: a closed `JobStatus`,
+  numeric `created_at`, optional message, and lifecycle-owned
+  `terminal_reason`/`ended_at`/`completed_at`. Production creators seed only
+  `status="running"`; unknown statuses and pre-terminalised initial records fail at
+  the store boundary. Training, dispersion, optimiser solve, optimiser frontier,
+  Explore, pivot, and input-cache owners define typed payload records for their own
+  non-common fields rather than extending one catch-all store dictionary type.
+- **`JobSnapshot`** — a read-only `Mapping` returned by every read and successful
+  write. Its top-level record cannot be mutated, and mutable built-in containers are
+  detached from the stored record before exposure; mutating a nested snapshot value
+  therefore cannot bypass the store. Opaque runtime values such as solver/dataframe
+  objects retain identity and are governed by the heavy-object lifetime policy.
+  Previous snapshots remain stable after later copy-on-write updates.
+- **`JobStore`** — owns `_jobs` plus `_running_activity_at` (per-job last-active
+  timestamp, used only while `status == "running"`), guarded by one private
+  `threading.RLock`. Every mutation validates the common envelope and replaces the
+  stored dictionary wholesale. No mutable mapping or lock is exposed. The public
+  operations are: create/read/require; ordinary and status-guarded payload updates;
+  a heavy-field guarded update; terminal transition with reason precedence;
+  compare-and-swap completion publication; locked predicate queries; per-job payload
+  cleanup/deletion; and namespace-wide cleanup. Generic payload updates reject
+  `status`, `terminal_reason`, `created_at`, `ended_at`, and `completed_at` so only
+  the terminal API can change lifecycle state.
 - **`ArtifactCleaner`** — `Callable[[dict[str, Any]], None]` registered per artifact
   `kind` in the module-level `_ARTIFACT_CLEANERS` dict via `register_artifact_cleaner`.
   Registering two *distinct* callables for the same `kind` raises `RuntimeError`;
@@ -53,22 +66,14 @@
   memory_limited=30 < cancelled=40 < timed_out=50 < superseded=60`. Higher wins a
   race between two *already-terminal* reasons; `completed` is not in this map because
   it is handled as a separate, non-precedence special case (see Control flow).
-- **`JobLifecycle`** — a frozen dataclass wrapping one `store: JobStore` and an optional
-  test-only terminal-transition `fault_injector`. It is a
-  privileged collaborator: `transition()` reaches into `store._write_lock`,
-  `store.jobs`, `store._store_merged_job_locked`, and
-  `store._schedule_heavy_object_cleanup_if_needed` directly (marked `# noqa: SLF001`
-  at each call site). This tight coupling is intentional — `JobLifecycle` is meant to
-  be the only code outside `JobStore` itself allowed to perform a guarded terminal
-  transition, mirroring the project's closed-prefix discipline for `JobStore`
-  construction.
-- **`require_job_status(job)`** — returns the job's `status` cast to `JobStatus` after
-  validating it is a string present in `JOB_STATUSES`; raises `ValueError` otherwise.
-  Note this validates against the *lifecycle's* closed status set
-  (`{"running", *TERMINAL_REASONS}`), which matches `haute.schemas.JobStatus`
-  exactly — but `JobStore` itself does not enforce this set on arbitrary
-  `create_job`/`update_job` calls (e.g. tests freely use `"pending"`); only code paths
-  that go through `require_job_status` (the metrics publisher) are constrained.
+- **`JobLifecycle`** — a frozen, typed facade wrapping one `store: JobStore` and an
+  optional test-only transition fault injector. `transition()` delegates to the
+  store's public terminal operation; `publish_completion()` delegates to the public
+  compare-and-swap publication operation. It never acquires the store lock, reads
+  backing state, calls a private merge helper, or schedules cleanup itself.
+- **`require_job_status(job)`** — returns the job's `status` after validating it
+  against the same closed set enforced by `JobStore`. It remains useful at external
+  mapping/response boundaries; a `JobSnapshot` is already validated when created.
 
 ### `_background_jobs.py`
 
@@ -150,20 +155,19 @@
 
 ### `JobLifecycle.transition(job_id, *, to, message, fields, expected_status="running", elapsed_seconds, now)`
 
-1. Compute `update` dict: merges `fields`, sets `status=to`,
-   `terminal_reason=to`, `ended_at=now`; sets
-   `completed_at` (via `setdefault`, so only stamped once) when `to == "completed"`;
-   optionally sets `message`/`elapsed_seconds`.
-2. Acquire `store._write_lock` and read the current stored job (`old =
-   store.jobs[job_id]`; raises `KeyError` if the id doesn't exist — no guard, by
-   design, since every caller already holds a job id it created).
-3. Validate the optimistic-lock state: `expected_status` may be only `"running"` or
+1. Validate the destination, optimistic-lock state, and payload fields before
+   entering the store. `expected_status` may be only `"running"` or
    `"completed"`; the latter is valid only with `to="error"`. Any other value or
-   destination raises `ValueError`.
-4. **Fast path** — if `old["status"] == expected_status` (default `"running"`): merge
-   and store via `store._store_merged_job_locked`, return the merged dict. This is how
-   the sole completed-to-error publication correction succeeds.
-5. **Race path** — if the status has already moved past `expected_status` (another
+   destination raises `ValueError`, as does any attempt for `fields` to supply a
+   store-owned lifecycle key.
+2. Delegate the whole operation to `JobStore.transition_terminal`. The store
+   validates the current record, constructs `status=to`, `terminal_reason=to`,
+   `ended_at=now`, optional message/elapsed time, and `completed_at` for a completed
+   outcome, then performs one copy-on-write swap under its private lock.
+3. **Fast path** — if the current status equals `expected_status` (default
+   `"running"`), commit and return an immutable snapshot. This is also how the sole
+   completed-to-error publication correction succeeds.
+4. **Race path** — if the status has already moved past `expected_status` (another
    transition won first):
    - If the old status has no valid `terminal_reason` recorded, return `None`
      (nothing to compare against — treated as "can't safely proceed").
@@ -171,15 +175,24 @@
      `None` — completed is a one-way door in both directions: you can't overwrite a
      completed job, and you can't "complete" a job that already terminated for a
      different reason.
-   - Otherwise compare `_TERMINAL_REASON_PRECEDENCE[to]` against
-     `_TERMINAL_REASON_PRECEDENCE[old_reason]`. If `to`'s precedence is not strictly
-     greater, return `None` (a lower-or-equal-precedence reason loses silently — the
-     caller gets `None` back to detect the race, not an exception). Otherwise merge
-     and store, same as the fast path.
-6. After releasing the lock, call `store._schedule_heavy_object_cleanup_if_needed`
-   with the `schedule_cleanup`/`expires_at` values returned by the merge step (see
-   `JobStore` control flow below) — heavy-object timer scheduling always happens
-   outside the write lock.
+   - Otherwise compare terminal-reason precedence. If the new reason's precedence
+     is not strictly greater, return `None`; otherwise commit it as one atomic swap.
+5. Heavy-object timer scheduling occurs after the store releases its lock. The
+   optional fault injector is invoked by the public operation immediately before
+   the write and after the swap but before scheduling, preserving the two explicit
+   fault points without privileged lifecycle/store collaboration.
+
+`JobLifecycle.publish_completion(job_id, *, publish, message, elapsed_seconds, now)`
+delegates to `JobStore.compare_and_publish_completion`. Under the store lock it
+checks that the current status is still `running`; if not, it returns `None` without
+invoking `publish`. If the claim is live, it invokes the artifact/result publisher
+while retaining the same lock, validates the returned job-specific fields, and
+commits those fields plus the completed lifecycle metadata in one copy-on-write
+swap. A cancellation or timeout therefore wins wholly before publication, or waits
+and observes the completed record after publication; no reader can observe durable
+artifacts paired with a still-running or cancelled in-memory result. Publisher
+exceptions propagate and leave the job record unchanged. Filesystem transaction and
+rollback semantics remain owned by the job-specific publisher.
 
 `bind_running_execution_metrics_publisher(store, job_id, execution_context)` closes
 over a `weakref.ref` to the `ExecutionContext` (does not keep it alive) and installs
@@ -193,11 +206,12 @@ the publisher does not silently suppress corrupted lifecycle state.
 
 ### `JobStore` mutation paths
 
-`update_job`, `atomic_update`, `atomic_update_if_heavy_present`, and lifecycle transitions
-funnel through `_store_merged_job_locked(job_id, old, fields, now)` while holding
-`_write_lock`. `create_job` applies the same heavy-object/activity policy directly because
-there is no old record to merge; `delete_job` and `clear_result_data` have dedicated locked
-paths.
+`update_job`, `atomic_update`, `atomic_update_if_heavy_present`, terminal transitions,
+and completion publication funnel through one private merge/swap implementation while
+holding the private lock. `create_job` requires an initial `running` status and rejects
+terminal metadata; `delete_job`, `clear_result_data`, and `clear_all` have dedicated
+locked paths. Every public read or successful mutation returns a fresh `JobSnapshot`,
+never the stored dictionary.
 
 1. `merged = {**old, **fields}` (shallow merge — a plain dict "swap in a new object",
    not a deep merge; nested dict/list values in `fields` fully replace the
@@ -218,8 +232,8 @@ paths.
    heavy-object-related ones, so e.g. re-opening a completed job back to `"error"`
    (via a later lifecycle correction) always tears down a stale timer rather than
    letting it fire against a job it no longer applies to.
-6. Return `(merged, schedule_cleanup, expires_at)` to the caller, which — outside the
-   lock — calls `_schedule_heavy_object_cleanup_if_needed`.
+6. Return the cleanup decision internally; the public operation schedules outside the
+   lock and exposes only an immutable snapshot.
 
 `_schedule_heavy_object_cleanup(job_id, expires_at)` builds a `Timer` via the
 injectable `_heavy_object_timer_factory` (production default `threading.Timer`; tests
@@ -267,10 +281,18 @@ than the current expiry, updates the stamp and reschedules the cleanup timer.
 **`atomic_update` / `atomic_update_if_heavy_present`** both take an optional
 `expected_status` compare-and-swap guard: if the stored status doesn't match, the
 call returns `None` without writing (a caller-visible "your read was stale" signal,
-not an exception).  `atomic_update_if_heavy_present` additionally returns `None` if
+not an exception). Unknown expected statuses and lifecycle-owned fields fail before
+the write. `atomic_update_if_heavy_present` additionally returns `None` if
 any `required_keys` heavy object is already absent, so a route committing a result
 after the heavy-object timer has already fired sees a clean `None` rather than
 silently merging partial state onto a stripped job.
+
+`has_job_with_status` validates its status and runs TTL eviction before querying.
+`has_job_matching` supplies immutable snapshots to its predicate while the namespace
+is stable. `clear_all` removes every record through normal store cleanup, then
+cancels and clears any orphaned timer/activity bookkeeping left by an interrupted or
+test-corrupted write. Artifact cleaners, activity state, and heavy-object timers
+therefore cannot be bypassed by test or shutdown reset code.
 
 ### `CancellableJobRegistry`
 
@@ -403,23 +425,47 @@ the root itself are never removed.
 6. `_drain_cancelled_future_result` is the cancellation-only drain: it catches/logs
    `BaseException`, ensuring a worker `SystemExit`, `KeyboardInterrupt`, or ordinary
    error cannot replace the request's `CancelledError`.
+7. A module-owned, lock-protected occupancy counter tracks only three integers:
+   submitted-but-not-started workers, running workers, and request-cancellation
+   waiters. It has no per-request registry and therefore cannot grow with request
+   history. The callable wrapper moves one unit from queued to running at thread
+   start and removes it at thread exit, including `BaseException` paths.
+8. Exactly one `route_blocking_work_completed` record is emitted when the real
+   worker has finished, including after the HTTP response timed out or cancellation
+   was observed. It contains `operation`, `outcome` (`completed`, `failed`,
+   `response_timeout`, or `request_cancelled`), `queue_ms`, `execution_ms`,
+   `response_wait_ms`, `cleanup_ms`, and queued/running/cancellation-waiter snapshots
+   at the response boundary and after cleanup. It contains no arguments, return
+   value, exception text, or request payload. For a timeout or request cancellation,
+   `cleanup_ms` is also the interval for which the upstream execution admission and,
+   where present, supersession semaphore remain owned after the response boundary.
+   A task that fails before its thread wrapper starts is removed from the queued
+   count before measurement, so executor shutdown cannot leak occupancy.
+
+The representative certificate cancels one event-gated compatibility-thread
+request while it owns a one-slot supersession semaphore, starts a different-key
+request behind that semaphore, and proves the second request cannot enter until
+the first worker exits. After release, the waiting request must enter and all three
+occupancy counts must converge to zero within 250 ms; bookkeeping after the worker
+release must remain below 100 ms. The deliberately gated worker duration is recorded
+but is not assigned a fabricated universal bound. Current retention semantics are
+accepted because production heavy execution defaults to killable process isolation
+and compatibility threads must represent real occupancy; cooperative cancellation
+is only warranted for a concrete thread callable that can honour such a signal.
 
 ## Edge cases and invariants
 
-- **Reads expose live mutable records, not snapshots.** `get_job` / `require_job` return the
-  stored dict object and the `jobs` property exposes the backing mapping directly. A caller
-  that mutates either bypasses `_write_lock`, read-merge-swap, running-activity bookkeeping,
-  and heavy-object timer policy. Production consumers treat returned records as read-only
-  (apart from `JobLifecycle`'s explicitly locked privileged access), so the concurrency
-  guarantees assume all writes use the store/lifecycle mutation APIs.
+- **Reads are immutable snapshots.** `get_job`, `require_job`, query predicates,
+  and successful mutations expose `JobSnapshot`, never a stored dictionary or the
+  namespace mapping. Top-level mutation raises; built-in nested containers are
+  detached, and later store writes do not change an earlier snapshot.
 - **Zero-second TTLs are valid.** `JobStore(ttl_seconds=0)` and
   `heavy_object_ttl_seconds=0` are accepted (only negative values raise); a
   zero heavy-object TTL makes heavy state due for stripping immediately on the next
   access after completion.
-- **Missing `created_at` treated as epoch zero for TTL purposes**, not as "always
-  fresh" or an error — `float(job.get("created_at", 0))`. A record inserted directly
-  into `store.jobs` (bypassing `create_job`) without `created_at` is immediately
-  eligible for eviction once `now > ttl_seconds`.
+- **Creation owns `created_at`.** An omitted timestamp is stamped by the store; an
+  explicit test/restore timestamp must be finite, numeric, non-boolean, and
+  non-negative. No public path can insert a record without it.
 - **`atomic_update`/`update_job` raise `KeyError`** for an unknown job id — there is
   no forgiving "create if missing" behaviour; `create_job` is the only entry point
   that mints new records.
@@ -436,10 +482,10 @@ the root itself are never removed.
   the end state is always self-consistent — either the update wins (heavy keys *and*
   new fields both present) or the evictor wins (heavy keys gone *and* the new fields
   were never merged), never a mix.
-- **`atomic_update(expected_status=...)` is a true optimistic lock** under contention
-  — of N threads racing to transition the same job out of a given status, exactly one
-  succeeds and the rest observe `None`
-  (`test_atomic_update_with_expected_status_is_optimistic_lock`).
+- **Terminal transition/publication claims are true optimistic locks.** Of
+  competing completion and cancellation attempts, one owns the running record;
+  completed publication is a one-way door, while non-completed terminal reasons
+  retain the documented precedence policy.
 - **`JobLifecycle.transition` returning `None` is not an error** — it's the
   documented way to signal "this write lost the race" or "this write was rejected by
   precedence"; callers must handle it explicitly rather than assume every transition
@@ -454,8 +500,8 @@ the root itself are never removed.
 
 | Exception | Raised by | Where it surfaces |
 | --- | --- | --- |
-| `ValueError` | `JobStore.__init__` (negative TTLs); `get_job_store` (unknown prefix); `require_job_status` (invalid/missing status) | Construction/lookup call sites; propagates to caller, not converted to HTTP by this component. |
-| `KeyError` | `JobStore.update_job` / `atomic_update` / `atomic_update_if_heavy_present` (unknown job id); `JobLifecycle.transition` (via `store.jobs[job_id]`) | Propagates; callers generally only reach these with ids they created themselves. |
+| `ValueError` | `JobStore.__init__` (negative TTLs); `create_job` (unknown/non-running status, terminal metadata, or invalid timestamp); generic updates (lifecycle-owned fields or unknown expected status); terminal/publication operations (unknown or invalid transition); `get_job_store` (unknown prefix); `require_job_status` (invalid/missing status) | Construction/mutation/lookup call sites; propagates to caller, not converted to HTTP by this component. Validation happens before record mutation. |
+| `KeyError` | `JobStore.update_job` / `atomic_update` / `atomic_update_if_heavy_present` / terminal and publication operations (unknown job id) | Propagates; callers generally only reach these with ids they created themselves. |
 | `RuntimeError` | `register_artifact_cleaner` (duplicate distinct cleaner for a kind); `_schedule_heavy_object_cleanup_if_needed` (schedule requested without a numeric expiry) | Treated as internal-bug-level failures; not caught anywhere in this component. |
 | `HTTPException(404)` | `JobStore.require_job` | Standard FastAPI error response for missing/expired job ids. |
 | `HTTPException(400)` | `JobStore.require_completed_job` | When the job exists but isn't `completed`; message includes the actual status. |
@@ -476,20 +522,25 @@ the root itself are never removed.
   `WorkerFailurePayload.__post_init__` enforces the 512-character bound on the
   field.
 
-- `tests/test_job_store.py` — the largest suite; unit-tests CRUD, TTL eviction
-  (including exact-boundary and missing-`created_at` cases), artifact-handle cleanup
+- `tests/test_job_store.py` — the largest suite; unit-tests immutable/detached
+  snapshots, closed-status and lifecycle-field validation, CRUD, TTL eviction
+  (including exact-boundary and explicit-timestamp cases), artifact-handle cleanup
   on eviction (success, missing cleaner registration, cleaner failure),
   `require_job` / `require_completed_job` status-code mapping, `atomic_update`
-  semantics (merge, new-dict-per-write, optimistic-lock races under real threads),
+  semantics (merge, stable old snapshots, guarded writes under real threads),
   `clear_result_data`, and the full heavy-object lifecycle policy (default retention
   shorter than metadata TTL, zero-retention edge case, value-equality status checks
   for dynamically-built `"completed"` strings, active-timer scheduling/cancellation
   across every status transition, `touch_heavy_objects` window extension and
-  timer replacement). Concurrency is exercised with real `threading.Barrier`-
+  timer replacement), including namespace reset of orphaned auxiliary state.
+  Concurrency is exercised with real `threading.Barrier`-
   synchronised threads, not mocks, for the highest-risk races (concurrent creates,
   concurrent updates to the same/different jobs, the heavy-object-eviction-vs-update
   race, the optimistic-lock race).
-- `tests/test_job_lifecycle.py` — transition metadata correctness; `completed`'s
+- `tests/test_job_lifecycle.py` — transition metadata correctness; store-boundary
+  rejection of invalid transitions; compare-and-swap completion publication
+  (publisher suppression after a lost claim, publisher failure, and real-thread
+  completion/cancellation contention); `completed`'s
   stickiness against precedence races and the sole completed-to-error publication
   correction; exhaustive pairwise
   precedence races across all six non-completed reasons
@@ -524,7 +575,10 @@ the root itself are never removed.
   propagates even if the worker itself raises. Also covers the distinct drain
   policies: `_drain_background_future_result` logs ordinary timeout-path exceptions,
   while `_drain_cancelled_future_result` consumes every worker `BaseException` without
-  masking request cancellation.
+  masking request cancellation; the measurement's exact-once event, phase fields,
+  and zero-convergence occupancy contract are direct assertions. The cross-component
+  cancellation/limiter certificate lives in
+  `tests/performance/test_external_scaling_perf.py`.
 - Indirect coverage: `tests/test_optimiser_routes.py` exercises
   `BackgroundJobStoppedError` with the registry/lifecycle combination; modelling
   process-worker behavior is covered through the protocol-specific suites.

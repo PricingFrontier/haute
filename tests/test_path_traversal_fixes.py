@@ -19,6 +19,7 @@ import pytest
 from fastapi import HTTPException
 
 from tests.conftest import make_file_input_config
+from tests.job_store_support import seed_job
 
 
 @pytest.fixture(autouse=True)
@@ -30,13 +31,12 @@ def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture()
 def clean_job_store():
-    """Snapshot and restore the optimiser job store after each test."""
+    """Clear the optimiser job store on both sides of each test."""
     from haute.routes.optimiser import _store
 
-    snapshot = dict(_store.jobs)
+    _store.clear_all()
     yield _store
-    _store.jobs.clear()
-    _store.jobs.update(snapshot)
+    _store.clear_all()
 
 
 def _make_completed_job(tmp_path: Path) -> dict:
@@ -133,7 +133,7 @@ class TestOptimiserSavePathTraversal:
 
         set_project_root(tmp_path)
         job_id = "save_ok"
-        clean_job_store.jobs[job_id] = _make_completed_job(tmp_path)
+        seed_job(clean_job_store, job_id, _make_completed_job(tmp_path))
 
         with patch("haute.routes._helpers.pipeline_dir", return_value=tmp_path):
             resp = client.post(
@@ -150,7 +150,7 @@ class TestOptimiserSavePathTraversal:
 
         set_project_root(tmp_path)
         job_id = "save_traversal"
-        clean_job_store.jobs[job_id] = _make_completed_job(tmp_path)
+        seed_job(clean_job_store, job_id, _make_completed_job(tmp_path))
 
         resp = client.post(
             "/api/optimiser/save",

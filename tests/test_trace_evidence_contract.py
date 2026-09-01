@@ -7,9 +7,11 @@ from types import SimpleNamespace
 
 import polars as pl
 import pytest
+import structlog
 from pydantic import ValidationError
 
-from haute._trace_correlation import _correlate_rows_posthoc
+import haute.trace as trace_mod
+from haute._trace_correlation import CorrelationWork, _correlate_rows_posthoc
 from haute.schemas import TraceOmissionResponse, TraceResultResponse
 from haute.trace import (
     SchemaDiff,
@@ -21,6 +23,56 @@ from haute.trace import (
 from tests.conftest import make_edge, make_graph, make_source_node, make_transform_node
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
+
+def test_correlation_telemetry_is_emitted_when_correlation_fails(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_path = tmp_path / "source.parquet"
+    pl.DataFrame({"policy_id": [1]}).write_parquet(source_path)
+    graph = make_graph(
+        {
+            "nodes": [make_source_node("source", str(source_path))],
+            "edges": [],
+        }
+    )
+
+    def fail_correlation(
+        *args: object,
+        work: CorrelationWork | None = None,
+        **kwargs: object,
+    ) -> dict[str, dict[str, object] | None]:
+        assert work is not None
+        work.candidate_frames_considered = 3
+        work.match_scans = 2
+        work.rows_scanned = 20
+        work.key_columns_scanned = 4
+        work.comparison_cells = 40
+        work.ambiguity_count = 1
+        raise RuntimeError("injected correlation failure")
+
+    monkeypatch.setattr(trace_mod, "_correlate_rows_posthoc", fail_correlation)
+    with structlog.testing.capture_logs() as logs:
+        with pytest.raises(RuntimeError, match="injected correlation failure"):
+            execute_trace(graph, target_node_id="source")
+
+    events = [record for record in logs if record.get("event") == "trace_correlation_completed"]
+    assert events == [
+        {
+            "component": "trace",
+            "execution_origin": "fresh_execution",
+            "duration_ms": events[0]["duration_ms"],
+            "candidate_frames_considered": 3,
+            "match_scans": 2,
+            "rows_scanned": 20,
+            "key_columns_scanned": 4,
+            "comparison_cells": 40,
+            "ambiguity_count": 1,
+            "event": "trace_correlation_completed",
+            "log_level": "info",
+        }
+    ]
+    assert events[0]["duration_ms"] >= 0
 
 
 def test_ambiguous_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None:
@@ -206,6 +258,7 @@ def test_ambiguous_source_frame_is_unresolved_instead_of_guessing() -> None:
     }
     diagnostics: list[dict[str, object]] = []
     unresolved: dict[str, tuple[str, int]] = {}
+    work = CorrelationWork()
 
     rows = _correlate_rows_posthoc(
         {
@@ -224,11 +277,14 @@ def test_ambiguous_source_frame_is_unresolved_instead_of_guessing() -> None:
         unresolved=unresolved,
         source_frames_of={("source", "target"): ["first", "second"]},
         traced_column="premium",
+        work=work,
     )
 
     assert rows["source"] is None
     assert unresolved["source"][0] == "multiple_source_frames_matched"
     assert diagnostics[unresolved["source"][1]]["code"] == "ambiguous_source_frame"
+    assert work.candidate_frames_considered == 2
+    assert work.ambiguity_count == 1
 
 
 @pytest.mark.parametrize(

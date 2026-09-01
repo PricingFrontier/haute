@@ -298,14 +298,13 @@ describe("GitPanel session cache + unchanged-payload short-circuit", () => {
     expect(screen.queryAllByTestId("git-panel-milestone")).toHaveLength(0)
     expect(screen.getByTestId("git-panel-loading")).toBeInTheDocument()
 
-    // Status resolves → the working branch is known → the cached rows paint
-    // WITHOUT waiting for the still-held milestones fetch, and without
-    // triggering any extra fetch.
+    // Status resolves → the working branch is known → the keyed scope hydrates
+    // cached rows without waiting for its own one-time revalidate.
     useGitStore.setState({ status: readyStatus })
     await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
     expect(screen.getByText("First milestone")).toBeInTheDocument()
     expect(screen.queryByTestId("git-panel-loading")).not.toBeInTheDocument()
-    expect(mockGetMilestones).toHaveBeenCalledTimes(2)
+    expect(mockGetMilestones).toHaveBeenCalledTimes(3)
 
     // The in-flight revalidate still lands and reconciles changed data.
     resolveMilestones({
@@ -319,7 +318,7 @@ describe("GitPanel session cache + unchanged-payload short-circuit", () => {
     expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(1)
   })
 
-  it("(e2) a late status load does not clobber rows a completed refresh already applied", async () => {
+  it("(e2) a late status load replaces the unresolved scope with a warm resolved scope", async () => {
     // Warm the cache, then remount before status is known.
     useGitStore.setState({ status: readyStatus })
     const first = render(<GitPanel {...defaultProps} />)
@@ -342,12 +341,13 @@ describe("GitPanel session cache + unchanged-payload short-circuit", () => {
     await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
     const rowBefore = screen.getAllByTestId("git-panel-milestone")[0]
 
-    // Status lands late → hydration must do NOTHING: rows for this branch are
-    // already applied, so the expansion and the row nodes survive untouched.
+    // Status lands late → entering the resolved branch scope hydrates its warm
+    // cache and starts exactly one revalidation. Selection and expansion belong
+    // to the retired unresolved scope, so they must not survive the replacement.
     useGitStore.setState({ status: readyStatus })
     await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
-    expect(screen.getByTestId("git-panel-save")).toBeInTheDocument()
-    expect(screen.getAllByTestId("git-panel-milestone")[0]).toBe(rowBefore)
+    expect(screen.queryByTestId("git-panel-save")).not.toBeInTheDocument()
+    expect(screen.getAllByTestId("git-panel-milestone")[0]).not.toBe(rowBefore)
   })
 
   it("peeking an uncached branch still clears the rows (no stale carry-over)", async () => {

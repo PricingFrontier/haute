@@ -21,6 +21,8 @@ from haute.deploy._scorer import score_graph
 
 logger = get_logger(component="deploy.validators")
 
+TestQuoteResult = dict[str, str | int | float]
+
 
 @dataclass(frozen=True)
 class _TestQuoteCase:
@@ -255,13 +257,14 @@ def _validate_expected_outputs(
         raise ValueError("expected-output validation failed: " + "; ".join(errors))
 
 
-def validate_deploy(resolved: ResolvedDeploy) -> None:
+def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
     """Run all pre-deploy validations.
 
     Structural errors and test-quote failures are collected first, then
     aggregated into a single :class:`DeployError` so the operator sees the
     full picture in one report rather than a trickle of "fix this, rerun,
-    fix that, rerun" cycles.
+    fix that, rerun" cycles. On success, return the exact per-file scoring
+    results so presentation callers do not execute the gate a second time.
     """
     from haute.errors import DeployError
 
@@ -362,6 +365,7 @@ def validate_deploy(resolved: ResolvedDeploy) -> None:
     #        fail before any scoring happens.
     #      * The scorer raised an exception → surfaced via the result dict.
     test_quote_errors: list[str] = []
+    quote_results: list[TestQuoteResult] = []
     tq_dir = resolved.config.test_quotes_dir
     if tq_dir is not None and not tq_dir.exists():
         errors.append(f"Configured test_quotes.dir does not exist: {tq_dir}")
@@ -413,13 +417,13 @@ def validate_deploy(resolved: ResolvedDeploy) -> None:
     # Control only reaches here when both ``errors`` and ``test_quote_errors``
     # are empty (the branch above raises otherwise), so validation passed.
     logger.info("validation_passed")
-    return None
+    return quote_results
 
 
 def score_test_quotes(
     resolved: ResolvedDeploy,
     test_quotes_dir: Path | None = None,
-) -> list[dict[str, str | int | float]]:
+) -> list[TestQuoteResult]:
     """Score every JSON file in the test_quotes directory.
 
     Each JSON file should contain a list of dicts (quote objects).
@@ -443,7 +447,7 @@ def score_test_quotes(
     if not json_files:
         return []
 
-    results: list[dict[str, str | int | float]] = []
+    results: list[TestQuoteResult] = []
 
     for jf in json_files:
         t0 = time.perf_counter()

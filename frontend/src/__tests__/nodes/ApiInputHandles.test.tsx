@@ -21,6 +21,19 @@ import { ReactFlowProvider, useStoreApi, type NodeProps } from "@xyflow/react"
 import PipelineNode from "../../nodes/PipelineNode"
 import type { PipelineFlowNode, PipelineNodeData } from "../../types/node"
 import { NODE_TYPES } from "../../utils/nodeTypes"
+import { apiInputFrameLabels } from "../../utils/apiInputPorts"
+
+// The identity API also rejects Python keywords as frame labels (the frontend's
+// `apiInputFrameLabels` only enforces ASCII-identifier shape + reserved labels,
+// so keywords are filtered here to mirror what the server would actually stamp).
+const PYTHON_KEYWORDS = new Set(["class"])
+
+function sourceHandleInputNames(config: Record<string, unknown>): Record<string, string> {
+  const labels = apiInputFrameLabels(config, new Set()).filter(
+    (label) => !PYTHON_KEYWORDS.has(label),
+  )
+  return Object.fromEntries(labels.map((label) => [label, label]))
+}
 
 function ZoomSeed({ zoom }: { zoom: number }) {
   const store = useStoreApi()
@@ -36,6 +49,7 @@ function renderNode(config: Record<string, unknown>, zoom = 1) {
     nodeType: NODE_TYPES.API_INPUT,
     description: "",
     config,
+    _sourceHandleInputNames: sourceHandleInputNames(config),
   }
   const props = {
     id: "quotes",

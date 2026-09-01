@@ -473,7 +473,7 @@ def test_start_releases_admission_when_prep_fails_before_launch(
 
     with (
         patch(
-            "haute.routes._train_service.create_admitted_execution_context",
+            "haute.routes._training_lifecycle.create_admitted_execution_context",
             side_effect=recording_create,
         ),
         patch.object(service, "_execute_and_sink", side_effect=RuntimeError("prep boom")),
@@ -523,7 +523,7 @@ def test_start_keeps_admission_held_after_successful_launch(
 
     with (
         patch(
-            "haute.routes._train_service.create_admitted_execution_context",
+            "haute.routes._training_lifecycle.create_admitted_execution_context",
             side_effect=recording_create,
         ),
         patch.object(service, "_execute_and_sink", return_value=str(fake_tmp)),

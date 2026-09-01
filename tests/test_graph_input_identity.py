@@ -7,7 +7,10 @@ pure derivation before executor/codegen call sites are changed.
 
 from __future__ import annotations
 
+import pytest
+
 import haute._graph_utils as graph_utils
+from haute._editor_identities import resolve_editor_identity
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType
 
 
@@ -105,6 +108,63 @@ def test_edge_input_name_does_not_mutate_its_inputs() -> None:
     assert first == second == "quotes"
     assert source == source_before
     assert edge == edge_before
+
+
+def test_submodel_output_identity_uses_port_id_not_boundary_handle_prefix() -> None:
+    assert (
+        graph_utils.executable_input_name(
+            node_type=NodeType.SUBMODEL,
+            label="Pricing",
+            source_handle="out__written-premium",
+            submodel_alias="pricing_secondary",
+        )
+        == "pricing_secondary__written_premium"
+    )
+
+    with pytest.raises(ValueError, match="out__<port_id>"):
+        graph_utils.executable_input_name(
+            node_type=NodeType.SUBMODEL,
+            label="Pricing",
+            source_handle="written-premium",
+            submodel_alias="pricing_secondary",
+        )
+
+
+def test_editor_identity_resolver_owns_keyword_unicode_and_config_paths() -> None:
+    keyword_identity = resolve_editor_identity(
+        node_type=NodeType.API_INPUT,
+        label="class",
+        source_handles=("quotes", "vehicles"),
+    )
+    unicode_identity = resolve_editor_identity(
+        node_type=NodeType.POLARS,
+        label="café",
+    )
+
+    assert keyword_identity.function_name == "node_class"
+    assert keyword_identity.config_reference == "config/quote_input/node_class.json"
+    assert keyword_identity.default_input_name is None
+    assert keyword_identity.source_handle_input_names == {
+        "quotes": "quotes",
+        "vehicles": "vehicles",
+    }
+    assert unicode_identity.function_name == "caf_xe9_"
+    assert unicode_identity.default_input_name == "caf_xe9_"
+    assert unicode_identity.config_reference is None
+
+
+def test_editor_identity_resolver_rejects_duplicate_handles_without_mutation() -> None:
+    handles = ["quotes", "quotes"]
+    before = handles.copy()
+
+    with pytest.raises(ValueError, match="unique"):
+        resolve_editor_identity(
+            node_type=NodeType.API_INPUT,
+            label="Request",
+            source_handles=handles,
+        )
+
+    assert handles == before
 
 
 def test_duplicate_input_names_returns_empty_for_unique_names() -> None:

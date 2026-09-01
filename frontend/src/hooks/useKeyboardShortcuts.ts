@@ -1,4 +1,4 @@
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
@@ -29,10 +29,41 @@ interface KeyboardShortcutsParams {
   closePanel: () => void
   isInsideSubmodel: boolean
   readOnly: boolean
+  resolveGraphIdentities: (
+    nodes: readonly Node[],
+    edges: readonly Edge[],
+  ) => Promise<{ nodes: Node[]; edges: Edge[] }>
   commitSharedNodeDeletion?: (
     nodeIds: ReadonlySet<string>,
     selectedEdgeIds?: ReadonlySet<string>,
   ) => SharedNodeDeletionResult
+}
+
+function assertResolvedPasteMatchesCandidate(
+  candidateNodes: readonly Node[],
+  candidateEdges: readonly Edge[],
+  resolved: { nodes: readonly Node[]; edges: readonly Edge[] },
+): void {
+  if (
+    resolved.nodes.length !== candidateNodes.length
+    || resolved.nodes.some((node, index) => node.id !== candidateNodes[index]?.id)
+  ) {
+    throw new Error("identity resolver returned an invalid node batch")
+  }
+  if (
+    resolved.edges.length !== candidateEdges.length
+    || resolved.edges.some((edge, index) => {
+      const candidate = candidateEdges[index]
+      return !candidate
+        || edge.id !== candidate.id
+        || edge.source !== candidate.source
+        || edge.target !== candidate.target
+        || (edge.sourceHandle ?? null) !== (candidate.sourceHandle ?? null)
+        || (edge.targetHandle ?? null) !== (candidate.targetHandle ?? null)
+    })
+  ) {
+    throw new Error("identity resolver returned an invalid edge batch")
+  }
 }
 
 export default function useKeyboardShortcuts({
@@ -40,10 +71,12 @@ export default function useKeyboardShortcuts({
   graphRef, clipboard, nodeIdCounter,
   setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
   isInsideSubmodel, readOnly,
+  resolveGraphIdentities,
   commitSharedNodeDeletion,
 }: KeyboardShortcutsParams) {
   const addToast = useToastStore((s) => s.addToast)
   const { setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen } = useUIStore()
+  const pasteRequestSerialRef = useRef(0)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName
@@ -102,9 +135,10 @@ export default function useKeyboardShortcuts({
         const { nodes: copiedNodes, edges: copiedEdges } = clipboard.current
         if (copiedNodes.length === 0) return
         e.preventDefault()
+        const capturedGraph = graphRef.current
         // Filter out singleton types that already exist in the graph
         const existingSingletonTypes = new Set<string>()
-        for (const n of graphRef.current.nodes) {
+        for (const n of capturedGraph.nodes) {
           const nt = nodeData(n).nodeType
           if (isSingletonType(nt)) existingSingletonTypes.add(nt!)
         }
@@ -132,14 +166,46 @@ export default function useKeyboardShortcuts({
           if (!newSource || !newTarget) return []
           return [{ ...ed, id: `e-${newSource}-${newTarget}`, source: newSource, target: newTarget }]
         })
-        // Pasted nodes + their internal edges added in ONE undo step, so a
-        // single ⌘/Ctrl-Z removes the whole paste (the undo-atomicity bug
-        // class — setNodes-then-setEdges would push two snapshots).
-        setNodesAndEdges(
-          (nds) => [...nds.map((n) => ({ ...n, selected: false })), ...newNodes],
-          (eds) => [...eds, ...newEdges],
-        )
-        addToast("info", `Pasted ${newNodes.length} node${newNodes.length > 1 ? "s" : ""}`)
+        const requestSerial = ++pasteRequestSerialRef.current
+        void resolveGraphIdentities(newNodes, newEdges).then((resolved) => {
+          if (
+            pasteRequestSerialRef.current !== requestSerial
+            || graphRef.current !== capturedGraph
+          ) {
+            addToast(
+              "error",
+              "Paste was not applied because the graph changed while identity resolution was running.",
+            )
+            return
+          }
+          assertResolvedPasteMatchesCandidate(newNodes, newEdges, resolved)
+          // Pasted nodes + their internal edges land in ONE undo step, so a
+          // single ⌘/Ctrl-Z removes the whole paste. The captured graph is
+          // still current here; any intervening mutation rejects above.
+          setNodesAndEdges(
+            [
+              ...capturedGraph.nodes.map((node) => ({ ...node, selected: false })),
+              ...resolved.nodes,
+            ],
+            [...capturedGraph.edges, ...resolved.edges],
+          )
+          addToast("info", `Pasted ${resolved.nodes.length} node${resolved.nodes.length > 1 ? "s" : ""}`)
+        }).catch((error: unknown) => {
+          if (
+            pasteRequestSerialRef.current !== requestSerial
+            || graphRef.current !== capturedGraph
+          ) {
+            addToast(
+              "error",
+              "Paste was not applied because the graph changed while identity resolution was running.",
+            )
+            return
+          }
+          addToast(
+            "error",
+            `Paste failed: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        })
         return
       }
 
@@ -244,6 +310,7 @@ export default function useKeyboardShortcuts({
     handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
-    addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel, readOnly, commitSharedNodeDeletion,
+    addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel, readOnly,
+    resolveGraphIdentities, commitSharedNodeDeletion,
   ])
 }

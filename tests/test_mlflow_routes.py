@@ -18,9 +18,11 @@ from __future__ import annotations
 import os
 import sys
 import types
+from math import isfinite
 from unittest.mock import MagicMock, patch
 
 import pytest
+import structlog.testing
 from fastapi import HTTPException
 
 
@@ -136,6 +138,227 @@ class TestListExperiments:
 
 
 class TestListRuns:
+    @staticmethod
+    def _discovery_measurement(logs: list[dict]) -> dict:
+        events = [
+            record for record in logs if record.get("event") == "mlflow_run_discovery_completed"
+        ]
+        assert len(events) == 1
+        return events[0]
+
+    @staticmethod
+    def _assert_safe_measurement(
+        measurement: dict,
+        *,
+        forbidden_values: set[str],
+    ) -> None:
+        expected_fields = {
+            "outcome",
+            "max_results",
+            "search_calls",
+            "artifact_calls",
+            "runs_scanned",
+            "runs_returned",
+            "artifact_failures",
+            "search_ms",
+            "artifact_ms",
+            "assembly_ms",
+            "total_ms",
+        }
+        forbidden_fields = {
+            "experiment_id",
+            "run_id",
+            "artifact_path",
+            "artifacts",
+            "params",
+            "metrics",
+            "error",
+            "exception",
+        }
+
+        assert expected_fields <= measurement.keys()
+        assert not (forbidden_fields & measurement.keys())
+        assert not (forbidden_values & set(measurement.values()))
+        for field in {"search_ms", "artifact_ms", "assembly_ms", "total_ms"}:
+            assert isinstance(measurement[field], float)
+            assert isfinite(measurement[field])
+            assert measurement[field] >= 0
+
+    def test_run_discovery_measurement_for_max_cardinality_success(self, client):
+        """A 100-run search emits one aggregate, payload-free measurement."""
+        runs = [_make_run(run_id=f"secret-run-{index}") for index in range(100)]
+        mock_mlflow = MagicMock()
+        mock_mlflow.search_runs.return_value = runs
+        mock_client = MagicMock()
+        mock_client.list_artifacts.return_value = [MagicMock(path="secret-model.cbm")]
+
+        with (
+            _mock_tracking(mlflow=mock_mlflow, client=mock_client),
+            structlog.testing.capture_logs() as logs,
+        ):
+            resp = client.get("/api/mlflow/runs?experiment_id=secret-experiment&max_results=100")
+
+        assert resp.status_code == 200
+        measurement = self._discovery_measurement(logs)
+        assert {
+            field: measurement[field]
+            for field in {
+                "outcome",
+                "max_results",
+                "search_calls",
+                "artifact_calls",
+                "runs_scanned",
+                "runs_returned",
+                "artifact_failures",
+            }
+        } == {
+            "outcome": "success",
+            "max_results": 100,
+            "search_calls": 1,
+            "artifact_calls": 100,
+            "runs_scanned": 100,
+            "runs_returned": 100,
+            "artifact_failures": 0,
+        }
+        self._assert_safe_measurement(
+            measurement,
+            forbidden_values={"secret-experiment", "secret-run-0", "secret-model.cbm"},
+        )
+
+    def test_run_discovery_measurement_counts_partial_artifact_failure(self, client):
+        """Artifact failures are counted while the successful run is returned."""
+        good_run = _make_run(run_id="secret-good-run")
+        broken_run = _make_run(run_id="secret-broken-run")
+        mock_mlflow = MagicMock()
+        mock_mlflow.search_runs.return_value = [good_run, broken_run]
+        mock_client = MagicMock()
+        mock_client.list_artifacts.side_effect = [
+            [MagicMock(path="secret-good-model.cbm")],
+            RuntimeError("secret artifact failure"),
+        ]
+
+        with (
+            _mock_tracking(mlflow=mock_mlflow, client=mock_client),
+            structlog.testing.capture_logs() as logs,
+        ):
+            resp = client.get("/api/mlflow/runs?experiment_id=secret-experiment")
+
+        assert resp.status_code == 200
+        measurement = self._discovery_measurement(logs)
+        assert {
+            field: measurement[field]
+            for field in {
+                "outcome",
+                "max_results",
+                "search_calls",
+                "artifact_calls",
+                "runs_scanned",
+                "runs_returned",
+                "artifact_failures",
+            }
+        } == {
+            "outcome": "success",
+            "max_results": 20,
+            "search_calls": 1,
+            "artifact_calls": 2,
+            "runs_scanned": 2,
+            "runs_returned": 1,
+            "artifact_failures": 1,
+        }
+        self._assert_safe_measurement(
+            measurement,
+            forbidden_values={
+                "secret-experiment",
+                "secret-good-run",
+                "secret-broken-run",
+                "secret-good-model.cbm",
+                "secret artifact failure",
+            },
+        )
+
+    def test_run_discovery_measurement_emitted_after_search_failure(self, client):
+        """A failed search still emits exactly one safe measurement."""
+        mock_mlflow = MagicMock()
+        mock_mlflow.search_runs.side_effect = RuntimeError("secret search failure")
+
+        with (
+            _mock_tracking(mlflow=mock_mlflow),
+            structlog.testing.capture_logs() as logs,
+        ):
+            resp = client.get("/api/mlflow/runs?experiment_id=secret-experiment")
+
+        assert resp.status_code == 502
+        measurement = self._discovery_measurement(logs)
+        assert {
+            field: measurement[field]
+            for field in {
+                "outcome",
+                "max_results",
+                "search_calls",
+                "artifact_calls",
+                "runs_scanned",
+                "runs_returned",
+                "artifact_failures",
+            }
+        } == {
+            "outcome": "search_failed",
+            "max_results": 20,
+            "search_calls": 1,
+            "artifact_calls": 0,
+            "runs_scanned": 0,
+            "runs_returned": 0,
+            "artifact_failures": 0,
+        }
+        self._assert_safe_measurement(
+            measurement,
+            forbidden_values={"secret-experiment", "secret search failure"},
+        )
+
+    def test_run_discovery_measurement_emitted_after_processing_failure(self):
+        """An unexpected response-build failure still closes the measurement."""
+
+        class BrokenInfo:
+            run_id = "secret-run"
+
+            @property
+            def run_name(self):
+                raise RuntimeError("secret response-build failure")
+
+            status = "FINISHED"
+            start_time = 1
+
+        broken_run = MagicMock()
+        broken_run.info = BrokenInfo()
+        mock_mlflow = MagicMock()
+        mock_mlflow.search_runs.return_value = [broken_run]
+        mock_client = MagicMock()
+        mock_client.list_artifacts.return_value = [MagicMock(path="secret-model.cbm")]
+
+        from haute.routes.mlflow import list_runs
+
+        with (
+            _mock_tracking(mlflow=mock_mlflow, client=mock_client),
+            structlog.testing.capture_logs() as logs,
+            pytest.raises(RuntimeError, match="secret response-build failure"),
+        ):
+            list_runs("secret-experiment", 1, "model")
+
+        measurement = self._discovery_measurement(logs)
+        assert measurement["outcome"] == "processing_failed"
+        assert measurement["search_calls"] == 1
+        assert measurement["artifact_calls"] == 1
+        assert measurement["runs_scanned"] == 1
+        assert measurement["runs_returned"] == 0
+        self._assert_safe_measurement(
+            measurement,
+            forbidden_values={
+                "secret-experiment",
+                "secret-run",
+                "secret-model.cbm",
+                "secret response-build failure",
+            },
+        )
+
     def test_list_runs_filters_cbm(self, client):
         """Only returns runs with .cbm artifacts."""
         run1 = _make_run(metrics={"rmse": 0.5}, params={"lr": "0.05"})

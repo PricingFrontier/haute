@@ -7,11 +7,25 @@
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
-import { useState } from "react"
-import ApiInputEditor from "../../panels/editors/ApiInputEditor"
+import { useState, type ComponentProps } from "react"
+import RawApiInputEditor from "../../panels/editors/ApiInputEditor"
 import type { OnUpdateConfig } from "../../panels/editors/_shared"
 
 afterEach(cleanup)
+
+const RESERVED_FRAME_LABELS = new Set([
+  "False", "None", "True", "and", "as", "assert", "async", "await",
+  "break", "class", "continue", "def", "del", "elif", "else", "except",
+  "finally", "for", "from", "global", "if", "import", "in", "is",
+  "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
+  "while", "with", "yield",
+])
+
+function ApiInputEditor(
+  props: Omit<ComponentProps<typeof RawApiInputEditor>, "reservedFrameLabels">,
+) {
+  return <RawApiInputEditor {...props} reservedFrameLabels={RESERVED_FRAME_LABELS} />
+}
 
 // Mock the shared components that make API calls
 vi.mock("../../panels/editors/_shared", async () => {
@@ -87,6 +101,7 @@ const DEFAULT_PROPS = {
   config: {} as Record<string, unknown>,
   onUpdate: successfulOnUpdateSpy(),
   accentColor: "#10b981",
+  reservedFrameLabels: RESERVED_FRAME_LABELS,
 }
 
 const CACHEABLE_TABLE = {

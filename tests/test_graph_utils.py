@@ -9,6 +9,7 @@ from haute.graph_utils import (
     GraphNode,
     NodeData,
     PipelineGraph,
+    UnknownEdgeEndpointError,
     _execute_lazy,
     _sanitize_func_name,
     ancestors,
@@ -124,11 +125,12 @@ class TestTopoSort:
             topo_sort_ids(ids, edges)
 
     def test_edges_referencing_unknown_nodes(self):
-        """Edges referencing non-existent IDs should be ignored."""
+        """The public default sorter fails loudly on unknown endpoints."""
         ids = ["a", "b"]
         edges = [_e("a", "b"), _e("x", "y")]
-        result = topo_sort_ids(ids, edges)
-        assert set(result) == {"a", "b"}
+        with pytest.raises(UnknownEdgeEndpointError) as exc_info:
+            topo_sort_ids(ids, edges)
+        assert exc_info.value.unknown_node_ids == ("x", "y")
 
     def test_empty_input(self):
         assert topo_sort_ids([], []) == []

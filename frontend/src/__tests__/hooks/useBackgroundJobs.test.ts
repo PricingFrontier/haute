@@ -169,7 +169,10 @@ describe("useBackgroundJobs", () => {
       // First poll fires at 500ms
       await advance(500)
       expect(mockGetStatus).toHaveBeenCalledTimes(1)
-      expect(mockGetStatus).toHaveBeenCalledWith("job-1")
+      expect(mockGetStatus).toHaveBeenCalledWith(
+        "job-1",
+        { signal: expect.any(AbortSignal) },
+      )
 
       // Progress should be updated on the active job
       expect(useNodeResultsStore.getState().solveJobs["n1"]?.progress?.progress).toBe(0.5)
@@ -479,7 +482,10 @@ describe("useBackgroundJobs", () => {
       await advance(500)
 
       const state = useNodeResultsStore.getState()
-      expect(mockGetStatus).toHaveBeenCalledWith("ej-1")
+      expect(mockGetStatus).toHaveBeenCalledWith(
+        "ej-1",
+        { signal: expect.any(AbortSignal) },
+      )
       expect(state.exploreJobs.e1).toBeUndefined()
       expect(state.exploreResults.e1).toMatchObject({
         jobId: "ej-1",

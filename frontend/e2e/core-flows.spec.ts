@@ -131,8 +131,8 @@ test.describe("core browser flows", () => {
     await sourceInput.fill("Batch Smoke")
     await sourceInput.press("Enter")
 
-    // Keys are minted by the blessed sanitizeName: case is PRESERVED (the
-    // old ad-hoc fold lowercased, silently merging case-distinct labels).
+    // Browser-owned source keys use portableKey: case is preserved (the old
+    // ad-hoc fold lowercased, silently merging case-distinct labels).
     await expect(page.getByTitle("Data source")).toContainText("Batch_Smoke")
 
     await page.getByRole("button", { name: "Save", exact: true }).click()

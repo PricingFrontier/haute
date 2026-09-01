@@ -371,7 +371,7 @@ def _portable_allowed_values(schema: Mapping[str, object]) -> tuple[object, ...]
 class _SchemaBudget:
     """Bounded property count projected onto a provider wire schema."""
 
-    remaining: int = 16
+    remaining: int = 40
 
 
 def _portable_property_schema(
@@ -393,7 +393,24 @@ def _portable_property_schema(
 
     types = [_portable_schema_type(schema) for schema in schemas]
     if types and types[0] is not None and all(value == types[0] for value in types):
-        return {"type": types[0]}
+        projected: dict[str, object] = {"type": types[0]}
+        if types[0] == "array":
+            item_schemas = [schema.get("items") for schema in schemas]
+            if all(isinstance(items, Mapping) for items in item_schemas):
+                projected["items"] = _portable_tool_schema(
+                    {"oneOf": item_schemas},
+                    budget,
+                )
+        descriptions = tuple(
+            dict.fromkeys(
+                description
+                for schema in schemas
+                if isinstance((description := schema.get("description")), str)
+            )
+        )
+        if descriptions:
+            projected["description"] = " ".join(descriptions)
+        return projected
     return {}
 
 

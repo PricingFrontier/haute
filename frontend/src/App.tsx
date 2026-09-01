@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useMemo, useState, useRef, lazy, Suspense } from "react"
-import type { ReactNode } from "react"
+import type { ComponentProps, ReactNode } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -20,8 +20,9 @@ import { moveToVersion } from "./api/client"
 import { nodeTypes } from "./utils/nodeTypeRegistry"
 import NodePalette from "./panels/NodePalette"
 import NodePanel from "./panels/NodePanel"
+import type { OnUpdateConfigResult, SimpleEdge, SimpleNode } from "./panels/editors/_shared"
 import { GraphProvider } from "./panels/GraphContext"
-import DataPreview from "./panels/DataPreview"
+import DataPreview, { type PreviewData } from "./panels/DataPreview"
 import ExplorePreview from "./panels/ExplorePreview"
 import OptimiserDataPreview from "./panels/OptimiserDataPreview"
 import { ModellingPreview } from "./panels/ModellingPreview"
@@ -49,13 +50,15 @@ import { withEdgeJoinInsertionCandidate } from "./utils/edgeJoinInsertionFeedbac
 import useGraphCanvasState from "./hooks/useGraphCanvasState"
 import useWebSocketSync from "./hooks/useWebSocketSync"
 import usePipelineAPI from "./hooks/usePipelineAPI"
-import useTracing from "./hooks/useTracing"
+import useTracing, { type TraceRequestState } from "./hooks/useTracing"
 import useSubmodelNavigation from "./hooks/useSubmodelNavigation"
 import useSubmodelBoundaryEditing from "./hooks/useSubmodelBoundaryEditing"
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts"
 import useNodeHandlers from "./hooks/useNodeHandlers"
 import useEdgeHandlers from "./hooks/useEdgeHandlers"
 import usePanelGraphContext from "./hooks/usePanelGraphContext"
+import type { PanelGraphContextSnapshot } from "./hooks/usePanelGraphContext"
+import useGraphCommitController from "./hooks/useGraphCommitController"
 import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
@@ -69,17 +72,12 @@ import { NODE_TYPES, isSingletonType } from "./utils/nodeTypes"
 import { previewForActiveNode } from "./utils/activePreview"
 import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./utils/edgeJoinGraph"
 import { validatePipelineConnection, type ConnectionValidationResult } from "./utils/connectionValidation"
-import {
-  applyApiInputConfigChange,
-  edgeInputName,
-  incomingEdgeInputNames,
-} from "./utils/apiInputPorts"
-import type { OnUpdateConfigResult, SimpleEdge, SimpleNode } from "./panels/editors/_shared"
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import type { DrilledOccurrenceIdentity } from "./utils/submodelRuntimeTarget"
 import { isSubmodelInstanceConfig, nodeData } from "./types/node"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
+import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
 import { PanelLeftOpen } from "lucide-react"
 
 // ---------------------------------------------------------------------------
@@ -121,60 +119,6 @@ const fitViewOptions = { padding: 0.15 }
 
 const proOptions = { hideAttribution: true }
 
-type RenamePair = { from: string; to: string }
-
-type RenameGraphScope = {
-  nodes: Node[]
-  edges: Edge[]
-  submodels: Record<string, unknown>
-}
-
-type AffectedRenameTarget = {
-  scope: RenameGraphScope
-  target: Node
-  incomingScope: RenameGraphScope
-  incomingTargetId: string
-  pairs: RenamePair[]
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function remapRecordKeys(
-  value: unknown,
-  renames: readonly RenamePair[],
-): { value: unknown; collision?: string } {
-  if (!isRecord(value) || renames.length === 0) return { value }
-  const renameByFrom = new Map(renames.map(({ from, to }) => [from, to]))
-  const next: Record<string, unknown> = {}
-  for (const [key, entry] of Object.entries(value)) {
-    const nextKey = renameByFrom.get(key) ?? key
-    if (Object.hasOwn(next, nextKey)) return { value, collision: nextKey }
-    next[nextKey] = entry
-  }
-  return { value: next }
-}
-
-function remapRecordValues(
-  value: unknown,
-  renames: readonly RenamePair[],
-): unknown {
-  if (!isRecord(value) || renames.length === 0) return value
-  const renameByFrom = new Map(renames.map(({ from, to }) => [from, to]))
-  let changed = false
-  const next = Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => {
-      if (typeof entry !== "string") return [key, entry]
-      const replacement = renameByFrom.get(entry)
-      if (replacement === undefined) return [key, entry]
-      changed = true
-      return [key, replacement]
-    }),
-  )
-  return changed ? next : value
-}
-
 // One-shot sessionStorage flag set just before the post-move reload, read once on
 // the next startup so it can confirm the move (toast) and skip the auto branch
 // prompt — the moved-to detached HEAD is intended, not a divergence (P6 §3.4).
@@ -187,6 +131,422 @@ const edgeJoinSwapFailureMessages: Record<EdgeJoinSwapInputsFailureReason, strin
   "join-input-not-found": "Edge join swap rejected: joining input is not connected",
   "base-input-ambiguous": "Edge join swap rejected: dominant input has more than one connection",
   "join-input-ambiguous": "Edge join swap rejected: joining input has more than one connection",
+}
+
+type NodeResultsState = ReturnType<typeof useNodeResultsStore.getState>
+type NodeContextMenuState = {
+  x: number
+  y: number
+  nodeId: string
+  nodeLabel: string
+  isSubmodel?: boolean
+  isSubmodelCopy?: boolean
+  isSingleton?: boolean
+}
+
+type ActiveNodePreviewProps = {
+  documentCanExecute: boolean
+  activeNodeId: string | null
+  activeNode: SimpleNode | null
+  panelNodes: SimpleNode[]
+  panelEdges: SimpleEdge[]
+  submodels: Record<string, unknown>
+  preamble: string
+  previewData: PreviewData | null
+  getModellingPreview: NodeResultsState["getModellingPreview"]
+  getOptimiserPreview: NodeResultsState["getOptimiserPreview"]
+  onCellClick: (rowIndex: number, column: string, rowValues?: Record<string, unknown>) => void
+  tracedCell: { rowIndex: number; column: string } | null
+  previewNodeFrame: (nodeId: string, portLabel: string) => unknown
+}
+
+function ActiveNodePreview({
+  documentCanExecute,
+  activeNodeId,
+  activeNode,
+  panelNodes,
+  panelEdges,
+  submodels,
+  preamble,
+  previewData,
+  getModellingPreview,
+  getOptimiserPreview,
+  onCellClick,
+  tracedCell,
+  previewNodeFrame,
+}: ActiveNodePreviewProps) {
+  if (
+    documentCanExecute
+    && activeNode
+    && nodeData(activeNode).nodeType === NODE_TYPES.EXPLORE
+  ) {
+    return (
+      <ExplorePreview
+        node={activeNode}
+        allNodes={panelNodes}
+        edges={panelEdges}
+        submodels={submodels}
+        preamble={preamble}
+        previewData={previewData}
+        onCellClick={onCellClick}
+        tracedCell={tracedCell}
+      />
+    )
+  }
+
+  const modellingPreview = activeNodeId ? getModellingPreview(activeNodeId) : null
+  if (documentCanExecute && modellingPreview) {
+    return <ModellingPreview data={modellingPreview} nodeId={activeNodeId!} />
+  }
+  const optimiserPreview = activeNodeId ? getOptimiserPreview(activeNodeId) : null
+  if (documentCanExecute && optimiserPreview) {
+    return (
+      <Suspense fallback={null}>
+        <OptimiserPreview
+          data={optimiserPreview}
+          nodeId={activeNodeId!}
+          allNodes={panelNodes}
+          edges={panelEdges}
+        />
+      </Suspense>
+    )
+  }
+  if (
+    documentCanExecute
+    && activeNode
+    && nodeData(activeNode).nodeType === NODE_TYPES.OPTIMISER
+    && previewData?.status === "ok"
+    && previewData.preview.length > 0
+  ) {
+    return (
+      <OptimiserDataPreview
+        data={previewData}
+        config={nodeData(activeNode).config ?? {}}
+      />
+    )
+  }
+  return (
+    <DataPreview
+      data={previewData}
+      nodeType={activeNode ? nodeData(activeNode).nodeType : undefined}
+      onCellClick={documentCanExecute ? onCellClick : undefined}
+      tracedCell={tracedCell}
+      onSelectFrame={
+        activeNodeId ? (portLabel) => previewNodeFrame(activeNodeId, portLabel) : undefined
+      }
+    />
+  )
+}
+
+type FlowEditorOverlaysProps = {
+  editingReadOnly: boolean
+  contextMenu: NodeContextMenuState | null
+  setContextMenu: (menu: NodeContextMenuState | null) => void
+  onDeleteNode: ComponentProps<typeof ContextMenu>["onDelete"]
+  onDuplicateNode: ComponentProps<typeof ContextMenu>["onDuplicate"]
+  onRenameNodeMenu: ComponentProps<typeof ContextMenu>["onRename"]
+  onCreateInstance: ComponentProps<typeof ContextMenu>["onCreateInstance"]
+  onDissolveSubmodel: ComponentProps<typeof ContextMenu>["onDissolveSubmodel"]
+  onGitModalConfirmed: () => void
+  onSave: () => Promise<boolean>
+  onMoveConfirmed: (saveFirst: boolean) => Promise<void>
+  onCreateSubmodel: (name: string, nodeIds: string[]) => void
+  onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
+  pipelineRepairTarget: PipelineRepairTarget | null
+  documentSourceFile: string
+  documentSourceRevision: string | null
+  onClosePipelineRepair: () => void
+  onRepairApplied: ComponentProps<typeof PipelineRepairDialog>["onApplied"]
+  onNodeSearchSelect: (nodeId: string) => void
+}
+
+function FlowEditorOverlays({
+  editingReadOnly,
+  contextMenu,
+  setContextMenu,
+  onDeleteNode,
+  onDuplicateNode,
+  onRenameNodeMenu,
+  onCreateInstance,
+  onDissolveSubmodel,
+  onGitModalConfirmed,
+  onSave,
+  onMoveConfirmed,
+  onCreateSubmodel,
+  onRenameNode,
+  pipelineRepairTarget,
+  documentSourceFile,
+  documentSourceRevision,
+  onClosePipelineRepair,
+  onRepairApplied,
+  onNodeSearchSelect,
+}: FlowEditorOverlaysProps) {
+  const shortcutsOpen = useUIStore((state) => state.shortcutsOpen)
+  const setShortcutsOpen = useUIStore((state) => state.setShortcutsOpen)
+  const submodelDialog = useUIStore((state) => state.submodelDialog)
+  const setSubmodelDialog = useUIStore((state) => state.setSubmodelDialog)
+  const renameDialog = useUIStore((state) => state.renameDialog)
+  const setRenameDialog = useUIStore((state) => state.setRenameDialog)
+  const nodeSearchOpen = useUIStore((state) => state.nodeSearchOpen)
+  const setNodeSearchOpen = useUIStore((state) => state.setNodeSearchOpen)
+  const gitModal = useGitStore((state) => state.modal)
+  const closeGitModal = useGitStore((state) => state.closeModal)
+  const moveTarget = useGitStore((state) => state.moveTarget)
+  const closeMove = useGitStore((state) => state.closeMove)
+
+  return (
+    <>
+      {contextMenu && !editingReadOnly && (
+        <ContextMenu
+          {...contextMenu}
+          onClose={() => setContextMenu(null)}
+          onDelete={onDeleteNode}
+          onDuplicate={onDuplicateNode}
+          onRename={onRenameNodeMenu}
+          onCreateInstance={onCreateInstance}
+          onDissolveSubmodel={onDissolveSubmodel}
+        />
+      )}
+      {shortcutsOpen && <KeyboardShortcuts onClose={() => setShortcutsOpen(false)} />}
+      {gitModal === "select" && (
+        <Suspense fallback={null}>
+          <WorkingBranchModal onConfirmed={onGitModalConfirmed} onClose={closeGitModal} />
+        </Suspense>
+      )}
+      {gitModal === "divergence" && (
+        <Suspense fallback={null}>
+          <DivergenceModal onConfirmed={onGitModalConfirmed} onClose={closeGitModal} />
+        </Suspense>
+      )}
+      {gitModal === "milestone" && (
+        <Suspense fallback={null}>
+          <MilestoneCommitModal onConfirmed={closeGitModal} onClose={closeGitModal} />
+        </Suspense>
+      )}
+      {gitModal === "storage" && (
+        <Suspense fallback={null}>
+          <StorageBindModal onClose={closeGitModal} />
+        </Suspense>
+      )}
+      {gitModal === "upstream" && (
+        <Suspense fallback={null}>
+          <UpstreamSyncModal onClose={closeGitModal} />
+        </Suspense>
+      )}
+      {gitModal === "identity" && (
+        <Suspense fallback={null}>
+          <IdentityPromptModal onSaved={() => void onSave()} onClose={closeGitModal} />
+        </Suspense>
+      )}
+      {moveTarget && (
+        <Suspense fallback={null}>
+          <MoveConfirmModal onConfirm={onMoveConfirmed} onClose={closeMove} />
+        </Suspense>
+      )}
+      {submodelDialog && (
+        <SubmodelDialog
+          nodeCount={submodelDialog.nodeIds.length}
+          onClose={() => setSubmodelDialog(null)}
+          onSubmit={(name) => {
+            onCreateSubmodel(name, submodelDialog.nodeIds)
+            setSubmodelDialog(null)
+          }}
+        />
+      )}
+      {renameDialog && (
+        <RenameDialog
+          defaultValue={renameDialog.currentLabel}
+          onCancel={() => setRenameDialog(null)}
+          onConfirm={async (newName) => {
+            const result = await onRenameNode(renameDialog.nodeId, newName)
+            if (result.ok) setRenameDialog(null)
+            return result
+          }}
+        />
+      )}
+      {pipelineRepairTarget && (
+        <PipelineRepairDialog
+          key={`${documentSourceRevision ?? ""}:${pipelineRepairTarget.sourceFile}:${pipelineRepairTarget.recoveryId}`}
+          target={pipelineRepairTarget}
+          sourceFile={documentSourceFile}
+          sourceRevision={documentSourceRevision ?? ""}
+          onClose={onClosePipelineRepair}
+          onApplied={onRepairApplied}
+        />
+      )}
+      {nodeSearchOpen && (
+        <Suspense fallback={null}>
+          <NodeSearch
+            onClose={() => setNodeSearchOpen(false)}
+            onSelectNode={onNodeSearchSelect}
+          />
+        </Suspense>
+      )}
+    </>
+  )
+}
+
+type NodePropertiesPanelProps = {
+  gitOpen: boolean
+  utilityOpen: boolean
+  importsOpen: boolean
+  assistantOpen: boolean
+  onCloseGit: () => void
+  onCloseUtility: () => void
+  onCloseImports: () => void
+  onSave: () => Promise<boolean>
+  preamble: string
+  onImportAdded: (importLine: string) => void
+  onPreambleChange: (value: string) => void
+  isInsideSubmodel: boolean
+  currentSourceFile: string | null
+  documentReadOnly: boolean
+  traceResult: ComponentProps<typeof TracePanel>["trace"] | null
+  traceState: TraceRequestState
+  clearTrace: () => void
+  cancelTrace: ComponentProps<typeof TraceStatePanel>["onCancel"]
+  retryTrace: ComponentProps<typeof TraceStatePanel>["onRetry"]
+  panelGraph: PanelGraphContextSnapshot
+  submodels: Record<string, unknown>
+  panelNode: SimpleNode | null
+  onUpdateNode: NonNullable<ComponentProps<typeof NodePanel>["onUpdateNode"]>
+  onRenameNode: NonNullable<ComponentProps<typeof NodePanel>["onRenameNode"]>
+  onDeleteEdge?: ComponentProps<typeof NodePanel>["onDeleteEdge"]
+  onSwapEdgeJoinInputs?: ComponentProps<typeof NodePanel>["onSwapEdgeJoinInputs"]
+  editingReadOnly: boolean
+  onRefreshPreview: () => void
+  selectedNode: Node | null
+  activePanelNodeId: string | null
+  previewData: PreviewData | null
+  previewBusy: boolean
+  onClosePanel: () => void
+  onRemoveUnavailableNode: NonNullable<ComponentProps<typeof NodePanel>["onRemoveUnavailableNode"]>
+}
+
+function NodePropertiesPanel({
+  gitOpen,
+  utilityOpen,
+  importsOpen,
+  assistantOpen,
+  onCloseGit,
+  onCloseUtility,
+  onCloseImports,
+  onSave,
+  preamble,
+  onImportAdded,
+  onPreambleChange,
+  isInsideSubmodel,
+  currentSourceFile,
+  documentReadOnly,
+  traceResult,
+  traceState,
+  clearTrace,
+  cancelTrace,
+  retryTrace,
+  panelGraph,
+  submodels,
+  panelNode,
+  onUpdateNode,
+  onRenameNode,
+  onDeleteEdge,
+  onSwapEdgeJoinInputs,
+  editingReadOnly,
+  onRefreshPreview,
+  selectedNode,
+  activePanelNodeId,
+  previewData,
+  previewBusy,
+  onClosePanel,
+  onRemoveUnavailableNode,
+}: NodePropertiesPanelProps) {
+  const visibleTraceState = traceState.status === "error"
+    || (traceState.status === "loading" && traceState.progressVisible)
+    ? traceState
+    : null
+  let content: ReactNode
+  if (gitOpen) {
+    content = (
+      <Suspense fallback={null}>
+        <GitPanel onClose={onCloseGit} onSave={onSave} />
+      </Suspense>
+    )
+  } else if (utilityOpen) {
+    content = (
+      <Suspense fallback={null}>
+        <UtilityPanel onClose={onCloseUtility} onImportAdded={onImportAdded} />
+      </Suspense>
+    )
+  } else if (importsOpen) {
+    content = (
+      <ImportsPanel
+        preamble={preamble}
+        onPreambleChange={onPreambleChange}
+        onClose={onCloseImports}
+      />
+    )
+  } else if (assistantOpen) {
+    content = (
+      <ErrorBoundary name="AssistantPanel">
+        <Suspense fallback={null}>
+          <AssistantPanel
+            isInsideSubmodel={isInsideSubmodel}
+            currentSourceFile={currentSourceFile}
+            readOnly={documentReadOnly}
+          />
+        </Suspense>
+      </ErrorBoundary>
+    )
+  } else if (traceResult) {
+    content = <TracePanel trace={traceResult} onClose={clearTrace} />
+  } else if (visibleTraceState) {
+    content = (
+      <TraceStatePanel
+        state={visibleTraceState}
+        onCancel={cancelTrace}
+        onRetry={retryTrace}
+        onClose={clearTrace}
+      />
+    )
+  } else {
+    content = (
+      <GraphProvider
+        allNodes={panelGraph.allNodes}
+        edges={panelGraph.edges}
+        submodels={submodels}
+        preamble={preamble}
+      >
+        <NodePanel
+          node={panelNode}
+          onClose={onClosePanel}
+          onUpdateNode={onUpdateNode}
+          onRenameNode={onRenameNode}
+          onDeleteEdge={onDeleteEdge}
+          onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
+          readOnly={editingReadOnly}
+          documentReadOnly={documentReadOnly}
+          onRefreshPreview={onRefreshPreview}
+          dimmed={!selectedNode && !!activePanelNodeId}
+          errorLine={
+            previewData?.nodeId === activePanelNodeId
+              ? previewData.error_line ?? null
+              : null
+          }
+          previewRows={
+            previewData?.status === "ok" && previewData.nodeId === activePanelNodeId
+              ? previewData.preview
+              : undefined
+          }
+          selectedPreviewLoading={previewBusy && selectedNode?.id === activePanelNodeId}
+          onRemoveUnavailableNode={onRemoveUnavailableNode}
+        />
+      </GraphProvider>
+    )
+  }
+  return (
+    <aside aria-label="Node properties">
+      <ErrorBoundary name="NodePanel">{content}</ErrorBoundary>
+    </aside>
+  )
 }
 
 // Note: the ReactFlow node-type → component registry now lives in
@@ -226,31 +586,21 @@ function FlowEditor() {
   const setGitOpen = useUIStore((s) => s.setGitOpen)
   const assistantOpen = useUIStore((s) => s.assistantOpen)
   const setAssistantOpen = useUIStore((s) => s.setAssistantOpen)
-  const shortcutsOpen = useUIStore((s) => s.shortcutsOpen)
-  const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen)
-  const submodelDialog = useUIStore((s) => s.submodelDialog)
   const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
-  const renameDialog = useUIStore((s) => s.renameDialog)
   const setRenameDialog = useUIStore((s) => s.setRenameDialog)
   // Git working-branch model (P2)
-  const gitModal = useGitStore((s) => s.modal)
   const loadGitReadiness = useGitStore((s) => s.loadStatus)
-  const closeGitModal = useGitStore((s) => s.closeModal)
   // Read-only comparison view (S11): when set, the dual-canvas overlay replaces
   // the editor's content row (the toolbar stays, remaining interactive).
   const comparison = useGitStore((s) => s.comparison)
   const closeComparison = useGitStore((s) => s.closeComparison)
   // Move-through-history (P6 §3.4): the version queued for a real checkout,
   // pending the pre-move save/discard/confirm prompt.
-  const moveTarget = useGitStore((s) => s.moveTarget)
-  const closeMove = useGitStore((s) => s.closeMove)
   const addToast = useToastStore((s) => s.addToast)
   const syncBanner = useUIStore((s) => s.syncBanner)
   const setSyncBanner = useUIStore((s) => s.setSyncBanner)
   const hoveredNodeId = useUIStore((s) => s.hoveredNodeId)
   const setHoveredNodeId = useUIStore((s) => s.setHoveredNodeId)
-  const nodeSearchOpen = useUIStore((s) => s.nodeSearchOpen)
-  const setNodeSearchOpen = useUIStore((s) => s.setNodeSearchOpen)
   const [sessionExpired, setSessionExpired] = useState(false)
 
   // Fetch MLflow status once on startup (shared by all panels)
@@ -286,7 +636,7 @@ function FlowEditor() {
     setComparisonInspectState(null)
     setGitOpen(false)
   }, [closeComparison, setGitOpen])
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSubmodelCopy?: boolean; isSingleton?: boolean } | null>(null)
+  const [contextMenu, setContextMenu] = useState<NodeContextMenuState | null>(null)
   // Preamble lives in useGraphStore. Subscribe to the string directly so
   // sibling state slices can change without re-rendering this component.
   // The raw setter avoids adding text edits to the graph undo stack.
@@ -370,6 +720,30 @@ function FlowEditor() {
   const dirty = useGraphStore((s) => s.dirty)
   const documentLoadStatus = useDocumentStatusStore((s) => s.loadStatus)
   const documentCapabilities = useDocumentStatusStore((s) => s.capabilities)
+  const reservedApiInputFrameLabels = useMemo(
+    () => new Set(documentCapabilities?.reserved_api_input_frame_labels ?? []),
+    [documentCapabilities?.reserved_api_input_frame_labels],
+  )
+  const resolveCandidateGraphIdentities = useCallback(
+    async (
+      candidateNodes: readonly Node[],
+      candidateEdges: readonly Edge[],
+    ): Promise<{ nodes: Node[]; edges: Edge[] }> => {
+      return resolveEditorGraphIdentities({
+        nodes: candidateNodes,
+        edges: candidateEdges,
+        submodels: submodelsRef.current,
+        reservedApiInputFrameLabels,
+      })
+    },
+    [reservedApiInputFrameLabels],
+  )
+  const resolveNodeIdentities = useCallback(
+    async (candidateNodes: readonly Node[]): Promise<Node[]> => (
+      await resolveCandidateGraphIdentities(candidateNodes, [])
+    ).nodes,
+    [resolveCandidateGraphIdentities],
+  )
   const documentSourceRevision = useDocumentStatusStore((s) => s.sourceRevision)
   const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
   const retainedPipelineCanvas = useDocumentStatusStore((s) => s.retainedCanvas)
@@ -395,101 +769,6 @@ function FlowEditor() {
     preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
     nodeIdCounter,
   })
-
-  // Flush the editor to the ledger, then open the milestone-commit modal —
-  // but only once the save has actually landed, so the milestone never commits
-  // a stale ledger (and we don't prompt for a message after a failed save).
-  const flushSaveThenMilestone = useCallback(async () => {
-    const ok = await handleSave()
-    if (ok) useGitStore.getState().openModal("milestone")
-  }, [handleSave])
-
-  // Save-gate (S5/S13): if no working branch is ready, the action opens the
-  // selection modal first and runs once a branch is chosen. Divergence routes
-  // to its own modal. Pipeline Save remains available when Git is absent or
-  // readiness could not be loaded; only Git Commit requires a ready repository.
-  const requestSave = useCallback(async () => {
-    // Resolve status before deciding: during the startup load (status null,
-    // loading in-flight) a synchronous read would see null and save ungated,
-    // bypassing the gate. Awaiting the in-flight/fresh load closes that race.
-    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
-    if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "ready") {
-      void handleSave()
-      return
-    }
-    useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
-      pendingAction: "save",
-    })
-  }, [handleSave])
-
-  // Commit (S7): same gate, but the queued action flushes a save before
-  // opening the milestone modal.
-  const requestCommit = useCallback(async () => {
-    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
-    if (st === null) {
-      const detail = useGitStore.getState().statusError
-      addToast(
-        "error",
-        detail ? `Git unavailable: ${detail}` : "Git readiness is unavailable — commit is disabled.",
-      )
-      return
-    }
-    if (st.state === "no-repository") {
-      addToast("error", "No git repository — commit is unavailable.")
-      return
-    }
-    if (st.state === "git-unavailable") {
-      addToast("error", "Git is not available in this environment — commit is unavailable.")
-      return
-    }
-    if (st.state === "ready") {
-      void flushSaveThenMilestone()
-      return
-    }
-    useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
-      pendingAction: "commit",
-    })
-  }, [flushSaveThenMilestone, addToast])
-
-  // A working-branch / divergence modal confirmed a branch: run the queued
-  // action (read it before closeModal clears it).
-  const handleGitModalConfirmed = useCallback(() => {
-    const pending = useGitStore.getState().pendingAction
-    useGitStore.getState().closeModal()
-    if (pending === "save") void handleSave()
-    else if (pending === "commit") void flushSaveThenMilestone()
-  }, [handleSave, flushSaveThenMilestone])
-
-  // Pre-move prompt confirmed (P6 §3.4): optionally flush unsaved edits onto the
-  // current branch (parking IS saving, S12), then move — a real detached
-  // checkout. A move replaces the whole working tree, so we reload to re-init the
-  // canvas from the moved-to state; the one-shot flag tells the next startup it
-  // arrived via a move (don't auto-prompt; the modal fires on first SAVE, S13).
-  const handleMoveConfirmed = useCallback(
-    async (saveFirst: boolean) => {
-      const target = useGitStore.getState().moveTarget
-      if (!target) return
-      try {
-        if (saveFirst) {
-          const ok = await handleSave()
-          if (!ok) {
-            addToast("error", "Save failed — staying on the current version.")
-            useGitStore.getState().closeMove()
-            return
-          }
-        }
-        await moveToVersion(target.sha)
-        sessionStorage.setItem(JUST_MOVED_KEY, target.label)
-        window.location.reload()
-      } catch (err: unknown) {
-        const { gitErrorMessage } = await import("./utils/gitError")
-        const detail = gitErrorMessage(err, "unknown error")
-        addToast("error", `Could not move to this version: ${detail}`)
-        useGitStore.getState().closeMove()
-      }
-    },
-    [handleSave, addToast],
-  )
 
   // Startup readiness check (S27): load status once, and surface the modal only
   // when something needs attention (unset/invalid → select, divergent → that
@@ -564,6 +843,7 @@ function FlowEditor() {
     setCurrentSourceFile,
     preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef,
     fitView,
+    reservedApiInputFrameLabels,
   })
 
   const handleRepairApplied = useCallback((
@@ -629,6 +909,120 @@ function FlowEditor() {
     onEdgesChange(changes)
   }, [editingReadOnly, onBoundaryEdgesChange, onEdgesChange])
 
+  // ---------------------------------------------------------------------------
+  // Node + edge interaction handlers (extracted to custom hooks)
+  // ---------------------------------------------------------------------------
+
+  const readDocumentIdentity = useCallback((): string => {
+    const status = useDocumentStatusStore.getState()
+    return JSON.stringify([
+      status.sourceFile,
+      status.sourceRevision,
+      status.loadStatus,
+      status.capabilities?.can_mutate === true,
+      status.graphSynchronized,
+    ])
+  }, [])
+
+  const { onUpdateNode, onRenameNode, waitForPendingCommits } = useGraphCommitController({
+    graphRef,
+    submodelsRef,
+    readDocumentIdentity,
+    readOnly: editingReadOnly,
+    reservedApiInputFrameLabels,
+    resolveNodeIdentities,
+    commitGraph: setNodesAndEdgesAndSubmodels,
+    setSelectedNode,
+    addToast,
+  })
+
+  const saveWithPendingCommits = useCallback(async (): Promise<boolean> => {
+    const pending = await waitForPendingCommits()
+    if (!pending.ok) {
+      addToast("error", pending.error)
+      return false
+    }
+    return handleSave()
+  }, [addToast, handleSave, waitForPendingCommits])
+
+  // Flush the editor through the graph-commit fence before opening the
+  // milestone modal, so Commit can never capture an older ledger snapshot.
+  const flushSaveThenMilestone = useCallback(async () => {
+    const ok = await saveWithPendingCommits()
+    if (ok) useGitStore.getState().openModal("milestone")
+  }, [saveWithPendingCommits])
+
+  // Save-gate: resolve Git readiness before deciding whether to save now or
+  // queue the action behind branch/divergence setup.
+  const requestSave = useCallback(async () => {
+    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
+    if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "ready") {
+      void saveWithPendingCommits()
+      return
+    }
+    useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
+      pendingAction: "save",
+    })
+  }, [saveWithPendingCommits])
+
+  // Commit uses the same readiness gate, but a ready repository first flushes
+  // the fenced graph and only then opens the milestone modal.
+  const requestCommit = useCallback(async () => {
+    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
+    if (st === null) {
+      const detail = useGitStore.getState().statusError
+      addToast("error", detail ? `Git unavailable: ${detail}` : "Git readiness is unavailable — commit is disabled.")
+      return
+    }
+    if (st.state === "no-repository") {
+      addToast("error", "No git repository — commit is unavailable.")
+      return
+    }
+    if (st.state === "git-unavailable") {
+      addToast("error", "Git is not available in this environment — commit is unavailable.")
+      return
+    }
+    if (st.state === "ready") {
+      void flushSaveThenMilestone()
+      return
+    }
+    useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
+      pendingAction: "commit",
+    })
+  }, [addToast, flushSaveThenMilestone])
+
+  const handleGitModalConfirmed = useCallback(() => {
+    const pending = useGitStore.getState().pendingAction
+    useGitStore.getState().closeModal()
+    if (pending === "save") void saveWithPendingCommits()
+    else if (pending === "commit") void flushSaveThenMilestone()
+  }, [flushSaveThenMilestone, saveWithPendingCommits])
+
+  // Moving versions replaces the working tree. If requested, park the fenced
+  // graph on the current branch first; a failed save keeps the user in place.
+  const handleMoveConfirmed = useCallback(
+    async (saveFirst: boolean) => {
+      const target = useGitStore.getState().moveTarget
+      if (!target) return
+      try {
+        if (saveFirst && !await saveWithPendingCommits()) {
+          addToast("error", "Save failed — staying on the current version.")
+          useGitStore.getState().closeMove()
+          return
+        }
+        await moveToVersion(target.sha)
+        sessionStorage.setItem(JUST_MOVED_KEY, target.label)
+        window.location.reload()
+      } catch (err: unknown) {
+        const { gitErrorMessage } = await import("./utils/gitError")
+        const detail = gitErrorMessage(err, "unknown error")
+        addToast("error", `Could not move to this version: ${detail}`)
+        useGitStore.getState().closeMove()
+      }
+    },
+    [addToast, saveWithPendingCommits],
+  )
+
   useKeyboardShortcuts({
     handleSave: requestSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
@@ -638,263 +1032,9 @@ function FlowEditor() {
     closePanel,
     isInsideSubmodel: viewStack.length > 1,
     readOnly: editingReadOnly,
+    resolveGraphIdentities: resolveCandidateGraphIdentities,
     commitSharedNodeDeletion,
   })
-
-  // ---------------------------------------------------------------------------
-  // Node + edge interaction handlers (extracted to custom hooks)
-  // ---------------------------------------------------------------------------
-
-  const onUpdateNode = useCallback(
-    (id: string, data: Record<string, unknown>): OnUpdateConfigResult => {
-      if (editingReadOnly) {
-        return { ok: false, error: "This pipeline document is read-only." }
-      }
-      // Capture the pre-update node BEFORE committing, so apiInput edge
-      // maintenance below can diff old vs new frame identities.
-      const currentGraph = graphRef.current
-      const prevNode = currentGraph.nodes.find((n) => n.id === id)
-      if (!prevNode) {
-        return { ok: false, error: `Cannot update missing node "${id}".` }
-      }
-
-      // Compute the entire candidate graph before touching either the store
-      // or graphRef. A failed preflight therefore cannot leave a config,
-      // edge, mapping, or history entry behind.
-      let tentativeEdges = currentGraph.edges
-      let rebound: Array<{ edge: Edge; from: string; to: string }> = []
-      let removed: Array<{ edge: Edge; sourceHandle: string | null }> = []
-      if (data.nodeType === NODE_TYPES.API_INPUT) {
-        const config = (data.config ?? {}) as Record<string, unknown>
-        const prevConfig = ((prevNode.data as Record<string, unknown>).config ??
-          {}) as Record<string, unknown>
-        const result = applyApiInputConfigChange({
-          nodeId: id,
-          prevConfig,
-          nextConfig: config,
-          edges: currentGraph.edges,
-        })
-        tentativeEdges = result.edges
-        rebound = result.rebound
-        removed = result.removed
-      } else if (prevNode.data.label !== data.label) {
-        const nextNode = { ...prevNode, data }
-        rebound = currentGraph.edges
-          .filter((edge) => edge.source === id)
-          .map((edge) => ({
-            edge,
-            from: edgeInputName(
-              edge as unknown as SimpleEdge,
-              prevNode as unknown as SimpleNode,
-              submodelsRef.current,
-            ),
-            to: edgeInputName(
-              edge as unknown as SimpleEdge,
-              nextNode as unknown as SimpleNode,
-              submodelsRef.current,
-            ),
-          }))
-          .filter((change) => change.from !== change.to)
-      }
-
-      let tentativeNodes = currentGraph.nodes.map((node) =>
-        node.id === id ? { ...node, data } : node,
-      )
-      const tentativeSubmodels = structuredClone(submodelsRef.current)
-      const rootScope: RenameGraphScope = {
-        nodes: tentativeNodes,
-        edges: tentativeEdges,
-        submodels: tentativeSubmodels,
-      }
-      const nodeById = new Map(tentativeNodes.map((node) => [node.id, node]))
-      const affectedByScope = new Map<
-        RenameGraphScope,
-        Map<string, AffectedRenameTarget>
-      >()
-
-      for (const change of rebound) {
-        const boundaryTarget = nodeById.get(change.edge.target)
-        if (!boundaryTarget) throw new Error(`Cannot derive rename target ${change.edge.target}`)
-        const targetScope = rootScope
-        const target = boundaryTarget
-        if (boundaryTarget.data.nodeType === NODE_TYPES.SUBMODEL) {
-          if (!isSubmodelInstanceConfig(boundaryTarget.data.config)) {
-            throw new Error(`Submodel instance ${boundaryTarget.id} has malformed identity config`)
-          }
-          // Public port ids are immutable definition-owned input names, so an
-          // external frame rename changes only the parent edge binding.
-          continue
-        }
-        const targets = affectedByScope.get(targetScope) ?? new Map<string, AffectedRenameTarget>()
-        const affected = targets.get(target.id) ?? {
-          scope: targetScope,
-          target,
-          incomingScope: rootScope,
-          incomingTargetId: boundaryTarget.id,
-          pairs: [],
-        }
-        if (!affected.pairs.some((pair) => pair.from === change.from && pair.to === change.to)) {
-          affected.pairs.push({ from: change.from, to: change.to })
-        }
-        targets.set(target.id, affected)
-        affectedByScope.set(targetScope, targets)
-      }
-
-      const mappingChanges = new Map<
-        RenameGraphScope,
-        Map<string, Record<string, unknown>>
-      >()
-
-      const applyConfigMapping = (
-        scope: RenameGraphScope,
-        node: Node,
-        field: "input_scenario_map" | "inputMapping",
-        pairs: readonly RenamePair[],
-        keys: boolean,
-      ): OnUpdateConfigResult => {
-        const scopeChanges = mappingChanges.get(scope) ?? new Map<string, Record<string, unknown>>()
-        const config = scopeChanges.get(node.id) ??
-          ((node.data.config ?? {}) as Record<string, unknown>)
-        if (keys) {
-          const mapped = remapRecordKeys(config[field], pairs)
-          if (mapped.collision !== undefined) {
-            return {
-              ok: false,
-              error: `Target "${String(node.data.label ?? node.id)}" already has an input named "${mapped.collision}".`,
-            }
-          }
-          if (mapped.value === config[field]) return { ok: true }
-          scopeChanges.set(node.id, { ...config, [field]: mapped.value })
-          mappingChanges.set(scope, scopeChanges)
-          return { ok: true }
-        }
-        const mappedValue = remapRecordValues(config[field], pairs)
-        if (mappedValue === config[field]) return { ok: true }
-        scopeChanges.set(node.id, { ...config, [field]: mappedValue })
-        mappingChanges.set(scope, scopeChanges)
-        return { ok: true }
-      }
-
-      // Directly affected targets receive the new frame name in the fields
-      // that use an input identity: live-switch keys and instance values.
-      for (const targets of affectedByScope.values()) {
-        for (const affected of targets.values()) {
-          if (affected.target.data.nodeType === NODE_TYPES.LIVE_SWITCH) {
-            const result = applyConfigMapping(
-              affected.scope,
-              affected.target,
-              "input_scenario_map",
-              affected.pairs,
-              true,
-            )
-            if (!result.ok) return result
-          }
-          const valueResult = applyConfigMapping(
-            affected.scope,
-            affected.target,
-            "inputMapping",
-            affected.pairs,
-            false,
-          )
-          if (!valueResult.ok) return valueResult
-        }
-      }
-
-      // The original node's input names are the keys in every instance's
-      // mapping. Rename those keys on all visible instances of each affected
-      // original, including instances that have no direct renamed edge.
-      const instanceScopes = new Set<RenameGraphScope>([rootScope])
-      for (const scope of affectedByScope.keys()) instanceScopes.add(scope)
-      for (const targets of affectedByScope.values()) {
-        for (const affected of targets.values()) {
-          for (const scope of instanceScopes) {
-            for (const node of scope.nodes) {
-              const config = (node.data.config ?? {}) as Record<string, unknown>
-              if (config.instanceOf !== affected.target.id) continue
-              const result = applyConfigMapping(
-                scope,
-                node,
-                "inputMapping",
-                affected.pairs,
-                true,
-              )
-              if (!result.ok) return result
-            }
-          }
-        }
-      }
-
-      // Apply all mapping changes only after every scope has passed its
-      // collision checks. Nested submodel graph arrays are updated in place
-      // so the cloned metadata retains the same graph references.
-      for (const [scope, changes] of mappingChanges) {
-        const mappedNodes = scope.nodes.map((node) => {
-          const config = changes.get(node.id)
-          return config ? { ...node, data: { ...node.data, config } } : node
-        })
-        scope.nodes.splice(0, scope.nodes.length, ...mappedNodes)
-      }
-      tentativeNodes = rootScope.nodes
-      nodeById.clear()
-      for (const node of tentativeNodes) nodeById.set(node.id, node)
-
-      const targetInputCollisionFor = (affected: AffectedRenameTarget): string | null => {
-        const names = incomingEdgeInputNames({
-          targetNodeId: affected.target.id,
-          boundaryNodeId: affected.incomingTargetId,
-          nodes: affected.incomingScope.nodes as unknown as SimpleNode[],
-          edges: affected.incomingScope.edges as unknown as SimpleEdge[],
-          submodels: affected.incomingScope.submodels,
-        })
-        if (affected.scope !== affected.incomingScope) {
-          names.push(...incomingEdgeInputNames({
-            targetNodeId: affected.target.id,
-            nodes: affected.scope.nodes as unknown as SimpleNode[],
-            edges: affected.scope.edges as unknown as SimpleEdge[],
-            submodels: affected.scope.submodels,
-          }))
-        }
-        const seen = new Set<string>()
-        for (const name of names) {
-          if (seen.has(name)) return name
-          seen.add(name)
-        }
-        return null
-      }
-
-      // Only targets whose incoming edge identity changed need duplicate
-      // preflight. Names come from the shared edgeInputName helper, exactly as
-      // the executor and panel surfaces derive them.
-      for (const targets of affectedByScope.values()) {
-        for (const affected of targets.values()) {
-          const collision = targetInputCollisionFor(affected)
-          if (collision !== null) {
-            return {
-              ok: false,
-              error: `Target "${String(affected.target.data.label ?? affected.target.id)}" already has an input named "${collision}".`,
-            }
-          }
-        }
-      }
-
-      // One history-aware store action commits the config, all migrated node
-      // mappings, and all rebound/pruned edges together.
-      graphRef.current = { nodes: tentativeNodes, edges: tentativeEdges }
-      setNodesAndEdgesAndSubmodels(tentativeNodes, tentativeEdges, tentativeSubmodels)
-      submodelsRef.current = tentativeSubmodels
-      setSelectedNode((prev) => (prev && prev.id === id ? { ...prev, data } : prev))
-
-      if (removed.length > 0) {
-        const label = String(data.label ?? id)
-        addToast(
-          "warning",
-          `Disconnected ${removed.length} edge${removed.length === 1 ? "" : "s"} from ${label}: the source ${removed.length === 1 ? "frame no longer exists" : "frames no longer exist"} after your edit.`,
-        )
-      }
-      return { ok: true }
-    },
-    [editingReadOnly, setNodesAndEdgesAndSubmodels, graphRef, addToast, setSelectedNode, submodelsRef],
-  )
 
   const {
     handleDeleteNode, handleDuplicateNode,
@@ -904,6 +1044,7 @@ function FlowEditor() {
     setNodes, setNodesAndEdges, setSelectedNode,
     setLastSelectedId,
     setPreviewData, fitView,
+    resolveNodeIdentities,
     commitSharedNodeDeletion,
   })
 
@@ -1021,6 +1162,7 @@ function FlowEditor() {
     clearTrace,
     screenToFlowPosition,
     graphRefreshingRef,
+    resolveGraphIdentities: resolveCandidateGraphIdentities,
     findEdgeIdAtPoint,
     validateConnection,
     commitBoundaryConnection,
@@ -1087,6 +1229,36 @@ function FlowEditor() {
     setGitOpen(false)
   }, [setGitOpen, setImportsOpen, setUtilityOpen])
 
+  const handleNodeSearchSelect = useCallback((nodeId: string) => {
+    const node = graphRef.current.nodes.find((candidate) => candidate.id === nodeId) ?? null
+    if (!node) return
+    setSelectedNode(node)
+    setLastSelectedId(node.id)
+    lastSelectedNodeRef.current = node
+    setUtilityOpen(false)
+    setImportsOpen(false)
+    setGitOpen(false)
+  }, [setGitOpen, setImportsOpen, setUtilityOpen])
+
+  const handleImportAdded = useCallback((importLine: string) => {
+    const current = preambleRef.current
+    if (current.includes(importLine)) return
+    const updated = current ? `${current}\n${importLine}` : importLine
+    setPreamble(updated)
+    preambleRef.current = updated
+  }, [setPreamble])
+
+  const handlePreambleChange = useCallback((value: string) => {
+    setPreamble(value)
+    preambleRef.current = value
+  }, [setPreamble])
+
+  const handlePanelPreviewRefresh = useCallback(() => {
+    if (!activePanelNodeId) return
+    const refreshTarget = graphRef.current.nodes.find((node) => node.id === activePanelNodeId)
+    if (refreshTarget) refreshPreview(refreshTarget)
+  }, [activePanelNodeId, refreshPreview])
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -1102,75 +1274,26 @@ function FlowEditor() {
   const submodelsSnapshot = submodels
   const useLiteGraphEffects = shouldUseLiteGraphEffects(nodes.length, edges.length)
 
-  // Pick the preview pane for the active node. Computed here (not as an inline
-  // Keep the preview derivation in this render scope so it shares the same
-  // metadata snapshot as the panel graph.
   const activeNodeId = activePanelNodeId
   const activePreviewData = previewForActiveNode(previewData, activeNodeId)
   const activeNode = panelGraph.getNode(activeNodeId)
-  let dataPreviewContent: ReactNode
-  if (
-    documentCanExecute &&
-    activeNode &&
-    nodeData(activeNode).nodeType === NODE_TYPES.EXPLORE
-  ) {
-    dataPreviewContent = (
-      <ExplorePreview
-        node={activeNode}
-        allNodes={panelGraph.allNodes}
-        edges={panelGraph.edges}
-        submodels={submodelsSnapshot}
-        preamble={preamble}
-        previewData={activePreviewData}
-        onCellClick={documentCanExecute ? handleCellClick : undefined}
-        tracedCell={tracedCell}
-      />
-    )
-  } else {
-    const modelPreview = activeNodeId ? getModellingPreview(activeNodeId) : null
-    const optPreview = activeNodeId ? getOptimiserPreview(activeNodeId) : null
-    if (documentCanExecute && modelPreview) {
-      dataPreviewContent = <ModellingPreview data={modelPreview} nodeId={activeNodeId!} />
-    } else if (documentCanExecute && optPreview) {
-      dataPreviewContent = (
-        <Suspense fallback={null}>
-          <OptimiserPreview
-            data={optPreview}
-            nodeId={activeNodeId!}
-            allNodes={panelGraph.allNodes}
-            edges={panelGraph.edges}
-          />
-        </Suspense>
-      )
-    } else if (
-      // Pre-solve chart view for optimiser nodes
-      documentCanExecute &&
-      activeNode &&
-      nodeData(activeNode).nodeType === NODE_TYPES.OPTIMISER &&
-      activePreviewData &&
-      activePreviewData.status === "ok" &&
-      activePreviewData.preview.length > 0
-    ) {
-      dataPreviewContent = (
-        <OptimiserDataPreview
-          data={activePreviewData}
-          config={nodeData(activeNode).config ?? {}}
-        />
-      )
-    } else {
-      dataPreviewContent = (
-        <DataPreview
-          data={activePreviewData}
-          nodeType={activeNode ? nodeData(activeNode).nodeType : undefined}
-          onCellClick={documentCanExecute ? handleCellClick : undefined}
-          tracedCell={tracedCell}
-          onSelectFrame={
-            activeNodeId ? (portLabel) => previewNodeFrame(activeNodeId, portLabel) : undefined
-          }
-        />
-      )
-    }
-  }
+  const dataPreviewContent = (
+    <ActiveNodePreview
+      documentCanExecute={documentCanExecute}
+      activeNodeId={activeNodeId}
+      activeNode={activeNode}
+      panelNodes={panelGraph.allNodes}
+      panelEdges={panelGraph.edges}
+      submodels={submodelsSnapshot}
+      preamble={preamble}
+      previewData={activePreviewData}
+      getModellingPreview={getModellingPreview}
+      getOptimiserPreview={getOptimiserPreview}
+      onCellClick={handleCellClick}
+      tracedCell={tracedCell}
+      previewNodeFrame={previewNodeFrame}
+    />
+  )
   return (
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--bg-base)' }}>
       <Toolbar
@@ -1241,7 +1364,7 @@ function FlowEditor() {
                     onClose={() => setComparisonInspectState(null)}
                   />
                 ) : (
-                  <GitPanel onClose={exitComparison} onSave={handleSave} />
+                  <GitPanel onClose={exitComparison} onSave={saveWithPendingCommits} />
                 )}
               </Suspense>
             </ErrorBoundary>
@@ -1363,208 +1486,66 @@ function FlowEditor() {
           </ErrorBoundary>
         </main>
 
-        <aside aria-label="Node properties">
-          <ErrorBoundary name="NodePanel">
-            {gitOpen ? (
-              <Suspense fallback={null}>
-                <GitPanel onClose={() => setGitOpen(false)} onSave={handleSave} />
-              </Suspense>
-            ) : utilityOpen ? (
-              <Suspense fallback={null}>
-                <UtilityPanel
-                  onClose={() => setUtilityOpen(false)}
-                  onImportAdded={(importLine) => {
-                    const current = preambleRef.current
-                    if (!current.includes(importLine)) {
-                      const updated = current ? `${current}\n${importLine}` : importLine
-                      setPreamble(updated)
-                      preambleRef.current = updated
-                      // Dirty is derived from the new preamble at next render.
-                    }
-                  }}
-                />
-              </Suspense>
-            ) : importsOpen ? (
-              <ImportsPanel
-                preamble={preamble}
-                onPreambleChange={(value) => {
-                  setPreamble(value)
-                  preambleRef.current = value
-                  // Dirty is derived from the new preamble at next render.
-                }}
-                onClose={() => setImportsOpen(false)}
-              />
-            ) : assistantOpen ? (
-              <ErrorBoundary name="AssistantPanel">
-                <Suspense fallback={null}>
-                  <AssistantPanel
-                    isInsideSubmodel={viewStack.length > 1}
-                    currentSourceFile={currentSourceFile}
-                    readOnly={documentReadOnly}
-                  />
-                </Suspense>
-              </ErrorBoundary>
-            ) : traceResult ? (
-              <TracePanel trace={traceResult} onClose={clearTrace} />
-            ) : traceState.status === "error" || (traceState.status === "loading" && traceState.progressVisible) ? (
-              <TraceStatePanel state={traceState} onCancel={cancelTrace} onRetry={retryTrace} onClose={clearTrace} />
-            ) : (
-              <GraphProvider
-                allNodes={panelGraph.allNodes}
-                edges={panelGraph.edges}
-                submodels={submodelsSnapshot}
-                preamble={preamble}
-              >
-                <NodePanel
-                  node={panelNode}
-                  onClose={closePanel}
-                  onUpdateNode={onUpdateNode}
-                  onDeleteEdge={editingReadOnly ? undefined : handleDeleteEdge}
-                  onSwapEdgeJoinInputs={editingReadOnly ? undefined : handleSwapEdgeJoinInputs}
-                  readOnly={editingReadOnly}
-                  documentReadOnly={documentReadOnly}
-                  onRefreshPreview={() => {
-                    if (!panelNode) return
-                    const refreshTarget = graphRef.current.nodes.find((n) => n.id === panelNode.id)
-                    if (refreshTarget) refreshPreview(refreshTarget)
-                  }}
-                  dimmed={!selectedNode && !!activePanelNodeId}
-                  errorLine={
-                    previewData?.nodeId === activePanelNodeId
-                      ? previewData?.error_line ?? null
-                      : null
-                  }
-                  previewRows={
-                    previewData?.status === "ok" && previewData?.nodeId === activePanelNodeId
-                      ? previewData.preview
-                      : undefined
-                  }
-                  selectedPreviewLoading={previewBusy && selectedNode?.id === activePanelNodeId}
-                  onRemoveUnavailableNode={setPipelineRepairTarget}
-                />
-              </GraphProvider>
-            )}
-          </ErrorBoundary>
-        </aside>
+        <NodePropertiesPanel
+          gitOpen={gitOpen}
+          utilityOpen={utilityOpen}
+          importsOpen={importsOpen}
+          assistantOpen={assistantOpen}
+          onCloseGit={() => setGitOpen(false)}
+          onCloseUtility={() => setUtilityOpen(false)}
+          onCloseImports={() => setImportsOpen(false)}
+          onSave={saveWithPendingCommits}
+          preamble={preamble}
+          onImportAdded={handleImportAdded}
+          onPreambleChange={handlePreambleChange}
+          isInsideSubmodel={viewStack.length > 1}
+          currentSourceFile={currentSourceFile}
+          documentReadOnly={documentReadOnly}
+          traceResult={traceResult}
+          traceState={traceState}
+          clearTrace={clearTrace}
+          cancelTrace={cancelTrace}
+          retryTrace={retryTrace}
+          panelGraph={panelGraph}
+          submodels={submodelsSnapshot}
+          panelNode={panelNode}
+          onUpdateNode={onUpdateNode}
+          onRenameNode={onRenameNode}
+          onDeleteEdge={editingReadOnly ? undefined : handleDeleteEdge}
+          onSwapEdgeJoinInputs={editingReadOnly ? undefined : handleSwapEdgeJoinInputs}
+          editingReadOnly={editingReadOnly}
+          onRefreshPreview={handlePanelPreviewRefresh}
+          selectedNode={selectedNode}
+          activePanelNodeId={activePanelNodeId}
+          previewData={previewData}
+          previewBusy={previewBusy}
+          onClosePanel={closePanel}
+          onRemoveUnavailableNode={setPipelineRepairTarget}
+        />
       </div>
       )}
 
-      {contextMenu && !editingReadOnly && (
-        <ContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          nodeId={contextMenu.nodeId}
-          nodeLabel={contextMenu.nodeLabel}
-          onClose={() => setContextMenu(null)}
-          onDelete={handleDeleteNode}
-          onDuplicate={handleDuplicateNode}
-          onRename={handleRenameNode}
-          onCreateInstance={handleCreateInstance}
-          isSubmodel={contextMenu.isSubmodel}
-          isSubmodelCopy={contextMenu.isSubmodelCopy}
-          isSingleton={contextMenu.isSingleton}
-          onDissolveSubmodel={handleDissolveSubmodel}
-        />
-      )}
-
-      {shortcutsOpen && <KeyboardShortcuts onClose={() => setShortcutsOpen(false)} />}
-
-      {gitModal === "select" && (
-        <Suspense fallback={null}>
-          <WorkingBranchModal onConfirmed={handleGitModalConfirmed} onClose={closeGitModal} />
-        </Suspense>
-      )}
-
-      {gitModal === "divergence" && (
-        <Suspense fallback={null}>
-          <DivergenceModal onConfirmed={handleGitModalConfirmed} onClose={closeGitModal} />
-        </Suspense>
-      )}
-
-      {gitModal === "milestone" && (
-        <Suspense fallback={null}>
-          <MilestoneCommitModal onConfirmed={closeGitModal} onClose={closeGitModal} />
-        </Suspense>
-      )}
-
-      {gitModal === "storage" && (
-        <Suspense fallback={null}>
-          <StorageBindModal onClose={closeGitModal} />
-        </Suspense>
-      )}
-
-      {gitModal === "upstream" && (
-        <Suspense fallback={null}>
-          <UpstreamSyncModal onClose={closeGitModal} />
-        </Suspense>
-      )}
-
-      {gitModal === "identity" && (
-        <Suspense fallback={null}>
-          {/* Re-save once an identity exists, so the changes that were saved
-              but not version-captured are committed and published now. */}
-          <IdentityPromptModal onSaved={() => void handleSave()} onClose={closeGitModal} />
-        </Suspense>
-      )}
-
-      {moveTarget && (
-        <Suspense fallback={null}>
-          <MoveConfirmModal onConfirm={handleMoveConfirmed} onClose={closeMove} />
-        </Suspense>
-      )}
-
-      {submodelDialog && (
-        <SubmodelDialog
-          nodeCount={submodelDialog.nodeIds.length}
-          onClose={() => setSubmodelDialog(null)}
-          onSubmit={(name) => {
-            handleCreateSubmodel(name, submodelDialog.nodeIds)
-            setSubmodelDialog(null)
-          }}
-        />
-      )}
-
-      {renameDialog && (
-        <RenameDialog
-          defaultValue={renameDialog.currentLabel}
-          onCancel={() => setRenameDialog(null)}
-          onConfirm={(newName) => {
-            const node = graphRef.current.nodes.find((n) => n.id === renameDialog.nodeId)
-            if (node) onUpdateNode(renameDialog.nodeId, { ...node.data, label: newName })
-            setRenameDialog(null)
-          }}
-        />
-      )}
-
-      {pipelineRepairTarget && (
-        <PipelineRepairDialog
-          key={`${documentSourceRevision ?? ""}:${pipelineRepairTarget.sourceFile}:${pipelineRepairTarget.recoveryId}`}
-          target={pipelineRepairTarget}
-          sourceFile={documentSourceFile}
-          sourceRevision={documentSourceRevision ?? ""}
-          onClose={() => setPipelineRepairTarget(null)}
-          onApplied={handleRepairApplied}
-        />
-      )}
-
-      {nodeSearchOpen && (
-        <Suspense fallback={null}>
-          <NodeSearch
-            onClose={() => setNodeSearchOpen(false)}
-            onSelectNode={(nodeId) => {
-              const node = graphRef.current.nodes.find((n) => n.id === nodeId) ?? null
-              if (node) {
-                setSelectedNode(node)
-                setLastSelectedId(node.id)
-                lastSelectedNodeRef.current = node
-                setUtilityOpen(false)
-                setImportsOpen(false)
-                setGitOpen(false)
-              }
-            }}
-          />
-        </Suspense>
-      )}
+      <FlowEditorOverlays
+        editingReadOnly={editingReadOnly}
+        contextMenu={contextMenu}
+        setContextMenu={setContextMenu}
+        onDeleteNode={handleDeleteNode}
+        onDuplicateNode={handleDuplicateNode}
+        onRenameNodeMenu={handleRenameNode}
+        onCreateInstance={handleCreateInstance}
+        onDissolveSubmodel={handleDissolveSubmodel}
+        onGitModalConfirmed={handleGitModalConfirmed}
+        onSave={saveWithPendingCommits}
+        onMoveConfirmed={handleMoveConfirmed}
+        onCreateSubmodel={handleCreateSubmodel}
+        onRenameNode={onRenameNode}
+        pipelineRepairTarget={pipelineRepairTarget}
+        documentSourceFile={documentSourceFile}
+        documentSourceRevision={documentSourceRevision}
+        onClosePipelineRepair={() => setPipelineRepairTarget(null)}
+        onRepairApplied={handleRepairApplied}
+        onNodeSearchSelect={handleNodeSearchSelect}
+      />
 
       <ErrorBoundary name="Toast">
         <ToastContainer />

@@ -5,6 +5,7 @@ import { getLayoutedElements } from "../utils/layout"
 import { normalizeEdges } from "../utils/graphHelpers"
 import { serializeSnapshot } from "../utils/graphSnapshot"
 import { buildSubmodelViewGraph } from "../utils/submodelViewGraph"
+import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 import { createSubmodel, dissolveSubmodel } from "../api/client"
 import useToastStore from "../stores/useToastStore"
 import useGraphStore from "../stores/useGraphStore"
@@ -34,6 +35,8 @@ interface SubmodelNavParams {
   sourceFileRef: React.MutableRefObject<string>
   pipelineNameRef: React.MutableRefObject<string>
   fitView: (options?: { padding?: number }) => void
+  reservedApiInputFrameLabels: ReadonlySet<string>
+  resolveGraphIdentities?: typeof resolveEditorGraphIdentities
 }
 
 export interface SubmodelNavReturn {
@@ -115,7 +118,7 @@ export default function useSubmodelNavigation({
   setNodesRaw, setEdgesRaw, setSubmodelsRaw,
   setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData,
   preambleRef, sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef,
-  fitView,
+  fitView, reservedApiInputFrameLabels, resolveGraphIdentities = resolveEditorGraphIdentities,
 }: SubmodelNavParams): SubmodelNavReturn {
   const addToast = useToastStore((s) => s.addToast)
   const [viewStack, setViewStack] = useState<ViewLevel[]>([{ type: "pipeline", name: "main", file: "" }])
@@ -188,13 +191,23 @@ export default function useSubmodelNavigation({
         const nextSubmodels = newGraph.submodels ?? {}
         const nextPreamble = newGraph.preamble ?? request.preamble
         const nextPreservedBlocks = newGraph.preserved_blocks ?? request.preservedBlocks
-        graphRef.current = { nodes: nextNodes, edges: nextEdges }
+        const resolved = await resolveGraphIdentities({
+          nodes: nextNodes,
+          edges: nextEdges,
+          submodels: nextSubmodels,
+          reservedApiInputFrameLabels,
+        })
+        if (transformRequestIsStale(request)) {
+          addToast("error", "Create submodel was not applied because the workspace changed while the transform was running.")
+          return
+        }
+        graphRef.current = { nodes: resolved.nodes, edges: resolved.edges }
         submodelsRef.current = nextSubmodels
         preambleRef.current = nextPreamble
         preservedBlocksRef.current = nextPreservedBlocks
         useGraphStore.getState().setNodesAndEdgesAndSubmodels(
-          nextNodes,
-          nextEdges,
+          resolved.nodes,
+          resolved.edges,
           nextSubmodels,
           nextPreamble,
         )
@@ -204,7 +217,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Create submodel failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveGraphIdentities])
 
   const handleDrillIntoSubmodel = useCallback(async (nodeId: string) => {
     transformRequestSerialRef.current += 1
@@ -358,13 +371,23 @@ export default function useSubmodelNavigation({
         const nextEdges = normalizeEdges(flat.edges ?? [])
         const nextSubmodels = flat.submodels ?? {}
         const nextPreamble = flat.preamble ?? request.preamble
-        graphRef.current = { nodes: nextNodes, edges: nextEdges }
+        const resolved = await resolveGraphIdentities({
+          nodes: nextNodes,
+          edges: nextEdges,
+          submodels: nextSubmodels,
+          reservedApiInputFrameLabels,
+        })
+        if (transformRequestIsStale(request)) {
+          addToast("error", "Dissolve submodel was not applied because the workspace changed while the transform was running.")
+          return
+        }
+        graphRef.current = { nodes: resolved.nodes, edges: resolved.edges }
         preambleRef.current = nextPreamble
         preservedBlocksRef.current = flat.preserved_blocks ?? request.preservedBlocks
         submodelsRef.current = nextSubmodels
         useGraphStore.getState().setNodesAndEdgesAndSubmodels(
-          nextNodes,
-          nextEdges,
+          resolved.nodes,
+          resolved.edges,
           nextSubmodels,
           nextPreamble,
         )
@@ -374,7 +397,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Dissolve failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveGraphIdentities])
 
   return {
     viewStack,

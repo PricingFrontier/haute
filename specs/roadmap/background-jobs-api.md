@@ -6,10 +6,9 @@ Owns job lifecycle transitions, worker supervision, request supersession,
 artifact/event transfer, route timeouts, and deterministic cleanup for
 long-running work.
 
-Shipped supervision, transport, lifecycle, cache-bound, and enforcement work
-is defined by the background-jobs and server-api component specifications and
-their ordinary regression tests. Those delivered packages have been removed
-from this active queue.
+Current supervision, transport, lifecycle, cache-bound, and enforcement
+behaviour is defined by the background-jobs and server-api component
+specifications and their ordinary regression tests.
 
 ## Priorities
 

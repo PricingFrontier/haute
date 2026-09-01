@@ -637,7 +637,6 @@ async def run_self_test_case(
                 build_tool_executor(
                     source_file,
                     session_id=session.id,
-                    authoring_request=case.request,
                 ),
                 started_at,
             )

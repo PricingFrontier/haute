@@ -5,7 +5,9 @@
 Haute pipelines are authored visually as a React Flow graph (nodes + edges) but
 executed as plain Python. Codegen is the one-way bridge from the visual
 representation to human-readable Python: a standalone, re-runnable `.py` file
-for a flat graph, or a small parseable file tree for a graph with submodels. Given a validated
+for a flat graph, or a small parseable file tree for a graph with submodels. The
+valid-Python mutation and classification boundary is fixed by the accepted
+[structured syntax decision](structured-syntax-boundary.md). Given a validated
 `PipelineGraph`, it produces source that:
 
 - Imports `polars` and `haute`, constructs a `haute.Pipeline`/`haute.Submodel`
@@ -38,8 +40,8 @@ In scope:
   `haute._codegen_builders`), covering every `NodeType` registered in
   `haute._registry.NODE_REGISTRY`.
 - Injecting column-contract decorator kwargs (`_format_contract_kwarg` /
-  `_inject_contract_kwarg` in `src/haute/codegen.py`) via a token-aware source
-  rewrite.
+  `_inject_contract_kwarg` in `src/haute/codegen.py`) through the
+  formatting-preserving LibCST boundary in `src/haute/_python_syntax.py`.
 - Extracting the user-authored portion of a node's code editor content back
   out of generated boilerplate (`haute._code_extraction`), so the same text
   can be re-embedded on the next save without accreting duplicate scaffolding.
@@ -69,8 +71,8 @@ Out of scope (owned by neighbouring components):
   closures rather than source text; codegen's builders are its source-level
   mirror, paired 1:1 through `NODE_REGISTRY`.
 - Validating the graph's structural shape (dangling edges, missing nodes,
-  role assignment) — `haute._graph_shape` and `haute._edge_join`, which
-  codegen calls into but does not implement.
+  role assignment) — `haute._graph_shape`, `haute._topo`, and
+  `haute._edge_join`, which codegen calls into but does not implement.
 
 ## Behaviour
 
@@ -79,6 +81,10 @@ Out of scope (owned by neighbouring components):
   calls preserve the graph's edge order (apart from edge-join role ordering and root-boundary
   deduplication). The same ordered graph therefore produces byte-identical output; codegen does
   not canonicalise arbitrary input edge ordering.
+- **Dangling graph edges fail before source emission.** Codegen uses the strict
+  `topo_sort_ids` boundary and propagates `UnknownEdgeEndpointError` with the
+  deterministic unknown-node and dropped-edge evidence. It never silently removes a
+  malformed connection from the generated pipeline.
 - **One function per node**, named by sanitizing the node's label
   (`haute._graph_utils._sanitize_func_name`). Any two node labels that
   produce the same identifier, including exact duplicate labels, are a hard error at codegen time
@@ -196,27 +202,34 @@ Out of scope (owned by neighbouring components):
   blank lines inside a completed module block are stripped, and unmatched
   module-level starts are ignored.
 - **Fails loudly, never emits a corrupt file.** Every code path that could
-  produce invalid Python — a missing codegen builder, an untokenizable
-  decorator, an unparseable emitted file — raises rather than degrading to a
+  produce invalid Python — a missing codegen builder, an invalid structured
+  source edit, an unparseable emitted file — raises rather than degrading to a
   partial or passthrough result. See Failure model.
 
 ## Design rationale
 
-- **Text generation, not an AST/CST builder.** Bodies are built from format
+- **Text generation with a structured mutation boundary.** Bodies are built from format
   strings and f-strings, not `ast.unparse` or a templating engine, so the
   emitted files read like hand-written Python and are directly diffable by a
-  human reviewer. The trade-off is that string-safety (quoting, escaping,
-  paren-matching) has to be handled explicitly at every interpolation point
-  — see `_safe_str`, `_safe_path`, `_sanitize_description`,
-  `_matching_close_paren` in `src/haute/_codegen_builders.py` /
-  `src/haute/codegen.py`.
+  human reviewer. String-safety for initial interpolation remains explicit in
+  `_safe_str`, `_safe_path`, and `_sanitize_description`. Post-generation
+  source mutation is different: it must pass through the LibCST boundary so
+  comments and untouched formatting have one owner and callers never splice a
+  manually located delimiter.
 - **Contract injection is a post-hoc source rewrite, not part of the
   template.** Each `_gen_*` builder produces its decorator without knowing
-  about contracts; `_inject_contract_kwarg` locates the decorator's
-  parenthesis span with `tokenize` (so a column literally named `"price
-  (gbp)"` can't confuse a naive character scan) and splices the kwarg in.
+  about contracts; `_inject_contract_kwarg` parses the generated module and
+  keyword through `haute._python_syntax.inject_decorator_keyword`, changes the
+  first structured `@pipeline.*` or `@submodel.*` decorator call, and emits the
+  updated CST. A column literally named `"price (gbp)"`, a comment containing a
+  decorator, or multiline trivia therefore cannot become an insertion point.
   This keeps contract computation (which can hit `ConfigError` or need an
   MLflow round-trip) decoupled from the per-type body templates.
+- **One proven shared node declaration, not inferred parity.** The modelling
+  node's first-connected-input passthrough policy and decorator config keys are
+  declared once in `haute._registry` and consumed by both its runtime and
+  codegen builders. Other node types retain explicit builders until a direct
+  cross-path result test proves that their semantics genuinely match.
 - **Global collision scope, not per-file.** A root-graph node and a
   submodel-child node emit into different `.py` files (legal at the file
   level), but `flatten_graph` later merges every submodel into one
@@ -303,9 +316,10 @@ execution time on a mis-wired pipeline). Concretely:
 - **Config-folder rewrite has no decorator mapping or no generated `def`** →
   `HauteError` with the node id, label, and type. Codegen never substitutes
   `@pipeline.polars` or leaves stale inline decorator arguments behind.
-- **Decorator argument list cannot be tokenized, or has no matching close
-  paren, or no `@pipeline.*`/`@submodel.*` decorator was found at all** →
-  `HauteError` from `_matching_close_paren` / `_inject_contract_kwarg`,
+- **Generated source or the injected keyword is invalid structured Python, the
+  keyword already exists, or no `@pipeline.*`/`@submodel.*` decorator was found** →
+  `HauteError` from `_python_syntax` / `_inject_contract_kwarg`, carrying a
+  stable reason and source position when parsing reached one,
   enriched with the offending node's id/label/type before re-raising.
 - **Contract computation raises `ConfigError`** (user misconfiguration) or
   any other non-infra exception → propagates unchanged; only `OSError` and
@@ -318,6 +332,9 @@ execution time on a mis-wired pipeline). Concretely:
   identifier, including exact duplicates, anywhere in the root graph or any submodel) →
   `ParseError` enumerating every colliding bucket, from
   `_error_on_name_collisions`.
+- **An edge references a node absent from the graph** →
+  `UnknownEdgeEndpointError` from the shared strict topology boundary before any
+  generated source is accepted; codegen does not use filtered traversal.
 - **Input-name collisions on one node** (two incoming edges deriving the same
   parameter name — e.g. a frame labelled `clean_data` alongside an upstream
   node whose label sanitises to `clean_data`) → `ParseError` naming the

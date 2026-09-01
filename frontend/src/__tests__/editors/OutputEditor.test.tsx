@@ -59,6 +59,7 @@ const SINGLE_PORT_NODES: SimpleNode[] = [
       label: "Upstream Node",
       description: "",
       nodeType: "polars",
+      _defaultInputName: "Upstream_Node",
       _columns: [
         { name: "premium", dtype: "Float64" },
         { name: "area", dtype: "String" },
@@ -80,6 +81,7 @@ const MULTI_FRAME_NODES: SimpleNode[] = [
       label: "API Input",
       description: "",
       nodeType: "apiInput",
+      _sourceHandleInputNames: { policies: "policies", drivers: "drivers" },
       config: {
         tables: [
           {
@@ -121,6 +123,7 @@ const SINGLE_FRAME_API_NODES: SimpleNode[] = [
       label: "API Input",
       description: "",
       nodeType: "apiInput",
+      _sourceHandleInputNames: { quotes: "quotes" },
       config: {
         tables: [
           {
@@ -152,6 +155,7 @@ const ZERO_ELIGIBLE_API_NODES: SimpleNode[] = [
       label: "API Input",
       description: "",
       nodeType: "apiInput",
+      _sourceHandleInputNames: {},
       config: {
         tables: [
           {
@@ -188,6 +192,7 @@ const TWO_SINGLE_PORT_NODES: SimpleNode[] = [
       label: "Source A",
       description: "",
       nodeType: "polars",
+      _defaultInputName: "Source_A",
       _columns: [{ name: "alpha", dtype: "String" }],
     },
   },
@@ -197,6 +202,7 @@ const TWO_SINGLE_PORT_NODES: SimpleNode[] = [
       label: "Source B",
       description: "",
       nodeType: "polars",
+      _defaultInputName: "Source_B",
       _columns: [{ name: "beta", dtype: "String" }],
     },
   },
@@ -216,6 +222,7 @@ const COLLIDING_PORT_NODES: SimpleNode[] = [
       label: "API A",
       description: "",
       nodeType: "apiInput",
+      _sourceHandleInputNames: { shared: "shared" },
       config: {
         tables: [
           { path: "$[:]", label: "shared", emit: true, columns: [{ name: "a", path: "$[:].a", type: "int", status: "Inferred", selected: true }] },
@@ -229,6 +236,7 @@ const COLLIDING_PORT_NODES: SimpleNode[] = [
       label: "API B",
       description: "",
       nodeType: "apiInput",
+      _sourceHandleInputNames: { shared: "shared" },
       config: {
         tables: [
           { path: "$[:]", label: "shared", emit: true, columns: [{ name: "b", path: "$[:].b", type: "int", status: "Inferred", selected: true }] },

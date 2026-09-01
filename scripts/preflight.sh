@@ -214,6 +214,13 @@ if [[ "$RUN_BACKEND" == true ]]; then
 fi
 
 if [[ "$RUN_FRONTEND" == true ]]; then
+  step "Generated API contracts"
+  if (cd frontend && npm run check:contracts); then
+    pass "Generated API contracts"
+  else
+    fail "Generated API contracts are stale or invalid - run 'cd frontend && npm run generate:contracts'"
+  fi
+
   step "TypeScript type check"
   if (cd frontend && npm run typecheck); then
     pass "TypeScript"

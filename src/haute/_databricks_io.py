@@ -9,12 +9,15 @@ Secrets are resolved from the environment:
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
+from haute._databricks_credentials import (
+    DatabricksConfigError,
+    resolve_databricks_credentials,
+)
 from haute._logging import get_logger
 from haute.errors import HauteError
 
@@ -62,10 +65,6 @@ def _validate_select_clause(query: str) -> None:
         raise ValueError(f"Query contains forbidden SQL keyword: {match.group()!r}")
     if _FROM_SQL_RE.search(stripped):
         raise ValueError("Query contains forbidden SQL keyword: 'FROM'")
-
-
-class DatabricksConfigError(HauteError):
-    """Raised when required Databricks data credentials are missing."""
 
 
 class FetchIntegrityError(HauteError):
@@ -117,43 +116,25 @@ def _connection_settings(http_path: str | None = None) -> tuple[str, dict[str, A
     passed to ``databricks.sql.connect``. The failure message names every
     consulted source without echoing any value.
     """
-    host = os.getenv("DATABRICKS_HOST", "")
-    token = os.getenv("DATABRICKS_TOKEN", "")
-    client_id = os.getenv("DATABRICKS_CLIENT_ID", "")
-    client_secret = os.getenv("DATABRICKS_CLIENT_SECRET", "")
-    resolved_http_path = http_path or ""
+    resolved_http_path = (http_path or "").strip()
+    credentials = resolve_databricks_credentials(
+        additional_missing=("http_path on the Data Input node",) if not resolved_http_path else ()
+    )
 
-    missing: list[str] = []
-    if not host:
-        missing.append("DATABRICKS_HOST")
-    if not token and not (client_id and client_secret):
-        missing.append("DATABRICKS_TOKEN (or DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET)")
-    if not resolved_http_path:
-        missing.append("http_path on the Data Input node")
-
-    if missing:
-        raise DatabricksConfigError(
-            "Missing Databricks data credentials:\n  "
-            + "\n  ".join(missing)
-            + "\nSet host plus a token or service-principal pair in the environment "
-            "(.env locally; injected automatically in a Databricks App) and "
-            "http_path on the Data Input node."
-        )
-
-    # Strip protocol for the SQL connector (it wants bare hostname)
-    host = host.rstrip("/")
-    if host.startswith("https://"):
-        host = host[len("https://") :]
-    elif host.startswith("http://"):
-        host = host[len("http://") :]
-
-    if token:
-        auth_kwargs: dict[str, Any] = {"access_token": token}
+    if credentials.auth_mode == "pat":
+        assert credentials.token is not None
+        auth_kwargs: dict[str, Any] = {"access_token": credentials.token}
     else:
+        assert credentials.client_id is not None
+        assert credentials.client_secret is not None
         auth_kwargs = {
-            "credentials_provider": _service_principal_credentials(host, client_id, client_secret)
+            "credentials_provider": _service_principal_credentials(
+                credentials.server_hostname,
+                credentials.client_id,
+                credentials.client_secret,
+            )
         }
-    return host, auth_kwargs, resolved_http_path
+    return credentials.server_hostname, auth_kwargs, resolved_http_path
 
 
 # ---------------------------------------------------------------------------

@@ -331,6 +331,35 @@ class TestSchemaValidationScope:
 
 
 class TestApply:
+    async def test_dry_run_and_apply_replay_share_the_verified_plan_builder(
+        self,
+        project_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import haute.assistant._application as application_module
+
+        built = []
+        original = application_module.build_verified_plan
+
+        def track_build(*args, **kwargs):
+            verified = original(*args, **kwargs)
+            built.append(verified)
+            return verified
+
+        monkeypatch.setattr(application_module, "build_verified_plan", track_build)
+        service = _service(project_root)
+        plan = service.dry_run(
+            "main.py",
+            [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}],
+        )
+
+        await service.apply("main.py", plan.plan_hash)
+
+        assert len(built) == 2
+        assert built[0].plan == plan
+        assert built[1].plan == plan
+        assert built[0].result_graph == built[1].result_graph
+
     async def test_low_risk_apply_is_exact_single_use_and_truthfully_verified(
         self, project_root: Path
     ):

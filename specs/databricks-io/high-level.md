@@ -20,8 +20,12 @@ of scope.
 ## Behaviour
 
 The browsing endpoints list warehouses, catalogs, schemas, and tables with the Databricks
-SDK. Data acquisition requires `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, a non-empty node
-`http_path`, and a fully-qualified `catalog.schema.table`.
+SDK. Browsing and data acquisition require `DATABRICKS_HOST` plus either a
+`DATABRICKS_TOKEN` personal access token or the complete
+`DATABRICKS_CLIENT_ID`/`DATABRICKS_CLIENT_SECRET` service-principal pair. A token takes
+precedence when both forms are present. Data acquisition additionally requires a non-empty
+node `http_path` and a fully-qualified `catalog.schema.table`; service-principal SQL
+connections use the SDK's OAuth M2M credentials provider.
 
 An optional query is a projection clause beginning with `SELECT`. Semicolons, comments,
 `FROM`, and mutating/dangerous SQL keywords are rejected before connecting. The component
@@ -34,7 +38,7 @@ exponential backoff; after any retry, connector row position must prove no rows 
 
 Cache identity canonicalises case/backtick spelling of the table and includes HTTP path
 and projection, but excludes `batch_size` because it is a transport/performance knob.
-Resolved host and token never enter identity or metadata.
+Resolved host and credential values never enter identity or metadata.
 
 ## Design rationale
 

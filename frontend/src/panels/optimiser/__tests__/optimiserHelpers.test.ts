@@ -19,8 +19,8 @@ describe("optimiserResultSavePath", () => {
     )
   })
 
-  it("routes the label through the shared sanitizeName", () => {
-    // sanitizeName: space → underscore, ASCII punctuation stripped,
+  it("routes the label through the shared portableKey", () => {
+    // portableKey: space → underscore, ASCII punctuation stripped,
     // casing preserved (NOT the old ad-hoc lowercase rule).
     expect(optimiserResultSavePath("My Node!", "opt_1")).toBe(
       "output/optimiser_My_Node_opt_1.json",
@@ -29,7 +29,7 @@ describe("optimiserResultSavePath", () => {
 
   it("sanitizes the node id defensively too", () => {
     // Real ids are filename-safe (<type>_<n> or Python func names); anything
-    // odd is still flattened by sanitizeName rather than reaching the path.
+    // odd is still flattened by portableKey rather than reaching the path.
     expect(optimiserResultSavePath("Foo", "weird id!")).toBe(
       "output/optimiser_Foo_weird_id.json",
     )

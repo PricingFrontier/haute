@@ -15,7 +15,9 @@ tests re-import it without recursively starting pytest.
 
 Current targets (budgets + rationale are owned by [`targets.json`](targets.json)):
 
-- `cosmic-ray.job-store.toml`: [src/haute/routes/_job_store.py](../src/haute/routes/_job_store.py)
+- `cosmic-ray.job-store.toml`: [src/haute/routes/_job_store.py](../src/haute/routes/_job_store.py),
+  witnessed by both the store and lifecycle contract suites because lifecycle
+  transitions are implemented by the store
 - `cosmic-ray.path-resolution.toml`: [src/haute/_path_resolution.py](../src/haute/_path_resolution.py)
 - `cosmic-ray.registry.toml`: [src/haute/_registry.py](../src/haute/_registry.py)
 - `cosmic-ray.output-assembler.toml`: [src/haute/_output_assembler.py](../src/haute/_output_assembler.py)

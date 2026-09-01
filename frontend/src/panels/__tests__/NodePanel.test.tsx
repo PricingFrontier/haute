@@ -3,13 +3,14 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, within, act } from "@testing-library/react"
 import NodePanel from "../NodePanel"
 import { GraphProvider } from "../GraphContext"
-import type { SimpleNode, SimpleEdge } from "../editors"
+import type { OnUpdateConfigResult, SimpleNode, SimpleEdge } from "../editors"
 import type { ExploreCacheReport } from "../../api/types"
 import useUIStore from "../../stores/useUIStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
+import { apiInputFrameLabels } from "../../utils/apiInputPorts"
 
 const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
@@ -104,7 +105,12 @@ vi.mock("../LazyNodeEditors", async () => {
   ),
   OutputEditor: () => <div data-testid="OutputEditor" />,
   ExternalFileEditor: () => <div data-testid="ExternalFileEditor" />,
-  ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
+  ApiInputEditor: (props: Record<string, unknown>) => (
+    <div
+      data-testid="ApiInputEditor"
+      data-config-path={typeof props.configPath === "string" ? props.configPath : undefined}
+    />
+  ),
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
   DataInputEditor: (props: Record<string, unknown>) => {
     dataInputEditorProps.push(props)
@@ -144,7 +150,7 @@ vi.mock("../editors/shared/PolarsCodePanel", () => ({
 }))
 
 function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
-  return {
+  const candidate = {
     id: "node_1",
     data: {
       label: "My Node",
@@ -154,6 +160,24 @@ function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
     },
     ...overrides,
   }
+  const data = { ...candidate.data }
+  if (data.nodeType === "apiInput") {
+    const handles = apiInputFrameLabels(data.config, new Set())
+    data._defaultInputName = null
+    data._sourceHandleInputNames = Object.fromEntries(handles.map((handle) => [handle, handle]))
+  } else if (data.nodeType === "submodelPort") {
+    const ports = Array.isArray(data.ports) ? data.ports : []
+    data._defaultInputName = null
+    data._sourceHandleInputNames = Object.fromEntries(ports.flatMap((port) => (
+      typeof port === "object" && port !== null && typeof port.id === "string"
+        ? [[port.id, port.id]]
+        : []
+    )))
+  } else if (data.nodeType !== "submodel") {
+    data._defaultInputName ??= data.label.replaceAll(" ", "_")
+    data._sourceHandleInputNames ??= {}
+  }
+  return { ...candidate, data }
 }
 
 function makeDefinition(
@@ -192,6 +216,7 @@ function renderPanel(overrides: RenderPanelOverrides = {}) {
     node: makeNode(),
     onClose: vi.fn(),
     onUpdateNode: vi.fn(() => ({ ok: true as const })),
+    onRenameNode: vi.fn(async () => ({ ok: true as const })),
     onDeleteEdge: vi.fn(),
     onSwapEdgeJoinInputs: vi.fn(),
     onRefreshPreview: vi.fn(),
@@ -379,14 +404,53 @@ describe("NodePanel", () => {
     expect(props.onClose).toHaveBeenCalledOnce()
   })
 
-  it("label input updates node via onUpdateNode", () => {
+  it("label input resolves a rename without using the config updater", async () => {
     const { props } = renderPanel()
     const input = screen.getByDisplayValue("My Node")
     fireEvent.change(input, { target: { value: "Renamed" } })
     // Commit-on-blur (undo-atomicity): typing buffers locally.
-    expect(props.onUpdateNode).not.toHaveBeenCalled()
+    expect(props.onRenameNode).not.toHaveBeenCalled()
     fireEvent.blur(input)
-    expect(props.onUpdateNode).toHaveBeenCalledWith("node_1", expect.objectContaining({ label: "Renamed" }))
+    await act(async () => {})
+    expect(props.onRenameNode).toHaveBeenCalledWith("node_1", "Renamed")
+    expect(props.onUpdateNode).not.toHaveBeenCalled()
+  })
+
+  it("does not publish a rename failure into a replacement node session", async () => {
+    let resolveRename!: (result: OnUpdateConfigResult) => void
+    const onRenameNode = vi.fn(() => new Promise<OnUpdateConfigResult>((resolve) => {
+      resolveRename = resolve
+    }))
+    const firstNode = makeNode({
+      id: "first",
+      data: { label: "First", description: "", nodeType: "polars", config: {} },
+    })
+    const secondNode = makeNode({
+      id: "second",
+      data: { label: "Second", description: "", nodeType: "polars", config: {} },
+    })
+    const { props, rerender } = renderPanel({ node: firstNode, onRenameNode })
+
+    const firstInput = screen.getByDisplayValue("First")
+    fireEvent.change(firstInput, { target: { value: "Renamed First" } })
+    fireEvent.blur(firstInput)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(onRenameNode).toHaveBeenCalledWith("first", "Renamed First")
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={secondNode} />
+      </GraphProvider>,
+    )
+    expect(screen.getByDisplayValue("Second")).toBeEnabled()
+
+    await act(async () => {
+      resolveRename({ ok: false, error: "stale first-node failure" })
+    })
+    expect(screen.queryByText("stale first-node failure")).not.toBeInTheDocument()
+    expect(screen.getByDisplayValue("Second")).toBeEnabled()
   })
 
   it("makes a drilled instance label and data-input config read-only", () => {
@@ -552,6 +616,26 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("ApiInputEditor")).toBeInTheDocument()
   })
 
+  it("passes the exact server-owned API-input config reference to cache controls", () => {
+    renderPanel({
+      node: makeNode({
+        id: "unrelated-local-id",
+        data: {
+          label: "class café",
+          description: "",
+          nodeType: "apiInput",
+          config: {},
+          _configReference: "config/quote_input/node_class_caf_xe9_.json",
+        },
+      }),
+    })
+
+    expect(screen.getByTestId("ApiInputEditor")).toHaveAttribute(
+      "data-config-path",
+      "config/quote_input/node_class_caf_xe9_.json",
+    )
+  })
+
   it("renders DataInputEditor for dataInput nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "In", description: "", nodeType: "dataInput", config: {} } }) })
     expect(screen.getByTestId("DataInputEditor")).toBeInTheDocument()
@@ -629,12 +713,12 @@ describe("NodePanel", () => {
     ) => { ok: boolean }
 
     expect(onReplaceConfig({ format: "parquet" })).toEqual({ ok: true })
-    expect(onUpdateNode).toHaveBeenCalledWith("io_node", {
+    expect(onUpdateNode).toHaveBeenCalledWith("io_node", expect.objectContaining({
       label: "I/O",
       description: "",
       nodeType,
       config: { format: "parquet" },
-    })
+    }))
   })
 
   it("reports when a complete config replacement has no node update handler", () => {
@@ -1399,7 +1483,7 @@ describe("NodePanel", () => {
       expect(latestTransformInputSources()).toEqual([
         expect.objectContaining({
           edgeId: "edge_api",
-          name: "stale_quotes",
+          name: "<unresolved>",
           sourceLabel: "Quote API",
           frameUnresolved: true,
         }),
@@ -1540,7 +1624,7 @@ describe("NodePanel", () => {
       expect(renamedSources[0].name).toBe("policies")
     })
 
-    it("clears unresolved state when resolution changes under an unchanged derived name", () => {
+    it("clears unresolved state when the server supplies the handle identity", () => {
       const target = makeNode({
         id: "target",
         data: { label: "Target", description: "", nodeType: "polars", config: {} },
@@ -1569,7 +1653,7 @@ describe("NodePanel", () => {
       })
       const unresolvedSources = latestTransformInputSources()
       expect(unresolvedSources[0]).toMatchObject({
-        name: "Quote_API",
+        name: "<unresolved>",
         frameUnresolved: true,
       })
 
@@ -1652,6 +1736,8 @@ describe("NodePanel", () => {
           description: "",
           nodeType: "submodel",
           config: { definitionId: "pricing", alias: "pricing" },
+          _defaultInputName: null,
+          _sourceHandleInputNames: { "out__premium": "pricing__premium" },
         },
       })
       const child = makeNode({
@@ -2309,7 +2395,7 @@ describe("NodePanel", () => {
   // ─── Config update via label input ──────────────────────────────
 
   describe("config update handler", () => {
-    it("label change calls onUpdateNode with full data merge", () => {
+    it("label change calls the server-backed rename handler", async () => {
       const node = makeNode({
         id: "n1",
         data: {
@@ -2324,16 +2410,13 @@ describe("NodePanel", () => {
       const input = screen.getByDisplayValue("Old Label")
       fireEvent.change(input, { target: { value: "New Label" } })
       fireEvent.blur(input)
+      await act(async () => {})
 
-      expect(props.onUpdateNode).toHaveBeenCalledWith("n1", {
-        label: "New Label",
-        description: "desc",
-        nodeType: "polars",
-        config: { existing: "value" },
-      })
+      expect(props.onRenameNode).toHaveBeenCalledWith("n1", "New Label")
+      expect(props.onUpdateNode).not.toHaveBeenCalled()
     })
 
-    it("label change preserves extra data keys on the node", () => {
+    it("passes only the authored label to the rename boundary", async () => {
       const node = makeNode({
         id: "n1",
         data: {
@@ -2349,13 +2432,10 @@ describe("NodePanel", () => {
       const input = screen.getByDisplayValue("Label")
       fireEvent.change(input, { target: { value: "Updated" } })
       fireEvent.blur(input)
+      await act(async () => {})
 
-      expect(props.onUpdateNode).toHaveBeenCalledWith("n1",
-        expect.objectContaining({
-          label: "Updated",
-          _columns: [{ name: "x", dtype: "Float64" }],
-        }),
-      )
+      expect(props.onRenameNode).toHaveBeenCalledWith("n1", "Updated")
+      expect(props.onUpdateNode).not.toHaveBeenCalled()
     })
   })
 

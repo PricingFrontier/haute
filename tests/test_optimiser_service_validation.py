@@ -64,10 +64,9 @@ _SCENARIO_STAT_KEYS = {
 def clean_job_store():
     from haute.routes.optimiser import _store
 
-    snapshot = dict(_store.jobs)
+    _store.clear_all()
     yield _store
-    _store.jobs.clear()
-    _store.jobs.update(snapshot)
+    _store.clear_all()
 
 
 def _poll_solve_terminal(client, job_id: str, timeout: float = 15.0) -> dict:

@@ -1,13 +1,13 @@
 /**
  * addSource mints the persisted data-source key through the blessed
- * sanitizeName — not an ad-hoc fold (sanitizer-proliferation class).
+ * portableKey — not an ad-hoc fold.
  *
  * The previous mint, trim().toLowerCase().replace(/\s+/g, "_"), was a
  * coarser identity than the blessed one: "My Src" and "my src" silently
  * became the SAME persisted key, and the folding rule could drift from the
  * blessed rules unnoticed.  These tests pin the blessed identity: case is
  * preserved (case-distinct labels are distinct sources), labels that DO
- * collide under sanitizeName are rejected at creation (never silently
+ * collide under portableKey are rejected at creation (never silently
  * merged), and keys already persisted in sidecars keep resolving.
  *
  * addSource returns a discriminated AddSourceResult so a reject carries WHY
@@ -17,7 +17,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest"
 import useSettingsStore from "../useSettingsStore"
-import { sanitizeName } from "../../utils/sanitizeName"
+import { portableKey } from "../../utils/portableKey"
 
 const reset = () =>
   useSettingsStore.setState({ sources: ["live"], activeSource: "live" })
@@ -39,7 +39,7 @@ describe("addSource — blessed identity", () => {
   })
 
   it("rejects (not silently merges) labels that collide under the blessed identity", () => {
-    // Space and hyphen both map to underscore in sanitizeName, so these two
+    // Space and hyphen both map to underscore in portableKey, so these two
     // labels ARE one key under the blessed identity — the second add must be
     // rejected (naming the colliding key) rather than coexist or clobber.
     expect(useSettingsStore.getState().addSource("data lake")).toEqual({ ok: true, key: "data_lake" })
@@ -55,18 +55,18 @@ describe("addSource — blessed identity", () => {
     expect(useSettingsStore.getState().sources).toEqual(["live", "my_src"])
   })
 
-  it("stays extensionally equal to sanitizeName on whatever it accepts", () => {
+  it("stays extensionally equal to portableKey on whatever it accepts", () => {
     for (const label of ["Motor Book", "quote-feed", "Q4 2025", "café"]) {
       reset()
-      expect(useSettingsStore.getState().addSource(label)).toEqual({ ok: true, key: sanitizeName(label) })
+      expect(useSettingsStore.getState().addSource(label)).toEqual({ ok: true, key: portableKey(label) })
     }
   })
 
-  it("pins the documented digit-leading edge: sanitizeName prefixes node_", () => {
+  it("pins the documented digit-leading edge: portableKey prefixes item_", () => {
     // Cosmetic but deliberate: the blessed identifier sanitizer prefixes
     // digit-leading names.  Pinned so a future "fix" of the prefix is a
     // conscious identity change, not a drift.
-    expect(useSettingsStore.getState().addSource("2024")).toEqual({ ok: true, key: "node_2024" })
+    expect(useSettingsStore.getState().addSource("2024")).toEqual({ ok: true, key: "item_2024" })
   })
 })
 

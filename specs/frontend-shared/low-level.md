@@ -4,14 +4,17 @@
 
 | File | Responsibility |
 |---|---|
+| `frontend/src/utils/editorIdentities.ts` | Builds bounded identity requests, applies exact-order server responses, and attaches authoritative node/edge metadata without mutating the candidate graph. |
 | `frontend/src/main.tsx` | Local-session bootstrap: establishes the browser-managed HttpOnly cookie before mounting `App` inside `StrictMode` + a root `ErrorBoundary`; renders an actionable reload state if the local backend is unavailable. |
 | `frontend/src/api/client.ts` | Typed `fetch()` wrapper: same-origin cookie credentials, single-flight `bootstrapHauteSession`, retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and a raw-stream helper (cookie credentials + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). Modelling train/status/estimate methods dynamically import `types/trainGuards.ts` only after their response arrives so the large training contract stays out of the initial bundle. |
 | `frontend/src/api/dispersion.ts` | GLM dispersion-estimation endpoints (NB `theta` / Tweedie `var_power`): `estimateGlmDispersion`, `getDispersionStatus`, `cancelDispersion`, and `runDispersionEstimate` (starts + polls to completion, resolving with the estimated number). Split out of `client.ts` so its code — reachable only from the lazy-loaded modelling config panel — stays out of the initial JS bundle; built on `client.ts`'s exported `request`/`post` and owns its own runtime parsers (`parseDispersionEstimateResponse`, `parseDispersionStatusResponse`) rather than routing through `types/guards.ts`. |
-| `frontend/src/api/types.ts` | Request/response TypeScript interfaces mirrored from `src/haute/schemas.py`, including nullable directory sizes and canonical evaluation/tuning reports and previews; re-exports canonical node/trace types and owns the runtime `JOB_STATUS_VALUES`, `FAILED_JOB_STATUSES`, and `TERMINAL_JOB_STATUSES` shared by guards and pollers. |
+| `frontend/src/api/types.ts` | Request/response TypeScript interfaces mirrored from backend contracts, including nullable directory sizes and canonical evaluation/tuning reports and previews; its execution-strategy pilot aliases the generated declarations while normalising nullable reason fields for the stable UI shape. It re-exports canonical node/trace types and owns the runtime `JOB_STATUS_VALUES`, `FAILED_JOB_STATUSES`, and `TERMINAL_JOB_STATUSES` shared by guards and pollers. |
 | `frontend/src/types/node.ts` | Canonical persisted `PIPELINE_NODE_TYPES` vocabulary and `NodeTypeValue`; `HauteNodeData`/`PipelineFlowNode`/`SubmodelNodeData` shapes, `ColumnInfo`, `BackendNodeStatus`/`NodeStatus`, and the `nodeData()`/`effectiveNodeType()` accessors used everywhere a React Flow `Node.data` needs typed access. |
 | `frontend/src/types/trace.ts` | Trace playback shapes (`TraceStep`, `TraceResult`, per-node-type `TraceNodeDetail` variants) mirroring backend trace output. |
 | `frontend/src/types/banding.ts` | Banding-factor rule shapes shared between the banding node editor and its trace rendering. |
-| `frontend/src/types/guards.ts` | Shared runtime parser primitives plus parsers (`parse*`) and type guards for eagerly used concrete JSON API response shapes; part of the JSON/DOM trust boundary. `parseFileListResponse` accepts absent, numeric, or null `size` while retaining strict validation of every other field. Generic transport helpers, the caller-generic `readJson<T>`, and split-module local parsers are explicit exceptions. |
+| `frontend/src/types/guards.ts` | Shared runtime parser primitives plus parsers (`parse*`) and type guards for eagerly used concrete JSON API response shapes; part of the JSON/DOM trust boundary. Execution-strategy parsing delegates matching-version structural assertions to its generated standalone validator, then applies explicit compatibility, relationship, ordering, and calibration semantics. `parseFileListResponse` accepts absent, numeric, or null `size` while retaining strict validation of every other field. Generic transport helpers, the caller-generic `readJson<T>`, and split-module local parsers are explicit exceptions. |
+| `frontend/src/types/generatedContractValidation.ts` | Lazy Explore adapter for generated-validator errors: constructs stable instance paths (including missing required properties), formats contract failures, and locates matching keyword/path errors without coupling the chart parser to Ajv internals. The eager execution parser keeps its small fail-fast formatter local so this module does not hoist Explore-only contract data into the initial chunk. |
+| `frontend/src/generated/api-contracts.schema.json`, `frontend/src/generated/api-contracts.generated.ts`, `frontend/src/generated/api-contracts.constants.generated.ts`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.mjs`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.d.mts`, `frontend/src/generated/api-contracts.explore-charts.validators.mjs`, and `frontend/src/generated/api-contracts.explore-charts.validators.d.mts` | Committed contract source, static declarations, lazy Explore constants, and split self-contained validators owned by [engineering-quality](../engineering-quality/low-level.md) and consumed by frontend trust boundaries. The execution validator co-exports its generated schema version and is eager; the Explore chart validator and option constants stay behind its lazy panel chunk. |
 | `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses. Training parsing strictly retains authoritative live-history/truncation and validates complete evaluation/tuning reports, weighted fit evidence, deterministic winner/count links, and bounded evaluation previews while remaining outside the initial JavaScript graph. |
 | `frontend/src/types/pipelineRepair.ts` | Exact-key minimal repair dry-run/apply wire types and parsers. Apply delegates its nested document to `parsePipelineEditorDocument`; no response or request type contains replacement source bytes or migration operations. |
 | `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore result caches, authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
@@ -24,7 +27,7 @@
 | `frontend/src/utils/formatValue.ts` | Renders backend's non-finite-float sentinel (`{__haute_type__: "non_finite_float", ...}`) as `NaN`/`Infinity`/`-Infinity`. |
 | `frontend/src/utils/color.ts` | Hex → `rgba(...)` string with alpha, for CSS-var-driven accent colours. |
 | `frontend/src/utils/dtypeColors.ts` | Dtype string → Tailwind text-colour class for column-type badges. |
-| `frontend/src/utils/sanitizeName.ts` | Human label → valid Python identifier; MUST stay in sync with `src/haute/_graph_utils.py::_sanitize_func_name`. |
+| `frontend/src/utils/portableKey.ts` | Browser-owned persistence key; intentionally not Python-compatible or reversible. Executable identity comes only from server metadata. |
 | `frontend/src/components/ErrorBoundary.tsx` | Class-component error boundary with a "Try again" fallback UI. |
 | `frontend/src/components/Toast.tsx` | `ToastMessage` type + `ToastContainer`, rendering `useToastStore`'s queue with per-type icon/colour and auto-dismiss. |
 | `frontend/src/components/ModalShell.tsx` | Shared dialog chrome: backdrop, Escape-close, full Tab focus trap, focus restore on unmount. |
@@ -39,7 +42,8 @@
 | `frontend/src/components/BreadcrumbBar.tsx` | Pipeline → submodel navigation trail; renders nothing at stack depth ≤ 1. |
 | `frontend/src/hooks/useClickOutside.ts` | Attaches/detaches a `mousedown` listener that fires `onClose` when the click lands outside `ref`, only while `active`. |
 | `frontend/src/hooks/useDragResize.ts` | Bottom-panel drag-to-resize: DOM-direct mutation while dragging, commits to React state on mouseup. |
-| `frontend/src/hooks/useJobPolling.ts` | Generic background-job poller: healthy/error interval ramp from 500ms to a 5s steady state, 30s request timeout, 24h max lifetime, per-job state via refs, consecutive-failure toast. |
+| `frontend/src/hooks/useJobPolling.ts` | Thin React adapter that keeps one `JobPollingController` configured, reconciles the current job record after commit, and disposes it on unmount. |
+| `frontend/src/hooks/jobPollingController.ts` | The single state authority for generic background polling: active poller identities, timers, abort controllers, interval ramp, progress throttling, replacement, terminal completion/error, and disposal. |
 | `frontend/src/hooks/useBackgroundJobs.ts` | Wires `useJobPolling` to the optimiser/train/explore endpoints and `useNodeResultsStore` actions; mounted once in `App.tsx`. |
 | `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs; shared by `ModelScoreEditor` and `OptimiserApplyEditor` (node-editors). |
 | `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `frontend/src/panels/editors/ApiInputEditor.tsx` and `frontend/src/panels/editors/DataInputEditor.tsx` (node-editors). |
@@ -233,11 +237,13 @@ frontier-array enrichment but does not regress the displayed
 `result`/`selectedPointIndex` to the stale response's point (the
 "stale-response guard").
 
-**Background job polling** (`useJobPolling` + `useBackgroundJobs`):
-`useBackgroundJobs` mounts three `useJobPolling` instances (solve/train/
-explore), each driven by the store's `*Jobs` record. `useJobPolling`
-reconciles active jobs against a ref-tracked map of running pollers on every
-render; a poller not yet in the map gets a `setTimeout`-driven loop starting
+**Background job polling** (`JobPollingController` + `useJobPolling` +
+`useBackgroundJobs`): `useBackgroundJobs` mounts four `useJobPolling`
+instances (solve/train/explore/pivot), each driven by the store's `*Jobs`
+record. The hook owns one controller instance, updates its callbacks, and
+reconciles the committed job record into it. The controller is the single
+authority for the running-poller map: a job not yet present gets a
+`setTimeout`-driven loop starting
 at `BASE_INTERVAL_MS` (500ms). After each non-terminal response or retryable
 poll error, the next interval doubles (`500ms → 1s → 2s → 4s → 5s`) and then
 holds at `MAX_INTERVAL_MS` (5s) for the rest of that job. Each request is
@@ -247,7 +253,11 @@ poll errors trigger a toast (poll errors are tolerated silently up to that
 point — the network hiccup case is expected). A 404/410 from the poll
 endpoint (`TERMINAL_MISSING_JOB_STATUSES`, checked via
 `getMissingJobPollErrorMessage`) is treated as "job is gone, stop polling"
-rather than a retryable transient error.
+rather than a retryable transient error. Reconciliation aborts and retires a
+poller when its node disappears or the same node is replaced by a different
+job id; completions from retired identities cannot publish progress or
+terminal state. Controller disposal performs the same retirement for every
+job and leaves no timer or request alive after unmount.
 
 **Modal focus trap** (`ModalShell`): on mount, stashes
 `document.activeElement`, focuses the dialog container, and installs a
@@ -353,7 +363,7 @@ rather than assume per-instance isolation.
 ## Testing
 
 - `tests/test_frontend_backend_contract.py` verifies frontend/backend node-type and allowed-column-type sets remain identical.
-- `tests/test_sanitize_parity_fixture.py` verifies the shared sanitization fixture matches backend output and retains minimum fixture width.
+- `tests/test_sanitize_parity_fixture.py` verifies the retained backend compatibility golden and minimum fixture width; it is not a frontend parity twin.
 
 Tests are split between colocated `frontend/src/**/__tests__/` folders next to each source
 file and a parallel `frontend/src/__tests__/`
@@ -456,10 +466,8 @@ same Vitest config.
 - **Generic utils**: `frontend/src/utils/__tests__/formatTime.test.ts`,
   `frontend/src/utils/__tests__/formatValue.test.ts`,
   `frontend/src/utils/__tests__/color.test.ts`,
-  `frontend/src/utils/__tests__/sanitizeName.test.ts` and
-  `frontend/src/utils/__tests__/sanitizeParity.diff.test.ts` (the latter checks the frontend sanitizer
-  stays byte-for-byte in parity with the backend's `_sanitize_func_name`
-  via `frontend/src/utils/__tests__/sanitizeParity.fixture.json`), plus root-level
+  `frontend/src/utils/__tests__/portableKey.test.ts` (browser-owned key behaviour
+  intentionally independent of executable identity), plus root-level
   `frontend/src/__tests__/utils/formatBytes.test.ts` and
   `frontend/src/__tests__/utils/dtypeColors.test.ts`.
 
@@ -495,7 +503,11 @@ fixed colour literals from `frontend/src/theme/colors.ts` instead of redeclaring
 ### Execution-strategy diagnostics
 
 The `api/` and `types/guards.ts` boundary defines one execution-strategy type and parser.
-Version 1 requires integer `schema_version=1`, `status`, `strategy`, `profile`, `boundedness`
+Generated declarations and a standalone validator derived from the canonical Pydantic model own
+required fields, literals, unions, scalar bounds, safe-integer limits, and collection sizes. The
+handwritten parser retains version compatibility, status/strategy relationships, bounded
+collection state/count relationships, calibration consistency, canonical ordering, stable error
+presentation, and projection to the UI shape. Version 1 requires integer `schema_version=1`, `status`, `strategy`, `profile`, `boundedness`
 (`bounded|unbounded|unknown`), `reason_code`, `detail_state`
 (`available|unavailable|truncated`), and `boundaries`, `reasons`, and `provenance`. It accepts
 optional blocking/remediation, cost, metric, and provenance item detail. Human messages and
@@ -587,15 +599,27 @@ and strict malformed-row rejection.
 semantics, every estimate show/hide case, terminal clearing, and reset on a replacement job for the
 same node. Consumer ownership is recorded in `ownership.toml`.
 
-## Approved change contract — recovery document ingestion
+## Recovery document ingestion
 
 `frontend/src/types/pipelineDocument.ts` defines and validates schema version 1 of
 `haute.pipeline_editor_document`. Exact-key validation applies recursively to document,
 capabilities, diagnostics, spans, nodes, edges, unresolved connections, submodels, and ports;
 duplicate recovery ids, non-finite coordinates, invalid spans, and edges with missing visual
-endpoints throw at ingestion. `adaptPipelineEditorDocument` clones configs and maps recovery
-identity, availability, diagnostic ids, blocker paths, decorator names and receivers, locations,
-handles, and submodel ports into presentation-only React Flow state.
+endpoints throw at ingestion. Every node requires `function_name`, nullable
+`default_input_name`, `source_handle_input_names`, and nullable `config_reference`; every edge
+requires nullable `input_name` (ready executable edges are non-null); every submodel input port
+has exact `input_port_input_names` coverage; capabilities require the sorted reserved API-frame
+labels. `adaptPipelineEditorDocument` clones configs and maps these values to transient
+`_functionName`, `_defaultInputName`, `_sourceHandleInputNames`, `_configReference`,
+`_inputName`, and `_inputPortInputNames` metadata alongside recovery presentation state.
+
+`editorIdentities.ts` sends bounded prospective nodes to
+`POST /api/pipeline/editor-identities`, requires response cardinality and order to exactly match
+the request, requires each source-handle map to cover exactly the requested handles, and enforces
+ordinary-versus-multi-output default-identity nullability before attaching node and edge identities
+immutably. Missing, reordered, malformed, semantically mismatched, or rejected identities throw
+before callers commit graph or history state. No frontend
+production module derives Python executable names or config references.
 
 `frontend/src/stores/useDocumentStatusStore.ts` performs one atomic status transition and clones
 all externally supplied arrays/objects. Its `capabilities` value is the shared UI admission fence;
@@ -617,7 +641,7 @@ recovery states are never delivered through that frame.
 Recovery preview uses `api/client.ts`'s source/revision/target request and never serializes React Flow
 recovery objects.
 
-## Approved change contract — minimal repair transport
+## Minimal repair transport
 
 `api/client.ts` exposes remove-only dry-run and apply calls. Both send the root
 document source, current raw revision, target source/recovery identity, and

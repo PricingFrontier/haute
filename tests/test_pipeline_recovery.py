@@ -14,7 +14,11 @@ from haute._types import NodeType
 from haute.errors import ConfigError, ParseError
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.schemas import (
+    EditorIdentitiesResponse,
+    EditorIdentityResponseNode,
+    PipelineDocumentCapabilities,
     PipelineEditorDocument,
+    RecoveryGraphSnapshot,
     RecoveryPipelineNode,
     RecoveryPreviewRequest,
     RecoverySourceSpan,
@@ -136,6 +140,368 @@ def test_strict_parser_rejects_syntax_while_recovery_preserves_healthy_nodes(
     assert [node.authored_id for node in document.nodes] == ["healthy"]
     assert document.nodes[0].availability == "ready"
     assert any(diagnostic.code == "python_syntax_error" for diagnostic in document.diagnostics)
+
+
+def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_io(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("editor identity resolution must not access the filesystem")
+
+    monkeypatch.setattr(Path, "read_text", unexpected_io)
+    monkeypatch.setattr(Path, "write_text", unexpected_io)
+    response = client.post(
+        "/api/pipeline/editor-identities",
+        json={
+            "nodes": [
+                {
+                    "node_id": "ordinary",
+                    "label": "class",
+                    "node_type": "polars",
+                    "submodel_alias": None,
+                    "source_handles": [],
+                },
+                {
+                    "node_id": "api",
+                    "label": "Café request",
+                    "node_type": "apiInput",
+                    "submodel_alias": None,
+                    "source_handles": ["quotes", "vehicles"],
+                },
+                {
+                    "node_id": "pricing",
+                    "label": "Pricing",
+                    "node_type": "submodel",
+                    "submodel_alias": "pricing_secondary",
+                    "source_handles": ["out__written-premium"],
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["node_id"] for item in payload["identities"]] == [
+        "ordinary",
+        "api",
+        "pricing",
+    ]
+    assert payload["identities"][0] == {
+        "node_id": "ordinary",
+        "function_name": "node_class",
+        "config_reference": None,
+        "default_input_name": "node_class",
+        "source_handle_input_names": {},
+    }
+    assert payload["identities"][1]["source_handle_input_names"] == {
+        "quotes": "quotes",
+        "vehicles": "vehicles",
+    }
+    assert payload["identities"][1]["config_reference"].startswith("config/quote_input/")
+    assert payload["identities"][2]["source_handle_input_names"] == {
+        "out__written-premium": "pricing_secondary__written_premium"
+    }
+
+
+@pytest.mark.parametrize(
+    "nodes",
+    [
+        [
+            {
+                "node_id": "node",
+                "label": "Node",
+                "node_type": "polars",
+                "submodel_alias": None,
+                "source_handles": [],
+                "unexpected": True,
+            }
+        ],
+        [
+            {
+                "node_id": "same",
+                "label": "First",
+                "node_type": "polars",
+                "submodel_alias": None,
+                "source_handles": [],
+            },
+            {
+                "node_id": "same",
+                "label": "Second",
+                "node_type": "polars",
+                "submodel_alias": None,
+                "source_handles": [],
+            },
+        ],
+        [
+            {
+                "node_id": "api",
+                "label": "Request",
+                "node_type": "apiInput",
+                "submodel_alias": None,
+                "source_handles": ["quotes", "quotes"],
+            }
+        ],
+        [
+            {
+                "node_id": "api",
+                "label": "Request",
+                "node_type": "apiInput",
+                "submodel_alias": None,
+                "source_handles": [""],
+            }
+        ],
+        [
+            {
+                "node_id": "api",
+                "label": "Request",
+                "node_type": "apiInput",
+                "submodel_alias": None,
+                "source_handles": ["class"],
+            }
+        ],
+        [
+            {
+                "node_id": "api",
+                "label": "Request",
+                "node_type": "apiInput",
+                "submodel_alias": None,
+                "source_handles": ["café"],
+            }
+        ],
+        [
+            {
+                "node_id": "pricing",
+                "label": "Pricing",
+                "node_type": "submodel",
+                "submodel_alias": None,
+                "source_handles": ["out__result"],
+            }
+        ],
+        [
+            {
+                "node_id": "pricing",
+                "label": "Pricing",
+                "node_type": "submodel",
+                "submodel_alias": "pricing",
+                "source_handles": ["out__"],
+            }
+        ],
+        [
+            {
+                "node_id": "ordinary",
+                "label": "Ordinary",
+                "node_type": "polars",
+                "submodel_alias": "pricing",
+                "source_handles": [],
+            }
+        ],
+        [
+            {
+                "node_id": "ordinary",
+                "label": "Ordinary",
+                "node_type": "polars",
+                "submodel_alias": None,
+                "source_handles": ["unexpected"],
+            }
+        ],
+    ],
+)
+def test_editor_identity_route_rejects_malformed_batches(
+    client: TestClient,
+    nodes: list[dict[str, object]],
+) -> None:
+    response = client.post("/api/pipeline/editor-identities", json={"nodes": nodes})
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("labels", [["b", "a"], ["a", "a"]])
+def test_capabilities_reject_unsorted_or_duplicate_reserved_api_input_labels(
+    labels: list[str],
+) -> None:
+    with pytest.raises(ValidationError, match="sorted and unique"):
+        PipelineDocumentCapabilities(
+            can_mutate=True,
+            can_save=True,
+            can_execute=True,
+            can_preview=True,
+            can_manage_submodels=True,
+            reserved_api_input_frame_labels=labels,
+        )
+
+
+@pytest.mark.parametrize(
+    ("input_ports", "input_names"),
+    [
+        ([{}], {}),
+        ([{"portId": ""}], {}),
+        ([{"portId": "input"}], {"extra": "input_name"}),
+        ([{"portId": "input"}], {"input": ""}),
+    ],
+)
+def test_recovery_submodel_definition_validates_input_port_identities(
+    input_ports: list[dict[str, object]], input_names: dict[str, str]
+) -> None:
+    with pytest.raises(ValidationError):
+        RecoverySubmodelDefinition(
+            definition_id="pricing",
+            file="models/pricing.py",
+            availability="ready",
+            graph=RecoveryGraphSnapshot(),
+            input_ports=input_ports,
+            input_port_input_names=input_names,
+        )
+
+
+def test_editor_identities_response_rejects_duplicate_node_ids() -> None:
+    identity = EditorIdentityResponseNode(
+        node_id="same",
+        function_name="same",
+        config_reference=None,
+        default_input_name="same",
+        source_handle_input_names={},
+    )
+
+    with pytest.raises(ValidationError, match="unique"):
+        EditorIdentitiesResponse(identities=[identity, identity])
+
+
+def test_editor_identity_route_translates_resolver_value_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute.routes import pipeline
+
+    def invalid_identity(**_kwargs: object) -> None:
+        raise ValueError("invalid identity")
+
+    monkeypatch.setattr(pipeline, "resolve_editor_identity", invalid_identity)
+
+    response = client.post(
+        "/api/pipeline/editor-identities",
+        json={
+            "nodes": [
+                {
+                    "node_id": "ordinary",
+                    "label": "Ordinary",
+                    "node_type": "polars",
+                    "submodel_alias": None,
+                    "source_handles": [],
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "invalid identity"
+
+
+def test_ready_document_carries_all_server_owned_api_input_identities(
+    tmp_path: Path,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    config = tmp_path / "config" / "quote_input" / "request.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        """{
+          "path": "data/request.json",
+          "tables": [
+            {"path": "$[:]", "label": "quotes", "emit": true,
+             "columns": [{"name": "id", "path": "$[:].id", "type": "int",
+                           "status": "Confirmed", "selected": true}]},
+            {"path": "$[:].vehicles[:]", "label": "vehicles", "emit": true,
+             "columns": [{"name": "vrn", "path": "$[:].vehicles[:].vrn", "type": "str",
+                           "status": "Confirmed", "selected": true}]}
+          ]
+        }""",
+        encoding="utf-8",
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("identity-document")
+
+        @pipeline.api_input(config="config/quote_input/request.json")
+        def request():
+            return None
+
+        @pipeline.polars
+        def consume(quotes):
+            return quotes
+
+        pipeline.connect("request", "consume", source_port="quotes")
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "ready"
+    request = next(node for node in document.nodes if node.authored_id == "request")
+    assert request.function_name == "request"
+    assert request.default_input_name is None
+    assert request.config_reference == "config/quote_input/request.json"
+    assert request.source_handle_input_names == {
+        "quotes": "quotes",
+        "vehicles": "vehicles",
+    }
+    edge = next(item for item in document.edges if item.source_authored_id == "request")
+    assert edge.input_name == "quotes"
+    assert document.capabilities.reserved_api_input_frame_labels == sorted(
+        document.capabilities.reserved_api_input_frame_labels
+    )
+    assert "class" in document.capabilities.reserved_api_input_frame_labels
+
+
+def test_ready_document_keeps_incomplete_api_input_config_repairable(
+    tmp_path: Path,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    config = tmp_path / "config" / "quote_input" / "request.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        """{
+          "path": "data/request.json",
+          "tables": [
+            {"path": "$[:]", "label": "quotes", "emit": true,
+             "columns": [
+               {"name": "id", "path": "$[:].id", "type": "int",
+                "status": "Confirmed", "selected": true},
+               {"name": "", "path": "$[:].premium", "type": "float",
+                "status": "Inferred", "selected": true}
+             ]},
+            {"path": "$[:].claims[:]", "label": "claims", "emit": true,
+             "columns": [{"name": "amount", "path": "$[:].claims[:].amount",
+                           "type": "float", "status": "Confirmed", "selected": true}]},
+            {"path": "", "label": "orphan", "emit": true, "columns": []},
+            {"path": "$[:].addons[:]", "label": "", "emit": true,
+             "columns": [{"name": "code", "path": "$[:].addons[:].code",
+                           "type": "str", "status": "Confirmed", "selected": true}]}
+          ]
+        }""",
+        encoding="utf-8",
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("identity-document")
+
+        @pipeline.api_input(config="config/quote_input/request.json")
+        def request():
+            return None
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "ready"
+    request = next(node for node in document.nodes if node.authored_id == "request")
+    assert len(request.config["tables"]) == 4
+    assert request.config["tables"][0]["columns"][1]["name"] == ""
+    assert request.config["tables"][3]["label"] == ""
+    assert request.source_handle_input_names == {"quotes": "quotes", "claims": "claims"}
 
 
 def test_legacy_explore_failure_is_localised_without_writing_project_bytes(
@@ -346,6 +712,9 @@ def test_recovery_preview_planner_rejects_unavailable_sources_and_nodes() -> Non
             availability=availability,  # type: ignore[arg-type]
             display_position={"x": 0, "y": 0},
             config={},
+            function_name=node_id,
+            default_input_name=node_id,
+            source_handle_input_names={},
         )
 
     def document(**updates: object) -> PipelineEditorDocument:
@@ -386,6 +755,7 @@ def test_recovery_preview_planner_rejects_unavailable_sources_and_nodes() -> Non
                         source_authored_id="ancestor",
                         target_authored_id="target",
                         availability="unavailable",
+                        input_name=None,
                     )
                 ],
             ),
@@ -404,6 +774,7 @@ def test_recovery_preview_planner_rejects_unavailable_sources_and_nodes() -> Non
                         source_authored_id="missing",
                         target_authored_id="target",
                         availability="unavailable",
+                        input_name=None,
                     )
                 ],
             ),
@@ -456,6 +827,9 @@ def test_canonical_snapshot_rejects_unavailable_nodes_and_submodels() -> None:
             availability=availability,  # type: ignore[arg-type]
             display_position={"x": 0, "y": 0},
             config={} if config is None else config,
+            function_name=node_id,
+            default_input_name=node_id,
+            source_handle_input_names={},
         )
 
     unavailable_definition = RecoverySubmodelDefinition(
@@ -463,6 +837,7 @@ def test_canonical_snapshot_rejects_unavailable_nodes_and_submodels() -> None:
         file="models/pricing.py",
         availability="unavailable",
         graph=RecoveryGraphSnapshot(),
+        input_port_input_names={},
     )
     cases = [
         ([node("broken", "unavailable")], None, "node_unavailable"),

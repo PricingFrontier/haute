@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
-import haute._git as git_mod
+import haute._git_archive as git_archive
+import haute._git_core as git_core
+import haute._git_remote as git_remote
 from haute._git import (
     GitError,
     GitTransactionError,
@@ -69,7 +71,7 @@ def _advance_remote_pair(repo: Path, tmp_path: Path) -> None:
     assert commit_save(["rating.py"], WORKING, cwd=other) is not None
     commit_milestone("remote milestone", other, cwd=other)
     push_working_pair("origin", other, cwd=other)
-    git_mod._fetch_cooldowns.clear()
+    git_core._fetch_cooldowns.clear()
 
 
 def test_adopting_existing_branch_restores_head_ledger_and_prior_state_on_failure(
@@ -135,14 +137,14 @@ def test_fast_forward_failure_restores_both_refs_head_and_worktree(
     old_working = _git(repo, "rev-parse", WORKING)
     old_ledger = _git(repo, "rev-parse", LEDGER)
     old_content = (repo / "rating.py").read_text()
-    real_run = git_mod._run_git
+    real_run = git_remote._run_git
 
     def fail_working_cas(*args: str, **kwargs: object) -> str:
         if args[:2] == ("update-ref", f"refs/heads/{WORKING}"):
             raise GitError("injected working CAS failure")
         return real_run(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(git_mod, "_run_git", fail_working_cas)
+    monkeypatch.setattr(git_remote, "_run_git", fail_working_cas)
 
     with pytest.raises(GitError, match="injected working CAS failure"):
         fast_forward_pair("origin", repo, cwd=repo)
@@ -158,8 +160,8 @@ def test_fast_forward_raises_transaction_error_when_ledger_compensation_fails(
 ) -> None:
     _set_up_pair(repo)
     _advance_remote_pair(repo, tmp_path)
-    real_run = git_mod._run_git
-    real_run_ok = git_mod._run_git_ok
+    real_run = git_remote._run_git
+    real_run_ok = git_remote._run_git_ok
 
     def fail_working_cas(*args: str, **kwargs: object) -> str:
         if args[:2] == ("update-ref", f"refs/heads/{WORKING}"):
@@ -171,8 +173,8 @@ def test_fast_forward_raises_transaction_error_when_ledger_compensation_fails(
             return False, "injected reset rollback failure"
         return real_run_ok(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(git_mod, "_run_git", fail_working_cas)
-    monkeypatch.setattr(git_mod, "_run_git_ok", fail_compensating_reset)
+    monkeypatch.setattr(git_remote, "_run_git", fail_working_cas)
+    monkeypatch.setattr(git_remote, "_run_git_ok", fail_compensating_reset)
 
     with pytest.raises(GitTransactionError, match="automatic rollback was incomplete"):
         fast_forward_pair("origin", repo, cwd=repo)
@@ -206,14 +208,14 @@ def test_restore_compensates_when_ledger_rename_fails(
     _set_up_pair(repo)
     archived = archive_working_pair(WORKING, repo, cwd=repo).archived_as
     archived_ledger = f"{archived}-save"
-    real_run = git_mod._run_git
+    real_run = git_archive._run_git
 
     def fail_ledger_rename(*args: str, **kwargs: object) -> str:
         if args[:4] == ("branch", "-m", archived_ledger, LEDGER):
             raise GitError("injected ledger rename failure")
         return real_run(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(git_mod, "_run_git", fail_ledger_rename)
+    monkeypatch.setattr(git_archive, "_run_git", fail_ledger_rename)
 
     with pytest.raises(GitError, match="injected ledger rename failure"):
         restore_working_pair(archived, repo, cwd=repo)

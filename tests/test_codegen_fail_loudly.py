@@ -12,7 +12,7 @@ from haute.codegen import (
     graph_to_code,
     graph_to_code_multi,
 )
-from haute.errors import ConfigError, HauteError, ParseError
+from haute.errors import HauteError, ParseError
 from tests.conftest import compile_node_code as _compile_node_code
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _n
@@ -30,6 +30,124 @@ def Step(df: pl.LazyFrame) -> pl.LazyFrame:
 
     assert 'contract={"inputs": ["x"], "outputs": ["band"]}' in injected
     _compile_node_code(injected)
+
+
+def test_inject_contract_kwarg_preserves_multiline_comments_and_trailing_style() -> None:
+    code = (
+        "@pipeline.banding(\n"
+        "    value=1,  # keep this authored explanation\n"
+        ")\n"
+        "def Step(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    return df\n"
+    )
+
+    injected = _inject_contract_kwarg(code, 'contract="opaque"')
+
+    assert injected == (
+        "@pipeline.banding(\n"
+        "    value=1,  # keep this authored explanation\n"
+        '    contract="opaque",\n'
+        ")\n"
+        "def Step(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    return df\n"
+    )
+
+
+def test_inject_contract_kwarg_preserves_crlf_newlines() -> None:
+    code = (
+        "@pipeline.polars(\r\n"
+        "    selected_columns=['x'],\r\n"
+        ")\r\n"
+        "def Step(df: pl.LazyFrame) -> pl.LazyFrame:\r\n"
+        "    return df\r\n"
+    )
+
+    injected = _inject_contract_kwarg(code, 'contract="opaque"')
+
+    assert injected == (
+        "@pipeline.polars(\r\n"
+        "    selected_columns=['x'],\r\n"
+        '    contract="opaque",\r\n'
+        ")\r\n"
+        "def Step(df: pl.LazyFrame) -> pl.LazyFrame:\r\n"
+        "    return df\r\n"
+    )
+
+
+def test_inject_contract_kwarg_preserves_single_line_trailing_comma_style() -> None:
+    code = (
+        "@pipeline.polars(selected_columns=['x'],)\n"
+        "def Step(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    return df\n"
+    )
+
+    injected = _inject_contract_kwarg(code, 'contract="opaque"')
+
+    assert injected.startswith("@pipeline.polars(selected_columns=['x'], contract=\"opaque\",)\n")
+
+
+def test_inject_contract_kwarg_handles_same_line_close_after_multiline_open() -> None:
+    code = (
+        "@pipeline.polars(\n"
+        "    selected_columns=['x'],)\n"
+        "def Step(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    return df\n"
+    )
+
+    injected = _inject_contract_kwarg(code, 'contract="opaque"')
+
+    assert injected.startswith(
+        "@pipeline.polars(\n    selected_columns=['x'], contract=\"opaque\",)\n"
+    )
+
+
+def test_inject_contract_kwarg_ignores_decorator_text_inside_a_string() -> None:
+    code = (
+        'banner = """\n'
+        "@pipeline.not_a_real_decorator()\n"
+        '"""\n'
+        "@pipeline.polars()\n"
+        "def Step(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    return df\n"
+    )
+
+    injected = _inject_contract_kwarg(code, 'contract="opaque"')
+
+    assert "@pipeline.not_a_real_decorator()" in injected
+    assert '@pipeline.polars(contract="opaque")' in injected
+
+
+def test_inject_contract_kwarg_targets_first_function_decorator_in_source_order() -> None:
+    code = (
+        "@pipeline.class_lookalike()\n"
+        "class Ignored:\n"
+        "    pass\n"
+        "\n"
+        "@pipeline.outer()\n"
+        "def outer() -> None:\n"
+        "    @pipeline.inner()\n"
+        "    def inner() -> None:\n"
+        "        pass\n"
+    )
+
+    injected = _inject_contract_kwarg(code, 'contract="opaque"')
+
+    assert "@pipeline.class_lookalike()" in injected
+    assert '@pipeline.outer(contract="opaque")' in injected
+    assert "@pipeline.inner()" in injected
+
+
+def test_inject_contract_kwarg_rejects_an_existing_contract() -> None:
+    code = (
+        '@pipeline.polars(contract="opaque")\n'
+        "def Step(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    return df\n"
+    )
+
+    with pytest.raises(HauteError) as exc_info:
+        _inject_contract_kwarg(code, 'contract="opaque"')
+
+    assert exc_info.value.context["reason"] == "decorator_keyword_exists"
 
 
 def test_inject_contract_kwarg_rewrites_bare_decorator() -> None:
@@ -467,9 +585,8 @@ def test_inject_contract_kwarg_paren_in_string_multiline_decorator() -> None:
     assert '"x ) y"' in injected
 
 
-def test_inject_contract_kwarg_does_not_read_past_the_decorator_close() -> None:
-    """Token consumption is lazy: garbage in the BODY (caught later by the
-    emission parse gate) must not break injection into a healthy decorator."""
+def test_inject_contract_kwarg_rejects_invalid_generated_body_with_position() -> None:
+    """The valid-source boundary never partially rewrites an invalid module."""
     code = (
         "@pipeline.polars(selected_columns=['x'])\n"
         "def Step(df: pl.LazyFrame) -> pl.LazyFrame:\n"
@@ -477,10 +594,12 @@ def test_inject_contract_kwarg_does_not_read_past_the_decorator_close() -> None:
         "    return df\n"
     )
 
-    injected = _inject_contract_kwarg(code, 'contract="opaque"')
+    with pytest.raises(HauteError) as exc_info:
+        _inject_contract_kwarg(code, 'contract="opaque"')
 
-    expected = "@pipeline.polars(selected_columns=['x'], contract=\"opaque\")"
-    assert injected.splitlines()[0] == expected
+    assert exc_info.value.context["reason"] == "source_syntax_invalid"
+    assert isinstance(exc_info.value.context["line"], int)
+    assert isinstance(exc_info.value.context["column"], int)
 
 
 # ---------------------------------------------------------------------------
@@ -516,12 +635,13 @@ def test_graph_to_code_refuses_to_emit_unparseable_file() -> None:
         }
     )
 
-    with pytest.raises(ConfigError) as excinfo:
+    with pytest.raises(HauteError) as excinfo:
         graph_to_code(graph, pipeline_name="main")
 
-    message = str(excinfo.value)
-    assert "main.py" in message
-    assert "not valid Python" in message
+    assert excinfo.value.context["reason"] == "source_syntax_invalid"
+    assert isinstance(excinfo.value.context["line"], int)
+    assert isinstance(excinfo.value.context["column"], int)
+    assert excinfo.value.context["node_id"] == "t"
 
 
 def test_graph_to_code_multi_refuses_unparseable_submodel_file() -> None:
@@ -572,10 +692,11 @@ def test_graph_to_code_multi_refuses_unparseable_submodel_file() -> None:
         }
     )
 
-    with pytest.raises(ConfigError) as excinfo:
+    with pytest.raises(HauteError) as excinfo:
         graph_to_code_multi(graph, pipeline_name="main")
 
-    assert "modules/sm.py" in str(excinfo.value)
+    assert excinfo.value.context["reason"] == "source_syntax_invalid"
+    assert excinfo.value.context["node_id"] == "t"
 
 
 def test_inject_contract_kwarg_raises_when_no_pipeline_decorator_exists() -> None:

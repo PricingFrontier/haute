@@ -1,10 +1,31 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { renderHook, cleanup } from "@testing-library/react"
+import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useKeyboardShortcuts from "../useKeyboardShortcuts"
 import useUIStore from "../../stores/useUIStore"
 import useToastStore from "../../stores/useToastStore"
 import { makeNode } from "../../test-utils/factories"
+
+function resolvedIdentityGraph(
+  nodes: readonly Node[],
+  edges: readonly Edge[],
+): { nodes: Node[]; edges: Edge[] } {
+  return {
+    nodes: nodes.map((node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        _functionName: `server_${node.id}`,
+        _defaultInputName: `server_input_${node.id}`,
+        _sourceHandleInputNames: {},
+      },
+    })),
+    edges: edges.map((edge) => ({
+      ...edge,
+      data: { ...edge.data, _inputName: `server_input_${edge.source}` },
+    })),
+  }
+}
 
 function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0]> = {}) {
   return {
@@ -24,6 +45,10 @@ function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0
     closePanel: vi.fn(),
     isInsideSubmodel: false,
     readOnly: false,
+    resolveGraphIdentities: vi.fn(async (
+      nodes: readonly Node[],
+      edges: readonly Edge[],
+    ): Promise<{ nodes: Node[]; edges: Edge[] }> => resolvedIdentityGraph(nodes, edges)),
     ...overrides,
   }
 }
@@ -36,6 +61,16 @@ function fireKeyFrom(target: HTMLElement, key: string, opts: Partial<KeyboardEve
   target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...opts }))
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 describe("useKeyboardShortcuts", () => {
   let params: ReturnType<typeof makeParams>
 
@@ -44,6 +79,7 @@ describe("useKeyboardShortcuts", () => {
     useUIStore.setState({
       shortcutsOpen: false, submodelDialog: null, nodeSearchOpen: false,
     })
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     params = makeParams()
     renderHook(() => useKeyboardShortcuts(params))
   })
@@ -225,23 +261,72 @@ describe("useKeyboardShortcuts", () => {
     expect(toasts[toasts.length - 1]).toMatchObject({ type: "info", text: "Copied 1 node" })
   })
 
-  it("Ctrl+V pastes copied nodes", () => {
+  it("Ctrl+V resolves copied node and edge identities before one atomic paste", async () => {
     params.clipboard.current = {
-      nodes: [{ id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, type: "pipelineNode" } as Node],
-      edges: [],
+      nodes: [
+        {
+          id: "n1",
+          position: { x: 0, y: 0 },
+          data: { label: "A", nodeType: "polars", _functionName: "stale_a" },
+          type: "pipelineNode",
+        } as Node,
+        {
+          id: "n2",
+          position: { x: 200, y: 0 },
+          data: { label: "B", nodeType: "polars", _functionName: "stale_b" },
+          type: "pipelineNode",
+        } as Node,
+      ],
+      edges: [{
+        id: "old-edge",
+        source: "n1",
+        target: "n2",
+        data: { _inputName: "stale_edge" },
+      } as Edge],
     }
     fireKey("v", { ctrlKey: true })
+    await waitFor(() => expect(params.resolveGraphIdentities).toHaveBeenCalledOnce())
+    const [candidateNodes, candidateEdges] = vi.mocked(params.resolveGraphIdentities).mock.calls[0]
+    expect(candidateNodes.map((node) => ({ id: node.id, label: node.data.label }))).toEqual([
+      { id: "pipelineNode_1", label: "A copy" },
+      { id: "pipelineNode_2", label: "B copy" },
+    ])
+    expect(candidateEdges).toEqual([
+      expect.objectContaining({
+        id: "e-pipelineNode_1-pipelineNode_2",
+        source: "pipelineNode_1",
+        target: "pipelineNode_2",
+      }),
+    ])
     // Undo-atomicity: paste adds nodes + their edges in ONE combined call, so
     // a single ⌘/Ctrl-Z removes the whole paste — never separate setNodes +
     // setEdges (two undo snapshots).
-    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(params.setEdges).not.toHaveBeenCalled()
+    const [nextNodes, nextEdges] = vi.mocked(params.setNodesAndEdges).mock.calls[0]
+    expect(nextNodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "pipelineNode_1",
+        data: expect.objectContaining({ _functionName: "server_pipelineNode_1" }),
+      }),
+      expect.objectContaining({
+        id: "pipelineNode_2",
+        data: expect.objectContaining({ _functionName: "server_pipelineNode_2" }),
+      }),
+    ]))
+    expect(nextEdges).toEqual([
+      expect.objectContaining({
+        source: "pipelineNode_1",
+        target: "pipelineNode_2",
+        data: { _inputName: "server_input_pipelineNode_1" },
+      }),
+    ])
     const toasts = useToastStore.getState().toasts
-    expect(toasts[toasts.length - 1]).toMatchObject({ type: "info", text: "Pasted 1 node" })
+    expect(toasts[toasts.length - 1]).toMatchObject({ type: "info", text: "Pasted 2 nodes" })
   })
 
-  it("Ctrl+V filters out singleton nodes that already exist in the graph", () => {
+  it("Ctrl+V filters out singleton nodes that already exist in the graph", async () => {
     params.graphRef.current.nodes = [
       { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" } } as unknown as Node,
     ]
@@ -253,9 +338,8 @@ describe("useKeyboardShortcuts", () => {
       edges: [],
     }
     fireKey("v", { ctrlKey: true })
-    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
-    const updater = vi.mocked(params.setNodesAndEdges).mock.calls[0][0] as (nds: Node[]) => Node[]
-    const result = updater(params.graphRef.current.nodes)
+    await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
+    const result = vi.mocked(params.setNodesAndEdges).mock.calls[0][0] as Node[]
     // Original node + 1 pasted (polars), singleton (apiInput) filtered out
     expect(result).toHaveLength(2)
     expect(result.some((n: Node) => n.data.label === "Transform copy")).toBe(true)
@@ -275,7 +359,7 @@ describe("useKeyboardShortcuts", () => {
     expect(params.setNodesAndEdges).not.toHaveBeenCalled()
   })
 
-  it("Ctrl+V allows pasting singleton when it does not exist in graph", () => {
+  it("Ctrl+V allows pasting singleton when it does not exist in graph", async () => {
     params.graphRef.current.nodes = []
     params.clipboard.current = {
       nodes: [
@@ -284,12 +368,116 @@ describe("useKeyboardShortcuts", () => {
       edges: [],
     }
     fireKey("v", { ctrlKey: true })
-    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
   })
 
   it("Ctrl+V with empty clipboard does nothing", () => {
     fireKey("v", { ctrlKey: true })
     expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+  })
+
+  it("Ctrl+V reports identity-resolution failure without mutating the graph", async () => {
+    cleanup()
+    params = makeParams({
+      resolveGraphIdentities: vi.fn(async () => {
+        throw new Error("identity service unavailable")
+      }),
+    })
+    params.clipboard.current = {
+      nodes: [makeNode("n1", "polars", { data: { label: "A", nodeType: "polars" } })],
+      edges: [],
+    }
+    renderHook(() => useKeyboardShortcuts(params))
+
+    fireKey("v", { ctrlKey: true })
+
+    await waitFor(() => expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "error",
+      text: expect.stringMatching(/paste failed.*identity service unavailable/i),
+    }))
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+  })
+
+  it("Ctrl+V rejects a malformed identity result without mutating the graph", async () => {
+    cleanup()
+    params = makeParams({
+      resolveGraphIdentities: vi.fn(async () => ({ nodes: [], edges: [] })),
+    })
+    params.clipboard.current = {
+      nodes: [makeNode("n1", "polars", { data: { label: "A", nodeType: "polars" } })],
+      edges: [],
+    }
+    renderHook(() => useKeyboardShortcuts(params))
+
+    fireKey("v", { ctrlKey: true })
+
+    await waitFor(() => expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "error",
+      text: expect.stringMatching(/paste failed.*invalid node/i),
+    }))
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+  })
+
+  it("Ctrl+V discards a resolved paste when the graph changes in flight", async () => {
+    cleanup()
+    const pending = deferred<{ nodes: Node[]; edges: Edge[] }>()
+    params = makeParams({ resolveGraphIdentities: vi.fn(() => pending.promise) })
+    params.clipboard.current = {
+      nodes: [makeNode("n1", "polars", { data: { label: "A", nodeType: "polars" } })],
+      edges: [],
+    }
+    renderHook(() => useKeyboardShortcuts(params))
+
+    fireKey("v", { ctrlKey: true })
+    await waitFor(() => expect(params.resolveGraphIdentities).toHaveBeenCalledOnce())
+    const [candidateNodes, candidateEdges] = vi.mocked(params.resolveGraphIdentities).mock.calls[0]
+    params.graphRef.current = { nodes: [makeNode("intervening")], edges: [] }
+    await act(async () => {
+      pending.resolve(resolvedIdentityGraph(candidateNodes, candidateEdges))
+      await pending.promise
+    })
+
+    await waitFor(() => expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "error",
+      text: expect.stringMatching(/paste was not applied.*graph changed/i),
+    }))
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+  })
+
+  it("Ctrl+V lets only the latest concurrent paste commit", async () => {
+    cleanup()
+    const first = deferred<{ nodes: Node[]; edges: Edge[] }>()
+    const second = deferred<{ nodes: Node[]; edges: Edge[] }>()
+    const resolveGraphIdentities = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+    params = makeParams({ resolveGraphIdentities })
+    params.clipboard.current = {
+      nodes: [makeNode("n1", "polars", { data: { label: "A", nodeType: "polars" } })],
+      edges: [],
+    }
+    renderHook(() => useKeyboardShortcuts(params))
+
+    fireKey("v", { ctrlKey: true })
+    fireKey("v", { ctrlKey: true })
+    await waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledTimes(2))
+    const [secondNodes, secondEdges] = resolveGraphIdentities.mock.calls[1] as [Node[], Edge[]]
+    await act(async () => {
+      second.resolve(resolvedIdentityGraph(secondNodes, secondEdges))
+      await second.promise
+    })
+    await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
+    expect((vi.mocked(params.setNodesAndEdges).mock.calls[0][0] as Node[]).at(-1)?.id).toBe("polars_2")
+
+    const [firstNodes, firstEdges] = resolveGraphIdentities.mock.calls[0] as [Node[], Edge[]]
+    await act(async () => {
+      first.resolve(resolvedIdentityGraph(firstNodes, firstEdges))
+      await first.promise
+    })
+    await waitFor(() => expect(useToastStore.getState().toasts.some(
+      (toast) => /paste was not applied/i.test(toast.text),
+    )).toBe(true))
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
   })
 
   it("Delete removes selected nodes", () => {

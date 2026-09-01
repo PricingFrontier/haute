@@ -14,6 +14,7 @@ import pytest
 import haute.routes.optimiser as optimiser_routes
 from haute.routes.optimiser import _build_artifact_payload
 from haute.schemas import OptimiserStatusResponse
+from tests.job_store_support import seed_job
 
 _UI_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "ui_contracts"
 _GOLDEN_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "golden"
@@ -55,20 +56,24 @@ def test_solve_status_route_matches_ui_contract_fixture() -> None:
     validated = OptimiserStatusResponse.model_validate(fixture)
     job_id = "job-1"
     frontier = validated.frontier.model_dump(mode="python") if validated.frontier else None
-    optimiser_routes._store.jobs[job_id] = {
-        "status": fixture["status"],
-        "progress": fixture["progress"],
-        "message": fixture["message"],
-        "elapsed_seconds": fixture["elapsed_seconds"],
-        "result": validated.result,
-        "frontier_data": frontier,
-        "created_at": time.time(),
-    }
+    seed_job(
+        optimiser_routes._store,
+        job_id,
+        {
+            "status": fixture["status"],
+            "progress": fixture["progress"],
+            "message": fixture["message"],
+            "elapsed_seconds": fixture["elapsed_seconds"],
+            "result": validated.result,
+            "frontier_data": frontier,
+            "created_at": time.time(),
+        },
+    )
 
     try:
         response = asyncio.run(optimiser_routes.solve_status(job_id))
     finally:
-        optimiser_routes._store.jobs.pop(job_id, None)
+        optimiser_routes._store.delete_job(job_id)
 
     assert response.model_dump(mode="json") == fixture
 

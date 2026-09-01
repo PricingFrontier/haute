@@ -6,7 +6,9 @@ and model versions so the frontend can populate dropdowns.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from time import perf_counter
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -29,6 +31,99 @@ from haute.schemas import (
 logger = get_logger(component="server.mlflow")
 
 router = APIRouter(prefix="/api/mlflow", tags=["mlflow"])
+
+
+def _elapsed_ms(started_at: float, ended_at: float) -> float:
+    """Return elapsed monotonic-clock time in milliseconds."""
+    return (ended_at - started_at) * 1000
+
+
+@dataclass(slots=True)
+class _RunDiscoveryMeasurement:
+    """Constant-space aggregate for one MLflow run discovery attempt."""
+
+    max_results: int
+    started_at: float
+    search_calls: int = 0
+    artifact_calls: int = 0
+    runs_scanned: int = 0
+    runs_returned: int = 0
+    artifact_failures: int = 0
+    search_ms: float = 0.0
+    artifact_ms: float = 0.0
+
+    def record_search(self, started_at: float, ended_at: float) -> None:
+        self.search_calls += 1
+        self.search_ms += _elapsed_ms(started_at, ended_at)
+
+    def record_artifact_call(self, started_at: float, ended_at: float) -> None:
+        self.artifact_calls += 1
+        self.artifact_ms += _elapsed_ms(started_at, ended_at)
+
+    def emit(self, *, outcome: str) -> None:
+        total_ms = _elapsed_ms(self.started_at, perf_counter())
+        assembly_ms = max(0.0, total_ms - self.search_ms - self.artifact_ms)
+        logger.info(
+            "mlflow_run_discovery_completed",
+            outcome=outcome,
+            max_results=self.max_results,
+            search_calls=self.search_calls,
+            artifact_calls=self.artifact_calls,
+            runs_scanned=self.runs_scanned,
+            runs_returned=self.runs_returned,
+            artifact_failures=self.artifact_failures,
+            search_ms=self.search_ms,
+            artifact_ms=self.artifact_ms,
+            assembly_ms=assembly_ms,
+            total_ms=total_ms,
+        )
+
+
+def _run_summaries(
+    runs: list[Any],
+    client: MlflowClient,
+    artifact_filter: str,
+    measurement: _RunDiscoveryMeasurement,
+) -> list[MlflowRunSummary]:
+    """Build filtered summaries while updating only aggregate work counters."""
+    model_extensions = (".cbm", ".rsglm")
+
+    def _match(path: str) -> bool:
+        if artifact_filter == "optimiser":
+            return path == "optimiser_result.json"
+        return any(path.endswith(ext) for ext in model_extensions)
+
+    results: list[MlflowRunSummary] = []
+    for run in runs:
+        measurement.runs_scanned += 1
+        run_id = run.info.run_id
+        # Check for matching artifacts (N+1 — unavoidable without batch API)
+        artifact_started_at = perf_counter()
+        try:
+            artifacts = client.list_artifacts(run_id)
+            matched = [a.path for a in artifacts if _match(a.path)]
+            if not matched:
+                continue
+        except Exception as exc:
+            measurement.artifact_failures += 1
+            logger.warning("artifact_list_failed", run_id=run_id, error=str(exc))
+            continue
+        finally:
+            measurement.record_artifact_call(artifact_started_at, perf_counter())
+
+        results.append(
+            MlflowRunSummary(
+                run_id=run_id,
+                run_name=run.info.run_name or "",
+                status=run.info.status,
+                start_time=run.info.start_time,
+                metrics=run.data.metrics or {},
+                params=run.data.params or {},
+                artifacts=matched,
+            )
+        )
+        measurement.runs_returned += 1
+    return results
 
 
 def _ensure_tracking() -> tuple[_types.ModuleType, MlflowClient]:
@@ -102,7 +197,9 @@ def list_runs(
     the number of runs.  The ``max_results`` cap bounds the total calls.
     """
     mlflow, client = _ensure_tracking()
+    measurement = _RunDiscoveryMeasurement(max_results=max_results, started_at=perf_counter())
 
+    search_started_at = perf_counter()
     try:
         runs = mlflow.search_runs(
             experiment_ids=[experiment_id],
@@ -111,41 +208,18 @@ def list_runs(
             output_format="list",
         )
     except Exception as exc:
+        measurement.record_search(search_started_at, perf_counter())
+        measurement.emit(outcome="search_failed")
         logger.error("mlflow_list_runs_failed", error=str(exc))
         raise HTTPException(status_code=502, detail=_INTERNAL_ERROR_DETAIL)
+    measurement.record_search(search_started_at, perf_counter())
 
-    model_extensions = (".cbm", ".rsglm")
-
-    def _match(path: str) -> bool:
-        if artifact_filter == "optimiser":
-            return path == "optimiser_result.json"
-        return any(path.endswith(ext) for ext in model_extensions)
-
-    results: list[MlflowRunSummary] = []
-    for run in runs:
-        run_id = run.info.run_id
-        # Check for matching artifacts (N+1 — unavoidable without batch API)
-        try:
-            artifacts = client.list_artifacts(run_id)
-            matched = [a.path for a in artifacts if _match(a.path)]
-            if not matched:
-                continue
-        except Exception as exc:
-            logger.warning("artifact_list_failed", run_id=run_id, error=str(exc))
-            continue
-
-        results.append(
-            MlflowRunSummary(
-                run_id=run_id,
-                run_name=run.info.run_name or "",
-                status=run.info.status,
-                start_time=run.info.start_time,
-                metrics=run.data.metrics or {},
-                params=run.data.params or {},
-                artifacts=matched,
-            )
-        )
-
+    try:
+        results = _run_summaries(runs, client, artifact_filter, measurement)
+    except BaseException:
+        measurement.emit(outcome="processing_failed")
+        raise
+    measurement.emit(outcome="success")
     return results
 
 

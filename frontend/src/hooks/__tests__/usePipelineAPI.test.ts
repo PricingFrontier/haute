@@ -11,6 +11,7 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import useUIStore from "../../stores/useUIStore"
 import type { PipelineEdge } from "../../types/node"
 import type {
   InputCacheJobStatusResponse,
@@ -250,6 +251,7 @@ describe("usePipelineAPI", () => {
   beforeEach(() => {
     vi.useRealTimers()
     useDocumentStatusStore.getState().reset()
+    useUIStore.setState({ syncBanner: null })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })
     useGraphStore.setState({
       nodes: [],
@@ -540,6 +542,99 @@ describe("usePipelineAPI", () => {
     }))
     expect(params.sourceRevisionRef.current).toBe("revision-save")
     expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-save")
+  })
+
+  it("acknowledges its own watcher update when the save response arrives", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({
+      nodes: [],
+      edges: [],
+      source_revision: "revision-load",
+    }))
+    let resolveSave!: (value: {
+      file: string
+      pipeline_name: string
+      source_revision: string
+    }) => void
+    mockSave.mockImplementation(() => new Promise((resolve) => {
+      resolveSave = resolve
+    }))
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
+
+    let savePromise!: Promise<boolean>
+    act(() => {
+      savePromise = result.current.handleSave()
+    })
+    await waitFor(() => expect(mockSave).toHaveBeenCalledOnce())
+
+    // The backend watcher can publish the just-written revision before the
+    // POST response reaches the browser. WebSocket sync conservatively blocks
+    // that frame while the submitted graph is still dirty.
+    act(() => {
+      params.sourceRevisionRef.current = "revision-save"
+      useDocumentStatusStore.getState().setSourceRevision("revision-save")
+      useDocumentStatusStore.getState().setGraphSynchronized(false)
+      useUIStore.getState().setSyncBanner(
+        "Pipeline changed on disk while you have unsaved changes.",
+      )
+      resolveSave({
+        file: "pricing.py",
+        pipeline_name: "pricing",
+        source_revision: "revision-save",
+      })
+    })
+
+    await expect(savePromise).resolves.toBe(true)
+    expect(useDocumentStatusStore.getState().graphSynchronized).toBe(true)
+    expect(useUIStore.getState().syncBanner).toBeNull()
+  })
+
+  it("does not hide a distinct watcher revision that arrives during save", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({
+      nodes: [],
+      edges: [],
+      source_revision: "revision-load",
+    }))
+    let resolveSave!: (value: {
+      file: string
+      pipeline_name: string
+      source_revision: string
+    }) => void
+    mockSave.mockImplementation(() => new Promise((resolve) => {
+      resolveSave = resolve
+    }))
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
+
+    let savePromise!: Promise<boolean>
+    act(() => {
+      savePromise = result.current.handleSave()
+    })
+    await waitFor(() => expect(mockSave).toHaveBeenCalledOnce())
+
+    act(() => {
+      params.sourceRevisionRef.current = "revision-external"
+      useDocumentStatusStore.getState().setSourceRevision("revision-external")
+      useDocumentStatusStore.getState().setGraphSynchronized(false)
+      useUIStore.getState().setSyncBanner("External change is waiting.")
+      resolveSave({
+        file: "pricing.py",
+        pipeline_name: "pricing",
+        source_revision: "revision-save",
+      })
+    })
+
+    await expect(savePromise).resolves.toBe(true)
+    expect(params.sourceRevisionRef.current).toBe("revision-external")
+    expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-external")
+    expect(useDocumentStatusStore.getState().graphSynchronized).toBe(false)
+    expect(useUIStore.getState().syncBanner).toBe("External change is waiting.")
   })
 
   it("blocks save when a dirty canvas did not accept the latest ready document graph", async () => {

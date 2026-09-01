@@ -1,0 +1,1018 @@
+{
+  "$defs": {
+    "ChartAxes": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "primary": {
+          "$ref": "#/$defs/ChartAxisConfig"
+        },
+        "secondary": {
+          "$ref": "#/$defs/ChartSecondaryAxisConfig"
+        }
+      },
+      "required": [
+        "primary",
+        "secondary"
+      ],
+      "title": "ChartAxes",
+      "type": "object"
+    },
+    "ChartAxisConfig": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Maximum"
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Minimum"
+        },
+        "number_format": {
+          "enum": [
+            "inherit",
+            "number",
+            "integer",
+            "percent",
+            "currency_gbp",
+            "currency_usd",
+            "currency_eur"
+          ],
+          "title": "Number Format",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "minimum",
+        "maximum",
+        "number_format"
+      ],
+      "title": "ChartAxisConfig",
+      "type": "object"
+    },
+    "ChartCategory": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "include_grand_total": {
+          "title": "Include Grand Total",
+          "type": "boolean"
+        },
+        "label_rotation": {
+          "maximum": 90,
+          "minimum": -90,
+          "title": "Label Rotation",
+          "type": "integer"
+        },
+        "source": {
+          "const": "rows",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "include_grand_total",
+        "label_rotation"
+      ],
+      "title": "ChartCategory",
+      "type": "object"
+    },
+    "ChartLegend": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "position": {
+          "enum": [
+            "top",
+            "right",
+            "bottom",
+            "left"
+          ],
+          "title": "Position",
+          "type": "string"
+        },
+        "visible": {
+          "title": "Visible",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "visible",
+        "position"
+      ],
+      "title": "ChartLegend",
+      "type": "object"
+    },
+    "ChartSecondaryAxisConfig": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Maximum"
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Minimum"
+        },
+        "number_format": {
+          "enum": [
+            "inherit",
+            "number",
+            "integer",
+            "percent",
+            "currency_gbp",
+            "currency_usd",
+            "currency_eur"
+          ],
+          "title": "Number Format",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "minimum",
+        "maximum",
+        "number_format",
+        "enabled"
+      ],
+      "title": "ChartSecondaryAxisConfig",
+      "type": "object"
+    },
+    "ChartSeriesOverride": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "axis": {
+          "enum": [
+            "primary",
+            "secondary"
+          ],
+          "title": "Axis",
+          "type": "string"
+        },
+        "color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-Fa-f]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Color"
+        },
+        "data_labels": {
+          "title": "Data Labels",
+          "type": "boolean"
+        },
+        "id": {
+          "minLength": 1,
+          "pattern": "[\\s\\S]*\\S[\\s\\S]*",
+          "title": "Id",
+          "type": "string"
+        },
+        "mark": {
+          "enum": [
+            "column",
+            "line",
+            "area"
+          ],
+          "title": "Mark",
+          "type": "string"
+        },
+        "markers": {
+          "title": "Markers",
+          "type": "boolean"
+        },
+        "series_key": {
+          "minLength": 1,
+          "pattern": "[\\s\\S]*\\S[\\s\\S]*",
+          "title": "Series Key",
+          "type": "string"
+        },
+        "stack_group": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "[\\s\\S]*\\S[\\s\\S]*",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Stack Group"
+        },
+        "stack_normalize": {
+          "title": "Stack Normalize",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mark",
+        "axis",
+        "stack_group",
+        "stack_normalize",
+        "color",
+        "data_labels",
+        "markers",
+        "id",
+        "series_key"
+      ],
+      "title": "ChartSeriesOverride",
+      "type": "object"
+    },
+    "ChartValueEncoding": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "axis": {
+          "enum": [
+            "primary",
+            "secondary"
+          ],
+          "title": "Axis",
+          "type": "string"
+        },
+        "color": {
+          "anyOf": [
+            {
+              "pattern": "^#[0-9A-Fa-f]{6}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Color"
+        },
+        "data_labels": {
+          "title": "Data Labels",
+          "type": "boolean"
+        },
+        "id": {
+          "minLength": 1,
+          "pattern": "[\\s\\S]*\\S[\\s\\S]*",
+          "title": "Id",
+          "type": "string"
+        },
+        "mark": {
+          "enum": [
+            "column",
+            "line",
+            "area"
+          ],
+          "title": "Mark",
+          "type": "string"
+        },
+        "markers": {
+          "title": "Markers",
+          "type": "boolean"
+        },
+        "stack_group": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "[\\s\\S]*\\S[\\s\\S]*",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Stack Group"
+        },
+        "stack_normalize": {
+          "title": "Stack Normalize",
+          "type": "boolean"
+        },
+        "value_id": {
+          "minLength": 1,
+          "pattern": "[\\s\\S]*\\S[\\s\\S]*",
+          "title": "Value Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mark",
+        "axis",
+        "stack_group",
+        "stack_normalize",
+        "color",
+        "data_labels",
+        "markers",
+        "id",
+        "value_id"
+      ],
+      "title": "ChartValueEncoding",
+      "type": "object"
+    },
+    "ExecutionStrategyBoundaryCollectionPayload": {
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ExecutionStrategyBoundaryPayload"
+          },
+          "maxItems": 32,
+          "title": "Items",
+          "type": "array"
+        },
+        "state": {
+          "enum": [
+            "available",
+            "unavailable",
+            "truncated"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "total_count": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Total Count"
+        }
+      },
+      "required": [
+        "state",
+        "total_count",
+        "items"
+      ],
+      "title": "ExecutionStrategyBoundaryCollectionPayload",
+      "type": "object"
+    },
+    "ExecutionStrategyBoundaryPayload": {
+      "properties": {
+        "boundary_kind": {
+          "enum": [
+            "unprojected-streaming-boundary",
+            "materialisation-boundary"
+          ],
+          "title": "Boundary Kind",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "operator": {
+          "title": "Operator",
+          "type": "string"
+        },
+        "topological_rank": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Topological Rank",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "topological_rank",
+        "node_id",
+        "operator",
+        "boundary_kind"
+      ],
+      "title": "ExecutionStrategyBoundaryPayload",
+      "type": "object"
+    },
+    "ExecutionStrategyDiagnosticPayload": {
+      "description": "Strict V1 API DTO for one shared execution-planning decision.",
+      "properties": {
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "blocking_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blocking Node Id"
+        },
+        "blocking_operator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blocking Operator"
+        },
+        "boundaries": {
+          "$ref": "#/$defs/ExecutionStrategyBoundaryCollectionPayload"
+        },
+        "boundedness": {
+          "enum": [
+            "bounded",
+            "unbounded",
+            "unknown"
+          ],
+          "title": "Boundedness",
+          "type": "string"
+        },
+        "detail_state": {
+          "enum": [
+            "available",
+            "unavailable",
+            "truncated"
+          ],
+          "title": "Detail State",
+          "type": "string"
+        },
+        "estimate_admission_basis": {
+          "anyOf": [
+            {
+              "enum": [
+                "provided",
+                "projected_columns",
+                "complete_width_fallback"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimate Admission Basis"
+        },
+        "estimate_calibration_factor_basis_points": {
+          "anyOf": [
+            {
+              "maximum": 80000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimate Calibration Factor Basis Points"
+        },
+        "estimated_peak_bytes": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimated Peak Bytes"
+        },
+        "headroom_bytes": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Headroom Bytes"
+        },
+        "profile": {
+          "enum": [
+            "preview_eager",
+            "lazy_sink",
+            "training_prep",
+            "optimiser_setup",
+            "explore_analysis",
+            "auto_range",
+            "deploy_live",
+            "deploy_batch",
+            "chunked_map_reduce"
+          ],
+          "title": "Profile",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/ExecutionStrategyProvenanceCollectionPayload"
+        },
+        "raw_estimated_peak_bytes": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Estimated Peak Bytes"
+        },
+        "reason_code": {
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "reasons": {
+          "$ref": "#/$defs/ExecutionStrategyReasonCollectionPayload"
+        },
+        "remediation": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Remediation"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "projected",
+            "admitted_eager",
+            "boundary",
+            "rejected",
+            "not_planned"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "strategy": {
+          "enum": [
+            "projected",
+            "schema-all-except",
+            "full-width-admitted-eager",
+            "unprojected-streaming-boundary",
+            "materialisation-boundary",
+            "unsupported",
+            "not-planned"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "status",
+        "strategy",
+        "profile",
+        "boundedness",
+        "reason_code",
+        "detail_state",
+        "boundaries",
+        "reasons",
+        "provenance"
+      ],
+      "title": "ExecutionStrategyDiagnosticPayload",
+      "type": "object"
+    },
+    "ExecutionStrategyProvenanceCollectionPayload": {
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ExecutionStrategyProvenancePayload"
+          },
+          "maxItems": 128,
+          "title": "Items",
+          "type": "array"
+        },
+        "state": {
+          "enum": [
+            "available",
+            "unavailable",
+            "truncated"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "total_count": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Total Count"
+        }
+      },
+      "required": [
+        "state",
+        "total_count",
+        "items"
+      ],
+      "title": "ExecutionStrategyProvenanceCollectionPayload",
+      "type": "object"
+    },
+    "ExecutionStrategyProvenancePayload": {
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "origin_kind": {
+          "enum": [
+            "seed",
+            "contract",
+            "expression",
+            "join_key",
+            "conservative_boundary"
+          ],
+          "title": "Origin Kind",
+          "type": "string"
+        },
+        "source_column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Column"
+        },
+        "source_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Node Id"
+        }
+      },
+      "required": [
+        "column",
+        "origin_kind"
+      ],
+      "title": "ExecutionStrategyProvenancePayload",
+      "type": "object"
+    },
+    "ExecutionStrategyReasonCollectionPayload": {
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ExecutionStrategyReasonPayload"
+          },
+          "maxItems": 32,
+          "title": "Items",
+          "type": "array"
+        },
+        "state": {
+          "enum": [
+            "available",
+            "unavailable",
+            "truncated"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "total_count": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Total Count"
+        }
+      },
+      "required": [
+        "state",
+        "total_count",
+        "items"
+      ],
+      "title": "ExecutionStrategyReasonCollectionPayload",
+      "type": "object"
+    },
+    "ExecutionStrategyReasonPayload": {
+      "properties": {
+        "message": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Node Id"
+        },
+        "operator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operator"
+        },
+        "parent_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Node Id"
+        },
+        "reason_code": {
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "topological_rank": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Topological Rank"
+        }
+      },
+      "required": [
+        "reason_code"
+      ],
+      "title": "ExecutionStrategyReasonPayload",
+      "type": "object"
+    },
+    "ExploreChartConfig": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "axes": {
+          "$ref": "#/$defs/ChartAxes"
+        },
+        "category": {
+          "$ref": "#/$defs/ChartCategory"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "id": {
+          "minLength": 1,
+          "pattern": "[\\s\\S]*\\S[\\s\\S]*",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "combo",
+          "title": "Kind",
+          "type": "string"
+        },
+        "legend": {
+          "$ref": "#/$defs/ChartLegend"
+        },
+        "name": {
+          "minLength": 1,
+          "pattern": "[\\s\\S]*\\S[\\s\\S]*",
+          "title": "Name",
+          "type": "string"
+        },
+        "orientation": {
+          "enum": [
+            "vertical",
+            "horizontal"
+          ],
+          "title": "Orientation",
+          "type": "string"
+        },
+        "pivot_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "[\\s\\S]*\\S[\\s\\S]*",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pivot Id"
+        },
+        "series_overrides": {
+          "items": {
+            "$ref": "#/$defs/ChartSeriesOverride"
+          },
+          "title": "Series Overrides",
+          "type": "array"
+        },
+        "value_encodings": {
+          "items": {
+            "$ref": "#/$defs/ChartValueEncoding"
+          },
+          "title": "Value Encodings",
+          "type": "array"
+        },
+        "version": {
+          "const": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "id",
+        "name",
+        "enabled",
+        "pivot_id",
+        "kind",
+        "orientation",
+        "category",
+        "value_encodings",
+        "series_overrides",
+        "axes",
+        "legend"
+      ],
+      "title": "ExploreChartConfig",
+      "type": "object"
+    },
+    "ExploreChartsConfig": {
+      "description": "Complete ordered chart-card collection.",
+      "items": {
+        "$ref": "#/$defs/ExploreChartConfig"
+      },
+      "title": "ExploreChartsConfig",
+      "type": "array"
+    },
+    "JsonValue": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$id": "https://haute.dev/schemas/api-contracts.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "execution_strategy_diagnostic": {
+      "$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"
+    },
+    "explore_charts": {
+      "$ref": "#/$defs/ExploreChartsConfig"
+    }
+  },
+  "required": [
+    "execution_strategy_diagnostic",
+    "explore_charts"
+  ],
+  "title": "HauteApiContractBundle",
+  "type": "object"
+}

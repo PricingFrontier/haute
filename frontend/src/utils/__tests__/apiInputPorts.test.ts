@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 import * as apiInputPorts from "../apiInputPorts"
 import {
-  apiInputFrameLabels,
+  apiInputFrameLabels as apiInputFrameLabelsWithReserved,
   apiInputHasEmittingTable,
   edgeInputName,
 } from "../apiInputPorts"
@@ -32,13 +32,33 @@ import { buildGraph } from "../buildGraph"
 import type { SimpleEdge, SimpleNode } from "../../panels/editors/_shared"
 
 const {
-  apiInputLabelIssue,
   apiInputLabelIssueMessage,
-  applyApiInputConfigChange,
-  migrateApiInputEdges,
-  reconcileApiInputEdges,
   sanitiseLabelForFilesystem,
 } = apiInputPorts
+
+const RESERVED_FRAME_LABELS = new Set([
+  "False", "None", "True", "and", "as", "assert", "async", "await",
+  "break", "class", "continue", "def", "del", "elif", "else", "except",
+  "finally", "for", "from", "global", "if", "import", "in", "is",
+  "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
+  "while", "with", "yield",
+])
+const apiInputFrameLabels = (
+  config: Parameters<typeof apiInputFrameLabelsWithReserved>[0],
+) => apiInputFrameLabelsWithReserved(config, RESERVED_FRAME_LABELS)
+const apiInputLabelIssue = (
+  candidate: string,
+  otherLabels: readonly string[],
+) => apiInputPorts.apiInputLabelIssue(candidate, otherLabels, RESERVED_FRAME_LABELS)
+const reconcileApiInputEdges = <E extends SimpleEdge>(
+  args: Omit<Parameters<typeof apiInputPorts.reconcileApiInputEdges<E>>[0], "reservedLabels">,
+) => apiInputPorts.reconcileApiInputEdges({ ...args, reservedLabels: RESERVED_FRAME_LABELS })
+const migrateApiInputEdges = <E extends SimpleEdge>(
+  args: Omit<Parameters<typeof apiInputPorts.migrateApiInputEdges<E>>[0], "reservedLabels">,
+) => apiInputPorts.migrateApiInputEdges({ ...args, reservedLabels: RESERVED_FRAME_LABELS })
+const applyApiInputConfigChange = <E extends SimpleEdge>(
+  args: Omit<Parameters<typeof apiInputPorts.applyApiInputConfigChange<E>>[0], "reservedLabels">,
+) => apiInputPorts.applyApiInputConfigChange({ ...args, reservedLabels: RESERVED_FRAME_LABELS })
 
 // A table is a runtime port only if it is emit:true AND has >=1 selected
 // column (matches the backend `load_v2_api_source`), so the helper gives a
@@ -75,7 +95,14 @@ const sourceNode = (
 ): SimpleNode => ({
   id: "source_1",
   type: nodeType,
-  data: { label: "Source node", description: "", nodeType, config },
+  data: {
+    label: "Source node",
+    description: "",
+    nodeType,
+    config,
+    _defaultInputName: "server_source",
+    _sourceHandleInputNames: nodeType === "apiInput" ? { quotes: "quotes" } : {},
+  },
 })
 const sourceEdge = (sourceHandle: string | null): SimpleEdge => ({
   id: "edge_1",
@@ -240,18 +267,27 @@ describe("edgeInputName", () => {
     ).toBe("<unresolved>")
   })
 
-  it("sanitises an ordinary source label and ignores its source handle", () => {
+  it("uses the server-owned identity for a keyword/Unicode ordinary label", () => {
     const ordinarySource: SimpleNode = {
       ...sourceNode("polars"),
       data: {
         ...sourceNode("polars").data,
-        label: "Driver claims-feed",
+        label: "class café",
+        _defaultInputName: "node_class_cafe",
       },
     }
 
     expect(
       edgeInputName(sourceEdge("unused-port"), ordinarySource, {}),
-    ).toBe("Driver_claims_feed")
+    ).toBe("node_class_cafe")
+  })
+
+  it("fails clearly when an ordinary source has no server-owned identity", () => {
+    const ordinarySource = sourceNode("polars")
+    delete ordinarySource.data._defaultInputName
+    expect(() => edgeInputName(sourceEdge(null), ordinarySource, {})).toThrow(
+      /no authoritative default input identity/i,
+    )
   })
 
   it("resolves a drilled submodel Input edge through its existing frame row", () => {
@@ -271,6 +307,10 @@ describe("edgeInputName", () => {
           { id: "row-batch", label: "NB batch 2" },
         ],
         externalNodeIds: ["quote_api", "nb_batch"],
+        _sourceHandleInputNames: {
+          "row-quote": "row_quote",
+          "row-batch": "row_batch",
+        },
       },
     }
 
@@ -304,6 +344,7 @@ describe("edgeInputName", () => {
         portDirection: "input",
         ports: [{ id: "row-quote", label: "quote_info" }],
         externalNodeIds: ["quote_api"],
+        _sourceHandleInputNames: { "row-quote": "row_quote" },
       },
     }
 
@@ -376,15 +417,7 @@ describe("apiInputLabelIssue", () => {
   )
 
   it("rejects every Python hard keyword while retaining soft keywords", () => {
-    const hardKeywords = [
-      "False", "None", "True", "and", "as", "assert", "async", "await",
-      "break", "class", "continue", "def", "del", "elif", "else", "except",
-      "finally", "for", "from", "global", "if", "import", "in", "is",
-      "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
-      "while", "with", "yield",
-    ]
-
-    for (const keyword of hardKeywords) {
+    for (const keyword of RESERVED_FRAME_LABELS) {
       const issue = apiInputLabelIssue(keyword, [])
       expect(issue).not.toBeNull()
       if (issue === null) throw new Error("expected a hard-keyword issue")
@@ -799,6 +832,7 @@ describe("canonical submodel boundary resolution", () => {
         portDirection: "input",
         ports: [{ id: "policy_data", label: "Policy data" }],
         externalNodeIds: ["quote_api"],
+        _sourceHandleInputNames: { policy_data: "policy_data" },
       },
     }
 
@@ -829,6 +863,9 @@ describe("canonical submodel boundary resolution", () => {
           definitionId: "definition_pricing",
           alias: "pricing_secondary",
         },
+        _sourceHandleInputNames: {
+          "out__written_premium": "pricing_secondary__written_premium",
+        },
       },
     }
     const definition = {
@@ -836,6 +873,7 @@ describe("canonical submodel boundary resolution", () => {
       file: "modules/pricing.py",
       graph: { nodes: [child], edges: [] },
       inputPorts: [],
+      _inputPortInputNames: {},
       outputPorts: [
         {
           portId: "written_premium",
@@ -887,6 +925,7 @@ describe("canonical submodel boundary resolution", () => {
           ],
         },
       ],
+      _inputPortInputNames: { policy_data: "policy_data" },
       outputPorts: [],
     }
     const edge: SimpleEdge = {

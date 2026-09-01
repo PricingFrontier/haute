@@ -22,7 +22,12 @@
 | `src/haute/modelling/_result_types.py` | `ModelDiagnostics` and `ModelCardMetadata` bundles shared by training, MLflow logging, and model-card generation. |
 | `src/haute/modelling/_export.py` | `generate_training_script()` code generation for standalone Python training scripts. |
 | `src/haute/routes/modelling.py` | FastAPI router for training, status/cancel, estimates, MLflow check/log, export, model-cache clear, and dispersion jobs. |
-| `src/haute/routes/_train_service.py` | `TrainService`: validation, RAM/VRAM estimates, pipeline materialisation, background training/dispersion lifecycle, cancellation, and cleanup. |
+| `src/haute/routes/_train_service.py` | Stable compatibility facade that re-exports `TrainService` and the established helper seams consumed by the router/tests. It owns no job state, worker entrypoint, preparation algorithm, or artifact mutation. |
+| `src/haute/routes/_training_preparation.py` | Training input preparation rules: deterministic sampling, feature/metadata demand and projection, modelling-node lookup, row-limit and RAM/VRAM feasibility helpers. |
+| `src/haute/routes/_training_evaluation.py` | Route-side evaluation and GLM-dispersion rules: family/link validation, dispersion parameter contracts, and immutable evaluation-preview projection. |
+| `src/haute/routes/_training_worker.py` | Spawn-picklable training/dispersion worker protocol: request validation, child execution context, curated failure taxonomy, bounded progress/result payloads, and the two process entrypoints. It publishes only staged manifests. |
+| `src/haute/routes/_training_artifacts.py` | Sole parent-side training artifact publication owner: manifest/path/size/digest validation, strict evaluation/tuning reloads, rollback-capable generation replacement, and stale tuning retirement. |
+| `src/haute/routes/_training_lifecycle.py` | State-owning `TrainService` implementation. Composes `JobLifecycle`, `CancellableJobRegistry`, and `IsolatedJobSupervisor`; orchestrates preparation and worker launch, cancellation/timeout, parent cleanup, and atomic completion publication through the domain modules above. |
 | `src/haute/routes/_memory_messages.py` | Shared curated wording for memory-limit failures (`memory_limit_user_message`, `format_byte_size`) used by training, auto-range, and the input-snapshot build. |
 | `src/haute/schemas.py` | Shared Pydantic request/response contracts owned by [server-api](../server-api/low-level.md) and used by `/api/modelling/*` routes. |
 
@@ -152,12 +157,21 @@
   (job-based, like `/train`); the status response mirrors `TrainStatusResponse`'s
   progress/message/elapsed shape plus the resolved `param`/`value`/`llf`/`n_fits` once
   complete.
-- **`TrainService`** (`routes/_train_service.py`) — wraps a `JobStore`, `JobLifecycle`,
+- **`TrainService`** (`routes/_training_lifecycle.py`, re-exported by
+  `routes/_train_service.py`) — wraps a `JobStore`, `JobLifecycle`,
   and `CancellableJobRegistry`; owns the HTTP-facing training lifecycle
   (`start`/`cancel`/`timeout`) and the dispersion-estimation lifecycle
   (`start_dispersion_estimate`/`dispersion_job`/`cancel_dispersion`), distinguished in
   the shared job store by a `job_type` field (`"training"` vs. `"dispersion_estimate"`)
   so `dispersion_job()` 404s if asked for a job of the other type.
+
+- **Training service import direction** — `_training_preparation`,
+  `_training_evaluation`, `_training_worker`, and `_training_artifacts` are cohesive
+  leaves and never import `_training_lifecycle` or `_train_service`.
+  `_training_lifecycle` is the only job-state owner and composes those leaves;
+  `_train_service` imports only to re-export the stable surface. The modelling package
+  remains below the route layer, and worker entrypoints retain their lazy `TrainingJob`
+  import so no route/modelling cycle is introduced.
 
 - **`TrainingFeatureSelectionDiagnosticPayload`** (`schemas.py`) — the version-1
   explanation of the pre-training feature choice. `mode` is `explicit`, `all_except`,
@@ -676,6 +690,9 @@ rows/features) and retry.
 
 ## Testing
 
+- `tests/test_service_domain_boundaries.py` keeps the training facade explicit,
+  the extracted service-module graph acyclic, and lifecycle state ownership out
+  of preparation, evaluation, worker-protocol, and artifact leaves.
 - `tests/performance/test_catboost_contiguity_perf.py` records the MOD-M05
   Fortran-versus-C CatBoost handoff evidence and enforces layout, allocation, and
   result-equivalence facts; it is opt-in under the `perf` marker.
@@ -783,9 +800,9 @@ The internal `_split.py` primitives remain covered through direct training tests
 the public evaluation contract has dedicated plan/config/orchestration suites above.
 No public node-config test treats `SplitConfig` as an accepted alternative.
 
-## Approved change contract — canonical-only modelling artifacts
+## Canonical modelling artifacts
 
-Under the [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
+Under the [canonical-only format policy](../README.md#canonical-only-format-policy),
 training reads and writes only the current run-scoped feature contract and artifact layout. It
 does not probe for, warn about, or interpret a historical shared contract path. Result and CLI
 field names describe their current meaning rather than retaining an obsolete name.
@@ -815,7 +832,7 @@ The implementation seams are:
   writes the model/contract, emits model loss history, and computes expensive
   diagnostics. Tuning uses pinned Optuna 4.x with one seeded sequential TPE sampler;
   no candidate is skipped after a fit failure.
-- `routes/_train_service.py` sends one versioned request to one supervised child for
+- `routes/_training_lifecycle.py` sends one versioned request to one supervised child for
   the complete run. Progress carries planning, trial-fit, trial-complete, final-fit,
   publication and completed phases with bounded one-based trial/fold indices and exact
   fit counts. The parent remains authoritative for cancellation, timeout, admission,

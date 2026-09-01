@@ -35,10 +35,9 @@ _TERMINAL = {
 def _clean_pivot_state(_widen_sandbox_root):
     from haute.routes.explore import _explore_service, _store
 
-    snapshot = dict(_store.jobs)
+    _store.clear_all()
     yield
-    _store.jobs.clear()
-    _store.jobs.update(snapshot)
+    _store.clear_all()
     _explore_service._report_cache.clear()
     try:
         from haute.routes.explore import _pivot_service

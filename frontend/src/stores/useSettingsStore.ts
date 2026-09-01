@@ -13,7 +13,7 @@
 import { create } from "zustand"
 import { checkMlflow } from "../api/client"
 import type { FileListItem } from "../api/types"
-import { sanitizeName } from "../utils/sanitizeName"
+import { portableKey } from "../utils/portableKey"
 
 export const MIN_STREAMING_CHUNK_SIZE = 1000
 export const MAX_STREAMING_CHUNK_SIZE = 10_000_000
@@ -24,7 +24,7 @@ export const MAX_STREAMING_CHUNK_SIZE = 10_000_000
  * word the right feedback rather than treating a silent failure as success:
  *   - `empty`     — the label was blank/whitespace-only; nothing to mint.
  *   - `duplicate` — the label sanitises to `key`, which already exists (a
- *                   distinct label can collide here because `sanitizeName`
+ *                   distinct label can collide here because `portableKey`
  *                   maps e.g. "My Src" and "My-Src" onto the same key).
  * `addSource` used to return a bare `string | null`; the `null` hid these two
  * cases from the caller, so the toolbar form closed with no explanation.
@@ -185,18 +185,16 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
   })),
   setActiveSource: (source) => set({ activeSource: source }),
   addSource: (name) => {
-    // Mint the persisted source key through the blessed sanitizer, not an
-    // ad-hoc fold: the previous local mint (trim, case-fold, whitespace to
-    // underscore) was a coarser identity than sanitizeName, so case-distinct
-    // labels silently minted the SAME persisted key. sanitizeName preserves
-    // case and encodes punctuation distinctly, so distinct labels stay
-    // distinct keys. Keys already persisted in sidecars are read back as
-    // opaque strings, so previously-saved sources are unaffected.
+    // Mint the persisted source key through portableKey, not an ad-hoc fold.
+    // Case is preserved; punctuation/word separators may still converge, so
+    // the occupied-key check below is part of this operation's correctness.
+    // Keys already persisted in sidecars are read back as opaque strings, so
+    // previously-saved sources are unaffected.
     //
     // Rejections return a discriminated reason (not a bare null) so the caller
     // can surface WHY the add failed instead of closing the form silently.
     if (!name.trim()) return { ok: false, reason: "empty" }
-    const key = sanitizeName(name)
+    const key = portableKey(name)
     const current = get().sources
     if (current.includes(key)) return { ok: false, reason: "duplicate", key }
     set({ sources: [...current, key] })

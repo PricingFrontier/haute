@@ -180,7 +180,7 @@ export function inheritedColumnName(path: string, salt = true): string {
 
 /**
  * This file's ONE deliberate local sanitizer (distinct semantics from the
- * blessed `sanitizeName`: runs collapse to a single underscore so the salted
+ * portableKey: runs collapse to a single underscore so the salted
  * dotted leaf `customer.id` → `customer_id`, and collisions are handled
  * actively by {@link dedupName}/{@link dedupNameByPath}/{@link ambiguousNames}
  * rather than avoided by injectivity). Both mint sites — the salted leaf and

@@ -38,7 +38,8 @@ stable point ordering, cancellation latency, and the implement/no-change
 decision. If implemented, concurrency-bound tests cover serial and parallel
 execution and prove admission is released exactly once.
 
-**Dependencies:** OPT-P13; delivered AUD-C10 and job admission policy.
+**Dependencies:** OPT-P13 and the current typed failure-classification and job-admission
+contracts.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes_real_library.py`.
 
@@ -56,7 +57,7 @@ wire schema because it is the canonical persisted contract.
 **Acceptance:** Artifact round-trip, tampered-handle, orphan-race, TTL-cleanup, and stale-startup
 tests pass unchanged; `_optimiser_service.py` owns no filesystem deletion.
 
-**Dependencies:** Delivered memory lifecycle (formerly OPT-P08).
+**Dependencies:** The current bounded artifact-memory lifecycle.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_apply_artifacts.py`.
 
@@ -75,8 +76,7 @@ materialisation, artifact-cap, and unrelated-parent concurrency regressions rema
 extraction step.
 
 **Dependencies:** OPT-P11, OPT-P13, and the OPT-P06 implement/no-change
-decision; delivered frontier apply and interruptibility (formerly OPT-P01,
-OPT-P05).
+decision, plus the current frontier apply and interruptibility contracts.
 
 **Evidence:** `src/haute/routes/optimiser.py`; `src/haute/routes/_optimiser_service.py`;
 `tests/test_optimiser_frontier_materialisation.py`; `tests/test_optimiser_routes.py`.
@@ -93,8 +93,8 @@ contract errors. `OptimiserSolveService` retains only orchestration calls.
 **Acceptance:** Projection, bounded-memory, multi-input, null/non-finite, chunk provenance, and
 grid ordering tests pass without fixture rewrites.
 
-**Dependencies:** OPT-P11; delivered constraint validation and scan bounding
-(formerly OPT-P03, OPT-P07).
+**Dependencies:** OPT-P11 and the current constraint-validation and scan-bounding
+contracts.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_service_coverage.py`;
 `tests/test_optimiser_service_validation.py`.
@@ -115,31 +115,3 @@ rather than a mixed domain/utilities module.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes.py`;
 `tests/test_optimiser_golden.py`; `tests/test_optimiser_ratebook_apply_agreement.py`.
-
-## Delivered outcomes
-
-- `OPT-P10` re-inventoried the 5,219-line solve service against current callers.
-  The only exact dead helper was the unused standalone
-  `_projection_plan_for_auto_range`; it and its two now-unused planner imports
-  were removed. Auto-range continues through the canonical execution facade,
-  and focused streaming/non-streaming projection regressions plus Ruff are
-  green. Other low-reference helpers are live internal or maintained
-  cross-module consumers, so no speculative consolidation was made.
-- Frontier multi-point apply without repeated heavy setup, the versioned
-  save-artifact contract with sanitized corrupt-artifact failures,
-  domain-boundary constraint validation, heavy endpoints behind the job
-  protocol, solve interruptibility with exactly-once admission release,
-  single-scan setup estimation, trace-apply reuse of stored point summaries,
-  and bounded artifact memory lifecycle (`OPT-P01`–`OPT-P05`,
-  `OPT-P07`–`OPT-P09`) are present-tense contracts in
-  [the optimiser specification](../optimiser/low-level.md), enforced by
-  `tests/test_optimiser_frontier_materialisation.py`,
-  `tests/test_optimiser_apply_artifacts.py`,
-  `tests/test_optimiser_service_validation.py`,
-  `tests/test_optimiser_routes_real_library.py`, and
-  `tests/test_optimiser_routes.py`.
-- `AUD-C10` classifies solver failures by typed input, external-solver, and
-  unexpected orchestration boundaries rather than `ValueError`/`RuntimeError`
-  alone. `OPT-D01` records and enforces fixed-detail 500 setup failures,
-  sanitized invalid/corrupt artifact failures, and a distinct 410 lifecycle
-  outcome for valid handles whose artifacts have expired.

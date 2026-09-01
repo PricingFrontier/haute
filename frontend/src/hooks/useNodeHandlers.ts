@@ -33,6 +33,7 @@ type UseNodeHandlersParams = {
   setLastSelectedId?: (id: string | null) => void
   setPreviewData: (updater: React.SetStateAction<PreviewData | null>) => void
   fitView: (opts?: { padding?: number }) => void
+  resolveNodeIdentities: (nodes: readonly Node[]) => Promise<Node[]>
   commitSharedNodeDeletion?: (
     nodeIds: ReadonlySet<string>,
     selectedEdgeIds?: ReadonlySet<string>,
@@ -65,9 +66,11 @@ export default function useNodeHandlers({
   setLastSelectedId,
   setPreviewData,
   fitView,
+  resolveNodeIdentities,
   commitSharedNodeDeletion,
 }: UseNodeHandlersParams) {
   const layoutInFlightRef = useRef(false)
+  const creationRequestSerialRef = useRef(0)
   const [isAutoLayouting, setIsAutoLayouting] = useState(false)
   const addToast = useToastStore((s) => s.addToast)
   const clearNode = useNodeResultsStore((s) => s.clearNode)
@@ -113,7 +116,7 @@ export default function useNodeHandlers({
     if (subDlg && subDlg.nodeIds.includes(id)) setSubmodelDialog(null)
   }, [graphRef, setNodesAndEdges, lastSelectedNodeRef, setSelectedNode, setLastSelectedId, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog, addToast, commitSharedNodeDeletion])
 
-  const handleDuplicateNode = useCallback((id: string) => {
+  const handleDuplicateNode = useCallback(async (id: string): Promise<void> => {
     const { nodes: n } = graphRef.current
     const original = n.find((node) => node.id === id)
     if (!original) return
@@ -131,12 +134,27 @@ export default function useNodeHandlers({
       selected: true,
       data: { ...original.data, label: `${original.data.label} copy` },
     }
-    setNodes((nds) => [...nds.map((nd) => ({ ...nd, selected: false })), newNode])
-    setSelectedNode(newNode)
-    setLastSelectedId?.(newNode.id)
-  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast])
+    const capturedGraph = graphRef.current
+    const requestSerial = ++creationRequestSerialRef.current
+    try {
+      const resolved = await resolveNodeIdentities([newNode])
+      if (resolved.length !== 1 || resolved[0]?.id !== newNode.id) {
+        throw new Error("identity resolver returned an invalid node")
+      }
+      if (creationRequestSerialRef.current !== requestSerial || graphRef.current !== capturedGraph) {
+        addToast("error", "Node creation was not applied because the graph changed while identity resolution was running.")
+        return
+      }
+      const resolvedNode = resolved[0]
+      setNodes((nds) => [...nds.map((nd) => ({ ...nd, selected: false })), resolvedNode])
+      setSelectedNode(resolvedNode)
+      setLastSelectedId?.(resolvedNode.id)
+    } catch (err: unknown) {
+      addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, resolveNodeIdentities])
 
-  const handleCreateInstance = useCallback((id: string) => {
+  const handleCreateInstance = useCallback(async (id: string): Promise<void> => {
     const { nodes: n } = graphRef.current
     const original = n.find((node) => node.id === id)
     if (!original) return
@@ -247,11 +265,26 @@ export default function useNodeHandlers({
         config: instanceConfig,
       },
     }
-    setNodes((nds) => [...nds.map((nd) => ({ ...nd, selected: false })), newNode])
-    setSelectedNode(newNode)
-    setLastSelectedId?.(newNode.id)
-    addToast("info", `Created instance of "${origData.label}"`)
-  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast])
+    const capturedGraph = graphRef.current
+    const requestSerial = ++creationRequestSerialRef.current
+    try {
+      const resolved = await resolveNodeIdentities([newNode])
+      if (resolved.length !== 1 || resolved[0]?.id !== newNode.id) {
+        throw new Error("identity resolver returned an invalid node")
+      }
+      if (creationRequestSerialRef.current !== requestSerial || graphRef.current !== capturedGraph) {
+        addToast("error", "Node creation was not applied because the graph changed while identity resolution was running.")
+        return
+      }
+      const resolvedNode = resolved[0]
+      setNodes((nds) => [...nds.map((nd) => ({ ...nd, selected: false })), resolvedNode])
+      setSelectedNode(resolvedNode)
+      setLastSelectedId?.(resolvedNode.id)
+      addToast("info", `Created instance of "${origData.label}"`)
+    } catch (err: unknown) {
+      addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, resolveNodeIdentities])
 
   const handleRenameNode = useCallback((id: string) => {
     const { nodes: n } = graphRef.current

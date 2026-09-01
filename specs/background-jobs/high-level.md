@@ -172,13 +172,19 @@ Out of scope (owned elsewhere):
   already in hand. The explicit completed-to-error compare-and-swap is deliberately
   narrower: it corrects a publication that was first recorded as successful and then
   failed validation; it is not part of terminal-reason precedence.
-- **Read-merge-swap over per-field mutation.** `JobStore`'s mutation methods never mutate a
-  stored job dict in place. Every update builds a new dict and swaps it in with a single
-  `dict.__setitem__`, which CPython's GIL makes atomic — a reader holding the previous
-  reference always sees a fully-old or fully-new record, never a torn one. A single
-  `RLock` still serialises the read-merge-swap sequence itself so two concurrent
-  writers touching disjoint keys cannot lose each other's writes (a hazard that bare
-  atomic dict-swap alone does not prevent).
+- **Immutable snapshots over mutable storage exposure.** `JobStore` never exposes
+  its backing mapping or lock. Every read returns a detached, read-only snapshot;
+  every update builds a new record and swaps it under one private `RLock`, so readers
+  see a fully-old or fully-new state and concurrent disjoint writes cannot be lost.
+  The same boundary validates the closed status vocabulary, reserves lifecycle
+  metadata from generic updates, and owns terminal precedence.
+- **Publication and completion share one claim.** A job-specific publisher may need
+  to atomically replace several durable artifacts before it can construct the final
+  result. The store's compare-and-swap completion operation checks `running`, holds
+  the lifecycle claim while that publisher commits, then swaps the final result and
+  completed metadata together. Cancellation therefore wins before publication or
+  observes completed afterwards; it cannot split artifact publication from the job
+  result.
 - **Two-tier TTL for heavy objects.** Splitting "how long is a job's status visible"
   from "how long does a completed job hold onto multi-object solver/dataframe state"
   lets a UI keep polling a finished job's summary long after the expensive payload
@@ -197,10 +203,11 @@ Out of scope (owned elsewhere):
   callback consumes its eventual outcome. The helper does not preserve a late successful
   value for the original caller or a job record; it discards that value, while logging an
   ordinary late exception.
-- **Fail loudly on store misuse.** Constructing a `JobStore` with a negative TTL,
-  updating an unknown job ID, or scheduling heavy-object cleanup without a concrete
-  expiry all raise immediately. Canonical job timestamps and artifact handles are consumed
-  directly rather than repaired or skipped as older record shapes.
+- **Fail loudly on store misuse.** Negative TTLs, unknown/non-running initial
+  statuses, attempts to change lifecycle fields through generic updates, unknown job
+  IDs, and cleanup scheduling without a concrete expiry all raise immediately.
+  Canonical timestamps and artifact handles are consumed directly rather than
+  repaired or skipped as older record shapes.
 
 ## Interactions
 
@@ -238,9 +245,10 @@ Depended on:
   silently dropping evidence of inconsistent lifecycle state.
   `require_completed_job` raises HTTP 400 (with the actual status in the message) if
   the job exists but isn't `completed`.
-- **Corrupt persisted status.** A job whose `status` field is missing or not one of
-  the known statuses raises `ValueError` from `require_job_status` rather than being
-  treated as any particular state.
+- **Invalid job status or transition.** Creation accepts only `running`; unknown
+  statuses, generic status writes, unsupported terminal destinations, and invalid
+  completed-record corrections raise `ValueError` at the job boundary before state
+  changes. `require_job_status` applies the same validation to external mappings.
 - **Invalid construction parameters.** A negative `ttl_seconds` or
   `heavy_object_ttl_seconds`, or an unlisted `JobStore` prefix, raises `ValueError`
   immediately at construction/lookup time. The prefix allow-list is closed

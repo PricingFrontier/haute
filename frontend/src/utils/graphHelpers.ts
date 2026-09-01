@@ -1,5 +1,5 @@
 import type { Node, Edge } from "@xyflow/react"
-import { apiInputFrameLabels } from "./apiInputPorts"
+import { authoritativeSourceHandles } from "./apiInputPorts"
 import {
   NODE_TYPES,
   SINK_ONLY_TYPES,
@@ -91,7 +91,7 @@ function liveHandles(node: Node, direction: HandleDirection): Set<string | null>
 
   if (type === NODE_TYPES.API_INPUT) {
     if (direction === "target") return new Set()
-    return new Set(apiInputFrameLabels(nodeConfig(node)))
+    return new Set(authoritativeSourceHandles(node))
   }
 
   if (type === NODE_TYPES.EDGE_JOIN && direction === "target") {

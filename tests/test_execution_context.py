@@ -4188,7 +4188,9 @@ def test_train_execute_and_sink_forwards_execution_context(tmp_path) -> None:
         captured.update(kwargs)
         return {"model": pl.DataFrame({"target": [1.0]}).lazy()}, ["model"], {}, {}
 
-    with patch("haute.routes._train_service.execute_lazy_graph", side_effect=fake_execute_lazy):
+    with patch(
+        "haute.routes._training_lifecycle.execute_lazy_graph", side_effect=fake_execute_lazy
+    ):
         tmp_parquet = service._execute_and_sink(
             body,
             preamble_ns=None,
@@ -4662,7 +4664,7 @@ def test_optimiser_cancel_during_setup_prevents_worker_launch(
     service = OptimiserSolveService(store)
 
     def cancel_during_grid(*_args, **_kwargs):
-        job_id = next(iter(store.jobs))
+        job_id = next(iter(store.list_jobs()))
         service.cancel_solve(job_id)
         return object()
 
@@ -4678,7 +4680,7 @@ def test_optimiser_cancel_during_setup_prevents_worker_launch(
 
     assert response.status == "started"
     launch.assert_not_called()
-    job = next(iter(store.jobs.values()))
+    job = next(iter(store.list_jobs().values()))
     assert job["status"] == "cancelled"
     assert job["terminal_reason"] == "cancelled"
 
@@ -4721,7 +4723,7 @@ def test_optimiser_start_maps_admission_failure_to_http_507(
 
     assert response.status == "started"
     execute_pipeline.assert_not_called()
-    job = next(iter(store.jobs.values()))
+    job = next(iter(store.list_jobs().values()))
     assert job["status"] == "memory_limited"
     assert job["terminal_reason"] == "memory_limited"
     assert job["http_status_code"] == 507
@@ -4772,7 +4774,7 @@ def test_optimiser_start_maps_runtime_memory_failure_to_http_507(
         response = service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
 
     assert response.status == "started"
-    job = next(iter(service._store.jobs.values()))
+    job = next(iter(service._store.list_jobs().values()))
     assert job["status"] == "memory_limited"
     assert job["terminal_reason"] == "memory_limited"
     assert job["http_status_code"] == 507
@@ -4824,7 +4826,7 @@ def test_optimiser_start_records_setup_stage_metrics_when_memory_limited(
         response = service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
 
     assert response.status == "started"
-    job = next(iter(store.jobs.values()))
+    job = next(iter(store.list_jobs().values()))
     assert job["status"] == "memory_limited"
     assert job["terminal_reason"] == "memory_limited"
     assert job["http_status_code"] == 507
@@ -4884,7 +4886,7 @@ def test_optimiser_start_preserves_typed_memory_http_exception_metrics(
         response = service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
 
     assert response.status == "started"
-    job = next(iter(store.jobs.values()))
+    job = next(iter(store.list_jobs().values()))
     assert job["status"] == "memory_limited"
     assert job["terminal_reason"] == "memory_limited"
     assert job["http_status_code"] == 507

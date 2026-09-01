@@ -15,10 +15,13 @@ back in a coherent state.
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
-import haute._git as git_mod
+import haute._git_core as git_core
+import haute._git_remote as git_remote
+import haute._git_transactions as git_transactions
 from haute._git import (
     GitDomainError,
     GitError,
@@ -79,6 +82,7 @@ def _fork_setup(repo: Path) -> dict[str, str]:
 
 def _fail_run_git_on(
     monkeypatch: pytest.MonkeyPatch,
+    target: ModuleType,
     trigger: Callable[[tuple[str, ...]], bool],
     exc: Exception | None = None,
 ) -> None:
@@ -86,7 +90,7 @@ def _fail_run_git_on(
     *exc* (default ``GitError``); every other call passes through to the real
     implementation. ``_run_git_ok`` (used by the rollback helpers) is untouched.
     """
-    real = git_mod._run_git
+    real = target._run_git
     fired = {"done": False}
 
     def wrapper(*args: str, **kwargs: object) -> str:
@@ -95,7 +99,7 @@ def _fail_run_git_on(
             raise exc if exc is not None else GitError("injected mid-sequence failure")
         return real(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(git_mod, "_run_git", wrapper)
+    monkeypatch.setattr(target, "_run_git", wrapper)
 
 
 class TestRollbackFork:
@@ -117,6 +121,7 @@ class TestRollbackFork:
         # full restore path (`branch -f` + `checkout`) in _rollback_fork runs.
         _fail_run_git_on(
             monkeypatch,
+            git_transactions,
             lambda a: a[:2] == ("branch", "-f") and len(a) > 2 and a[2] == LEDGER,
         )
         with pytest.raises(GitError):
@@ -142,6 +147,7 @@ class TestRollbackFork:
         working_before = _git(repo, "rev-parse", WORKING)
         _fail_run_git_on(
             monkeypatch,
+            git_transactions,
             lambda a: a[:2] == ("branch", "-f") and len(a) > 2 and a[2] == LEDGER,
             RuntimeError("injected unexpected failure"),
         )
@@ -167,6 +173,7 @@ class TestRollbackFork:
         # which runs after the working ref already exists.
         _fail_run_git_on(
             monkeypatch,
+            git_transactions,
             lambda a: a[:1] == ("branch",) and len(a) >= 2 and a[1] == ledger_name("para"),
         )
         with pytest.raises(GitError):
@@ -227,6 +234,7 @@ class TestRollbackBranchAway:
         # rename both back and restore HEAD onto the original ledger.
         _fail_run_git_on(
             monkeypatch,
+            git_remote,
             lambda a: a[:1] == ("branch",) and len(a) >= 3 and a[1] == WORKING,
         )
         with pytest.raises(GitError):
@@ -327,13 +335,13 @@ class TestPushAndFastForwardRaises:
         commit_milestone("remote m", other, cwd=other)
         push_working_pair("origin", other, cwd=other)
 
-        git_mod._fetch_cooldowns.clear()
+        git_core._fetch_cooldowns.clear()
 
         # Catch-up first verifies the freshly fetched remote leg exists, then the
         # leg-state read resolves it again to classify the working branch as
         # "behind". Break only the THIRD resolution inside the working-ref CAS
         # block, so the CAS branch is entered and its resolve-failure raise fires.
-        real_rev = git_mod._rev_parse
+        real_rev = git_core._rev_parse
         tracking = f"refs/remotes/origin/{WORKING}"
         seen = {"n": 0}
 
@@ -344,6 +352,11 @@ class TestPushAndFastForwardRaises:
                     return None
             return real_rev(ref, cwd=cwd)
 
-        monkeypatch.setattr(git_mod, "_rev_parse", fake_rev)
+        # The split remote domain performs the initial/CAS probes, while the
+        # shared leg-state helper performs the classification probe in core.
+        # Patch both lookup sites so the injected failure remains the third
+        # resolution across the complete operation.
+        monkeypatch.setattr(git_remote, "_rev_parse", fake_rev)
+        monkeypatch.setattr(git_core, "_rev_parse", fake_rev)
         with pytest.raises(GitError, match="could not resolve refs"):
             fast_forward_pair("origin", repo, cwd=repo)

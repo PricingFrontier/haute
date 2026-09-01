@@ -19,17 +19,28 @@ NOTE registry was rejected because it would duplicate callout text and could dri
 from both the specification and roadmap. The callouts that predated this rule were classified
 during the migration; that point-in-time working record is not retained as a second registry.
 
+## Temporary change contract lifecycle
+
 Planned changes follow the repository's spec-first workflow. Before tests or production code
 change, the owning component spec may add an explicitly labelled
-`## Approved change contract` section that states the agreed future behaviour, failure model,
-compatibility decision, and acceptance evidence. That section must distinguish the current
-behaviour from the approved target and link to its implementation plan. It is not a claim that
-the change has shipped. When implementation lands, the release step folds the approved contract
-into the normal present-tense sections, removes the temporary section, and verifies that code,
-tests, and specification agree. The historical `## Polars backend contracts (<version>)`
-heading is legacy temporary-contract debt: no new section may use it, and existing sections follow
-the same fold-and-remove rule. A bare repository path in a temporary contract identifies an
-intended edit; retirement requires positive symbol-level target or acceptance-test evidence.
+`## Approved change contract` section. It is temporary planning material, not a claim that the
+change has shipped, and contains these explicit records:
+
+- **Current limitation.** The present behaviour that motivates the change.
+- **Unresolved target.** The approved target that production code does not yet satisfy.
+- **Non-goals.** The adjacent behaviour deliberately left unchanged.
+- **Failure and compatibility semantics.** How invalid, stale, or old inputs behave.
+- **Acceptance evidence.** The smallest executable proof required for delivery.
+- **Roadmap package.** A direct link to the anchored active package that owns implementation.
+
+When implementation lands, the release step folds the approved behaviour into ordinary
+present-tense sections, removes the temporary section, and verifies that code, tests, and
+specification agree. The historical `## Polars backend contracts (<version>)` heading is
+prohibited and follows the same fold-and-remove rule if encountered. A bare repository path in a
+temporary contract identifies an intended edit; retirement requires positive symbol-level target
+or acceptance-test evidence. `tests/test_docs_accuracy.py` rejects a temporary contract without
+an unresolved-target label and active anchored roadmap package, and detects shipped targets when
+the contract names resolvable symbol/test evidence.
 
 `tests/test_docs_accuracy.py` enforces paths, symbols, headings, links and anchors, Testing
 references, roadmap evidence, ownership claims, and temporary-contract retirement. Existing
@@ -49,10 +60,13 @@ A broad semantic review records one coverage state for every file in the checked
 The checked inventory uses the current working tree as one snapshot: it reads the exact on-disk
 bytes, including staged and unstaged changes present there and untracked in-scope files, and
 fingerprints every sorted path and file body together. It never combines counts from `HEAD`, the
-index, and the working tree. Component high/low documents, root specification-governance
-documents, and roadmap documents are reported separately; Markdown line totals use those same
-fingerprinted bytes. Coverage totals are derived from per-file records, and only `full` counts as
-a fully read file.
+index, and the working tree. Component high/low documents, supplemental component documents,
+root specification-governance documents, and roadmap documents are reported separately;
+Markdown line totals use those same fingerprinted bytes. `corpus.toml` declares every supported
+component document outside the conventional high/low pair, including its closed kind and exact
+required headings. An undeclared `.md` or `.toml` anywhere below `specs/` fails inventory rather
+than disappearing. Coverage totals are derived from per-file records, and only `full` counts as a
+fully read file.
 
 Run the current working-tree inventory with:
 
@@ -72,10 +86,8 @@ separate current implementation complexity, complexity required by the specified
 and corpus/editorial complexity, and inspect owning component roadmaps before calling work
 unowned.
 
-## Approved change contract — prerelease canonical-only formats
+## Canonical-only format policy
 
-The delivered `ROAD-CANON-01` decision is the present-tense contract in this
-section.
 Haute is prerelease software with no external compatibility obligation. Each boundary therefore
 accepts exactly its current canonical Haute representation. Production code must not retain an
 obsolete Haute format through conversion, fallback, deprecated aliases, temporary

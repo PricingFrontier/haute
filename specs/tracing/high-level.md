@@ -106,6 +106,9 @@ Out of scope (owned elsewhere, linked where relevant):
   verified leaves that node's step unresolved — it is omitted from the trace
   rather than shown with a wrong row — and is recorded as a non-fatal entry in
   `correlation_diagnostics`.
+  The reorder guard reads exact structured Python method-call sites, so words
+  inside comments or string literals cannot disable positional correlation and
+  an unreadable transform is conservatively treated as potentially reordering.
 - **Multi-frame sources correlate per edge, not per node pair.** A multi-frame
   source (e.g. a ≥2-table `apiInput`) stores `dict[label, DataFrame]`; each edge
   out of it carries a `sourceHandle` naming the frame that edge consumes, and the
@@ -174,7 +177,7 @@ Out of scope (owned elsewhere, linked where relevant):
   node, row limit, source, and runtime-input state are fingerprinted; identical
   fingerprints reuse the same materialized per-node DataFrames so switching
   row/column on the same pipeline is near-instant after the first click. The
-  cache is invalidated by model retraining (`routes/_train_service.py` calls
+  cache is invalidated by model retraining (`routes/_training_lifecycle.py` calls
   `haute.trace._cache.invalidate()`) and is bounded by both entry count and
   retained bytes, evicting least-recently-used entries first. `execute_trace`
   accepts an optional caller-supplied `GraphFingerprintMemo`; the trace route
@@ -288,7 +291,7 @@ Out of scope (owned elsewhere, linked where relevant):
 - Depended on by [server-api](../server-api/high-level.md): `routes/pipeline.py`
   is the sole production caller of `execute_trace()`, wrapping it in a response
   timeout, request-supersession coordinator, and concurrency semaphore, and
-  mapping its exceptions to HTTP status codes. `routes/_train_service.py`
+  mapping its exceptions to HTTP status codes. `routes/_training_lifecycle.py`
   reaches into `haute.trace._cache` to invalidate trace results after a model
   retrain.
 - Depended on by [frontend-trace-ui](../frontend-trace-ui/high-level.md), which

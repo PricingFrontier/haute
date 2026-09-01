@@ -8,7 +8,8 @@ What this file pins
 -------------------
 1. Topological correctness for every supported graph shape (linear chain,
    diamond, wide fan-out, deep chain, disconnected components, parallel
-   edges, unknown-endpoint edges, empty graph, single node).
+   edges, strict unknown-endpoint rejection, explicit filtered traversal,
+   empty graph, single node).
 2. ``CycleError`` behaviour that users see in the GUI — the error must
    name every node participating in the cycle and stay a ``HauteError``
    subclass so callers catching ``HauteError`` do not silently miss cycles
@@ -33,7 +34,12 @@ import graphlib
 
 import pytest
 
-from haute._topo import CycleError, topo_sort_ids
+from haute._topo import (
+    CycleError,
+    UnknownEdgeEndpointError,
+    topo_sort_ids,
+    topo_sort_ids_filtered,
+)
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.errors import HauteError
 from haute.projection import prepare_graph
@@ -49,11 +55,7 @@ def _e(src: str, tgt: str, eid: str | None = None) -> GraphEdge:
 
 
 def _is_topologically_valid(order: list[str], edges: list[GraphEdge]) -> bool:
-    """True iff every edge's source precedes its target in ``order``.
-
-    Edges pointing at unknown nodes (outside ``order``) are ignored, matching
-    the current implementation's silent-drop semantics.
-    """
+    """True iff every known edge's source precedes its target in ``order``."""
     position = {nid: i for i, nid in enumerate(order)}
     for edge in edges:
         if edge.source not in position or edge.target not in position:
@@ -117,13 +119,16 @@ class TestTopologicalCorrectness:
         assert order == ["a", "b"]
         assert _is_topologically_valid(order, edges)
 
-    def test_edges_with_unknown_endpoints_are_ignored(self) -> None:
-        """Edges whose source or target is not in ``node_ids`` are dropped."""
+    def test_edges_with_unknown_endpoints_require_explicit_filtering(self) -> None:
         edges = [_e("a", "b"), _e("ghost", "a"), _e("b", "phantom")]
-        order = topo_sort_ids(["a", "b"], edges)
 
-        assert set(order) == {"a", "b"}
-        assert order == ["a", "b"]
+        with pytest.raises(UnknownEdgeEndpointError):
+            topo_sort_ids(["a", "b"], edges)
+
+        filtered = topo_sort_ids_filtered(["a", "b"], edges)
+        assert filtered.order == ["a", "b"]
+        assert filtered.dropped_edges == tuple(edges[1:])
+        assert filtered.unknown_node_ids == ("ghost", "phantom")
 
     def test_deep_chain_of_60_nodes(self) -> None:
         """A 60-node linear chain must come out in exactly the chain order."""

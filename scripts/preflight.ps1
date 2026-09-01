@@ -234,6 +234,16 @@ if ($RunBackend) {
 }
 
 if ($RunFrontend) {
+    Invoke-Check "Generated API contracts" {
+        Push-Location frontend
+        try {
+            & npm run check:contracts
+        }
+        finally {
+            Pop-Location
+        }
+    } "Generated API contracts are stale or invalid - run 'cd frontend && npm run generate:contracts'"
+
     Invoke-Check "TypeScript type check" {
         Push-Location frontend
         try {

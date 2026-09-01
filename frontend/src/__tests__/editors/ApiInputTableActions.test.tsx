@@ -10,6 +10,14 @@ import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/re
 import { useState } from "react"
 import ApiInputEditor from "../../panels/editors/ApiInputEditor"
 
+const RESERVED_FRAME_LABELS = new Set([
+  "False", "None", "True", "and", "as", "assert", "async", "await",
+  "break", "class", "continue", "def", "del", "elif", "else", "except",
+  "finally", "for", "from", "global", "if", "import", "in", "is",
+  "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
+  "while", "with", "yield",
+])
+
 // The editor pulls FileBrowser/SchemaPreview (network) + the api client +
 // useSchemaFetch; stub them exactly as the main ApiInputEditor suite does.
 vi.mock("../../panels/editors/_shared", async () => {
@@ -65,6 +73,7 @@ function StatefulHarness({
     <ApiInputEditor
       config={config}
       accentColor="#10b981"
+      reservedFrameLabels={RESERVED_FRAME_LABELS}
       onUpdate={(k, v) => {
         onUpdateSpy(k, v)
         setConfig((prev) => (typeof k === "string" ? { ...prev, [k]: v } : { ...prev, ...k }))

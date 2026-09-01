@@ -1,8 +1,31 @@
 import type { ExplorePivotMemberKey } from "../../api/types"
+import {
+  EXPLORE_CHART_CONFIG_VERSION,
+  EXPLORE_CHART_AXIS_VALUES,
+  EXPLORE_CHART_LEGEND_POSITION_VALUES,
+  EXPLORE_CHART_MARK_VALUES,
+  EXPLORE_CHART_NUMBER_FORMAT_VALUES,
+  EXPLORE_CHART_ORIENTATION_VALUES,
+} from "../../generated/api-contracts.constants.generated"
+import type {
+  ChartAxisConfig as GeneratedChartAxisConfig,
+  ChartCategory as GeneratedChartCategory,
+  ChartSecondaryAxisConfig as GeneratedChartSecondaryAxisConfig,
+  ChartSeriesOverride as GeneratedChartSeriesOverride,
+  ChartValueEncoding as GeneratedChartValueEncoding,
+  ExploreChartConfig as GeneratedExploreChartConfig,
+} from "../../generated/api-contracts.generated"
+import { validateExploreCharts } from "../../generated/api-contracts.explore-charts.validators.mjs"
+import {
+  findGeneratedContractError,
+  formatGeneratedContractError,
+  generatedContractErrorPath,
+  type GeneratedContractValidationError,
+} from "../../types/generatedContractValidation"
 import { pivotOutputs } from "./pivotConfig"
 import type { ExplorePivotConfig } from "./pivotConfig"
 
-export const CHART_CONFIG_VERSION = 1 as const
+export const CHART_CONFIG_VERSION = EXPLORE_CHART_CONFIG_VERSION
 
 // Combo leads as the general category and default (as in Excel), followed
 // by the three column layouts. Applying Combo seeds columns with the last
@@ -15,132 +38,41 @@ export const CHART_PRESETS = [
   "hundred_percent_stacked_columns",
 ] as const
 
-export const CHART_NUMBER_FORMATS = [
-  "inherit",
-  "number",
-  "integer",
-  "percent",
-  "currency_gbp",
-  "currency_usd",
-  "currency_eur",
-] as const
+export const CHART_MARKS = EXPLORE_CHART_MARK_VALUES
+export const CHART_AXES = EXPLORE_CHART_AXIS_VALUES
+export const CHART_ORIENTATIONS = EXPLORE_CHART_ORIENTATION_VALUES
+export const CHART_NUMBER_FORMATS = EXPLORE_CHART_NUMBER_FORMAT_VALUES
+export const CHART_LEGEND_POSITIONS = EXPLORE_CHART_LEGEND_POSITION_VALUES
 
-export type ChartMark = "column" | "line" | "area"
-export type ChartAxis = "primary" | "secondary"
-export type ChartOrientation = "vertical" | "horizontal"
+export type ChartValueEncoding = GeneratedChartValueEncoding
+export type ChartSeriesOverride = GeneratedChartSeriesOverride
+export type ChartAxisConfig = GeneratedChartAxisConfig
+export type ChartSecondaryAxisConfig = GeneratedChartSecondaryAxisConfig
+export type ChartCategory = GeneratedChartCategory
+export type ExploreChartConfig = GeneratedExploreChartConfig
+
+export type ChartMark = ChartValueEncoding["mark"]
+export type ChartAxis = ChartValueEncoding["axis"]
+export type ChartOrientation = ExploreChartConfig["orientation"]
 export type ChartNumberFormat = (typeof CHART_NUMBER_FORMATS)[number]
+export type ChartLegendPosition = ExploreChartConfig["legend"]["position"]
 export type ChartPreset = (typeof CHART_PRESETS)[number]
 
-export type ChartStyle = {
-  mark: ChartMark
-  axis: ChartAxis
-  stack_group: string | null
-  stack_normalize: boolean
-  color: string | null
-  data_labels: boolean
-  markers: boolean
-  [key: string]: unknown
-}
-
-export type ChartValueEncoding = ChartStyle & {
-  id: string
-  value_id: string
-}
-
-export type ChartSeriesOverride = ChartStyle & {
-  id: string
-  series_key: string
-}
-
-export type ChartAxisConfig = {
-  title: string
-  minimum: number | null
-  maximum: number | null
-  number_format: ChartNumberFormat
-  [key: string]: unknown
-}
-
-export type ChartSecondaryAxisConfig = ChartAxisConfig & {
-  enabled: boolean
-}
-
-export type ChartCategory = {
-  source: "rows"
-  include_grand_total: boolean
-  label_rotation: number
-  [key: string]: unknown
-}
-
-export type ExploreChartConfig = {
-  version: typeof CHART_CONFIG_VERSION
-  id: string
-  name: string
-  enabled: boolean
-  pivot_id: string | null
-  kind: "combo"
-  orientation: ChartOrientation
-  category: ChartCategory
-  value_encodings: ChartValueEncoding[]
-  series_overrides: ChartSeriesOverride[]
-  axes: {
-    primary: ChartAxisConfig
-    secondary: ChartSecondaryAxisConfig
-    [key: string]: unknown
-  }
-  legend: {
-    visible: boolean
-    position: "top" | "right" | "bottom" | "left"
-    [key: string]: unknown
-  }
-  [key: string]: unknown
-}
+export type ChartStyle = Pick<
+  ChartValueEncoding,
+  | "mark"
+  | "axis"
+  | "stack_group"
+  | "stack_normalize"
+  | "color"
+  | "data_labels"
+  | "markers"
+>
 
 export type ExploreChartsParseResult =
   | { ok: true; charts: ExploreChartConfig[] }
   | { ok: false; error: string }
 
-const CARD_KEYS = new Set([
-  "version",
-  "id",
-  "name",
-  "enabled",
-  "pivot_id",
-  "kind",
-  "orientation",
-  "category",
-  "value_encodings",
-  "series_overrides",
-  "axes",
-  "legend",
-])
-const STYLE_KEYS = new Set([
-  "id",
-  "mark",
-  "axis",
-  "stack_group",
-  "stack_normalize",
-  "color",
-  "data_labels",
-  "markers",
-])
-const ORIENTATIONS = new Set<ChartOrientation>(["vertical", "horizontal"])
-const AXIS_KEYS = new Set([
-  "title",
-  "minimum",
-  "maximum",
-  "number_format",
-])
-const CATEGORY_KEYS = new Set([
-  "source",
-  "include_grand_total",
-  "label_rotation",
-])
-const LEGEND_KEYS = new Set(["visible", "position"])
-const MARKS = new Set<ChartMark>(["column", "line", "area"])
-const AXES = new Set<ChartAxis>(["primary", "secondary"])
-const NUMBER_FORMATS = new Set<string>(CHART_NUMBER_FORMATS)
-const LEGEND_POSITIONS = new Set(["top", "right", "bottom", "left"])
-const STRICT_HEX_COLOUR = /^#[0-9A-Fa-f]{6}$/
 const SERIES_KEY_FIELDS = new Set(["version", "value_id", "column_path"])
 const SERIES_MEMBER_FIELDS = new Set(["kind", "value"])
 const SERIES_MEMBER_KINDS = new Set<ExplorePivotMemberKey["kind"]>([
@@ -257,111 +189,6 @@ function parseCanonicalSeriesKey(seriesKey: string): CanonicalSeriesKey {
   }
 }
 
-function validateFutureFields(
-  raw: Record<string, unknown>,
-  known: ReadonlySet<string>,
-  where: string,
-): string | null {
-  for (const [key, value] of Object.entries(raw)) {
-    if (!known.has(key) && !isSimpleLiteral(value)) {
-      return `${where} field "${key}" must contain only simple literal values.`
-    }
-  }
-  return null
-}
-
-function parseStyle(
-  raw: unknown,
-  where: string,
-  identityKey: "value_id" | "series_key",
-): (ChartStyle & Record<string, unknown>) | string {
-  if (!isPlainObject(raw)) return `${where} must be an object.`
-  const otherIdentityKey = identityKey === "value_id" ? "series_key" : "value_id"
-  if (otherIdentityKey in raw) {
-    return `${where} contains misplaced identity field ${otherIdentityKey}.`
-  }
-  const futureError = validateFutureFields(
-    raw,
-    new Set([...STYLE_KEYS, identityKey]),
-    where,
-  )
-  if (futureError) return futureError
-  if (!nonEmptyString(raw.id) || !nonEmptyString(raw[identityKey])) {
-    return `${where} requires non-empty id and ${identityKey}.`
-  }
-  if (typeof raw.mark !== "string" || !MARKS.has(raw.mark as ChartMark)) {
-    return `${where} has invalid mark.`
-  }
-  if (typeof raw.axis !== "string" || !AXES.has(raw.axis as ChartAxis)) {
-    return `${where} has invalid axis.`
-  }
-  if (
-    raw.stack_group !== null &&
-    !nonEmptyString(raw.stack_group)
-  ) {
-    return `${where} stack_group must be null or a non-empty string.`
-  }
-  if (typeof raw.stack_normalize !== "boolean") {
-    return `${where} stack_normalize must be a boolean.`
-  }
-  if (raw.stack_normalize && raw.stack_group === null) {
-    return `${where} stack_normalize requires a stack group.`
-  }
-  if (
-    raw.color !== null &&
-    (typeof raw.color !== "string" || !STRICT_HEX_COLOUR.test(raw.color))
-  ) {
-    return `${where} color must be #RRGGBB or null.`
-  }
-  if (
-    typeof raw.data_labels !== "boolean" ||
-    typeof raw.markers !== "boolean"
-  ) {
-    return `${where} labels and markers must be boolean.`
-  }
-  return cloneLiteral(raw) as ChartStyle & Record<string, unknown>
-}
-
-function parseAxis(
-  raw: unknown,
-  where: string,
-  secondary = false,
-): ChartAxisConfig | string {
-  if (!isPlainObject(raw)) return `${where} must be an object.`
-  const known = secondary ? new Set([...AXIS_KEYS, "enabled"]) : AXIS_KEYS
-  const futureError = validateFutureFields(raw, known, where)
-  if (futureError) return futureError
-  if (secondary && typeof raw.enabled !== "boolean") {
-    return `${where}.enabled must be a boolean.`
-  }
-  if (typeof raw.title !== "string") return `${where}.title must be a string.`
-
-  const minimum = raw.minimum
-  const maximum = raw.maximum
-  if (
-    minimum !== null &&
-    (typeof minimum !== "number" || !Number.isFinite(minimum))
-  ) {
-    return `${where}.minimum must be a finite number or null.`
-  }
-  if (
-    maximum !== null &&
-    (typeof maximum !== "number" || !Number.isFinite(maximum))
-  ) {
-    return `${where}.maximum must be a finite number or null.`
-  }
-  if (minimum !== null && maximum !== null && minimum >= maximum) {
-    return `${where}.minimum must be less than maximum.`
-  }
-  if (
-    typeof raw.number_format !== "string" ||
-    !NUMBER_FORMATS.has(raw.number_format)
-  ) {
-    return `${where}.number_format is invalid.`
-  }
-  return cloneLiteral(raw) as ChartAxisConfig
-}
-
 function chartDefaults(id: string, name: string): ExploreChartConfig {
   return {
     version: 1,
@@ -398,79 +225,21 @@ function chartDefaults(id: string, name: string): ExploreChartConfig {
 }
 
 function parseV1Chart(
-  raw: Record<string, unknown>,
+  raw: ExploreChartConfig,
   position: number,
 ): ExploreChartConfig | string {
-  const futureError = validateFutureFields(
-    raw,
-    CARD_KEYS,
-    `Chart ${position}`,
-  )
-  if (futureError) return futureError
-  if (raw.version !== 1) return `Chart ${position} version must be 1.`
-  if (!nonEmptyString(raw.id)) {
-    return `Chart ${position} id must be a non-empty string.`
-  }
-  if (!nonEmptyString(raw.name)) {
-    return `Chart ${position} name must be a non-empty string.`
-  }
-  if (typeof raw.enabled !== "boolean") {
-    return `Chart ${position} enabled state must be a boolean.`
-  }
-  if (
-    !Object.prototype.hasOwnProperty.call(raw, "pivot_id") ||
-    (raw.pivot_id !== null && !nonEmptyString(raw.pivot_id))
-  ) {
-    return `Chart ${position} pivot_id must be null or a non-empty string.`
-  }
-  if (raw.kind !== "combo") return `Chart ${position} kind must be combo.`
-  if (
-    typeof raw.orientation !== "string" ||
-    !ORIENTATIONS.has(raw.orientation as ChartOrientation)
-  ) {
-    return `Chart ${position} orientation must be vertical or horizontal.`
-  }
-
-  if (!isPlainObject(raw.category)) {
-    return `Chart ${position} category must be an object.`
-  }
-  const categoryFutureError = validateFutureFields(
-    raw.category,
-    CATEGORY_KEYS,
-    `Chart ${position} category`,
-  )
-  if (categoryFutureError) return categoryFutureError
-  if (
-    raw.category.source !== "rows" ||
-    typeof raw.category.include_grand_total !== "boolean" ||
-    typeof raw.category.label_rotation !== "number" ||
-    !Number.isInteger(raw.category.label_rotation) ||
-    raw.category.label_rotation < -90 ||
-    raw.category.label_rotation > 90
-  ) {
-    return `Chart ${position} category is invalid.`
-  }
-
-  if (!Array.isArray(raw.value_encodings)) {
-    return `Chart ${position} value_encodings must be a list.`
-  }
-  if (!Array.isArray(raw.series_overrides)) {
-    return `Chart ${position} series_overrides must be a list.`
-  }
+  const chart = cloneLiteral(raw)
   const nestedIds = new Set<string>()
   const valueIds = new Set<string>()
   const seriesKeys = new Set<string>()
-  const valueEncodings: ChartValueEncoding[] = []
-  const seriesOverrides: ChartSeriesOverride[] = []
 
-  for (const rawEncoding of raw.value_encodings) {
-    const parsed = parseStyle(
-      rawEncoding,
-      `Chart ${position} encoding`,
-      "value_id",
-    )
-    if (typeof parsed === "string") return parsed
-    const encoding = parsed as ChartValueEncoding
+  for (const encoding of chart.value_encodings) {
+    if (Object.prototype.hasOwnProperty.call(encoding, "series_key")) {
+      return `Chart ${position} encoding contains misplaced identity field series_key.`
+    }
+    if (encoding.stack_normalize && encoding.stack_group === null) {
+      return `Chart ${position} encoding stack_normalize requires a stack group.`
+    }
     if (nestedIds.has(encoding.id)) {
       return `Chart ${position} has duplicate encoding id "${encoding.id}".`
     }
@@ -479,16 +248,14 @@ function parseV1Chart(
     }
     nestedIds.add(encoding.id)
     valueIds.add(encoding.value_id)
-    valueEncodings.push(encoding)
   }
-  for (const rawOverride of raw.series_overrides) {
-    const parsed = parseStyle(
-      rawOverride,
-      `Chart ${position} override`,
-      "series_key",
-    )
-    if (typeof parsed === "string") return parsed
-    const override = parsed as ChartSeriesOverride
+  for (const override of chart.series_overrides) {
+    if (Object.prototype.hasOwnProperty.call(override, "value_id")) {
+      return `Chart ${position} override contains misplaced identity field value_id.`
+    }
+    if (override.stack_normalize && override.stack_group === null) {
+      return `Chart ${position} override stack_normalize requires a stack group.`
+    }
     try {
       const identity = parseCanonicalSeriesKey(override.series_key)
       override.series_key = exploreChartSeriesKey(
@@ -507,13 +274,13 @@ function parseV1Chart(
     }
     nestedIds.add(override.id)
     seriesKeys.add(override.series_key)
-    seriesOverrides.push(override)
   }
   const stackIdentities = new Map<
     string,
     { normalize: boolean; axis: ChartAxis }
   >()
-  for (const style of [...valueEncodings, ...seriesOverrides]) {
+  const styles = [...chart.value_encodings, ...chart.series_overrides]
+  for (const style of styles) {
     if (style.stack_group === null) continue
     const existing = stackIdentities.get(style.stack_group)
     if (existing === undefined) {
@@ -532,65 +299,63 @@ function parseV1Chart(
     }
   }
 
-  if (!isPlainObject(raw.axes)) {
-    return `Chart ${position} axes must be an object.`
+  for (const [label, axis] of [
+    ["primary", chart.axes.primary],
+    ["secondary", chart.axes.secondary],
+  ] as const) {
+    if (
+      axis.minimum !== null
+      && axis.maximum !== null
+      && axis.minimum >= axis.maximum
+    ) {
+      return `Chart ${position} ${label} axis minimum must be less than maximum.`
+    }
   }
-  const axesFutureError = validateFutureFields(
-    raw.axes,
-    new Set(["primary", "secondary"]),
-    `Chart ${position} axes`,
-  )
-  if (axesFutureError) return axesFutureError
-  const primary = parseAxis(raw.axes.primary, `Chart ${position} primary axis`)
-  if (typeof primary === "string") return primary
-  const parsedSecondary = parseAxis(
-    raw.axes.secondary,
-    `Chart ${position} secondary axis`,
-    true,
-  )
-  if (typeof parsedSecondary === "string") return parsedSecondary
-  const secondary = parsedSecondary as ChartSecondaryAxisConfig
-  if (
-    !secondary.enabled &&
-    [...valueEncodings, ...seriesOverrides].some(
-      ({ axis }) => axis === "secondary",
-    )
-  ) {
+  if (!chart.axes.secondary.enabled && styles.some(({ axis }) => axis === "secondary")) {
     return `Chart ${position} secondary axis is disabled but a style uses it.`
   }
 
-  if (!isPlainObject(raw.legend)) {
-    return `Chart ${position} legend must be an object.`
-  }
-  const legendFutureError = validateFutureFields(
-    raw.legend,
-    LEGEND_KEYS,
-    `Chart ${position} legend`,
-  )
-  if (legendFutureError) return legendFutureError
-  if (
-    typeof raw.legend.visible !== "boolean" ||
-    typeof raw.legend.position !== "string" ||
-    !LEGEND_POSITIONS.has(raw.legend.position)
-  ) {
-    return `Chart ${position} legend is invalid.`
-  }
+  return chart
+}
 
-  return {
-    ...cloneLiteral(raw),
-    version: 1,
-    id: raw.id,
-    name: raw.name,
-    enabled: raw.enabled,
-    pivot_id: raw.pivot_id,
-    kind: "combo",
-    orientation: raw.orientation as ChartOrientation,
-    category: cloneLiteral(raw.category) as ChartCategory,
-    value_encodings: valueEncodings,
-    series_overrides: seriesOverrides,
-    axes: { ...cloneLiteral(raw.axes), primary, secondary },
-    legend: cloneLiteral(raw.legend) as ExploreChartConfig["legend"],
+function chartPosition(error: GeneratedContractValidationError): number {
+  const match = /^\/(\d+)(?:\/|$)/.exec(generatedContractErrorPath(error))
+  return match === null ? 1 : Number(match[1]) + 1
+}
+
+function chartContractError(
+  errors: readonly GeneratedContractValidationError[] | null,
+): string {
+  const first = errors?.[0]
+  if (first === undefined) return formatGeneratedContractError("Explore charts", errors)
+  const position = chartPosition(first)
+  const sameChart = (error: GeneratedContractValidationError): boolean => (
+    chartPosition(error) === position
+  )
+  const versionError = findGeneratedContractError(
+    errors,
+    (error) => sameChart(error) && (
+      (error.keyword === "required" && error.params.missingProperty === "version")
+      || generatedContractErrorPath(error).endsWith("/version")
+    ),
+  )
+  if (versionError !== undefined) return `Chart ${position} version must be 1.`
+
+  const secondaryEnabledError = findGeneratedContractError(
+    errors,
+    (error) => sameChart(error) && (
+      (
+        error.keyword === "required"
+        && error.params.missingProperty === "enabled"
+        && generatedContractErrorPath(error).includes("/axes/secondary/")
+      )
+      || generatedContractErrorPath(error).endsWith("/axes/secondary/enabled")
+    ),
+  )
+  if (secondaryEnabledError !== undefined) {
+    return `Chart ${position} secondary axis enabled must be a boolean.`
   }
+  return formatGeneratedContractError("Explore charts", errors)
 }
 
 export function parseExploreCharts(
@@ -599,18 +364,25 @@ export function parseExploreCharts(
   if (!Object.prototype.hasOwnProperty.call(config, "charts")) {
     return { ok: true, charts: [] }
   }
-  if (!Array.isArray(config.charts)) {
+  const rawCharts = config.charts
+  if (!Array.isArray(rawCharts)) {
     return { ok: false, error: "Explore charts config must be a list." }
+  }
+  if (!isSimpleLiteral(rawCharts)) {
+    return {
+      ok: false,
+      error: "Explore charts config must contain only JSON literal values.",
+    }
+  }
+  if (!validateExploreCharts(rawCharts)) {
+    return { ok: false, error: chartContractError(validateExploreCharts.errors) }
   }
 
   const charts: ExploreChartConfig[] = []
   const ids = new Set<string>()
   const names = new Set<string>()
-  for (const [index, raw] of config.charts.entries()) {
+  for (const [index, raw] of rawCharts.entries()) {
     const position = index + 1
-    if (!isPlainObject(raw)) {
-      return { ok: false, error: `Chart ${position} must be an object.` }
-    }
     const chart = parseV1Chart(raw, position)
     if (typeof chart === "string") return { ok: false, error: chart }
     if (ids.has(chart.id)) {

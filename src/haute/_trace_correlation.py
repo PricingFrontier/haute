@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from functools import lru_cache
 from typing import Any
 
 import polars as pl
@@ -30,9 +31,10 @@ from haute._edge_join import build_edge_join_kwargs
 from haute._json_safe import (
     MAX_SAFE_INTEGER,
     non_finite_float_token,
-    to_json_safe,
 )
+from haute._json_safe import row_to_json_safe as _jsonify_row
 from haute._logging import get_logger
+from haute._python_syntax import StructuredSyntaxError, method_call_sites
 from haute._types import GraphNode, NodeType
 
 logger = get_logger(component="trace_correlation")
@@ -54,6 +56,18 @@ class SchemaDiff:
     columns_removed: list[str]
     columns_modified: list[str]
     columns_passed: list[str]
+
+
+@dataclass(slots=True)
+class CorrelationWork:
+    """Mutable counters for work performed during post-hoc correlation."""
+
+    candidate_frames_considered: int = 0
+    match_scans: int = 0
+    rows_scanned: int = 0
+    key_columns_scanned: int = 0
+    comparison_cells: int = 0
+    ambiguity_count: int = 0
 
 
 class _RowMatchStatus(StrEnum):
@@ -105,16 +119,6 @@ def _value_non_finite_token(value: Any) -> str | None:
     if isinstance(value, float):
         return _float_non_finite_token(value)
     return non_finite_float_token(value)
-
-
-def _jsonify_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Convert Polars row values to JSON-serialisable Python types.
-
-    The preview JSON boundary is the single display-value authority for
-    trace too, including recursive temporal, nested, non-finite, object,
-    and JavaScript-unsafe integer values.
-    """
-    return {str(key): to_json_safe(value) for key, value in row.items()}
 
 
 def _trace_values_match(actual: Any, expected: Any) -> bool:
@@ -499,11 +503,17 @@ def _match_rows_vectorized(
     key_columns: Sequence[str],
     *,
     allow_relaxed: bool = False,
+    work: CorrelationWork | None = None,
 ) -> _RowMatchResult:
     """Match row identity with native Polars expressions and bounded output."""
     keys = tuple(
         column for column in key_columns if column in frame.columns and column in row_values
     )
+    if work is not None:
+        work.match_scans += 1
+        work.rows_scanned += frame.height
+        work.key_columns_scanned += len(keys)
+        work.comparison_cells += frame.height * len(keys)
     dtypes = tuple(str(frame.schema[column]) for column in keys)
     if not keys:
         return _RowMatchResult(
@@ -543,10 +553,11 @@ def _match_rows_vectorized(
         return _unsupported_match_result(keys, dtypes, "incompatible_nested_schema")
     strict_count, strict_candidates, strict_state = _candidate_payload(strict_indices)
     if strict_count:
+        status = _RowMatchStatus.UNIQUE_STRICT if strict_count == 1 else _RowMatchStatus.AMBIGUOUS
+        if status is _RowMatchStatus.AMBIGUOUS and work is not None:
+            work.ambiguity_count += 1
         return _RowMatchResult(
-            status=(
-                _RowMatchStatus.UNIQUE_STRICT if strict_count == 1 else _RowMatchStatus.AMBIGUOUS
-            ),
+            status=status,
             strict_key_columns=keys,
             effective_key_columns=keys,
             relaxation_reason=None,
@@ -618,10 +629,11 @@ def _match_rows_vectorized(
         for key, alias in zip(keys, aliases, strict=True)
         if not bool(best.get_column(alias).all())
     )
+    status = _RowMatchStatus.UNIQUE_RELAXED if relaxed_count == 1 else _RowMatchStatus.AMBIGUOUS
+    if status is _RowMatchStatus.AMBIGUOUS and work is not None:
+        work.ambiguity_count += 1
     return _RowMatchResult(
-        status=(
-            _RowMatchStatus.UNIQUE_RELAXED if relaxed_count == 1 else _RowMatchStatus.AMBIGUOUS
-        ),
+        status=status,
         strict_key_columns=keys,
         effective_key_columns=effective,
         relaxation_reason="strict_keys_no_match_best_subset",
@@ -694,6 +706,7 @@ def _find_matching_row(
     node_id: str | None = None,
     child_node_id: str | None = None,
     allow_relaxed: bool = True,
+    work: CorrelationWork | None = None,
 ) -> tuple[dict[str, Any] | None, int]:
     """Find the row in *df* that matches *child_row* on shared columns.
 
@@ -717,6 +730,7 @@ def _find_matching_row(
         child_row,
         shared,
         allow_relaxed=allow_relaxed,
+        work=work,
     )
     if match.status in {_RowMatchStatus.UNIQUE_STRICT, _RowMatchStatus.UNIQUE_RELAXED}:
         idx = match.candidate_indices[0]
@@ -823,26 +837,43 @@ def _find_matching_row(
     return None, -1
 
 
-#: Tokens whose presence in a node's code means the transform can
-#: reorder rows or change row identity (so a positional alignment cannot
-#: be trusted without shared columns to verify it).
-_ROW_REORDERING_TOKENS = (
-    ".sort",
-    ".reverse",
-    ".gather",
-    ".take(",
-    ".sample",
-    ".shuffle",
-    ".join(",
-    ".group_by(",
-    ".groupby(",
-    ".unique(",
-    ".top_k(",
-    ".bottom_k(",
-    ".explode(",
-    ".pivot(",
-    ".cross_join(",
+#: Exact called-method names whose semantics can reorder rows or change row
+#: identity, so positional alignment cannot be trusted without shared columns.
+#: Structured call discovery deliberately excludes lookalikes in comments,
+#: strings, longer attribute names, and bare attribute references.
+_ROW_REORDERING_METHODS = frozenset(
+    {
+        "bottom_k",
+        "cross_join",
+        "explode",
+        "gather",
+        "group_by",
+        "groupby",
+        "join",
+        "pivot",
+        "reverse",
+        "sample",
+        "shuffle",
+        "sort",
+        "sort_by",
+        "take",
+        "top_k",
+        "unique",
+    }
 )
+
+
+@lru_cache(maxsize=512)
+def _code_may_reorder_rows(code: str) -> bool:
+    """Classify one valid Python fragment through exact structured call sites."""
+
+    try:
+        calls = method_call_sites(code.lstrip("\ufeff"))
+    except StructuredSyntaxError:
+        # Correlation is an observation surface. If syntax cannot be proved,
+        # leave the step unresolved rather than revive a substring guess.
+        return True
+    return any(call.name in _ROW_REORDERING_METHODS for call in calls)
 
 
 def _child_transform_may_reorder(child_node: GraphNode | None) -> bool:
@@ -862,8 +893,7 @@ def _child_transform_may_reorder(child_node: GraphNode | None) -> bool:
     code = config.get("code", "") if isinstance(config, dict) else ""
     if not isinstance(code, str) or not code:
         return True
-    low = code.lower()
-    return any(token in low for token in _ROW_REORDERING_TOKENS)
+    return _code_may_reorder_rows(code)
 
 
 def _allows_relaxed_parent_match(
@@ -1046,6 +1076,7 @@ def _match_parent_row(
     eager_outputs: Mapping[str, Any],
     source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None,
     diagnostics: list[dict[str, Any]] | None,
+    work: CorrelationWork | None = None,
 ) -> tuple[dict[str, Any] | None, int, int]:
     """Correlate one parent FRAME against the resolved child row.
 
@@ -1055,6 +1086,9 @@ def _match_parent_row(
     rank competing candidate frames.  ``(None, -1, width)`` when no row
     can be confidently identified.
     """
+    if work is not None:
+        work.candidate_frames_considered += 1
+
     parent_cols = set(parent_df.columns)
     child_node = node_map.get(child_id)
     match_row = _build_parent_match_row(
@@ -1088,6 +1122,7 @@ def _match_parent_row(
                 verification_frame,
                 match_row,
                 shared,
+                work=work,
             )
             expected_index = child_row_idx if child_may_reorder else 0
             if (
@@ -1114,6 +1149,7 @@ def _match_parent_row(
         node_id=parent_id,
         child_node_id=child_id,
         allow_relaxed=_allows_relaxed_parent_match(parent_id, child_node),
+        work=work,
     )
     return row_dict, idx, len(match_row)
 
@@ -1132,6 +1168,7 @@ def _resolve_multi_frame_parent(
     eager_outputs: Mapping[str, Any],
     source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None,
     diagnostics: list[dict[str, Any]] | None,
+    work: CorrelationWork | None = None,
 ) -> tuple[dict[str, Any] | None, int]:
     """Correlate a multi-frame parent (``dict[label, DataFrame]``) row.
 
@@ -1191,6 +1228,7 @@ def _resolve_multi_frame_parent(
             eager_outputs=eager_outputs,
             source_frames_of=source_frames_of,
             diagnostics=diagnostics,
+            work=work,
         )
         return row_dict, idx
 
@@ -1210,6 +1248,7 @@ def _resolve_multi_frame_parent(
             eager_outputs=eager_outputs,
             source_frames_of=source_frames_of,
             diagnostics=None,
+            work=work,
         )
         if row_dict is not None:
             matches.append((handle, frame, row_dict, idx, width))
@@ -1247,6 +1286,8 @@ def _resolve_multi_frame_parent(
         best_width = max(m[4] for m in picked)
         picked = [m for m in picked if m[4] == best_width]
     if len(picked) > 1:
+        if work is not None:
+            work.ambiguity_count += 1
         if diagnostics is not None:
             diagnostics.append(
                 {
@@ -1325,6 +1366,7 @@ def _correlate_rows_posthoc(
     unresolved: dict[str, tuple[str, int]] | None = None,
     source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None = None,
     traced_column: str | None = None,
+    work: CorrelationWork | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Extract the correct row from each node using post-hoc correlation.
 
@@ -1421,6 +1463,7 @@ def _correlate_rows_posthoc(
                 eager_outputs=eager_outputs,
                 source_frames_of=source_frames_of,
                 diagnostics=diagnostics,
+                work=work,
             )
             result[nid] = row_dict  # may be None if no frame resolved
             row_indices[nid] = idx
@@ -1460,6 +1503,7 @@ def _correlate_rows_posthoc(
             eager_outputs=eager_outputs,
             source_frames_of=source_frames_of,
             diagnostics=diagnostics,
+            work=work,
         )
         result[nid] = row_dict  # may be None if no match found
         row_indices[nid] = idx

@@ -143,10 +143,13 @@ def test_rejects_invalid_v1_known_fields(mutate: object, message: str) -> None:
     ("charts", "message"),
     [
         ({}, "must be a list"),
+        ((), "must be a list"),
         (["chart"], "entries must be dicts"),
         ([{"enabled": True}], "version must be 1"),
         ([{"id": "old", "enabled": True, "name": "no"}], "version must be 1"),
         ([{"id": "old", "enabled": True, "future": object()}], "simple literals"),
+        ([{**_chart(), "future": math.nan}], "simple literals"),
+        ([{**_chart(), 1: "not-a-string-key"}], "simple literals"),
         (
             [{**_chart(), "category": {**_chart()["category"], "future": object()}}],
             "simple literals",

@@ -4,7 +4,8 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/panels/GitPanel.tsx` | The Git side panel: pending-save list, milestone list + expansion, graph-rail row wiring, all right-click context menus, the fork-naming dialog, `SaveRow`/`FileRow`/`ForkLinks`/`ViewVersionButton`/`MoveToVersionButton` sub-components. |
+| `frontend/src/panels/GitPanel.tsx` | The Git side-panel view and user-action boundary: pending-save and milestone rows, graph-rail wiring, context menus, fork dialog, and row sub-components. Branch-history request identity and hydration are delegated to `useGitHistory`. |
+| `frontend/src/panels/git/useGitHistory.ts` | The single state authority for branch-scoped Git history: cache hydration, stale-while-revalidate fetching, request generations, nonce consumption, row selection, expansion, and branch replacement. It exposes a render-ready snapshot and event callbacks without render-time ref mutation or effect-driven synchronous state resets. |
 | `frontend/src/panels/gitPanelCache.ts` | Module-level session caches (`branchHistory`, `milestoneSaves`, whole-forest `graphCache`) with LRU eviction, feeding the Git panel's stale-while-revalidate hydration and unchanged-payload short-circuit. |
 | `frontend/src/panels/gitgraph/layout.ts` | Pure layout: `computeGitGraphLayout` turns a `GitGraphResponse` + the panel's row list into a `RailModel` (lanes, dots, curves, magnifiers, spawn stubs); `computeRailRuns` consolidates per-row cells into whole-length vertical line segments. No DOM, no fetch. |
 | `frontend/src/panels/gitgraph/GraphCell.tsx` | Rendering: `GraphRailCell` (per-row SVG cell), `GraphRailOverlay` (the measured whole-box overlay of consolidated runs), `GraphRailHeader` (top departing-branch chip strip), `Magnifier`. Pure presentation over `frontend/src/panels/gitgraph/layout.ts` types. |
@@ -111,38 +112,44 @@ graph-derived shape used for in-row spawn chips.
 
 ## Control flow
 
-**Panel mount / branch resolution.** `GitPanel` derives `branchKey = viewBranch ?? workingBranch`
-(the peek target, else the current working branch). On mount it seeds `milestones`/`pending`/
-`graph` synchronously from `gitPanelCache` (`readBranchHistory`,
-`readGraphCache`) so a previously-viewed branch paints with no loading flash, then always
-runs `refresh()` (stale-while-revalidate — see Edge cases). A `branchKey` change (peek
-start/clear, or the workingBranch resolving after the panel mounted before status loaded)
-re-hydrates from cache or clears rows, gated on `applied.current.branch !== branchKey` so
-an already-landed refresh for that key is never clobbered.
+**Panel mount / branch resolution.** `GitPanel` derives
+`branchKey = viewBranch ?? workingBranch` (the peek target, else the current
+working branch) and renders an immutable keyed branch scope around
+`useGitHistory`, the named authority for that branch-scoped snapshot. The
+scope key includes whether the branch is being peeked, so a peek becoming the
+working branch cannot retain peek-only request semantics. The hook's reducer
+initializer reads `gitPanelCache` (`readBranchHistory`, `readGraphCache`)
+synchronously, so a previously viewed branch paints with no loading flash; a
+miss produces an explicit empty snapshot for that branch. Replacing the scope
+unmounts and retires its request generation and creates the replacement from
+its own cache seed, rather than synchronously clearing or hydrating several
+independent state values in an effect. Every entered scope is then revalidated
+(stale while revalidate — see Edge cases).
 
-**`refresh()`** (`GitPanel.tsx`). Stamps a new `refreshGeneration`. Kicks off the graph
-fetch (`getGitGraph(50)`) and the two branch-history fetches (`getMilestones`,
+**`refresh()`** (`useGitHistory`). Stamps a new monotonic request generation
+and captures the branch scope. It kicks off the graph fetch
+(`getGitGraph(50)`) and the two branch-history fetches (`getMilestones`,
 `getPendingSaves`) in parallel. Working-branch metadata comes from the store's shared
 `loadBranches()` path and updates fork chips through a store-derived effect. On a cold paint
-(`!hasRowsOnScreen.current`) it races the graph fetch against a 250ms timer before
+when the captured snapshot has no rows, it races the graph fetch against a 250ms timer before
 committing row state, so the rail doesn't visibly pop in a beat after the list on first
 load — this gate is skipped once rows are already on screen (a warm remount or a
 subsequent refresh), where the delay would only slow things down. Any response — graph or
-row-data — is discarded un-applied if `generation !== refreshGeneration.current` by the
-time it resolves (a newer refresh started first). On success, every fetched payload is
+row data — is discarded un-applied unless both the captured branch and generation still
+own the authority when it resolves. On success, every fetched payload is
 `serializePayload`'d and written to `gitPanelCache` unconditionally (permissive — a
 hydrated mount always revalidates anyway), then each `setState` is skipped individually
-when its serialization matches what's already applied for that branch (`applied.current`)
+when its serialization matches the authority's already-applied value for that branch
 — this is what keeps a no-op auto-refresh from re-rendering the row list or re-triggering
 the rail's measurement effect.
 
-**Nonce-driven effects** (`GitPanel`'s nonce `useEffect` block), each keyed on one store
-nonce:
+**Nonce-driven transitions** (`useGitHistory`), each consumed once by the
+authority for the current branch:
 - `historyNonce` → `refresh()`, no selection change.
 - `commitNonce` → `refresh()`, then select `res.milestones[0].sha` if not peeking.
-`refresh` itself has stable callback identity and snapshots the current peek target from a
-ref when invoked; peek changes have their own refresh effect, so changing branches cannot
-re-fire a previously handled nonce effect and fan one action out into redundant requests.
+The controller reads current scope at the request boundary; it does not mirror peek state
+into a ref during render. Changing branches therefore cannot re-fire a previously handled
+nonce or allow an old completion to select a commit in the replacement branch.
 
 No nonce selects a specific commit: selection inside the history is driven by clicking the
 history itself.
@@ -473,7 +480,7 @@ breadth (60+ cases) suggests `computeGitGraphLayout`/`computeRailRuns` are the
 highest-risk, most thoroughly defended part of this component, consistent with them being
 the only pure, intricate geometry code in the surface.
 
-## Approved change contract — canonical branch source
+## Canonical branch source
 
-Under the [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
+Under the [canonical-only format policy](../README.md#canonical-only-format-policy),
 the Git panel renders topology chips only from the current graph payload.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import keyword
 import re
 from collections import Counter, deque
 from collections.abc import Sequence
@@ -25,12 +26,17 @@ from haute._ast_helpers import (
 )
 from haute._cache import canonical_json
 from haute._config_builder import _resolve_node_config
+from haute._editor_identities import (
+    recoverable_api_input_source_handles,
+    resolve_editor_identity,
+)
 from haute._graph_builders import (
     PipelineNodeSkeleton,
     _edge_param_names_for_node,
     _extract_decorated_node_skeletons,
     _resolve_node_skeleton,
 )
+from haute._graph_utils import executable_input_name
 from haute._hashing import content_hash_bytes
 from haute._io import read_user_bytes_and_text, read_user_text
 from haute._logging import get_logger
@@ -52,7 +58,7 @@ from haute._sidecar import (
     read_sidecar_state,
 )
 from haute._submodel_paths import resolve_submodel_reference
-from haute._types import NODE_TYPE_TO_DECORATOR, NodeType, PipelineGraph
+from haute._types import NODE_TYPE_TO_DECORATOR, GraphNode, NodeType, PipelineGraph
 from haute.errors import ConfigError, HauteError, ParseError
 from haute.parser import _infer_parse_base_dir, parse_pipeline_source
 from haute.schemas import (
@@ -994,12 +1000,43 @@ def _build_recovery_graph(
             blocking_paths[downstream_id] = [*path, downstream_candidate.recovery_id]
             queue.append((downstream_id, blocking_paths[downstream_id]))
 
+    handles_by_source: dict[str, list[str]] = {}
+    for edge in edge_specs:
+        if edge.source_handle is not None:
+            handles = handles_by_source.setdefault(edge.source.recovery_id, [])
+            if edge.source_handle not in handles:
+                handles.append(edge.source_handle)
     nodes: list[RecoveryPipelineNode] = []
     for index, candidate in enumerate(candidates):
         position = positions.get(
             candidate.authored_id,
             {"x": float(index * 300), "y": 0.0},
         )
+        resolved_identity = None
+        if candidate.node_type is not None:
+            try:
+                alias = (
+                    candidate.config.get("alias")
+                    if isinstance(candidate.config, dict)
+                    and isinstance(candidate.config.get("alias"), str)
+                    else None
+                )
+                source_handles = handles_by_source.get(candidate.recovery_id, [])
+                if candidate.node_type == NodeType.API_INPUT and isinstance(candidate.config, dict):
+                    source_handles = list(recoverable_api_input_source_handles(candidate.config))
+                elif candidate.node_type == NodeType.SUBMODEL:
+                    source_handles = [
+                        f"out__{port_id}" for port_id in candidate.submodel_output_ports
+                    ]
+                resolved_identity = resolve_editor_identity(
+                    node_type=candidate.node_type,
+                    label=candidate.authored_id,
+                    source_handles=source_handles,
+                    submodel_alias=alias,
+                    config_reference_override=candidate.config_reference,
+                )
+            except (HauteError, ValueError):
+                resolved_identity = None
         nodes.append(
             RecoveryPipelineNode(
                 recovery_id=candidate.recovery_id,
@@ -1012,6 +1049,15 @@ def _build_recovery_graph(
                 display_position=position,
                 config=candidate.config,
                 config_reference=candidate.config_reference,
+                function_name=(
+                    resolved_identity.function_name if resolved_identity else candidate.authored_id
+                ),
+                default_input_name=(
+                    resolved_identity.default_input_name if resolved_identity else None
+                ),
+                source_handle_input_names=(
+                    resolved_identity.source_handle_input_names if resolved_identity else {}
+                ),
                 source_file=source_file,
                 source_span=candidate.span,
                 diagnostic_ids=candidate.diagnostic_ids,
@@ -1026,6 +1072,24 @@ def _build_recovery_graph(
         edge_availability: PipelineElementAvailability = (
             "ready" if source_availability == target_availability == "ready" else "blocked"
         )
+        input_name: str | None = None
+        source_candidate = candidate_by_id[edge.source.recovery_id]
+        if edge_availability == "ready" and source_candidate.node_type is not None:
+            alias = (
+                source_candidate.config.get("alias")
+                if isinstance(source_candidate.config, dict)
+                and isinstance(source_candidate.config.get("alias"), str)
+                else None
+            )
+            try:
+                input_name = executable_input_name(
+                    node_type=source_candidate.node_type,
+                    label=source_candidate.authored_id,
+                    source_handle=edge.source_handle,
+                    submodel_alias=alias,
+                )
+            except ValueError:
+                input_name = None
         edges.append(
             RecoveryPipelineEdge(
                 recovery_id=_edge_recovery_id(
@@ -1043,6 +1107,7 @@ def _build_recovery_graph(
                 target_handle=edge.target_handle,
                 source_port=edge.source_port,
                 target_port=edge.target_port,
+                input_name=input_name,
                 availability=edge_availability,
                 source_span=edge.span,
                 blocking_path=blocking_paths.get(edge.target.recovery_id, []),
@@ -1099,21 +1164,62 @@ def _canonical_snapshot(
     if sidecar_issue is not None:
         diagnostics.append(sidecar_issue)
 
-    nodes = [
-        RecoveryPipelineNode(
-            recovery_id=node.id,
-            authored_id=node.id,
-            label=node.data.label,
-            decorator_name=NODE_TYPE_TO_DECORATOR.get(node.data.nodeType, "submodel"),
-            node_type=str(node.data.nodeType),
-            description=node.data.description,
-            availability="ready",
-            display_position=positions.get(node.id, node.position),
-            config=dict(node.data.config),
-            source_file=source_file,
+    connected_handles_by_source: dict[str, list[str]] = {}
+    for edge in graph.edges:
+        if edge.sourceHandle is not None:
+            handles = connected_handles_by_source.setdefault(edge.source, [])
+            if edge.sourceHandle not in handles:
+                handles.append(edge.sourceHandle)
+
+    def source_handles_for(node: GraphNode) -> list[str]:
+        if node.data.nodeType == NodeType.API_INPUT:
+            return list(recoverable_api_input_source_handles(node.data.config))
+        if node.data.nodeType == NodeType.SUBMODEL:
+            definition_id = node.data.config.get("definitionId")
+            definition = (
+                (graph.submodels or {}).get(definition_id)
+                if isinstance(definition_id, str)
+                else None
+            )
+            if definition is None:
+                raise ValueError(f"Submodel node {node.id!r} references a missing definition.")
+            return [f"out__{port.port_id}" for port in definition.output_ports]
+        if node.data.nodeType == NodeType.SUBMODEL_PORT:
+            return connected_handles_by_source.get(node.id, [])
+        return []
+
+    nodes: list[RecoveryPipelineNode] = []
+    for node in graph.nodes:
+        alias = (
+            node.data.config.get("alias")
+            if isinstance(node.data.config.get("alias"), str)
+            else None
         )
-        for node in graph.nodes
-    ]
+        identity = resolve_editor_identity(
+            node_type=node.data.nodeType,
+            label=node.data.label,
+            source_handles=source_handles_for(node),
+            submodel_alias=alias,
+        )
+        nodes.append(
+            RecoveryPipelineNode(
+                recovery_id=node.id,
+                authored_id=node.id,
+                label=node.data.label,
+                decorator_name=NODE_TYPE_TO_DECORATOR.get(node.data.nodeType, "submodel"),
+                node_type=str(node.data.nodeType),
+                description=node.data.description,
+                availability="ready",
+                display_position=positions.get(node.id, node.position),
+                config=dict(node.data.config),
+                config_reference=identity.config_reference,
+                function_name=identity.function_name,
+                default_input_name=identity.default_input_name,
+                source_handle_input_names=identity.source_handle_input_names,
+                source_file=source_file,
+            )
+        )
+    source_nodes = {node.id: node for node in graph.nodes}
     edges = [
         RecoveryPipelineEdge(
             recovery_id=edge.id,
@@ -1125,6 +1231,16 @@ def _canonical_snapshot(
             target_handle=edge.targetHandle,
             source_port=edge.sourcePort,
             target_port=edge.targetPort,
+            input_name=executable_input_name(
+                node_type=source_nodes[edge.source].data.nodeType,
+                label=source_nodes[edge.source].data.label,
+                source_handle=edge.sourceHandle,
+                submodel_alias=(
+                    source_nodes[edge.source].data.config.get("alias")
+                    if isinstance(source_nodes[edge.source].data.config.get("alias"), str)
+                    else None
+                ),
+            ),
             availability="ready",
         )
         for edge in graph.edges
@@ -1149,6 +1265,12 @@ def _canonical_snapshot(
             input_ports=[
                 port.model_dump(mode="json", by_alias=True) for port in definition.input_ports
             ],
+            input_port_input_names={
+                port.port_id: executable_input_name(
+                    node_type=NodeType.SUBMODEL_PORT, label="", source_handle=port.port_id
+                )
+                for port in definition.input_ports
+            },
             output_ports=[
                 port.model_dump(mode="json", by_alias=True) for port in definition.output_ports
             ],
@@ -1260,6 +1382,12 @@ def _unavailable_submodel_definition(
         diagnostic_ids=list(diagnostic_ids or []),
         graph=graph or RecoveryGraphSnapshot(),
         input_ports=list(input_ports or []),
+        input_port_input_names={
+            port_id: executable_input_name(
+                node_type=NodeType.SUBMODEL_PORT, label="", source_handle=port_id
+            )
+            for port_id in _port_ids(list(input_ports or []))
+        },
         output_ports=list(output_ports or []),
     )
 
@@ -1496,6 +1624,12 @@ def _recover_registered_submodels(
                 diagnostics=diagnostics,
             ),
             input_ports=input_ports,
+            input_port_input_names={
+                port_id: executable_input_name(
+                    node_type=NodeType.SUBMODEL_PORT, label="", source_handle=port_id
+                )
+                for port_id in _port_ids(input_ports)
+            },
             output_ports=output_ports,
         )
 
@@ -1683,6 +1817,7 @@ def _capabilities(
         can_preview=status != "source_only" and source_selection_trusted,
         can_manage_submodels=ready,
         can_repair=status == "degraded",
+        reserved_api_input_frame_labels=sorted(keyword.kwlist),
     )
 
 

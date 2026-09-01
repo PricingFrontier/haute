@@ -11,8 +11,10 @@ from unittest.mock import patch
 
 import pytest
 
+from haute.routes._job_lifecycle import JobLifecycle
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_limits import FRONTIER_POINT_LIMIT
+from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import poll_frontier_until_done
 
 pytestmark = pytest.mark.perf
@@ -25,11 +27,9 @@ _MAX_CAPPED_FRONTIER_RESPONSE_BYTES = 350_000
 def clean_optimiser_job_store() -> Any:
     from haute.routes.optimiser import _store
 
-    snapshot = dict(_store.jobs)
-    _store.jobs.clear()
+    _store.clear_all()
     yield _store
-    _store.jobs.clear()
-    _store.jobs.update(snapshot)
+    _store.clear_all()
 
 
 class _FullFrontierFrame:
@@ -138,13 +138,17 @@ def test_frontier_route_caps_response_before_serialising_large_point_frame(
     points = _FullFrontierFrame(_LARGE_FRONTIER_POINT_COUNT)
     quote_grid = object()
     solver = _FrontierSolver(points)
-    clean_optimiser_job_store.jobs["large-frontier"] = {
-        "status": "completed",
-        "solver": solver,
-        "quote_grid": quote_grid,
-        "created_at": time.time(),
-        "completed_at": time.time(),
-    }
+    seed_job(
+        clean_optimiser_job_store,
+        "large-frontier",
+        {
+            "status": "completed",
+            "solver": solver,
+            "quote_grid": quote_grid,
+            "created_at": time.time(),
+            "completed_at": time.time(),
+        },
+    )
 
     start = client.post(
         "/api/optimiser/frontier",
@@ -219,14 +223,13 @@ def test_completed_optimiser_jobs_slim_heavy_objects_then_evict_owned_artifacts(
                 "node_label": "pricing optimiser",
             }
         )
-        store.atomic_update(
+        JobLifecycle(store).transition(
             job_id,
-            {
-                "status": "completed",
+            to="completed",
+            message="Completed",
+            elapsed_seconds=12.5,
+            fields={
                 "progress": 1.0,
-                "message": "Completed",
-                "elapsed_seconds": 12.5,
-                "completed_at": time.time(),
                 "solver": solver,
                 "solve_result": solve_result,
                 "quote_grid": quote_grid,

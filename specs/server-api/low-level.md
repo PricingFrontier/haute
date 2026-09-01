@@ -4,9 +4,10 @@
 
 | File | Responsibility |
 |---|---|
+| `src/haute/_editor_identities.py` | Pure derivation of node function names, default/handle input identities, and config references used by editor documents and the bounded prospective-identity endpoint. |
 | `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (bytecode clear, logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher, and credential-free static SPA serving. |
 | `src/haute/_local_security.py` | [sandbox-security](../sandbox-security/low-level.md)-owned per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
-| `src/haute/schemas.py` | Shared Pydantic request/response models used across the app — re-exports the canonical graph types from `_types.py` and defines per-feature model groups, including the structurally separate pipeline editor-recovery document and diagnostics. The OUTPUT dry-run models are the deliberate route-local exception. |
+| `src/haute/schemas.py` | Stable shared Pydantic request/response import surface used across the app — re-exports canonical graph types from `_types.py`, re-exports execution-strategy DTOs from `_execution_schemas.py`, and defines the remaining per-feature model groups, including the structurally separate pipeline editor-recovery document and diagnostics. The OUTPUT dry-run models are the deliberate route-local exception. |
 | `src/haute/errors.py` | The `HauteError` hierarchy, including execution, bounded-memory, schema/contract, deployment, and feature errors. Route-visible public subclasses carry stable `error_code` and `public_fields` metadata consumed by `_contract_errors.py`. |
 | `src/haute/_validation_error.py` | `HauteValidationError` — the ValueError-derived marker for haute-authored validation messages (re-exported by `errors.py`); the modelling worker boundary keys its curated-message promotion on it. |
 | `src/haute/_logging.py` | `configure_logging()` (structlog + stdlib bridge, dev-console vs. JSON-lines modes) and `get_logger()`. |
@@ -18,7 +19,7 @@
 | `src/haute/_sidecar.py` | Core read-side `.haute.json` contract: `SidecarModel`, the typed absent/valid/corrupt/unreadable read state, and the sidecar source/position normalisers. Lives outside the web layer so editor recovery never imports routes. |
 | `src/haute/routes/__init__.py` | Package docstring only — no code. |
 | `src/haute/routes/_helpers.py` | Re-exports the core sidecar read contract and `load_pipeline_editor_document` for route consumers; path/index/watcher/WebSocket helpers; strict `parse_pipeline_to_graph`; the sidecar write path (`save_sidecar`); historical-commit parsing; and the shared `save_lock`. |
-| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/save`, `/api/pipeline/repair/remove/dry-run`, `/api/pipeline/repair/remove/apply`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/recovery-preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
+| `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/editor-identities`, `/api/pipeline/save`, `/api/pipeline/repair/remove/dry-run`, `/api/pipeline/repair/remove/apply`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/recovery-preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
 | `src/haute/routes/files.py` | `/api/files` (directory browse) and `/api/schema` (flat-file plus XML structured-record schema/preview). |
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
@@ -105,14 +106,27 @@ version 1. `PipelineEditorDocument` carries `document_kind`, `schema_version`,
 `load_status`, metadata/source text, `RecoveryPipelineNode[]`, `RecoveryPipelineEdge[]`,
 structured diagnostics, capabilities, source-selection trust, submodels, and a raw-artifact
 revision. `RecoveryPipelineNode` uses `recovery_id`, `authored_id`, `decorator_name`,
-`node_type`, `display_position`, `availability`, optional validated `config`, source/config
+`node_type`, `display_position`, `availability`, optional validated `config`, server-owned
+`function_name`, nullable `default_input_name`, exact `source_handle_input_names`, source/config
 locations, diagnostic ids, and blocker path; it intentionally has no canonical
 `id/type/position/data` tuple. Recovery edges likewise use recovery endpoint identities, not
-canonical `source`/`target`. `PipelineRecoveryDiagnostic` supplies a stable id/code,
+canonical `source`/`target`, and carry nullable `input_name` (non-null for ready executable
+edges). Submodel definitions exactly map every public input port to its executable identity.
+`PipelineRecoveryDiagnostic` supplies a stable id/code,
 severity, scope, safe message, optional element identity and source span, remediation, and
 incident id. `PipelineDocumentCapabilities` is the server-derived mutation/persistence/
-execution/preview/submodel/repair fence. The response types do not subclass or relax
+execution/preview/submodel/repair fence and carries a sorted unique
+`reserved_api_input_frame_labels` list. The response types do not subclass or relax
 `PipelineGraph`.
+
+**Prospective editor identity models** (`schemas.py`) use `extra="forbid"`.
+`EditorIdentitiesRequest` accepts at most 10,000 unique nodes; each has bounded
+`node_id`, `label`, canonical `node_type`, nullable submodel alias, and at most
+1,024 unique bounded source handles. Validators enforce node-type-specific alias
+and handle rules; API-input handles must already be non-keyword ASCII identifiers,
+while submodel outputs use `out__<port_id>`. `EditorIdentitiesResponse` returns one exact-order identity per
+request node with non-empty function/default/handle identities and an optional
+config reference. Resolution is pure and performs no project I/O.
 
 **`SidecarModel`** (`haute/_sidecar.py`, re-exported by `routes/_helpers.py`) is the typed `.haute.json` schema: `positions:
 dict[str, dict[str, float]]`, `sources: list[str]` (defaults to `["live"]`), `active_source:
@@ -159,6 +173,7 @@ when a path/query/body fails model validation):
 | `GET /api/pipelines` | No body | `list[PipelineSummary]`; each item carries `{name, description, file, node_count, load_status, diagnostic_count}`. |
 | `GET /api/pipeline` | No body | First discovered authored `PipelineEditorDocument`, irrespective of load status; a new empty ready document only when no authored document exists. Readable authored errors remain HTTP 200. |
 | `GET /api/pipeline/{name}` | Pipeline name path parameter | Named `PipelineEditorDocument`; a readable non-ready document is found by recovered metadata or file stem and remains HTTP 200. |
+| `POST /api/pipeline/editor-identities` | `EditorIdentitiesRequest {nodes:[{node_id,label,node_type,submodel_alias,source_handles}]}` with the bounded exact schema above | `EditorIdentitiesResponse {identities:[{node_id,function_name,config_reference,default_input_name,source_handle_input_names}]}` in exact request order; no project-state side effects. |
 | `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live"}` | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, warnings=[], git_sha=null}` |
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
 | `POST /api/pipeline/preview` | `PreviewNodeRequest {graph, node_id, row_limit=100 (1..10000), source="live", requested_preview_columns=null (non-empty when present), streaming_chunk_size=null (1..10000000, bool rejected), port_label=null}`; `node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child | `PreviewNodeResponse`, extending `NodeResult` with `node_id`, timings/memory, per-node schemas/statuses, and optional execution metrics |
@@ -664,9 +679,9 @@ for route-level tests, and direct unit tests for the pure-function modules.
 - **`test_types.py`** — `_types.py` model construction, defaults, validation, and
   cached-property behaviour.
 
-## Approved change contract — canonical-only API payloads
+## Canonical API payloads
 
-Under the [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
+Under the [canonical-only format policy](../README.md#canonical-only-format-policy),
 server routes return and consume only current versioned payload fields. They do not append
 temporary historical detail keys, classify earlier config generations, strip old fields, or try
 alternate sidecar identifiers. Ordinary current-schema validation and safe error translation remain.

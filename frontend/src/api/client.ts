@@ -16,6 +16,8 @@ import type {
   DatabricksTablesResponse,
   DatabricksWarehousesResponse,
   DissolveSubmodelResponse,
+  EditorIdentityBatchRequest,
+  EditorIdentityBatchResponse,
   ExploreRunResponse,
   ExploreCacheSnapshotResponse,
   ExploreStatusResponse,
@@ -97,6 +99,7 @@ import {
   parseDatabricksTablesResponse,
   parseDatabricksWarehousesResponse,
   parseDissolveSubmodelResponse,
+  parseEditorNodeIdentityBatchResponse,
   parseExploreRunResponse,
   parseExploreCacheSnapshotResponse,
   parseExploreStatusResponse,
@@ -612,6 +615,73 @@ export function checkHauteSession(options: ApiClientOptions = {}): Promise<{ ok:
 
 export function loadPipeline(options?: ApiClientOptions): Promise<unknown> {
   return request<unknown>("/api/pipeline", options)
+}
+
+const EDITOR_NODE_TYPES_WITHOUT_DEFAULT_INPUT = new Set([
+  "apiInput",
+  "submodel",
+  "submodelPort",
+])
+
+export async function resolveEditorNodeIdentities(
+  payload: EditorIdentityBatchRequest,
+  options?: MutationOptions,
+): Promise<EditorIdentityBatchResponse> {
+  const response = parseEditorNodeIdentityBatchResponse(
+    await post<unknown>("/api/pipeline/editor-identities", payload, options),
+  )
+  if (
+    response.identities.length !== payload.nodes.length
+    || response.identities.some(
+      (identity, index) => identity.node_id !== payload.nodes[index]?.node_id,
+    )
+  ) {
+    throw new Error(
+      "resolveEditorNodeIdentities: response identities must exactly match request node order",
+    )
+  }
+  response.identities.forEach((identity, index) => {
+    const requestNode = payload.nodes[index]
+    if (!requestNode) {
+      throw new Error("resolveEditorNodeIdentities: response identities must exactly match request node order")
+    }
+    const actualHandles = Object.keys(identity.source_handle_input_names)
+    if (
+      actualHandles.length !== requestNode.source_handles.length
+      || requestNode.source_handles.some(
+        (handle) => !Object.prototype.hasOwnProperty.call(
+          identity.source_handle_input_names,
+          handle,
+        ),
+      )
+    ) {
+      throw new Error(
+        `resolveEditorNodeIdentities: source handles must exactly match the request for node ${requestNode.node_id}`,
+      )
+    }
+    if (
+      requestNode.node_type === "apiInput"
+      && requestNode.source_handles.some(
+        (handle) => identity.source_handle_input_names[handle] !== handle,
+      )
+    ) {
+      throw new Error(
+        `resolveEditorNodeIdentities: API frame identities must preserve raw source handles for node ${requestNode.node_id}`,
+      )
+    }
+    const expectsNullDefault = EDITOR_NODE_TYPES_WITHOUT_DEFAULT_INPUT.has(
+      requestNode.node_type,
+    )
+    if (
+      (expectsNullDefault && identity.default_input_name !== null)
+      || (!expectsNullDefault && identity.default_input_name === null)
+    ) {
+      throw new Error(
+        `resolveEditorNodeIdentities: invalid default input identity for node ${requestNode.node_id}`,
+      )
+    }
+  })
+  return response
 }
 
 export function dryRunRemoveUnavailableNode(

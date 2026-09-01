@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import polars as pl
 
+from tests.job_store_support import replace_job, seed_job
 from tests.optimiser_fixtures import (
     make_frontier_data as _frontier_data,
 )
@@ -37,7 +38,7 @@ def test_select_frontier_point_uses_stored_summary_without_solver(
     client,
     clean_job_store,
 ):
-    clean_job_store.jobs["select_instant"] = _online_frontier_job()
+    seed_job(clean_job_store, "select_instant", _online_frontier_job())
 
     resp = client.post(
         "/api/optimiser/frontier/select",
@@ -53,7 +54,7 @@ def test_select_frontier_point_uses_stored_summary_without_solver(
     assert data["lambdas"] == {"volume": 0.55}
     assert data["converged"] is False
 
-    job = clean_job_store.jobs["select_instant"]
+    job = clean_job_store.require_job("select_instant")
     assert job["selected_frontier_point"] == 1
     assert job["result"]["selected_frontier_point"] == 1
     assert job["result"]["total_objective"] == 130.0
@@ -68,10 +69,14 @@ def test_select_frontier_point_rejects_malformed_missing_constraint_total(
     malformed = _frontier_point()
     malformed.pop("total_volume")
     solver = MagicMock()
-    clean_job_store.jobs["select_malformed"] = _online_frontier_job(
-        frontier_data=_frontier_data([malformed]),
-        solver=solver,
-        quote_grid=MagicMock(),
+    seed_job(
+        clean_job_store,
+        "select_malformed",
+        _online_frontier_job(
+            frontier_data=_frontier_data([malformed]),
+            solver=solver,
+            quote_grid=MagicMock(),
+        ),
     )
 
     resp = client.post(
@@ -90,10 +95,14 @@ def test_select_frontier_point_accepts_raw_price_contour_constraint_column(
 ):
     point = _frontier_point(objective=123.0, volume=0.91, lambda_volume=0.42)
     point["volume"] = point.pop("total_volume")
-    clean_job_store.jobs["select_raw_constraint"] = _online_frontier_job(
-        frontier_data=_frontier_data([point]),
-        solver=MagicMock(),
-        quote_grid=MagicMock(),
+    seed_job(
+        clean_job_store,
+        "select_raw_constraint",
+        _online_frontier_job(
+            frontier_data=_frontier_data([point]),
+            solver=MagicMock(),
+            quote_grid=MagicMock(),
+        ),
     )
 
     resp = client.post(
@@ -111,8 +120,12 @@ def test_select_frontier_point_rejects_partial_scenario_stats(
 ):
     malformed = _frontier_point()
     malformed.pop("sv_std")
-    clean_job_store.jobs["select_partial_stats"] = _online_frontier_job(
-        frontier_data=_frontier_data([malformed]),
+    seed_job(
+        clean_job_store,
+        "select_partial_stats",
+        _online_frontier_job(
+            frontier_data=_frontier_data([malformed]),
+        ),
     )
 
     resp = client.post(
@@ -132,7 +145,7 @@ def test_save_explicit_frontier_point_without_solve_result(
     from haute._sandbox import _get_project_root, set_project_root
 
     original_root = _get_project_root()
-    clean_job_store.jobs["save_point"] = _online_frontier_job()
+    seed_job(clean_job_store, "save_point", _online_frontier_job())
     out_path = tmp_path / "selected.json"
 
     try:
@@ -172,9 +185,13 @@ def test_save_selected_frontier_point_does_not_use_stale_solve_result(
         converged=True,
     )
     original_root = _get_project_root()
-    clean_job_store.jobs["save_selected"] = _online_frontier_job(
-        solve_result=stale_solve_result,
-        selected_frontier_point=1,
+    seed_job(
+        clean_job_store,
+        "save_selected",
+        _online_frontier_job(
+            solve_result=stale_solve_result,
+            selected_frontier_point=1,
+        ),
     )
     out_path = tmp_path / "selected-default.json"
 
@@ -198,7 +215,7 @@ def test_mlflow_log_explicit_frontier_point_without_solver_or_solve_result(
     client,
     clean_job_store,
 ):
-    clean_job_store.jobs["mlflow_point"] = _online_frontier_job()
+    seed_job(clean_job_store, "mlflow_point", _online_frontier_job())
     mock_mlflow = _mlflow_mock()
 
     with (
@@ -243,8 +260,12 @@ def test_apply_explicit_frontier_point_materialises_online_result_to_disk(
         dataframe=pl.DataFrame({"quote_id": ["q1"], "optimal_scenario_value": [1.04]}),
     )
     quote_grid = MagicMock()
-    clean_job_store.jobs["apply_point"] = _online_frontier_job(
-        quote_grid=quote_grid,
+    seed_job(
+        clean_job_store,
+        "apply_point",
+        _online_frontier_job(
+            quote_grid=quote_grid,
+        ),
     )
 
     with patch("price_contour.apply_from_grid", return_value=apply_result) as apply_from_grid:
@@ -264,7 +285,7 @@ def test_apply_explicit_frontier_point_materialises_online_result_to_disk(
         constraints={"volume": {"min": 0.9}},
     )
 
-    job = clean_job_store.jobs["apply_point"]
+    job = clean_job_store.require_job("apply_point")
     assert job["selected_frontier_point"] == 1
     handle = job["artifact_handles"]["frontier_apply_result:1"]
     assert Path(handle["path"]).is_file()
@@ -279,7 +300,7 @@ def test_concurrent_frontier_point_materialisations_preserve_both_handles(
     """Disjoint point artifacts merge instead of overwriting one another."""
     apply_barrier = threading.Barrier(2)
     job = _online_frontier_job(quote_grid=MagicMock())
-    clean_job_store.jobs["apply_points_concurrently"] = job
+    seed_job(clean_job_store, "apply_points_concurrently", job)
 
     def apply_from_grid(_grid, *, lambdas, constraints):
         del constraints
@@ -326,9 +347,13 @@ def test_frontier_point_materialisation_survives_store_copy_of_frontier_payload(
 ):
     """A store may copy nested payloads without representing a recompute."""
     job_id = "apply_point_after_store_copy"
-    clean_job_store.jobs[job_id] = _online_frontier_job(
-        quote_grid=MagicMock(),
-        frontier_generation=7,
+    seed_job(
+        clean_job_store,
+        job_id,
+        _online_frontier_job(
+            quote_grid=MagicMock(),
+            frontier_generation=7,
+        ),
     )
 
     def apply_from_grid(_grid, *, lambdas, constraints):
@@ -392,12 +417,21 @@ def test_apply_explicit_ratebook_frontier_point_is_contract_error(
     solver work: the real ``RatebookResult`` carries factor tables only, so
     there is no per-quote dataframe for the detail endpoint to serve."""
     solver = MagicMock()
-    clean_job_store.jobs["apply_ratebook_point"] = _online_frontier_job(
-        solver=solver,
-        quote_grid=MagicMock(),
+    seed_job(
+        clean_job_store,
+        "apply_ratebook_point",
+        _online_frontier_job(
+            solver=solver,
+            quote_grid=MagicMock(),
+        ),
     )
-    clean_job_store.jobs["apply_ratebook_point"]["config"]["mode"] = "ratebook"
-    clean_job_store.jobs["apply_ratebook_point"]["result"]["mode"] = "ratebook"
+
+    def set_ratebook_mode(job):
+        job["config"] = {**job["config"], "mode": "ratebook"}
+        job["result"] = {**job["result"], "mode": "ratebook"}
+        return job
+
+    replace_job(clean_job_store, "apply_ratebook_point", set_ratebook_mode)
 
     resp = client.post(
         "/api/optimiser/apply",
@@ -427,8 +461,12 @@ def test_select_frontier_point_returns_distinct_data_for_each_index(
         _frontier_point(objective=500.0, volume=0.85, lambda_volume=0.55, converged=False),
         _frontier_point(objective=900.0, volume=0.90, lambda_volume=0.99, converged=True),
     ]
-    clean_job_store.jobs["select_distinct"] = _online_frontier_job(
-        frontier_data=_frontier_data(distinct_points),
+    seed_job(
+        clean_job_store,
+        "select_distinct",
+        _online_frontier_job(
+            frontier_data=_frontier_data(distinct_points),
+        ),
     )
 
     for index, point in enumerate(distinct_points):
@@ -447,7 +485,7 @@ def test_select_frontier_point_returns_distinct_data_for_each_index(
         assert data["lambdas"] == {"volume": point["lambda_volume"]}
         assert data["converged"] is point["converged"]
         # The job's stored selected point must agree with the returned index.
-        assert clean_job_store.jobs["select_distinct"]["selected_frontier_point"] == index
+        assert clean_job_store.require_job("select_distinct")["selected_frontier_point"] == index
 
 
 def test_apply_explicit_frontier_point_artifact_matches_response_preview(
@@ -479,7 +517,7 @@ def test_apply_explicit_frontier_point_artifact_matches_response_preview(
         dataframe=persisted_df,
     )
     quote_grid = MagicMock()
-    clean_job_store.jobs["apply_round_trip"] = _online_frontier_job(quote_grid=quote_grid)
+    seed_job(clean_job_store, "apply_round_trip", _online_frontier_job(quote_grid=quote_grid))
 
     with patch("price_contour.apply_from_grid", return_value=apply_result):
         resp = client.post(
@@ -501,7 +539,7 @@ def test_apply_explicit_frontier_point_artifact_matches_response_preview(
     )
 
     # 2) The artifact file must contain the exact same dataframe.
-    job = clean_job_store.jobs["apply_round_trip"]
+    job = clean_job_store.require_job("apply_round_trip")
     handle = job["artifact_handles"]["frontier_apply_result:1"]
     artifact_path = Path(handle["path"])
     assert artifact_path.is_file()
@@ -527,7 +565,7 @@ def test_select_frontier_point_normalises_when_config_name_differs_from_column(
     point["total_volume"] = point.pop("total_volume", 0.88)
     job = _online_frontier_job(frontier_data=_frontier_data([point]))
     job["config"]["constraints"] = {"volume": {"min": 0.9}}
-    clean_job_store.jobs["select_normalise"] = job
+    seed_job(clean_job_store, "select_normalise", job)
 
     resp = client.post(
         "/api/optimiser/frontier/select",
