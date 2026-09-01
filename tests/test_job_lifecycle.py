@@ -58,6 +58,111 @@ def test_lifecycle_transition_sets_terminal_metadata() -> None:
     assert job["ended_at"] == 123.0
 
 
+def test_store_lifecycle_operations_keep_payload_arguments_keyword_only() -> None:
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+
+    with pytest.raises(TypeError):
+        store.transition_terminal(job_id, "error")  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        store.compare_and_publish_completion(job_id, lambda: {})  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"to": "bogus"}, "Unsupported terminal reason"),
+        ({"to": "error", "expected_status": "pending"}, "expect only"),
+        (
+            {"to": "cancelled", "expected_status": "".join(["com", "pleted"])},
+            "only be corrected to 'error'",
+        ),
+        (
+            {"to": "superseded", "expected_status": "completed"},
+            "only be corrected to 'error'",
+        ),
+        ({"to": "error", "fields": {"status": "error"}}, "lifecycle fields"),
+    ],
+)
+def test_store_terminal_boundary_rejects_invalid_requests(
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+
+    with pytest.raises(ValueError, match=message):
+        store.transition_terminal(job_id, **kwargs)  # type: ignore[arg-type]
+
+    assert store.require_job(job_id)["status"] == "running"
+
+
+def test_store_terminal_optimistic_match_uses_value_equality() -> None:
+    store = JobStore()
+    stored_status = "".join(["run", "ning"])
+    expected_status = "".join(["run", "ning"])
+    job_id = store.create_job(cast(dict, {"status": stored_status}))
+
+    transitioned = store.transition_terminal(
+        job_id,
+        to="error",
+        expected_status=cast(object, expected_status),  # type: ignore[arg-type]
+    )
+
+    assert transitioned is not None
+    assert transitioned["status"] == "error"
+
+
+def test_store_terminal_race_path_applies_strict_precedence_in_both_directions() -> None:
+    store = JobStore()
+    upgrade_id = store.create_job({"status": "running"})
+    reject_id = store.create_job({"status": "running"})
+
+    assert store.transition_terminal(upgrade_id, to="error", now=1.0) is not None
+    upgraded = store.transition_terminal(upgrade_id, to="cancelled", now=2.0)
+    assert upgraded is not None
+    assert upgraded["status"] == "cancelled"
+
+    assert store.transition_terminal(reject_id, to="cancelled", now=1.0) is not None
+    assert store.transition_terminal(reject_id, to="error", now=2.0) is None
+    assert store.require_job(reject_id)["status"] == "cancelled"
+
+
+def test_store_terminal_race_path_recognises_dynamic_completed_destination() -> None:
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+    assert store.transition_terminal(job_id, to="error", now=1.0) is not None
+    completed = "".join(["com", "pleted"])
+
+    result = store.transition_terminal(
+        job_id,
+        to=cast(TerminalReason, completed),
+        now=2.0,
+    )
+
+    assert result is None
+    assert store.require_job(job_id)["status"] == "error"
+
+
+def test_store_terminal_race_path_treats_dynamic_completed_as_one_way() -> None:
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+    completed = "".join(["com", "pleted"])
+    assert (
+        store.transition_terminal(
+            job_id,
+            to=cast(TerminalReason, completed),
+            now=1.0,
+        )
+        is not None
+    )
+
+    result = store.transition_terminal(job_id, to="superseded", now=2.0)
+
+    assert result is None
+    assert store.require_job(job_id)["status"] == "completed"
+
+
 def test_lifecycle_rejects_invalid_terminal_reason_without_mutating_job() -> None:
     store = JobStore()
     lifecycle = JobLifecycle(store)
@@ -229,6 +334,37 @@ def test_publish_completion_failure_leaves_running_record_unchanged() -> None:
         lifecycle.publish_completion(job_id, publish=publish)
 
     assert store.require_job(job_id) == before
+
+
+def test_publish_completion_rejects_invalid_explicit_timestamp_before_publish() -> None:
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+    called = False
+
+    def publish() -> dict[str, object]:
+        nonlocal called
+        called = True
+        return {}
+
+    with pytest.raises(ValueError, match="now"):
+        store.compare_and_publish_completion(job_id, publish=publish, now=-1.0)
+
+    assert called is False
+    assert store.require_job(job_id)["status"] == "running"
+
+
+def test_publish_completion_rejects_equal_replacement_of_claimed_record() -> None:
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+
+    def publish() -> dict[str, object]:
+        store._jobs[job_id] = dict(store._jobs[job_id])  # noqa: SLF001
+        return {}
+
+    with pytest.raises(RuntimeError, match="must not mutate"):
+        store.compare_and_publish_completion(job_id, publish=publish)
+
+    assert store.require_job(job_id)["status"] == "running"
 
 
 def test_publish_completion_timestamps_after_publisher_returns() -> None:

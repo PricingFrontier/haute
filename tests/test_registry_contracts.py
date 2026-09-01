@@ -6,6 +6,7 @@ import inspect
 import subprocess
 import sys
 from collections.abc import Callable
+from dataclasses import FrozenInstanceError
 from typing import Any, get_type_hints
 
 import pytest
@@ -101,6 +102,9 @@ def test_modelling_shared_semantics_declaration_is_closed() -> None:
     assert semantics.node_type is NodeType.MODELLING
     assert semantics.input_policy is registry.NodeInputPolicy.FIRST_CONNECTED
     assert semantics.decorator_config_keys == MODELLING_CONFIG_KEYS
+    assert not hasattr(semantics, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        semantics.node_type = NodeType.POLARS  # type: ignore[misc]
 
 
 def test_register_exec_decorator_rejects_duplicates(

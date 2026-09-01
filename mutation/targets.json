@@ -6,7 +6,7 @@
       "config": "mutation/cosmic-ray.job-store.toml",
       "max_pending_per_shard": 80,
       "max_survival_rate": 6.0,
-      "rationale": "Job state transitions back long-running route behavior and must not silently regress."
+      "rationale": "Job state transitions back long-running route behavior and must not silently regress. The target's witness command follows the implementation boundary by combining the store and lifecycle contract suites. Exclusions are limited to syntax-only postponed annotations, a private keyword marker, a non-negative-depth comparison equivalence, and deliberately non-contractual numeric rank magnitudes; executable lifecycle decisions remain mutation-tested."
     },
     {
       "name": "path-resolution",

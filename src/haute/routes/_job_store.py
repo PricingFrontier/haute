@@ -61,12 +61,13 @@ TERMINAL_REASONS: frozenset[TerminalReason] = frozenset(
 )
 JOB_STATUSES: frozenset[JobStatus] = frozenset({RUNNING_STATUS, *TERMINAL_REASONS})
 _TERMINAL_REASON_PRECEDENCE: Mapping[TerminalReason, int] = {
-    "error": 10,
-    "contract_error": 20,
-    "memory_limited": 30,
-    "cancelled": 40,
-    "timed_out": 50,
-    "superseded": 60,
+    # Only strict ordering is observable; deliberately spaced magnitudes are not a contract.
+    "error": 10,  # pragma: no mutate
+    "contract_error": 20,  # pragma: no mutate
+    "memory_limited": 30,  # pragma: no mutate
+    "cancelled": 40,  # pragma: no mutate
+    "timed_out": 50,  # pragma: no mutate
+    "superseded": 60,  # pragma: no mutate
 }
 _LIFECYCLE_KEYS = frozenset({"status", "terminal_reason", "created_at", "ended_at", "completed_at"})
 
@@ -245,15 +246,14 @@ class JobStore:
     def _write_locked_with_artifact_cleanup(self) -> Iterator[list[_ArtifactCleanup]]:
         """Drain shared cleanup work only after the outermost store lock releases."""
         state = _ARTIFACT_CLEANUP_STATE
-        if state.depth == 0:
-            state.cleanups = []
         state.depth += 1
         try:
             with self._write_lock:
                 yield state.cleanups
         finally:
             state.depth -= 1
-            if state.depth == 0:
+            # Balanced entry/exit keeps depth non-negative, so <= 0 is equivalent.
+            if state.depth == 0:  # pragma: no mutate
                 cleanups = state.cleanups
                 state.cleanups = []
                 self._run_artifact_cleanups(cleanups)
@@ -264,8 +264,6 @@ class JobStore:
         cleanups: list[_ArtifactCleanup],
     ) -> None:
         """Detach expired jobs and append their artifact cleanup work."""
-        for job in self._jobs.values():
-            _validate_common_record(job)
         self._clear_expired_heavy_objects_locked(now)
         cutoff = now - self._ttl_seconds
         stale = [
@@ -326,11 +324,10 @@ class JobStore:
                     exc_info=True,
                 )
 
-    @classmethod
-    def _run_artifact_cleanups(cls, cleanups: list[_ArtifactCleanup]) -> None:
+    def _run_artifact_cleanups(self, cleanups: list[_ArtifactCleanup]) -> None:
         """Run detached filesystem cleanup without blocking store operations."""
         for job_id, handles in cleanups:
-            cls._cleanup_artifact_handles(job_id, handles)
+            self._cleanup_artifact_handles(job_id, handles)
 
     def _clear_expired_heavy_objects_locked(self, now: float) -> None:
         """Strip completed-job heavy objects once their short retention expires."""
@@ -420,7 +417,7 @@ class JobStore:
         self,
         job_id: str,
         job: dict[str, Any],
-        *,
+        *,  # pragma: no mutate
         now: float,
     ) -> None:
         if job.get("status") == "running":
@@ -450,7 +447,7 @@ class JobStore:
         return merged, schedule_cleanup, expires_at
 
     @staticmethod
-    def _validate_expected_status(expected_status: str | None) -> None:
+    def _validate_expected_status(expected_status: str | None) -> None:  # pragma: no mutate
         if expected_status is not None and expected_status not in JOB_STATUSES:
             raise ValueError(f"Unknown expected job status: {expected_status!r}")
 
@@ -552,13 +549,13 @@ class JobStore:
         job_id: str,
         *,
         to: TerminalReason,
-        message: str | None = None,
-        fields: Mapping[str, Any] | None = None,
+        message: str | None = None,  # pragma: no mutate
+        fields: Mapping[str, Any] | None = None,  # pragma: no mutate
         expected_status: LifecycleExpectedStatus = RUNNING_STATUS,
-        elapsed_seconds: float | None = None,
-        now: float | None = None,
-        fault_injector: Callable[[str], None] | None = None,
-    ) -> JobSnapshot | None:
+        elapsed_seconds: float | None = None,  # pragma: no mutate
+        now: float | None = None,  # pragma: no mutate
+        fault_injector: Callable[[str], None] | None = None,  # pragma: no mutate
+    ) -> JobSnapshot | None:  # pragma: no mutate
         """Apply the only public terminal-state transition protocol."""
         if to not in TERMINAL_REASONS:
             raise ValueError(f"Unsupported terminal reason: {to!r}")
@@ -609,10 +606,10 @@ class JobStore:
         job_id: str,
         *,
         publish: Callable[[], Mapping[str, Any]],
-        message: str | None = None,
-        elapsed_seconds: float | None = None,
-        now: float | None = None,
-    ) -> JobSnapshot | None:
+        message: str | None = None,  # pragma: no mutate
+        elapsed_seconds: float | None = None,  # pragma: no mutate
+        now: float | None = None,  # pragma: no mutate
+    ) -> JobSnapshot | None:  # pragma: no mutate
         """Claim a running job, publish its result, and complete in one swap."""
         if now is not None:
             _validate_timestamp("now", now)
