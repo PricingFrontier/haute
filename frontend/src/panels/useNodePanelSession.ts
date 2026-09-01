@@ -95,8 +95,13 @@ export function useNodeRenameSession(nodeId: string): NodeRenameSession {
       return
     }
     dispatch({ type: "started" })
-    void Promise.resolve()
-      .then(() => onRenameNode(nodeId, label))
+    let pending: Promise<OnUpdateConfigResult>
+    try {
+      pending = onRenameNode(nodeId, label)
+    } catch (error: unknown) {
+      pending = Promise.reject(error)
+    }
+    void pending
       .then((result) => {
         if (!mountedRef.current || generationRef.current !== generation) return
         dispatch({ type: "settled", error: result.ok ? null : result.error })

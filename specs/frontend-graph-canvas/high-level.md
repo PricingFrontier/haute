@@ -193,6 +193,12 @@ well as occurrence-specific positions and bindings.
   monotonically. Undo/redo restores all four graph fields together and retains
   transient server-owned editor identities required by the live graph; Save
   payloads and dirty fingerprints omit those identities.
+- **Save waits for committed editor work.** A blur-triggered node update or
+  rename that is still resolving a server-owned identity is part of the edit
+  that preceded the Save gesture. Save and Save-then-Commit wait for every such
+  in-flight graph commit before reading the graph snapshot, and abort visibly
+  if an in-flight commit is rejected. They never persist the earlier graph and
+  report success while the visible edit lands afterwards.
 - **Authored boundary ports survive the client.** `PipelineEdge` extends the React Flow edge shape
   with optional `sourcePort`/`targetPort` fields used while a submodel occurrence occupies the
   visible handle. Response parsing, edge normalisation, graph snapshots, and save payloads retain
@@ -309,7 +315,12 @@ well as occurrence-specific positions and bindings.
   module-level preserved blocks and `source_revision` live in request-facing
   refs alongside `sourceFileRef`: load records both, save sends the preserved
   blocks unchanged, and a successful save replaces the revision with the
-  committed response value.
+  committed response value when no distinct intervening revision arrived. A
+  filesystem notification for that same committed revision may arrive before
+  the save response; the successful response
+  acknowledges that self-notification, restores graph synchronisation, and
+  clears its conflict banner. A distinct intervening revision remains blocked
+  as an external change rather than being hidden by the save response.
   All ordinary graph mutation, layout dragging, undo/redo, Save, submodel transforms,
   assistant graph edits, and execution/publication actions derive from one document-status
   fence and are disabled unless the corresponding server capability is present. Selection,
@@ -395,7 +406,11 @@ well as occurrence-specific positions and bindings.
   snapshot of the current one, with added/removed/changed/moved nodes ring-
   highlighted on the relevant side(s). Clicking a node on either canvas
   highlights its counterpart on the other and opens a read-only inspector
-  showing that node's real config editor, `inert`.
+  showing that node's real config editor, `inert`. The historical graph is
+  passed through the same authoritative editor-identity resolver as a live
+  graph before either canvas renders; persisted history is not expected to
+  contain transient `_functionName`, `_defaultInputName`, or
+  `_sourceHandleInputNames` metadata.
 
 ## Design rationale
 

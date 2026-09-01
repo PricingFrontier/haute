@@ -84,12 +84,15 @@ test.describe("apiInput persistence", () => {
       // After Infer, tables should be present. Match the row container
       // testid exactly (api-input-table-<ti>) — a prefix selector would
       // also count every child element (-emit, -label, -col-0-name, …)
-      // and pass with a single table.
+      // and pass with a single table. The infer response is followed by the
+      // authoritative editor-identity request, so wait for that committed
+      // graph state instead of sampling between the two responses.
       const tableRows = page.getByTestId(/^api-input-table-\d+$/)
-      const tableCount = await tableRows.count()
-      expect(
-        tableCount,
-        "Infer Tables produces at least 2 tables (arrays as child tables, not flat indexed columns)",
+      await expect.poll(
+        () => tableRows.count(),
+        {
+          message: "Infer Tables produces at least 2 tables (arrays as child tables, not flat indexed columns)",
+        },
       ).toBeGreaterThanOrEqual(2)
 
       // Scan all column-path inputs (api-input-table-<ti>-col-<ci>-path);

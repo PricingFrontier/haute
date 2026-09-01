@@ -38,6 +38,7 @@ export type UseGraphCommitControllerOptions = {
 export type GraphCommitController = {
   onUpdateNode: (nodeId: string, data: Record<string, unknown>) => OnUpdateConfigResult
   onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
+  waitForPendingCommits: () => Promise<OnUpdateConfigResult>
 }
 
 /**
@@ -57,6 +58,23 @@ export default function useGraphCommitController({
   addToast,
 }: UseGraphCommitControllerOptions): GraphCommitController {
   const requestGenerationsRef = useRef(new Map<string, number>())
+  const pendingCommitsRef = useRef(new Set<Promise<OnUpdateConfigResult>>())
+
+  const registerPendingCommit = useCallback((pending: Promise<OnUpdateConfigResult>): void => {
+    pendingCommitsRef.current.add(pending)
+    void pending.finally(() => {
+      pendingCommitsRef.current.delete(pending)
+    })
+  }, [])
+
+  const waitForPendingCommits = useCallback(async (): Promise<OnUpdateConfigResult> => {
+    while (pendingCommitsRef.current.size > 0) {
+      const results = await Promise.all([...pendingCommitsRef.current])
+      const failure = results.find((result) => !result.ok)
+      if (failure) return failure
+    }
+    return { ok: true }
+  }, [])
 
   const prepare = useCallback((
     nodeId: string,
@@ -132,65 +150,73 @@ export default function useGraphCommitController({
     }
 
     const candidate = { ...currentNode, data }
-    void resolveNodeIdentities([candidate]).then((resolved) => {
-      if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
-        throw new Error("identity resolver returned an invalid node")
+    const pending = (async (): Promise<OnUpdateConfigResult> => {
+      try {
+        const resolved = await resolveNodeIdentities([candidate])
+        if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
+          throw new Error("identity resolver returned an invalid node")
+        }
+        if (requestIsStale(request)) {
+          return {
+            ok: false,
+            error: "Node update was not applied because the graph changed while identity resolution was running.",
+          }
+        }
+        const finalPlan = prepare(nodeId, resolved[0].data, true)
+        if (!finalPlan.ok) return finalPlan
+        commit(finalPlan)
+        return { ok: true }
+      } catch (error: unknown) {
+        return {
+          ok: false,
+          error: `Update node failed: ${error instanceof Error ? error.message : String(error)}`,
+        }
       }
-      if (requestIsStale(request)) {
-        addToast(
-          "error",
-          "Node update was not applied because the graph changed while identity resolution was running.",
-        )
-        return
-      }
-      const finalPlan = prepare(nodeId, resolved[0].data, true)
-      if (!finalPlan.ok) {
-        addToast("error", finalPlan.error)
-        return
-      }
-      commit(finalPlan)
-    }).catch((error: unknown) => {
-      addToast(
-        "error",
-        `Update node failed: ${error instanceof Error ? error.message : String(error)}`,
-      )
+    })()
+    registerPendingCommit(pending)
+    void pending.then((result) => {
+      if (!result.ok) addToast("error", result.error)
     })
     return { ok: true }
-  }, [addToast, beginRequest, commit, graphRef, prepare, requestIsStale, resolveNodeIdentities])
+  }, [addToast, beginRequest, commit, graphRef, prepare, registerPendingCommit, requestIsStale, resolveNodeIdentities])
 
-  const onRenameNode = useCallback(async (
+  const onRenameNode = useCallback((
     nodeId: string,
     label: string,
   ): Promise<OnUpdateConfigResult> => {
-    if (readOnly) return { ok: false, error: "This pipeline document is read-only." }
+    if (readOnly) return Promise.resolve({ ok: false, error: "This pipeline document is read-only." })
     const currentNode = graphRef.current.nodes.find((node) => node.id === nodeId)
-    if (!currentNode) return { ok: false, error: `Cannot rename missing node "${nodeId}".` }
-    if (currentNode.data.label === label) return { ok: true }
+    if (!currentNode) return Promise.resolve({ ok: false, error: `Cannot rename missing node "${nodeId}".` })
+    if (currentNode.data.label === label) return Promise.resolve({ ok: true })
     const request = beginRequest(nodeId)
-    try {
-      const resolved = await resolveNodeIdentities([
+    const pending = (async (): Promise<OnUpdateConfigResult> => {
+      try {
+        const resolved = await resolveNodeIdentities([
         { ...currentNode, data: { ...currentNode.data, label } },
-      ])
-      if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
-        throw new Error("identity resolver returned an invalid node")
-      }
-      if (requestIsStale(request)) {
+        ])
+        if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
+          throw new Error("identity resolver returned an invalid node")
+        }
+        if (requestIsStale(request)) {
+          return {
+            ok: false,
+            error: "Rename was not applied because the graph changed while identity resolution was running.",
+          }
+        }
+        const prepared = prepare(nodeId, resolved[0].data, true)
+        if (!prepared.ok) return prepared
+        commit(prepared)
+        return { ok: true }
+      } catch (error: unknown) {
         return {
           ok: false,
-          error: "Rename was not applied because the graph changed while identity resolution was running.",
+          error: `Rename failed: ${error instanceof Error ? error.message : String(error)}`,
         }
       }
-      const prepared = prepare(nodeId, resolved[0].data, true)
-      if (!prepared.ok) return prepared
-      commit(prepared)
-      return { ok: true }
-    } catch (error: unknown) {
-      return {
-        ok: false,
-        error: `Rename failed: ${error instanceof Error ? error.message : String(error)}`,
-      }
-    }
-  }, [beginRequest, commit, graphRef, prepare, readOnly, requestIsStale, resolveNodeIdentities])
+    })()
+    registerPendingCommit(pending)
+    return pending
+  }, [beginRequest, commit, graphRef, prepare, readOnly, registerPendingCommit, requestIsStale, resolveNodeIdentities])
 
-  return { onUpdateNode, onRenameNode }
+  return { onUpdateNode, onRenameNode, waitForPendingCommits }
 }

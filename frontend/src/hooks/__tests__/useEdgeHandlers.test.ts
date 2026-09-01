@@ -145,6 +145,45 @@ describe("useEdgeHandlers", () => {
     vi.restoreAllMocks()
   })
 
+  it("tracks only source connect starts, including the default source handle", () => {
+    const params = makeParams()
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onConnectStart({} as never, {
+        nodeId: "a",
+        handleId: null,
+        handleType: "target",
+      } as never)
+      result.current.onConnectionPointerMove({ clientX: 1, clientY: 2 })
+    })
+    expect(params.findEdgeIdAtPoint).not.toHaveBeenCalled()
+
+    act(() => {
+      result.current.onConnectStart({} as never, {
+        nodeId: "a",
+        handleId: null,
+        handleType: "source",
+      } as never)
+      result.current.onConnectionPointerMove({ clientX: 3, clientY: 4 })
+    })
+    expect(params.findEdgeIdAtPoint).toHaveBeenCalledWith({ x: 3, y: 4 })
+  })
+
+  it("reports a non-Error identity rejection from a dropped node", async () => {
+    const params = makeParams()
+    params.resolveGraphIdentities = vi.fn(async () => {
+      throw "identity service unavailable"
+    })
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => result.current.onDrop(droppedPolarsEvent()))
+    await flushIdentityCommit()
+
+    expect(useToastStore.getState().toasts.at(-1)?.text).toContain(
+      "Create node failed: identity service unavailable",
+    )
+  })
+
   it("onConnect waits for onConnectEnd so handle directions can be interpreted", () => {
     const params = makeParams()
     const { result } = renderHook(() => useEdgeHandlers(params))

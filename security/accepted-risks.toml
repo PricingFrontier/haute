@@ -3,7 +3,7 @@ version = 1
 # PYSEC-2026-3552 (CVE-2026-69247 / GHSA-g6cj-pr64-35w5): Bleichenbacher
 # oracle in cryptography's PKCS#7 EnvelopedData decryption, fixed only in
 # cryptography 50.0.0. Unreachable ceiling: every current mlflow release
-# (<=3.15.1) pins cryptography<50, and cryptography is present solely as
+# (<=3.15.2) pins cryptography<50, and cryptography is present solely as
 # mlflow/google-auth's transitive dependency for the databricks extra.
 # haute never invokes PKCS#7 decryption; Databricks auth is OAuth-token
 # over TLS. The audit's unused-acceptance rule forces this entry's removal
@@ -14,6 +14,21 @@ package = "cryptography"
 advisory = "PYSEC-2026-3552"
 owner = "Nick"
 exposure = "transitive via mlflow/google-auth (databricks extra); the vulnerable PKCS#7 EnvelopedData decryption API is never called by haute or its Databricks auth path"
-compensating_control = "mlflow <=3.15.1 caps cryptography <50 so no fixed release resolves; Databricks auth uses OAuth bearer tokens over TLS, not PKCS#7; the unused-acceptance gate forces removal once the cap lifts"
+compensating_control = "mlflow <=3.15.2 caps cryptography <50 so no fixed release resolves; Databricks auth uses OAuth bearer tokens over TLS, not PKCS#7; the unused-acceptance gate forces removal once the cap lifts"
 approved_on = "2026-08-07"
 review_by = "2026-10-02"
+
+# CVE-2026-71211 / GHSA-h7x2-h6g9-p789: unpatched SSRF in MLflow's
+# AI Gateway proxy. Haute uses MLflow tracking/model-registry clients and does
+# not start, mount, or route requests to the AI Gateway service. Keep this
+# acceptance short-lived so the locked audit forces an upgrade as soon as a
+# patched MLflow release is available.
+[[acceptance]]
+ecosystem = "python"
+package = "mlflow"
+advisory = "CVE-2026-71211"
+owner = "Pricing Frontier security"
+exposure = "MLflow is installed for tracking and model-registry client operations; Haute does not expose or call the vulnerable AI Gateway proxy endpoints"
+compensating_control = "Haute starts only its own FastAPI application and never mounts the MLflow AI Gateway; the exact-advisory and unused-acceptance gates force review or removal when upstream publishes a fix"
+approved_on = "2026-09-01"
+review_by = "2026-09-29"

@@ -20,6 +20,7 @@ import useGitStore from "../stores/useGitStore"
 import { isIdentityPromptDismissed } from "../stores/identityPrompt"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
+import useUIStore from "../stores/useUIStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
 import { effectiveNodeType, nodeData } from "../types/node"
@@ -1144,6 +1145,7 @@ export default function usePipelineAPI({
     // saveRequestSeq / appliedSaveSeq).
     const savePreamble = preambleRef.current
     const saveSubmodels = structuredClone(submodelsRef.current)
+    const saveSourceRevision = sourceRevisionRef.current
     const savedSnapshot = captureGraphSnapshot({
       nodes: n,
       edges: e,
@@ -1165,10 +1167,19 @@ export default function usePipelineAPI({
       // Mark the exact graph snapshot that reached the backend, unless a
       // newer save has already been applied.
       if (saveRequestId > appliedSaveSeq.current) {
+        const observedRevision = sourceRevisionRef.current
+        const acknowledgesCurrentRevision =
+          observedRevision === saveSourceRevision ||
+          observedRevision === data.source_revision
         useGraphStore.getState().markSaved(savedSnapshot)
         appliedSaveSeq.current = saveRequestId
-        sourceRevisionRef.current = data.source_revision
-        useDocumentStatusStore.getState().setSourceRevision(data.source_revision)
+        if (acknowledgesCurrentRevision) {
+          sourceRevisionRef.current = data.source_revision
+          const status = useDocumentStatusStore.getState()
+          status.setSourceRevision(data.source_revision)
+          status.setGraphSynchronized(true)
+          useUIStore.getState().setSyncBanner(null)
+        }
       }
       // Reflect the new ledger commit in the toolbar indicator (P2). null
       // when no working branch is configured — the indicator stays as-is.

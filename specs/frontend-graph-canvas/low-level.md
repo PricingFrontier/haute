@@ -566,8 +566,13 @@ newer overlapping transform.
     calls `markSaved(savedSnapshot)` only if this request's id is still the
     newest applied (`saveRequestId > appliedSaveSeq.current`), then updates
     `useGitStore`'s last-save SHA and notifies its history-changed
-    subscribers and replaces `sourceRevisionRef.current` with the committed
-    `source_revision`. The success toast is followed by one warning toast for
+    subscribers and, unless a distinct intervening watcher revision arrived,
+    replaces `sourceRevisionRef.current` with the committed `source_revision`.
+    If a watcher frame received while the request was in
+    flight carries either the starting revision or that committed revision,
+    the response also restores `graphSynchronized` and clears the watcher
+    conflict banner; a different intervening revision remains authoritative
+    and blocked. The success toast is followed by one warning toast for
     each backend save warning, including incomplete transforms found in either
     the root graph or an embedded submodel definition. Never throws; resolves
     `false` on any failure after toasting the detail.
@@ -656,8 +661,10 @@ newer overlapping transform.
 23. **Comparison view mount (`ComparisonView`).** Freezes the current
     nodes/edges into local state once on mount (so the right canvas stays
     stable even if the live pipeline changes underneath). Fetches the
-    historical pipeline via `getCommitPipeline(sha)`; once both sides are
-    available, `diffPipelineNodes` runs once (`useMemo`) and `prepNodes`
+    historical pipeline via `getCommitPipeline(sha)`, then resolves its
+    transient node and edge identities through `resolveEditorGraphIdentities`
+    using the historical submodel registry; once both sides are available,
+    `diffPipelineNodes` runs once (`useMemo`) and `prepNodes`
     stamps each side's nodes with `data._diffStatus` for `PipelineNode` to
     render. Each `ReadonlyCanvas` seeds its own local React Flow state once
     from `initialNodes`/`initialEdges` (the parent remounts it via `key`
@@ -828,6 +835,13 @@ newer overlapping transform.
   pipeline edit or WebSocket sync while comparing does not perturb the
   right canvas, the diff, or the legend; a fresh comparison is a remount
   (keyed by `comparison.sha` at the call site), not an in-place update.
+- **Save observes the graph-commit fence.** `useGraphCommitController`
+  registers every asynchronous API-input update and rename before returning
+  control to the browser event loop. All App save entry points await that
+  shared fence before `usePipelineAPI.handleSave` reads `graphRef`; a failed
+  commit blocks the save. `useNodeRenameSession` invokes its supplied rename
+  handler synchronously (while still observing the result asynchronously), so
+  the blur event registers its work before the following Save click runs.
 - **`RenameDialog` renders a single-line `<textarea>`, not
   `<input type="text">`**, specifically so a pasted or injected newline is
   visible to validation — `HTMLInputElement` silently strips newlines

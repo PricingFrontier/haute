@@ -341,6 +341,54 @@ class TestPreparedExecution:
         assert inputs == [source_frame]
         assert result.collect().to_dict(as_series=False) == {"x": [1], "y": [2]}
 
+    def test_node_boundary_runner_rejects_missing_non_source_input(self):
+        graph = PipelineGraph(
+            nodes=[_source_node("source"), _transform_node("transform")],
+            edges=[_e("source", "transform")],
+        )
+        prepared = _prepare_execution(PreparedExecutionRequest(graph=graph))
+        runner = NodeBoundaryRunner(
+            prepared=prepared,
+            funcs={
+                "source": (lambda: pl.DataFrame({"x": [1]}).lazy(), True),
+                "transform": (lambda frame: frame, False),
+            },
+            enforce_contracts=False,
+            execution_context=None,
+            needed_columns={},
+        )
+
+        with pytest.raises(ValueError, match="transform"):
+            runner.invoke(runner.open("transform"))
+
+    def test_node_boundary_runner_skips_contract_assertions_when_disabled(self, monkeypatch):
+        graph = PipelineGraph(
+            nodes=[_source_node("source"), _transform_node("transform")],
+            edges=[_e("source", "transform")],
+        )
+        prepared = _prepare_execution(PreparedExecutionRequest(graph=graph))
+        runner = NodeBoundaryRunner(
+            prepared=prepared,
+            funcs={
+                "source": (lambda: pl.DataFrame({"x": [1]}).lazy(), True),
+                "transform": (lambda frame: frame, False),
+            },
+            enforce_contracts=False,
+            execution_context=None,
+            needed_columns={},
+        )
+        boundary = runner.open("transform")
+        assert boundary.check_contract is False
+
+        def unexpected(*_args, **_kwargs):
+            raise AssertionError("contract assertion should be skipped")
+
+        monkeypatch.setattr(execution_core, "_assert_inputs_satisfy_contract", unexpected)
+        monkeypatch.setattr(execution_core, "_assert_outputs_satisfy_contract", unexpected)
+
+        runner.assert_inputs(boundary, frozenset())
+        runner.assert_outputs(boundary, frozenset())
+
     def test_both_engines_delegate_to_the_same_preparation_boundary(self, monkeypatch):
         graph = PipelineGraph(
             nodes=[_source_node("source"), _transform_node("transform")],

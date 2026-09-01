@@ -14,7 +14,11 @@ from haute._types import NodeType
 from haute.errors import ConfigError, ParseError
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.schemas import (
+    EditorIdentitiesResponse,
+    EditorIdentityResponseNode,
+    PipelineDocumentCapabilities,
     PipelineEditorDocument,
+    RecoveryGraphSnapshot,
     RecoveryPipelineNode,
     RecoveryPreviewRequest,
     RecoverySourceSpan,
@@ -283,6 +287,24 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "source_handles": ["out__"],
             }
         ],
+        [
+            {
+                "node_id": "ordinary",
+                "label": "Ordinary",
+                "node_type": "polars",
+                "submodel_alias": "pricing",
+                "source_handles": [],
+            }
+        ],
+        [
+            {
+                "node_id": "ordinary",
+                "label": "Ordinary",
+                "node_type": "polars",
+                "submodel_alias": None,
+                "source_handles": ["unexpected"],
+            }
+        ],
     ],
 )
 def test_editor_identity_route_rejects_malformed_batches(
@@ -291,6 +313,86 @@ def test_editor_identity_route_rejects_malformed_batches(
 ) -> None:
     response = client.post("/api/pipeline/editor-identities", json={"nodes": nodes})
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("labels", [["b", "a"], ["a", "a"]])
+def test_capabilities_reject_unsorted_or_duplicate_reserved_api_input_labels(
+    labels: list[str],
+) -> None:
+    with pytest.raises(ValidationError, match="sorted and unique"):
+        PipelineDocumentCapabilities(
+            can_mutate=True,
+            can_save=True,
+            can_execute=True,
+            can_preview=True,
+            can_manage_submodels=True,
+            reserved_api_input_frame_labels=labels,
+        )
+
+
+@pytest.mark.parametrize(
+    ("input_ports", "input_names"),
+    [
+        ([{}], {}),
+        ([{"portId": ""}], {}),
+        ([{"portId": "input"}], {"extra": "input_name"}),
+        ([{"portId": "input"}], {"input": ""}),
+    ],
+)
+def test_recovery_submodel_definition_validates_input_port_identities(
+    input_ports: list[dict[str, object]], input_names: dict[str, str]
+) -> None:
+    with pytest.raises(ValidationError):
+        RecoverySubmodelDefinition(
+            definition_id="pricing",
+            file="models/pricing.py",
+            availability="ready",
+            graph=RecoveryGraphSnapshot(),
+            input_ports=input_ports,
+            input_port_input_names=input_names,
+        )
+
+
+def test_editor_identities_response_rejects_duplicate_node_ids() -> None:
+    identity = EditorIdentityResponseNode(
+        node_id="same",
+        function_name="same",
+        config_reference=None,
+        default_input_name="same",
+        source_handle_input_names={},
+    )
+
+    with pytest.raises(ValidationError, match="unique"):
+        EditorIdentitiesResponse(identities=[identity, identity])
+
+
+def test_editor_identity_route_translates_resolver_value_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute.routes import pipeline
+
+    def invalid_identity(**_kwargs: object) -> None:
+        raise ValueError("invalid identity")
+
+    monkeypatch.setattr(pipeline, "resolve_editor_identity", invalid_identity)
+
+    response = client.post(
+        "/api/pipeline/editor-identities",
+        json={
+            "nodes": [
+                {
+                    "node_id": "ordinary",
+                    "label": "Ordinary",
+                    "node_type": "polars",
+                    "submodel_alias": None,
+                    "source_handles": [],
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "invalid identity"
 
 
 def test_ready_document_carries_all_server_owned_api_input_identities(
@@ -349,6 +451,57 @@ def test_ready_document_carries_all_server_owned_api_input_identities(
         document.capabilities.reserved_api_input_frame_labels
     )
     assert "class" in document.capabilities.reserved_api_input_frame_labels
+
+
+def test_ready_document_keeps_incomplete_api_input_config_repairable(
+    tmp_path: Path,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    config = tmp_path / "config" / "quote_input" / "request.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        """{
+          "path": "data/request.json",
+          "tables": [
+            {"path": "$[:]", "label": "quotes", "emit": true,
+             "columns": [
+               {"name": "id", "path": "$[:].id", "type": "int",
+                "status": "Confirmed", "selected": true},
+               {"name": "", "path": "$[:].premium", "type": "float",
+                "status": "Inferred", "selected": true}
+             ]},
+            {"path": "$[:].claims[:]", "label": "claims", "emit": true,
+             "columns": [{"name": "amount", "path": "$[:].claims[:].amount",
+                           "type": "float", "status": "Confirmed", "selected": true}]},
+            {"path": "", "label": "orphan", "emit": true, "columns": []},
+            {"path": "$[:].addons[:]", "label": "", "emit": true,
+             "columns": [{"name": "code", "path": "$[:].addons[:].code",
+                           "type": "str", "status": "Confirmed", "selected": true}]}
+          ]
+        }""",
+        encoding="utf-8",
+    )
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("identity-document")
+
+        @pipeline.api_input(config="config/quote_input/request.json")
+        def request():
+            return None
+        """,
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == "ready"
+    request = next(node for node in document.nodes if node.authored_id == "request")
+    assert len(request.config["tables"]) == 4
+    assert request.config["tables"][0]["columns"][1]["name"] == ""
+    assert request.config["tables"][3]["label"] == ""
+    assert request.source_handle_input_names == {"quotes": "quotes", "claims": "claims"}
 
 
 def test_legacy_explore_failure_is_localised_without_writing_project_bytes(

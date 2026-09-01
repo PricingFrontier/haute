@@ -383,9 +383,8 @@ def _prepare_execution(request: PreparedExecutionRequest) -> PreparedExecution:
     children_of_lists: dict[str, list[str]] = {node_id: [] for node_id in graph_plan.order}
     for node_id, parent_ids in graph_plan.parents_of.items():
         for parent_id in parent_ids:
-            if parent_id in children_count:
-                children_count[parent_id] += 1
-                children_of_lists[parent_id].append(node_id)
+            children_count[parent_id] += 1
+            children_of_lists[parent_id].append(node_id)
 
     def _edge_index(edges: Iterable[GraphEdge]) -> dict[str, tuple[GraphEdge, ...]]:
         indexed: dict[str, list[GraphEdge]] = {}

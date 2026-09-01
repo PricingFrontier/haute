@@ -770,101 +770,6 @@ function FlowEditor() {
     nodeIdCounter,
   })
 
-  // Flush the editor to the ledger, then open the milestone-commit modal —
-  // but only once the save has actually landed, so the milestone never commits
-  // a stale ledger (and we don't prompt for a message after a failed save).
-  const flushSaveThenMilestone = useCallback(async () => {
-    const ok = await handleSave()
-    if (ok) useGitStore.getState().openModal("milestone")
-  }, [handleSave])
-
-  // Save-gate (S5/S13): if no working branch is ready, the action opens the
-  // selection modal first and runs once a branch is chosen. Divergence routes
-  // to its own modal. Pipeline Save remains available when Git is absent or
-  // readiness could not be loaded; only Git Commit requires a ready repository.
-  const requestSave = useCallback(async () => {
-    // Resolve status before deciding: during the startup load (status null,
-    // loading in-flight) a synchronous read would see null and save ungated,
-    // bypassing the gate. Awaiting the in-flight/fresh load closes that race.
-    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
-    if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "ready") {
-      void handleSave()
-      return
-    }
-    useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
-      pendingAction: "save",
-    })
-  }, [handleSave])
-
-  // Commit (S7): same gate, but the queued action flushes a save before
-  // opening the milestone modal.
-  const requestCommit = useCallback(async () => {
-    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
-    if (st === null) {
-      const detail = useGitStore.getState().statusError
-      addToast(
-        "error",
-        detail ? `Git unavailable: ${detail}` : "Git readiness is unavailable — commit is disabled.",
-      )
-      return
-    }
-    if (st.state === "no-repository") {
-      addToast("error", "No git repository — commit is unavailable.")
-      return
-    }
-    if (st.state === "git-unavailable") {
-      addToast("error", "Git is not available in this environment — commit is unavailable.")
-      return
-    }
-    if (st.state === "ready") {
-      void flushSaveThenMilestone()
-      return
-    }
-    useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
-      pendingAction: "commit",
-    })
-  }, [flushSaveThenMilestone, addToast])
-
-  // A working-branch / divergence modal confirmed a branch: run the queued
-  // action (read it before closeModal clears it).
-  const handleGitModalConfirmed = useCallback(() => {
-    const pending = useGitStore.getState().pendingAction
-    useGitStore.getState().closeModal()
-    if (pending === "save") void handleSave()
-    else if (pending === "commit") void flushSaveThenMilestone()
-  }, [handleSave, flushSaveThenMilestone])
-
-  // Pre-move prompt confirmed (P6 §3.4): optionally flush unsaved edits onto the
-  // current branch (parking IS saving, S12), then move — a real detached
-  // checkout. A move replaces the whole working tree, so we reload to re-init the
-  // canvas from the moved-to state; the one-shot flag tells the next startup it
-  // arrived via a move (don't auto-prompt; the modal fires on first SAVE, S13).
-  const handleMoveConfirmed = useCallback(
-    async (saveFirst: boolean) => {
-      const target = useGitStore.getState().moveTarget
-      if (!target) return
-      try {
-        if (saveFirst) {
-          const ok = await handleSave()
-          if (!ok) {
-            addToast("error", "Save failed — staying on the current version.")
-            useGitStore.getState().closeMove()
-            return
-          }
-        }
-        await moveToVersion(target.sha)
-        sessionStorage.setItem(JUST_MOVED_KEY, target.label)
-        window.location.reload()
-      } catch (err: unknown) {
-        const { gitErrorMessage } = await import("./utils/gitError")
-        const detail = gitErrorMessage(err, "unknown error")
-        addToast("error", `Could not move to this version: ${detail}`)
-        useGitStore.getState().closeMove()
-      }
-    },
-    [handleSave, addToast],
-  )
-
   // Startup readiness check (S27): load status once, and surface the modal only
   // when something needs attention (unset/invalid → select, divergent → that
   // modal). A healthy clone fires nothing. Exception: when we've just arrived via
@@ -1004,19 +909,6 @@ function FlowEditor() {
     onEdgesChange(changes)
   }, [editingReadOnly, onBoundaryEdgesChange, onEdgesChange])
 
-  useKeyboardShortcuts({
-    handleSave: requestSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
-    graphRef, clipboard, nodeIdCounter,
-    setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
-    setLastSelectedId,
-    clearTrace,
-    closePanel,
-    isInsideSubmodel: viewStack.length > 1,
-    readOnly: editingReadOnly,
-    resolveGraphIdentities: resolveCandidateGraphIdentities,
-    commitSharedNodeDeletion,
-  })
-
   // ---------------------------------------------------------------------------
   // Node + edge interaction handlers (extracted to custom hooks)
   // ---------------------------------------------------------------------------
@@ -1032,7 +924,7 @@ function FlowEditor() {
     ])
   }, [])
 
-  const { onUpdateNode, onRenameNode } = useGraphCommitController({
+  const { onUpdateNode, onRenameNode, waitForPendingCommits } = useGraphCommitController({
     graphRef,
     submodelsRef,
     readDocumentIdentity,
@@ -1042,6 +934,106 @@ function FlowEditor() {
     commitGraph: setNodesAndEdgesAndSubmodels,
     setSelectedNode,
     addToast,
+  })
+
+  const saveWithPendingCommits = useCallback(async (): Promise<boolean> => {
+    const pending = await waitForPendingCommits()
+    if (!pending.ok) {
+      addToast("error", pending.error)
+      return false
+    }
+    return handleSave()
+  }, [addToast, handleSave, waitForPendingCommits])
+
+  // Flush the editor through the graph-commit fence before opening the
+  // milestone modal, so Commit can never capture an older ledger snapshot.
+  const flushSaveThenMilestone = useCallback(async () => {
+    const ok = await saveWithPendingCommits()
+    if (ok) useGitStore.getState().openModal("milestone")
+  }, [saveWithPendingCommits])
+
+  // Save-gate: resolve Git readiness before deciding whether to save now or
+  // queue the action behind branch/divergence setup.
+  const requestSave = useCallback(async () => {
+    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
+    if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "ready") {
+      void saveWithPendingCommits()
+      return
+    }
+    useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
+      pendingAction: "save",
+    })
+  }, [saveWithPendingCommits])
+
+  // Commit uses the same readiness gate, but a ready repository first flushes
+  // the fenced graph and only then opens the milestone modal.
+  const requestCommit = useCallback(async () => {
+    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
+    if (st === null) {
+      const detail = useGitStore.getState().statusError
+      addToast("error", detail ? `Git unavailable: ${detail}` : "Git readiness is unavailable — commit is disabled.")
+      return
+    }
+    if (st.state === "no-repository") {
+      addToast("error", "No git repository — commit is unavailable.")
+      return
+    }
+    if (st.state === "git-unavailable") {
+      addToast("error", "Git is not available in this environment — commit is unavailable.")
+      return
+    }
+    if (st.state === "ready") {
+      void flushSaveThenMilestone()
+      return
+    }
+    useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
+      pendingAction: "commit",
+    })
+  }, [addToast, flushSaveThenMilestone])
+
+  const handleGitModalConfirmed = useCallback(() => {
+    const pending = useGitStore.getState().pendingAction
+    useGitStore.getState().closeModal()
+    if (pending === "save") void saveWithPendingCommits()
+    else if (pending === "commit") void flushSaveThenMilestone()
+  }, [flushSaveThenMilestone, saveWithPendingCommits])
+
+  // Moving versions replaces the working tree. If requested, park the fenced
+  // graph on the current branch first; a failed save keeps the user in place.
+  const handleMoveConfirmed = useCallback(
+    async (saveFirst: boolean) => {
+      const target = useGitStore.getState().moveTarget
+      if (!target) return
+      try {
+        if (saveFirst && !await saveWithPendingCommits()) {
+          addToast("error", "Save failed — staying on the current version.")
+          useGitStore.getState().closeMove()
+          return
+        }
+        await moveToVersion(target.sha)
+        sessionStorage.setItem(JUST_MOVED_KEY, target.label)
+        window.location.reload()
+      } catch (err: unknown) {
+        const { gitErrorMessage } = await import("./utils/gitError")
+        const detail = gitErrorMessage(err, "unknown error")
+        addToast("error", `Could not move to this version: ${detail}`)
+        useGitStore.getState().closeMove()
+      }
+    },
+    [addToast, saveWithPendingCommits],
+  )
+
+  useKeyboardShortcuts({
+    handleSave: requestSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
+    graphRef, clipboard, nodeIdCounter,
+    setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
+    setLastSelectedId,
+    clearTrace,
+    closePanel,
+    isInsideSubmodel: viewStack.length > 1,
+    readOnly: editingReadOnly,
+    resolveGraphIdentities: resolveCandidateGraphIdentities,
+    commitSharedNodeDeletion,
   })
 
   const {
@@ -1372,7 +1364,7 @@ function FlowEditor() {
                     onClose={() => setComparisonInspectState(null)}
                   />
                 ) : (
-                  <GitPanel onClose={exitComparison} onSave={handleSave} />
+                  <GitPanel onClose={exitComparison} onSave={saveWithPendingCommits} />
                 )}
               </Suspense>
             </ErrorBoundary>
@@ -1502,7 +1494,7 @@ function FlowEditor() {
           onCloseGit={() => setGitOpen(false)}
           onCloseUtility={() => setUtilityOpen(false)}
           onCloseImports={() => setImportsOpen(false)}
-          onSave={handleSave}
+          onSave={saveWithPendingCommits}
           preamble={preamble}
           onImportAdded={handleImportAdded}
           onPreambleChange={handlePreambleChange}
@@ -1543,7 +1535,7 @@ function FlowEditor() {
         onCreateInstance={handleCreateInstance}
         onDissolveSubmodel={handleDissolveSubmodel}
         onGitModalConfirmed={handleGitModalConfirmed}
-        onSave={handleSave}
+        onSave={saveWithPendingCommits}
         onMoveConfirmed={handleMoveConfirmed}
         onCreateSubmodel={handleCreateSubmodel}
         onRenameNode={onRenameNode}
