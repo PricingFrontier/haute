@@ -216,10 +216,11 @@
    developer already has Haute running; the harness and Playwright config
    validate and share those values.
    `frontend/scripts/check-bundle-size.mjs` counts the production entry and
-   modulepreload chunks against default ceilings of 271 KiB initial and
-   1,320 KiB total JavaScript gzip. The measured bundle is approximately
-   271.0 KiB initial and 1,315.4 KiB total with the eager execution-diagnostic
-   validator and existing recovery/live-sync boundaries. The Explore chart
+   modulepreload chunks against default ceilings of 279 KiB initial and
+   1,333 KiB total JavaScript gzip. The measured bundle is approximately
+   276.7 KiB initial and 1,322.8 KiB total with the eager execution-diagnostic
+   validator, server-owned editor identities, extracted graph/job controllers,
+   and existing recovery/live-sync boundaries. The Explore chart
    validator is a separate lazy artifact in the chart-config chunk rather than
    an entry modulepreload.
    Modelling training response parsers remain in a dynamically imported

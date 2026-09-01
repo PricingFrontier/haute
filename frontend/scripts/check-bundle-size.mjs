@@ -14,7 +14,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // minimal repair contract. The merged bundle is 1,309.4 KiB; 1,320 KiB keeps
 // ~10 KiB headroom while the separate chart-vendor cap below prevents that
 // dependency consuming it.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1320
+// The engineering-quality roadmap adds ~13.4 KiB across the generated runtime
+// contract validators, server-owned editor identities, and extracted graph/job
+// controllers. The merged bundle is 1,322.8 KiB; 1,333 KiB preserves the same
+// ~10 KiB aggregate headroom without weakening the separate vendor caps.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1333
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -67,7 +71,12 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // and capabilities atomically, and preserve a truthful degraded canvas. The
 // repair dialog itself remains small and the chart/editor vendors remain lazy.
 // The merged initial bundle is 268.5 KiB; 271 KiB retains ~2.5 KiB headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 271
+// Generated structural validation for execution diagnostics, server-owned
+// editor identity resolution, and synchronous graph-commit coordination add
+// ~8.2 KiB of deliberate eager core. The Explore validator and editor surfaces
+// remain lazy. The merged initial bundle is 276.7 KiB; 279 KiB retains ~2.3 KiB
+// headroom while continuing to catch accidental eager imports.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 279
 
 // Chunks that should only be fetched after a user opens a code/editor-heavy
 // surface. If one appears as a startup modulepreload, the app has likely

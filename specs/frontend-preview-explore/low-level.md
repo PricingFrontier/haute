@@ -218,10 +218,10 @@
    from the same dataset as the visual chart.
 4. The production bundle gate rejects any startup preload of the chart pane/runtime/vendor,
    caps the narrowly imported `vendor-charts` chunk at 205 KiB gzip, and keeps the measured
-   application limits at 271 KiB initial and 1,320 KiB total gzip. The later pipeline-recovery
-   contract owns the increase from this chart package's 258/1,300 KiB baseline; chart capability
-   still pays its cost only after Charts is opened and cannot quietly grow inside the aggregate
-   budget.
+   application limits at 279 KiB initial and 1,333 KiB total gzip. The later pipeline-recovery
+   and engineering-quality contracts own the increases from this chart package's 258/1,300 KiB
+   baseline; chart capability still pays its cost only after Charts is opened and cannot quietly
+   grow inside the aggregate budget.
 
 `DataPreview` consumes guarded version-1 execution metrics through
 `ExecutionDiagnosticsIndicator`: projected/admitted/not-planned states and a
