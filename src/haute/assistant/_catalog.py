@@ -21,6 +21,7 @@ from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE, VALID_KEYS
 from haute._types import NODE_TYPE_TO_DECORATOR, NodeType
 from haute.assistant._recipes import recipe_manifest
+from haute.assistant._wire_ops import graph_edit_operations_schema
 from haute.routes._save_pipeline import _SINGLETON_NODE_TYPES
 
 
@@ -735,88 +736,6 @@ def _closed_object(
     return result
 
 
-def _graph_edit_operations_schema() -> dict[str, object]:
-    ref = {
-        "type": "string",
-        "description": "Node id, or a batch-local $ref declared by an earlier add_node.",
-    }
-    variants: list[dict[str, object]] = [
-        _closed_object(
-            {
-                "op": {"const": "add_node"},
-                "node_type": {"type": "string"},
-                "name": {"type": "string"},
-                "config": {"type": "object"},
-                "ref": {
-                    "type": "string",
-                    "description": (
-                        "Declares a batch-local handle for this new node. Write the bare "
-                        "name here without a leading '$' (for example \"agg\"); later "
-                        'operations in the same batch address it as "$agg".'
-                    ),
-                },
-            },
-            ["op", "node_type", "name"],
-        ),
-        _closed_object(
-            {"op": {"const": "update_node"}, "node": ref, "config": {"type": "object"}},
-            ["op", "node", "config"],
-        ),
-        _closed_object(
-            {"op": {"const": "rename_node"}, "node": ref, "new_name": {"type": "string"}},
-            ["op", "node", "new_name"],
-        ),
-        _closed_object(
-            {"op": {"const": "delete_node"}, "node": ref},
-            ["op", "node"],
-        ),
-    ]
-    for operation in ("add_edge", "delete_edge"):
-        variants.append(
-            _closed_object(
-                {
-                    "op": {"const": operation},
-                    "source": ref,
-                    "target": ref,
-                    "source_handle": {
-                        "type": ["string", "null"],
-                        "description": (
-                            "Output port on the source node, exactly as get_pipeline "
-                            "reports it under an edge's 'source_handle'. Required only "
-                            "when the source emits several frames, such as an apiInput "
-                            "table; omit it for an ordinary single-output node."
-                        ),
-                    },
-                    "target_handle": {
-                        "type": ["string", "null"],
-                        "description": (
-                            "Input port on the target node, exactly as get_pipeline "
-                            "reports it under an edge's 'target_handle'. Only nodes with "
-                            "named input roles use it: an edgeJoin requires 'base' or "
-                            "'join'. Omit it for an ordinary node such as polars, which "
-                            "binds inputs by source name and has no input ports."
-                        ),
-                    },
-                },
-                ["op", "source", "target"],
-            )
-        )
-    variants.append(
-        _closed_object(
-            {
-                "op": {"const": "update_preamble"},
-                "preamble": {"type": ["string", "null"]},
-            },
-            ["op", "preamble"],
-        )
-    )
-    return {
-        "type": "array",
-        "items": {"oneOf": variants},
-        "maxItems": 100,
-    }
-
-
 def _postconditions_schema() -> dict[str, object]:
     node = {"type": "string", "minLength": 1}
     handle = {"type": ["string", "null"]}
@@ -1143,10 +1062,10 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
         "get_capability_manifest": "Read manifest identity and its compact capability index.",
         "get_capability_descriptors": "Read ordered complete capability descriptors in one batch.",
         "plan_recipe": (
-            "Mandatory first planner before dry-run when an installed recipe matches. "
-            "Supply output_name and explicit output_columns together for a response output. "
-            "Pass only the returned recipe_plan_hash to dry_run_recipe_plan; canonical "
-            "operations remain server-side."
+            "Select and plan one installed canonical recipe with its explicit structured "
+            "arguments. Supply output_name and explicit output_columns together for a "
+            "response output. Pass only the returned recipe_plan_hash to "
+            "dry_run_recipe_plan; canonical operations remain server-side."
         ),
     }
     input_schemas = {
@@ -1186,7 +1105,7 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
         "get_authoring_guide": _closed_object(),
         "dry_run_graph_edits": _closed_object(
             {
-                "ops": _graph_edit_operations_schema(),
+                "ops": graph_edit_operations_schema(),
                 "postconditions": _postconditions_schema(),
             },
             ["ops"],
@@ -1231,18 +1150,6 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             "recovery": "Inspect the returned details and retry after correction.",
         },
     ]
-    if name in {
-        "plan_recipe",
-        "dry_run_recipe_plan",
-        "dry_run_graph_edits",
-        "apply_graph_plan",
-    }:
-        errors.append(
-            {
-                "code": "material_input_required",
-                "recovery": "Ask for the explicitly withheld rating choices before planning.",
-            }
-        )
     if name in {"dry_run_graph_edits", "dry_run_recipe_plan"}:
         errors.extend(
             [
@@ -1261,17 +1168,11 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             ]
         )
         if name == "dry_run_graph_edits":
-            errors.extend(
-                [
-                    {
-                        "code": "recipe_plan_requires_handle",
-                        "recovery": "Pass the pending hash to dry_run_recipe_plan.",
-                    },
-                    {
-                        "code": "recipe_route_required",
-                        "recovery": "Call plan_recipe with the returned required recipe id.",
-                    },
-                ]
+            errors.append(
+                {
+                    "code": "recipe_plan_requires_handle",
+                    "recovery": "Pass the pending hash to dry_run_recipe_plan.",
+                }
             )
         else:
             errors.append(
@@ -1280,19 +1181,6 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
                     "recovery": "Call plan_recipe again and use its latest returned hash.",
                 }
             )
-    elif name == "plan_recipe":
-        errors.extend(
-            [
-                {
-                    "code": "recipe_route_mismatch",
-                    "recovery": "Use the deterministic recipe id returned in the error.",
-                },
-                {
-                    "code": "recipe_name_mismatch",
-                    "recovery": "Use the explicit primary node name returned in the error.",
-                },
-            ]
-        )
     elif name == "apply_graph_plan":
         errors.extend(
             [

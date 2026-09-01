@@ -8,12 +8,17 @@
 
 import type { Node } from "@xyflow/react"
 
+import {
+  EXECUTION_STRATEGY_SCHEMA_VERSION,
+  validateExecutionStrategyDiagnostic,
+} from "../generated/api-contracts.execution-strategy-diagnostic.validators.mjs"
 import type {
   DatabricksCatalogsResponse,
   DatabricksSchemasResponse,
   DatabricksTablesResponse,
   DatabricksWarehousesResponse,
   DissolveSubmodelResponse,
+  EditorIdentityBatchResponse,
   ExecutionAdmission,
   ExecutionCacheProof,
   ExecutionMemoryPressureEvent,
@@ -885,12 +890,6 @@ export function expectInteger(value: unknown, field: string, nonNegative = false
   return value
 }
 
-function expectOptionalNullableDiagnosticString(obj: Record<string, unknown>, key: string): string | null | undefined {
-  const value = obj[key]
-  if (value === undefined || value === null || typeof value === "string") return value
-  throw new Error(`execution strategy: expected ${key} to be a string or null`)
-}
-
 function compareUnicode(left: string, right: string): number {
   const leftPoints = Array.from(left)
   const rightPoints = Array.from(right)
@@ -911,18 +910,36 @@ function compareTuple(left: (number | string)[], right: (number | string)[]): nu
   return 0
 }
 
-function parseDiagnosticCollection<T>(
-  value: unknown,
+function executionStrategyValidationError(): Error {
+  const issue = validateExecutionStrategyDiagnostic.errors?.[0]
+  if (issue === undefined) {
+    return new Error(
+      "execution strategy: generated validator rejected the payload without an error",
+    )
+  }
+  const missing = issue.params.missingProperty
+  const path = `${issue.instancePath}${
+    issue.keyword === "required" && typeof missing === "string"
+      ? `/${missing}`
+      : ""
+  }` || "/"
+  return new Error(
+    `execution strategy: invalid contract at ${path}: ${issue.keyword}`,
+  )
+}
+
+function parseDiagnosticCollection<TInput, TOutput>(
+  collection: {
+    state: "available" | "unavailable" | "truncated"
+    total_count: number | null
+    items: TInput[]
+  },
   name: string,
-  cap: number,
-  parseItem: (value: unknown, field: string) => T,
-  sortKey: (item: T) => (number | string)[],
-): ExecutionStrategyBoundedCollection<T> {
-  const obj = expectPlainObject("execution strategy", value, name)
-  const state = expectStringLiteral("execution strategy", obj.state, `${name}.state`, DETAIL_STATES)
-  const items = expectArray("execution strategy", obj.items, `${name}.items`).map((item, index) => parseItem(item, `${name}.items[${index}]`))
-  if (items.length > cap) throw new Error(`execution strategy: ${name} exceeds its ${cap}-item cap`)
-  const totalCount = obj.total_count === null ? null : expectInteger(obj.total_count, `${name}.total_count`, true)
+  projectItem: (item: TInput) => TOutput,
+  sortKey: (item: TOutput) => (number | string)[],
+): ExecutionStrategyBoundedCollection<TOutput> {
+  const { state, total_count: totalCount } = collection
+  const items = collection.items.map(projectItem)
   if (state === "unavailable") {
     if (totalCount !== null || items.length !== 0) throw new Error(`execution strategy: unavailable ${name} is inconsistent`)
   } else if (totalCount === null || (state === "available" && totalCount !== items.length) || (state === "truncated" && totalCount <= items.length)) {
@@ -940,45 +957,79 @@ function parseDiagnosticCollection<T>(
 export function parseExecutionStrategyDiagnostic(value: unknown): ExecutionStrategyDiagnostic | null {
   if (value === undefined || value === null) return null
   const obj = expectPlainObject("execution strategy", value)
-  if (expectInteger(obj.schema_version, "schema_version") !== 1) return null
-  const strategy = expectStringLiteral("execution strategy", obj.strategy, "strategy", Object.keys(STRATEGY_STATUS) as (keyof typeof STRATEGY_STATUS)[])
-  const status = expectStringLiteral("execution strategy", obj.status, "status", ["projected", "admitted_eager", "boundary", "rejected", "not_planned"])
+  if (expectInteger(obj.schema_version, "schema_version") !== EXECUTION_STRATEGY_SCHEMA_VERSION) return null
+  if (!validateExecutionStrategyDiagnostic(obj)) {
+    throw executionStrategyValidationError()
+  }
+
+  const { strategy, status } = obj
   if (status !== STRATEGY_STATUS[strategy]) throw new Error("execution strategy: status does not match strategy")
-  const profile = expectStringLiteral("execution strategy", obj.profile, "profile", ["preview_eager", "lazy_sink", "training_prep", "optimiser_setup", "explore_analysis", "auto_range", "deploy_live", "deploy_batch", "chunked_map_reduce"])
-  const boundedness = expectStringLiteral("execution strategy", obj.boundedness, "boundedness", ["bounded", "unbounded", "unknown"])
-  const reasonCode = expectString("execution strategy", obj.reason_code, "reason_code")
-  const boundaries = parseDiagnosticCollection<ExecutionStrategyBoundary>(obj.boundaries, "boundaries", 32, (item, field) => {
-    const itemObj = expectPlainObject("execution strategy", item, field)
-    return {
-      topological_rank: expectInteger(itemObj.topological_rank, `${field}.topological_rank`, true),
-      node_id: expectString("execution strategy", itemObj.node_id, `${field}.node_id`),
-      operator: expectString("execution strategy", itemObj.operator, `${field}.operator`),
-      boundary_kind: expectStringLiteral("execution strategy", itemObj.boundary_kind, `${field}.boundary_kind`, ["unprojected-streaming-boundary", "materialisation-boundary"]),
-    }
-  }, (item) => [item.topological_rank, item.node_id, item.operator, item.boundary_kind])
-  const reasons = parseDiagnosticCollection<ExecutionStrategyReason>(obj.reasons, "reasons", 32, (item, field) => {
-    const itemObj = expectPlainObject("execution strategy", item, field)
-    const message = expectOptionalNullableDiagnosticString(itemObj, "message")
-    if (message !== undefined && message !== null && message.length > 512) throw new Error(`execution strategy: ${field}.message exceeds 512 characters`)
-    return { reason_code: expectString("execution strategy", itemObj.reason_code, `${field}.reason_code`), topological_rank: itemObj.topological_rank === undefined || itemObj.topological_rank === null ? null : expectInteger(itemObj.topological_rank, `${field}.topological_rank`, true), node_id: expectOptionalNullableDiagnosticString(itemObj, "node_id") ?? null, operator: expectOptionalNullableDiagnosticString(itemObj, "operator") ?? null, ...(message === undefined ? {} : { message }), ...(itemObj.parent_node_id === undefined ? {} : { parent_node_id: expectOptionalNullableDiagnosticString(itemObj, "parent_node_id") }) }
-  }, (item) => [item.topological_rank ?? Number.MAX_SAFE_INTEGER, item.node_id ?? "", item.reason_code, item.operator ?? ""])
-  const provenance = parseDiagnosticCollection<ExecutionStrategyProvenance>(obj.provenance, "provenance", 128, (item, field) => {
-    const itemObj = expectPlainObject("execution strategy", item, field)
-    return { column: expectString("execution strategy", itemObj.column, `${field}.column`), origin_kind: expectStringLiteral("execution strategy", itemObj.origin_kind, `${field}.origin_kind`, ["seed", "contract", "expression", "join_key", "conservative_boundary"]), ...(itemObj.source_node_id === undefined ? {} : { source_node_id: expectOptionalNullableDiagnosticString(itemObj, "source_node_id") }), ...(itemObj.source_column === undefined ? {} : { source_column: expectOptionalNullableDiagnosticString(itemObj, "source_column") }) }
-  }, (item) => [item.column, item.origin_kind, item.source_node_id ?? "", item.source_column ?? ""])
-  const detailState = expectStringLiteral("execution strategy", obj.detail_state, "detail_state", DETAIL_STATES)
+  const boundaries = parseDiagnosticCollection(
+    obj.boundaries,
+    "boundaries",
+    (item): ExecutionStrategyBoundary => ({
+      topological_rank: item.topological_rank,
+      node_id: item.node_id,
+      operator: item.operator,
+      boundary_kind: item.boundary_kind,
+    }),
+    (item) => [item.topological_rank, item.node_id, item.operator, item.boundary_kind],
+  )
+  const reasons = parseDiagnosticCollection(
+    obj.reasons,
+    "reasons",
+    (item): ExecutionStrategyReason => ({
+      reason_code: item.reason_code,
+      topological_rank: item.topological_rank ?? null,
+      node_id: item.node_id ?? null,
+      operator: item.operator ?? null,
+      ...(item.message === undefined ? {} : { message: item.message }),
+      ...(item.parent_node_id === undefined ? {} : { parent_node_id: item.parent_node_id }),
+    }),
+    (item) => [item.topological_rank ?? Infinity, item.node_id ?? "", item.reason_code, item.operator ?? ""],
+  )
+  const provenance = parseDiagnosticCollection(
+    obj.provenance,
+    "provenance",
+    (item): ExecutionStrategyProvenance => ({
+      column: item.column,
+      origin_kind: item.origin_kind,
+      ...(item.source_node_id === undefined ? {} : { source_node_id: item.source_node_id }),
+      ...(item.source_column === undefined ? {} : { source_column: item.source_column }),
+    }),
+    (item) => [item.column, item.origin_kind, item.source_node_id ?? "", item.source_column ?? ""],
+  )
+  const detailState = obj.detail_state
   const expectedDetailState = [boundaries.state, reasons.state, provenance.state].reduce((worst, state) => DETAIL_STATES.indexOf(state) > DETAIL_STATES.indexOf(worst) ? state : worst)
   if (detailState !== expectedDetailState) throw new Error("execution strategy: detail_state is inconsistent")
-  const remediation = expectOptionalNullableDiagnosticString(obj, "remediation")
-  if (remediation !== undefined && remediation !== null && remediation.length > 512) throw new Error("execution strategy: remediation exceeds 512 characters")
-  const estimatedPeakBytes = obj.estimated_peak_bytes === undefined || obj.estimated_peak_bytes === null ? obj.estimated_peak_bytes : expectInteger(obj.estimated_peak_bytes, "estimated_peak_bytes", true)
-  const rawEstimatedPeakBytes = obj.raw_estimated_peak_bytes === undefined || obj.raw_estimated_peak_bytes === null ? obj.raw_estimated_peak_bytes : expectInteger(obj.raw_estimated_peak_bytes, "raw_estimated_peak_bytes", true)
-  const estimateCalibrationFactorBasisPoints = obj.estimate_calibration_factor_basis_points === undefined || obj.estimate_calibration_factor_basis_points === null ? obj.estimate_calibration_factor_basis_points : expectInteger(obj.estimate_calibration_factor_basis_points, "estimate_calibration_factor_basis_points", true)
-  const estimateAdmissionBasis = obj.estimate_admission_basis === undefined || obj.estimate_admission_basis === null ? obj.estimate_admission_basis : expectStringLiteral("execution strategy", obj.estimate_admission_basis, "estimate_admission_basis", ESTIMATE_ADMISSION_BASES)
-  validateCalibratedEstimateEvidence("execution strategy", estimatedPeakBytes, rawEstimatedPeakBytes, estimateCalibrationFactorBasisPoints, estimateAdmissionBasis)
-  const headroomBytes = obj.headroom_bytes === undefined || obj.headroom_bytes === null ? obj.headroom_bytes : expectInteger(obj.headroom_bytes, "headroom_bytes", true)
-  const assumptions = obj.assumptions === undefined ? undefined : expectArray("execution strategy", obj.assumptions, "assumptions").map((assumption, index) => expectString("execution strategy", assumption, `assumptions[${index}]`))
-  return { schema_version: 1, status, strategy, profile, boundedness, reason_code: reasonCode, detail_state: detailState, boundaries, reasons, provenance, ...(obj.blocking_node_id === undefined ? {} : { blocking_node_id: expectOptionalNullableDiagnosticString(obj, "blocking_node_id") }), ...(obj.blocking_operator === undefined ? {} : { blocking_operator: expectOptionalNullableDiagnosticString(obj, "blocking_operator") }), ...(remediation === undefined ? {} : { remediation }), ...(estimatedPeakBytes === undefined ? {} : { estimated_peak_bytes: estimatedPeakBytes }), ...(rawEstimatedPeakBytes === undefined ? {} : { raw_estimated_peak_bytes: rawEstimatedPeakBytes }), ...(estimateCalibrationFactorBasisPoints === undefined ? {} : { estimate_calibration_factor_basis_points: estimateCalibrationFactorBasisPoints }), ...(estimateAdmissionBasis === undefined ? {} : { estimate_admission_basis: estimateAdmissionBasis }), ...(headroomBytes === undefined ? {} : { headroom_bytes: headroomBytes }), ...(assumptions === undefined ? {} : { assumptions }) }
+  validateCalibratedEstimateEvidence(
+    "execution strategy",
+    obj.estimated_peak_bytes,
+    obj.raw_estimated_peak_bytes,
+    obj.estimate_calibration_factor_basis_points,
+    obj.estimate_admission_basis,
+  )
+  return {
+    schema_version: EXECUTION_STRATEGY_SCHEMA_VERSION,
+    status,
+    strategy,
+    profile: obj.profile,
+    boundedness: obj.boundedness,
+    reason_code: obj.reason_code,
+    detail_state: detailState,
+    boundaries,
+    reasons,
+    provenance,
+    ...(obj.blocking_node_id === undefined ? {} : { blocking_node_id: obj.blocking_node_id }),
+    ...(obj.blocking_operator === undefined ? {} : { blocking_operator: obj.blocking_operator }),
+    ...(obj.remediation === undefined ? {} : { remediation: obj.remediation }),
+    ...(obj.estimated_peak_bytes === undefined ? {} : { estimated_peak_bytes: obj.estimated_peak_bytes }),
+    ...(obj.raw_estimated_peak_bytes === undefined ? {} : { raw_estimated_peak_bytes: obj.raw_estimated_peak_bytes }),
+    ...(obj.estimate_calibration_factor_basis_points === undefined ? {} : { estimate_calibration_factor_basis_points: obj.estimate_calibration_factor_basis_points }),
+    ...(obj.estimate_admission_basis === undefined ? {} : { estimate_admission_basis: obj.estimate_admission_basis }),
+    ...(obj.headroom_bytes === undefined ? {} : { headroom_bytes: obj.headroom_bytes }),
+    ...(obj.assumptions === undefined ? {} : { assumptions: [...obj.assumptions] }),
+  }
 }
 
 export function optionalExecutionMetrics(
@@ -1093,6 +1144,79 @@ export function parsePipelineResponse(value: unknown): PipelineResponse {
     sources: obj.sources === undefined ? undefined : parseStringArray("parsePipelineResponse", obj.sources, "field `sources`"),
     active_source: obj.active_source === undefined ? undefined : expectString("parsePipelineResponse", obj.active_source, "field `active_source`"),
   }
+}
+
+const EDITOR_IDENTITY_PARSER = "parseEditorNodeIdentityBatchResponse"
+
+function parseRequiredNullableNonBlankString(
+  value: unknown,
+  field: string,
+): string | null {
+  if (value === null) return null
+  return expectNonBlankString(EDITOR_IDENTITY_PARSER, value, field)
+}
+
+function parseEditorIdentityStringMap(
+  value: unknown,
+  field: string,
+): Record<string, string> {
+  const object = expectPlainObject(EDITOR_IDENTITY_PARSER, value, field)
+  return Object.fromEntries(
+    Object.entries(object).map(([key, item]) => [
+      expectNonBlankString(EDITOR_IDENTITY_PARSER, key, `${field} key`),
+      expectNonBlankString(EDITOR_IDENTITY_PARSER, item, `${field}.${key}`),
+    ]),
+  )
+}
+
+export function parseEditorNodeIdentityBatchResponse(
+  value: unknown,
+): EditorIdentityBatchResponse {
+  const object = expectPlainObject(EDITOR_IDENTITY_PARSER, value)
+  expectExactKeys(EDITOR_IDENTITY_PARSER, object, "response", ["identities"])
+  const identities = expectArray(
+    EDITOR_IDENTITY_PARSER,
+    object.identities,
+    "response.identities",
+  ).map((item, index) => {
+    const field = `response.identities[${index}]`
+    const identity = expectPlainObject(EDITOR_IDENTITY_PARSER, item, field)
+    expectExactKeys(EDITOR_IDENTITY_PARSER, identity, field, [
+      "node_id",
+      "function_name",
+      "config_reference",
+      "default_input_name",
+      "source_handle_input_names",
+    ])
+    return {
+      node_id: expectNonBlankString(
+        EDITOR_IDENTITY_PARSER,
+        identity.node_id,
+        `${field}.node_id`,
+      ),
+      function_name: expectNonBlankString(
+        EDITOR_IDENTITY_PARSER,
+        identity.function_name,
+        `${field}.function_name`,
+      ),
+      config_reference: parseRequiredNullableNonBlankString(
+        identity.config_reference,
+        `${field}.config_reference`,
+      ),
+      default_input_name: parseRequiredNullableNonBlankString(
+        identity.default_input_name,
+        `${field}.default_input_name`,
+      ),
+      source_handle_input_names: parseEditorIdentityStringMap(
+        identity.source_handle_input_names,
+        `${field}.source_handle_input_names`,
+      ),
+    }
+  })
+  if (new Set(identities.map((identity) => identity.node_id)).size !== identities.length) {
+    throw new Error(`${EDITOR_IDENTITY_PARSER}: duplicate node_id in response.identities`)
+  }
+  return { identities }
 }
 
 function parseNestedPipelineResponse(

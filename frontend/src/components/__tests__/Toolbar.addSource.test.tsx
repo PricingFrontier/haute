@@ -4,7 +4,7 @@
  *
  * addSource returns a discriminated AddSourceResult; before this the toolbar
  * treated the bare `null` as success and just closed the form, so a name that
- * collided with an existing source (under the blessed sanitizeName identity)
+ * collided with an existing source (under the portableKey identity)
  * or a blank name vanished with no explanation. These tests pin that both
  * reject reasons produce a distinguishable message and leave the form open,
  * while a valid name still adds the source and closes the form.

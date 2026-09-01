@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Regenerate the sanitizer parity fixture from the backend implementation.
+"""Regenerate the retained backend compatibility golden fixture.
 
-The fixture ``frontend/src/utils/__tests__/sanitizeParity.fixture.json`` pins
-``frontend/src/utils/sanitizeName.ts`` to the backend
-``haute._graph_utils._sanitize_func_name`` (vitest asserts the TS side,
-``tests/test_sanitize_parity_fixture.py`` asserts the Python side — a change
-to either implementation fails its leg until the pair is realigned).
+The fixture ``frontend/src/utils/__tests__/sanitizeParity.fixture.json`` is a
+backend compatibility golden for
+``haute._graph_utils._sanitize_func_name``. The backend test asserts this
+golden, so an intentional sanitizer change requires an explicit fixture update.
 
 This script is the single source of BOTH the input corpus (``_INPUTS`` below)
 and the backend-derived expected outputs: ``build_fixture()`` recomputes every
@@ -18,7 +17,7 @@ sanitizer change:
 
     python3 scripts/regen_sanitize_parity_fixture.py
 
-then update ``sanitizeName.ts`` until vitest is green again.  To extend
+then update the compatibility golden as needed. To extend
 coverage, append inputs to ``_INPUTS`` and rerun.
 """
 

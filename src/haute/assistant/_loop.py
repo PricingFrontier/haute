@@ -120,7 +120,7 @@ def _turn_ends_with_needs_input(session_turn: Any) -> bool:
 
 
 def effective_authoring_request(session: AssistantSession, user_text: str) -> str:
-    """Retain a recipe route only across an explicit clarification chain."""
+    """Retain recipe guidance only across an explicit clarification chain."""
 
     if (
         route_recipe_request(user_text) is not None
@@ -221,8 +221,9 @@ _PROMPT_INTENT_AND_RECIPE_ROUTING = (
     "Treat explicit authoring language as mutation "
     "intent: Build, add, change, update, connect, remove, and delete each require "
     "authoring unless the user clearly asks only for an explanation. When the "
-    "requested operation matches an installed deterministic recipe, the first "
-    "planning call after `get_pipeline` must be `plan_recipe`. If the request "
+    "requested operation matches an installed deterministic recipe, prefer "
+    "`plan_recipe` after `get_pipeline`. The explicit structured recipe_id selects "
+    "the recipe; natural-language hints never authorize or reject a tool call. If the request "
     "also asks for a response output, pass `output_name` and `output_columns` together; "
     "a name without explicit selected columns is material ambiguity. Pass only the "
     "returned `recipe_plan_hash` to `dry_run_recipe_plan`; never copy, extend, or "
@@ -363,11 +364,11 @@ def build_system_prompt(
             f"- Schema version: `{manifest['schema_version']}`",
             f"- Haute version: `{manifest['haute_version']}`",
             f"- Capability hash: `{manifest['capability_hash']}`",
-            "### Mandatory recipe routing (Recipe index)",
+            "### Structured recipe selection (Recipe index)",
             recipe_index,
             (
-                "When a request exactly matches one of these summaries, you must "
-                "call `plan_recipe` before any dry run. If a response output is "
+                "When a request matches one of these summaries, prefer `plan_recipe` "
+                "before dry-run and select its recipe_id explicitly. If a response output is "
                 "requested, pass `output_name` and `output_columns` together. Then pass "
                 "only the returned `recipe_plan_hash` to `dry_run_recipe_plan`; never "
                 "copy or reconstruct recipe operations."
@@ -409,23 +410,25 @@ def build_system_prompt(
 
 
 def _request_routed_system_prompt(system_prompt: str, user_text: str) -> str:
-    """Pin one conservative deterministic recipe route for the current turn."""
+    """Append conservative request guidance without granting tool authority."""
 
     if request_requires_material_clarification(user_text):
         return "\n\n".join(
             (
                 system_prompt,
                 "## Current-request material clarification\n"
-                "- The request explicitly withholds required rating factor values or "
-                "missing-factor policy. Do not call mutation tools. Begin the response "
-                "with exactly `NEEDS_INPUT:` and ask for those choices.",
+                "- The request appears to withhold required rating factor values or "
+                "missing-factor policy. Do not invent those choices. If they are not "
+                "supplied elsewhere in the request, begin the response with exactly "
+                "`NEEDS_INPUT:` and ask for them. This hint does not authorize or reject tools.",
             )
         )
     recipe_id = route_recipe_request(user_text)
     if recipe_id is None:
         return system_prompt
     route_guidance = (
-        "- After `get_pipeline`, you must call `plan_recipe` with that exact recipe id. "
+        "- After `get_pipeline`, consider `plan_recipe` with this recipe id. The explicit "
+        "structured recipe_id in the tool call remains authoritative. "
         "Supply `output_name` and `output_columns` together when an explicitly mapped "
         "response output is requested, then pass only the returned `recipe_plan_hash` to "
         "`dry_run_recipe_plan`. Do not substitute a generic node. Preserve any explicit "
@@ -452,75 +455,16 @@ def _request_routed_system_prompt(system_prompt: str, user_text: str) -> str:
     return "\n\n".join(
         (
             system_prompt,
-            "## Current-request deterministic recipe route\n"
-            f"- Required recipe: `{recipe_id}`\n" + route_guidance,
+            "## Current-request advisory recipe suggestion\n"
+            f"- Suggested recipe: `{recipe_id}`\n" + route_guidance,
         )
     )
 
 
-def _request_routed_tools(
-    tools: Sequence[Mapping[str, Any]],
-    user_text: str,
-) -> Sequence[Mapping[str, Any]]:
-    """Expose only the exact recipe schema branch for one deterministic route."""
+def _provider_tools(tools: Sequence[Mapping[str, Any]]) -> Sequence[Mapping[str, Any]]:
+    """Return one stable structured tool contract for every request wording."""
 
-    if request_requires_material_clarification(user_text):
-        mutation_tools = {
-            "plan_recipe",
-            "dry_run_recipe_plan",
-            "dry_run_graph_edits",
-            "apply_graph_plan",
-        }
-        return tuple(tool for tool in tools if tool.get("name") not in mutation_tools)
-    recipe_id = route_recipe_request(user_text)
-    if recipe_id is None:
-        return tuple(
-            tool for tool in tools if tool.get("name") not in {"plan_recipe", "dry_run_recipe_plan"}
-        )
-    routed: list[Mapping[str, Any]] = []
-    matched_recipe_tool = False
-    dataset_root = (
-        explicit_dataset_directory(user_text) if recipe_id == "parquet_showcase" else None
-    )
-    for tool in tools:
-        if tool.get("name") == "list_datasets" and dataset_root is not None:
-            routed.append(
-                {
-                    **tool,
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "project_root": {"type": "string", "const": dataset_root},
-                            "recursive": {"type": "boolean", "const": True},
-                        },
-                        "required": ["project_root", "recursive"],
-                        "additionalProperties": False,
-                    },
-                }
-            )
-            continue
-        if tool.get("name") != "plan_recipe":
-            routed.append(tool)
-            continue
-        schema = tool.get("input_schema")
-        branches = schema.get("oneOf") if isinstance(schema, Mapping) else None
-        if not isinstance(branches, Sequence) or isinstance(branches, (str, bytes)):
-            raise RuntimeError("plan_recipe tool schema has no discriminated union")
-        matching = [
-            branch
-            for branch in branches
-            if isinstance(branch, Mapping)
-            and isinstance(branch.get("properties"), Mapping)
-            and isinstance(branch["properties"].get("recipe_id"), Mapping)
-            and branch["properties"]["recipe_id"].get("const") == recipe_id
-        ]
-        if len(matching) != 1:
-            raise RuntimeError("plan_recipe tool schema does not match the routed recipe")
-        routed.append({**tool, "input_schema": matching[0]})
-        matched_recipe_tool = True
-    if not matched_recipe_tool:
-        raise RuntimeError("routed assistant tools omit plan_recipe")
-    return tuple(routed)
+    return tuple(tools)
 
 
 _SUMMARY_LIMIT = 160
@@ -760,7 +704,7 @@ async def run_turn(
     deadline = time.monotonic() + timeout_seconds
     effective_request = authoring_request or effective_authoring_request(session, user_text)
     routed_system_prompt = _request_routed_system_prompt(system_prompt, effective_request)
-    routed_tools = _request_routed_tools(tools, effective_request)
+    provider_tools = _provider_tools(tools)
     user_message: dict[str, Any] = {"role": "user", "content": user_text}
     request_messages: list[Mapping[str, Any]] = [
         *store.history_window(session),
@@ -802,7 +746,7 @@ async def run_turn(
                 active_stream = provider.stream_turn(
                     system=routed_system_prompt,
                     messages=request_messages,
-                    tools=routed_tools,
+                    tools=provider_tools,
                 )
                 async for event in active_stream:
                     if isinstance(event, TextDelta):

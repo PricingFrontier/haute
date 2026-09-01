@@ -92,7 +92,7 @@ describe("useJobPolling", () => {
       // First poll at 500ms
       await advance(500)
 
-      expect(pollFn).toHaveBeenCalledWith("j1")
+      expect(pollFn).toHaveBeenCalledWith("j1", expect.any(AbortSignal))
       expect(onProgress).toHaveBeenCalledWith("n1", {
         status: "running",
         progress: 0.5,
@@ -446,7 +446,7 @@ describe("useJobPolling", () => {
       )
 
       await advance(500)
-      expect(pollFn).toHaveBeenCalledWith("old-job")
+      expect(pollFn).toHaveBeenCalledWith("old-job", expect.any(AbortSignal))
 
       rerender({
         config: makeConfig({
@@ -473,7 +473,7 @@ describe("useJobPolling", () => {
       }))
 
       await advance(500)
-      expect(pollFn).toHaveBeenCalledWith("new-job")
+      expect(pollFn).toHaveBeenCalledWith("new-job", expect.any(AbortSignal))
       expect(onProgress).toHaveBeenCalledWith("n1", expect.objectContaining({
         message: "New job progress",
       }))
@@ -501,7 +501,7 @@ describe("useJobPolling", () => {
       )
 
       await advance(500)
-      expect(pollFn).toHaveBeenCalledWith("old-job")
+      expect(pollFn).toHaveBeenCalledWith("old-job", expect.any(AbortSignal))
 
       rerender({
         config: makeConfig({
@@ -521,7 +521,7 @@ describe("useJobPolling", () => {
       }))
 
       await advance(500)
-      expect(pollFn).toHaveBeenCalledWith("new-job")
+      expect(pollFn).toHaveBeenCalledWith("new-job", expect.any(AbortSignal))
       expect(onProgress).toHaveBeenCalledWith("n1", expect.objectContaining({
         message: "Replacement job progress",
       }))
@@ -549,7 +549,7 @@ describe("useJobPolling", () => {
       )
 
       await advance(500)
-      expect(pollFn).toHaveBeenCalledWith("old-job")
+      expect(pollFn).toHaveBeenCalledWith("old-job", expect.any(AbortSignal))
 
       rerender({
         config: makeConfig({
@@ -574,7 +574,7 @@ describe("useJobPolling", () => {
       expect(addToast).not.toHaveBeenCalled()
 
       await advance(500)
-      expect(pollFn).toHaveBeenCalledWith("new-job")
+      expect(pollFn).toHaveBeenCalledWith("new-job", expect.any(AbortSignal))
       expect(addToast).not.toHaveBeenCalled()
     })
 

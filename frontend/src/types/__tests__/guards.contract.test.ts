@@ -306,7 +306,7 @@ describe("parseExecutionStrategyDiagnostic", () => {
   it("throws for malformed fields, caps, wrappers, and ordering in a matching version", () => {
     expect(() => parseExecutionStrategyDiagnostic(
       executionStrategyFixture({ reason_code: 3 }),
-    )).toThrow()
+    )).toThrow(/reason_code/i)
     expect(() => parseExecutionStrategyDiagnostic(executionStrategyFixture({
       reasons: { state: "available", total_count: 33, items: Array.from({ length: 33 }, () => ({ reason_code: "r" })) },
     }))).toThrow()
@@ -323,9 +323,71 @@ describe("parseExecutionStrategyDiagnostic", () => {
   })
 
   it("accepts V1 additive fields and equal-primary duplicates but rejects higher versions", () => {
-    const diagnostic = parseExecutionStrategyDiagnostic(executionStrategyFixture({ unknown_additive_field: true, reasons: { state: "available", total_count: 2, items: [{ reason_code: "same" }, { reason_code: "same" }] } }))
+    const diagnostic = parseExecutionStrategyDiagnostic(executionStrategyFixture({
+      unknown_additive_field: true,
+      reasons: {
+        state: "available",
+        total_count: 2,
+        future_collection_field: { nested: true },
+        items: [
+          { reason_code: "same", future_item_field: [1] },
+          { reason_code: "same" },
+        ],
+      },
+    }))
     expect(diagnostic?.reasons.items).toHaveLength(2)
     expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({ schema_version: 2 }))).toBeNull()
+  })
+
+  it("detaches retained arrays from the untrusted input", () => {
+    const assumptions = ["bounded input"]
+    const raw = executionStrategyFixture({ assumptions })
+    const diagnostic = parseExecutionStrategyDiagnostic(raw)
+
+    assumptions[0] = "mutated after parsing"
+
+    expect(diagnostic?.assumptions).toEqual(["bounded input"])
+  })
+
+  it("rejects browser-unsafe integers through the generated V1 validator", () => {
+    expect(() => parseExecutionStrategyDiagnostic(executionStrategyFixture({
+      boundaries: {
+        state: "available",
+        total_count: 1,
+        items: [{
+          topological_rank: Number.MAX_SAFE_INTEGER + 1,
+          node_id: "boundary",
+          operator: "collect",
+          boundary_kind: "materialisation-boundary",
+        }],
+      },
+    }))).toThrow(/topological_rank/i)
+  })
+
+  it("orders absent reason ranks after every browser-safe rank", () => {
+    const diagnostic = parseExecutionStrategyDiagnostic(executionStrategyFixture({
+      reasons: {
+        state: "available",
+        total_count: 2,
+        items: [
+          {
+            reason_code: "ranked",
+            topological_rank: Number.MAX_SAFE_INTEGER,
+            node_id: "z",
+          },
+          {
+            reason_code: "unranked",
+            topological_rank: null,
+            node_id: "a",
+          },
+        ],
+      },
+    }))
+
+    expect(diagnostic?.reasons.items.map(({ reason_code }) => reason_code)).toEqual([
+      "ranked",
+      "unranked",
+    ])
   })
 
   it.each([

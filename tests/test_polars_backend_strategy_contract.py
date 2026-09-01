@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
+from haute._execution_schemas import MAX_JSON_SAFE_INTEGER
 from haute._ram_estimate import MaterialisationEstimate
 from haute.chunking import ChunkPlanRequest, chunk_plan
 from haute.errors import BoundedMemoryUnsupportedError, GroupByExecutionUnsupportedError
@@ -199,6 +200,59 @@ def test_v1_dto_rejects_inconsistent_and_over_cap_collections() -> None:
     with pytest.raises(ValidationError):
         ExecutionStrategyDiagnosticPayload.model_validate(payload)
 
+
+@pytest.mark.parametrize(
+    ("mutate", "field"),
+    [
+        (
+            lambda payload: (
+                payload["boundaries"]["items"].append(
+                    {
+                        "topological_rank": True,
+                        "node_id": "node",
+                        "operator": "select",
+                        "boundary_kind": "unprojected-streaming-boundary",
+                    }
+                ),
+                payload["boundaries"].update(total_count=1),
+            ),
+            "topological_rank",
+        ),
+        (
+            lambda payload: (
+                payload["reasons"].update(
+                    state="truncated",
+                    total_count=2**53,
+                ),
+                payload.update(detail_state="truncated"),
+            ),
+            "total_count",
+        ),
+        (
+            lambda payload: payload.update(estimated_peak_bytes=2**53),
+            "estimated_peak_bytes",
+        ),
+    ],
+)
+def test_v1_dto_rejects_values_that_cannot_be_exact_browser_integers(
+    mutate: object,
+    field: str,
+) -> None:
+    payload = ExecutionStrategyDiagnostic.create(
+        strategy=ExecutionStrategy.PROJECTED,
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        boundedness=ExecutionBoundedness.BOUNDED,
+        reason_code="projection_seed",
+        boundaries=_available([]),
+        reasons=_available([]),
+        provenance=_available([]),
+    ).to_dict()
+    mutate(payload)  # type: ignore[operator]
+
+    with pytest.raises(ValidationError) as error:
+        ExecutionStrategyDiagnosticPayload.model_validate(payload)
+    assert field in str(error.value)
+
     payload["reasons"] = {
         "state": "available",
         "total_count": 33,
@@ -380,6 +434,25 @@ def test_v1_dto_rejects_every_inconsistent_collection_state_and_order() -> None:
         payload["reasons"] = reasons
         with pytest.raises(ValidationError):
             ExecutionStrategyDiagnosticPayload.model_validate(payload)
+
+    payload = valid_payload()
+    payload["reasons"] = {
+        "state": "available",
+        "total_count": 2,
+        "items": [
+            {
+                "reason_code": "ranked",
+                "topological_rank": MAX_JSON_SAFE_INTEGER,
+                "node_id": "z",
+            },
+            {
+                "reason_code": "unranked",
+                "topological_rank": None,
+                "node_id": "a",
+            },
+        ],
+    }
+    assert ExecutionStrategyDiagnosticPayload.model_validate(payload).reasons.total_count == 2
 
     payload = valid_payload()
     payload["boundaries"] = {

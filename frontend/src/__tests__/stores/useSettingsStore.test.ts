@@ -332,7 +332,7 @@ describe("useSettingsStore", () => {
   })
 
   // ────────────────────────────────────────────────────────────────
-  // Source slug (B12 fix; key mint moved to the blessed sanitizeName —
+  // Source slug (B12 fix; key mint moved to portableKey —
   // case is now PRESERVED. Full identity battery lives in
   // stores/__tests__/useSettingsStore.addSource.test.ts)
   // ────────────────────────────────────────────────────────────────
@@ -356,7 +356,7 @@ describe("useSettingsStore", () => {
     })
 
     it("maps each space to an underscore, per the blessed identity", () => {
-      // sanitizeName encodes EVERY interior space (runs are not collapsed),
+      // portableKey encodes EVERY interior space (runs are not collapsed),
       // so "a  b" and "a b" stay distinct keys — the old fold merged them.
       const result = useSettingsStore.getState().addSource("  Two  Words  ")
       expect(result).toEqual({ ok: true, key: "Two__Words" })

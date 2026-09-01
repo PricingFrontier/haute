@@ -117,8 +117,10 @@ _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 # the NAME but never surfaces the VALUE through the API or logs.
 _REVIEWED_SECRET_ENV_REFERENCES: set[tuple[str, str]] = {
     # Credential resolution seams (values flow only into client connections).
-    ("_databricks_io.py", "DATABRICKS_TOKEN"),
-    ("_databricks_io.py", "DATABRICKS_CLIENT_SECRET"),
+    # The shared resolver's dataclass hides secret fields from repr, and its
+    # missing-configuration error lists only names.
+    ("_databricks_credentials.py", "DATABRICKS_TOKEN"),
+    ("_databricks_credentials.py", "DATABRICKS_CLIENT_SECRET"),
     ("_input_providers.py", "DATABRICKS_TOKEN"),
     ("modelling/_mlflow_log.py", "DATABRICKS_TOKEN"),
     ("deploy/_mlflow.py", "DATABRICKS_RATING_TOKEN"),
@@ -140,9 +142,6 @@ _REVIEWED_SECRET_ENV_REFERENCES: set[tuple[str, str]] = {
     # Local session-token machinery (owns the token by design).
     ("_local_security.py", "HAUTE_LOCAL_SESSION_TOKEN"),
     ("cli/_serve.py", "VITE_HAUTE_SESSION_TOKEN"),
-    # Routes that report whether credentials are CONFIGURED (boolean), by name.
-    ("routes/databricks.py", "DATABRICKS_TOKEN"),
-    ("routes/databricks.py", "DATABRICKS_CLIENT_SECRET"),
     ("routes/input_cache.py", "DATABRICKS_TOKEN"),
     # Redaction denylist: the value is consulted precisely to scrub it.
     ("routes/input_cache.py", "DATABRICKS_CLIENT_SECRET"),

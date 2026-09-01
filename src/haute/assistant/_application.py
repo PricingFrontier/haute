@@ -18,10 +18,9 @@ from haute.assistant._ops import (
     ProjectSnapshot,
     ProjectSourceEvidence,
     SemanticDiff,
-    apply_ops,
-    build_graph_edit_plan,
     build_project_snapshot,
-    parse_ops,
+    finalize_graph_edit_plan,
+    prepare_graph_edit,
     semantic_diff,
     verify_postconditions,
 )
@@ -43,6 +42,7 @@ MutationReadiness = Callable[[Path], tuple[bool, str | None]]
 DocumentUpdatePublisher = Callable[[str], str]
 GraphParser = Callable[[Path], PipelineGraph]
 ProjectSources = Callable[[str], Sequence[Path | ProjectSourceEvidence]]
+GraphValidator = Callable[[PipelineGraph], Sequence[str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +77,14 @@ class ApplicationResult:
             "git_sha": self.git_sha,
             "applied_operations": self.applied_operations,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedPlan:
+    """One fully validated graph result and its sealed plan authority."""
+
+    result_graph: PipelineGraph
+    plan: GraphEditPlan
 
 
 class CommittedVerificationError(AssistantOperationError):
@@ -300,6 +308,33 @@ def _schema_evidence(
     return tuple(evidence), tuple(warnings)
 
 
+def build_verified_plan(
+    snapshot: ProjectSnapshot,
+    operations: Sequence[Mapping[str, Any]],
+    postconditions: Sequence[Mapping[str, Any]] = (),
+    *,
+    validate_graph: GraphValidator,
+) -> VerifiedPlan:
+    """Build one plan through the shared edit and save-verification pipeline."""
+
+    prepared = prepare_graph_edit(snapshot, operations, postconditions)
+    warnings = validate_graph(prepared.result_graph)
+    targets = _schema_validation_targets(prepared.result_graph, prepared.diff)
+    evidence, schema_warnings = _schema_evidence(
+        prepared.result_graph,
+        targets,
+        baseline=snapshot.graph,
+        changed=_diff_seed_nodes(prepared.result_graph, prepared.diff),
+    )
+    plan = finalize_graph_edit_plan(
+        prepared,
+        validation_warnings=(*warnings, *schema_warnings),
+        verification_tier="schema" if evidence else "structural",
+        verification_evidence=evidence,
+    )
+    return VerifiedPlan(result_graph=prepared.result_graph, plan=plan)
+
+
 class PipelineApplicationService:
     """Canonical inspect, plan, apply, and verify service."""
 
@@ -403,34 +438,17 @@ class PipelineApplicationService:
             graph,
             self._project_sources(source_file),
         )
-        result_graph = apply_ops(graph, parse_ops(operations))
-        warnings = self._save_service().validate_graph(
-            result_graph,
-            source_file=source_file,
-        )
-        provisional = build_graph_edit_plan(
+        verified = build_verified_plan(
             snapshot,
             operations,
             postconditions,
-            validation_warnings=warnings,
+            validate_graph=lambda candidate: self._save_service().validate_graph(
+                candidate,
+                source_file=source_file,
+            ),
         )
-        targets = _schema_validation_targets(result_graph, provisional.diff)
-        evidence, schema_warnings = _schema_evidence(
-            result_graph,
-            targets,
-            baseline=graph,
-            changed=_diff_seed_nodes(result_graph, provisional.diff),
-        )
-        plan = build_graph_edit_plan(
-            snapshot,
-            operations,
-            postconditions,
-            validation_warnings=(*warnings, *schema_warnings),
-            verification_tier="schema" if evidence else "structural",
-            verification_evidence=evidence,
-        )
-        self.plan_store.put(plan)
-        return plan
+        self.plan_store.put(verified.plan)
+        return verified.plan
 
     def _prepare_apply(
         self,
@@ -450,39 +468,22 @@ class PipelineApplicationService:
         raw_postconditions = wire["postconditions"]
         assert isinstance(raw_operations, list)
         assert isinstance(raw_postconditions, list)
-        parsed_operations = parse_ops(raw_operations)
-        after = apply_ops(before, parsed_operations)
-        warnings = self._save_service().validate_graph(
-            after,
-            source_file=source_file,
-        )
-        provisional = build_graph_edit_plan(
+        verified = build_verified_plan(
             snapshot,
             raw_operations,
-            postconditions=raw_postconditions,
-            validation_warnings=warnings,
+            raw_postconditions,
+            validate_graph=lambda candidate: self._save_service().validate_graph(
+                candidate,
+                source_file=source_file,
+            ),
         )
-        targets = _schema_validation_targets(after, provisional.diff)
-        schema_evidence, schema_warnings = _schema_evidence(
-            after,
-            targets,
-            baseline=before,
-            changed=_diff_seed_nodes(after, provisional.diff),
-        )
-        recomputed = build_graph_edit_plan(
-            snapshot,
-            raw_operations,
-            postconditions=raw_postconditions,
-            validation_warnings=(*warnings, *schema_warnings),
-            verification_tier="schema" if schema_evidence else "structural",
-            verification_evidence=schema_evidence,
-        )
+        recomputed = verified.plan
         if recomputed.plan_hash != plan.plan_hash or recomputed != plan:
             raise AssistantOperationError(
                 "invalid_plan",
                 "The stored plan no longer matches its canonical payload",
             )
-        return before, after, recomputed
+        return before, verified.result_graph, recomputed
 
     def _commit(
         self,
@@ -632,4 +633,6 @@ __all__ = [
     "ApplicationResult",
     "CommittedVerificationError",
     "PipelineApplicationService",
+    "VerifiedPlan",
+    "build_verified_plan",
 ]

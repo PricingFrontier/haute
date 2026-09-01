@@ -318,13 +318,13 @@ zero, or negative value fails loudly as a server configuration error; it never d
 The classification and disclosure rationale is recorded in the accepted
 [OPT-D01 error-detail policy](error-detail-policy.md).
 
-## Approved change contract — prerelease canonical frontier ranges
+## Canonical frontier ranges
 
-This contract implements
-[prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats).
+The optimiser follows the
+[canonical-only format policy](../README.md#canonical-only-format-policy).
 Every configured constraint range is represented only by
 `frontier_ranges[constraint] = {"min": number, "max": number}`. There is no global-range reader,
 fallback, mirroring, or migration in the service or optimiser UI.
 
-Tests cover exact per-constraint validation and frontend persistence containing
-`frontier_ranges` only; historical-field fixtures are deleted.
+Tests cover exact per-constraint validation and assert that frontend persistence
+contains `frontier_ranges` only.

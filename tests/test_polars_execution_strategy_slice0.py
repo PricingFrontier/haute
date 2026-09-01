@@ -32,13 +32,11 @@ def _route_job_store_snapshots() -> Iterator[None]:
     from haute.routes.modelling import _store as training_store
     from haute.routes.optimiser import _store as optimiser_store
 
-    training_snapshot = dict(training_store.jobs)
-    optimiser_snapshot = dict(optimiser_store.jobs)
+    training_store.clear_all()
+    optimiser_store.clear_all()
     yield
-    training_store.jobs.clear()
-    training_store.jobs.update(training_snapshot)
-    optimiser_store.jobs.clear()
-    optimiser_store.jobs.update(optimiser_snapshot)
+    training_store.clear_all()
+    optimiser_store.clear_all()
 
 
 def _write_competitor_training_inputs(tmp_path: Path) -> tuple[str, str]:

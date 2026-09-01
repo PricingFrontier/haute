@@ -3,9 +3,9 @@ import type { Edge } from "@xyflow/react"
 import { isPipelineConnectionValid, validatePipelineConnection } from "../connectionValidation"
 import type { SimpleNode } from "../../panels/editors/_shared"
 import { NODE_TYPES, type NodeTypeValue } from "../nodeTypes"
-const node = (id: string, label: string, nodeType: NodeTypeValue = NODE_TYPES.POLARS): SimpleNode => ({ id, type: nodeType, data: { label, description: "", nodeType, config: {} } })
-const apiInput = (id: string): SimpleNode => ({ ...node(id, id, NODE_TYPES.API_INPUT), data: { label: id, description: "", nodeType: NODE_TYPES.API_INPUT, config: { tables: [{ path: "$[:].quotes", label: "quotes", emit: true, columns: [{ name: "id", selected: true }] }] } } })
-const definition = (child: SimpleNode) => ({ definitionId: "definition_pricing", file: "modules/pricing.py", graph: { nodes: [child], edges: [] }, inputPorts: [{ portId: "policy", label: "Policy data", targets: [{ nodeId: child.id, handleId: null }] }], outputPorts: [] })
+const node = (id: string, label: string, nodeType: NodeTypeValue = NODE_TYPES.POLARS): SimpleNode => ({ id, type: nodeType, data: { label, description: "", nodeType, config: {}, _defaultInputName: id, _sourceHandleInputNames: {} } })
+const apiInput = (id: string): SimpleNode => ({ ...node(id, id, NODE_TYPES.API_INPUT), data: { label: id, description: "", nodeType: NODE_TYPES.API_INPUT, config: { tables: [{ path: "$[:].quotes", label: "quotes", emit: true, columns: [{ name: "id", selected: true }] }] }, _defaultInputName: null, _sourceHandleInputNames: { quotes: "quotes" } } })
+const definition = (child: SimpleNode) => ({ definitionId: "definition_pricing", file: "modules/pricing.py", graph: { nodes: [child], edges: [] }, inputPorts: [{ portId: "policy", label: "Policy data", targets: [{ nodeId: child.id, handleId: null }] }], _inputPortInputNames: { policy: "policy" }, outputPorts: [] })
 const occurrence = () => ({ ...node("instance_primary", "Pricing", NODE_TYPES.SUBMODEL), data: { label: "Pricing", description: "", nodeType: NODE_TYPES.SUBMODEL, config: { definitionId: "definition_pricing", alias: "pricing" } } })
 describe("connection validation", () => {
   it("rejects self loops", () => { const item = node("one", "One"); expect(isPipelineConnectionValid({ source: item.id, target: item.id, sourceHandle: null, targetHandle: null }, [item], [])).toBe(false) })

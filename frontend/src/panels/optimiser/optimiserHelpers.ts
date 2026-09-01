@@ -5,7 +5,7 @@
  * (satisfies `react-refresh/only-export-components`).
  */
 
-import { sanitizeName } from "../../utils/sanitizeName"
+import { portableKey } from "../../utils/portableKey"
 
 /**
  * Derive the on-disk save path for an optimiser result artifact.
@@ -18,14 +18,11 @@ import { sanitizeName } from "../../utils/sanitizeName"
  * a re-save of the SAME node still overwrites its own file (rerun
  * semantics).
  *
- * The label goes through the shared `sanitizeName` (the backend sanitizer's
- * case-preserving twin), replacing an ad-hoc lowercase sanitizer that had
- * diverged from it.  Node ids (`<type>_<n>` for UI-created nodes, Python
- * function names for pipeline-loaded ones) are already filename-safe, but
- * are sanitized too as defence in depth.
+ * The label and id go through the browser-owned `portableKey`. This is a
+ * suggested artifact filename, not a Python or editor execution identity.
  */
 export function optimiserResultSavePath(nodeLabel: string, nodeId: string): string {
-  return `output/optimiser_${sanitizeName(nodeLabel)}_${sanitizeName(nodeId)}.json`
+  return `output/optimiser_${portableKey(nodeLabel)}_${portableKey(nodeId)}.json`
 }
 
 /**

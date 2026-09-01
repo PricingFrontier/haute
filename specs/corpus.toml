@@ -1,0 +1,11 @@
+version = 1
+
+[[supplemental_document]]
+path = "specs/codegen/structured-syntax-boundary.md"
+kind = "decision"
+required_headings = ["Context", "Decision", "Ownership boundaries", "Rejected alternatives", "Consequences", "Pilot and evidence"]
+
+[[supplemental_document]]
+path = "specs/optimiser/error-detail-policy.md"
+kind = "decision"
+required_headings = ["Context", "Decision", "Rejected policies", "Consequences"]

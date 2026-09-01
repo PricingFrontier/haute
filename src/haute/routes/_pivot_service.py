@@ -13,7 +13,7 @@ from datetime import time as datetime_time
 from decimal import Decimal
 from functools import cmp_to_key, reduce
 from operator import or_
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import polars as pl
 from fastapi import HTTPException
@@ -42,7 +42,7 @@ from haute._types import (
 from haute.routes._background_jobs import CancellableJobRegistry, JobCancellation
 from haute.routes._explore_service import ExploreCacheSpec, ExploreService
 from haute.routes._job_lifecycle import JobLifecycle, bind_running_execution_metrics_publisher
-from haute.routes._job_store import JobStore
+from haute.routes._job_store import JobStore, RunningJobFields
 from haute.schemas import (
     ExecutionMetricsPayload,
     ExplorePivotCell,
@@ -60,6 +60,13 @@ from haute.schemas import (
     ExplorePivotValueIdentity,
     ExploreRunRequest,
 )
+
+
+class _PivotRunningJob(RunningJobFields):
+    kind: Literal["pivot"]
+    progress: float
+    analysis_key: str
+
 
 EXPLORE_PIVOT_RESULT_VERSION = 1
 MAX_ROW_GROUPS = 500
@@ -651,15 +658,14 @@ class PivotService:
                 result=cached,
             )
 
-        job_id = self._store.create_job(
-            {
-                "kind": "pivot",
-                "status": "running",
-                "progress": 0.0,
-                "message": "Starting pivot calculation",
-                "analysis_key": spec.result_cache_key,
-            }
-        )
+        initial_job: _PivotRunningJob = {
+            "kind": "pivot",
+            "status": "running",
+            "progress": 0.0,
+            "message": "Starting pivot calculation",
+            "analysis_key": spec.result_cache_key,
+        }
+        job_id = self._store.create_job(initial_job)
         completion_event = threading.Event()
         with self._completion_lock:
             self._completion_events[job_id] = completion_event

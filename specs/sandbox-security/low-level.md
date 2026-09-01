@@ -444,8 +444,8 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   exactly-once input-code execution, output-code rejection, and secret-free
   namespaces/failures.
 
-## Approved change contract — canonical sandbox payload
+## Canonical sandbox payload
 
-Under the [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
+Under the [canonical-only format policy](../README.md#canonical-only-format-policy),
 the sandbox accepts only the current generated payload namespace. Historical module aliases and
 shim globals are removed; allow-list and containment behavior for the current payload is unchanged.

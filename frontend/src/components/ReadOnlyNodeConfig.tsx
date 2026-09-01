@@ -32,9 +32,12 @@ import {
   OptimiserConfig,
   LazyEditorBoundary,
 } from "../panels/LazyNodeEditors"
+import { useMemo } from "react"
+
 import { GraphProvider } from "../panels/GraphContext"
 import { NODE_TYPES, nodeTypeColors } from "../utils/nodeTypes"
 import type { OnUpdateConfigResult } from "../panels/editors/_shared"
+import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 
 const noop = (): OnUpdateConfigResult => ({ ok: true })
 const EMPTY: never[] = []
@@ -48,11 +51,21 @@ interface ReadOnlyNodeConfigProps {
 export default function ReadOnlyNodeConfig({ nodeType, config, nodeId }: ReadOnlyNodeConfigProps) {
   const accentColor = nodeTypeColors[nodeType] ?? "var(--accent)"
   const configWithNodeId = { ...config, _nodeId: nodeId }
+  // Select the stored array (or undefined) so the snapshot stays reference-
+  // stable while capabilities are absent; a `?? []` inside the selector minted
+  // a fresh array per snapshot and looped useSyncExternalStore forever.
+  const reservedLabelList = useDocumentStatusStore(
+    (state) => state.capabilities?.reserved_api_input_frame_labels,
+  )
+  const reservedFrameLabels = useMemo(
+    () => new Set(reservedLabelList ?? []),
+    [reservedLabelList],
+  )
 
   const editor = (() => {
     switch (nodeType) {
       case NODE_TYPES.API_INPUT:
-        return <ApiInputEditor config={config} onUpdate={noop} accentColor={accentColor} />
+        return <ApiInputEditor config={config} onUpdate={noop} accentColor={accentColor} reservedFrameLabels={reservedFrameLabels} />
       case NODE_TYPES.LIVE_SWITCH:
         return (
           <LiveSwitchEditor

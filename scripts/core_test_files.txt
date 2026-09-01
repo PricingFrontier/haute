@@ -33,5 +33,6 @@ tests/test_optimiser_routes.py
 tests/test_codegen.py
 tests/test_executor.py
 tests/test_api_contracts.py
+tests/test_api_contract_generation.py
 tests/test_optional_dependency_extras.py
 tests/test_polars_io_interface_contracts.py

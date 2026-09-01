@@ -338,8 +338,7 @@ frontier-points CSV. Tracking-URI/registry setup and experiment-name resolution 
 go through the same shared `configure_mlflow_tracking()` / `resolve_experiment_name()` /
 `build_run_url()` helpers in `haute.modelling._mlflow_log` that `routes/modelling.py` uses
 (see [modelling low-level](../modelling/low-level.md#shared-mlflow-trackingexperiment-name-resolution))
-— this component previously duplicated that logic inline rather than calling through
-`log_experiment()` itself, since the optimiser's artifact shape (solver params, frontier CSV,
+without calling `log_experiment()` itself, since the optimiser's artifact shape (solver params, frontier CSV,
 `optimiser_result.json`) doesn't fit `log_experiment()`'s model-diagnostics-shaped signature.
 
 ### Artifact lifecycle (persist / validate / load / cleanup)
@@ -746,10 +745,10 @@ price-contour-emitted level-label tie-breaking logic beyond the specific fixture
 `test_optimiser_apply_trace_enrichment.py`; the dtype agreement matrix itself is exhaustive
 over the supported dtype families.
 
-## Approved change contract — prerelease canonical frontier ranges
+## Canonical frontier range implementation
 
-The target is defined in
-[the optimiser high-level contract](high-level.md#approved-change-contract--prerelease-canonical-frontier-ranges).
+The required behaviour is defined in
+[the optimiser high-level contract](high-level.md#canonical-frontier-ranges).
 
 - `src/haute/routes/_optimiser_service.py::_auto_frontier_ranges_from_config` resolves ranges
   exclusively from `frontier_ranges`; it contains no global-range compatibility branch.

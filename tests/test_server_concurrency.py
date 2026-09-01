@@ -286,7 +286,7 @@ class TestJobStoreAtomicUpdateEnforced:
         store = JobStore()
         job_id = store.create_job({"status": "running", "progress": 0.0})
         old_ref = store.get_job(job_id)
-        store.update_job(job_id, status="completed", progress=1.0)
+        store.update_job(job_id, progress=1.0, phase="result-ready")
         new_ref = store.get_job(job_id)
         assert old_ref is not new_ref, (
             "update_job must be atomic (build a new dict and swap) — "
@@ -295,9 +295,11 @@ class TestJobStoreAtomicUpdateEnforced:
         # Old reference stays at the pre-update state
         assert old_ref["status"] == "running"
         assert old_ref["progress"] == 0.0
+        assert "phase" not in old_ref
         # New reference has the update
-        assert new_ref["status"] == "completed"
+        assert new_ref["status"] == "running"
         assert new_ref["progress"] == 1.0
+        assert new_ref["phase"] == "result-ready"
 
     def test_update_job_never_exposes_partial_multi_key_state(self) -> None:
         """Reader thread must never see inconsistent coupled fields.

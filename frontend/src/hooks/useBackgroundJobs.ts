@@ -77,7 +77,7 @@ export default function useBackgroundJobs() {
   const failSolveJob = useNodeResultsStore((s) => s.failSolveJob)
 
   const solvePollFn = useCallback(
-    (jobId: string) => getOptimiserStatus<SolveProgress>(jobId),
+    (jobId: string, signal: AbortSignal) => getOptimiserStatus<SolveProgress>(jobId, { signal }),
     [],
   )
   const solveOnComplete = useCallback(
@@ -118,7 +118,7 @@ export default function useBackgroundJobs() {
   const failTrainJob = useNodeResultsStore((s) => s.failTrainJob)
 
   const trainPollFn = useCallback(
-    (jobId: string) => getTrainStatus<TrainProgress>(jobId),
+    (jobId: string, signal: AbortSignal) => getTrainStatus<TrainProgress>(jobId, { signal }),
     [],
   )
   const trainOnComplete = useCallback(
@@ -159,7 +159,7 @@ export default function useBackgroundJobs() {
   const failExploreJob = useNodeResultsStore((s) => s.failExploreJob)
 
   const explorePollFn = useCallback(
-    (jobId: string) => getExploreStatus<ExploreProgress>(jobId),
+    (jobId: string, signal: AbortSignal) => getExploreStatus<ExploreProgress>(jobId, { signal }),
     [],
   )
   const exploreOnComplete = useCallback(
@@ -199,7 +199,7 @@ export default function useBackgroundJobs() {
   const completeExplorePivotJob = useNodeResultsStore((s) => s.completeExplorePivotJob)
   const failExplorePivotJob = useNodeResultsStore((s) => s.failExplorePivotJob)
   const pivotPollFn = useCallback(
-    (jobId: string) => getExplorePivotStatus(jobId),
+    (jobId: string, signal: AbortSignal) => getExplorePivotStatus(jobId, { signal }),
     [],
   )
   const pivotOnComplete = useCallback(

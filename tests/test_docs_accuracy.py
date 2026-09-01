@@ -14,7 +14,8 @@ import importlib
 import re
 import subprocess
 import tomllib
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -28,6 +29,7 @@ from haute._types import NodeType
 from haute.cli import cli
 from haute.cli._init_cmd import InitConfig, handle_init
 from haute.parser import parse_pipeline_file
+from scripts.spec_corpus_inventory import load_corpus_manifest
 
 # Every check here reads repository files — specs, docs, source listings — and
 # compares them to each other. Nothing it asserts can come out differently on a
@@ -144,6 +146,7 @@ _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
     flags=re.MULTILINE,
 )
+_COMPONENT_PACKAGE_ID = re.compile(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+")
 _REQUIRED_PACKAGE_FIELDS = (
     "**Why:**",
     "**Plan:**",
@@ -167,6 +170,16 @@ _ACCEPTANCE_LABEL = re.compile(
     r"^\s*(?:[-*]\s*)?(?:\*\*)?Acceptance(?: evidence)?\b",
     flags=re.IGNORECASE | re.MULTILINE,
 )
+_UNRESOLVED_TARGET_LABEL = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:\*\*)?Unresolved target\b",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+_ROADMAP_DELIVERED_OUTCOMES_HEADING = re.compile(
+    r"^##\s+Delivered outcomes?\s*$",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+_ROADMAP_REVIEW_OUTCOME_LABEL = re.compile(r"\*\*Review outcome:\*\*", flags=re.IGNORECASE)
+_ROADMAP_RETIRED_TERM = re.compile(r"\b(?:delivered|formerly|superseded)\b", re.IGNORECASE)
 _TEST_PATH = re.compile(r"(?:^|/)(?:test_[^/]+[.]py|[^/]+[.](?:test|spec)[.](?:ts|tsx))$")
 _TEST_COUNT_CLAIM = re.compile(
     r"`(?P<path>(?:tests/)?test_[^`\s]+[.]py)`\s+\((?P<count>\d+)\s+tests?\)"
@@ -264,10 +277,59 @@ def test_internal_engineering_docs_are_excluded_from_public_mkdocs_site() -> Non
     for internal_file in (
         "CI_MIRROR.md",
         "COMMIT_STANDARDS.md",
+        "ENGINEERING_QUALITY_AUDIT_2026_08.md",
+        "ENGINEERING_QUALITY_AUDIT_2026_08_COVERAGE.toml",
         "PERFORMANCE_CHECKS.md",
     ):
         assert f"  {internal_file}\n" in exclude_block
     assert "\n  - Roadmap:" not in config
+
+
+def test_current_specs_reconcile_the_audited_high_low_contradictions() -> None:
+    hosted_high = (SPECS_ROOT / "hosted-databricks-app/high-level.md").read_text(encoding="utf-8")
+    databricks_high = (SPECS_ROOT / "databricks-io/high-level.md").read_text(encoding="utf-8")
+    databricks_low = (SPECS_ROOT / "databricks-io/low-level.md").read_text(encoding="utf-8")
+    quality_high = (SPECS_ROOT / "engineering-quality/high-level.md").read_text(encoding="utf-8")
+    quality_low = (SPECS_ROOT / "engineering-quality/low-level.md").read_text(encoding="utf-8")
+
+    assert "DRAFT" not in hosted_high
+    assert "Nothing in this spec is implemented" not in hosted_high
+    assert "haute.hosted.create_app()" in hosted_high
+    for document in (databricks_high, databricks_low):
+        for credential in (
+            "DATABRICKS_HOST",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_CLIENT_ID",
+            "DATABRICKS_CLIENT_SECRET",
+        ):
+            assert credential in document
+    assert "schema 4" in quality_high
+    assert "schema 4" in quality_low
+    assert "schema 3" not in quality_high
+    assert "schema-3" not in quality_low
+    assert '"schema_version": 4' in (ROOT / "scripts/run_perf_suite.py").read_text(encoding="utf-8")
+
+
+def test_execution_engine_spec_has_one_assistant_schema_inspection_contract() -> None:
+    text = (SPECS_ROOT / "execution-engine/high-level.md").read_text(encoding="utf-8")
+    assert text.count("**Assistant schema inspection is plan-only.**") == 1
+
+
+def test_readme_is_the_single_temporary_contract_lifecycle_owner() -> None:
+    readme = SPECS_README.read_text(encoding="utf-8")
+    template = (SPECS_ROOT / "TEMPLATE.md").read_text(encoding="utf-8")
+
+    for required_record in (
+        "**Current limitation.**",
+        "**Unresolved target.**",
+        "**Non-goals.**",
+        "**Failure and compatibility semantics.**",
+        "**Acceptance evidence.**",
+        "**Roadmap package.**",
+    ):
+        assert required_record in readme
+        assert required_record not in template
+    assert "README.md#temporary-change-contract-lifecycle" in template
 
 
 def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> None:
@@ -315,6 +377,15 @@ def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> Non
             )
             if _module_map_rows(priorities)
             else []
+        )
+        _assert_roadmap_package_bijection(
+            package_ids,
+            priority_rows,
+            context=path.relative_to(ROOT).as_posix(),
+        )
+        history = _roadmap_history_markers(text)
+        assert not history, (
+            f"{path.relative_to(ROOT)} retains delivered/superseded package history: {history}"
         )
         delivered_rows = [
             row for row in priority_rows if _DELIVERED_ROADMAP_STATE.match(row["state"])
@@ -790,6 +861,88 @@ def _roadmap_package_cell_contains(cell: str, package_id: str) -> bool:
     )
 
 
+def _assert_roadmap_package_bijection(
+    package_ids: Sequence[str],
+    priority_rows: Sequence[Mapping[str, str]],
+    *,
+    context: str,
+) -> None:
+    row_ids: list[str] = []
+    for row in priority_rows:
+        package_cell = row["package"].strip()
+        unquoted = (
+            package_cell[1:-1]
+            if package_cell.startswith("`") and package_cell.endswith("`")
+            else package_cell
+        )
+        assert _COMPONENT_PACKAGE_ID.fullmatch(unquoted), (
+            f"{context} priority Package cell must contain exactly one package id: {package_cell!r}"
+        )
+        row_ids.append(unquoted)
+
+    heading_counts = Counter(package_ids)
+    row_counts = Counter(row_ids)
+    heading_duplicates = sorted(
+        package_id for package_id, count in heading_counts.items() if count > 1
+    )
+    row_duplicates = sorted(package_id for package_id, count in row_counts.items() if count > 1)
+    assert not heading_duplicates and not row_duplicates, (
+        f"{context} package ids must appear exactly once; "
+        f"duplicate headings={heading_duplicates}, duplicate rows={row_duplicates}"
+    )
+    assert heading_counts == row_counts, (
+        f"{context} priority rows and package headings must be one-to-one; "
+        f"headings={dict(sorted(heading_counts.items()))}, "
+        f"rows={dict(sorted(row_counts.items()))}"
+    )
+
+
+def _roadmap_history_markers(text: str) -> list[str]:
+    markers: list[str] = []
+    if _ROADMAP_DELIVERED_OUTCOMES_HEADING.search(text):
+        markers.append("Delivered outcomes heading")
+    if _ROADMAP_REVIEW_OUTCOME_LABEL.search(text):
+        markers.append("Review outcome label")
+    markers.extend(
+        f"retired package reference: {line.strip()}"
+        for line in text.splitlines()
+        if _ROADMAP_RETIRED_TERM.search(line) and _COMPONENT_PACKAGE_ID.search(line)
+    )
+    return markers
+
+
+@pytest.mark.parametrize(
+    ("headings", "rows"),
+    [
+        (["EX-01"], []),
+        ([], [{"package": "`EX-01`"}]),
+        (["EX-01"], [{"package": "`EX-01`"}, {"package": "`EX-01`"}]),
+        (["EX-01", "EX-01"], [{"package": "`EX-01`"}, {"package": "`EX-01`"}]),
+    ],
+    ids=["heading-only", "row-only", "duplicate-row", "duplicates-on-both-sides"],
+)
+def test_roadmap_package_bijection_rejects_each_escape(
+    headings: list[str],
+    rows: list[dict[str, str]],
+) -> None:
+    with pytest.raises(AssertionError, match="one-to-one|exactly once"):
+        _assert_roadmap_package_bijection(headings, rows, context="fixture")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "## Delivered outcomes\nOld result.",
+        "**Review outcome:** an earlier design changed.",
+        "**Dependencies:** Delivered EX-01.",
+        "**Dependencies:** EX-01 was delivered.",
+        "**Dependencies:** Current behavior (formerly EX-01).",
+    ],
+)
+def test_roadmap_history_guard_rejects_delivered_or_superseded_narrative(text: str) -> None:
+    assert _roadmap_history_markers(text)
+
+
 def test_markdown_table_records_address_columns_by_header() -> None:
     records = _markdown_table_records(
         """
@@ -995,6 +1148,36 @@ def _note_linkage_violations(
     return violations
 
 
+def _has_active_roadmap_package_link(
+    document: Path,
+    block: str,
+    roadmap_root: Path,
+) -> bool:
+    for target in _MARKDOWN_LINK.findall(block):
+        target_path, hash_mark, anchor = target.strip().partition("#")
+        if not hash_mark or not anchor:
+            continue
+        linked = (document.parent / target_path).resolve() if target_path else document.resolve()
+        if (
+            not linked.is_file()
+            or linked.parent != roadmap_root.resolve()
+            or linked.name == "README.md"
+        ):
+            continue
+        active_anchors = {
+            _slug(match.group(1))
+            for match in re.finditer(
+                r"^###\s+(.+?)\s*$",
+                linked.read_text(encoding="utf-8"),
+                re.MULTILINE,
+            )
+            if _COMPONENT_PACKAGE_HEADING.match(match.group(0))
+        }
+        if anchor in active_anchors:
+            return True
+    return False
+
+
 def _docs_violations(
     root: Path = ROOT,
     specs_root: Path | None = None,
@@ -1009,6 +1192,15 @@ def _docs_violations(
     violations: set[DocViolation] = set()
     referenced_tests: set[str] = set()
     roadmap_root = root / "specs" / "roadmap"
+    corpus_manifest = specs_root / "corpus.toml"
+    supplemental_headings = (
+        {
+            declaration.path: tuple(f"## {heading}" for heading in declaration.required_headings)
+            for declaration in load_corpus_manifest(root).values()
+        }
+        if corpus_manifest.is_file()
+        else {}
+    )
 
     for document in sorted(specs_root.rglob("*.md")):
         if roadmap_root in document.parents:
@@ -1021,7 +1213,7 @@ def _docs_violations(
             if document.name == "low-level.md"
             else _REQUIRED_HIGH_LEVEL_HEADINGS
             if document.name == "high-level.md"
-            else ()
+            else supplemental_headings.get(relative, ())
         )
         for heading in expected:
             if heading[3:] not in sections:
@@ -1079,6 +1271,14 @@ def _docs_violations(
         for heading, contract in _contract_sections(sections):
             if heading.startswith(_LEGACY_CONTRACT_PREFIX):
                 violations.add(DocViolation(relative, "legacy-contract-section", heading))
+            if not _UNRESOLVED_TARGET_LABEL.search(contract):
+                violations.add(
+                    DocViolation(relative, "temporary-contract-missing-unresolved-target", heading)
+                )
+            if not _has_active_roadmap_package_link(document, contract, roadmap_root):
+                violations.add(
+                    DocViolation(relative, "temporary-contract-missing-roadmap-package", heading)
+                )
             for sentence in re.split(r"(?<=[.!?])\s+|\n(?=\s*[-*])", contract):
                 refs = [
                     item
@@ -1771,6 +1971,15 @@ def test_every_spec_document_follows_the_required_structure() -> None:
             if missing:
                 failures.append(f"{document.relative_to(ROOT).as_posix()}: {', '.join(missing)}")
 
+    for declaration in load_corpus_manifest(ROOT).values():
+        document = ROOT / declaration.path
+        present = _h2_sections(document.read_text(encoding="utf-8"))
+        missing = [
+            f"## {heading}" for heading in declaration.required_headings if heading not in present
+        ]
+        if missing:
+            failures.append(f"{declaration.path}: {', '.join(missing)}")
+
     assert not failures, "Spec documents missing required sections:\n- " + "\n- ".join(failures)
 
 
@@ -2258,6 +2467,117 @@ def test_docs_guard_retires_contract_when_acceptance_test_symbol_is_present(
         "specs/example/high-level.md",
         "contract-target-present",
         "Approved change contract — tested target: tests/test_ready.py::test_ready",
+    ) in _docs_violations(
+        tmp_path,
+        specs,
+        repo_files=_fixture_repo_files(tmp_path),
+    )
+
+
+def test_docs_guard_requires_unresolved_target_in_temporary_contract(tmp_path: Path) -> None:
+    specs = _seed_high_level_contract(
+        tmp_path,
+        "Approved change contract — pending",
+        "- **Current limitation.** The fixture is incomplete.",
+        "- **Roadmap.** [Tracked](../roadmap/example.md#example-01--finish-it).",
+    )
+    roadmap = tmp_path / "specs/roadmap"
+    roadmap.mkdir()
+    (roadmap / "example.md").write_text(
+        "### EXAMPLE-01 — Finish it\n",
+        encoding="utf-8",
+    )
+
+    violations = _docs_violations(
+        tmp_path,
+        specs,
+        repo_files=_fixture_repo_files(tmp_path),
+    )
+    assert (
+        DocViolation(
+            "specs/example/high-level.md",
+            "temporary-contract-missing-unresolved-target",
+            "Approved change contract — pending",
+        )
+        in violations
+    )
+    assert (
+        DocViolation(
+            "specs/example/high-level.md",
+            "temporary-contract-missing-roadmap-package",
+            "Approved change contract — pending",
+        )
+        not in violations
+    )
+
+
+def test_docs_guard_requires_active_roadmap_package_in_temporary_contract(
+    tmp_path: Path,
+) -> None:
+    specs = _seed_high_level_contract(
+        tmp_path,
+        "Approved change contract — pending",
+        "- **Unresolved target.** Implement the missing behavior.",
+    )
+
+    assert DocViolation(
+        "specs/example/high-level.md",
+        "temporary-contract-missing-roadmap-package",
+        "Approved change contract — pending",
+    ) in _docs_violations(
+        tmp_path,
+        specs,
+        repo_files=_fixture_repo_files(tmp_path),
+    )
+
+
+def test_docs_guard_does_not_treat_roadmap_index_heading_as_active_package(
+    tmp_path: Path,
+) -> None:
+    specs = _seed_high_level_contract(
+        tmp_path,
+        "Approved change contract — pending",
+        "- **Unresolved target.** Implement the missing behavior.",
+        "- **Roadmap package.** "
+        "[Invalid index target](../roadmap/README.md#example-01--finish-it).",
+    )
+    roadmap = tmp_path / "specs/roadmap"
+    roadmap.mkdir()
+    (roadmap / "README.md").write_text(
+        "### EXAMPLE-01 — Finish it\n",
+        encoding="utf-8",
+    )
+
+    assert DocViolation(
+        "specs/example/high-level.md",
+        "temporary-contract-missing-roadmap-package",
+        "Approved change contract — pending",
+    ) in _docs_violations(
+        tmp_path,
+        specs,
+        repo_files=_fixture_repo_files(tmp_path),
+    )
+
+
+def test_docs_guard_applies_declared_supplemental_headings(tmp_path: Path) -> None:
+    specs = tmp_path / "specs"
+    policy = specs / "example/policy.md"
+    policy.parent.mkdir(parents=True)
+    policy.write_text("## Context\nPresent.\n", encoding="utf-8")
+    (specs / "corpus.toml").write_text(
+        """version = 1
+[[supplemental_document]]
+path = "specs/example/policy.md"
+kind = "decision"
+required_headings = ["Context", "Decision"]
+""",
+        encoding="utf-8",
+    )
+
+    assert DocViolation(
+        "specs/example/policy.md",
+        "missing-required-heading",
+        "## Decision",
     ) in _docs_violations(
         tmp_path,
         specs,

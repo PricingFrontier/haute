@@ -29,9 +29,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from haute._types import NodeType
+from haute._types import MODELLING_CONFIG_KEYS, NodeType
 
 if TYPE_CHECKING:
     from haute._types import GraphNode
@@ -42,6 +43,28 @@ ExecFn = Callable[..., tuple[str, Callable[..., Any], bool]]
 
 #: Codegen-side builder signature: ``(node, source_names) -> generated-source-str``.
 CodegenFn = Callable[["GraphNode", list[str]], str]
+
+
+class NodeInputPolicy(Enum):
+    """Closed set of input-selection policies shared by paired node builders."""
+
+    FIRST_CONNECTED = "first_connected"
+
+
+@dataclass(frozen=True, slots=True)
+class SharedNodeSemantics:
+    """Declarative semantics which execution and codegen must share."""
+
+    node_type: NodeType
+    input_policy: NodeInputPolicy
+    decorator_config_keys: tuple[str, ...]
+
+
+MODELLING_NODE_SEMANTICS = SharedNodeSemantics(
+    node_type=NodeType.MODELLING,
+    input_policy=NodeInputPolicy.FIRST_CONNECTED,
+    decorator_config_keys=MODELLING_CONFIG_KEYS,
+)
 
 
 @dataclass(slots=True)

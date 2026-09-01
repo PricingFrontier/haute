@@ -134,7 +134,7 @@ describe("useJobPolling progress throttling", () => {
     )
 
     await advance(500)
-    expect(pollFn).toHaveBeenCalledWith("job-1")
+    expect(pollFn).toHaveBeenCalledWith("job-1", expect.any(AbortSignal))
 
     rerender({
       ...initialConfig,
@@ -149,7 +149,7 @@ describe("useJobPolling progress throttling", () => {
     expect(onProgress).not.toHaveBeenCalled()
 
     await advance(500)
-    expect(pollFn).toHaveBeenCalledWith("job-2")
+    expect(pollFn).toHaveBeenCalledWith("job-2", expect.any(AbortSignal))
     expect(onProgress).toHaveBeenCalledTimes(1)
     expect(onProgress).toHaveBeenLastCalledWith("n1", expect.objectContaining({
       message: "new job",

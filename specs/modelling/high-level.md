@@ -58,6 +58,12 @@ Out of scope, owned elsewhere:
 - The training/optimiser configuration and results UI — see
   [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/high-level.md).
 
+The HTTP training implementation is split behind the stable `TrainService` surface:
+preparation, evaluation/dispersion rules, spawn-picklable worker protocol, and atomic
+artifact publication are stateless/cohesive domain modules, while one lifecycle module owns
+the job store, cancellation registry, supervisor, cleanup, and terminal transitions. The
+compatibility facade and route own no duplicate state or worker implementation.
+
 ## Behaviour
 
 - A user configures a "modelling" node: target column, optional weight/offset columns,
@@ -180,7 +186,7 @@ Invariants that always hold:
   loss). It is never silently mapped to `double`.
 - The public modelling config has exactly one versioned `evaluation` object.
   Legacy public `split` and `cross_validation` objects are rejected under the
-  prerelease canonical-only format policy.
+  [canonical-only format policy](../README.md#canonical-only-format-policy).
 - A final-test source position is never visible to a validation fit or tuning trial.
   Selection fits use only development rows, the selected configuration is refitted
   once on all development rows, and the final test is evaluated once after selection.

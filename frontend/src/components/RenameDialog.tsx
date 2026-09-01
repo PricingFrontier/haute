@@ -3,7 +3,9 @@ import ModalShell from "./ModalShell"
 
 interface RenameDialogProps {
   defaultValue: string
-  onConfirm: (newName: string) => void
+  onConfirm: (newName: string) => Promise<
+    { ok: true } | { ok: false; error: string }
+  >
   onCancel: () => void
 }
 
@@ -18,7 +20,7 @@ const MAX_NAME_LENGTH = 200
  *    - `` ` ``         — breaks markdown code spans and our template strings
  *
  *  Unicode letters, digits, punctuation, spaces, dashes, etc. are allowed
- *  freely — sanitisation for code-gen happens in a separate `sanitizeName`
+ *  freely — sanitisation for code-gen happens in a separate backend identity
  *  step (not here). */
 // eslint-disable-next-line no-control-regex -- deliberately matching control chars
 const UNSAFE_CHAR_REGEX = /[\u0000-\u001f\u007f`]/
@@ -45,6 +47,8 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
   // us even though those characters corrupt downstream code generation.
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [value, setValue] = useState<string>(defaultValue)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   // Auto-focus and select all text on mount
   useEffect(() => {
@@ -58,13 +62,28 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
   const validated = validateName(value)
   const canSubmit = validated !== null
 
-  const submit = () => {
+  const submit = async () => {
+    if (pending) return
     const result = validateName(value)
-    if (result !== null) onConfirm(result)
+    if (result === null) return
+    setPending(true)
+    setError(null)
+    try {
+      const outcome = await onConfirm(result)
+      if (!outcome.ok) setError(outcome.error)
+    } catch (reason: unknown) {
+      setError(`Rename failed: ${reason instanceof Error ? reason.message : String(reason)}`)
+    } finally {
+      setPending(false)
+    }
   }
 
   return (
-    <ModalShell ariaLabel="Rename node" onClose={onCancel} testId="rename-dialog">
+    <ModalShell
+      ariaLabel="Rename node"
+      onClose={pending ? () => {} : onCancel}
+      testId="rename-dialog"
+    >
       <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
         <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
           Rename Node
@@ -74,7 +93,7 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
         className="p-4 flex flex-col gap-3"
         onSubmit={(e) => {
           e.preventDefault()
-          submit()
+          void submit()
         }}
       >
         <div>
@@ -91,6 +110,7 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
             name="name"
             rows={1}
             value={value}
+            disabled={pending}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={(e) => {
               // Enter submits (as an <input type="text"> would). Shift+Enter
@@ -101,7 +121,7 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
               // violate the "fail loudly" principle.
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault()
-                submit()
+                void submit()
               }
             }}
             className="w-full px-3 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2 resize-none overflow-hidden"
@@ -113,12 +133,19 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
               whiteSpace: "nowrap",
             }}
             aria-invalid={!canSubmit}
+            aria-describedby={error ? "rename-error" : undefined}
           />
+          {error && (
+            <p id="rename-error" role="alert" className="mt-1 text-[11px]" style={{ color: "var(--danger)" }}>
+              {error}
+            </p>
+          )}
         </div>
         <div className="flex justify-end gap-2">
           <button
             type="button"
             onClick={onCancel}
+            disabled={pending}
             className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
             style={{ color: "var(--text-secondary)" }}
           >
@@ -126,11 +153,11 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
           </button>
           <button
             type="submit"
-            disabled={!canSubmit}
+            disabled={!canSubmit || pending}
             className="px-4 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--structure-action-hover)] disabled:hover:bg-[var(--structure-action)]"
             style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
           >
-            Rename
+            {pending ? "Resolving…" : "Rename"}
           </button>
         </div>
       </form>

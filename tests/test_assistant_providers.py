@@ -996,13 +996,10 @@ class TestDatabricksProvider:
         assert tool.arguments == {"ops": [operation]}
 
     async def test_all_providers_advertise_the_same_portable_production_schema(self):
-        from haute.assistant._loop import _request_routed_tools
+        from haute.assistant._loop import _provider_tools
         from haute.assistant._tools import TOOL_DEFINITIONS
 
-        routed_tools = _request_routed_tools(
-            TOOL_DEFINITIONS,
-            "Continuously band driver_age into driver_age_band.",
-        )
+        routed_tools = _provider_tools(TOOL_DEFINITIONS)
 
         canonical_definition = next(
             tool for tool in routed_tools if tool["name"] == "dry_run_graph_edits"
@@ -1081,7 +1078,10 @@ class TestDatabricksProvider:
                 "update_preamble",
             ]
         }
-        assert anthropic_wire["properties"]["postconditions"]["items"] == {"type": "object"}
+        postcondition_item = anthropic_wire["properties"]["postconditions"]["items"]
+        assert postcondition_item["type"] == "object"
+        assert postcondition_item["additionalProperties"] is False
+        assert "kind" in postcondition_item["properties"]
 
         recipe_wire = anthropic_schemas["plan_recipe"]
         assert "graph node name" in recipe_wire["properties"]["name"]["description"]
@@ -1096,7 +1096,9 @@ class TestDatabricksProvider:
             "op2",
             "val2",
             "assignment",
+            "value",
         }
+        assert rules_wire["items"]["required"] == ["assignment"]
 
         def objects(value):
             if isinstance(value, dict):
@@ -1112,7 +1114,7 @@ class TestDatabricksProvider:
             wire_objects = list(objects(wire_schema))
             assert all(unsupported.isdisjoint(value) for value in wire_objects)
             assert all(not isinstance(value.get("type"), list) for value in wire_objects)
-            assert sum(len(value.get("properties", {})) for value in wire_objects) <= 16
+            assert sum(len(value.get("properties", {})) for value in wire_objects) <= 40
 
     async def test_openai_provider_does_not_apply_databricks_compatibility(self):
         arguments = {

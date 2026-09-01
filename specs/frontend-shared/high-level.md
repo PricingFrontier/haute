@@ -64,7 +64,7 @@ In scope:
 - Canonical shared types (`types/node.ts`, `types/trace.ts`,
   `types/banding.ts`) and the generic formatting/naming utilities
   (`utils/formatBytes.ts`, `utils/formatTime.ts`, `utils/formatValue.ts`,
-  `utils/color.ts`, `utils/dtypeColors.ts`, `utils/sanitizeName.ts`,
+  `utils/color.ts`, `utils/dtypeColors.ts`, `utils/portableKey.ts`,
   `utils/chartHelpers.ts`, `utils/formatTrace.ts`,
   `utils/mlflowOptimiser.ts`).
 - The application bootstrap (`main.tsx`).
@@ -151,10 +151,14 @@ sequence — distinct from `useJobPolling`/`useBackgroundJobs`, which track
 jobs the user can navigate away from and revisit.
 
 The shared boundary also owns the versioned execution-strategy diagnostic,
-I/O capability, input-cache, and explicit output-write shapes. Strategy
-diagnostics retain known status fields and bounded unavailable/truncated
-detail; an unsupported version becomes unavailable, while a malformed
-matching version throws rather than being repaired by a feature panel.
+I/O capability, input-cache, and explicit output-write shapes. The diagnostic's
+static TypeScript types, constants, and standalone structural validator are
+generated from the canonical Pydantic contract; the handwritten parser owns
+collection state/count relationships, strategy/status mapping, canonical order,
+calibration consistency, compatibility handling, and stable projection into the
+UI type. Strategy diagnostics retain known status fields and bounded
+unavailable/truncated detail; an unsupported version becomes unavailable, while
+a malformed matching version throws rather than being repaired by a feature panel.
 Capability order and unsupported legs remain intact, cache
 readiness/freshness/progress are separate typed values, and removed
 compatibility endpoints or legacy node types have no client wrappers.
@@ -187,9 +191,9 @@ result cache.
 size, per-section open/closed UI memory, the MLflow connectivity check
 (fetched once, shared, retried on a 10s cooldown after failure), the list of
 named data sources plus which is active, and a 30-second file-listing cache.
-Adding a source runs the label through the shared `sanitizeName()` so two
-labels that only differ by case or punctuation don't collide on the
-persisted key. `addSource` returns a discriminated `AddSourceResult`
+Adding a source runs the label through browser-owned `portableKey()`. Case is
+preserved; if distinct labels converge after punctuation handling, the store
+detects the occupied key and refuses the second addition. `addSource` returns a discriminated `AddSourceResult`
 (`{ok: true, key}` or `{ok: false, reason: "empty" | "duplicate", key?}`)
 rather than a bare `string | null`, so a caller like `Toolbar` can tell
 the user *why* the add was rejected — blank name vs. a label that
@@ -366,7 +370,7 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   the boundary it wraps, so one panel's crash is visible and recoverable
   without reloading the whole app.
 
-## Approved change contract — pipeline editor document trust boundary
+## Pipeline editor document trust boundary
 
 The initial pipeline endpoint returns `unknown` through the generic transport. A dedicated strict
 parser validates the complete versioned editor-document shape, including exact nested keys,

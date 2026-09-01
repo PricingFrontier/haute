@@ -21,6 +21,7 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import run_frontier_and_wait
 
 # -- Shared constants and helpers ------------------------------------------
@@ -512,10 +513,9 @@ class TestOptimiserRoutesSafeDetail:
     def clean_job_store(self):
         from haute.routes.optimiser import _store
 
-        snapshot = dict(_store.jobs)
+        _store.clear_all()
         yield _store
-        _store.jobs.clear()
-        _store.jobs.update(snapshot)
+        _store.clear_all()
 
     def test_apply_500_no_leak(self, client: TestClient, clean_job_store) -> None:
         store = clean_job_store
@@ -523,12 +523,16 @@ class TestOptimiserRoutesSafeDetail:
         type(mock_solve_result).dataframe = property(
             lambda self: (_ for _ in ()).throw(RuntimeError("numpy internal: segfault at 0xdead"))
         )
-        store.jobs["test_apply_err"] = {
-            "status": "completed",
-            "solve_result": mock_solve_result,
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        }
+        seed_job(
+            store,
+            "test_apply_err",
+            {
+                "status": "completed",
+                "solve_result": mock_solve_result,
+                "created_at": time.time(),
+                "completed_at": time.time(),
+            },
+        )
         resp = client.post("/api/optimiser/apply", json={"job_id": "test_apply_err"})
         assert resp.status_code == 500
         detail = resp.json()["detail"]
@@ -542,13 +546,17 @@ class TestOptimiserRoutesSafeDetail:
         mock_solver.frontier.side_effect = RuntimeError(
             "Rust panic: thread 'solver' panicked at core/src/lib.rs:42"
         )
-        store.jobs["test_frontier_err"] = {
-            "status": "completed",
-            "solver": mock_solver,
-            "quote_grid": MagicMock(),
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        }
+        seed_job(
+            store,
+            "test_frontier_err",
+            {
+                "status": "completed",
+                "solver": mock_solver,
+                "quote_grid": MagicMock(),
+                "created_at": time.time(),
+                "completed_at": time.time(),
+            },
+        )
         status = run_frontier_and_wait(
             client,
             {
@@ -574,14 +582,18 @@ class TestOptimiserRoutesSafeDetail:
             total_constraints={"vol": 0.5},
             converged=True,
         )
-        store.jobs["test_save_err"] = {
-            "status": "completed",
-            "solve_result": mock_solve_result,
-            "solver": MagicMock(),
-            "config": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        }
+        seed_job(
+            store,
+            "test_save_err",
+            {
+                "status": "completed",
+                "solve_result": mock_solve_result,
+                "solver": MagicMock(),
+                "config": {},
+                "created_at": time.time(),
+                "completed_at": time.time(),
+            },
+        )
         with patch(
             "pathlib.Path.write_bytes",
             side_effect=OSError("Permission denied: '/secure/results/output.json'"),
@@ -602,15 +614,19 @@ class TestOptimiserRoutesSafeDetail:
         store = clean_job_store
         mock_solver = MagicMock()
         mock_solve_result = MagicMock()
-        store.jobs["test_mlflow_err"] = {
-            "status": "completed",
-            "solver": mock_solver,
-            "solve_result": mock_solve_result,
-            "config": {},
-            "node_label": "opt",
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        }
+        seed_job(
+            store,
+            "test_mlflow_err",
+            {
+                "status": "completed",
+                "solver": mock_solver,
+                "solve_result": mock_solve_result,
+                "config": {},
+                "node_label": "opt",
+                "created_at": time.time(),
+                "completed_at": time.time(),
+            },
+        )
         with patch.dict("sys.modules", {"mlflow": MagicMock()}):
             with patch(
                 "haute.modelling._mlflow_log.resolve_tracking_backend",
@@ -634,14 +650,18 @@ class TestModellingRoutesSafeDetail:
     def test_mlflow_log_500_no_leak(self, client: TestClient) -> None:
         from haute.routes.modelling import _store
 
-        _store.jobs["test_err"] = {
-            "status": "completed",
-            "result": _completed_modelling_result(),
-            "config": {},
-            "node_label": "model",
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        }
+        seed_job(
+            _store,
+            "test_err",
+            {
+                "status": "completed",
+                "result": _completed_modelling_result(),
+                "config": {},
+                "node_label": "model",
+                "created_at": time.time(),
+                "completed_at": time.time(),
+            },
+        )
         try:
             with patch(
                 "haute.modelling._mlflow_log.log_experiment",
@@ -656,7 +676,7 @@ class TestModellingRoutesSafeDetail:
             assert "/opt/simba/lib" not in detail
             assert detail == _SAFE_DETAIL
         finally:
-            _store.jobs.pop("test_err", None)
+            _store.delete_job("test_err")
 
 
 # =====================================================================
@@ -970,17 +990,21 @@ class TestMlflowMissingStatusInconsistency:
     ) -> None:
         from haute.routes.optimiser import _store
 
-        snapshot = dict(_store.jobs)
+        _store.clear_all()
         try:
-            _store.jobs["inc_test"] = {
-                "status": "completed",
-                "solver": MagicMock(),
-                "solve_result": MagicMock(),
-                "config": {},
-                "node_label": "opt",
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            }
+            seed_job(
+                _store,
+                "inc_test",
+                {
+                    "status": "completed",
+                    "solver": MagicMock(),
+                    "solve_result": MagicMock(),
+                    "config": {},
+                    "node_label": "opt",
+                    "created_at": time.time(),
+                    "completed_at": time.time(),
+                },
+            )
             with patch.dict("sys.modules", {"mlflow": None}):
                 resp = client.post(
                     "/api/optimiser/mlflow/log",
@@ -992,8 +1016,7 @@ class TestMlflowMissingStatusInconsistency:
             )
             assert "not installed" in resp.json()["detail"].lower()
         finally:
-            _store.jobs.clear()
-            _store.jobs.update(snapshot)
+            _store.clear_all()
 
     def test_mlflow_routes_return_503_when_mlflow_missing(
         self,
@@ -1243,17 +1266,21 @@ class TestSensitiveInfoLeakage:
         """POST /api/optimiser/mlflow/log -- databricks:// URI must not leak."""
         from haute.routes.optimiser import _store
 
-        snapshot = dict(_store.jobs)
+        _store.clear_all()
         try:
-            _store.jobs["test_uri_leak"] = {
-                "status": "completed",
-                "solver": MagicMock(),
-                "solve_result": MagicMock(),
-                "config": {},
-                "node_label": "opt",
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            }
+            seed_job(
+                _store,
+                "test_uri_leak",
+                {
+                    "status": "completed",
+                    "solver": MagicMock(),
+                    "solve_result": MagicMock(),
+                    "config": {},
+                    "node_label": "opt",
+                    "created_at": time.time(),
+                    "completed_at": time.time(),
+                },
+            )
             with patch.dict("sys.modules", {"mlflow": MagicMock()}):
                 with patch(
                     "haute.modelling._mlflow_log.resolve_tracking_backend",
@@ -1272,21 +1299,24 @@ class TestSensitiveInfoLeakage:
             assert "acme.cloud.databricks.com" not in detail
             assert detail == _SAFE_DETAIL
         finally:
-            _store.jobs.clear()
-            _store.jobs.update(snapshot)
+            _store.clear_all()
 
     def test_modelling_mlflow_log_postgres_uri_no_leak(self, client: TestClient) -> None:
         """POST /api/modelling/mlflow/log -- postgres connection string must not leak."""
         from haute.routes.modelling import _store
 
-        _store.jobs["test_pg_leak"] = {
-            "status": "completed",
-            "result": _completed_modelling_result(),
-            "config": {},
-            "node_label": "model",
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        }
+        seed_job(
+            _store,
+            "test_pg_leak",
+            {
+                "status": "completed",
+                "result": _completed_modelling_result(),
+                "config": {},
+                "node_label": "model",
+                "created_at": time.time(),
+                "completed_at": time.time(),
+            },
+        )
         try:
             with patch(
                 "haute.modelling._mlflow_log.log_experiment",
@@ -1306,7 +1336,7 @@ class TestSensitiveInfoLeakage:
             assert "5432" not in detail
             assert detail == _SAFE_DETAIL
         finally:
-            _store.jobs.pop("test_pg_leak", None)
+            _store.delete_job("test_pg_leak")
 
 
 # =====================================================================

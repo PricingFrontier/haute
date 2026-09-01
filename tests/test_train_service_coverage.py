@@ -152,7 +152,7 @@ class TestCheckGpuFallbackFailure:
 
         train_params: dict[str, object] = {"task_type": "GPU"}
         with patch(
-            "haute.routes._train_service._check_gpu_vram",
+            "haute.routes._training_lifecycle._check_gpu_vram",
             side_effect=RuntimeError("nvml exploded"),
         ):
             result = service._check_gpu_vram_before_launch(
@@ -182,7 +182,7 @@ class TestCheckGpuFallbackFailure:
         job_id = store.create_job({"status": "running"})
 
         train_params: dict[str, object] = {"task_type": "CPU"}
-        with patch("haute.routes._train_service._check_gpu_vram") as mock_vram:
+        with patch("haute.routes._training_lifecycle._check_gpu_vram") as mock_vram:
             result = service._check_gpu_vram_before_launch(
                 train_params,
                 row_limit=None,
@@ -218,7 +218,7 @@ class TestExecuteAndSinkMissingTarget:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._train_service.execute_lazy_graph",
+                "haute.routes._training_lifecycle.execute_lazy_graph",
                 side_effect=lazy_without_target,
             ),
             p1,
@@ -271,7 +271,7 @@ class TestExecuteAndSinkProjection:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._train_service.execute_lazy_graph",
+                "haute.routes._training_lifecycle.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
             patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
@@ -323,7 +323,7 @@ class TestExecuteAndSinkProjection:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._train_service.execute_lazy_graph",
+                "haute.routes._training_lifecycle.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
             patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
@@ -438,7 +438,7 @@ class TestStartGlmMergeAndKeepColumns:
             service._join_preparation(resp.job_id)
 
         assert resp.status == "started"
-        created_job = next(iter(store.jobs.values()))
+        created_job = next(iter(store.list_jobs().values()))
         assert isinstance(created_job["start_time"], float)
         assert created_job["timeout"] > 0
         # GLM top-level config keys merged into train_params (line 272-273).
@@ -467,7 +467,7 @@ class TestStartGlmMergeAndKeepColumns:
         observed: dict[str, object] = {}
 
         def inspect_created_job(*_args, **_kwargs):
-            job = next(iter(store.jobs.values()))
+            job = next(iter(store.list_jobs().values()))
             observed["start_time"] = job.get("start_time")
             observed["timeout"] = job.get("timeout")
             raise RuntimeError("stop after create")
@@ -506,9 +506,9 @@ class TestStartGlmMergeAndKeepColumns:
             service._join_preparation(response.job_id)
 
         # The single created job should be in error state, not left running.
-        running = [j for j in store.jobs.values() if j["status"] == "running"]
+        running = [j for j in store.list_jobs().values() if j["status"] == "running"]
         assert running == []
-        errored = [j for j in store.jobs.values() if j["status"] == "error"]
+        errored = [j for j in store.list_jobs().values() if j["status"] == "error"]
         assert errored
         assert "sink failed" in errored[0]["error"]
 
@@ -547,7 +547,7 @@ class TestExecuteAndSinkWithExecutionContext:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._train_service.execute_lazy_graph",
+                "haute.routes._training_lifecycle.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
             patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
@@ -604,7 +604,7 @@ class TestExecuteAndSinkWithExecutionContext:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._train_service.execute_lazy_graph",
+                "haute.routes._training_lifecycle.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
             patch("haute._polars_utils.bounded_sink"),
@@ -652,7 +652,7 @@ class TestExecuteAndSinkWithExecutionContext:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._train_service.execute_lazy_graph",
+                "haute.routes._training_lifecycle.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
             patch("haute._polars_utils.bounded_sink"),
@@ -701,11 +701,11 @@ class TestExecuteAndSinkCleanupArms:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._train_service.execute_lazy_graph",
+                "haute.routes._training_lifecycle.execute_lazy_graph",
                 side_effect=lazy_raises_contract_error,
             ),
             patch(
-                "haute.routes._train_service.os.unlink",
+                "haute.routes._training_lifecycle.os.unlink",
                 side_effect=lambda path: unlinked.append(path),
             ),
             p1,
@@ -752,11 +752,11 @@ class TestExecuteAndSinkCleanupArms:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._train_service.execute_lazy_graph",
+                "haute.routes._training_lifecycle.execute_lazy_graph",
                 side_effect=lazy_raises_memory,
             ),
             patch(
-                "haute.routes._train_service.os.unlink",
+                "haute.routes._training_lifecycle.os.unlink",
                 side_effect=lambda p: created_paths.append(p),
             ),
             p1,
@@ -792,11 +792,11 @@ class TestExecuteAndSinkCleanupArms:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._train_service.execute_lazy_graph",
+                "haute.routes._training_lifecycle.execute_lazy_graph",
                 side_effect=lazy_raises_unsupported,
             ),
             patch(
-                "haute.routes._train_service.os.unlink",
+                "haute.routes._training_lifecycle.os.unlink",
                 side_effect=lambda p: unlinked.append(p),
             ),
             p1,
@@ -869,17 +869,17 @@ class TestExecuteAndSinkCleanupAbsentPaths:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._train_service.execute_lazy_graph",
+                "haute.routes._training_lifecycle.execute_lazy_graph",
                 side_effect=lazy_side_effect,
             ),
-            patch("haute.routes._train_service.os.path.exists", return_value=False),
+            patch("haute.routes._training_lifecycle.os.path.exists", return_value=False),
             patch.object(_tempfile, "mkstemp", side_effect=_mkstemp_training_absent),
             patch.object(_tempfile, "mkdtemp", return_value=str(ckpt_missing)),
             patch(
-                "haute.routes._train_service.build_dataframe_execution_cache_request",
+                "haute.routes._training_lifecycle.build_dataframe_execution_cache_request",
                 return_value=MagicMock(),
             ),
-            patch("haute.routes._train_service.os.unlink") as mock_unlink,
+            patch("haute.routes._training_lifecycle.os.unlink") as mock_unlink,
             p1,
             p2,
             p3,
@@ -1023,16 +1023,16 @@ class TestStartExecutionContextLifecycle:
             patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch(
-                "haute.routes._train_service.create_admitted_execution_context",
+                "haute.routes._training_lifecycle.create_admitted_execution_context",
                 return_value=ctx,
             ),
-            patch("haute.routes._train_service.bind_running_execution_metrics_publisher"),
+            patch("haute.routes._training_lifecycle.bind_running_execution_metrics_publisher"),
             patch.object(service, "_execute_and_sink", side_effect=fake_execute),
         ):
             response = service.start(body)
             service._join_preparation(response.job_id)
 
-        jobs = list(store.jobs.values())
+        jobs = list(store.list_jobs().values())
         assert jobs and jobs[0]["status"] == "memory_limited"
         assert jobs[0]["http_status_code"] == 507
         assert jobs[0]["error_code"] == "memory_limit"
@@ -1069,10 +1069,10 @@ class TestStartExecutionContextLifecycle:
             patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch(
-                "haute.routes._train_service.create_admitted_execution_context",
+                "haute.routes._training_lifecycle.create_admitted_execution_context",
                 return_value=ctx,
             ),
-            patch("haute.routes._train_service.bind_running_execution_metrics_publisher"),
+            patch("haute.routes._training_lifecycle.bind_running_execution_metrics_publisher"),
             patch.object(
                 service,
                 "_execute_and_sink",
@@ -1087,7 +1087,7 @@ class TestStartExecutionContextLifecycle:
             release_preparation.set()
             service._join_preparation(response.job_id)
 
-        jobs = list(store.jobs.values())
+        jobs = list(store.list_jobs().values())
         assert jobs and jobs[0]["status"] == "cancelled"
         assert released == [True]
 
@@ -1100,7 +1100,7 @@ class TestStartExecutionContextLifecycle:
 
         with (
             patch(
-                "haute.routes._train_service.threading.Thread.start",
+                "haute.routes._training_lifecycle.threading.Thread.start",
                 side_effect=RuntimeError("thread unavailable"),
             ),
             pytest.raises(HTTPException) as exc_info,
@@ -1108,7 +1108,7 @@ class TestStartExecutionContextLifecycle:
             service.start(self._min_graph())
 
         assert exc_info.value.status_code == 500
-        (job_id,) = store.jobs
+        (job_id,) = store.list_jobs()
         job = store.require_job(job_id)
         assert job["status"] == "error"
         assert "failed to start" in job["message"]
@@ -1205,12 +1205,11 @@ class TestCheckGpuVramHelper:
 
     def test_sufficient_vram_yields_no_warning(self):
         """When estimated VRAM fits available VRAM, no warning (384->390)."""
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
 
         with (
-            patch.object(
-                _train_service,
-                "_DEFAULT_BORDER_COUNT",
+            patch(
+                "haute.routes._training_preparation._DEFAULT_BORDER_COUNT",
                 128,
             ),
             patch(
@@ -1230,7 +1229,7 @@ class TestCheckGpuVramHelper:
 
     def test_unknown_vram_warns_without_refusing(self):
         """Unknown VRAM is advisory: warning set, ``insufficient`` stays False."""
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
 
         with (
             patch(
@@ -1252,7 +1251,7 @@ class TestCheckGpuVramHelper:
 
     def test_insufficient_vram_sets_blocking_flag(self):
         """Observed-too-small VRAM is the one state that refuses a launch."""
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
 
         with (
             patch(
@@ -1290,11 +1289,13 @@ class TestCancelGuards:
 
     def test_cancel_non_running_job_returns_job_unchanged(self):
         """cancel on an already-finished training job is a no-op (line 599)."""
+        from haute.routes._job_lifecycle import JobLifecycle
         from haute.routes._job_store import JobStore
 
         store = JobStore()
         service = TrainService(store)
-        job_id = store.create_job({"status": "completed", "job_type": "training"})
+        job_id = store.create_job({"status": "running", "job_type": "training"})
+        JobLifecycle(store).transition(job_id, to="completed")
 
         result = service.cancel(job_id)
         assert result["status"] == "completed"
@@ -1382,7 +1383,7 @@ class TestCheckGpuFallbackNoWarning:
 
         train_params: dict[str, object] = {"task_type": "GPU"}
         with patch(
-            "haute.routes._train_service._check_gpu_vram",
+            "haute.routes._training_lifecycle._check_gpu_vram",
             return_value=_VramCheck(estimated_mb=10.0, available_mb=100.0, warning=None),
         ):
             result = service._check_gpu_vram_before_launch(
@@ -1409,7 +1410,7 @@ class TestCheckGpuFallbackNoWarning:
         advisory = "GPU VRAM could not be detected (no NVIDIA GPU found)."
         train_params: dict[str, object] = {"task_type": "GPU"}
         with patch(
-            "haute.routes._train_service._check_gpu_vram",
+            "haute.routes._training_lifecycle._check_gpu_vram",
             return_value=_VramCheck(
                 estimated_mb=10.0,
                 available_mb=None,
@@ -1516,7 +1517,7 @@ class TestEvaluationPreviewFailures:
         lazy_outputs: dict[str, pl.LazyFrame],
         message: str,
     ) -> None:
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
 
         context = _training_execution_context()
         service = TrainService(JobStore())
@@ -1567,7 +1568,7 @@ class TestEvaluationPreviewFailures:
         error: BaseException,
         message: str,
     ) -> None:
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
 
         context = _training_execution_context()
         service = TrainService(JobStore())
@@ -1679,7 +1680,7 @@ class TestLaunchBackgroundWorker:
         """A TrainingJob whose run() invokes progress + on_iteration (past the
         loss-history cap) drives the success closures and the truncation arm
         (1075-1076); the job ends completed and the temp parquet is unlinked."""
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
 
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
@@ -1728,7 +1729,7 @@ class TestLaunchBackgroundWorker:
     def test_execution_cancelled_marks_cancelled(self, tmp_path):
         """An ExecutionCancelledError from run() → job cancelled (1164-1169)."""
         from haute._execution_context import ExecutionCancelledError
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
 
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
@@ -1768,7 +1769,7 @@ class TestLaunchBackgroundWorker:
 
     def test_bounded_unsupported_marks_contract_error(self, tmp_path):
         """BoundedMemoryUnsupportedError from run() → contract_error (1185-1186)."""
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
 
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
@@ -1811,7 +1812,7 @@ class TestLaunchBackgroundWorker:
     def test_thread_start_failure_marks_error_and_raises_500(self, tmp_path):
         """If Thread.start() blows up, the job flips to error, admission is
         released, the temp file is removed, and a 500 is raised (1236-1250)."""
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
 
         store, service, job_id = self._service_and_job()
         released: list[bool] = []
@@ -1860,7 +1861,7 @@ class TestLaunchBackgroundWorker:
 class TestProtocolCallbackValidation:
     @staticmethod
     def _capture_training_launch(tmp_path: Path):
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
         from haute.routes._job_store import JobStore
 
         store = JobStore()
@@ -1909,7 +1910,7 @@ class TestProtocolCallbackValidation:
 
     @staticmethod
     def _capture_dispersion_launch(tmp_path: Path):
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
         from haute.routes._job_store import JobStore
 
         store = JobStore()
@@ -1977,7 +1978,7 @@ class TestProtocolCallbackValidation:
                         {"iteration": True, "total": 1, "metrics": {}},
                     )
                 )
-            store.jobs.pop(job_id)
+            store.delete_job(job_id)
             with pytest.raises(KeyError, match="disappeared"):
                 on_progress(
                     WorkerProgressEvent(
@@ -2079,7 +2080,7 @@ class TestProtocolCallbackValidation:
                     )
                 )
 
-            store.jobs.pop(job_id)
+            store.delete_job(job_id)
             with pytest.raises(KeyError, match="disappeared during tuning"):
                 on_progress(
                     WorkerProgressEvent(
@@ -2309,7 +2310,7 @@ class TestProtocolLaunchCleanup:
         kind: str,
         job_type: str,
     ) -> None:
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
 
         store, service, job_id, prepared, context, released = self._service_job_and_context(
             tmp_path, job_type=job_type
@@ -2349,7 +2350,7 @@ class TestProtocolLaunchCleanup:
         kind: str,
         job_type: str,
     ) -> None:
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
 
         _store, service, job_id, prepared, context, released = self._service_job_and_context(
             tmp_path, job_type=job_type
@@ -2373,7 +2374,7 @@ class TestProtocolLaunchCleanup:
         self,
         tmp_path: Path,
     ) -> None:
-        from haute.routes import _train_service
+        from haute.routes import _training_lifecycle as _train_service
 
         _store, service, job_id, prepared, context, released = self._service_job_and_context(
             tmp_path, job_type="dispersion_estimate"

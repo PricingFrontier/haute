@@ -73,6 +73,8 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
     preservedBlocksRef: { current: ["import numpy as np"] },
     pipelineNameRef: { current: "test" },
     fitView: vi.fn(),
+    reservedApiInputFrameLabels: new Set<string>(),
+    resolveGraphIdentities: vi.fn(async ({ nodes, edges }) => ({ nodes: [...nodes], edges: [...edges] })),
     ...overrides,
   }
 }
@@ -166,6 +168,73 @@ describe("useSubmodelNavigation", () => {
     expect(useGraphStore.getState().nodes.find((node) => node.id === "n1")?.position.x).toBe(99)
     expect(params.graphRef.current.nodes.map((node) => node.id)).toContain("n1")
     expect(useToastStore.getState().toasts.at(-1)?.text).toContain("workspace changed")
+  })
+
+  it("keeps a create transform atomic when identity resolution fails", async () => {
+    mockCreate.mockResolvedValue(makeCreateResponse({
+      nodes: [makeNode("replacement")],
+      edges: [],
+      submodels: {},
+    }))
+    const identityError = new Error("identity service unavailable")
+    const params = makeParams({
+      resolveGraphIdentities: vi.fn(async () => { throw identityError }),
+    })
+    seedCanonicalGraph(params)
+    const originalGraph = params.graphRef.current
+    const originalSubmodels = params.submodelsRef.current
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+
+    await act(async () => {
+      await result.current.handleCreateSubmodel("pricing", ["n1", "n2"])
+    })
+
+    expect(params.graphRef.current).toBe(originalGraph)
+    expect(params.submodelsRef.current).toBe(originalSubmodels)
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual([
+      "n1",
+      "n2",
+      INSTANCE_ID,
+    ])
+    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "error",
+      text: "Create submodel failed: identity service unavailable",
+    })
+  })
+
+  it("does not apply identities after the workspace changes during resolution", async () => {
+    mockCreate.mockResolvedValue(makeCreateResponse({
+      nodes: [makeNode("replacement")],
+      edges: [],
+      submodels: {},
+    }))
+    let resolveIdentities!: (value: { nodes: Node[]; edges: Edge[] }) => void
+    const identityPromise = new Promise<{ nodes: Node[]; edges: Edge[] }>((resolve) => {
+      resolveIdentities = resolve
+    })
+    const resolveGraphIdentities = vi.fn(() => identityPromise)
+    const params = makeParams({ resolveGraphIdentities })
+    seedCanonicalGraph(params)
+    const originalGraph = params.graphRef.current
+    const originalSubmodels = params.submodelsRef.current
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+
+    const pending = result.current.handleCreateSubmodel("pricing", ["n1", "n2"])
+    await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledOnce())
+    act(() => useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) =>
+      node.id === "n1" ? { ...node, position: { x: 123, y: 0 } } : node)))
+    await act(async () => {
+      resolveIdentities({ nodes: [makeNode("resolved_replacement")], edges: [] })
+      await pending
+    })
+
+    expect(params.graphRef.current).toBe(originalGraph)
+    expect(params.submodelsRef.current).toBe(originalSubmodels)
+    expect(useGraphStore.getState().nodes.find((node) => node.id === "n1")?.position.x).toBe(123)
+    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "error",
+      text: expect.stringContaining("workspace changed"),
+    })
   })
 
   it("does not apply a dissolve response after a submodel-only canonical-store edit", async () => {
@@ -288,7 +357,8 @@ describe("useSubmodelNavigation", () => {
         submodels: { [DEFINITION_ID]: makeDefinition() },
       },
     })
-    const params = makeParams()
+    const resolvedNode = { ...makeOccurrence(), data: { ...makeOccurrence().data, _functionName: "resolved_create" } }
+    const params = makeParams({ resolveGraphIdentities: vi.fn(async () => ({ nodes: [resolvedNode], edges: [] })) })
     seedCanonicalGraph(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
     await act(async () => {
@@ -300,6 +370,7 @@ describe("useSubmodelNavigation", () => {
     expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual([
       INSTANCE_ID,
     ])
+    expect(useGraphStore.getState().nodes[0]?.data._functionName).toBe("resolved_create")
     const toasts = useToastStore.getState().toasts
     expect(toasts.some((t) => t.type === "success")).toBe(true)
     vi.useRealTimers()
@@ -665,7 +736,8 @@ describe("useSubmodelNavigation", () => {
         edges: [],
       },
     })
-    const params = makeParams()
+    const resolvedNodes = [{ ...makeNode("n1"), data: { ...makeNode("n1").data, _functionName: "resolved_dissolve" } }, makeNode("n2")]
+    const params = makeParams({ resolveGraphIdentities: vi.fn(async () => ({ nodes: resolvedNodes, edges: [] })) })
     seedCanonicalGraph(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
     await act(async () => {
@@ -677,6 +749,7 @@ describe("useSubmodelNavigation", () => {
     expect(params.submodelsRef.current).toEqual({})
     expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
     expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["n1", "n2"])
+    expect(useGraphStore.getState().nodes[0]?.data._functionName).toBe("resolved_dissolve")
     const toasts = useToastStore.getState().toasts
     expect(toasts.some((t) => t.type === "success" && t.text.includes("dissolved"))).toBe(true)
     vi.useRealTimers()

@@ -63,6 +63,14 @@ function recoveryNode(node: Node, index: number): RecoveryNode {
         ? node.type
         : "polars"
   const position = node.position ?? { x: index * 300, y: 0 }
+  const functionName = typeof data._functionName === "string" ? data._functionName : node.id
+  const explicitDefaultInputName = data._defaultInputName
+  const defaultInputName =
+    explicitDefaultInputName === null || typeof explicitDefaultInputName === "string"
+      ? explicitDefaultInputName
+      : nodeType === "apiInput" || nodeType === "submodel" || nodeType === "submodelPort"
+        ? null
+        : functionName
   return {
     recovery_id: node.id,
     authored_id: typeof data._authoredId === "string" ? data._authoredId : node.id,
@@ -75,6 +83,9 @@ function recoveryNode(node: Node, index: number): RecoveryNode {
     display_position: { x: position.x, y: position.y },
     config: structuredClone(record(data.config)) as RecoveryNode["config"],
     config_reference: nullableString(data._configReference),
+    function_name: functionName,
+    default_input_name: defaultInputName,
+    source_handle_input_names: structuredClone(record(data._sourceHandleInputNames)) as Record<string, string>,
     source_file: nullableString(data._sourceFile),
     source_span: null,
     diagnostic_ids: Array.isArray(data._loadDiagnosticIds)
@@ -86,10 +97,16 @@ function recoveryNode(node: Node, index: number): RecoveryNode {
   }
 }
 
-function recoveryEdge(edge: Edge): RecoveryEdge {
+function recoveryEdge(edge: Edge, nodesById: ReadonlyMap<string, RecoveryNode>): RecoveryEdge {
   const data = record(edge.data)
   const pipelineEdge = edge as Edge & { sourcePort?: string | null; targetPort?: string | null }
   const availability = data._loadAvailability
+  const sourceNode = nodesById.get(edge.source)
+  const sourceHandle = edge.sourceHandle ?? null
+  const suppliedInputName = nullableString(data._inputName)
+    ?? (sourceHandle === null
+      ? sourceNode?.default_input_name ?? null
+      : sourceNode?.source_handle_input_names[sourceHandle] ?? null)
   return {
     recovery_id: edge.id,
     source_recovery_id: edge.source,
@@ -98,10 +115,11 @@ function recoveryEdge(edge: Edge): RecoveryEdge {
       typeof data._sourceAuthoredId === "string" ? data._sourceAuthoredId : edge.source,
     target_authored_id:
       typeof data._targetAuthoredId === "string" ? data._targetAuthoredId : edge.target,
-    source_handle: edge.sourceHandle ?? null,
+    source_handle: sourceHandle,
     target_handle: edge.targetHandle ?? null,
     source_port: pipelineEdge.sourcePort ?? null,
     target_port: pipelineEdge.targetPort ?? null,
+    input_name: suppliedInputName ?? edge.source,
     availability:
       availability === "unavailable" || availability === "blocked" ? availability : "ready",
     source_span: null,
@@ -117,6 +135,21 @@ function recoveryEdge(edge: Edge): RecoveryEdge {
 function recoverySubmodel(id: string, value: unknown): RecoverySubmodel {
   const definition = record(value)
   const graph = record(definition.graph)
+  const inputPorts = Array.isArray(definition.inputPorts)
+    ? structuredClone(definition.inputPorts)
+    : []
+  const explicitInputNames = record(definition._inputPortInputNames)
+  const inputPortInputNames = Object.keys(explicitInputNames).length > 0
+    ? explicitInputNames as Record<string, string>
+    : Object.fromEntries(
+      inputPorts.map((port) => {
+        const portId = record(port).portId
+        if (typeof portId !== "string") {
+          throw new Error("pipeline document test fixture input port requires a string portId")
+        }
+        return [portId, portId]
+      }),
+    )
   return {
     definition_id:
       typeof definition.definitionId === "string" ? definition.definitionId : id,
@@ -128,9 +161,8 @@ function recoverySubmodel(id: string, value: unknown): RecoverySubmodel {
       edges: Array.isArray(graph.edges) ? (graph.edges as Edge[]) : [],
       submodels: record(graph.submodels),
     }),
-    input_ports: Array.isArray(definition.inputPorts)
-      ? structuredClone(definition.inputPorts)
-      : [],
+    input_ports: inputPorts,
+    input_port_input_names: inputPortInputNames,
     output_ports: Array.isArray(definition.outputPorts)
       ? structuredClone(definition.outputPorts)
       : [],
@@ -138,9 +170,11 @@ function recoverySubmodel(id: string, value: unknown): RecoverySubmodel {
 }
 
 function recoveryGraph(fixture: CanonicalGraphFixture): RecoveryGraph {
+  const nodes = (fixture.nodes ?? []).map(recoveryNode)
+  const nodesById = new Map(nodes.map((node) => [node.recovery_id, node]))
   return {
-    nodes: (fixture.nodes ?? []).map(recoveryNode),
-    edges: (fixture.edges ?? []).map(recoveryEdge),
+    nodes,
+    edges: (fixture.edges ?? []).map((edge) => recoveryEdge(edge, nodesById)),
     unresolved_connections: [],
     submodels:
       fixture.submodels === null
@@ -167,6 +201,7 @@ function capabilitiesFor(
     can_preview: ready && trusted,
     can_manage_submodels: ready,
     can_repair: status === "degraded",
+    reserved_api_input_frame_labels: [],
     ...overrides,
   }
 }

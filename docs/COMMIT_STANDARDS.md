@@ -67,7 +67,7 @@ Every output value must be traceable back through the graph to its inputs, showi
 - No copy-pasted logic. If two places do the same thing, extract a shared function/module.
 - Shared utilities live in well-known locations (`graph_utils.py`, `frontend/src/utils/`).
 - Shared constants (e.g. config key tuples used by both parser and codegen) live in `_types.py` alongside the TypedDict they describe, and are re-exported through `graph_utils.py`.
-- Frontend and backend implementations of the same logic (e.g. `sanitizeName`) must reference each other in comments and stay in sync.
+- Cross-runtime rules must come from one generated contract or one owning runtime; do not maintain handwritten semantic twins.
 
 ## 2. Simplicity (KISS)
 

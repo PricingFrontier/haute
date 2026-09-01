@@ -56,6 +56,9 @@ export interface RecoveryNode {
   display_position: { x: number; y: number }
   config: Record<string, JsonValue> | null
   config_reference: string | null
+  function_name: string
+  default_input_name: string | null
+  source_handle_input_names: Record<string, string>
   source_file: string | null
   source_span: SourceSpan | null
   diagnostic_ids: string[]
@@ -72,6 +75,7 @@ export interface RecoveryEdge {
   target_handle: string | null
   source_port: string | null
   target_port: string | null
+  input_name: string | null
   availability: PipelineElementAvailability
   source_span: SourceSpan | null
   diagnostic_ids: string[]
@@ -106,6 +110,7 @@ export interface RecoverySubmodel {
   diagnostic_ids: string[]
   graph: RecoveryGraph
   input_ports: SubmodelInputPort[]
+  input_port_input_names: Record<string, string>
   output_ports: SubmodelOutputPort[]
 }
 
@@ -129,6 +134,7 @@ export interface PipelineDocumentCapabilities {
   can_preview: boolean
   can_manage_submodels: boolean
   can_repair: boolean
+  reserved_api_input_frame_labels: string[]
 }
 
 export interface PipelineEditorDocument extends RecoveryGraph {
@@ -162,6 +168,16 @@ function exactKeys(
 function stringArray(value: unknown, field: string): string[] {
   return expectArray(PARSER, value, field).map((item, index) =>
     expectString(PARSER, item, `${field}[${index}]`),
+  )
+}
+
+function nonBlankStringMap(value: unknown, field: string): Record<string, string> {
+  const object = expectPlainObject(PARSER, value, field)
+  return Object.fromEntries(
+    Object.entries(object).map(([key, item]) => [
+      expectNonBlankString(PARSER, key, `${field} key`),
+      expectNonBlankString(PARSER, item, `${field}.${key}`),
+    ]),
   )
 }
 
@@ -246,6 +262,9 @@ function parseRecoveryNode(value: unknown, field: string): RecoveryNode {
     "display_position",
     "config",
     "config_reference",
+    "function_name",
+    "default_input_name",
+    "source_handle_input_names",
     "source_file",
     "source_span",
     "diagnostic_ids",
@@ -268,6 +287,12 @@ function parseRecoveryNode(value: unknown, field: string): RecoveryNode {
     config:
       object.config === null ? null : parseJsonObject(object.config, `${field}.config`),
     config_reference: nullableString(object, "config_reference", field),
+    function_name: expectNonBlankString(PARSER, object.function_name, `${field}.function_name`),
+    default_input_name: nullableString(object, "default_input_name", field),
+    source_handle_input_names: nonBlankStringMap(
+      object.source_handle_input_names,
+      `${field}.source_handle_input_names`,
+    ),
     source_file: nullableString(object, "source_file", field),
     source_span: parseSpan(object.source_span, `${field}.source_span`),
     diagnostic_ids: stringArray(object.diagnostic_ids, `${field}.diagnostic_ids`),
@@ -287,6 +312,7 @@ function parseRecoveryEdge(value: unknown, field: string): RecoveryEdge {
     "target_handle",
     "source_port",
     "target_port",
+    "input_name",
     "availability",
     "source_span",
     "diagnostic_ids",
@@ -318,6 +344,7 @@ function parseRecoveryEdge(value: unknown, field: string): RecoveryEdge {
     target_handle: nullableString(object, "target_handle", field),
     source_port: nullableString(object, "source_port", field),
     target_port: nullableString(object, "target_port", field),
+    input_name: nullableString(object, "input_name", field),
     availability: expectStringLiteral(
       PARSER,
       object.availability,
@@ -470,8 +497,23 @@ function parseRecoverySubmodel(value: unknown, field: string): RecoverySubmodel 
     "diagnostic_ids",
     "graph",
     "input_ports",
+    "input_port_input_names",
     "output_ports",
   ])
+  const inputPorts = expectArray(PARSER, object.input_ports, `${field}.input_ports`).map(
+    (port, index) => parseInputPort(port, `${field}.input_ports[${index}]`),
+  )
+  const inputPortInputNames = nonBlankStringMap(
+    object.input_port_input_names,
+    `${field}.input_port_input_names`,
+  )
+  const inputPortIds = inputPorts.map((port) => port.portId)
+  if (
+    Object.keys(inputPortInputNames).length !== inputPortIds.length
+    || inputPortIds.some((portId) => !(portId in inputPortInputNames))
+  ) {
+    throw new Error(`${PARSER}: ${field}.input_port_input_names must exactly cover input_ports`)
+  }
   return {
     definition_id: expectNonBlankString(
       PARSER,
@@ -490,9 +532,8 @@ function parseRecoverySubmodel(value: unknown, field: string): RecoverySubmodel 
       expectPlainObject(PARSER, object.graph, `${field}.graph`),
       `${field}.graph`,
     ),
-    input_ports: expectArray(PARSER, object.input_ports, `${field}.input_ports`).map(
-      (port, index) => parseInputPort(port, `${field}.input_ports[${index}]`),
-    ),
+    input_ports: inputPorts,
+    input_port_input_names: inputPortInputNames,
     output_ports: expectArray(PARSER, object.output_ports, `${field}.output_ports`).map(
       (port, index) => parseOutputPort(port, `${field}.output_ports[${index}]`),
     ),
@@ -573,6 +614,7 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
     "can_preview",
     "can_manage_submodels",
     "can_repair",
+    "reserved_api_input_frame_labels",
   ])
   const diagnostics = expectArray(PARSER, object.diagnostics, "document.diagnostics").map(
     (item, index) => parseDiagnostic(item, `document.diagnostics[${index}]`),
@@ -588,6 +630,20 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
   if (!Number.isInteger(diagnosticsOmitted) || diagnosticsOmitted < 0) {
     throw new Error(
       `${PARSER}: expected document.diagnostics_omitted to be a non-negative integer`,
+    )
+  }
+  const reservedApiInputFrameLabels = stringArray(
+    capabilities.reserved_api_input_frame_labels,
+    "capabilities.reserved_api_input_frame_labels",
+  )
+  if (
+    reservedApiInputFrameLabels.some((label) => label.length === 0)
+    || reservedApiInputFrameLabels.some(
+      (label, index) => index > 0 && label <= reservedApiInputFrameLabels[index - 1],
+    )
+  ) {
+    throw new Error(
+      `${PARSER}: capabilities.reserved_api_input_frame_labels must be sorted and unique`,
     )
   }
   return {
@@ -636,6 +692,7 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
         "capabilities.can_manage_submodels",
       ),
       can_repair: expectBoolean(PARSER, capabilities.can_repair, "capabilities.can_repair"),
+      reserved_api_input_frame_labels: reservedApiInputFrameLabels,
     },
   }
 }
@@ -665,6 +722,12 @@ function adaptRecoveryGraph(
         description: node.description,
         nodeType,
         ...(node.config === null ? {} : { config: structuredClone(node.config) }),
+        _functionName: node.function_name,
+        _defaultInputName: node.default_input_name,
+        _sourceHandleInputNames: structuredClone(node.source_handle_input_names),
+        ...(node.config_reference === null
+          ? {}
+          : { _configReference: node.config_reference }),
         ...(includeRecoveryMetadata
           ? {
               _loadAvailability: node.availability,
@@ -674,9 +737,6 @@ function adaptRecoveryGraph(
               _authoredId: node.authored_id,
               _authoredDecorator: node.decorator_name,
               _authoredReceiver: receiver,
-              ...(node.config_reference === null
-                ? {}
-                : { _configReference: node.config_reference }),
               ...(node.source_file === null ? {} : { _sourceFile: node.source_file }),
               ...(node.source_span === null
                 ? {}
@@ -690,30 +750,26 @@ function adaptRecoveryGraph(
     id: edge.recovery_id,
     source: edge.source_recovery_id,
     target: edge.target_recovery_id,
-    ...(includeRecoveryMetadata
+    data: {
+      ...(edge.input_name === null ? {} : { _inputName: edge.input_name }),
+      ...(includeRecoveryMetadata
       ? {
-          ...(edge.source_handle === null ? {} : { sourceHandle: edge.source_handle }),
-          ...(edge.target_handle === null ? {} : { targetHandle: edge.target_handle }),
-          ...(edge.source_port === null ? {} : { sourcePort: edge.source_port }),
-          ...(edge.target_port === null ? {} : { targetPort: edge.target_port }),
-          data: {
-            _loadAvailability: edge.availability,
-            _loadDiagnosticIds: [...edge.diagnostic_ids],
-            _loadBlockingPath: [...edge.blocking_path],
-            _recoveryId: edge.recovery_id,
-            _sourceAuthoredId: edge.source_authored_id,
-            _targetAuthoredId: edge.target_authored_id,
-            ...(edge.source_span === null
-              ? {}
-              : { _sourceSpan: { ...edge.source_span } }),
-          },
+          _loadAvailability: edge.availability,
+          _loadDiagnosticIds: [...edge.diagnostic_ids],
+          _loadBlockingPath: [...edge.blocking_path],
+          _recoveryId: edge.recovery_id,
+          _sourceAuthoredId: edge.source_authored_id,
+          _targetAuthoredId: edge.target_authored_id,
+          ...(edge.source_span === null
+            ? {}
+            : { _sourceSpan: { ...edge.source_span } }),
         }
-      : {
-          sourceHandle: edge.source_handle,
-          targetHandle: edge.target_handle,
-          ...(edge.source_port === null ? {} : { sourcePort: edge.source_port }),
-          ...(edge.target_port === null ? {} : { targetPort: edge.target_port }),
-        }),
+      : {}),
+    },
+    sourceHandle: edge.source_handle,
+    targetHandle: edge.target_handle,
+    ...(edge.source_port === null ? {} : { sourcePort: edge.source_port }),
+    ...(edge.target_port === null ? {} : { targetPort: edge.target_port }),
   }))
   for (const connection of graph.unresolved_connections) {
     if (connection.source_recovery_id === null || connection.target_recovery_id === null) {
@@ -762,6 +818,7 @@ function adaptRecoveryGraph(
           graph: { nodes: adaptedGraph.nodes, edges: adaptedGraph.edges },
           inputPorts: structuredClone(submodel.input_ports),
           outputPorts: structuredClone(submodel.output_ports),
+          _inputPortInputNames: structuredClone(submodel.input_port_input_names),
         } satisfies SubmodelDefinition,
       ]
     }),

@@ -434,7 +434,7 @@ class TestTrainExecuteAndSinkChunkSize:
 
         with (
             patch(
-                "haute.routes._train_service.execute_lazy_graph",
+                "haute.routes._training_lifecycle.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
             ),
             patch("haute.executor._build_node_fn", return_value=None),

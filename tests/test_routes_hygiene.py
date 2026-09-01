@@ -829,6 +829,37 @@ class TestNoDirectJobStoreInstantiation:
         assert "JobStore" in class_names
 
 
+class TestJobStoreStateOwnership:
+    """Production collaborators use only the store's public atomic API."""
+
+    _FORBIDDEN_ATTRIBUTES = {"jobs", "_write_lock", "_store_merged_job_locked"}
+
+    def test_routes_do_not_access_job_store_backing_state_or_lock(self) -> None:
+        offenders: list[tuple[str, int, str]] = []
+        for py_file in _iter_python_sources(_ROUTES_DIR):
+            if py_file == _JOB_STORE_PY:
+                continue
+            relative = py_file.relative_to(_REPO_ROOT).as_posix()
+            tree = ast.parse(py_file.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Attribute):
+                    continue
+                is_direct_backing_map = node.attr == "_jobs" and (
+                    isinstance(node.value, ast.Name)
+                    and node.value.id in {"store", "_store"}
+                    or isinstance(node.value, ast.Attribute)
+                    and node.value.attr == "_store"
+                )
+                if node.attr in self._FORBIDDEN_ATTRIBUTES or is_direct_backing_map:
+                    offenders.append((relative, node.lineno, ast.unparse(node)))
+
+        assert offenders == [], (
+            "JobStore backing state or lock accessed outside _job_store.py. "
+            "Use immutable snapshots and the public transition, publication, "
+            f"query, or cleanup operations instead. Offenders: {offenders}"
+        )
+
+
 class TestNoNewPrivateEngineImports:
     """Slice 0 guardrail for the execution-engine cleanup.
 
@@ -1103,13 +1134,16 @@ class TestGetJobStoreIndependentState:
         assert optimiser.get_job(jid) is None
 
     def test_clear_result_data_scoped_to_prefix(self) -> None:
+        from haute.routes._job_lifecycle import JobLifecycle
         from haute.routes._job_store import get_job_store
 
         training = get_job_store("training")
         optimiser = get_job_store("optimiser")
 
-        t_id = training.create_job({"status": "completed", "solver": object()})
-        o_id = optimiser.create_job({"status": "completed", "solver": object()})
+        t_id = training.create_job({"status": "running", "solver": object()})
+        o_id = optimiser.create_job({"status": "running", "solver": object()})
+        JobLifecycle(training).transition(t_id, to="completed")
+        JobLifecycle(optimiser).transition(o_id, to="completed")
 
         training.clear_result_data(t_id)
 

@@ -8,6 +8,7 @@
 | `AGENTS.md` | Records repository-local engineering and review instructions for contributors and coding agents; it is guidance, not executable build or test configuration. |
 | `CLAUDE.md` | Directs Claude-compatible coding agents to the repository's authoritative `AGENTS.md` engineering instructions without duplicating policy. |
 | `.gitignore` | Excludes generated builds, virtual environments, caches, local pipeline output/data, tool state, and other non-source artifacts from normal version-control discovery. |
+| `specs/corpus.toml` | Versioned declaration for supported component documents outside the conventional high/low pair; records a closed document kind and exact required headings. |
 | `specs/ownership.toml` | Machine-checked ledger for files shared by multiple Module maps or explicit cross-component prose ownership claims; records the single primary owner and all consumer components. |
 | `.pre-commit-config.yaml` | Runs Ruff fix/format plus local mypy and frontend typecheck/lint hooks on relevant source changes. |
 | `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, coverage shards/gate, compatibility/probe, performance, optional dependencies, platform, mutation-config, frontend, and browser E2E lanes. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
@@ -16,6 +17,9 @@
 | `.github/workflows/mutation.yml` | Plans changed mutation targets, runs separate CI-job shards whose mutants execute serially per runner, and uses a failure-aware non-cancelled status condition on the single merge gate so plan/shard failures become failed rather than skipped checks. |
 | `.github/workflows/performance.yml` | Runs scheduled/manual Python and browser-performance lanes and uploads their artifacts. |
 | `frontend/package.json` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); defines frontend lint/type/unit/coverage/bundle/E2E/benchmark command entry points and frontend critical-coverage entries. |
+| `frontend/scripts/generate-api-contracts.mjs` | Pinned schema-to-browser generator: selects each pilot's exact transitive definition closure, emits reviewed TypeScript declarations and constants, and bundles separate self-contained Ajv standalone ESM validators so Explore validation remains lazy. The eager execution validator co-exports its schema-version literal while Explore-only option constants remain in the lazy contract module. Its check mode compares every output byte without writing. |
+| `frontend/scripts/generate-api-contracts.test.mjs` | Isolated generator contract: regenerates outside the repository dependency tree, imports both standalone validators without runtime Ajv, and proves that independently staling every generated output makes check mode fail without modifying the file. |
+| `frontend/src/generated/api-contracts.schema.json`, `frontend/src/generated/api-contracts.generated.ts`, `frontend/src/generated/api-contracts.constants.generated.ts`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.mjs`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.d.mts`, `frontend/src/generated/api-contracts.explore-charts.validators.mjs`, and `frontend/src/generated/api-contracts.explore-charts.validators.d.mts` | Committed generated contract bundle, static declarations, lazy Explore constants, and split standalone runtime validators; the execution validator and declaration also export its schema version. They are reviewed build inputs, never edited by hand or regenerated at application runtime. |
 | `frontend/eslint.config.js` | Defines blocking browser TypeScript/React ESLint rules, fourteen explicit pre-existing file/rule exceptions, generated-report ignores, and underscore-prefixed intentionally-unused names. |
 | `frontend/vitest.config.ts` | Configures the Vitest unit-test environment, setup, source/test selection, coverage reporting, and blocking 80/75/80/80 global thresholds. |
 | `frontend/playwright.config.ts` | Configures serial browser E2E projects, retries, artifacts, and readiness-managed local E2E server. |
@@ -45,6 +49,7 @@
 | `security/accepted-risks.toml` | Versioned exact advisory acceptance registry. Entries require ecosystem/package/advisory identity, owner, exposure, compensating control, approval date, and non-expired review date; stale, duplicate, malformed, mismatched, or unused entries fail the audit. |
 | `scripts/core_test_files.txt` | Curated core test-subset manifest and its selection/refresh rationale for canary/dependency lanes. |
 | `scripts/e2e_git_topologies.py` | Exercises Git topology scenarios used by repository-level verification. |
+| `scripts/generate_api_contracts.py` | Deterministically composes the execution-strategy diagnostic and Explore chart root models into one Draft 2020-12 JSON Schema bundle, fixes the recursive finite-JSON definition, and atomically writes or byte-checks the committed frontend source artifact. |
 | `scripts/extract_polars_io.py` | Extracts the Polars I/O argument schema by introspection, and with `--diff` reports installed-versus-committed drift as a non-failing Markdown freshness summary. |
 | `scripts/init_smoke.py` | Builds/installs or consumes a wheel in a fresh environment, initialises a project, serves it headlessly, exercises an authenticated endpoint, and shuts it down. |
 | `scripts/memory_smoke.py` | Runs the maintained memory-safety smoke path. |
@@ -52,13 +57,13 @@
 | `scripts/update_assistant_example_manifests.py` | Checks or explicitly refreshes closed content-addressed assistant example inventories; unsafe, duplicate, missing, and undeclared paths fail in both modes. |
 | `scripts/preflight.ps1` | Windows preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/preflight.sh` | POSIX preflight entry point for selected backend/frontend/init-smoke checks. |
-| `scripts/regen_sanitize_parity_fixture.py` | Regenerates the committed sanitisation-parity fixture when deliberately requested. |
+| `scripts/regen_sanitize_parity_fixture.py` | Regenerates the retained backend compatibility golden when deliberately requested. |
 | `scripts/run_frontend_e2e_server.py` | Generates the isolated browser fixture, then starts and readiness-signals its dedicated-port backend and Vite proxy for Playwright. |
 | `scripts/run_assistant_evaluation.py` | Fail-closed credentialed assistant qualification command: loads a closed candidate/matrix/scenario set, invokes an explicit live runner repeatedly, writes a redacted atomic report, and succeeds only for an already-qualified configuration that still meets every threshold. |
 | `scripts/run_mutation_pytest.py` | Runs a mutation witness command from a fresh synthetic project while retaining repository pytest configuration and placing pytest inputs in a sibling temporary boundary, so relative Haute runtime state cannot leak between mutants or alter path-confinement semantics. |
 | `scripts/run_mutation_suite.py` | Implements mutation target selection, work planning, shard execution, merge, and survival-threshold reporting. |
-| `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes schema-3 workload, environment, resource, wall-time, and per-test evidence artifacts. |
-| `scripts/spec_corpus_inventory.py` | Builds the exact working-tree specification inventory and content fingerprint, validates complete per-file review coverage, and derives component/governance/roadmap line and coverage totals for reproducible semantic-review claims. |
+| `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes schema-4 workload, environment, resource, wall-time, and per-test evidence artifacts. |
+| `scripts/spec_corpus_inventory.py` | Recursively classifies every supported-suffix specification file, rejects undeclared nested documents, builds the exact working-tree content fingerprint, validates complete per-file review coverage, and derives component/supplemental/governance/roadmap totals. |
 | `scripts/setup-worktree.sh` | Sets up a development worktree. |
 | `mutation/README.md` | Documents the maintained mutation-testing workflow and constraints. |
 | `mutation/targets.json` | Declares selected mutation targets, witness suites, survival budgets, and rationales. |
@@ -72,6 +77,7 @@
 | `mutation/cosmic-ray.registry.toml` | Cosmic Ray configuration for registry mutation coverage. |
 | `tests/` | Active Python unit, integration, property, regression, contract, E2E-support, and repository-hygiene test corpus. |
 | `tests/test_assistant_example_portfolio.py` | Ordinary specialist evidence for the packaged assistant portfolio: source parity, trace/dry-run, real training/scoring and optimisation/apply, deployment preflight, and adversarial rejection. |
+| `tests/test_api_contract_generation.py` | Backend contract-generation evidence: deterministic Pydantic-to-schema output, stale/read-only check behaviour, root/definition ownership, recursive finite JSON, safe-integer bounds, collection caps, and pinned frontend code-generation dependencies. |
 | `tests/fixtures/` | Checked-in input, golden, expected-contract, UI-contract, and data fixtures consumed by active tests. |
 | `tests/performance/` | `perf`-marked benchmark-style tests excluded from ordinary pytest and run by the performance harness, including the rating miss-guard evidence matrix (`test_rating_miss_guard_perf.py`). |
 | `tests/performance/test_execution_engine_certification.py` | Reproducible execution-engine certification scenarios for isolated wide-Parquet projection memory, modelling-menu demand, per-port API-input projection, and checkpoint-bounded direct JSONL shredding. |
@@ -108,11 +114,24 @@
   lines; the summary artifact is `coverage/coverage-summary.json`. This sits
   after Vitest's global floors of 80% statements, 75% branches, 80% functions,
   and 80% lines.
+- **Generated API contract pipeline** has two explicit reviewed stages. The
+  Python stage maps canonical Pydantic root models to a deterministic Draft
+  2020-12 bundle. The Node stage computes the exact local-definition closure for
+  each pilot and emits static declarations/constants plus one standalone runtime
+  validator per lazy-loading boundary. Generated validation owns structural
+  assertions only; feature adapters own semantic relationships and stable error
+  policy.
 - **Documentation violation** is the ordered
   `document<TAB>rule<TAB>detail` record emitted by
   `tests/test_docs_accuracy.py`. The committed
   `tests/docs_accuracy_baseline.txt` contains every accepted current record
   exactly once in sorted order.
+- **Supplemental specification declaration** in `specs/corpus.toml` has a
+  canonical repository-root-relative component Markdown path, the closed kind
+  `decision`, and a non-empty unique list of exact level-two headings. The
+  declared path must exist outside the conventional high/low pair; unknown
+  kinds, traversal, duplicates, malformed headings, and undeclared `.md` or
+  `.toml` files fail inventory.
 - **Mutation target** in `mutation/targets.json` selects a Cosmic Ray config,
   witness test command, survivor budget, rationale, and required positive-integer
   `max_pending_per_shard`. The cap is calibrated per target to retain CI
@@ -151,7 +170,9 @@
 - **Component improvement package** is a `### <package-id>` section in one
   flat `specs/roadmap/<component>.md` file. It has a stable ID, priority/order,
   problem, plan, acceptance criteria, dependencies, and current evidence. The
-  component file owns whether the package is queued, blocked, or retired.
+  component file owns whether the package is queued, blocked, or retired. Its
+  priority row and heading are a checked one-to-one pair; delivered package
+  histories and review-outcome narratives do not remain in the active queue.
 
 ## Control flow
 
@@ -171,7 +192,12 @@
 4. Compatibility, optional-dependency, platform, package, init, and mutation
    configuration smoke lanes run their named commands. The 3.14 probe is
    explicitly allowed to fail without blocking the workflow result.
-5. The frontend CI job runs `npm ci` then the frontend-only preflight. Browser
+5. The frontend CI job runs `npm ci` then the frontend-only preflight. Every
+   frontend preflight mode runs `npm run check:contracts` before type checking;
+   the backend core subset separately proves the Pydantic-to-schema stage through
+   `tests/test_api_contract_generation.py`. Ordinary regeneration runs the Python
+   stage followed by the Node stage, while application build and runtime only
+   consume the committed results. Browser
    E2E additionally synchronises Python, installs Chromium/Firefox, and runs
    `npm run test:e2e`; Playwright calls `scripts/run_frontend_e2e_server.py` and
    waits for its readiness URL. The harness preserves the same-origin Vite
@@ -192,8 +218,10 @@
    `frontend/scripts/check-bundle-size.mjs` counts the production entry and
    modulepreload chunks against default ceilings of 271 KiB initial and
    1,320 KiB total JavaScript gzip. The measured bundle is approximately
-   268.5 KiB initial and 1,309.4 KiB total after adding the eager pipeline
-   recovery document validator/adapter, recovery state, and live-sync fences.
+   271.0 KiB initial and 1,315.4 KiB total with the eager execution-diagnostic
+   validator and existing recovery/live-sync boundaries. The Explore chart
+   validator is a separate lazy artifact in the chart-config chunk rather than
+   an entry modulepreload.
    Modelling training response parsers remain in a dynamically imported
    `types/trainGuards.ts` chunk. The checker classifies that chunk as lazy-only
    and fails if it becomes a startup modulepreload; CI may override the ceiling
@@ -234,6 +262,11 @@
    identity; meta-findings use the affected package plus `npm:transitive`, not
    the dependency path recorded by the current lockfile. Scanner/export/report-
    schema errors fail closed; failed reports are uploaded for triage.
+8. A specification inventory recursively enumerates every `.md` and `.toml`
+   below `specs/`, classifies the conventional component pairs and root/roadmap
+   documents, validates `specs/corpus.toml`, then rejects any remaining path.
+   Coverage is loaded only after that literal set is closed, so an undeclared
+   document cannot evade either the snapshot or coverage ledger.
 
 ## Edge cases and invariants
 
@@ -271,8 +304,13 @@
   every selected mutant to contribute exactly once.
 - A component roadmap contains active/deferred/decision/reverify work only.
   Delivered packages are removed once present-tense specs and ordinary tests
-  own their outcome; the index's `Start with` cell names an existing
+  own their outcome. Priority rows and package headings have identical unique
+  package-id multisets; the index's `Start with` cell names an existing
   non-deferred package, or `—` when no such package exists.
+- Generated contract outputs are byte-stable and committed. Check modes never
+  rewrite or bless drift; missing, stale, nondeterministic, or unexpectedly shaped
+  generator output is a hard failure. Standalone validators contain their runtime
+  support and may not import Ajv from the production dependency graph.
 - Mutation thresholds measure observable behaviour. Syntax-only mutants in
   postponed annotations and keyword-only call markers are explicitly excluded
   with `# pragma: no mutate`; executable expressions and branch decisions must
@@ -357,6 +395,8 @@ are never retained in the report artifact.
 
 ## Testing
 
+- `tests/test_api_contract_generation.py` — deterministic Pydantic-to-schema generation, stale-check, schema-ownership, browser-safe-bound, and pinned-tooling contracts.
+- `frontend/scripts/generate-api-contracts.test.mjs` — isolated schema-to-browser generation, standalone-validator import, per-artifact stale rejection, and read-only check-mode contracts.
 - `tests/test_bug_regressions.py` — named deep-review bug regressions (streaming restoration, source/pipeline path handling, preview source files, and Polars/parser safety).
 - `tests/test_bugfixes.py` — regression contracts for streaming chunk restoration, source/pipeline path resolution, preview source files, and parser/config safety.
 - `tests/test_coverage_gaps.py` — targeted edge coverage for config/fingerprint/builders/artifacts/model helpers, schemas, and node discovery.
@@ -403,9 +443,11 @@ are never retained in the report artifact.
   with ignored files excluded) whose exact, suffix, and parent-path indexes are
   built once per ratchet evaluation; they also validate
   `path::symbol` and Module-map responsibility symbols, exact headings, Testing
-  references and backend-test indexing, link anchors, roadmap evidence,
-  present-tense ownership claims, positive-evidence temporary-contract
-  retirement, and the one-line ratchet.
+  references and backend-test indexing, declared supplemental headings, link
+  anchors, roadmap package bijection/evidence, present-tense ownership claims,
+  unresolved temporary-contract tracking, positive-evidence retirement, and
+  the one-line ratchet. `tests/test_spec_corpus_inventory.py` separately proves
+  literal-set equality and fail-loud manifest validation.
 - `tests/test_dependency_audit.py` covers clean/blocking reports, npm
   high/critical and transitive identities, valid/expired/malformed/duplicate/
   unused acceptances, the invariant that an accepted parent meta-finding cannot

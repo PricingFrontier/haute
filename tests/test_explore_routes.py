@@ -37,10 +37,9 @@ def _clean_explore_state(_widen_sandbox_root):
         yield
         return
 
-    job_snapshot = dict(_store.jobs)
+    _store.clear_all()
     yield
-    _store.jobs.clear()
-    _store.jobs.update(job_snapshot)
+    _store.clear_all()
     _explore_service._report_cache.clear()
 
 
@@ -291,6 +290,17 @@ def test_explore_cache_status_restores_durable_dataset_after_process_caches_are_
     started = client.post("/api/explore/run", json=body).json()
     completed = _poll_explore(client, started["job_id"])
     assert completed["status"] == "completed"
+
+    # A terminal job record guarantees that the generation is published, but
+    # the worker can still be retiring older generations.  Wait for that
+    # housekeeping before deliberately deleting the cache directory on
+    # Windows, where an open ``current.json`` handle prevents removal.
+    worker_name = f"haute-explore-{started['job_id']}"
+    for thread in threading.enumerate():
+        if thread.name == worker_name:
+            thread.join(timeout=5.0)
+            assert not thread.is_alive()
+            break
 
     spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
     assert spec.project_root == tmp_path.resolve()
@@ -1876,16 +1886,18 @@ def test_prepare_explore_spec_resolves_relative_pipeline_source_from_project_roo
 
 
 def test_cancel_completed_explore_job_is_an_idempotent_read() -> None:
+    from haute.routes._job_lifecycle import JobLifecycle
     from haute.routes.explore import _explore_service, _store
 
     job_id = _store.create_job(
         {
             "kind": "explore",
-            "status": "completed",
+            "status": "running",
             "progress": 1.0,
             "message": "Explore cache ready",
         }
     )
+    JobLifecycle(_store).transition(job_id, to="completed")
 
     result = _explore_service.cancel(job_id)
 

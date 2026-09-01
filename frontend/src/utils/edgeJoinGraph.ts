@@ -18,8 +18,21 @@ export type EdgeJoinFailureReason =
   | "self-join"
   | "cycle"
 
+type DeferredInputMappingRewrite = {
+  targetEdge: Edge
+  oldCurrentInputName: string
+}
+
+export type EdgeJoinInsertSuccess = {
+  ok: true
+  nodes: Node[]
+  edges: Edge[]
+  newNodeId: string
+  deferredInputMappingRewrite: DeferredInputMappingRewrite | null
+}
+
 export type EdgeJoinInsertResult =
-  | { ok: true; nodes: Node[]; edges: Edge[]; newNodeId: string }
+  | EdgeJoinInsertSuccess
   | { ok: false; reason: EdgeJoinFailureReason }
 
 export type EdgeJoinSwapInputsFailureReason =
@@ -143,6 +156,7 @@ export function insertEdgeJoinNode({
   if (oldCurrentInputName === UNRESOLVED_INPUT_NAME) {
     throw new Error("Cannot preserve the downstream input name for an unresolved source frame")
   }
+  assertDownstreamInputMappingCanBeRewritten(nodes, targetEdge, oldCurrentInputName)
 
   const newNodeId = idFactory()
   const newNode = buildEdgeJoinNode({
@@ -153,11 +167,6 @@ export function insertEdgeJoinNode({
   })
 
   const replacementEdges = edgeJoinReplacementEdges(targetEdge, newNodeId, { ...connection, source })
-  const newCurrentInputName = edgeInputName(
-    replacementEdges[1] as unknown as SimpleEdge,
-    newNode as unknown as SimpleNode,
-  )
-
   const nextEdges = [
     ...edges.filter((edge) => edge.id !== targetEdgeId),
     ...replacementEdges,
@@ -165,17 +174,16 @@ export function insertEdgeJoinNode({
   return {
     ok: true,
     nodes: selectOnlyNode([
-      ...nodes.map((node) => rewriteDownstreamSplitTargetNode(
+      ...nodes.map((node) => rewriteDownstreamSplitTargetNodeStructure(
         node,
         targetEdge,
         newNodeId,
-        oldCurrentInputName,
-        newCurrentInputName,
       )),
       newNode,
     ], newNodeId),
     edges: nextEdges,
     newNodeId,
+    deferredInputMappingRewrite: { targetEdge, oldCurrentInputName },
   }
 }
 
@@ -254,6 +262,43 @@ export function insertEdgeJoinNodeFromSources({
     nodes: selectOnlyNode([...nodes, newNode], newNodeId),
     edges: nextEdges,
     newNodeId,
+    deferredInputMappingRewrite: null,
+  }
+}
+
+/**
+ * Complete an Edge Join insertion after the server has attached executable
+ * identities to the whole candidate graph. Structural changes are safe to
+ * prepare locally, but the downstream inputMapping cannot be rewritten until
+ * the new join's server-owned default input name is known.
+ */
+export function finalizeResolvedEdgeJoinInsertion(
+  insertion: EdgeJoinInsertSuccess,
+  resolved: { nodes: Node[]; edges: Edge[] },
+): { nodes: Node[]; edges: Edge[]; newNodeId: string } {
+  assertSameOrderedIds("node", insertion.nodes, resolved.nodes)
+  assertSameOrderedIds("edge", insertion.edges, resolved.edges)
+
+  const rewrite = insertion.deferredInputMappingRewrite
+  if (!rewrite) return { ...resolved, newNodeId: insertion.newNodeId }
+
+  const resolvedJoin = resolved.nodes.find((node) => node.id === insertion.newNodeId)
+  const newCurrentInputName = resolvedJoin?.data._defaultInputName
+  if (typeof newCurrentInputName !== "string" || newCurrentInputName.length === 0) {
+    throw new Error(
+      `identity resolver did not provide a default input name for ${insertion.newNodeId}`,
+    )
+  }
+
+  return {
+    nodes: resolved.nodes.map((node) => rewriteDownstreamInputMapping(
+      node,
+      rewrite.targetEdge,
+      rewrite.oldCurrentInputName,
+      newCurrentInputName,
+    )),
+    edges: resolved.edges,
+    newNodeId: insertion.newNodeId,
   }
 }
 
@@ -327,21 +372,48 @@ function buildEdgeJoinNode({
   })
 }
 
-function rewriteDownstreamSplitTargetNode(
+function rewriteDownstreamSplitTargetNodeStructure(
   node: Node,
   targetEdge: Edge,
   newNodeId: string,
-  oldCurrentInputName: string,
-  newCurrentInputName: string,
 ): Node {
   const roleRewritten = rewriteDownstreamEdgeJoinNode(node, targetEdge, newNodeId)
-  const inputMappingRewritten = rewriteDownstreamInputMapping(
-    roleRewritten,
-    targetEdge,
-    oldCurrentInputName,
-    newCurrentInputName,
-  )
-  return rewriteDownstreamInputsByParentContract(inputMappingRewritten, targetEdge, newNodeId)
+  return rewriteDownstreamInputsByParentContract(roleRewritten, targetEdge, newNodeId)
+}
+
+function assertDownstreamInputMappingCanBeRewritten(
+  nodes: Node[],
+  targetEdge: Edge,
+  oldCurrentInputName: string,
+): void {
+  const target = nodes.find((node) => node.id === targetEdge.target)
+  if (!target) return
+
+  const config = { ...(target.data.config as Record<string, unknown> | undefined) }
+  const rawInputMapping = config.inputMapping
+  if (rawInputMapping !== undefined && !isRecord(rawInputMapping)) {
+    throw new Error("Cannot rewrite a malformed inputMapping; expected an object")
+  }
+  const hasInputMapping = isRecord(rawInputMapping)
+  const shouldCreateMapping = target.data.nodeType === NODE_TYPES.POLARS && !config.instanceOf
+  if (!hasInputMapping && !shouldCreateMapping) return
+
+  let matchedOldCurrentInput = false
+  for (const currentName of Object.values(hasInputMapping ? rawInputMapping : {})) {
+    if (typeof currentName !== "string") {
+      throw new Error("Cannot rewrite a malformed inputMapping; values must be strings")
+    }
+    if (currentName === oldCurrentInputName) matchedOldCurrentInput = true
+  }
+  if (
+    shouldCreateMapping
+    && !matchedOldCurrentInput
+    && Object.prototype.hasOwnProperty.call(rawInputMapping ?? {}, oldCurrentInputName)
+  ) {
+    throw new Error(
+      `Cannot preserve input name "${oldCurrentInputName}" because inputMapping already uses it`,
+    )
+  }
 }
 
 function rewriteDownstreamInputMapping(
@@ -457,6 +529,19 @@ function rewriteDownstreamInputsByParentContract(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function assertSameOrderedIds(
+  kind: "node" | "edge",
+  expected: Array<{ id: string }>,
+  actual: Array<{ id: string }>,
+): void {
+  if (
+    actual.length !== expected.length
+    || actual.some((item, index) => item.id !== expected[index]?.id)
+  ) {
+    throw new Error(`identity resolver returned an invalid ${kind} sequence`)
+  }
 }
 
 function hasDirectedCycle(nodes: Node[], edges: Edge[]): boolean {

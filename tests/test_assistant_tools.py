@@ -962,7 +962,7 @@ class TestReadTools:
         assert result["recursive"] is True
         assert result["truncated"] is False
 
-    async def test_routed_showcase_defaults_to_named_folder_recursively(self, project_root: Path):
+    async def test_showcase_wording_cannot_rewrite_dataset_tool_arguments(self, project_root: Path):
         from haute.assistant._tools import build_tool_executor
 
         nested = project_root / "data" / "competitor_premiums"
@@ -970,24 +970,15 @@ class TestReadTools:
         pl.DataFrame({"quote_id": ["q1"], "premium": [123.0]}).write_parquet(
             nested / "competitor_insight.parquet"
         )
-        execute_tool = build_tool_executor(
-            "main.py",
-            authoring_request=(
-                "can you make a pipeline with the parquets in the data folder. "
-                "use as many nodee types as you can"
-            ),
-        )
+        execute_tool = build_tool_executor("main.py")
 
         result = await execute_tool(
             "list_datasets",
-            {"project_root": "wrong-folder", "recursive": "true"},
+            {"project_root": "data", "recursive": False},
         )
 
-        assert {item["path"] for item in result["datasets"]} == {
-            "data/competitor_premiums/competitor_insight.parquet",
-            "data/quotes.parquet",
-        }
-        assert result["recursive"] is True
+        assert [item["path"] for item in result["datasets"]] == ["data/quotes.parquet"]
+        assert result["recursive"] is False
 
     def test_list_datasets_missing_directory(self, project_root: Path):
         from haute.assistant._tools import list_datasets
@@ -1250,17 +1241,10 @@ class TestToolExecutorDispatch:
         )
         assert consumed["error"]["code"] == "recipe_plan_not_found"
 
-    async def test_explicit_request_recipe_route_is_enforced_before_dry_run(
-        self, project_root: Path
-    ):
+    async def test_executor_structured_plans_have_no_lexical_authority(self, project_root: Path):
         from haute.assistant._tools import build_tool_executor
 
-        execute_tool = build_tool_executor(
-            "main.py",
-            authoring_request=(
-                "After quotes, add age_band: continuously band driver_age into driver_age_band."
-            ),
-        )
+        execute_tool = build_tool_executor("main.py")
         primitive = await execute_tool(
             "dry_run_graph_edits",
             {
@@ -1273,10 +1257,9 @@ class TestToolExecutorDispatch:
                 ]
             },
         )
-        assert primitive["error"]["code"] == "recipe_route_required"
-        assert primitive["error"]["recipe_id"] == "continuous_banding"
+        assert "plan_hash" in primitive
 
-        mismatch = await execute_tool(
+        differently_selected = await execute_tool(
             "plan_recipe",
             {
                 "recipe_id": "reference_join",
@@ -1288,10 +1271,10 @@ class TestToolExecutorDispatch:
                 "right_on": ["region"],
             },
         )
-        assert mismatch["error"]["code"] == "recipe_route_mismatch"
-        assert mismatch["error"]["recipe_id"] == "continuous_banding"
+        assert differently_selected["recipe_id"] == "reference_join"
+        assert "recipe_plan_hash" in differently_selected
 
-        wrong_name = await execute_tool(
+        structured_name = await execute_tool(
             "plan_recipe",
             {
                 "recipe_id": "continuous_banding",
@@ -1303,70 +1286,48 @@ class TestToolExecutorDispatch:
                 "default": "unknown",
             },
         )
-        assert wrong_name["error"]["code"] == "recipe_name_mismatch"
-        assert wrong_name["error"]["expected_name"] == "age_band"
+        assert structured_name["recipe_id"] == "continuous_banding"
+        assert "recipe_plan_hash" in structured_name
 
-        matched = await execute_tool(
-            "plan_recipe",
-            {
-                "recipe_id": "continuous_banding",
-                "source": "quotes",
-                "name": "age_band",
-                "column": "driver_age",
-                "output_column": "driver_age_band",
-                "rules": [{"op1": "<=", "val1": 25, "assignment": "young"}],
-                "default": "unknown",
-            },
-        )
-        assert matched["recipe_id"] == "continuous_banding"
-
-    async def test_explicitly_withheld_rating_material_blocks_every_mutation_planner(
+    async def test_complete_structured_plans_do_not_require_material_wording(
         self, project_root: Path
     ):
         from haute.assistant._tools import build_tool_executor
 
-        execute_tool = build_tool_executor(
-            "main.py",
-            authoring_request=(
-                "Add rating factors, but do not supply missing-factor policy or factor values."
-            ),
+        execute_tool = build_tool_executor("main.py")
+        recipe = await execute_tool(
+            "plan_recipe",
+            {
+                "recipe_id": "rating_step",
+                "source": "quotes",
+                "name": "rating_factors",
+                "tables": [
+                    {
+                        "factors": ["region"],
+                        "output_column": "region_factor",
+                        "entries": [{"factor_values": ["north"], "value": 1.1}],
+                        "default_value": 1.0,
+                    }
+                ],
+            },
         )
-        calls = (
-            (
-                "dry_run_graph_edits",
-                {
-                    "ops": [
-                        {
-                            "op": "update_node",
-                            "node": "quotes",
-                            "config": {},
-                        }
-                    ]
-                },
-            ),
-            (
-                "plan_recipe",
-                {
-                    "recipe_id": "rating_step",
-                    "source": "quotes",
-                    "name": "rating_factors",
-                    "tables": [
-                        {
-                            "factors": ["region"],
-                            "output_column": "region_factor",
-                            "entries": [{"factor_values": ["north"], "value": 1.1}],
-                            "default_value": 1.0,
-                        }
-                    ],
-                },
-            ),
-            ("dry_run_recipe_plan", {"recipe_plan_hash": "a" * 64}),
-            ("apply_graph_plan", {"plan_hash": "a" * 64}),
-        )
+        assert recipe["recipe_id"] == "rating_step"
+        assert "recipe_plan_hash" in recipe
 
-        for name, arguments in calls:
-            result = await execute_tool(name, arguments)
-            assert result["error"]["code"] == "material_input_required"
+        primitive_executor = build_tool_executor("main.py")
+        primitive = await primitive_executor(
+            "dry_run_graph_edits",
+            {
+                "ops": [
+                    {
+                        "op": "update_node",
+                        "node": "quotes",
+                        "config": {},
+                    }
+                ]
+            },
+        )
+        assert "plan_hash" in primitive
 
     async def test_tool_input_and_result_context_are_bounded(
         self,

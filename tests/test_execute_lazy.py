@@ -15,17 +15,22 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
+import haute._execute_lazy as execution_core
 import haute.projection as projection_planner
 from haute._execute_lazy import (
     EagerResult,
+    NodeBoundaryRunner,
+    PreparedExecutionRequest,
     _apply_selected_columns,
     _build_funcs,
     _checkpoint_filename,
     _execute_eager_core,
     _execute_lazy,
     _extract_error_line,
+    _prepare_execution,
     _prune_live_switch_edges,
 )
+from haute._execution_context import ExecutionProfile
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -274,6 +279,89 @@ class TestPrepareGraph:
         )
         prepared = projection_planner.prepare_graph(g)
         assert prepared.id_to_name["n1"] == "My_Node"
+
+
+class TestPreparedExecution:
+    def test_owns_shared_identity_routing_and_contract_policy(self):
+        edge_ab = _e("a", "b")
+        edge_ac = _e("a", "c")
+        graph = PipelineGraph(
+            nodes=[_source_node("a"), _transform_node("b"), _transform_node("c")],
+            edges=[edge_ab, edge_ac],
+        )
+
+        prepared = _prepare_execution(
+            PreparedExecutionRequest(
+                graph=graph,
+                target_node_id="b",
+                source="live",
+                required_columns_by_node={"b": {"x"}},
+                profile=ExecutionProfile.PREVIEW_EAGER,
+            )
+        )
+
+        assert prepared.graph_plan.order == ["a", "b"]
+        assert prepared.graph_plan.id_to_name == {"a": "a", "b": "b"}
+        assert prepared.normalised_required_columns == {"b": {"x"}}
+        assert prepared.strict_contract_resolution is False
+        assert prepared.children_count == {"a": 1, "b": 0}
+        assert prepared.children_of == {"a": ("b",), "b": ()}
+        assert prepared.incoming_edges_by_target == {"b": (edge_ab,)}
+        assert prepared.all_incoming_edges_by_target == {
+            "b": (edge_ab,),
+            "c": (edge_ac,),
+        }
+        assert prepared.all_parents == {"a": [], "b": ["a"], "c": ["a"]}
+
+    def test_node_boundary_runner_routes_and_invokes_prepared_inputs(self):
+        edge = _e("source", "transform")
+        graph = PipelineGraph(
+            nodes=[_source_node("source"), _transform_node("transform")],
+            edges=[edge],
+        )
+        prepared = _prepare_execution(PreparedExecutionRequest(graph=graph))
+        runner = NodeBoundaryRunner(
+            prepared=prepared,
+            funcs={
+                "source": (lambda: pl.DataFrame({"x": [1]}).lazy(), True),
+                "transform": (lambda frame: frame.with_columns(y=pl.col("x") + 1), False),
+            },
+            enforce_contracts=False,
+            execution_context=None,
+            needed_columns={},
+        )
+        source_frame = pl.DataFrame({"x": [1]}).lazy()
+
+        boundary = runner.open("transform")
+        inputs = runner.input_frames(boundary, {"source": source_frame})
+        result = runner.invoke(boundary, inputs)
+
+        assert boundary.parent_ids == ("source",)
+        assert boundary.incoming_edges == (edge,)
+        assert inputs == [source_frame]
+        assert result.collect().to_dict(as_series=False) == {"x": [1], "y": [2]}
+
+    def test_both_engines_delegate_to_the_same_preparation_boundary(self, monkeypatch):
+        graph = PipelineGraph(
+            nodes=[_source_node("source"), _transform_node("transform")],
+            edges=[_e("source", "transform")],
+        )
+        requests: list[PreparedExecutionRequest] = []
+        prepare = execution_core._prepare_execution
+
+        def capture(request: PreparedExecutionRequest):
+            requests.append(request)
+            return prepare(request)
+
+        monkeypatch.setattr(execution_core, "_prepare_execution", capture)
+
+        execution_core._execute_lazy(graph, _simple_build_fn)
+        execution_core._execute_eager_core(graph, _simple_build_fn)
+
+        assert requests == [
+            PreparedExecutionRequest(graph=graph),
+            PreparedExecutionRequest(graph=graph),
+        ]
 
 
 # ===========================================================================

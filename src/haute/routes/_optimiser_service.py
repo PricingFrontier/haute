@@ -22,7 +22,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 from fastapi import HTTPException
@@ -108,7 +108,12 @@ from haute.routes._job_lifecycle import (
     bind_running_execution_metrics_publisher,
     require_job_status,
 )
-from haute.routes._job_store import JobStore, register_artifact_cleaner
+from haute.routes._job_store import (
+    JobSnapshot,
+    JobStore,
+    RunningJobFields,
+    register_artifact_cleaner,
+)
 from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._optimiser_limits import (
     enforce_frontier_compute_budget,
@@ -187,10 +192,10 @@ class _OptimiserSolverExecutionError(Exception):
     """An exception raised by the external price-contour solver boundary."""
 
 
-_SOLVE_JOB_TYPE = "solve"
-_ESTIMATE_JOB_TYPE = "estimate"
-_FRONTIER_AUTO_RANGE_JOB_TYPE = "frontier_auto_range"
-_FRONTIER_RECOMPUTE_JOB_TYPE = "frontier_recompute"
+_SOLVE_JOB_TYPE: Literal["solve"] = "solve"
+_ESTIMATE_JOB_TYPE: Literal["estimate"] = "estimate"
+_FRONTIER_AUTO_RANGE_JOB_TYPE: Literal["frontier_auto_range"] = "frontier_auto_range"
+_FRONTIER_RECOMPUTE_JOB_TYPE: Literal["frontier_recompute"] = "frontier_recompute"
 _FRONTIER_GENERATION_KEY = "frontier_generation"
 _GRAPH_NODE_SETUP_COORDINATION_TYPE = "optimiser_graph_node_setup"
 _NULL_QUOTE_ID_DETAIL_PREFIX = "Null quote_id values found in optimiser input"
@@ -203,6 +208,24 @@ _AUTO_RANGE_BUCKET_COLUMN = "__haute_frontier_auto_range_bucket"
 _FRONTIER_AUTO_RANGE_CANCELLED_STATUS = "cancelled"
 _FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS = "superseded"
 _FRONTIER_AUTO_RANGE_TERMINAL_STATUSES = TERMINAL_REASONS
+
+
+class _OptimiserSolveRunningJob(RunningJobFields):
+    job_type: Literal["solve"]
+    progress: float
+    config: dict[str, Any]
+    node_label: str
+    start_time: float
+    timeout: int | None
+
+
+class _FrontierAutoRangeRunningJob(RunningJobFields):
+    job_type: Literal["frontier_auto_range"]
+    progress: float
+    config: dict[str, Any]
+    node_label: str
+
+
 _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
     {
         _ESTIMATE_JOB_TYPE,
@@ -651,7 +674,7 @@ def _auto_range_target_chunk_bytes() -> int:
     )
 
 
-def _job_elapsed_seconds(job: dict[str, Any], fallback: float = 0.0) -> float:
+def _job_elapsed_seconds(job: Mapping[str, Any], fallback: float = 0.0) -> float:
     """Return wall-clock elapsed seconds for a job when start_time is available."""
     start_time = job.get("start_time")
     fallback_elapsed = max(0.0, float(fallback))
@@ -2372,7 +2395,7 @@ def _finalize_solve_result(
     frontier_data = None
     frontier_error = None
     # Read through JobStore so concurrent eviction cannot race this snapshot.
-    job_snapshot = store.get_job(job_id) or {}
+    job_snapshot: Mapping[str, Any] = store.get_job(job_id) or {}
     config = job_snapshot.get("config", {})
     constraints = config.get("constraints")
     if constraints and config.get("frontier_enabled") is True:
@@ -2435,81 +2458,87 @@ def _finalize_solve_result(
     result_dict["frontier"] = frontier_data
     if frontier_error is not None:
         result_dict["frontier_error"] = frontier_error
-    artifact_handles: dict[str, Any] = {}
-    apply_result_handle = _persist_apply_result_artifact(solve_result)
-    if apply_result_handle is not None:
-        artifact_handles[_APPLY_RESULT_HANDLE_KEY] = apply_result_handle
-    if ratebook_factors_handle is None:
-        ratebook_factors_handle = _persist_ratebook_factors_artifact(factors_df)
-    if ratebook_factors_handle is not None:
-        artifact_handles[_RATEBOOK_FACTORS_HANDLE_KEY] = ratebook_factors_handle
-
-    completion_fields: dict[str, Any] = {
-        "progress": 1.0,
-        "elapsed_seconds": _job_elapsed_seconds(
-            store.get_job(job_id) or job_snapshot,
-            elapsed,
-        ),
-        "solver": solver,
-        "solve_result": solve_result,
-        "quote_grid": quote_grid,
-        "factor_columns_valid": factor_columns,
-        "result": result_dict,
-        "base_result": dict(result_dict),
-        "frontier_data": frontier_data,
-        "artifact_handles": artifact_handles,
-        **(extra_job_fields or {}),
-        _FRONTIER_GENERATION_KEY: 0,
-    }
-    if ratebook_factor_contexts is not None:
-        completion_fields["ratebook_factor_contexts"] = ratebook_factor_contexts
-
-    # P7: Atomic update — replace the entire dict to avoid races with
-    # status-polling reads on the main thread.
-    # L5: result_dict["frontier"] is the frontend-serialised frontier payload
-    # (consumed by OptimiserStatusResponse).  "frontier_data" is a top-level
-    # job key used by internal endpoints (e.g. /frontier/select) to look up
-    # raw frontier points without going through the result dict.
-    updated_job = JobLifecycle(store).transition(
-        job_id,
-        to="completed",
-        message="Completed",
-        fields=completion_fields,
-        expected_status="running",
+    completion_elapsed = _job_elapsed_seconds(
+        store.get_job(job_id) or job_snapshot,
+        elapsed,
     )
+    uncommitted_handles: list[tuple[dict[str, Any], str]] = []
+    if ratebook_factors_handle is not None:
+        uncommitted_handles.append(
+            (
+                ratebook_factors_handle,
+                "solve_completion_orphan_factor_artifact_cleanup_failed",
+            )
+        )
+
+    def publish_completion_fields() -> Mapping[str, Any]:
+        """Persist durable artifacts only after this worker owns completion."""
+        artifact_handles: dict[str, Any] = {}
+        apply_result_handle = _persist_apply_result_artifact(solve_result)
+        if apply_result_handle is not None:
+            artifact_handles[_APPLY_RESULT_HANDLE_KEY] = apply_result_handle
+            uncommitted_handles.append(
+                (
+                    apply_result_handle,
+                    "solve_completion_orphan_apply_artifact_cleanup_failed",
+                )
+            )
+
+        factor_handle = ratebook_factors_handle
+        if factor_handle is None:
+            factor_handle = _persist_ratebook_factors_artifact(factors_df)
+            if factor_handle is not None:
+                uncommitted_handles.append(
+                    (
+                        factor_handle,
+                        "solve_completion_orphan_factor_artifact_cleanup_failed",
+                    )
+                )
+        if factor_handle is not None:
+            artifact_handles[_RATEBOOK_FACTORS_HANDLE_KEY] = factor_handle
+
+        completion_fields: dict[str, Any] = {
+            "progress": 1.0,
+            "solver": solver,
+            "solve_result": solve_result,
+            "quote_grid": quote_grid,
+            "factor_columns_valid": factor_columns,
+            "result": result_dict,
+            "base_result": dict(result_dict),
+            "frontier_data": frontier_data,
+            "artifact_handles": artifact_handles,
+            **(extra_job_fields or {}),
+            _FRONTIER_GENERATION_KEY: 0,
+        }
+        if ratebook_factor_contexts is not None:
+            completion_fields["ratebook_factor_contexts"] = ratebook_factor_contexts
+        return completion_fields
+
+    def cleanup_uncommitted_handles() -> None:
+        for handle, event in uncommitted_handles:
+            _cleanup_orphan_apply_result_artifact(
+                handle,
+                job_id=job_id,
+                event=event,
+            )
+
+    # Artifact persistence and the terminal record now share the store's one
+    # running-job claim. Cancellation either wins before the publisher runs or
+    # observes the complete artifact/result pair afterwards.
+    try:
+        updated_job = JobLifecycle(store).publish_completion(
+            job_id,
+            publish=publish_completion_fields,
+            message="Completed",
+            elapsed_seconds=completion_elapsed,
+        )
+    except BaseException:
+        cleanup_uncommitted_handles()
+        raise
     if updated_job is None:
         logger.info("solve_completion_skipped", job_id=job_id, expected_status="running")
-        if apply_result_handle is not None:
-            _cleanup_orphan_apply_result_artifact(
-                apply_result_handle,
-                job_id=job_id,
-                event="solve_completion_orphan_apply_artifact_cleanup_failed",
-            )
-        if ratebook_factors_handle is not None:
-            _cleanup_orphan_apply_result_artifact(
-                ratebook_factors_handle,
-                job_id=job_id,
-                event="solve_completion_orphan_factor_artifact_cleanup_failed",
-            )
+        cleanup_uncommitted_handles()
         return
-    if (
-        apply_result_handle is not None
-        and updated_job.get("artifact_handles") is not artifact_handles
-    ):
-        _cleanup_orphan_apply_result_artifact(
-            apply_result_handle,
-            job_id=job_id,
-            event="solve_completion_orphan_apply_artifact_cleanup_failed",
-        )
-    if (
-        ratebook_factors_handle is not None
-        and updated_job.get("artifact_handles") is not artifact_handles
-    ):
-        _cleanup_orphan_apply_result_artifact(
-            ratebook_factors_handle,
-            job_id=job_id,
-            event="solve_completion_orphan_factor_artifact_cleanup_failed",
-        )
 
     # The job store keeps these heavy runtime objects for its short
     # heavy-object retention window, then slims the completed job down to
@@ -2774,18 +2803,17 @@ class OptimiserSolveService:
             if active_setup is not None:
                 raise self._graph_node_setup_conflict(active_setup)
             start_time = time.monotonic()
-            job_id = self._store.create_job(
-                {
-                    "status": "running",
-                    _JOB_TYPE_KEY: _SOLVE_JOB_TYPE,
-                    "progress": 0.0,
-                    "message": "Preparing optimiser input",
-                    "config": dict(config),
-                    "node_label": node.data.label,
-                    "start_time": start_time,
-                    "timeout": _solve_timeout_from_config(config),
-                }
-            )
+            initial_job: _OptimiserSolveRunningJob = {
+                "status": "running",
+                "job_type": _SOLVE_JOB_TYPE,
+                "progress": 0.0,
+                "message": "Preparing optimiser input",
+                "config": dict(config),
+                "node_label": node.data.label,
+                "start_time": start_time,
+                "timeout": _solve_timeout_from_config(config),
+            }
+            job_id = self._store.create_job(initial_job)
             execution_token = ExecutionCancellationToken()
             self._graph_node_setup_singleflight.acquire(
                 setup_job_key,
@@ -3135,16 +3163,15 @@ class OptimiserSolveService:
                             job_id=active_setup.job_id,
                         )
                 raise self._graph_node_setup_conflict(active_setup)
-            job_id = self._store.create_job(
-                {
-                    "status": "running",
-                    _JOB_TYPE_KEY: _FRONTIER_AUTO_RANGE_JOB_TYPE,
-                    "progress": 0.0,
-                    "message": "Estimating frontier range",
-                    "config": dict(config),
-                    "node_label": node.data.label,
-                }
-            )
+            initial_job: _FrontierAutoRangeRunningJob = {
+                "status": "running",
+                "job_type": _FRONTIER_AUTO_RANGE_JOB_TYPE,
+                "progress": 0.0,
+                "message": "Estimating frontier range",
+                "config": dict(config),
+                "node_label": node.data.label,
+            }
+            job_id = self._store.create_job(initial_job)
             execution_token = ExecutionCancellationToken()
             try:
                 execution_context = create_admitted_execution_context(
@@ -3235,7 +3262,7 @@ class OptimiserSolveService:
         )
         return self._frontier_auto_range_status_response(job)
 
-    def cancel_solve(self, job_id: str) -> dict[str, Any]:
+    def cancel_solve(self, job_id: str) -> JobSnapshot:
         """Cancel a running optimiser solve job."""
         job = self._store.require_job(job_id)
         if job.get(_JOB_TYPE_KEY) != _SOLVE_JOB_TYPE:
@@ -3257,7 +3284,7 @@ class OptimiserSolveService:
         *,
         timeout: int | float,
         start_time: float,
-    ) -> dict[str, Any]:
+    ) -> JobSnapshot:
         """Mark a running optimiser solve as timed out and request cancellation."""
         self._jobs.cancel(job_id, reason="timed_out")
         updated_job = self._lifecycle.transition(
@@ -3272,7 +3299,7 @@ class OptimiserSolveService:
 
     def _frontier_auto_range_status_response(
         self,
-        job: dict[str, Any],
+        job: Mapping[str, Any],
     ) -> OptimiserFrontierAutoRangeStatusResponse:
         stored_status = require_job_status(job)
         result = None
@@ -3369,7 +3396,7 @@ class OptimiserSolveService:
         *,
         status: str,
         message: str,
-    ) -> dict[str, Any]:
+    ) -> JobSnapshot:
         if status not in _FRONTIER_AUTO_RANGE_TERMINAL_STATUSES:
             raise ValueError(f"Unsupported auto-range stop status: {status!r}")
         job = self._store.require_job(job_id)
@@ -4136,7 +4163,7 @@ class OptimiserSolveService:
                     if isinstance(execution_context, ExecutionContext):
                         terminal_reason = None
                         try:
-                            job = self._store.require_job(job_id)
+                            job: Mapping[str, Any] = self._store.require_job(job_id)
                         except HTTPException:
                             job = {}
                         stored_reason = job.get("terminal_reason")
@@ -4210,7 +4237,7 @@ class OptimiserSolveService:
         return str(mode)
 
     @staticmethod
-    def _is_blocking_solve_job(job: dict[str, Any]) -> bool:
+    def _is_blocking_solve_job(job: JobSnapshot) -> bool:
         """Return whether a job should reserve the real optimiser solve slot."""
         if job.get("status") != "running":
             return False
@@ -4966,7 +4993,7 @@ class OptimiserSolveService:
         setup_singleflight_key = ctx.setup_singleflight_key
         execution_context = ctx.execution_context
 
-        existing_job = self._store.get_job(job_id) or {}
+        existing_job: Mapping[str, Any] = self._store.get_job(job_id) or {}
         raw_start_time = existing_job.get("start_time")
         start_time = (
             float(raw_start_time)
@@ -5152,7 +5179,7 @@ class OptimiserSolveService:
                     and ratebook_factors_handle.get("kind") == _RATEBOOK_FACTORS_HANDLE_KIND
                 ):
                     current = self._store.get_job(job_id)
-                    handles = current.get("artifact_handles") if isinstance(current, dict) else None
+                    handles = current.get("artifact_handles") if current is not None else None
                     attached = (
                         isinstance(handles, dict)
                         and isinstance(handles.get(_RATEBOOK_FACTORS_HANDLE_KEY), dict)

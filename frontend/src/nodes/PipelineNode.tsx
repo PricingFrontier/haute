@@ -9,7 +9,7 @@ import { STATUS_COLORS } from "../theme/colors"
 import type { PipelineFlowNode } from "../types/node"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_BOTTOM_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "../utils/edgeJoinRoles"
 import { DEFAULT_TARGET_HANDLE } from "../utils/flowHandles"
-import { apiInputFrameLabels } from "../utils/apiInputPorts"
+import { authoritativeSourceHandles } from "../utils/apiInputPorts"
 import FramePortRows from "./FramePortRows"
 
 const statusColors: Record<string, string> = {
@@ -184,8 +184,10 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // Bundle 3c — one ordered frame-label list is the source of truth for
   // source Handles, full-detail body rows, and the re-measure signature.
   const frameLabels = useMemo<string[]>(
-    () => (isDeployInput ? apiInputFrameLabels(nodeData.config) : []),
-    [isDeployInput, nodeData.config],
+    () => (isDeployInput
+      ? authoritativeSourceHandles({ id, data: nodeData })
+      : []),
+    [id, isDeployInput, nodeData],
   )
 
   // JSON serialization is a collision-safe value-equality proxy for the

@@ -217,7 +217,7 @@ Cancellation, terminal-race, GPU-VRAM 507 and estimate-failure behaviour are unc
 malformed present live-history entry fails at the runtime response boundary exactly like malformed
 completed-result history; absent history produces no chart and is never synthesized from
 latest-loss polls. Under the
-[prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
+[canonical-only format policy](../README.md#canonical-only-format-policy),
 the `modelling.features`/`modelling.mlflow`/`modelling.monotonic` section keys cease to be read or
 written; the generic section store and any inert in-memory entries need no migration.
 

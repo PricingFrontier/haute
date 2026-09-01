@@ -183,20 +183,25 @@ describe("filterIncomingEdges", () => {
 
   it("checks API Input frame handles against runtime-eligible emitted tables", () => {
     const nodes = [
-      graphNode("api", NODE_TYPES.API_INPUT, {
-        tables: [
-          {
-            label: "quotes",
-            emit: true,
-            columns: [{ name: "quote_id", selected: true }],
-          },
-          {
-            label: "not_emitted",
-            emit: false,
-            columns: [{ name: "ignored", selected: true }],
-          },
-        ],
-      }),
+      graphNode(
+        "api",
+        NODE_TYPES.API_INPUT,
+        {
+          tables: [
+            {
+              label: "quotes",
+              emit: true,
+              columns: [{ name: "quote_id", selected: true }],
+            },
+            {
+              label: "not_emitted",
+              emit: false,
+              columns: [{ name: "ignored", selected: true }],
+            },
+          ],
+        },
+        { _sourceHandleInputNames: { quotes: "quotes" } },
+      ),
       graphNode("target", NODE_TYPES.POLARS),
     ]
     const result = filterIncomingEdges(nodes, [

@@ -100,7 +100,6 @@ export function useDataInputColumns(
     const fingerprint = columnFingerprint(cachedColumns)
     if (fingerprint !== prevColumnFingerprint.current) {
       prevColumnFingerprint.current = fingerprint
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing store-owned cache into local state only when content actually changes (ref-equal but value-different arrays are skipped via column fingerprint compare)
       setDataInputColumns(cachedColumns)
     }
   }, [cachedColumns, enabled])

@@ -35,6 +35,8 @@ import numpy as np
 import polars as pl
 import pytest
 
+from tests.job_store_support import seed_job
+
 # This integration test needs the real core MLflow package. Keep the guard for
 # deliberately partial test environments.
 mlflow = pytest.importorskip(
@@ -81,17 +83,21 @@ def _seeded_job(
     """Inject a completed training job into the route's job store."""
     from haute.routes.modelling import _store
 
-    _store.jobs[job_id] = {
-        "status": "completed",
-        "result": result,
-        "config": config,
-        "node_label": node_label,
-        "created_at": time.time(),
-    }
+    seed_job(
+        _store,
+        job_id,
+        {
+            "status": "completed",
+            "result": result,
+            "config": config,
+            "node_label": node_label,
+            "created_at": time.time(),
+        },
+    )
     try:
         yield
     finally:
-        _store.jobs.pop(job_id, None)
+        _store.delete_job(job_id)
 
 
 def _training_frame(n: int = 80) -> pl.DataFrame:

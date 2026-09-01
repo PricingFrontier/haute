@@ -4,8 +4,9 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`); instance-node handling; contract kwarg formatting/injection (`_format_contract_kwarg`, `_format_contract_source`, `_inject_contract_kwarg`, `_matching_close_paren`); pipeline/submodel file assembly (`_generate_pipeline_lines`); the final parse gate (`_assert_emitted_files_parse`). |
+| `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`); instance-node handling; contract kwarg formatting/injection (`_format_contract_kwarg`, `_format_contract_source`, `_inject_contract_kwarg`); pipeline/submodel file assembly (`_generate_pipeline_lines`); the final parse gate (`_assert_emitted_files_parse`). |
 | `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`. String-safety helpers (`_safe_str`, `_safe_path`), shared field extraction (`_common_node_fields`, `_build_params` — parameters are the per-edge input names supplied by the orchestrator, with a loud duplicate-name guard replacing the former name-suffixing behaviour), docstring sanitization (`_sanitize_description`), and per-type templates such as `_MODEL_SCORE`, `_BANDING_SINGLE`, and `_RETAINED_EXTERNAL`. |
+| `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: LibCST decorator-keyword injection, exact method-call discovery with source spans, and stable structured syntax failures. It never repairs invalid source or evaluates Python. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): codegen registers and reads per-node code builders through the canonical registry. |
 | `src/haute/_code_extraction.py` | Reverse direction of the codegen builders' body wrapping: strips generated boilerplate back out of a persisted function body so the user-facing code editor shows only what the user actually typed. Consolidated engine (`extract_user_code`) dispatches through `BOILERPLATE_MATCHERS`/`_FINALISERS` registries keyed by node "kind." |
 | `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`_get_decorator_kwargs`, `_is_pipeline_node_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), and whole-file extraction helpers (`_extract_function_bodies`, `_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, `_extract_preserved_blocks`) shared with the parser. |
@@ -15,6 +16,10 @@
 - **`_NodeCodeFn`** (`codegen.py`) — `Callable[[GraphNode, list[str] | None, list[str] | None, list[str] | None], str]`; the injected per-node code generator (`_node_to_code` for pipelines, `_submodel_node_to_code` for submodel files), parameterizing `_generate_pipeline_lines` so both file kinds share one assembly routine. The fourth argument carries the per-edge source *function* names, kept alongside the edge-derived input names so edge-join role kwargs (`base_input`/`join_input`) can reference the connected source functions for parser reconstruction while the signature uses the input names.
 - **`_ConnectPair`** (`codegen.py`) — `tuple[str, str, str | None, str | None]`: `(src_func, tgt_func, source_port, target_port)`. `source_port`/`target_port` are `None` for the bare `connect("a", "b")` form used by ordinary single-output sources. Every `apiInput` edge — including one from a sole-frame source — carries its frame label as `source_port`, so the generated file always names the frame each connection delivers; a bare connect from an `apiInput` is not emitted.
 - **`CodegenBuilder`** (`_codegen_builders.py`) — `Callable[[GraphNode, list[str]], str]`; the signature every `_gen_*` function implements. Registered per `NodeType` into `NODE_REGISTRY[node_type].codegen` (see `haute._registry`); `NODE_REGISTRY` pairs each type's codegen builder with its exec-side runtime builder from `haute._builders`, and `validate_registry_complete` enforces both are present for every type.
+- **`MethodCallSite` / `StructuredSyntaxError`** (`_python_syntax.py`) — an immutable
+  exact attribute-call name plus one-based line/zero-based column span, and the
+  value-free failure raised when a source/keyword cannot be represented by the
+  valid-Python CST boundary.
 - **`MatcherResult`** (`_code_extraction.py`) — `NamedTuple(start_idx: int, return_vars: tuple[str, ...], generated_scaffold: bool = False)`. Output of a `BoilerplateMatcher`: `start_idx` is the first line of `cleaned_lines` considered user code; `return_vars` are variable names whose trailing `return <var>` should be stripped; `generated_scaffold=True` means generated setup (a `df = <helper>(...)` call or the explore kind's `df = <param>` binding) already produced `df`, so the finaliser runs with no param names and later references to the input parameters stay intentional user code.
 - **`BoilerplateMatcher`** (`_code_extraction.py`) — `Callable[[list[str], tuple[str, ...]], MatcherResult]`. One matcher per internal kind (`polars`, `explore`, `source`, `scenario_expander`, `model_score`, `rating_step`, `external`), registered in `BOILERPLATE_MATCHERS`.
 - **`_FINALISERS`** (`_code_extraction.py`) — `dict[str, Callable[[str, tuple[str, ...]], str]]`, the post-processing step per kind that runs after the shared strip-docstring → dedent → skip-boilerplate → strip-trailing-return pass (e.g. `_finalise_polars` unwraps redundant `df = (...)` parens and rewrites bare `return expr` to `df = expr`).
@@ -34,7 +39,8 @@
    `_error_on_name_collisions` over root nodes plus each referenced
    definition graph exactly once.4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
    each edge-join's two incoming edges in base-then-join order), topo-sort
-   nodes (`_topo_sort` via `haute._topo.topo_sort_ids`), build
+   nodes (`_topo_sort` via strict `haute._topo.topo_sort_ids`, which raises
+   `UnknownEdgeEndpointError` with dropped-edge evidence for any dangling endpoint), build
    id→func-name maps and each node's per-edge input-name list
    (`edge_input_name(edge, source_node)` in edge order — the same list the
    executor derives, so signature and binding can never disagree), raising
@@ -96,8 +102,9 @@ fresh markers.
    defaulting or skipping the rewrite.
 4. `_format_contract_kwarg` computes the `contract=...` kwarg text (or
    `None` for instance nodes whose contract comes from the referenced
-   original node); if present, `_inject_contract_kwarg` splices it into the
-   decorator, with any `HauteError` enriched with `node_id`/`node_label`/
+   original node); if present, `_inject_contract_kwarg` asks the structured
+   syntax boundary to add it to the first authored decorator, with any
+   `HauteError` enriched with `node_id`/`node_label`/
    `node_type` before re-raising.
 
 ### Canonical data I/O and retained sidecar builders
@@ -137,21 +144,19 @@ fresh markers.
   destination fields, connections, and user code without inventing inactive
   fields. No cache-mode field exists to round-trip; execution mode is derived.
 
-### `_inject_contract_kwarg` / `_matching_close_paren`
+### `_inject_contract_kwarg` / structured syntax boundary
 
-Operates on the ALREADY-GENERATED source text (not an AST), because the
-per-type builders never know about contracts. Splits on `"\n"` (not
-`str.splitlines()`, since form-feed/NEL/LINE-SEPARATOR can legally appear
-inside an emitted string literal but Python only breaks source lines at real
-newlines — using `splitlines()` would desync from `tokenize`'s row
-numbering). Finds the first `@pipeline.`/`@submodel.` line; if it has no
-`(`, rewrites it to `name(contract=...)`; otherwise locates the matching
-close paren with `_matching_close_paren` (a `tokenize.generate_tokens` walk
-tracking paren depth from the first `(` at the known position — string- and
-comment-aware, and lazy so malformed *body* code after the decorator can't
-make it fail) and inserts `, contract=...` or `contract=...` depending on
-whether the decorator already has args (determined by checking whether the
-text between the parens is non-whitespace).
+Operates on already-generated source because the per-type builders do not own
+contract computation. `inject_decorator_keyword` parses the complete module and
+the single keyword argument with LibCST, walks actual function decorators in
+source order, and updates the first call or bare attribute whose root is exactly
+`pipeline` or `submodel`. It rejects a duplicate `contract`, a malformed keyword,
+invalid module syntax, and a missing matching decorator. The output comes from
+the modified CST, so comments, quote spelling, line endings, trailing commas,
+and all syntax outside the changed decorator remain owned by the input tree.
+Invalid generated bodies are rejected here with a positioned structured error
+rather than being partially rewritten; the final AST gate remains the complete
+emitted-file assertion.
 
 ### `extract_user_code` (the extraction engine)
 
@@ -237,9 +242,9 @@ preamble global, matching the generated function's local assignment.
   their default `df` parameter when disconnected; a zero-source `polars`
   transform alone emits an empty parameter list.
 - **User-controlled text inside decorator arg lists** (a column literally
-  named `"price (gbp)"`, or containing `":)"`) — `_matching_close_paren`
-  tokenizes rather than character-scans, so parens inside string literals
-  and comments are invisible to the depth counter.
+  named `"price (gbp)"`, or containing `":)"`) — LibCST represents it as a
+  string literal rather than a delimiter. Comments and lookalike decorator
+  text are likewise trivia, never candidate syntax nodes.
 - **Descriptions containing triple quotes, backslashes, or edge whitespace**
   — `_sanitize_description` doubles every backslash, escapes every `"`
   (preventing any run of 3+ quotes from closing the enclosing `"""` early),
@@ -345,7 +350,7 @@ preamble global, matching the generated function's local assignment.
 |---|---|---|
 | No codegen builder registered for a `NodeType` | `KeyError` | `codegen._generate_node_code` |
 | Config-backed node has no decorator mapping or its builder emitted no function definition | `HauteError` with node id/label/type | `codegen._node_to_code` |
-| Decorator arg list untokenizable / no matching close paren / no decorator found | `HauteError` (context enriched with node id/label/type) | `codegen._matching_close_paren`, `codegen._inject_contract_kwarg`, re-raised in `codegen._node_to_code` |
+| Invalid module/keyword syntax, duplicate injected keyword, or no matching decorator | `HauteError` with stable reason and available line/column (then enriched with node id/label/type) | `_python_syntax.inject_decorator_keyword`, re-raised by `codegen._inject_contract_kwarg` / `_node_to_code` |
 | Contract computation hits `ConfigError` | `ConfigError` (propagated) | `codegen._format_contract_kwarg` |
 | Contract computation hits a non-infra exception (`TypeError`, `KeyError`, `HauteError` incl. `ContractMismatchError`) | propagated unchanged | `codegen._format_contract_kwarg` |
 | `inputs_by_parent` ambiguous key collision | `ParseError` | `codegen._format_contract_source` |

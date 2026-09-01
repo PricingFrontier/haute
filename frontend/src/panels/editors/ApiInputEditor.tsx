@@ -151,6 +151,7 @@ export default function ApiInputEditor({
   onUpdate,
   accentColor,
   configPath,
+  reservedFrameLabels,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
@@ -158,6 +159,8 @@ export default function ApiInputEditor({
   /** Pipeline-relative path to the on-disk schema mapping file (e.g.
    * `rating/config/quote_input/quotes.json`). */
   configPath?: string
+  /** Server-advertised frame labels reserved by the executable language. */
+  reservedFrameLabels: ReadonlySet<string>
 }) {
   const currentPath = configField<string | undefined>(config, "path", undefined)
   const { schema, loading: loadingSchema, error: schemaError, fetchForPath } = useSchemaFetch(currentPath)
@@ -248,6 +251,7 @@ export default function ApiInputEditor({
       apiInputLabelIssue(
         candidate,
         v2.tables.filter((_, idx) => idx !== i).map((t) => t.label),
+        reservedFrameLabels,
       ),
     )
   const updateColumn = (

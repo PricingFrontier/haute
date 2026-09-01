@@ -364,19 +364,22 @@ class TestResolvedDescriptors:
             "invalid_ops",
             "invalid_plan",
             "recipe_plan_requires_handle",
-            "recipe_route_required",
         } <= dry_run_errors
         assert "recipe_plan_not_found" in recipe_dry_run_errors
-        assert "recipe_route_mismatch" in plan_recipe_errors
-        assert "recipe_name_mismatch" in plan_recipe_errors
+        lexical_error_codes = {
+            "material_input_required",
+            "recipe_name_mismatch",
+            "recipe_route_mismatch",
+            "recipe_route_required",
+        }
         for error_codes in (
             dry_run_errors,
             recipe_dry_run_errors,
             plan_recipe_errors,
             apply_errors,
         ):
-            assert "material_input_required" in error_codes
-        assert "Mandatory" in plan_recipe.description
+            assert lexical_error_codes.isdisjoint(error_codes)
+        assert "structured" in plan_recipe.description.lower()
         assert "dry_run_recipe_plan" in plan_recipe.description
         assert set(recipe_dry_run.input_schema["properties"]) == {"recipe_plan_hash"}
         assert set(plan_recipe.output_schema["properties"]) == {
@@ -409,6 +412,51 @@ class TestResolvedDescriptors:
             "plan_aborted",
             "plan_already_applied",
         } <= apply_errors
+
+    def test_graph_edit_provider_schema_is_derived_from_wire_models(self):
+        from haute.assistant._wire_ops import (
+            AddEdgeOp,
+            AddNodeOp,
+            DeleteEdgeOp,
+            DeleteNodeOp,
+            RenameNodeOp,
+            UpdateNodeOp,
+            UpdatePreambleOp,
+            graph_edit_operations_schema,
+        )
+
+        models = (
+            AddNodeOp,
+            UpdateNodeOp,
+            RenameNodeOp,
+            DeleteNodeOp,
+            AddEdgeOp,
+            DeleteEdgeOp,
+            UpdatePreambleOp,
+        )
+        schema = graph_edit_operations_schema()
+        branches = schema["items"]["oneOf"]
+
+        assert schema["maxItems"] == 100
+        assert len(branches) == len(models)
+        for model in models:
+            discriminator = model.model_fields["op"].default
+            branch = next(
+                item for item in branches if item["properties"]["op"]["const"] == discriminator
+            )
+            assert set(branch["properties"]) == set(model.model_fields)
+            assert set(branch["required"]) == {
+                "op",
+                *(name for name, field in model.model_fields.items() if field.is_required()),
+            }
+            assert branch["additionalProperties"] is False
+
+        add_node = next(
+            item for item in branches if item["properties"]["op"]["const"] == "add_node"
+        )
+        assert add_node["properties"]["node_type"]["enum"] == [
+            node_type.value for node_type in NodeType
+        ]
 
 
 def test_edge_join_descriptor_teaches_strict_role_handles() -> None:

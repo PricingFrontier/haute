@@ -77,9 +77,9 @@ Out of scope:
   assistant bundle portfolio.
 - A push to `main` that changes any `docs/**` path or `mkdocs.yml` builds MkDocs
   in strict mode and deploys the resulting `site/` artifact to GitHub Pages.
-  `CI_MIRROR.md`, `COMMIT_STANDARDS.md`, and `PERFORMANCE_CHECKS.md` are
-  excluded from the public site, but changes to those paths still trigger this
-  workflow. Component specs and engineering roadmaps live in
+  The internal engineering documents named in `exclude_docs` (engineering
+  procedures and dated audit records) are excluded from the public site, but
+  changes to those paths still trigger this workflow. Component specs and engineering roadmaps live in
   root-level `specs/`, outside the site source tree, so changes there neither
   publish nor trigger a docs deployment. A newer docs run queues behind an
   active Pages deployment instead of cancelling it.

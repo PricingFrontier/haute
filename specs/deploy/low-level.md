@@ -10,7 +10,7 @@
 | `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts, and retained Data Inputs; path resolution plus canonical provider/schema validation and a bounded one-row readability probe. MLflow-sourced optimiser applies are deliberately not bundled. |
 | `src/haute/deploy/_schema.py` | Input schema inference (read source file schema) and output schema inference (dry-run scoring with the bundled artefacts), with a graph-and-artefact-fingerprint-keyed on-disk cache. |
 | `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
-| `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + test-quote scoring; golden test-quote parsing and expected-output tolerance comparison; `score_test_quotes`. |
+| `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison; `score_test_quotes`. |
 | `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
 | `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature/conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check. |
 | `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph`. |
@@ -116,6 +116,8 @@ starts, since a passthrough graph wouldn't otherwise surface it), then calls
 `score_test_quotes()` with `config.output_fields` to score the same projection served at
 runtime and collect per-file errors. All
 structural + test-quote errors are combined into one `DeployError` if any exist.
+On success, `validate_deploy()` returns that exact per-file result list so a
+presentation caller can render timings/status without executing the scorer again.
 `score_test_quotes()` remains a result-producing helper and returns an empty list when
 called directly without a usable directory; `validate_deploy()` owns enforcement of the
 configured gate.
@@ -125,8 +127,8 @@ configured gate.
    bad target fails fast rather than surfacing as an unrelated "no output node" error) →
    `resolve_config()` → `validate_deploy()` → `_dispatch_resolved()`.
 2. `deploy_resolved(resolved)`: the CLI's actual path — resolution and validation already
-   happened, including validation's quote-scoring gate; the CLI then ran a second
-   `score_test_quotes()` pass to print per-file timings. This function re-validates only
+   happened, including validation's quote-scoring gate; the CLI renders the result list
+   returned by that gate. This function re-validates only
    the target and dispatches the *same* resolved object, so the backend receives exactly
    what was validated.
 3. `_dispatch_resolved()`: `"databricks"` → `deploy_to_mlflow`; `"container"` →
@@ -453,7 +455,7 @@ image, contacts a real registry/Databricks workspace, or verifies a cloud servic
 
 ## Canonical-only scoring inputs
 
-Under the [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
+Under the [canonical-only format policy](../README.md#canonical-only-format-policy),
 generated deployment pruning and scoring bind inputs exclusively through the current named input
 handle contract. There is no positional-first-input or bare-frame fallback. Deployment tests use
 the same canonical handles produced by current graph/code generation.

@@ -600,12 +600,11 @@ class TestTurnReservation:
         expected_history = store.history_window(session)
         captured: dict[str, object] = {}
 
-        def build_executor(source_file, *, session_id, prior_messages, authoring_request):
+        def build_executor(source_file, *, session_id, prior_messages):
             captured.update(
                 {
                     "source_file": source_file,
                     "session_id": session_id,
-                    "authoring_request": authoring_request,
                     "prior_messages": prior_messages,
                 }
             )
@@ -633,11 +632,10 @@ class TestTurnReservation:
         assert captured == {
             "source_file": "main.py",
             "session_id": session.id,
-            "authoring_request": "continue",
             "prior_messages": expected_history,
         }
 
-    async def test_needs_input_follow_up_routes_provider_and_executor_to_original_recipe(
+    async def test_needs_input_follow_up_routes_provider_guidance_without_executor_prose(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch
     ):
         import haute.routes.assistant as assistant_routes
@@ -663,8 +661,14 @@ class TestTurnReservation:
         )
         captured: dict[str, object] = {}
 
-        def build_executor(source_file, *, session_id, prior_messages, authoring_request):
-            captured["authoring_request"] = authoring_request
+        def build_executor(source_file, *, session_id, prior_messages):
+            captured.update(
+                {
+                    "source_file": source_file,
+                    "session_id": session_id,
+                    "prior_messages": prior_messages,
+                }
+            )
 
             async def execute_tool(_name, _arguments):
                 raise AssertionError("clarification response must not execute a tool")
@@ -689,17 +693,18 @@ class TestTurnReservation:
         chunks = [chunk async for chunk in response.body_iterator]
 
         assert any("completed" in chunk for chunk in chunks)
-        effective = captured["authoring_request"]
-        assert isinstance(effective, str)
-        assert original in effective
-        assert "data/competitor_insight.parquet" in effective
+        assert set(captured) == {"source_file", "session_id", "prior_messages"}
         assert len(provider.calls) == 1
-        assert "Required recipe: `parquet_showcase`" in provider.calls[0]["system"]
+        assert "Suggested recipe: `parquet_showcase`" in provider.calls[0]["system"]
         dataset_tool = next(
             tool for tool in provider.calls[0]["tools"] if tool["name"] == "list_datasets"
         )
-        assert dataset_tool["input_schema"]["properties"]["project_root"]["const"] == "data"
-        assert dataset_tool["input_schema"]["properties"]["recursive"]["const"] is True
+        assert dataset_tool["input_schema"]["properties"]["project_root"] == {"type": "string"}
+        assert dataset_tool["input_schema"]["properties"]["recursive"] == {"type": "boolean"}
+        recipe_tool = next(
+            tool for tool in provider.calls[0]["tools"] if tool["name"] == "plan_recipe"
+        )
+        assert len(recipe_tool["input_schema"]["oneOf"]) == 6
 
     async def test_pre_stream_failure_after_reservation_releases_the_lock(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch

@@ -1197,7 +1197,9 @@ def test_isolated_job_supervisor_rejects_incoherent_existing_terminal_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = JobStore()
-    job_id = store.create_job({"status": "cancelled"})
+    job_id = store.create_job({"status": "running"})
+    with store._write_lock:  # noqa: SLF001 - deliberate corrupt-state boundary test
+        store._jobs[job_id]["status"] = "cancelled"  # noqa: SLF001
     supervisor = IsolatedJobSupervisor(JobLifecycle(store))
     monkeypatch.setattr(
         "haute.routes._background_jobs.run_isolated_worker",
@@ -1208,7 +1210,10 @@ def test_isolated_job_supervisor_rejects_incoherent_existing_terminal_state(
     thread.join(timeout=10)
 
     assert isinstance(thread.infrastructure_failure, SupervisorInfrastructureError)
-    with pytest.raises(SupervisorInfrastructureError, match="incoherent"):
+    with pytest.raises(
+        SupervisorInfrastructureError,
+        match="Terminal job reason must match its status",
+    ):
         thread.join_and_raise()
 
 

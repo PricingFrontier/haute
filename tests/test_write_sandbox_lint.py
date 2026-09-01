@@ -90,6 +90,9 @@ _ABS_PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[/\\]|\\\\)")
 _PARENT_RE = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
 
 _WRITE_MODE_CHARS = frozenset("wax+")
+# Every valid ``open`` mode string is a short combination of these characters;
+# anything else is a non-mode argument to an unrelated ``.open`` method.
+_OPEN_MODE = re.compile(r"[rwxab+tU]{1,4}")
 
 
 @dataclass(frozen=True)
@@ -400,14 +403,20 @@ class _FileScanner:
         return False
 
     def _open_mode(self, call: ast.Call, position: int) -> str | None:
-        """The literal mode argument of an open-like call, if statically known."""
+        """The literal mode argument of an open-like call, if statically known.
+
+        Only strings that are plausible ``open`` modes count: non-mode ``.open``
+        methods (e.g. a runner opening a node boundary by name) take ordinary
+        string arguments that would otherwise false-positive on containing an
+        ``a`` or ``w``.
+        """
         if len(call.args) > position and isinstance(call.args[position], ast.Constant):
             value = call.args[position].value
-            return value if isinstance(value, str) else None
+            return value if isinstance(value, str) and _OPEN_MODE.fullmatch(value) else None
         for keyword in call.keywords:
             if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant):
                 value = keyword.value.value
-                return value if isinstance(value, str) else None
+                return value if isinstance(value, str) and _OPEN_MODE.fullmatch(value) else None
         return None
 
     def _check_scope(self, nodes: list[ast.stmt], tainted: set[str]) -> None:

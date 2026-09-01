@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -418,7 +419,7 @@ def _make_resolved(
 
 
 class TestValidateDeploy:
-    def test_all_checks_pass_returns_empty(self) -> None:
+    def test_all_checks_pass_returns_empty_quote_results(self) -> None:
         inp = _make_node("input1")
         out = _make_node("output1")
         edge = GraphEdge(id="e1", source="input1", target="output1")
@@ -428,7 +429,75 @@ class TestValidateDeploy:
             input_node_ids=["input1"],
             output_node_id="output1",
         )
-        assert validate_deploy(resolved) is None
+        assert validate_deploy(resolved) == []
+
+    def test_returns_the_single_scoring_pass_results(self, tmp_path: Path) -> None:
+        quote_file = tmp_path / "quote.json"
+        quote_file.write_text('[{"input": {"col": 1}}]')
+        inp = _make_node("input1")
+        out = _make_node("output1")
+        resolved = _make_resolved(
+            nodes=[inp, out],
+            edges=[GraphEdge(id="e1", source="input1", target="output1")],
+            input_node_ids=["input1"],
+            output_node_id="output1",
+        )
+        resolved.config.test_quotes_dir = tmp_path
+        quote_results: list[dict[str, str | int | float]] = [
+            {"file": "quote.json", "rows": 1, "status": "ok", "time_ms": 1.5, "error": ""}
+        ]
+
+        with patch(
+            "haute.deploy._validators.score_test_quotes",
+            return_value=quote_results,
+        ) as scorer:
+            result = validate_deploy(resolved)
+
+        assert result is quote_results
+        scorer.assert_called_once_with(resolved, tmp_path)
+
+    def test_failed_quote_warns_once_and_raises_from_the_same_scoring_pass(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute.errors import DeployError
+
+        (tmp_path / "quote.json").write_text('[{"input": {"col": 1}}]')
+        inp = _make_node("input1")
+        out = _make_node("output1")
+        resolved = _make_resolved(
+            nodes=[inp, out],
+            edges=[GraphEdge(id="e1", source="input1", target="output1")],
+            input_node_ids=["input1"],
+            output_node_id="output1",
+        )
+        resolved.config.test_quotes_dir = tmp_path
+        quote_results: list[dict[str, str | int | float]] = [
+            {
+                "file": "quote.json",
+                "rows": 0,
+                "status": "error",
+                "time_ms": 1.5,
+                "error": "schema mismatch",
+            }
+        ]
+
+        with (
+            patch(
+                "haute.deploy._validators.score_test_quotes",
+                return_value=quote_results,
+            ) as scorer,
+            patch("haute.deploy._validators.logger.warning") as warning,
+            pytest.raises(DeployError, match="schema mismatch"),
+        ):
+            validate_deploy(resolved)
+
+        scorer.assert_called_once_with(resolved, tmp_path)
+        warning.assert_called_once_with(
+            "validation_failed",
+            structural_errors=0,
+            test_quote_errors=1,
+        )
 
     def test_input_node_not_in_pruned_graph(self) -> None:
         from haute.errors import DeployError

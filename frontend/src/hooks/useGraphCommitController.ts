@@ -1,0 +1,196 @@
+import { useCallback, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react"
+import type { Edge, Node } from "@xyflow/react"
+
+import type { OnUpdateConfigResult } from "../panels/editors/_shared"
+import { NODE_TYPES } from "../utils/nodeTypes"
+import {
+  prepareNodeUpdate,
+  type PreparedNodeUpdate,
+} from "../utils/nodeUpdatePlan"
+
+type GraphSnapshot = { nodes: Node[]; edges: Edge[] }
+type ToastType = "success" | "error" | "warning" | "info"
+
+type GraphCommitRequest = {
+  nodeId: string
+  generation: number
+  graph: GraphSnapshot
+  submodels: Record<string, unknown>
+  documentIdentity: string
+}
+
+export type UseGraphCommitControllerOptions = {
+  graphRef: MutableRefObject<GraphSnapshot>
+  submodelsRef: MutableRefObject<Record<string, unknown>>
+  readDocumentIdentity: () => string
+  readOnly: boolean
+  reservedApiInputFrameLabels: ReadonlySet<string>
+  resolveNodeIdentities: (candidateNodes: readonly Node[]) => Promise<Node[]>
+  commitGraph: (
+    nodes: Node[],
+    edges: Edge[],
+    submodels: Record<string, unknown>,
+  ) => void
+  setSelectedNode: Dispatch<SetStateAction<Node | null>>
+  addToast: (type: ToastType, text: string) => void
+}
+
+export type GraphCommitController = {
+  onUpdateNode: (nodeId: string, data: Record<string, unknown>) => OnUpdateConfigResult
+  onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
+}
+
+/**
+ * Owns request generations and the one selected-node graph commit boundary.
+ * The pure planner computes candidates; this hook alone decides whether an
+ * asynchronous candidate still owns the graph/document fence and may commit.
+ */
+export default function useGraphCommitController({
+  graphRef,
+  submodelsRef,
+  readDocumentIdentity,
+  readOnly,
+  reservedApiInputFrameLabels,
+  resolveNodeIdentities,
+  commitGraph,
+  setSelectedNode,
+  addToast,
+}: UseGraphCommitControllerOptions): GraphCommitController {
+  const requestGenerationsRef = useRef(new Map<string, number>())
+
+  const prepare = useCallback((
+    nodeId: string,
+    data: Record<string, unknown>,
+    refreshSourceIdentity: boolean,
+  ) => prepareNodeUpdate({
+    nodeId,
+    data,
+    refreshSourceIdentity,
+    readOnly,
+    graph: graphRef.current,
+    submodels: submodelsRef.current,
+    reservedApiInputFrameLabels,
+  }), [graphRef, readOnly, reservedApiInputFrameLabels, submodelsRef])
+
+  const beginRequest = useCallback((nodeId: string): GraphCommitRequest => {
+    const generation = (requestGenerationsRef.current.get(nodeId) ?? 0) + 1
+    requestGenerationsRef.current.set(nodeId, generation)
+    return {
+      nodeId,
+      generation,
+      graph: graphRef.current,
+      submodels: submodelsRef.current,
+      documentIdentity: readDocumentIdentity(),
+    }
+  }, [graphRef, readDocumentIdentity, submodelsRef])
+
+  const requestIsStale = useCallback((request: GraphCommitRequest): boolean => (
+    requestGenerationsRef.current.get(request.nodeId) !== request.generation
+    || graphRef.current !== request.graph
+    || submodelsRef.current !== request.submodels
+    || readDocumentIdentity() !== request.documentIdentity
+  ), [graphRef, readDocumentIdentity, submodelsRef])
+
+  const commit = useCallback((prepared: PreparedNodeUpdate): void => {
+    // Keep request-facing refs coherent immediately; the store subscription
+    // effects will observe the same identities after React commits.
+    graphRef.current = { nodes: prepared.nodes, edges: prepared.edges }
+    submodelsRef.current = prepared.submodels
+    commitGraph(prepared.nodes, prepared.edges, prepared.submodels)
+    setSelectedNode((previous) => (
+      previous?.id === prepared.nodeId
+        ? { ...previous, data: prepared.data }
+        : previous
+    ))
+    if (prepared.removed.length === 0) return
+    const label = String(prepared.data.label ?? prepared.nodeId)
+    addToast(
+      "warning",
+      `Disconnected ${prepared.removed.length} edge${prepared.removed.length === 1 ? "" : "s"} from ${label}: the source ${prepared.removed.length === 1 ? "frame no longer exists" : "frames no longer exist"} after your edit.`,
+    )
+  }, [addToast, commitGraph, graphRef, setSelectedNode, submodelsRef])
+
+  const onUpdateNode = useCallback((
+    nodeId: string,
+    data: Record<string, unknown>,
+  ): OnUpdateConfigResult => {
+    const currentNode = graphRef.current.nodes.find((node) => node.id === nodeId)
+    if (!currentNode) return { ok: false, error: `Cannot update missing node "${nodeId}".` }
+    if (currentNode.data.label !== data.label) {
+      return {
+        ok: false,
+        error: "Use the rename action so the server can resolve the node identity before commit.",
+      }
+    }
+
+    const preflight = prepare(nodeId, data, false)
+    if (!preflight.ok) return preflight
+    const request = beginRequest(nodeId)
+    if (data.nodeType !== NODE_TYPES.API_INPUT) {
+      commit(preflight)
+      return { ok: true }
+    }
+
+    const candidate = { ...currentNode, data }
+    void resolveNodeIdentities([candidate]).then((resolved) => {
+      if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
+        throw new Error("identity resolver returned an invalid node")
+      }
+      if (requestIsStale(request)) {
+        addToast(
+          "error",
+          "Node update was not applied because the graph changed while identity resolution was running.",
+        )
+        return
+      }
+      const finalPlan = prepare(nodeId, resolved[0].data, true)
+      if (!finalPlan.ok) {
+        addToast("error", finalPlan.error)
+        return
+      }
+      commit(finalPlan)
+    }).catch((error: unknown) => {
+      addToast(
+        "error",
+        `Update node failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    })
+    return { ok: true }
+  }, [addToast, beginRequest, commit, graphRef, prepare, requestIsStale, resolveNodeIdentities])
+
+  const onRenameNode = useCallback(async (
+    nodeId: string,
+    label: string,
+  ): Promise<OnUpdateConfigResult> => {
+    if (readOnly) return { ok: false, error: "This pipeline document is read-only." }
+    const currentNode = graphRef.current.nodes.find((node) => node.id === nodeId)
+    if (!currentNode) return { ok: false, error: `Cannot rename missing node "${nodeId}".` }
+    if (currentNode.data.label === label) return { ok: true }
+    const request = beginRequest(nodeId)
+    try {
+      const resolved = await resolveNodeIdentities([
+        { ...currentNode, data: { ...currentNode.data, label } },
+      ])
+      if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
+        throw new Error("identity resolver returned an invalid node")
+      }
+      if (requestIsStale(request)) {
+        return {
+          ok: false,
+          error: "Rename was not applied because the graph changed while identity resolution was running.",
+        }
+      }
+      const prepared = prepare(nodeId, resolved[0].data, true)
+      if (!prepared.ok) return prepared
+      commit(prepared)
+      return { ok: true }
+    } catch (error: unknown) {
+      return {
+        ok: false,
+        error: `Rename failed: ${error instanceof Error ? error.message : String(error)}`,
+      }
+    }
+  }, [beginRequest, commit, graphRef, prepare, readOnly, requestIsStale, resolveNodeIdentities])
+
+  return { onUpdateNode, onRenameNode }
+}

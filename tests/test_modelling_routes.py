@@ -30,6 +30,7 @@ from tests.conftest import (
     make_graph,
     make_ready_file_input_config,
 )
+from tests.job_store_support import seed_job
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -414,13 +415,14 @@ class TestTrainEndpoint:
         assert job_id not in store._running_activity_at
 
     def test_job_store_cleanup_clears_orphaned_running_activity(self):
-        """Cleanup should repair tests that mutated ``jobs`` directly."""
+        """Namespace cleanup also removes orphaned auxiliary activity state."""
         from haute.routes._job_store import get_job_store
         from tests.conftest import _clear_job_store_jobs
 
         store = get_job_store("training")
         job_id = store.create_job({"status": "running"})
-        store.jobs.pop(job_id)
+        with store._write_lock:  # noqa: SLF001 - deliberate orphan-state regression
+            store._jobs.pop(job_id)  # noqa: SLF001
 
         assert job_id in store._running_activity_at
 
@@ -495,12 +497,16 @@ class TestTrainEndpoint:
         """A second training request while one is running returns 409."""
         from haute.routes.modelling import _store
 
-        _store.jobs["fake_running"] = {
-            "status": "running",
-            "progress": 0.5,
-            "message": "Training...",
-            "created_at": time.time(),
-        }
+        seed_job(
+            _store,
+            "fake_running",
+            {
+                "status": "running",
+                "progress": 0.5,
+                "message": "Training...",
+                "created_at": time.time(),
+            },
+        )
         try:
             graph = _make_modelling_graph(training_data)
             resp = client.post(
@@ -510,7 +516,7 @@ class TestTrainEndpoint:
             assert resp.status_code == 409
             assert "already running" in resp.json()["detail"]
         finally:
-            _store.jobs.pop("fake_running", None)
+            _store.delete_job("fake_running")
 
     def test_train_gpu_refuses_on_vram_limit(self, client, training_data):
         """When GPU VRAM is insufficient, training should fail before launch."""
@@ -704,14 +710,18 @@ class TestTrainStatusTimeout:
     def test_timeout_sets_error_with_elapsed(self, client):
         from haute.routes.modelling import _store
 
-        _store.jobs["train_tout"] = {
-            "status": "running",
-            "progress": 0.3,
-            "message": "Training",
-            "start_time": time.monotonic() - 500,
-            "timeout": 10,
-            "created_at": time.time(),
-        }
+        seed_job(
+            _store,
+            "train_tout",
+            {
+                "status": "running",
+                "progress": 0.3,
+                "message": "Training",
+                "start_time": time.monotonic() - 500,
+                "timeout": 10,
+                "created_at": time.time(),
+            },
+        )
         try:
             resp = client.get("/api/modelling/train/status/train_tout")
             data = resp.json()
@@ -720,19 +730,23 @@ class TestTrainStatusTimeout:
             assert "timed out" in data["message"].lower()
             assert data["elapsed_seconds"] > 0
         finally:
-            _store.jobs.pop("train_tout", None)
+            _store.delete_job("train_tout")
 
     def test_cancel_training_marks_job_cancelled(self, client):
         from haute.routes.modelling import _store
 
-        _store.jobs["train_cancel_me"] = {
-            "status": "running",
-            "job_type": "training",
-            "progress": 0.3,
-            "message": "Training",
-            "start_time": time.monotonic() - 1,
-            "created_at": time.time(),
-        }
+        seed_job(
+            _store,
+            "train_cancel_me",
+            {
+                "status": "running",
+                "job_type": "training",
+                "progress": 0.3,
+                "message": "Training",
+                "start_time": time.monotonic() - 1,
+                "created_at": time.time(),
+            },
+        )
         try:
             resp = client.post("/api/modelling/train/cancel/train_cancel_me")
             data = resp.json()
@@ -741,20 +755,24 @@ class TestTrainStatusTimeout:
             assert data["terminal_reason"] == "cancelled"
             assert _store.require_job("train_cancel_me")["terminal_reason"] == "cancelled"
         finally:
-            _store.jobs.pop("train_cancel_me", None)
+            _store.delete_job("train_cancel_me")
 
     def test_completed_job_not_overwritten_by_timeout(self, client):
         from haute.routes.modelling import _store
 
-        _store.jobs["train_done_past_timeout"] = {
-            "status": "completed",
-            "progress": 1.0,
-            "message": "Done",
-            "start_time": time.monotonic() - 500,
-            "timeout": 10,
-            "elapsed_seconds": 12.0,
-            "created_at": time.time(),
-        }
+        seed_job(
+            _store,
+            "train_done_past_timeout",
+            {
+                "status": "completed",
+                "progress": 1.0,
+                "message": "Done",
+                "start_time": time.monotonic() - 500,
+                "timeout": 10,
+                "elapsed_seconds": 12.0,
+                "created_at": time.time(),
+            },
+        )
         try:
             resp = client.get("/api/modelling/train/status/train_done_past_timeout")
             data = resp.json()
@@ -762,7 +780,7 @@ class TestTrainStatusTimeout:
             assert data["message"] == "Done"
             assert "timed out" not in data["message"].lower()
         finally:
-            _store.jobs.pop("train_done_past_timeout", None)
+            _store.delete_job("train_done_past_timeout")
 
 
 def test_bounded_loss_history_retains_latest_rows() -> None:
@@ -835,6 +853,7 @@ class TestTrainStatusEndpoint:
 
     def test_non_finite_completed_result_becomes_job_error(self, client):
         """A bad completed payload must not make status polling 500 forever."""
+        from haute.routes._job_lifecycle import JobLifecycle
         from haute.routes.modelling import _store
         from haute.schemas import TrainResponse
 
@@ -846,12 +865,13 @@ class TestTrainStatusEndpoint:
         )
         job_id = store.create_job(
             {
-                "status": "completed",
+                "status": "running",
                 "progress": 1.0,
                 "message": "Done",
                 "result": bad_result,
             }
         )
+        JobLifecycle(store).transition(job_id, to="completed")
         try:
             resp = client.get(f"/api/modelling/train/status/{job_id}")
             assert resp.status_code == 200
@@ -861,7 +881,7 @@ class TestTrainStatusEndpoint:
             assert "diagnostic_metrics.auc" in data["message"]
             assert data["result"] is None
         finally:
-            store.jobs.pop(job_id, None)
+            store.delete_job(job_id)
 
     def test_finite_completed_result_is_validated_only_once(self, client, monkeypatch):
         """Status polls must not re-walk an already-validated result on every read.
@@ -872,6 +892,7 @@ class TestTrainStatusEndpoint:
         validated and skip the walk on subsequent polls.
         """
         from haute.routes import modelling as modelling_routes
+        from haute.routes._job_lifecycle import JobLifecycle
         from haute.routes.modelling import _store
 
         store = _store
@@ -882,12 +903,13 @@ class TestTrainStatusEndpoint:
         )
         job_id = store.create_job(
             {
-                "status": "completed",
+                "status": "running",
                 "progress": 1.0,
                 "message": "Done",
                 "result": good_result,
             }
         )
+        JobLifecycle(store).transition(job_id, to="completed")
 
         call_count = {"n": 0}
         original_assert = modelling_routes._assert_json_finite
@@ -907,7 +929,7 @@ class TestTrainStatusEndpoint:
             # because the result is already known to be finite.
             assert call_count["n"] == 1
         finally:
-            store.jobs.pop(job_id, None)
+            store.delete_job(job_id)
 
     def test_assert_json_finite_walks_nested_pydantic_models(self):
         """Recursion must descend into nested ``BaseModel`` instances.
@@ -963,12 +985,16 @@ class TestMlflowLogEndpoint:
         from haute.routes.modelling import _store
 
         # Inject a fake running job
-        _store.jobs["fake_running"] = {
-            "status": "running",
-            "progress": 0.5,
-            "message": "Training...",
-            "created_at": time.time(),
-        }
+        seed_job(
+            _store,
+            "fake_running",
+            {
+                "status": "running",
+                "progress": 0.5,
+                "message": "Training...",
+                "created_at": time.time(),
+            },
+        )
         try:
             resp = client.post(
                 "/api/modelling/mlflow/log",
@@ -979,7 +1005,7 @@ class TestMlflowLogEndpoint:
             assert resp.status_code == 400
             assert "not completed" in resp.json()["detail"]
         finally:
-            _store.jobs.pop("fake_running", None)
+            _store.delete_job("fake_running")
 
 
 # ---------------------------------------------------------------------------
@@ -1447,13 +1473,17 @@ class TestMlflowLogSuccess:
             final_test_metrics={"gini": 0.85, "rmse": 0.12},
             model_path="/tmp/model.cbm",
         )
-        _store.jobs["test_log"] = {
-            "status": "completed",
-            "result": fake_result,
-            "config": {"algorithm": "catboost", "task": "regression", "target": "y"},
-            "node_label": "my_model",
-            "created_at": time.time(),
-        }
+        seed_job(
+            _store,
+            "test_log",
+            {
+                "status": "completed",
+                "result": fake_result,
+                "config": {"algorithm": "catboost", "task": "regression", "target": "y"},
+                "node_label": "my_model",
+                "created_at": time.time(),
+            },
+        )
         mock_log_result = SimpleNamespace(
             backend="local",
             experiment_name="/Shared/haute/my_model",
@@ -1473,7 +1503,7 @@ class TestMlflowLogSuccess:
             assert data["backend"] == "local"
             assert data["run_id"] == "abc123"
         finally:
-            _store.jobs.pop("test_log", None)
+            _store.delete_job("test_log")
 
     def test_mlflow_log_exception_returns_500(self, client):
         """If log_experiment raises, should return 500."""
@@ -1484,13 +1514,17 @@ class TestMlflowLogSuccess:
             diagnostic_metrics={"gini": 0.5},
             final_test_metrics={"gini": 0.5},
         )
-        _store.jobs["test_err"] = {
-            "status": "completed",
-            "result": fake_result,
-            "config": {},
-            "node_label": "model",
-            "created_at": time.time(),
-        }
+        seed_job(
+            _store,
+            "test_err",
+            {
+                "status": "completed",
+                "result": fake_result,
+                "config": {},
+                "node_label": "model",
+                "created_at": time.time(),
+            },
+        )
         try:
             with patch(
                 "haute.modelling._mlflow_log.log_experiment",
@@ -1501,23 +1535,27 @@ class TestMlflowLogSuccess:
             assert "MLflow connection refused" not in resp.json()["detail"]
             assert "Check the server logs" in resp.json()["detail"]
         finally:
-            _store.jobs.pop("test_err", None)
+            _store.delete_job("test_err")
 
     def test_mlflow_log_no_result_data(self, client):
         """Completed job with no result should return 400."""
         from haute.routes.modelling import _store
 
-        _store.jobs["no_result"] = {
-            "status": "completed",
-            "result": None,
-            "created_at": time.time(),
-        }
+        seed_job(
+            _store,
+            "no_result",
+            {
+                "status": "completed",
+                "result": None,
+                "created_at": time.time(),
+            },
+        )
         try:
             resp = client.post("/api/modelling/mlflow/log", json={"job_id": "no_result"})
             assert resp.status_code == 400
             assert "no result" in resp.json()["detail"].lower()
         finally:
-            _store.jobs.pop("no_result", None)
+            _store.delete_job("no_result")
 
 
 class TestMlflowCheckImportError:
@@ -1914,7 +1952,9 @@ class TestTrainingProjection:
 
         seeds = {"train": frozenset({"claim_count", "driver_age"})}
         with (
-            patch("haute.routes._train_service.execute_lazy_graph", side_effect=fake_execute_lazy),
+            patch(
+                "haute.routes._training_lifecycle.execute_lazy_graph", side_effect=fake_execute_lazy
+            ),
             patch("haute.executor._build_node_fn", return_value=None),
             patch("haute.modelling._algorithms._mem_checkpoint"),
             patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
@@ -1973,7 +2013,9 @@ class TestTrainingProjection:
             )
 
         with (
-            patch("haute.routes._train_service.execute_lazy_graph", side_effect=fake_execute_lazy),
+            patch(
+                "haute.routes._training_lifecycle.execute_lazy_graph", side_effect=fake_execute_lazy
+            ),
             patch("haute.executor._build_node_fn", return_value=None),
             patch("haute.modelling._algorithms._mem_checkpoint"),
             patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
@@ -2033,7 +2075,7 @@ class TestExecuteAndSinkCheckpointCleanup:
 
         with (
             patch(
-                "haute.routes._train_service.execute_lazy_graph",
+                "haute.routes._training_lifecycle.execute_lazy_graph",
                 side_effect=failing_execute_lazy,
             ),
             patch("haute.executor._build_node_fn", return_value=None),
@@ -2486,7 +2528,7 @@ class TestDispersionEstimateEndpoint:
         """Job types are disjoint: a training job id is not a dispersion job."""
         from haute.routes.modelling import _store
 
-        job_id = _store.create_job({"status": "completed", "job_type": "training"})
+        job_id = _store.create_job({"status": "running", "job_type": "training"})
         resp = client.get(f"/api/modelling/dispersion/status/{job_id}")
         assert resp.status_code == 404
 
@@ -2579,7 +2621,7 @@ class TestDispersionErrorPaths:
         ):
             service.start_dispersion_estimate(body)
         assert exc_info.value.status_code == 422
-        (job_id,) = store.jobs
+        (job_id,) = store.list_jobs()
         job = store.require_job(job_id)
         assert job["status"] == "contract_error"
         assert "missing column" in job["message"]
@@ -2614,7 +2656,7 @@ class TestDispersionErrorPaths:
             patch.object(service, "_compile_preamble", return_value=None),
             patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
             patch(
-                "haute.routes._train_service.create_admitted_execution_context",
+                "haute.routes._training_lifecycle.create_admitted_execution_context",
                 return_value=context,
             ),
             patch.object(service, "_execute_and_sink", side_effect=capture_sink),
@@ -2642,7 +2684,7 @@ class TestDispersionErrorPaths:
             pytest.raises(RuntimeError),
         ):
             service.start_dispersion_estimate(body)
-        (job_id,) = store.jobs
+        (job_id,) = store.list_jobs()
         job = store.require_job(job_id)
         assert job["status"] == "error"
         assert "sink exploded" in job["message"]
@@ -2670,7 +2712,7 @@ class TestDispersionErrorPaths:
         ):
             service.start_dispersion_estimate(body)
         assert exc_info.value.status_code == 507
-        (job_id,) = store.jobs
+        (job_id,) = store.list_jobs()
         assert store.require_job(job_id)["status"] == "memory_limited"
 
     def test_cancel_dispersion_running_then_terminal_noop(self):
@@ -3003,10 +3045,11 @@ class TestTrainStatusDirect:
             assert result.result is None
             assert result.warning is None
         finally:
-            _store.jobs.pop(job_id, None)
+            _store.delete_job(job_id)
 
     @pytest.mark.asyncio
     async def test_completed_job_includes_result(self):
+        from haute.routes._job_lifecycle import JobLifecycle
         from haute.routes.modelling import _store, train_status
 
         fake_result = _completed_train_response(
@@ -3016,20 +3059,21 @@ class TestTrainStatusDirect:
         )
         job_id = _store.create_job(
             {
-                "status": "completed",
+                "status": "running",
                 "progress": 1.0,
                 "message": "Done",
                 "result": fake_result,
                 "warning": "Row limit applied",
             }
         )
+        JobLifecycle(_store).transition(job_id, to="completed")
         try:
             result = await train_status(job_id)
             assert result.status == "completed"
             assert result.result is not None
             assert result.warning == "Row limit applied"
         finally:
-            _store.jobs.pop(job_id, None)
+            _store.delete_job(job_id)
 
     @pytest.mark.asyncio
     async def test_missing_job_raises_404(self):

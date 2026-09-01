@@ -16,6 +16,7 @@ from haute._codegen_builders import (
     _sanitize_description,
     _wrap_user_code,
 )
+from haute._topo import UnknownEdgeEndpointError
 from haute.codegen import (
     _generate_node_code,
     _instance_to_code,
@@ -1255,7 +1256,7 @@ class TestCodegenEdgeCases:
         _compile_node_code(code)
 
     def test_graph_with_edge_referencing_nonexistent_node(self):
-        """Edges to non-existent nodes should not crash graph_to_code."""
+        """Codegen must reject rather than silently erase a dangling edge."""
         graph = _g(
             {
                 "nodes": [
@@ -1273,10 +1274,11 @@ class TestCodegenEdgeCases:
                 ],
             }
         )
-        # Should not raise — ghost edges are tolerated
-        code = graph_to_code(graph)
-        assert "import polars as pl" in code
-        compile(code, "<test>", "exec")
+        with pytest.raises(UnknownEdgeEndpointError) as exc_info:
+            graph_to_code(graph)
+
+        assert exc_info.value.unknown_node_ids == ("ghost_node",)
+        assert tuple(edge.id for edge in exc_info.value.dropped_edges) == ("e1",)
 
     def test_node_with_very_long_label(self):
         """A node with a very long label (>200 chars) should still produce valid code."""

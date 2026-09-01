@@ -4,20 +4,22 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/App.tsx` | `FlowEditor` — the canvas orchestrator: wires `<ReactFlow>` event props to interaction hooks, derives a transient highlighted edge from the active edge-join insertion candidate, renders its accessible status, owns local selection/context-menu/dialog state, picks the active preview pane, handles `onUpdateNode` (including api-input edge reconciliation), adapts the shared Submodel creation policy and owns the Instance toolbar handler (the `can*` props drive presentation only, so an unavailable click still toasts its reason), and gates Save/Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
+| `frontend/src/App.tsx` | `FlowEditor` — the canvas composition boundary: wires `<ReactFlow>` event props to interaction hooks, derives and renders the transient edge-join candidate, owns local selection/context-menu/dialog state, picks the active preview pane, adapts the shared Submodel creation policy, owns the Instance toolbar handler, and gates Save/Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
+| `frontend/src/hooks/useGraphCommitController.ts` | The single state authority for selected-node config and label commits: assigns per-node request generations, captures the graph/document identity fence, resolves prospective node/API-frame identities, invokes the pure preflight planner, and applies one history-aware graph transaction only while the request still owns that fence. |
+| `frontend/src/utils/nodeUpdatePlan.ts` | Pure selected-node update planner: reconciles API-frame handles, migrates dependent mappings, checks post-update input-name collisions, and returns either a complete root-graph/submodel candidate or a typed rejection without mutating the store. |
 | `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type at full detail regardless of zoom, plus the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted through the shared `FramePortRows` component) and edge-join geometry-dependent handle placement; owns api-input instance-name suppression and the zero-frame "No emitted frames" state. |
 | `frontend/src/nodes/FramePortRows.tsx` | Shared full-detail frame-row primitive used by API Input, the parent Submodel card, and drilled Input/Output boundary cards. It owns the common semibold 13px label typography, truncation/title behavior, and row-relative source/target handle placement. |
 | `frontend/src/nodes/SubmodelNode.tsx` | Resolves occurrences through `config.definitionId` and the typed definition registry, then renders labelled `in__<portId>`/`out__<portId>` rows, a registry-derived accessible child count, and a visible invalid-definition alert. Cards have no default target. |
 | `frontend/src/nodes/SubmodelPortNode.tsx` | Renders one composite Input or Output boundary card inside a drilled submodel. Both headers use the same right-pointing arrow while their handles retain their graph semantics. Input turns its ordered `ports` into shared source-handle rows; Output renders one shared target handle and never lists exported frames. |
 | `frontend/src/panels/useGraph.ts` | Defines `GraphContext` (`React.Context<GraphContextValue \| undefined>`) and the `useGraph()` consumer hook, which throws when called outside a provider. |
 | `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble}` identity. |
-| `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. |
+| `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. It exports the production `computeStructuralFingerprint` for direct contract tests; tests must not maintain a copied fingerprint implementation. |
 | `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract owned by [frontend-shared](../frontend-shared/low-level.md) and consumed by the canvas. |
-| `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: ordinary atomic delete, guarded submodel deletion, duplicate, ordinary `instanceOf` creation, reusable-submodel occurrence creation with deterministic fresh id/alias allocation, rename dialog, and in-flight-guarded ELK auto-layout. |
-| `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion and always clear gesture feedback; the hook also owns `onSelectionChange`/`onNodeClick` (panel + debounced preview, gated while a structured API-input has no `tables[]` schema), `handleDeleteEdge`, `onNodeContextMenu`, and `onDragOver`/`onDrop` (palette node creation). |
+| `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: ordinary atomic delete, guarded submodel deletion, duplicate and instance creation that resolve authoritative identities before commit, reusable-submodel occurrence creation with deterministic fresh id/alias allocation, rename dialog, and in-flight-guarded ELK auto-layout. Resolver rejection, malformed output, or graph replacement leaves state untouched. |
+| `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion; palette and edge-join nodes resolve identities before any graph/history mutation, with downstream join mappings finalized only from the server result. The hook also owns selection/preview, edge deletion, context menus, and drag/drop. |
 | `frontend/src/hooks/usePipelineAPI.ts` | Pipeline editor-document load-on-mount; recovery-to-React-Flow adaptation; atomic document-status/revision plus graph ingestion; request-facing refs; preview lifecycle; and capability-fenced Save. |
 | `frontend/src/stores/useDocumentStatusStore.ts` | Authoritative editor-document status, diagnostics, capabilities, raw revision, source-only text, and last accepted document identity. Graph state/history remain in `useGraphStore`. |
-| `frontend/src/types/pipelineDocument.ts` | Strict version-1 recovery wire types/guards and the single adapter from recovery nodes/edges/submodels into render-only React Flow snapshots. Recovery wire values are never accepted as canonical graph values. |
+| `frontend/src/types/pipelineDocument.ts` | Strict version-1 editor-document wire types/guards and the single adapter from recovery nodes/edges/submodels into render-only React Flow snapshots, including required node identities, edge input identities, submodel input-port identities, and reserved API-frame labels. Recovery wire values are never accepted as canonical graph values. |
 | `frontend/src/components/PipelineRecoveryBanner.tsx` | Accessible degraded-document summary and issues entry point. |
 | `frontend/src/components/SourceRecoveryView.tsx` | Read-only current-source and document-diagnostic surface used when no trustworthy graph skeleton exists. |
 | `frontend/src/components/PipelineLoadFailureView.tsx` | Dedicated initial-load system-failure surface that keeps transport, permission, discovery, and unreadable-file failures distinct from authored recovery diagnostics. |
@@ -56,7 +58,7 @@
 | `frontend/src/utils/edgeJoinInsertionFeedback.ts` | Pure render-only Edge Join candidate decoration that preserves edge-array identity when inactive. |
 | `frontend/src/utils/edgeJoinValidation.ts` | Save-time edge-join graph validation and readable warnings. |
 | `frontend/src/utils/nodeTypeRegistry.ts` | React Flow node-type registry built from canonical metadata, shared by editable and read-only canvases. |
-| `frontend/src/utils/graphSnapshot.ts` | Four-field graph snapshot serialization/cloning and persisted canonicalisation; omits transient node/submodel metadata from fingerprints. |
+| `frontend/src/utils/graphSnapshot.ts` | Four-field graph snapshot serialization/cloning and persisted canonicalisation: Save/dirty serialization strips transient identities; live history clones retain only the server-owned identity subset while omitting React Flow presentation and volatile preview/trace metadata. |
 | `frontend/src/utils/shallowNodeHash.ts` | Stable shallow data hashing used by structural and panel-context fingerprint calculations. |
 | `frontend/src/components/ComparisonInspector.tsx` | Read-only comparison-view config panel: renders the real node editor `inert` for the available side(s), with a Historical/Current switcher. |
 | `frontend/src/components/ComparisonView.tsx` | The historical-vs-current comparison canvas pair: fetches the historical pipeline, diffs it, and renders two non-interactive `ReactFlow` instances (`ReadonlyCanvas`) with diff-ring highlighting, a draggable split, and orientation toggle. |
@@ -222,7 +224,11 @@ newer overlapping transform.
   under — set alongside `_columns`/`_availableColumns`/`_schemaWarnings`
   by `usePipelineAPI`, compared against the live active source to decide
   staleness), `_status`, `_traceActive`, `_traceDimmed`, `_hoverDimmed`,
-  `_traceValue`, `_traceMotionDisabled`, `_diffStatus`.
+  `_traceValue`, `_traceMotionDisabled`, `_diffStatus`, plus server-owned
+  `_functionName`, `_defaultInputName`, `_sourceHandleInputNames`, and
+  `_configReference`. Edges carry transient `_inputName`; submodel definitions
+  carry transient `_inputPortInputNames`. These identities are omitted from
+  persistence/fingerprints but retained in live undo/redo snapshots.
 - **`SubmodelDefinition`** — `{ definitionId, file, graph, inputPorts,
   outputPorts }`, where every input port owns ordered internal targets and every
   output port owns exactly one internal source. Public `portId` values are
@@ -295,22 +301,33 @@ newer overlapping transform.
    selection-only changes — go through `setNodesRaw(applyNodeChanges(...))`.
    `add`/`remove`/`replace` changes always push a snapshot first.
 4. **Structural edits** (connect, delete, paste, edge-join swap) are driven
-   by `hooks/useNodeHandlers.ts` and `hooks/useEdgeHandlers.ts` (owned
-   elsewhere) calling the history-aware setters exposed here. `App.tsx`'s
+   by `hooks/useNodeHandlers.ts`, `hooks/useEdgeHandlers.ts`, and
+   `hooks/useKeyboardShortcuts.ts` calling the history-aware setters exposed
+   here. Paste treats copied identities as stale because every pasted label
+   changes: it resolves the complete cloned node/edge batch through the
+   server-owned editor-identity adapter before one atomic graph commit. A
+   resolver failure, malformed result, superseding paste, or intervening graph
+   change leaves graph and history untouched and reports the failure. `App.tsx`'s
    own `handleSwapEdgeJoinInputs` is a concrete example: it calls
    `pushSnapshot()` once, then applies the swap's resulting nodes/edges via
    the *raw* setters — deliberately, so the whole swap is one undo entry
    despite not using `setNodesAndEdges`.
-5. **Config commit (`App.tsx`'s `onUpdateNode`) — compute, preflight, then
-   commit.** Captures `prevNode` from `graphRef.current`, then **before any
-   store mutation** computes the complete tentative result: the new config,
-   `applyApiInputConfigChange`'s edge rebind/prune outcome (owned by
-   `utils/apiInputPorts.ts`). For a frame rename, occurrence edges only rebind
-   their external `sourceHandle` because the shared definition is already keyed
-   by public port id. Ordinary targets additionally migrate
-   `input_scenario_map` keys and instance `inputMapping` entries. The
-   preflight then checks each affected executable target's post-commit
-   input-name set for duplicates. On a collision the commit
+5. **Selected-node commit (`useGraphCommitController`) — capture, resolve,
+   preflight, then commit.** The controller is the only authority for config
+   and label request identity. It increments a monotonic generation for the
+   target node and captures the current root graph, definition registry, and
+   editor-document identity before starting any asynchronous identity
+   resolution. A resolver failure, a newer request for that node, a document
+   replacement, or any intervening graph/registry replacement retires the
+   candidate without mutating graph or history. Once current, it asks
+   `nodeUpdatePlan.ts` to compute the complete tentative result before any
+   store mutation: the new config and `applyApiInputConfigChange`'s edge
+   rebind/prune outcome (owned by `utils/apiInputPorts.ts`). For a frame
+   rename, occurrence edges only rebind their external `sourceHandle` because
+   the shared definition is already keyed by public port id. Ordinary targets
+   additionally migrate `input_scenario_map` keys and instance `inputMapping`
+   entries. The pure preflight checks each affected executable target's
+   post-commit input-name set for duplicates. On a collision the commit
    returns `{ ok: false, error }` and **nothing mutates** — no snapshot, no
    config, no edges, no mappings; `NodePanel` passes the result through
    `OnUpdateConfig` so the ApiInputEditor surfaces `error` inline at the
@@ -318,16 +335,16 @@ newer overlapping transform.
    [frontend-node-editors](../frontend-node-editors/low-level.md)), clearing
    it on the next successful commit. On success the whole tentative result —
    the migrated root nodes, edges, and canonical definition registry — lands
-   through the single
-   history-aware combined setter (`setNodesAndEdgesAndSubmodels`, one
-   snapshot) plus the `selectedNode` update, as a single undo entry; undo
-   restores root and nested state coherently, never a root-only revert.
+   through the single history-aware combined setter
+   (`setNodesAndEdgesAndSubmodels`, one snapshot) plus the selected-node view
+   update, as a single undo entry; undo restores root and nested state
+   coherently, never a root-only revert.
 6. **Store internals, history-aware path.** Every history-aware setter calls
    `pushSnapshotInternal()` (deep-clones the pre-mutation state — nodes,
    edges, preamble, and submodels — via `captureGraphSnapshot`, which
-   delegates to the shared transient-stripping `cloneGraphSnapshot` in
-   `graphSnapshot.ts` so React Flow presentation fields never enter
-   history, evicting the oldest entry once
+   delegates to `cloneGraphSnapshot` in `graphSnapshot.ts`; React Flow
+   presentation and volatile preview/trace fields never enter history, while
+   server identities remain available when a snapshot is restored. The stack evicts the oldest entry once
    `undoStack.length >= MAX_HISTORY`), then always recomputes
    `persistedFingerprint` and `dirty` (via `computeDirty` against
    `lastSavedSnapshot`/`savedPersistedFingerprint`), recomputes
@@ -450,7 +467,12 @@ newer overlapping transform.
     into the edge-join's `config` under that role's key, and pushes one
     snapshot before applying nodes/edges via the raw setters (so the
     role-config write and the new edge land in the same undo entry as the
-    edge itself). A successful edge-join insertion (either path) also
+    edge itself). Before an ordinary edge or an edge-join role edge enters
+    live state or history, `attachEditorEdgeIdentities` derives its exact
+    `_inputName` from the source node's server-owned default/handle metadata.
+    Missing or malformed source identity produces a visible error and leaves
+    nodes, edges, and history untouched; the browser never reconstructs an
+    executable name from a label. A successful edge-join insertion (either path) also
     selects the new node, clears trace, and cancels any in-flight preview.
     Splitting preserves the original edge's `sourceHandle` on the new base
     edge and `targetHandle` on the new downstream edge, and preserves the
@@ -898,15 +920,19 @@ frame eligibility, blank/duplicate/non-identifier/keyword label rejection
 (mirroring backend invariant B4's ASCII rule — valid Unicode identifiers like
 `café` are rejected too), frame-label derivation (`apiInputFrameLabels` across
 zero/one/many eligible frames, invalid labels, and unselected-column tables),
-edge input-name derivation (`edgeInputName` for api-input frame edges verbatim,
-sanitised source labels for ordinary nodes, submodel `out__` edges resolving to
-the child's sanitised label, and per-target duplicate detection),
+edge input-name consumption (`edgeInputName` reads authoritative edge/node/
+submodel metadata and fails clearly when it is absent, plus per-target duplicate
+detection),
 rename-before-prune migration, identity-preserving no-ops, edge-join
 insertion/role normalisation, and invalid saved graph diagnostics. These sit
 alongside the hook/store suites below because their contracts are exercised
 again through the editor and save paths.
 
 - **Store — `frontend/src/stores/__tests__/`:**
+  - `frontend/src/utils/__tests__/graphSnapshot.test.ts` — pins persisted
+    serialization and proves live undo restores node, edge, and submodel
+    server identities without persisting them or retaining volatile runtime
+    caches/status.
   - `frontend/src/stores/__tests__/useGraphStore.consolidation.test.ts` — store shape and required
     action surface; a "selector isolation (reviewer gate)" block asserting
     by render count that subscribing to one slice does not re-render on
@@ -928,6 +954,11 @@ again through the editor and save paths.
     hashes; Explore overview-card, pivot-card, and chart-card display config is ignored while Explore
     data-prep code still flips the hash; add/remove/rewire/reconfigure and
     preamble edits do bump `structuralVersion`.
+  - `frontend/src/__tests__/utils/graphFingerprint.test.ts` — imports and
+    exercises production `computeStructuralFingerprint` directly, including
+    position/edge-id insensitivity, ordering stability, semantic node/edge/
+    handle/preamble sensitivity, and empty-graph determinism. It contains no
+    local fingerprint oracle.
   - `frontend/src/stores/__tests__/useGraphStore.undoAtomicity.test.ts` — single- and multi-node delete
     (mixing connected/unconnected nodes), pure-edge delete, and paste are
     each exactly one undo entry regardless of selection size; redo replays
@@ -1041,7 +1072,8 @@ again through the editor and save paths.
     `clearNode` independently (no missed nodes).
   - `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` (largest suite) — `onConnect` is a no-op
     (commit happens in `onConnectEnd`); source→target and target→source
-    edge creation; self-loop and duplicate-edge rejection; submodel
+    edge creation with authoritative default/labelled-handle `_inputName`
+    attachment and atomic refusal when source identity is absent; self-loop and duplicate-edge rejection; submodel
     targetHandle preservation; `maxInputs` blocking (including a
     second Explore input) and non-blocking when unset; default-handle
     normalisation; source-to-source edge-join creation and its rejection
@@ -1074,6 +1106,11 @@ again through the editor and save paths.
     candidate churn never calls graph setters, selection setters, or
     `pushSnapshot`; existing normal connection and insertion cases retain the
     handle-preservation, selection, and single-undo assertions.
+  - `frontend/src/hooks/__tests__/useKeyboardShortcuts.test.ts` pins paste as
+    one resolve-before-commit transaction: cloned node identities and internal
+    edge identities come from the authoritative resolver, while rejection,
+    malformed results, superseding requests, and intervening graph edits are
+    visible atomic no-ops.
   - The Edge Join insertion feedback component is covered with React Testing
     Library: a compatible candidate exposes one named polite status and the
     derived edge receives the candidate class; clearing or invalidating the

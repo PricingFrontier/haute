@@ -13,7 +13,7 @@
 | `hatch_build.py` | Defines `FrontendBuildHook`: inventories and fingerprints production inputs, validates the generated input/output manifests and every local output dependency, explicitly rebuilds embedded frontend assets, resolves npm, and turns failed prerequisites/commands into runtime errors. |
 | `src/haute/__init__.py` | Defines the installed package's public import surface, which is the package root selected for wheel distribution. |
 | `src/haute/py.typed` | PEP 561 marker declaring that the installed `haute` package ships type information. |
-| `frontend/package.json` | Declares the private frontend's pinned Node/npm engines, locked-toolchain commands, production build (`tsc -b && vite build`), and build-time dependencies. |
+| `frontend/package.json` | Declares the private frontend's pinned Node/npm engines, locked-toolchain commands, production build (`tsc -b && vite build`), explicit contract generation/check commands, and build-time dependencies. Ajv, json-schema-to-typescript, and esbuild are exact-pinned development generators, not production runtime dependencies. |
 | `frontend/package-lock.json` | Pins the sole supported frontend dependency graph consumed by `npm ci` for reproducible frontend builds. Secondary package-manager lockfiles are unsupported and must not be checked in because CI cannot verify their parity. |
 | `frontend/.npmrc` | Supplies npm configuration used when installing the frontend dependency graph. |
 | `frontend/README.md` | Documents the frontend project for repository contributors. |
@@ -23,11 +23,11 @@
 | `frontend/vite.config.ts` | Reads the package version from `pyproject.toml`, defines `__APP_VERSION__`, and configures React/Tailwind plugins, a strict `127.0.0.1:5173` development listener, API/WebSocket proxies, chunking, a Rollup manifest, and output to `src/haute/static/`. |
 | `docs/overrides/home.html` | Supplies the public documentation landing-page override and is a documentation-build input. |
 | `docs/stylesheets/extra.css` | Supplies public documentation styling and is a documentation-build input. |
-| `docs/CI_MIRROR.md`, `docs/COMMIT_STANDARDS.md`, `docs/PERFORMANCE_CHECKS.md` | Internal engineering procedures: retained as workflow inputs in the repository but excluded from public-site output. |
+| `docs/CI_MIRROR.md`, `docs/COMMIT_STANDARDS.md`, `docs/PERFORMANCE_CHECKS.md`, `docs/ENGINEERING_QUALITY_AUDIT_2026_08.md`, `docs/ENGINEERING_QUALITY_AUDIT_2026_08_COVERAGE.toml` | Internal engineering procedures and dated audit records: retained in the repository but excluded from public-site output. |
 | `frontend/tsconfig.json` | References the application and Vite-node TypeScript projects. |
 | `frontend/tsconfig.app.json` | Sets strict browser-source TypeScript compilation and build-info placement. |
 | `frontend/tsconfig.node.json` | Sets strict TypeScript compilation for `frontend/vite.config.ts`. |
-| `mkdocs.yml` | Configures the Material/MkDocs public site, navigation, strict-build plugins, and exclusions for the three internal engineering reference documents that remain under `docs/`. |
+| `mkdocs.yml` | Configures the Material/MkDocs public site, navigation, strict-build plugins, and exclusions for the internal engineering reference documents and dated audit records that remain under `docs/`. |
 | `.github/workflows/docs.yml` | Builds public docs strictly and deploys the resulting `site/` artifact to GitHub Pages after `main` pushes affecting `docs/**` or `mkdocs.yml`, or on manual dispatch. |
 
 `src/haute/static/` is a generated build output, not a tracked source module.
@@ -73,8 +73,9 @@ package input validated by `hatch_build.py`, not hand-edited source.
   workspace data access and deployment.
 - **MkDocs site inputs** are public Markdown, `docs/overrides/home.html`,
   `docs/stylesheets/extra.css`, and `mkdocs.yml`; `exclude_docs` prevents the
-  three engineering procedure documents from becoming pages. Component specs
-  and roadmaps live outside the MkDocs source tree.
+  internal engineering documents and dated audit records from entering the
+  site output. Component specs and roadmaps live outside the MkDocs source
+  tree.
 
 ## Control flow
 
@@ -91,7 +92,13 @@ package input validated by `hatch_build.py`, not hand-edited source.
    recorded proof. Build mode always runs `npm ci --prefer-offline`, then skips
    the production build only if both those checks pass; otherwise it invokes
    `npm run build`.
-4. `frontend/package.json` runs `tsc -b` before Vite. `frontend/vite.config.ts`
+4. Contract generation is an explicit contributor/preflight path, not an
+   implicit Hatch, Vite, or browser-runtime side effect. Preflight requires the
+   committed Pydantic-derived JSON Schema, TypeScript declarations/constants,
+   and standalone validators to be current. The production-input manifest
+   naturally fingerprints those committed frontend source files, so packaging
+   consumes exactly the reviewed artifacts and detects later source drift.
+   `frontend/package.json` runs `tsc -b` before Vite. `frontend/vite.config.ts`
    reads the package version, supplies React/Tailwind and development proxies,
    clears `src/haute/static/`, then emits the HTML/public assets,
    JavaScript/CSS chunks, and `src/haute/static/manifest.json` there. The hook captures the input

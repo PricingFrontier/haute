@@ -12,7 +12,8 @@
 | `src/haute/_polars_utils.py` | [io-layer](../io-layer/low-level.md)-owned `cancellable_streaming_collect` primitive consumed by Explore so a cancelled analysis interrupts its in-flight native Polars query. |
 | `src/haute/_column_summary.py` | Dtype facts shared with the [assistant](../assistant/low-level.md)'s value profiles: `is_unhashable_dtype` (the distinct-count gate), the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. Explore's display formatting stays local to the service; only the facts that a second summariser would otherwise have to rediscover as production failures live here. |
 | `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
-| `src/haute/_explore_charts.py` | Standalone strict validator for ordered version-1 PivotChart cards, nested mappings/styles/axes/legend, ids/names, finite bounds, required orientation and stack-normalisation flags, card-wide stack-group consistency, and simple-literal future fields. Versionless cards are rejected, never migrated. |
+| `src/haute/_explore_chart_contracts.py` | Canonical Pydantic structural authority for version-1 PivotChart cards and their nested category, value, series, style, axes, and legend models. It accepts only finite recursive JSON extension values and owns field shape, required values, literals, and scalar bounds; model validators own Python-side identity, stack, and axis relationships. |
+| `src/haute/_explore_charts.py` | Stable persisted-config adapter around the canonical chart models: accepts an ordered list of mappings, returns plain dicts, preserves finite additive fields, and translates Pydantic failures into `ConfigError`. It performs no migration, repair, or default materialisation. |
 | `src/haute/_explore_pivots.py` | Standalone strict validator for ordered version-1 Explore pivot cards, placements, typed members, supported aggregations/options, unique ids/names, and simple-literal future fields. Versionless cards are rejected, never migrated. |
 | `src/haute/schemas.py` | Shared Explore API/report contracts owned by [server-api](../server-api/low-level.md): existing cache-report contracts plus pivot run/status/member requests, typed failures, member/path/value/cell structures, and result matrices. |
 
@@ -59,12 +60,14 @@
   "round-trippable" value per `_is_round_trippable_overview_value` (recursively: `None`, `str`,
   `bool`, `int`, finite `float`, or `list`/`dict` of the same, with dict keys required to be
   `str`).
-- **`ExploreChartConfig`** (`_types.py`) — one persisted version-1 ComboChart with stable
+- **`ExploreChartConfig`** (`_explore_chart_contracts.py`, Pydantic model) — the
+  canonical structural authority for one persisted version-1 ComboChart with stable
   id/name/enabled/source-pivot linkage, chart `orientation` (`"vertical"`/`"horizontal"`), Rows
   category settings, ordered Value encodings and exact
   series overrides, primary/secondary axes, and legend. Style mappings contain only closed mark,
   axis, number-format, colour, stack (`stack_group` plus Boolean `stack_normalize`), marker, and
-  label values.
+  label values. Unknown string-keyed fields are retained only when their values
+  satisfy the finite recursive JSON grammar.
 - **`ExplorePivotPersistedConfig` / `ExplorePivotConfig`** (`_types.py`) — the version-1 persisted
   card contains `id`, `name`, `enabled`, ordered Filter/Columns/Rows/Values placements, ordered
   selected shared-formula ids, a combined `value_order` of Value/formula ids, and grand-total
@@ -178,8 +181,12 @@
 
 ## PivotChart adapter invariants
 
-- `frontend/src/panels/explore/chartConfig.ts` mirrors the backend version-1 validator (including
-  required orientation and stack-normalisation flags, any-mark stacking, card-wide
+- `frontend/src/panels/explore/chartConfig.ts` consumes generated chart types/constants and a
+  separate lazy standalone validator derived from the canonical Pydantic schema. Generated code
+  owns the version-1 structural fields, literals, required values, and bounds; the handwritten
+  adapter retains non-plain/finite-JSON rejection, stable errors, canonical series identities,
+  duplicates, stack and axis relationships (including required orientation and
+  stack-normalisation flags, any-mark stacking, card-wide
   stack-group consistency, and the secondary axis's required Boolean `enabled` — rejected
   when absent or when disabled while any style
   is assigned to the secondary axis) and exposes

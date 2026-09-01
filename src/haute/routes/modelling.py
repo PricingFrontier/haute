@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -149,7 +151,7 @@ async def cancel_training(job_id: str) -> TrainStatusResponse:
     )
 
 
-def _dispersion_status_response(job: dict) -> DispersionEstimateStatusResponse:
+def _dispersion_status_response(job: Mapping[str, Any]) -> DispersionEstimateStatusResponse:
     return DispersionEstimateStatusResponse(
         status=require_job_status(job),
         progress=job.get("progress", 0.0),

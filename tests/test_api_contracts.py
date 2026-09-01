@@ -599,6 +599,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/PipelineEditorDocument"},
         },
     },
+    "/api/pipeline/editor-identities": {
+        "POST": {
+            "request_ref": "#/components/schemas/EditorIdentitiesRequest",
+            "success_schema": {"$ref": "#/components/schemas/EditorIdentitiesResponse"},
+        },
+    },
     "/api/pipeline/read-json": {
         "POST": {
             "request_ref": "#/components/schemas/ReadJsonRequest",

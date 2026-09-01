@@ -166,6 +166,43 @@ profile has shown its setup cost to be material. Reconsider that decision only
 if a real-Linux profile measures sampler setup p95 above 1 ms in a
 representative run.
 
+The external-scaling certificate was captured on 2026-08-31 using Windows 10,
+Python 3.11.13, and Polars 1.39.3:
+
+| Path | Representative load | Network/provider | Local/serialization | Bounded result |
+|---|---:|---:|---:|---:|
+| MLflow run discovery | 100 candidates | 101 calls; 0.207 ms in-process fake | 0.444 ms handler; 0.769 ms JSON | 19,191 bytes |
+| UC complete bundle | 10 commits | 4.709 ms fake Files API | 191.724 ms create; 45.213 ms verify | 2,709 bytes |
+| UC complete bundle | 100 commits | 4.960 ms fake Files API | 173.531 ms create; 51.915 ms verify | 24,199 bytes |
+| UC complete bundle | 500 commits | 4.539 ms fake Files API | 185.946 ms create; 46.949 ms verify | 119,803 bytes |
+| Thread cancellation | one held permit, one waiter | 65.643 ms limiter wait | 117.594 ms cleanup; 0.225 ms bookkeeping tail | permit returned |
+
+The MLflow and Files API providers are deterministic in-process stand-ins: their
+times prove phase attribution and call counts, not service latency. Production
+`mlflow_run_discovery_completed` and `uc_publish_measurement` events supply live
+network evidence without identifiers or payload data. The certificate separates
+provider/network, response serialization, executor queue, worker execution, and
+post-response cleanup in its retained JSON evidence. Operational re-evaluation
+gates are 5,000 ms p95 total MLflow discovery at the 100-candidate cap and
+30,000 ms p95 UC upload for bundles at or below 25 MiB.
+
+These measurements retire all three speculative redesigns. MLflow keeps its
+one-search-plus-at-most-100-artifact-call path; provider-side metadata/filtering
+or a bounded index requires a live response-budget breach. UC keeps independently
+restorable complete bundles and five-generation retention: its 500-commit sample
+is about 0.46% of the 25 MiB gate, so incremental/checkpoint recovery complexity
+is not justified. Compatibility threads continue holding admission and limiter
+ownership until real worker exit; in the gated sample the permit was reusable
+0.754 ms after worker release. Heavy production execution already defaults to
+killable process isolation, so a generic cooperative-cancellation protocol would
+add an unusable signal to callables that cannot honour it.
+
+Reproduce the certificate and retain its JSON, Markdown, and JUnit artifacts with:
+
+```powershell
+uv run python scripts/run_perf_suite.py --output-dir .cache/perf/cx12 --pytest-target tests/performance/test_external_scaling_perf.py --max-total-seconds 60 --max-test-seconds 20
+```
+
 The last retained tracing baseline was captured on 2026-07-23 using Windows 10,
 Python 3.11.13, and Polars 1.39.3:
 

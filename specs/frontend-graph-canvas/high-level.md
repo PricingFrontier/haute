@@ -190,7 +190,9 @@ well as occurrence-specific positions and bindings.
   non-history path. A whole-document load is a distinct atomic transition: it
   installs all four persisted fields, establishes that exact snapshot as the
   saved baseline, clears undo and redo, and advances cache/context versions
-  monotonically. Undo/redo restores all four persisted graph fields together.
+  monotonically. Undo/redo restores all four graph fields together and retains
+  transient server-owned editor identities required by the live graph; Save
+  payloads and dirty fingerprints omit those identities.
 - **Authored boundary ports survive the client.** `PipelineEdge` extends the React Flow edge shape
   with optional `sourcePort`/`targetPort` fields used while a submodel occurrence occupies the
   visible handle. Response parsing, edge normalisation, graph snapshots, and save payloads retain

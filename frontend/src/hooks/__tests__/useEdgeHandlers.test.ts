@@ -28,6 +28,20 @@ function makeParams() {
     clearTrace: vi.fn(),
     screenToFlowPosition: vi.fn((pos: { x: number; y: number }) => pos),
     graphRefreshingRef: { current: 0 },
+    resolveGraphIdentities: vi.fn(async (
+      nodes: readonly Node[],
+      edges: readonly Edge[],
+    ): Promise<{ nodes: Node[]; edges: Edge[] }> => ({
+      nodes: nodes.map((node): Node => ({
+        ...node,
+        data: {
+          ...node.data,
+          _defaultInputName: node.data._defaultInputName ?? `server_${node.id}`,
+          _sourceHandleInputNames: node.data._sourceHandleInputNames ?? {},
+        },
+      })),
+      edges: [...edges],
+    })),
     findEdgeIdAtPoint: vi.fn(() => null as string | null),
     validateConnection: undefined as
       | undefined
@@ -69,6 +83,60 @@ function connectionEndState({
 
 const mouseUpEvent = { clientX: 200, clientY: 150 } as MouseEvent
 
+function identifiedNode(
+  id: string,
+  nodeType: string = NODE_TYPES.POLARS,
+  data: Record<string, unknown> = {},
+): Node {
+  return {
+    id,
+    position: { x: 0, y: 0 },
+    data: {
+      label: id,
+      nodeType,
+      _defaultInputName: `server_${id}`,
+      _sourceHandleInputNames: {},
+      ...data,
+    },
+  } as unknown as Node
+}
+
+function makeEdgeJoinInsertionParams() {
+  const params = makeParams()
+  params.graphRef.current.nodes = [
+    { id: "a", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS, _defaultInputName: "base", _sourceHandleInputNames: {} } } as unknown as Node,
+    { id: "b", position: { x: 300, y: 0 }, data: { label: "Downstream", nodeType: NODE_TYPES.POLARS, _defaultInputName: "downstream", _sourceHandleInputNames: {} } } as unknown as Node,
+    { id: "c", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS, _defaultInputName: "lookup", _sourceHandleInputNames: {} } } as unknown as Node,
+  ]
+  params.graphRef.current.edges = [
+    { id: "e_ab", source: "a", target: "b", sourceHandle: "base_out", targetHandle: null } as Edge,
+  ]
+  params.findEdgeIdAtPoint.mockReturnValue("e_ab")
+  return params
+}
+
+function droppedPolarsEvent(): React.DragEvent {
+  return {
+    preventDefault: vi.fn(),
+    clientX: 300,
+    clientY: 400,
+    dataTransfer: {
+      getData: vi.fn((key: string) => {
+        if (key === "application/reactflow-type") return NODE_TYPES.POLARS
+        if (key === "application/reactflow-config") return "{}"
+        return ""
+      }),
+    },
+  } as unknown as React.DragEvent
+}
+
+async function flushIdentityCommit(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
 describe("useEdgeHandlers", () => {
   afterEach(() => {
     cleanup()
@@ -94,6 +162,19 @@ describe("useEdgeHandlers", () => {
 
   it("onConnectEnd creates a new edge for source-to-target handles", () => {
     const params = makeParams()
+    params.graphRef.current.nodes = [
+      {
+        id: "a",
+        position: { x: 0, y: 0 },
+        data: {
+          label: "Source",
+          nodeType: NODE_TYPES.POLARS,
+          _defaultInputName: "server_source",
+          _sourceHandleInputNames: {},
+        },
+      } as unknown as Node,
+      { id: "b", position: { x: 200, y: 0 }, data: { label: "Target", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
     const { result } = renderHook(() => useEdgeHandlers(params))
     act(() => {
       result.current.onConnectEnd(
@@ -115,7 +196,68 @@ describe("useEdgeHandlers", () => {
         target: "b",
         sourceHandle: "out",
         targetHandle: "in",
+        data: { _inputName: "server_source" },
       },
+    ])
+  })
+
+  it("onConnectEnd attaches the authoritative source-handle identity", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      {
+        id: "api",
+        position: { x: 0, y: 0 },
+        data: {
+          label: "API",
+          nodeType: NODE_TYPES.API_INPUT,
+          _defaultInputName: null,
+          _sourceHandleInputNames: { quotes: "server_api_quotes" },
+        },
+      } as unknown as Node,
+      { id: "target", position: { x: 200, y: 0 }, data: { label: "Target", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({
+          from: "api",
+          to: "target",
+          fromHandleId: "quotes",
+          toHandleId: "in",
+        }),
+      )
+    })
+
+    const updater = params.setEdges.mock.calls[0][0] as (eds: Edge[]) => Edge[]
+    expect(updater([])[0]).toMatchObject({
+      source: "api",
+      sourceHandle: "quotes",
+      data: { _inputName: "server_api_quotes" },
+    })
+  })
+
+  it("onConnectEnd refuses a new edge when source identity is unavailable", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "a", position: { x: 0, y: 0 }, data: { label: "Source", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "b", position: { x: 200, y: 0 }, data: { label: "Target", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "a", to: "b" }))
+    })
+
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        type: "error",
+        text: expect.stringMatching(/connection rejected.*authoritative default identity/i),
+      }),
     ])
   })
 
@@ -146,6 +288,7 @@ describe("useEdgeHandlers", () => {
 
   it("onConnectEnd creates a new edge for target-to-source handles", () => {
     const params = makeParams()
+    params.graphRef.current.nodes = [identifiedNode("outputNode"), identifiedNode("inputNode")]
     const { result } = renderHook(() => useEdgeHandlers(params))
     act(() => {
       result.current.onConnectEnd(
@@ -195,6 +338,7 @@ describe("useEdgeHandlers", () => {
   it("onConnectEnd preserves targetHandle for submodel nodes", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
+      identifiedNode("a"),
       { id: "sm1", data: { label: "SM", nodeType: NODE_TYPES.SUBMODEL } } as unknown as Node,
     ]
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -214,6 +358,7 @@ describe("useEdgeHandlers", () => {
   it("leaves a new collapsed submodel input unassigned", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
+      identifiedNode("api"),
       { id: "sm1", data: { label: "SM", nodeType: NODE_TYPES.SUBMODEL } } as unknown as Node,
     ]
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -276,7 +421,7 @@ describe("useEdgeHandlers", () => {
       id: "exp1",
       data: { label: "Expander", nodeType: NODE_TYPES.SCENARIO_EXPANDER },
     } as unknown as Node
-    params.graphRef.current.nodes = [expanderNode]
+    params.graphRef.current.nodes = [identifiedNode("a"), expanderNode]
     params.graphRef.current.edges = []
     const { result } = renderHook(() => useEdgeHandlers(params))
     act(() => {
@@ -291,7 +436,7 @@ describe("useEdgeHandlers", () => {
       id: "t1",
       data: { label: "Transform", nodeType: NODE_TYPES.POLARS },
     } as unknown as Node
-    params.graphRef.current.nodes = [transformNode]
+    params.graphRef.current.nodes = [identifiedNode("b"), transformNode]
     params.graphRef.current.edges = [
       { id: "e1", source: "a", target: "t1" } as Edge,
     ]
@@ -313,7 +458,7 @@ describe("useEdgeHandlers", () => {
   ])("onConnectEnd allows dragging from an edgeJoin output $label", ({ existingEdges }) => {
     const params = makeParams()
     params.graphRef.current.nodes = [
-      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
+      identifiedNode("join1", NODE_TYPES.EDGE_JOIN, { label: "Edge Join 1", config: {} }),
       { id: "existing", data: { label: "Existing", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
       { id: "target", data: { label: "Target", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
     ]
@@ -343,7 +488,7 @@ describe("useEdgeHandlers", () => {
   it("onConnectEnd normalises the default input handle id before storing a normal edge", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
-      { id: "join1", position: { x: 0, y: 0 }, data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
+      identifiedNode("join1", NODE_TYPES.EDGE_JOIN, { label: "Edge Join 1", config: {} }),
       {
         id: "target",
         position: { x: 300, y: 0 },
@@ -381,11 +526,11 @@ describe("useEdgeHandlers", () => {
     ])
   })
 
-  it("onConnectEnd keeps source-to-source edgeJoin creation when dropped on a Polars output side", () => {
+  it("onConnectEnd keeps source-to-source edgeJoin creation when dropped on a Polars output side", async () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
-      { id: "base", position: { x: 300, y: 0 }, measured: { width: 240, height: 70 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "base", position: { x: 300, y: 0 }, measured: { width: 240, height: 70 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS, _defaultInputName: "base", _sourceHandleInputNames: {} } } as unknown as Node,
+      { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS, _defaultInputName: "lookup", _sourceHandleInputNames: {} } } as unknown as Node,
     ]
     const { result } = renderHook(() => useEdgeHandlers(params))
 
@@ -401,6 +546,7 @@ describe("useEdgeHandlers", () => {
         } as never,
       )
     })
+    await flushIdentityCommit()
 
     expect(params.setEdges).not.toHaveBeenCalled()
     expect(params.pushSnapshot).toHaveBeenCalledOnce()
@@ -475,7 +621,7 @@ describe("useEdgeHandlers", () => {
     expect(useToastStore.getState().toasts).toEqual([])
   })
 
-  it("creates an edgeJoin when an apiInput frame is dropped on an output that already consumes that frame", () => {
+  it("creates an edgeJoin when an apiInput frame is dropped on an output that already consumes that frame", async () => {
     const params = makeParams()
     const apiInput = {
       id: "api",
@@ -529,6 +675,7 @@ describe("useEdgeHandlers", () => {
         }),
       )
     })
+    await flushIdentityCommit()
 
     expect(params.pushSnapshot).toHaveBeenCalledOnce()
     const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
@@ -547,7 +694,7 @@ describe("useEdgeHandlers", () => {
     )
   })
 
-  it("onConnectEnd does not reinterpret source-only nodes as input-side targets", () => {
+  it("onConnectEnd does not reinterpret source-only nodes as input-side targets", async () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
       { id: "base", position: { x: 300, y: 0 }, measured: { width: 240, height: 70 }, data: { label: "Base", nodeType: NODE_TYPES.DATA_INPUT } } as unknown as Node,
@@ -567,6 +714,7 @@ describe("useEdgeHandlers", () => {
         } as never,
       )
     })
+    await flushIdentityCommit()
 
     expect(params.setEdges).not.toHaveBeenCalled()
     expect(params.pushSnapshot).toHaveBeenCalledOnce()
@@ -587,7 +735,16 @@ describe("useEdgeHandlers", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
       { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: { baseInput: "old", joinInput: "lookup" } } } as unknown as Node,
-      { id: "quotes", data: { label: "Quotes", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
+      {
+        id: "quotes",
+        data: {
+          label: "Quotes",
+          nodeType: NODE_TYPES.POLARS,
+          config: {},
+          _defaultInputName: "server_quotes",
+          _sourceHandleInputNames: {},
+        },
+      } as unknown as Node,
     ]
     params.graphRef.current.edges = []
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -609,8 +766,37 @@ describe("useEdgeHandlers", () => {
     })
     const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
     expect(nextEdges).toEqual([
-      expect.objectContaining({ source: "quotes", target: "join1", targetHandle: "base" }),
+      expect.objectContaining({
+        source: "quotes",
+        target: "join1",
+        targetHandle: "base",
+        data: { _inputName: "server_quotes" },
+      }),
     ])
+  })
+
+  it("onConnectEnd leaves an edgeJoin role update atomic when source identity is unavailable", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: { joinInput: "lookup" } } } as unknown as Node,
+      { id: "quotes", data: { label: "Quotes", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "quotes", to: "join1", toHandleId: "base" }),
+      )
+    })
+
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "error",
+      text: expect.stringMatching(/connection rejected.*authoritative default identity/i),
+    })
   })
 
   it("onConnectEnd normalises the bottom edgeJoin drop target to the join role", () => {
@@ -618,7 +804,7 @@ describe("useEdgeHandlers", () => {
     params.graphRef.current.nodes = [
       { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: { baseInput: "base", joinInput: "removed" } } } as unknown as Node,
       { id: "base", data: { label: "Base", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
-      { id: "lookup", data: { label: "Lookup", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
+      identifiedNode("lookup", NODE_TYPES.POLARS, { label: "Lookup", config: {} }),
     ]
     params.graphRef.current.edges = [
       { id: "e-base-join", source: "base", target: "join1", targetHandle: "base" } as Edge,
@@ -709,17 +895,8 @@ describe("useEdgeHandlers", () => {
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
   })
 
-  it("onConnectEnd inserts an edgeJoin node when a connection is dropped on an edge", () => {
-    const params = makeParams()
-    params.graphRef.current.nodes = [
-      { id: "a", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      { id: "b", position: { x: 300, y: 0 }, data: { label: "Downstream", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      { id: "c", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-    ]
-    params.graphRef.current.edges = [
-      { id: "e_ab", source: "a", target: "b", sourceHandle: "base_out", targetHandle: null } as Edge,
-    ]
-    params.findEdgeIdAtPoint.mockReturnValue("e_ab")
+  it("onConnectEnd inserts an edgeJoin node when a connection is dropped on an edge", async () => {
+    const params = makeEdgeJoinInsertionParams()
     const { result } = renderHook(() => useEdgeHandlers(params))
 
     act(() => {
@@ -733,6 +910,7 @@ describe("useEdgeHandlers", () => {
         } as never,
       )
     })
+    await flushIdentityCommit()
 
     expect(params.pushSnapshot).toHaveBeenCalledOnce()
     expect(params.setNodesRaw).toHaveBeenCalledOnce()
@@ -749,6 +927,7 @@ describe("useEdgeHandlers", () => {
       data: {
         label: "Edge Join 1",
         nodeType: NODE_TYPES.EDGE_JOIN,
+        _defaultInputName: "server_edgeJoin_1",
         config: {
           baseInput: "a",
           joinInput: "c",
@@ -784,6 +963,67 @@ describe("useEdgeHandlers", () => {
     expect(nextEdges).toHaveLength(3)
   })
 
+  it("does not commit an edgeJoin when the server omits its executable identity", async () => {
+    const params = makeEdgeJoinInsertionParams()
+    params.resolveGraphIdentities = vi.fn(async (nodes, edges) => ({
+      nodes: [...nodes],
+      edges: [...edges],
+    }))
+    const originalGraph = params.graphRef.current
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "c", fromHandleId: "lookup_out" }),
+      )
+    })
+    await flushIdentityCommit()
+
+    expect(params.graphRef.current).toBe(originalGraph)
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/did not provide a default input name/)
+  })
+
+  it("does not commit a resolved edgeJoin after the graph changes", async () => {
+    const params = makeEdgeJoinInsertionParams()
+    let candidate: { nodes: Node[]; edges: Edge[] } | null = null
+    let resolveIdentities!: (value: { nodes: Node[]; edges: Edge[] }) => void
+    params.resolveGraphIdentities = vi.fn((nodes, edges) => {
+      candidate = { nodes: [...nodes], edges: [...edges] }
+      return new Promise((resolve) => { resolveIdentities = resolve })
+    })
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "c", fromHandleId: "lookup_out" }),
+      )
+    })
+    await vi.waitFor(() => expect(params.resolveGraphIdentities).toHaveBeenCalledOnce())
+    params.graphRef.current = { nodes: [], edges: [] }
+    await act(async () => {
+      if (!candidate) throw new Error("Expected an Edge Join identity candidate")
+      resolveIdentities({
+        nodes: candidate.nodes.map((node) => node.id === "edgeJoin_1"
+          ? { ...node, data: { ...node.data, _defaultInputName: "server_join" } }
+          : node),
+        edges: candidate.edges,
+      })
+      await Promise.resolve()
+    })
+
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/graph changed/)
+  })
+
   it("onConnectEnd ignores input-handle drops on an existing edge", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
@@ -815,7 +1055,7 @@ describe("useEdgeHandlers", () => {
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
   })
 
-  it("onConnectEnd inserts an unconnected edgeJoin node when a source output is dropped on another source output", () => {
+  it("onConnectEnd inserts an unconnected edgeJoin node when a source output is dropped on another source output", async () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
       { id: "base", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
@@ -836,6 +1076,7 @@ describe("useEdgeHandlers", () => {
         } as never,
       )
     })
+    await flushIdentityCommit()
 
     expect(params.findEdgeIdAtPoint).not.toHaveBeenCalled()
     expect(params.pushSnapshot).toHaveBeenCalledOnce()
@@ -881,7 +1122,7 @@ describe("useEdgeHandlers", () => {
     ])
   })
 
-  it("onConnectEnd uses changedTouches to position source-to-source edgeJoin creation", () => {
+  it("onConnectEnd uses changedTouches to position source-to-source edgeJoin creation", async () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
       { id: "base", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
@@ -904,6 +1145,7 @@ describe("useEdgeHandlers", () => {
         } as never,
       )
     })
+    await flushIdentityCommit()
 
     const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
     expect(nextNodes.find((node) => node.id === "edgeJoin_1")?.position).toEqual({
@@ -1411,7 +1653,7 @@ describe("useEdgeHandlers", () => {
     expect(event.dataTransfer.dropEffect).toBe("move")
   })
 
-  it("onDrop creates a new node from shared node metadata and drag config", () => {
+  it("onDrop creates a new node from shared node metadata and drag config", async () => {
     const params = makeParams()
     const { result } = renderHook(() => useEdgeHandlers(params))
     const event = {
@@ -1429,6 +1671,7 @@ describe("useEdgeHandlers", () => {
     act(() => {
       result.current.onDrop(event)
     })
+    await flushIdentityCommit()
     expect(params.setNodes).toHaveBeenCalledOnce()
     expect(params.setSelectedNode).toHaveBeenCalledOnce()
     expect(params.nodeIdCounter.current).toBe(1)
@@ -1442,10 +1685,12 @@ describe("useEdgeHandlers", () => {
         type: NODE_TYPES.DATA_OUTPUT,
         selected: true,
         position: { x: 300, y: 400 },
-        data: {
+        data: expect.objectContaining({
           label: "Data Output 1",
           description: "",
           nodeType: NODE_TYPES.DATA_OUTPUT,
+          _defaultInputName: "server_dataOutput_1",
+          _sourceHandleInputNames: {},
           config: {
             outputType: "file",
             format: "parquet",
@@ -1453,12 +1698,66 @@ describe("useEdgeHandlers", () => {
             path: "",
             arguments: {},
           },
-        },
+        }),
       }),
     ])
     expect(params.setSelectedNode).toHaveBeenCalledWith(
       expect.objectContaining({ id: "dataOutput_1", selected: true }),
     )
+  })
+
+  it("keeps a dropped-node creation atomic when identity resolution rejects", async () => {
+    const params = makeParams()
+    params.resolveGraphIdentities = vi.fn(async () => {
+      throw new Error("identity service unavailable")
+    })
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => result.current.onDrop(droppedPolarsEvent()))
+    await flushIdentityCommit()
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(
+      /Create node failed: identity service unavailable/,
+    )
+  })
+
+  it("rejects malformed dropped-node identity output atomically", async () => {
+    const params = makeParams()
+    params.resolveGraphIdentities = vi.fn(async () => ({ nodes: [], edges: [] }))
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => result.current.onDrop(droppedPolarsEvent()))
+    await flushIdentityCommit()
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/invalid node/)
+  })
+
+  it("does not commit a dropped node after the graph changes during resolution", async () => {
+    const params = makeParams()
+    let candidate: Node | null = null
+    let resolveIdentities!: (value: { nodes: Node[]; edges: Edge[] }) => void
+    params.resolveGraphIdentities = vi.fn((nodes) => {
+      candidate = nodes[0] ?? null
+      return new Promise((resolve) => { resolveIdentities = resolve })
+    })
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => result.current.onDrop(droppedPolarsEvent()))
+    await vi.waitFor(() => expect(params.resolveGraphIdentities).toHaveBeenCalledOnce())
+    params.graphRef.current = { nodes: [], edges: [] }
+    await act(async () => {
+      if (!candidate) throw new Error("Expected a dropped-node identity candidate")
+      resolveIdentities({ nodes: [candidate], edges: [] })
+      await Promise.resolve()
+    })
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/graph changed/)
   })
 
   it("onDrop with no type does nothing", () => {
@@ -1516,6 +1815,8 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
         data: {
           label: "API",
           nodeType: NODE_TYPES.API_INPUT,
+          _defaultInputName: null,
+          _sourceHandleInputNames: { quotes: "quotes" },
           config: {
             tables: [
               {
@@ -1530,11 +1831,11 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
       } as unknown as Node,
       {
         id: "ordinary",
-        data: { label: "quotes", nodeType: NODE_TYPES.POLARS, config: {} },
+        data: { label: "quotes", nodeType: NODE_TYPES.POLARS, config: {}, _defaultInputName: "quotes", _sourceHandleInputNames: {} },
       } as unknown as Node,
       {
         id: "target",
-        data: { label: "Target", nodeType: NODE_TYPES.POLARS, config: {} },
+        data: { label: "Target", nodeType: NODE_TYPES.POLARS, config: {}, _defaultInputName: "Target", _sourceHandleInputNames: {} },
       } as unknown as Node,
     ]
     params.graphRef.current.edges = [
@@ -1640,7 +1941,7 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
       { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN } } as unknown as Node,
-      { id: "quotes", data: { label: "Quotes", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
+      identifiedNode("quotes", NODE_TYPES.POLARS, { label: "Quotes", config: {} }),
     ]
     const { result } = renderHook(() => useEdgeHandlers(params))
 
@@ -1806,7 +2107,7 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
   })
 
-  it("onConnectEnd stores null source handles when joining two default outputs", () => {
+  it("onConnectEnd stores null source handles when joining two default outputs", async () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
       { id: "base", position: { x: 300, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
@@ -1826,6 +2127,7 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
         } as never,
       )
     })
+    await flushIdentityCommit()
 
     expect(params.pushSnapshot).toHaveBeenCalledOnce()
     const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
@@ -1851,6 +2153,7 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
 
   it("onConnectEnd normalises a reverse drag between default handles into a null-handle edge", () => {
     const params = makeParams()
+    params.graphRef.current.nodes = [identifiedNode("sourceNode"), identifiedNode("sinkNode")]
     const { result } = renderHook(() => useEdgeHandlers(params))
 
     act(() => {
@@ -1879,12 +2182,12 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
     ])
   })
 
-  it("onConnectEnd inserts an edgeJoin from a default source handle dropped on an edge", () => {
+  it("onConnectEnd inserts an edgeJoin from a default source handle dropped on an edge", async () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
-      { id: "a", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      { id: "b", position: { x: 300, y: 0 }, data: { label: "Downstream", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      { id: "c", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "a", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS, _defaultInputName: "Base", _sourceHandleInputNames: {} } } as unknown as Node,
+      { id: "b", position: { x: 300, y: 0 }, data: { label: "Downstream", nodeType: NODE_TYPES.POLARS, _defaultInputName: "Downstream", _sourceHandleInputNames: {} } } as unknown as Node,
+      { id: "c", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS, _defaultInputName: "Lookup", _sourceHandleInputNames: {} } } as unknown as Node,
     ]
     params.graphRef.current.edges = [
       { id: "e_ab", source: "a", target: "b", sourceHandle: null, targetHandle: null } as Edge,
@@ -1903,6 +2206,7 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
         } as never,
       )
     })
+    await flushIdentityCommit()
 
     expect(params.pushSnapshot).toHaveBeenCalledOnce()
     const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
@@ -1982,10 +2286,10 @@ describe("useEdgeHandlers edge-join insertion candidates", () => {
   function candidateParams() {
     const params = makeParams()
     params.graphRef.current.nodes = [
-      { id: "base", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      { id: "middle", position: { x: 200, y: 0 }, data: { label: "Middle", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      { id: "downstream", position: { x: 400, y: 0 }, data: { label: "Downstream", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      { id: "lookup", position: { x: 0, y: 180 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "base", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS, _defaultInputName: "Base", _sourceHandleInputNames: {} } } as unknown as Node,
+      { id: "middle", position: { x: 200, y: 0 }, data: { label: "Middle", nodeType: NODE_TYPES.POLARS, _defaultInputName: "Middle", _sourceHandleInputNames: {} } } as unknown as Node,
+      { id: "downstream", position: { x: 400, y: 0 }, data: { label: "Downstream", nodeType: NODE_TYPES.POLARS, _defaultInputName: "Downstream", _sourceHandleInputNames: {} } } as unknown as Node,
+      { id: "lookup", position: { x: 0, y: 180 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS, _defaultInputName: "Lookup", _sourceHandleInputNames: {} } } as unknown as Node,
     ]
     params.graphRef.current.edges = [
       { id: "edge-base-middle", source: "base", target: "middle" } as Edge,
@@ -2178,7 +2482,7 @@ describe("useEdgeHandlers edge-join insertion candidates", () => {
     expect(params.setEdges).toHaveBeenCalledOnce()
   })
 
-  it("honours the hit-tested edge when handle proximity snapping reports its source node", () => {
+  it("honours the hit-tested edge when handle proximity snapping reports its source node", async () => {
     const params = candidateParams()
     params.findEdgeIdAtPoint.mockReturnValue("edge-base-middle")
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -2201,6 +2505,7 @@ describe("useEdgeHandlers edge-join insertion candidates", () => {
         } as never,
       )
     })
+    await flushIdentityCommit()
 
     expect(params.pushSnapshot).toHaveBeenCalledOnce()
     const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]

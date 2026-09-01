@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -73,6 +74,31 @@ _UC_GENERATION_RECORD = "uc-generation.json"
 #: Tracking namespace a fork's parent refs are fetched into. Deliberately NOT
 #: a configured remote — see ``_git.fetch_bundle_refs``.
 UPSTREAM_NAMESPACE = "upstream"
+
+
+@dataclass(slots=True)
+class _UCPublishWork:
+    """Constant-space phase totals for one complete-bundle publish attempt."""
+
+    generation: int | None = None
+    bundle_bytes: int = 0
+    lease_fence_ms: float = 0.0
+    bundle_create_ms: float = 0.0
+    bundle_verify_ms: float = 0.0
+    upload_ms: float = 0.0
+    publish_fence_ms: float = 0.0
+    pointer_write_ms: float = 0.0
+    local_record_ms: float = 0.0
+    cleanup_ms: float = 0.0
+    total_ms: float = 0.0
+
+    @property
+    def network_ms(self) -> float:
+        return self.lease_fence_ms + self.upload_ms + self.publish_fence_ms + self.pointer_write_ms
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return (time.perf_counter() - started_at) * 1000
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +688,34 @@ def release_uc_claim() -> None:
 
 
 def publish_to_uc(url: str, project_root: Path) -> None:
+    """Publish a complete repository bundle and record bounded phase evidence."""
+    work = _UCPublishWork()
+    started_at = time.perf_counter()
+    outcome = "failed"
+    try:
+        _publish_to_uc(url, project_root, work)
+        outcome = "published"
+    finally:
+        work.total_ms = _elapsed_ms(started_at)
+        logger.info(
+            "uc_publish_measurement",
+            outcome=outcome,
+            generation=work.generation,
+            bundle_bytes=work.bundle_bytes,
+            lease_fence_ms=work.lease_fence_ms,
+            bundle_create_ms=work.bundle_create_ms,
+            bundle_verify_ms=work.bundle_verify_ms,
+            upload_ms=work.upload_ms,
+            publish_fence_ms=work.publish_fence_ms,
+            pointer_write_ms=work.pointer_write_ms,
+            local_record_ms=work.local_record_ms,
+            cleanup_ms=work.cleanup_ms,
+            network_ms=work.network_ms,
+            total_ms=work.total_ms,
+        )
+
+
+def _publish_to_uc(url: str, project_root: Path, work: _UCPublishWork) -> None:
     """Publish the whole repository to *url* as the next bundle generation.
 
     Order matters: hold the lease → bundle locally (the only step under
@@ -677,8 +731,12 @@ def publish_to_uc(url: str, project_root: Path) -> None:
 
     # Publishing only while holding the lease (or on a claimless location);
     # a live foreign claim stops here, before any bytes move.
-    hold_claim(url, claim_when_absent=False)
-    head = read_uc_head(url)
+    phase_started_at = time.perf_counter()
+    try:
+        hold_claim(url, claim_when_absent=False)
+        head = read_uc_head(url)
+    finally:
+        work.lease_fence_ms += _elapsed_ms(phase_started_at)
     # The generation this process restored from is exempt: that pointer was
     # legitimately written by the predecessor container whose lineage this
     # one adopted. Anything newer from another writer means we lost the race.
@@ -693,13 +751,22 @@ def publish_to_uc(url: str, project_root: Path) -> None:
             "Restart the app to continue from the latest published project."
         )
     generation = (head.generation if head is not None else 0) + 1
+    work.generation = generation
     bundle_filename = _uc_bundle_filename(generation)
 
     with tempfile.TemporaryDirectory(prefix="haute-uc-publish-") as tmp:
         bundle = Path(tmp) / bundle_filename
         try:
-            tip_sha = _git.bundle_create(bundle, cwd=project_root)
-            _git.bundle_verify(bundle, cwd=project_root)
+            phase_started_at = time.perf_counter()
+            try:
+                tip_sha = _git.bundle_create(bundle, cwd=project_root)
+            finally:
+                work.bundle_create_ms += _elapsed_ms(phase_started_at)
+            phase_started_at = time.perf_counter()
+            try:
+                _git.bundle_verify(bundle, cwd=project_root)
+            finally:
+                work.bundle_verify_ms += _elapsed_ms(phase_started_at)
         except _git.GitDomainError:
             raise  # Hand-authored and user-facing; surfaces verbatim.
         except _git.GitError as exc:
@@ -708,21 +775,30 @@ def publish_to_uc(url: str, project_root: Path) -> None:
                 "Saves are kept locally and will publish on the next save, or retry now."
             ) from exc
         bundle_bytes = bundle.stat().st_size
+        work.bundle_bytes = bundle_bytes
         with bundle.open("rb") as handle:
-            volume_write(
-                _uc_bundle_path(url, bundle_filename),
-                handle,
-                event="uc_bundle_upload_failed",
-                unavailable=(
-                    "The project bundle could not be uploaded to the storage volume. "
-                    "Saves are kept locally and will publish on the next save, or retry now."
-                ),
-            )
+            phase_started_at = time.perf_counter()
+            try:
+                volume_write(
+                    _uc_bundle_path(url, bundle_filename),
+                    handle,
+                    event="uc_bundle_upload_failed",
+                    unavailable=(
+                        "The project bundle could not be uploaded to the storage volume. "
+                        "Saves are kept locally and will publish on the next save, or retry now."
+                    ),
+                )
+            finally:
+                work.upload_ms += _elapsed_ms(phase_started_at)
 
     # The initial fence guarded the packaging; this one guards the pointer.
     # Any movement in between means another writer published mid-flight —
     # overwriting its pointer would silently discard its generation.
-    latest = read_uc_head(url)
+    phase_started_at = time.perf_counter()
+    try:
+        latest = read_uc_head(url)
+    finally:
+        work.publish_fence_ms += _elapsed_ms(phase_started_at)
     moved = (latest is None) != (head is None) or (
         latest is not None
         and head is not None
@@ -742,21 +818,33 @@ def publish_to_uc(url: str, project_root: Path) -> None:
         written_at=now_iso(),
         bundle_name=bundle_filename,
     )
-    volume_write(
-        _uc_head_path(url),
-        pointer.to_json().encode("utf-8"),
-        event="uc_head_write_failed",
-        unavailable=(
-            "The project's storage pointer could not be written to the volume. "
-            "Saves are kept locally and will publish on the next save, or retry now."
-        ),
-    )
+    phase_started_at = time.perf_counter()
+    try:
+        volume_write(
+            _uc_head_path(url),
+            pointer.to_json().encode("utf-8"),
+            event="uc_head_write_failed",
+            unavailable=(
+                "The project's storage pointer could not be written to the volume. "
+                "Saves are kept locally and will publish on the next save, or retry now."
+            ),
+        )
+    finally:
+        work.pointer_write_ms += _elapsed_ms(phase_started_at)
     _writer.last_seen_generation = generation
-    _write_uc_generation_record(project_root, pointer)
+    phase_started_at = time.perf_counter()
+    try:
+        _write_uc_generation_record(project_root, pointer)
+    finally:
+        work.local_record_ms += _elapsed_ms(phase_started_at)
     # Full-bundle publishes are O(history); the size is logged so growth is
     # visible long before incremental chains would be worth their complexity.
     logger.info("uc_project_published", generation=generation, bundle_bytes=bundle_bytes)
-    _prune_uc_bundles(url, generation)
+    phase_started_at = time.perf_counter()
+    try:
+        _prune_uc_bundles(url, generation)
+    finally:
+        work.cleanup_ms += _elapsed_ms(phase_started_at)
 
 
 def _prune_uc_bundles(url: str, newest: int) -> None:

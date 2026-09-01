@@ -1,15 +1,11 @@
-"""Python-side drift gate for the backend↔frontend sanitizer parity fixture.
+"""Backend compatibility golden test for the retained sanitizer fixture.
 
 The fixture ``frontend/src/utils/__tests__/sanitizeParity.fixture.json`` is
 generated FROM the backend ``_sanitize_func_name`` by
 ``scripts/regen_sanitize_parity_fixture.py`` and is asserted against the
-frontend ``sanitizeName.ts`` by vitest (``sanitizeParity.diff.test.ts``).
-Before this gate existed, a backend sanitizer change kept BOTH suites green
-while the implementations diverged — vitest checks TS against the (stale)
-fixture, and nothing checked the fixture against Python.  This test closes
-that: any backend change that alters an expected output fails here until the
-regenerator is rerun (which in turn breaks vitest until the TS side is
-realigned).  Drift can no longer stay green.
+backend implementation only. It is retained as a compatibility golden, not a
+frontend/backend parity requirement. Any backend change that alters an expected
+output fails here until the regenerator is rerun.
 
 The regenerator module is the single source of BOTH the input corpus and the
 expected outputs, and the gate asserts the on-disk bytes equal
@@ -73,10 +69,10 @@ def test_fixture_matches_current_backend() -> None:
     """
     on_disk = _require_fixture()
     assert on_disk == regen.canonical(regen.build_fixture()), (
-        "Sanitizer parity fixture is stale vs the backend — if a change to "
+        "Backend compatibility golden is stale — if a change to "
         "_sanitize_func_name (or the corpus) is intentional, run "
         "`uv run python scripts/regen_sanitize_parity_fixture.py` and realign "
-        "frontend/src/utils/sanitizeName.ts until vitest is green."
+        "the backend sanitizer changes, regenerate the compatibility golden."
     )
 
 

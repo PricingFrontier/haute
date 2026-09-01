@@ -1,33 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useMemo } from "react"
 import { X, Link2, AlertTriangle, RefreshCw, Lock } from "lucide-react"
 import { fetchExplorePivotMembers } from "../api/client"
 import { NODE_TYPES, NODE_TYPE_META } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
-import { sanitizeName } from "../utils/sanitizeName"
-import { apiInputFrameLabels, edgeInputName } from "../utils/apiInputPorts"
+import { authoritativeSourceHandles, edgeInputName } from "../utils/apiInputPorts"
 import {
-  TransformEditor,
-  EdgeJoinEditor,
-  ExploreCodeEditor,
-  ExploreOverviewConfig,
-  ExplorePivotsConfig,
-  ExploreChartsConfig,
-  ModelScoreEditor,
-  BandingEditor,
-  RatingStepEditor,
-  OutputEditor,
-  ExternalFileEditor,
-  ApiInputEditor,
-  LiveSwitchEditor,
-  DataInputEditor,
-  DataOutputEditor,
-  ScenarioExpanderEditor,
-  OptimiserApplyEditor,
-  ConstantEditor,
-  SubmodelEditor,
   ColumnsTab,
-  ModellingConfig,
-  OptimiserConfig,
   PolarsCodePanel,
   LazyEditorBoundary,
 } from "./LazyNodeEditors"
@@ -37,7 +15,9 @@ import {
   isSubmodelDefinition,
   isSubmodelInstanceConfig,
   type HauteNodeData,
+  type LoadAvailability,
 } from "../types/node"
+import type { PipelineDiagnostic } from "../types/pipelineDocument"
 import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useUIStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -48,11 +28,18 @@ import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
 import { buildGraph } from "../utils/buildGraph"
 import { CommittedTextField } from "../components/form"
+import {
+  useNodePanelSession,
+  useNodeRenameSession,
+  type NodePanelTab,
+} from "./useNodePanelSession"
+import { NodeConfigEditor } from "./NodeConfigEditor"
 
 type NodePanelProps = {
   node: SimpleNode | null
   onClose: () => void
   onUpdateNode?: (id: string, data: Record<string, unknown>) => OnUpdateConfigResult
+  onRenameNode?: (id: string, label: string) => Promise<OnUpdateConfigResult>
   onDeleteEdge?: (edgeId: string) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
   onRefreshPreview?: () => void
@@ -71,8 +58,6 @@ type NodePanelProps = {
   /** Opens the document-level remove-only recovery flow. */
   onRemoveUnavailableNode?: (target: { sourceFile: string; recoveryId: string }) => void
 }
-
-type NodePanelTab = "config" | "polars" | "columns"
 
 // ─── Node types that do NOT show the Columns tab ──
 // Output already has its own field selection; submodels/ports are placeholders;
@@ -575,7 +560,7 @@ function inputSourceForEdge(
     sourceNode.data.nodeType === NODE_TYPES.API_INPUT
     && (edge.sourceHandle === null
       || edge.sourceHandle === undefined
-      || !apiInputFrameLabels(sourceNode.data.config).includes(edge.sourceHandle))
+      || !authoritativeSourceHandles(sourceNode).includes(edge.sourceHandle))
 
   return {
     sourceNodeId: edge.source,
@@ -683,12 +668,440 @@ function clearCachedResultShape(
   return next
 }
 
+type NodePanelHeaderProps = {
+  nodeId: string
+  label: string
+  readOnly: boolean
+  onRenameNode?: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
+  showRefreshPreview: boolean
+  refreshTitle: string
+  onRefreshPreview?: () => void
+  onClose: () => void
+}
+
+function NodePanelHeader({
+  nodeId,
+  label,
+  readOnly,
+  onRenameNode,
+  showRefreshPreview,
+  refreshTitle,
+  onRefreshPreview,
+  onClose,
+}: NodePanelHeaderProps) {
+  const rename = useNodeRenameSession(nodeId)
+  return (
+    <div className="px-3 py-2.5 shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+      <div className="flex items-center gap-2">
+        <CommittedTextField
+          data-testid="node-panel-label-input"
+          type="text"
+          value={label}
+          disabled={readOnly || rename.pending}
+          onCommit={(value) => rename.commit(value, onRenameNode)}
+          className="node-label-input flex-1 min-w-0 px-2 py-1 text-[13px] font-semibold border border-transparent rounded-md focus:outline-none bg-transparent"
+          style={{ color: "var(--text-primary)", borderColor: "transparent" }}
+        />
+        {readOnly && (
+          <span
+            data-testid="node-panel-readonly"
+            className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <Lock size={11} aria-hidden="true" />Read-only
+          </span>
+        )}
+        {showRefreshPreview && (
+          <button
+            onClick={onRefreshPreview}
+            className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
+            style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}
+            title={refreshTitle}
+          >
+            <RefreshCw size={11} />
+            Refresh
+          </button>
+        )}
+        <button
+          data-testid="node-panel-close"
+          onClick={onClose}
+          className="node-close-btn p-1 rounded shrink-0 transition-colors"
+          style={{ color: "var(--text-on-accent)" }}
+          title="Close"
+        >
+          <X size={14} strokeWidth={2.5} />
+        </button>
+      </div>
+      {rename.error && (
+        <p
+          role="alert"
+          data-testid="node-panel-label-error"
+          className="mt-1 px-2 text-[11px]"
+          style={{ color: "var(--danger)" }}
+        >
+          {rename.error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+type RecoveryNodePanelProps = {
+  node: SimpleNode
+  availability: Exclude<LoadAvailability, "ready">
+  diagnostics: PipelineDiagnostic[]
+  canRepair: boolean
+  onClose: () => void
+  onRemoveUnavailableNode?: NodePanelProps["onRemoveUnavailableNode"]
+}
+
+function RecoveryNodePanel({
+  node,
+  availability,
+  diagnostics,
+  canRepair,
+  onClose,
+  onRemoveUnavailableNode,
+}: RecoveryNodePanelProps) {
+  const recoveryData = node.data as HauteNodeData
+  const diagnosticIds = new Set(recoveryData._loadDiagnosticIds ?? [])
+  const nodeDiagnostics = diagnostics.filter((diagnostic) => (
+    diagnosticIds.has(diagnostic.diagnostic_id)
+  ))
+  const sourceLocation = recoveryData._sourceFile
+    ? `${recoveryData._sourceFile}${
+      recoveryData._sourceSpan ? `:${recoveryData._sourceSpan.start_line}` : ""
+    }`
+    : null
+  const canRemove = availability === "unavailable"
+    && canRepair
+    && typeof recoveryData._sourceFile === "string"
+    && typeof recoveryData._recoveryId === "string"
+    && onRemoveUnavailableNode !== undefined
+
+  return (
+    <PanelShell testId="node-panel">
+      <div
+        className="flex items-center gap-2 px-3 py-2.5"
+        style={{ borderBottom: "1px solid var(--border)" }}
+      >
+        <AlertTriangle size={15} aria-hidden="true" style={{ color: "var(--danger)" }} />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
+            {node.data.label}
+          </div>
+          <div className="text-[10px] uppercase tracking-[0.08em]" style={{ color: "var(--danger-text)" }}>
+            {availability}
+          </div>
+        </div>
+        <span
+          data-testid="node-panel-readonly"
+          className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em]"
+          style={{ color: "var(--text-muted)" }}
+        >
+          <Lock size={11} aria-hidden="true" />Read-only
+        </span>
+        <button
+          data-testid="node-panel-close"
+          onClick={onClose}
+          className="node-close-btn shrink-0 rounded p-1 transition-colors"
+          style={{ color: "var(--text-muted)" }}
+          title="Close"
+        >
+          <X size={14} strokeWidth={2.5} />
+        </button>
+      </div>
+      <div className="flex-1 space-y-4 overflow-y-auto p-4" data-testid="node-recovery-diagnostics">
+        <p className="text-[12px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+          {availability === "unavailable"
+            ? "This authored node could not be validated and cannot be edited or executed."
+            : "This node is valid, but an unavailable upstream dependency prevents it from running."}
+        </p>
+        {(sourceLocation || recoveryData._configReference) && (
+          <dl className="space-y-2 text-[11px]">
+            {sourceLocation && (
+              <div>
+                <dt style={{ color: "var(--text-muted)" }}>Source</dt>
+                <dd className="mt-0.5 break-all font-mono" style={{ color: "var(--text-primary)" }}>
+                  {sourceLocation}
+                </dd>
+              </div>
+            )}
+            {recoveryData._configReference && (
+              <div>
+                <dt style={{ color: "var(--text-muted)" }}>Configuration</dt>
+                <dd className="mt-0.5 break-all font-mono" style={{ color: "var(--text-primary)" }}>
+                  {recoveryData._configReference}
+                </dd>
+              </div>
+            )}
+          </dl>
+        )}
+        {recoveryData._loadBlockingPath && recoveryData._loadBlockingPath.length > 0 && (
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+              Blocking path
+            </div>
+            <div className="mt-1 break-words font-mono text-[11px]" style={{ color: "var(--warning)" }}>
+              {recoveryData._loadBlockingPath.join(" → ")}
+            </div>
+          </div>
+        )}
+        <section aria-label="Node load diagnostics">
+          <h2 className="text-[10px] font-semibold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+            Diagnostics
+          </h2>
+          {nodeDiagnostics.length === 0 ? (
+            <p className="mt-2 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+              No detailed diagnostic was included for this element.
+            </p>
+          ) : (
+            <ul className="mt-2 space-y-3">
+              {nodeDiagnostics.map((diagnostic) => (
+                <li
+                  key={diagnostic.diagnostic_id}
+                  className="rounded-lg p-3 text-[11px] leading-relaxed"
+                  style={{ background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
+                >
+                  <div style={{ color: "var(--danger-text)" }}>{diagnostic.message}</div>
+                  {diagnostic.remediation && (
+                    <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
+                      {diagnostic.remediation}
+                    </div>
+                  )}
+                  {diagnostic.incident_id && (
+                    <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>
+                      Incident {diagnostic.incident_id}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        {canRemove && (
+          <button
+            type="button"
+            onClick={() => onRemoveUnavailableNode({
+              sourceFile: recoveryData._sourceFile!,
+              recoveryId: recoveryData._recoveryId!,
+            })}
+            className="w-full rounded px-3 py-2 text-[12px] font-semibold"
+            style={{ color: "var(--danger-text)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
+          >
+            Remove unavailable node
+          </button>
+        )}
+      </div>
+    </PanelShell>
+  )
+}
+
+type NodeEditorTabStripProps = {
+  visible: boolean
+  tabs: NodePanelTab[]
+  activeTab: NodePanelTab
+  onSelect: (tab: NodePanelTab) => void
+}
+
+function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect }: NodeEditorTabStripProps) {
+  if (!visible) return null
+  return (
+    <div className="flex shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+      {tabs.map((tab) => {
+        const isActive = activeTab === tab
+        return (
+          <button
+            key={tab}
+            onClick={() => onSelect(tab)}
+            className={`flex-1 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors${
+              isActive ? "" : " hover:bg-[var(--bg-hover)]"
+            }`}
+            style={isActive
+              ? {
+                  color: "var(--accent)",
+                  borderBottom: "2px solid var(--accent)",
+                  background: "var(--accent-soft)",
+                }
+              : {
+                  color: "var(--text-muted)",
+                  borderBottom: "2px solid transparent",
+                }}
+          >
+            {tab === "polars" ? "Polars" : tab}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+type SchemaWarningBannerProps = {
+  warnings: { column: string; status: string }[]
+  dismissedSignature: string | null
+  onDismiss: (signature: string) => void
+  onRefreshPreview?: () => void
+}
+
+function SchemaWarningBanner({
+  warnings,
+  dismissedSignature,
+  onDismiss,
+  onRefreshPreview,
+}: SchemaWarningBannerProps) {
+  if (warnings.length === 0) return null
+  const signature = warnings.map((warning) => `${warning.column}|${warning.status}`).join(",")
+  if (signature === dismissedSignature) return null
+
+  return (
+    <div className="px-4 py-2 shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+      <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: "var(--warning-soft)", border: "1px solid var(--warning-border)" }}>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            <AlertTriangle size={11} style={{ color: "var(--warning-strong)" }} className="shrink-0" />
+            <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--warning-strong)" }}>
+              Stale columns ({warnings.length})
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={() => {
+                onDismiss(signature)
+                onRefreshPreview?.()
+              }}
+              className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
+              style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}
+              title="Re-run preview and re-check schema warnings"
+            >
+              <RefreshCw size={11} />
+              Refresh and check
+            </button>
+            <button
+              onClick={() => onDismiss(signature)}
+              className="p-1 rounded shrink-0 transition-colors hover:opacity-[0.85]"
+              style={{ color: "var(--warning-strong)" }}
+              title="Dismiss"
+              aria-label="Dismiss"
+            >
+              <X size={12} strokeWidth={2.5} />
+            </button>
+          </div>
+        </div>
+        <p className="text-[10px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
+          These columns are referenced in config but not found in the upstream schema:
+        </p>
+        <div className="flex flex-wrap gap-1 mt-0.5">
+          {warnings.map((warning) => (
+            <span key={warning.column} className="px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: "var(--warning-soft-emphasis)", color: "var(--warning)" }}>
+              {warning.column}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+type NodeEditorBodyProps = {
+  documentReadOnly: boolean
+  readOnly: boolean
+  config: Record<string, unknown>
+  activeTab: NodePanelTab
+  showPolarsTab: boolean
+  showColumnsTab: boolean
+  nodeType: string
+  inputSources: InputSource[]
+  onDeleteEdge?: (edgeId: string) => void
+  errorLine?: number | null
+  upstreamColumns: { name: string; dtype: string }[]
+  availableColumns: { name: string; dtype: string }[]
+  currentColumns: { name: string; dtype: string }[]
+  onUpdateConfig: OnUpdateConfig
+  configEditor: React.ReactNode
+}
+
+function NodeEditorBody({
+  documentReadOnly,
+  readOnly,
+  config,
+  activeTab,
+  showPolarsTab,
+  showColumnsTab,
+  nodeType,
+  inputSources,
+  onDeleteEdge,
+  errorLine,
+  upstreamColumns,
+  availableColumns,
+  currentColumns,
+  onUpdateConfig,
+  configEditor,
+}: NodeEditorBodyProps) {
+  let editor = configEditor
+  if (activeTab === "polars" && showPolarsTab) {
+    editor = (
+      <PolarsCodePanel
+        config={config}
+        onUpdate={onUpdateConfig}
+        inputSources={nodeType === NODE_TYPES.DATA_INPUT ? [] : inputSources}
+        onDeleteInput={onDeleteEdge}
+        errorLine={errorLine}
+        upstreamColumns={upstreamColumns}
+        hint={POLARS_TAB_HINTS[nodeType] ?? null}
+      />
+    )
+  } else if (activeTab === "columns" && showColumnsTab) {
+    editor = (
+      <ColumnsTab
+        config={config}
+        onUpdate={onUpdateConfig}
+        availableColumns={availableColumns}
+        columns={currentColumns}
+      />
+    )
+  }
+
+  return (
+    <div
+      className="flex-1 min-h-0 overflow-y-auto"
+      data-testid="node-panel-editor"
+      inert={readOnly ? true : undefined}
+      aria-readonly={readOnly}
+    >
+      {documentReadOnly ? (
+        <div className="space-y-3 p-3" data-testid="node-document-readonly-inspector">
+          <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+            This node is valid and available for inspection. Resolve the pipeline load diagnostics before editing or running it.
+          </p>
+          <pre
+            aria-label="Read-only node configuration"
+            className="overflow-auto whitespace-pre-wrap break-words rounded-md p-2 text-[10px]"
+            style={{ background: "var(--bg-input)", color: "var(--text-secondary)" }}
+          >
+            {JSON.stringify(config, null, 2)}
+          </pre>
+        </div>
+      ) : (
+        <LazyEditorBoundary>{editor}</LazyEditorBoundary>
+      )}
+    </div>
+  )
+}
+
 // ─── NodePanel ────────────────────────────────────────────────────
 
-export default function NodePanel({
+type ActiveNodePanelProps = Omit<NodePanelProps, "node"> & { node: SimpleNode }
+
+export default function NodePanel(props: NodePanelProps) {
+  if (!props.node) return null
+  return <NodePanelContent key={props.node.id} {...props} node={props.node} />
+}
+
+function NodePanelContent({
   node,
   onClose,
   onUpdateNode,
+  onRenameNode,
   onDeleteEdge,
   onSwapEdgeJoinInputs,
   onRefreshPreview,
@@ -699,29 +1112,32 @@ export default function NodePanel({
   readOnly = false,
   documentReadOnly = false,
   onRemoveUnavailableNode,
-}: NodePanelProps) {
+}: ActiveNodePanelProps) {
   const { allNodes, edges, submodels, preamble } = useGraph()
-  const config = useMemo(() => (node?.data.config || {}) as Record<string, unknown>, [node?.data.config])
-  const [activeTab, setActiveTab] = useState<NodePanelTab>("config")
-  const [labelUpdateError, setLabelUpdateError] = useState<string | null>(null)
-  const rememberedExplorePane = useUIStore((s) => node?.id ? s.explorePanes[node.id] : undefined)
+  const config = useMemo(() => (node.data.config || {}) as Record<string, unknown>, [node.data.config])
+  const {
+    activeTab,
+    selectTab,
+    dismissedWarningSignature,
+    dismissWarning,
+  } = useNodePanelSession()
+  const rememberedExplorePane = useUIStore((s) => s.explorePanes[node.id])
   const setExplorePane = useUIStore((s) => s.setExplorePane)
-  const rememberedModellingPane = useUIStore((s) => node?.id ? s.modellingPanes[node.id] : undefined)
+  const rememberedModellingPane = useUIStore((s) => s.modellingPanes[node.id])
   const setModellingPane = useUIStore((s) => s.setModellingPane)
-  const hasActiveTrainJob = useNodeResultsStore((s) => node?.id ? Boolean(s.trainJobs[node.id]) : false)
-  const cachedExploreResult = useNodeResultsStore((s) => node?.id ? s.exploreResults[node.id] : undefined)
+  const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[node.id]))
+  const cachedExploreResult = useNodeResultsStore((s) => s.exploreResults[node.id])
   const activeSource = useSettingsStore((s) => s.activeSource)
   const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
   const documentDiagnostics = useDocumentStatusStore((s) => s.diagnostics)
   const canRepair = useDocumentStatusStore((s) => s.capabilities?.can_repair === true)
-
-  // Keep config and node in refs so handleConfigUpdate never captures stale values
-  const configRef = useRef(config)
-  const nodeRef = useRef(node)
-  useEffect(() => { configRef.current = config }, [config])
-  useEffect(() => { nodeRef.current = node }, [node])
-  useEffect(() => { setLabelUpdateError(null) }, [node?.id, node?.data.label])
-  useEffect(() => { setActiveTab("config") }, [node?.id])
+  const reservedApiInputFrameLabels = useDocumentStatusStore(
+    (s) => s.capabilities?.reserved_api_input_frame_labels,
+  )
+  const reservedApiInputFrameLabelSet = useMemo(
+    () => new Set(reservedApiInputFrameLabels ?? []),
+    [reservedApiInputFrameLabels],
+  )
 
   // Current Explore cache identity hash — the same client identity gate the
   // Explore preview applies, so a Chart Configure subview never treats a
@@ -756,14 +1172,6 @@ export default function NodePanel({
     [exploreConfigHash, streamingChunkSize],
   )
 
-  // Bundle 3b — dismissal state for the stale-columns banner.
-  // Stored as the warning-signature the user dismissed, so the banner
-  // reappears whenever the warning content (columns / statuses / count)
-  // changes.  Reset on node switch so dismissals don't bleed across
-  // nodes while the panel stays mounted.
-  const [dismissedStaleWarningSig, setDismissedStaleWarningSig] = useState<string | null>(null)
-  useEffect(() => { setDismissedStaleWarningSig(null) }, [node?.id])
-
   const handleConfigUpdate = useCallback<OnUpdateConfig>((keyOrUpdates, value) => {
     if (readOnly) {
       return {
@@ -773,14 +1181,12 @@ export default function NodePanel({
           : "This submodel instance is read-only.",
       }
     }
-    const currentNode = nodeRef.current
-    if (!currentNode || !onUpdateNode) {
+    if (!onUpdateNode) {
       return { ok: false, error: "Node update handler is unavailable." }
     }
-    const currentConfig = configRef.current
     const newConfig = typeof keyOrUpdates === "string"
-      ? { ...currentConfig, [keyOrUpdates]: value }
-      : { ...currentConfig, ...keyOrUpdates }
+      ? { ...config, [keyOrUpdates]: value }
+      : { ...config, ...keyOrUpdates }
     const changedKeys =
       typeof keyOrUpdates === "string"
         ? [keyOrUpdates]
@@ -788,13 +1194,13 @@ export default function NodePanel({
     const selectionOnlyUpdate =
       changedKeys.length === 1 && changedKeys[0] === "selected_columns"
     return onUpdateNode(
-      currentNode.id,
+      node.id,
       clearCachedResultShape(
-        { ...currentNode.data, config: newConfig },
+        { ...node.data, config: newConfig },
         { preserveAvailableColumns: selectionOnlyUpdate },
       ),
     )
-  }, [documentReadOnly, onUpdateNode, readOnly])
+  }, [config, documentReadOnly, node, onUpdateNode, readOnly])
 
   const handleConfigReplace = useCallback<OnReplaceConfig>((nextConfig) => {
     if (readOnly) {
@@ -805,26 +1211,24 @@ export default function NodePanel({
           : "This submodel instance is read-only.",
       }
     }
-    const currentNode = nodeRef.current
-    if (!currentNode || !onUpdateNode) return { ok: false, error: "Node update handler is unavailable." }
-    return onUpdateNode(currentNode.id, clearCachedResultShape({ ...currentNode.data, config: nextConfig }))
-  }, [documentReadOnly, onUpdateNode, readOnly])
+    if (!onUpdateNode) return { ok: false, error: "Node update handler is unavailable." }
+    return onUpdateNode(node.id, clearCachedResultShape({ ...node.data, config: nextConfig }))
+  }, [documentReadOnly, node, onUpdateNode, readOnly])
 
   const configWithNodeId = useMemo(
-    () => ({ ...config, _nodeId: node?.id ?? "" }),
-    [config, node?.id]
+    () => ({ ...config, _nodeId: node.id }),
+    [config, node.id]
   )
 
   // Compute input sources (must be before early return to satisfy hook ordering rules)
   const nodeMap = useMemo(() => Object.fromEntries(allNodes.map((n) => [n.id, n])), [allNodes])
-  const selectedNodeId = node?.id ?? null
+  const selectedNodeId = node.id
   const upstreamEdges = useMemo(
-    () => selectedNodeId ? edges.filter((e) => e.target === selectedNodeId) : [],
+    () => edges.filter((e) => e.target === selectedNodeId),
     [edges, selectedNodeId],
   )
   const upstreamInputSourceSig = upstreamInputSourceSignature(upstreamEdges, nodeMap, submodels)
   const inputSources: InputSource[] = useMemo(() => {
-    if (!selectedNodeId) return []
     return upstreamEdges.map((edge) => inputSourceForEdge(edge, nodeMap, submodels))
     // Keyed by selected node plus each upstream edge's source/display identity:
     // source labels, source handles, resolved frame labels, and resolution
@@ -833,7 +1237,6 @@ export default function NodePanel({
   }, [selectedNodeId, upstreamInputSourceSig, submodels])
   const upstreamSchemaSignature = upstreamColumnsSignature(upstreamEdges, nodeMap)
   const upstreamColumns = useMemo(() => {
-    if (!selectedNodeId) return []
     return collectColumnsFromEdges(upstreamEdges, nodeMap)
     // Intentionally keyed by selected node plus upstream schema content.
     // Selected-node config/label edits rebuild nodeMap but do not change the
@@ -848,137 +1251,17 @@ export default function NodePanel({
       ? report.columns.map(({ name, dtype }) => ({ name, dtype }))
       : upstreamColumns
   }, [cachedExploreResult, exploreConfigHash, upstreamColumns])
-  if (!node) return null
-
-  const recoveryData = node.data as HauteNodeData
-  const recoveryAvailability = recoveryData._loadAvailability ?? "ready"
+  const recoveryAvailability = (node.data as HauteNodeData)._loadAvailability ?? "ready"
   if (recoveryAvailability !== "ready") {
-    const diagnosticIds = new Set(recoveryData._loadDiagnosticIds ?? [])
-    const diagnostics = documentDiagnostics.filter((diagnostic) =>
-      diagnosticIds.has(diagnostic.diagnostic_id),
-    )
-    const sourceLocation = recoveryData._sourceFile
-      ? `${recoveryData._sourceFile}${
-        recoveryData._sourceSpan ? `:${recoveryData._sourceSpan.start_line}` : ""
-      }`
-      : null
     return (
-      <PanelShell testId="node-panel">
-        <div
-          className="flex items-center gap-2 px-3 py-2.5"
-          style={{ borderBottom: "1px solid var(--border)" }}
-        >
-          <AlertTriangle size={15} aria-hidden="true" style={{ color: "var(--danger)" }} />
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
-              {node.data.label}
-            </div>
-            <div className="text-[10px] uppercase tracking-[0.08em]" style={{ color: "var(--danger-text)" }}>
-              {recoveryAvailability}
-            </div>
-          </div>
-          <span
-            data-testid="node-panel-readonly"
-            className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            <Lock size={11} aria-hidden="true" />Read-only
-          </span>
-          <button
-            data-testid="node-panel-close"
-            onClick={onClose}
-            className="node-close-btn shrink-0 rounded p-1 transition-colors"
-            style={{ color: "var(--text-muted)" }}
-            title="Close"
-          >
-            <X size={14} strokeWidth={2.5} />
-          </button>
-        </div>
-        <div className="flex-1 space-y-4 overflow-y-auto p-4" data-testid="node-recovery-diagnostics">
-          <p className="text-[12px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
-            {recoveryAvailability === "unavailable"
-              ? "This authored node could not be validated and cannot be edited or executed."
-              : "This node is valid, but an unavailable upstream dependency prevents it from running."}
-          </p>
-          {(sourceLocation || recoveryData._configReference) && (
-            <dl className="space-y-2 text-[11px]">
-              {sourceLocation && (
-                <div>
-                  <dt style={{ color: "var(--text-muted)" }}>Source</dt>
-                  <dd className="mt-0.5 break-all font-mono" style={{ color: "var(--text-primary)" }}>
-                    {sourceLocation}
-                  </dd>
-                </div>
-              )}
-              {recoveryData._configReference && (
-                <div>
-                  <dt style={{ color: "var(--text-muted)" }}>Configuration</dt>
-                  <dd className="mt-0.5 break-all font-mono" style={{ color: "var(--text-primary)" }}>
-                    {recoveryData._configReference}
-                  </dd>
-                </div>
-              )}
-            </dl>
-          )}
-          {recoveryData._loadBlockingPath && recoveryData._loadBlockingPath.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-                Blocking path
-              </div>
-              <div className="mt-1 break-words font-mono text-[11px]" style={{ color: "var(--warning)" }}>
-                {recoveryData._loadBlockingPath.join(" → ")}
-              </div>
-            </div>
-          )}
-          <section aria-label="Node load diagnostics">
-            <h2 className="text-[10px] font-semibold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-              Diagnostics
-            </h2>
-            {diagnostics.length === 0 ? (
-              <p className="mt-2 text-[11px]" style={{ color: "var(--text-secondary)" }}>
-                No detailed diagnostic was included for this element.
-              </p>
-            ) : (
-              <ul className="mt-2 space-y-3">
-                {diagnostics.map((diagnostic) => (
-                  <li
-                    key={diagnostic.diagnostic_id}
-                    className="rounded-lg p-3 text-[11px] leading-relaxed"
-                    style={{ background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
-                  >
-                    <div style={{ color: "var(--danger-text)" }}>{diagnostic.message}</div>
-                    {diagnostic.remediation && (
-                      <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
-                        {diagnostic.remediation}
-                      </div>
-                    )}
-                    {diagnostic.incident_id && (
-                      <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>
-                        Incident {diagnostic.incident_id}
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-          {recoveryAvailability === "unavailable" && canRepair &&
-            typeof recoveryData._sourceFile === "string" &&
-            typeof recoveryData._recoveryId === "string" && onRemoveUnavailableNode && (
-              <button
-                type="button"
-                onClick={() => onRemoveUnavailableNode({
-                  sourceFile: recoveryData._sourceFile as string,
-                  recoveryId: recoveryData._recoveryId as string,
-                })}
-                className="w-full rounded px-3 py-2 text-[12px] font-semibold"
-                style={{ color: "var(--danger-text)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
-              >
-                Remove unavailable node
-              </button>
-            )}
-        </div>
-      </PanelShell>
+      <RecoveryNodePanel
+        node={node}
+        availability={recoveryAvailability}
+        diagnostics={documentDiagnostics}
+        canRepair={canRepair}
+        onClose={onClose}
+        onRemoveUnavailableNode={onRemoveUnavailableNode}
+      />
     )
   }
 
@@ -991,7 +1274,6 @@ export default function NodePanel({
   const showRefreshPreview = !!onRefreshPreview && !NO_REFRESH_PREVIEW.has(nodeType)
   const refreshTitle = showExplorePanes ? "Refresh Explore outputs" : "Refresh preview"
   const activeExplorePane = showExplorePanes ? rememberedExplorePane ?? "code" : "code"
-  const activeExplorePaneMeta = EXPLORE_PANES.find((pane) => pane.key === activeExplorePane) ?? EXPLORE_PANES[0]
   const algorithm = typeof config.algorithm === "string" ? config.algorithm.toLowerCase() : ""
   const showModellingPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.MODELLING && (algorithm === "catboost" || algorithm === "glm")
   const activeModellingPane = showModellingPanes ? rememberedModellingPane ?? "target" : "target"
@@ -1002,232 +1284,45 @@ export default function NodePanel({
       : undefined,
   }))
 
-  // ── Render the right editor based on nodeType ──
-
   const accentColor = NODE_TYPE_META[nodeType as NodeTypeValue]?.color ?? "var(--accent)"
-
-  const renderEditor = () => {
-    if (!isKnownNodeType) {
-      return <UnknownNodeTypeDiagnostic nodeType={nodeType} config={config} />
-    }
-
-    if (isInstance) {
-      return (
-        <InstancePanel
-          node={node}
-          config={config}
-          nodeMap={nodeMap}
-          handleConfigUpdate={handleConfigUpdate}
-        />
-      )
-    }
-
-    switch (nodeType) {
-      case NODE_TYPES.API_INPUT:
-        // Bundle 3a — the per-node config file lives at
-        // config/quote_input/<sanitised_label>.json on disk. The
-        // backend's canonical scheme uses `_sanitize_func_name(label)`
-        // (`_config_io.py:320-321`) as the filename. The frontend
-        // previously sent `${node.id}.json` here, which the cache-
-        // status GET routed to a path the backend never wrote → silent
-        // `cached=false` response → cache button looked unresponsive.
-        // Using `sanitizeName(label)` (the frontend twin of
-        // `_sanitize_func_name`, defined in `frontend/src/utils/sanitizeName.ts`)
-        // brings the two sides into agreement. Collision uniqueness
-        // for labels-that-sanitise-to-the-same-string is already
-        // enforced at save time via `_validate_unique_sanitized_names`
-        // (`_save_pipeline.py:165-184`) → HTTP 400, no silent clobber.
-        return <ApiInputEditor config={config} onUpdate={handleConfigUpdate} accentColor={accentColor} configPath={`config/quote_input/${sanitizeName(node.data.label)}.json`} />
-
-      case NODE_TYPES.LIVE_SWITCH:
-        return <LiveSwitchEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} accentColor={accentColor} />
-
-      case NODE_TYPES.DATA_INPUT:
-        return <DataInputEditor config={config} onUpdate={handleConfigUpdate} onReplaceConfig={handleConfigReplace} accentColor={accentColor} errorLine={errorLine} />
-
-      case NODE_TYPES.DATA_OUTPUT:
-        return <DataOutputEditor config={config} onUpdate={handleConfigUpdate} onReplaceConfig={handleConfigReplace} nodeId={node.id} accentColor={accentColor} />
-
-      case NODE_TYPES.EXPLORE:
-        if (activeExplorePane === "code") {
-          return (
-            <div
-              id="explore-code-pane"
-              role="tabpanel"
-              aria-labelledby="explore-code-tab"
-              data-testid="explore-code-pane"
-              className="h-full min-h-0 flex flex-col"
-            >
-              <ExploreCodeEditor
-                config={config}
-                onUpdate={handleConfigUpdate}
-                inputSources={inputSources}
-                onDeleteInput={onDeleteEdge}
-                errorLine={errorLine}
-                upstreamColumns={upstreamColumns}
-              />
-            </div>
-          )
-        }
-        return (
-          <div
-            id={`explore-${activeExplorePaneMeta.key}-pane`}
-            role="tabpanel"
-            aria-labelledby={`explore-${activeExplorePaneMeta.key}-tab`}
-            data-testid={`explore-${activeExplorePaneMeta.key}-pane`}
-            className="h-full"
-          >
-            {activeExplorePane === "overview" && (
-              <ExploreOverviewConfig config={config} onUpdate={handleConfigUpdate} />
-            )}
-            {activeExplorePane === "pivots" && (
-              <ExplorePivotsConfig
-                config={config}
-                onUpdate={handleConfigUpdate}
-                nodeId={node.id}
-                upstreamColumns={pivotColumns}
-                loadFilterMembers={loadPivotFilterMembers}
-                currentConfigHash={exploreConfigHash}
-              />
-            )}
-            {activeExplorePane === "charts" && (
-              <ExploreChartsConfig
-                config={config}
-                onUpdate={handleConfigUpdate}
-                nodeId={node.id}
-                currentConfigHash={exploreConfigHash}
-                onShowPivots={() => setExplorePane(node.id, "pivots")}
-              />
-            )}
-          </div>
-        )
-
-      case NODE_TYPES.EXTERNAL_FILE:
-        return <ExternalFileEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
-
-      case NODE_TYPES.OUTPUT:
-        return <OutputEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} />
-
-      case NODE_TYPES.BANDING:
-        return (
-          <BandingEditor
-            config={config}
-            onUpdate={handleConfigUpdate}
-            inputSources={inputSources}
-            onDeleteInput={onDeleteEdge}
-            upstreamColumns={upstreamColumns}
-            accentColor={accentColor}
-            previewRows={previewRows}
-          />
-        )
-
-      case NODE_TYPES.SCENARIO_EXPANDER:
-        return (
-          <ScenarioExpanderEditor
-            config={config}
-            onUpdate={handleConfigUpdate}
-            inputSources={inputSources}
-            onDeleteInput={onDeleteEdge}
-            upstreamColumns={upstreamColumns}
-          />
-        )
-
-      case NODE_TYPES.RATING_STEP:
-        return (
-          <RatingStepEditor
-            config={config}
-            onUpdate={handleConfigUpdate}
-            inputSources={inputSources}
-            onDeleteInput={onDeleteEdge}
-            upstreamColumns={upstreamColumns}
-            previewRows={previewRows}
-            accentColor={accentColor}
-            errorLine={errorLine}
-            nodeId={node.id}
-          />
-        )
-
-      case NODE_TYPES.MODEL_SCORE:
-        return <ModelScoreEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
-
-      case NODE_TYPES.MODELLING: {
-        // Modelling is a pass-through -- its own _columns (set by preview) ARE the upstream columns
-        const effectiveCols = upstreamColumns.length > 0
-          ? upstreamColumns
-          : ((node.data as Record<string, unknown>)?._columns as { name: string; dtype: string }[] | undefined) || []
-        return (
-          <ModellingConfig
-            config={configWithNodeId}
-            onUpdate={handleConfigUpdate}
-            upstreamColumns={effectiveCols}
-            activePane={activeModellingPane}
-          />
-        )
-      }
-
-      case NODE_TYPES.OPTIMISER: {
-        const effectiveCols = upstreamColumns.length > 0
-          ? upstreamColumns
-          : ((node.data as Record<string, unknown>)?._columns as { name: string; dtype: string }[] | undefined) || []
-        return (
-          <OptimiserConfig
-            config={configWithNodeId}
-            onUpdate={handleConfigUpdate}
-            upstreamColumns={effectiveCols}
-            accentColor={accentColor}
-            deferColumnFetch={selectedPreviewLoading}
-          />
-        )
-      }
-
-      case NODE_TYPES.OPTIMISER_APPLY:
-        return (
-          <OptimiserApplyEditor
-            config={config}
-            onUpdate={handleConfigUpdate}
-            inputSources={inputSources}
-            onDeleteInput={onDeleteEdge}
-            accentColor={accentColor}
-          />
-        )
-
-      case NODE_TYPES.CONSTANT:
-        return <ConstantEditor config={config} onUpdate={handleConfigUpdate} />
-
-      case NODE_TYPES.POLARS:
-        return (
-          <TransformEditor
-            config={config}
-            onUpdate={handleConfigUpdate}
-            inputSources={inputSources}
-            onDeleteInput={onDeleteEdge}
-            errorLine={errorLine}
-            upstreamColumns={upstreamColumns}
-          />
-        )
-
-      case NODE_TYPES.EDGE_JOIN:
-        return (
-          <EdgeJoinEditor
-            config={config}
-            onUpdate={handleConfigUpdate}
-            nodeId={node.id}
-            accentColor={accentColor}
-            onDeleteInput={onDeleteEdge}
-            onSwapInputs={onSwapEdgeJoinInputs ? () => onSwapEdgeJoinInputs(node.id) : undefined}
-          />
-        )
-
-      case NODE_TYPES.SUBMODEL:
-        return <SubmodelEditor config={config} accentColor={accentColor} />
-
-      default:
-        return null
-    }
-  }
+  const configEditor = !isKnownNodeType ? (
+    <UnknownNodeTypeDiagnostic nodeType={nodeType} config={config} />
+  ) : isInstance ? (
+    <InstancePanel
+      node={node}
+      config={config}
+      nodeMap={nodeMap}
+      handleConfigUpdate={handleConfigUpdate}
+    />
+  ) : (
+    <NodeConfigEditor
+      nodeType={nodeType as NodeTypeValue}
+      config={config}
+      configWithNodeId={configWithNodeId}
+      node={node}
+      onUpdateConfig={handleConfigUpdate}
+      onReplaceConfig={handleConfigReplace}
+      inputSources={inputSources}
+      upstreamColumns={upstreamColumns}
+      pivotColumns={pivotColumns}
+      activeExplorePane={activeExplorePane}
+      activeModellingPane={activeModellingPane}
+      onDeleteEdge={onDeleteEdge}
+      onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
+      onShowPivots={() => setExplorePane(node.id, "pivots")}
+      errorLine={errorLine}
+      previewRows={previewRows}
+      selectedPreviewLoading={selectedPreviewLoading}
+      loadPivotFilterMembers={loadPivotFilterMembers}
+      exploreConfigHash={exploreConfigHash}
+      reservedApiInputFrameLabels={reservedApiInputFrameLabelSet}
+      accentColor={accentColor}
+    />
+  )
 
   const availableColumns = ((node.data as Record<string, unknown>)?._availableColumns as { name: string; dtype: string }[]) || []
   const currentColumns = ((node.data as Record<string, unknown>)?._columns as { name: string; dtype: string }[]) || []
+  const schemaWarnings = (node.data._schemaWarnings as { column: string; status: string }[]) || []
   const editorTabs: NodePanelTab[] = [
     "config",
     ...(showPolarsTab ? ["polars" as const] : []),
@@ -1236,91 +1331,24 @@ export default function NodePanel({
 
   return (
     <PanelShell testId="node-panel" style={{ opacity: dimmed ? 0.6 : 1, transition: 'opacity 150ms' }}>
-      <div className="px-3 py-2.5 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-        <div className="flex items-center gap-2">
-          <CommittedTextField
-            data-testid="node-panel-label-input"
-            type="text"
-            value={node.data.label}
-            disabled={readOnly}
-            onCommit={(v) => {
-              if (!onUpdateNode) return
-              const result = onUpdateNode(node.id, { ...node.data, label: v })
-              setLabelUpdateError(result.ok ? null : result.error)
-            }}
-            className="node-label-input flex-1 min-w-0 px-2 py-1 text-[13px] font-semibold border border-transparent rounded-md focus:outline-none bg-transparent"
-            style={{ color: 'var(--text-primary)', borderColor: 'transparent' }}
-          />
-          {readOnly && (
-            <span
-              data-testid="node-panel-readonly"
-              className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em]"
-              style={{ color: "var(--text-muted)" }}
-            ><Lock size={11} aria-hidden="true" />Read-only</span>
-          )}
-          {showRefreshPreview && (
-            <button
-              onClick={onRefreshPreview}
-              className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
-              style={{ background: 'var(--accent)', color: 'var(--text-on-accent)' }}
-              title={refreshTitle}
-            >
-              <RefreshCw size={11} />
-              Refresh
-            </button>
-          )}
-          <button data-testid="node-panel-close" onClick={onClose} className="node-close-btn p-1 rounded shrink-0 transition-colors" style={{ color: 'var(--text-on-accent)' }}
-            title="Close"
-          >
-            <X size={14} strokeWidth={2.5} />
-          </button>
-        </div>
-        {labelUpdateError && (
-          <p
-            role="alert"
-            data-testid="node-panel-label-error"
-            className="mt-1 px-2 text-[11px]"
-            style={{ color: 'var(--danger)' }}
-          >
-            {labelUpdateError}
-          </p>
-        )}
-      </div>
+      <NodePanelHeader
+        key={String(node.data.label)}
+        nodeId={node.id}
+        label={String(node.data.label)}
+        readOnly={readOnly}
+        onRenameNode={onRenameNode}
+        showRefreshPreview={showRefreshPreview}
+        refreshTitle={refreshTitle}
+        onRefreshPreview={onRefreshPreview}
+        onClose={onClose}
+      />
 
-      {/* Tab bar — only show when Columns tab is available.  Hover
-          background is applied via Tailwind only for the INACTIVE tab
-          so the accent-soft background of the active tab doesn't
-          flicker on mouseover.  Inactive tabs deliberately omit an
-          inline `background` so the Tailwind `hover:` rule can apply
-          (inline styles would otherwise win over class rules). */}
-      {(showColumnsTab || showPolarsTab) && (
-        <div className="flex shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-          {editorTabs.map((tab) => {
-            const isActive = activeTab === tab
-            const activeStyle: React.CSSProperties = {
-              color: 'var(--accent)',
-              borderBottom: '2px solid var(--accent)',
-              background: 'var(--accent-soft)',
-            }
-            const inactiveStyle: React.CSSProperties = {
-              color: 'var(--text-muted)',
-              borderBottom: '2px solid transparent',
-            }
-            return (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`flex-1 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors${
-                  isActive ? '' : ' hover:bg-[var(--bg-hover)]'
-                }`}
-                style={isActive ? activeStyle : inactiveStyle}
-              >
-                {tab === "polars" ? "Polars" : tab}
-              </button>
-            )
-          })}
-        </div>
-      )}
+      <NodeEditorTabStrip
+        visible={showColumnsTab || showPolarsTab}
+        tabs={editorTabs}
+        activeTab={activeTab}
+        onSelect={selectTab}
+      />
 
       {showExplorePanes && (
         <PreviewPanelTabs
@@ -1345,108 +1373,32 @@ export default function NodePanel({
         />
       )}
 
-      {/* Schema warnings for non-instance nodes.  Bundle 3b: dismiss
-          (×) + Refresh-and-check controls.  Suppressed when the current
-          warning signature matches the user's last dismissal. */}
-      {!isInstance && !showExplorePanes && (() => {
-        const warnings = (node.data._schemaWarnings as { column: string; status: string }[]) || []
-        if (warnings.length === 0) return null
-        const sig = warnings.map((w) => `${w.column}|${w.status}`).join(',')
-        if (sig === dismissedStaleWarningSig) return null
-        return (
-          <div className="px-4 py-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-            <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}>
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5">
-                  <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0" />
-                  <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--warning-strong)' }}>
-                    Stale columns ({warnings.length})
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <button
-                    onClick={() => {
-                      setDismissedStaleWarningSig(sig)
-                      onRefreshPreview?.()
-                    }}
-                    className="px-2 py-1 rounded shrink-0 transition-opacity flex items-center gap-1 text-[11px] font-medium hover:opacity-[0.85]"
-                    style={{ background: 'var(--accent)', color: 'var(--text-on-accent)' }}
-                    title="Re-run preview and re-check schema warnings"
-                  >
-                    <RefreshCw size={11} />
-                    Refresh and check
-                  </button>
-                  <button
-                    onClick={() => setDismissedStaleWarningSig(sig)}
-                    className="p-1 rounded shrink-0 transition-colors hover:opacity-[0.85]"
-                    style={{ color: 'var(--warning-strong)' }}
-                    title="Dismiss"
-                    aria-label="Dismiss"
-                  >
-                    <X size={12} strokeWidth={2.5} />
-                  </button>
-                </div>
-              </div>
-              <p className="text-[10px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-                These columns are referenced in config but not found in the upstream schema:
-              </p>
-              <div className="flex flex-wrap gap-1 mt-0.5">
-                {warnings.map((w) => (
-                  <span key={w.column} className="px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: 'var(--warning-soft-emphasis)', color: 'var(--warning)' }}>
-                    {w.column}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-        )
-      })()}
+      {!isInstance && !showExplorePanes && (
+        <SchemaWarningBanner
+          warnings={schemaWarnings}
+          dismissedSignature={dismissedWarningSignature}
+          onDismiss={dismissWarning}
+          onRefreshPreview={onRefreshPreview}
+        />
+      )}
 
-      <div
-        className="flex-1 min-h-0 overflow-y-auto"
-        data-testid="node-panel-editor"
-        inert={readOnly ? true : undefined}
-        aria-readonly={readOnly}
-      >
-        {documentReadOnly ? (
-          <div
-            className="space-y-3 p-3"
-            data-testid="node-document-readonly-inspector"
-          >
-            <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
-              This node is valid and available for inspection. Resolve the pipeline load diagnostics before editing or running it.
-            </p>
-            <pre
-              aria-label="Read-only node configuration"
-              className="overflow-auto whitespace-pre-wrap break-words rounded-md p-2 text-[10px]"
-              style={{ background: "var(--bg-input)", color: "var(--text-secondary)" }}
-            >
-              {JSON.stringify(config, null, 2)}
-            </pre>
-          </div>
-        ) : (
-          <LazyEditorBoundary>
-            {activeTab === "polars" && showPolarsTab ? (
-            <PolarsCodePanel
-              config={config}
-              onUpdate={handleConfigUpdate}
-              inputSources={nodeType === NODE_TYPES.DATA_INPUT ? [] : inputSources}
-              onDeleteInput={onDeleteEdge}
-              errorLine={errorLine}
-              upstreamColumns={upstreamColumns}
-              hint={POLARS_TAB_HINTS[nodeType] ?? null}
-            />
-          ) : activeTab === "columns" && showColumnsTab ? (
-            <ColumnsTab
-              config={config}
-              onUpdate={handleConfigUpdate}
-              availableColumns={availableColumns}
-              columns={currentColumns}
-            />
-            ) : renderEditor()}
-          </LazyEditorBoundary>
-        )}
-      </div>
+      <NodeEditorBody
+        documentReadOnly={documentReadOnly}
+        readOnly={readOnly}
+        config={config}
+        activeTab={activeTab}
+        showPolarsTab={showPolarsTab}
+        showColumnsTab={showColumnsTab}
+        nodeType={nodeType}
+        inputSources={inputSources}
+        onDeleteEdge={onDeleteEdge}
+        errorLine={errorLine}
+        upstreamColumns={upstreamColumns}
+        availableColumns={availableColumns}
+        currentColumns={currentColumns}
+        onUpdateConfig={handleConfigUpdate}
+        configEditor={configEditor}
+      />
     </PanelShell>
   )
 }

@@ -17,6 +17,7 @@ import {
   estimateOptimiserSolve,
   estimateTrainingRam,
   commitMilestone,
+  resolveEditorNodeIdentities,
   resolveOutputDestination,
   writeOutput,
   fetchIoCapabilities,
@@ -159,6 +160,160 @@ describe("client runtime contracts", () => {
       format: "csv",
       suffix_mismatch: false,
     })
+  })
+
+  it("resolveEditorNodeIdentities validates the complete strict response", async () => {
+    mockFetch.mockReturnValue(jsonResponse({
+      identities: [{
+        node_id: "source",
+        function_name: "node_class",
+        default_input_name: "node_class",
+        source_handle_input_names: {},
+        config_reference: null,
+      }],
+    }))
+
+    await expect(resolveEditorNodeIdentities({
+      nodes: [{
+        node_id: "source",
+        label: "class",
+        node_type: "polars",
+        submodel_alias: null,
+        source_handles: [],
+      }],
+    })).resolves.toEqual({
+      identities: [{
+        node_id: "source",
+        function_name: "node_class",
+        default_input_name: "node_class",
+        source_handle_input_names: {},
+        config_reference: null,
+      }],
+    })
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/pipeline/editor-identities")
+    expect(JSON.parse(String(init?.body))).toEqual({
+      nodes: [{
+        node_id: "source",
+        label: "class",
+        node_type: "polars",
+        submodel_alias: null,
+        source_handles: [],
+      }],
+    })
+  })
+
+  it("resolveEditorNodeIdentities rejects nested response drift", async () => {
+    mockFetch.mockReturnValue(jsonResponse({
+      identities: [{
+        node_id: "source",
+        function_name: "source",
+        default_input_name: "source",
+        source_handle_input_names: {},
+        config_reference: null,
+        unexpected: true,
+      }],
+    }))
+
+    await expect(resolveEditorNodeIdentities({ nodes: [] })).rejects.toThrow(
+      /parseEditorNodeIdentityBatchResponse/i,
+    )
+  })
+
+  it.each([
+    ["missing", ["first"]],
+    ["reordered", ["second", "first"]],
+  ] as const)("resolveEditorNodeIdentities rejects %s response identities", async (
+    _case,
+    responseNodeIds,
+  ) => {
+    const identity = (nodeId: string) => ({
+      node_id: nodeId,
+      function_name: `function_${nodeId}`,
+      default_input_name: `input_${nodeId}`,
+      source_handle_input_names: {},
+      config_reference: null,
+    })
+    mockFetch.mockReturnValue(jsonResponse({
+      identities: responseNodeIds.map(identity),
+    }))
+
+    await expect(resolveEditorNodeIdentities({
+      nodes: ["first", "second"].map((nodeId) => ({
+        node_id: nodeId,
+        label: nodeId,
+        node_type: "polars",
+        submodel_alias: null,
+        source_handles: [],
+      })),
+    })).rejects.toThrow(/exactly match request node order/)
+  })
+
+  it("resolveEditorNodeIdentities rejects incomplete source-handle identity coverage", async () => {
+    mockFetch.mockReturnValue(jsonResponse({
+      identities: [{
+        node_id: "api",
+        function_name: "api",
+        default_input_name: null,
+        source_handle_input_names: { quotes: "quotes" },
+        config_reference: "config/quote_input/api.json",
+      }],
+    }))
+
+    await expect(resolveEditorNodeIdentities({
+      nodes: [{
+        node_id: "api",
+        label: "API",
+        node_type: "apiInput",
+        submodel_alias: null,
+        source_handles: ["quotes", "vehicles"],
+      }],
+    })).rejects.toThrow(/source handles must exactly match the request/i)
+  })
+
+  it("resolveEditorNodeIdentities rejects invalid default-identity nullability", async () => {
+    mockFetch.mockReturnValue(jsonResponse({
+      identities: [{
+        node_id: "ordinary",
+        function_name: "ordinary",
+        default_input_name: null,
+        source_handle_input_names: {},
+        config_reference: null,
+      }],
+    }))
+
+    await expect(resolveEditorNodeIdentities({
+      nodes: [{
+        node_id: "ordinary",
+        label: "Ordinary",
+        node_type: "polars",
+        submodel_alias: null,
+        source_handles: [],
+      }],
+    })).rejects.toThrow(/default input identity/i)
+  })
+
+  it("resolveEditorNodeIdentities rejects rewritten API frame identities", async () => {
+    mockFetch.mockReturnValue(jsonResponse({
+      identities: [{
+        node_id: "api",
+        function_name: "api",
+        default_input_name: null,
+        source_handle_input_names: { quotes: "rewritten_quotes" },
+        config_reference: "config/quote_input/api.json",
+      }],
+    }))
+
+    await expect(resolveEditorNodeIdentities({
+      nodes: [{
+        node_id: "api",
+        label: "API",
+        node_type: "apiInput",
+        submodel_alias: null,
+        source_handles: ["quotes"],
+      }],
+    })).rejects.toThrow(/API frame identities must preserve raw source handles/i)
   })
 
   it("fetchIoCapabilities rejects unknown V1 discriminants", async () => {

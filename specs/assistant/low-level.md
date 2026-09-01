@@ -28,7 +28,7 @@
 | `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery. Config redaction is policy-driven: credentials and row values are never eligible, while executable keys follow the project's own `allow_executable_source` decision rather than being redacted unconditionally. Value profiling is the one data-reading adapter and is gated on the egress policy's row-sample permission; see Control flow. A routed Parquet showcase binds an omitted listing root to the safe folder explicitly named by the user and enables recursion. Each source-bound executor seeds its evidence ledger from schema/content evidence in the exact provider history window, then adds evidence returned during the current turn. The only provider-visible mutation tools are `dry_run_graph_edits` and `apply_graph_plan`: the model must pass the exact returned plan hash and cannot resend operations at apply time. Tool code does not own revision, save, or verification policy. |
 | `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, per-session `asyncio.Lock`, timestamps), create/lookup/resume, `list_sessions` for the chat list, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence and value-free validation diagnostics; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
-| `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: resolves only an unbroken `NEEDS_INPUT:` clarification chain into its originating recipe route, assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when either the plan-correction or the malformed-call dry-run budget is exhausted, applies the bounded incomplete-mutation continuation gate, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
+| `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: resolves only an unbroken `NEEDS_INPUT:` clarification chain into its originating recipe guidance, assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when either the plan-correction or the malformed-call dry-run budget is exhausted, applies the bounded incomplete-mutation continuation gate, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
 | `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `GET /api/assistant/sessions` (this pipeline's saved conversations for the panel's chat list, resolving the pipeline exactly as session creation does), `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
 | `src/haute/_column_summary.py` | Shared with [explore-eda](../explore-eda/low-level.md): the Polars dtype facts every column-summarising surface needs — `is_unhashable_dtype` for the columns that cannot be counted, the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. Polars-only, so the assistant reaches it without importing the routes layer. |
 | `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries, message request, usage, and the text-delta, tool-started, tool-finished, graph-updated, completed, failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
@@ -75,7 +75,18 @@ orphaned halves).
   concurrency, timeout, payload, context-budget, stable-error and recovery
   metadata. Its output schema requires attribution plus exactly one non-empty
   success or error result variant; an empty object is never a valid declared
-  operation result.
+  operation result. The `dry_run_graph_edits.ops` branches are generated from
+  `_wire_ops`' canonical Pydantic operation models. The projection inlines local
+  definitions and retains closed fields, requiredness, discriminator constants,
+  descriptions, nullability, and the canonical `NodeType` enum; `_catalog` does
+  not hand-copy the primitive operation vocabulary.
+- **`PreparedGraphEdit` / `VerifiedPlan`** (`_ops.py` / `_application.py`): the
+  prepared value contains one parsed, normalized, graph-applied edit plus its
+  resolved postconditions, semantic diff, and affected capabilities. The verified
+  value adds save validation, schema evidence, warnings, tier, and the one sealed
+  `GraphEditPlan`. `build_verified_plan` is the sole application-service path from
+  snapshot plus raw operations to that pair and is reused for dry-run, recipe
+  dry-run, and apply replay.
 - **Manifest identity/cache**: `get_capability_manifest()` refreshes installed
   format/engine facts, canonicalises all immutable material as UTF-8 JSON with
   sorted object keys and compact separators, hashes it with SHA-256, and looks
@@ -211,11 +222,10 @@ response. Every descriptor is materialised into ordinary JSON containers.
 and cannot drift independently.
 
 **Recipe planning**: `plan_recipe` has a canonical flat discriminated union derived from the
-closed recipe argument schemas. For a uniquely routed current request, the provider-facing
-tool definition contains only the exact matching union branch. Unrouted provider catalogs
-omit `plan_recipe` and `dry_run_recipe_plan`; the canonical internal registry retains the
-complete union. Argument descriptions distinguish a requested graph-node name from its
-output-column name. Transform, join, and rating recipes also accept optional non-empty
+closed recipe argument schemas. Every request receives the same complete provider-facing
+union together with `dry_run_recipe_plan`; lexical recipe recognition changes neither tool
+availability nor schema shape. Argument descriptions distinguish a requested graph-node name
+from its output-column name. Transform, join, and rating recipes also accept optional non-empty
 `output_name` and `output_columns` fields, which must be present together. The latter is a
 non-empty unique array of simple JSON-field column names. When present, the deterministic
 planner adds one response `output` node, a canonical JSON `outputMapping` for exactly those
@@ -255,7 +265,7 @@ handle and invokes the ordinary graph dry-run with exactly the stored canonical 
 material. It rejects every additional property. A pending recipe makes primitive
 `dry_run_graph_edits` return `recipe_plan_requires_handle`; an unknown or replaced handle returns
 `recipe_plan_not_found`. The live handle clears only after a successful dedicated
-dry-run. Neither tool writes. A conservative current-request router returns a recipe id only
+dry-run. Neither tool writes. A conservative current-request recognizer suggests a recipe id only
 when exactly one explicit domain pattern matches: a band/banding term with a continuous,
 range, breakpoint, bucket, or comparison-operator cue maps to `continuous_banding`;
 categorical/discrete banding maps to `categorical_banding`; join maps to `reference_join`;
@@ -274,25 +284,25 @@ is outside two to eight or no candidate pair remains. If the assistant returns
 `NEEDS_INPUT:`, route resolution scans backward only across consecutive turns whose final
 assistant text also begins `NEEDS_INPUT:` and reuses the first directly routed user request.
 Any other final response ends continuation, so an unrelated bare path cannot revive stale
-mutation authority. A standalone
-response-output request maps to `response_output`; a specialist recipe that also requests
-a response output keeps its specialist route and owns that downstream output. The loop
-appends that route id to the current turn's system contract and
-the source-bound executor independently enforces it. Primitive dry-run before that recipe
-returns `recipe_route_required`; a `plan_recipe` call for another id returns
-`recipe_route_mismatch`. Zero or multiple matches do not force a route; the provider-visible
-catalog then omits both `plan_recipe` and `dry_run_recipe_plan`, while the canonical internal
-registry retains the complete discriminated union. The router never populates recipe arguments. A closed primary-name recognizer accepts
-recipe-specific `named NAME` forms plus `add NAME:` and compares the explicit name to
-`name` (or `output_name` for standalone response output) before planning. A mismatch
-returns `recipe_name_mismatch` with the expected name and never stores a recipe plan.
-A closed material-input recognizer identifies rating-factor
-requests which explicitly say factor values or missing-factor policy are not supplied. Such a
-turn appends a mandatory `NEEDS_INPUT:` contract, omits `plan_recipe`,
-`dry_run_recipe_plan`, `dry_run_graph_edits`, and `apply_graph_plan` from provider tools,
-and makes the independent source-bound executor return `material_input_required` for any
-of those calls. Provider-side narrowing changes only the advertised input
-branch; the source-bound executor still validates the canonical schema and route.
+guidance. A standalone response-output request suggests `response_output`; a specialist recipe
+that also requests a response output keeps its specialist suggestion and owns that downstream
+output. The loop may append that suggestion to the current turn's system contract, but the
+suggestion is never executor authority. Every request receives the same full `plan_recipe`
+discriminated union, `dry_run_recipe_plan`, `dry_run_graph_edits`, and `apply_graph_plan`
+descriptors. Zero, one, or multiple lexical matches therefore cannot remove a valid structured
+path. The recognizer never populates recipe arguments, changes an input schema, rewrites a tool
+call, or rejects a primitive plan or another valid recipe id. The source-bound executor API has
+no natural-language request parameter, so this separation is structural rather than a
+convention inside its dispatcher.
+
+A material-input recognizer may add focused prompt guidance when rating choices appear to be
+withheld, but it does not omit tools or create an executor verdict. The provider must not invent
+missing choices; if it submits a complete structured call, that call is judged only by the
+canonical recipe/operation schema and graph validators. The lexical-only error codes
+`recipe_route_required`, `recipe_route_mismatch`, `recipe_name_mismatch`, and
+`material_input_required` are not part of the operation descriptors. A pending canonical
+recipe receipt remains different: `recipe_plan_requires_handle` prevents a provider from
+replacing already-generated server-side recipe material with primitive operations.
 
 **Column value profiles**: `get_column_profiles(node, input?)` is the only operation that
 reads project data, and it never returns a row. It requires
@@ -348,8 +358,11 @@ excluded count; its path and content never cross the tool boundary.
 **Plan/apply/verify**:
 
 1. `dry_run` resolves and parses the saved source, builds the snapshot and
-   revision, parses and normalizes primitive ops, applies them to a deep graph
-   copy, invokes the save service's public no-write validation (including
+   revision, and calls the single `build_verified_plan` pipeline. Its prepared-edit
+   phase parses and normalizes primitive ops once, applies them once to a deep graph
+   copy, validates assistant-authored invariants, resolves postcondition refs, and
+   derives the complete semantic diff and affected capabilities. Its verification
+   phase invokes the save service's public no-write validation (including
    canonical Edge Join role, handle, topology, and key-form validation),
    derives the complete changed-node set, and resolves the schema of every
    reachable executable terminal through `flatten_graph` +
@@ -357,8 +370,8 @@ excluded count; its path and content never cross the tool boundary.
    `collect_schema()`.
    No frame is collected and no sink is invoked, which is what `schema_only`
    declares to the engine's group-by materialisation-admission gate. It then
-   derives the semantic
-   diff/postconditions/tier, binds the closed schema evidence into the plan
+   binds the normalized operations, semantic diff, postconditions, tier, warnings,
+   and closed schema evidence into the plan
    hash, and records the immutable validated plan. A schema failure aborts the
    dry-run and stores no plan, except for the pre-existing collateral case below.
 
@@ -385,12 +398,14 @@ excluded count; its path and content never cross the tool boundary.
    on the saved graph by construction, so excusing seeds would silently accept exactly
    the broken code the analyst asked for. A target that resolves on the saved graph and
    fails on the planned graph was broken by the edit and still aborts the dry-run.
-   `apply` recomputes seeds, evidence, and these warnings identically, so the plan hash
+   `apply` calls the same `build_verified_plan` function, so it recomputes seeds,
+   evidence, normalization, and these warnings identically and the plan hash
    is stable; post-save verification re-resolves only the targets the plan already
    proved and admits no pre-existing excuse at all.
 2. `apply` acquires `save_lock`, reloads the snapshot, compares its revision,
-   replays and revalidates the stored normalized operations, recomputes the
-   candidate schema evidence and plan hash, checks the plan-store state, and invokes
+   passes the stored normalized operations through `build_verified_plan`, requires
+   the complete rebuilt `GraphEditPlan` and plan hash to equal the stored authority,
+   checks the plan-store state, and invokes
    `SavePipelineService.save_graph_transactionally` exactly once.
 3. Still under the lock, it reparses, derives the actual diff/revision,
    verifies the visible diff plus complete semantic-diff digest, postconditions,
@@ -471,10 +486,11 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    The prompt treats explicit authoring verbs such as build, add, change, update,
    connect, remove, delete, and make as mutation intent rather than an invitation to
    inspect and stop. When an installed deterministic recipe matches the requested
-   operation, the model must call `plan_recipe`, then pass its `recipe_plan_hash` to
+   operation, the model should call `plan_recipe`, then pass its `recipe_plan_hash` to
    `dry_run_recipe_plan`; it never copies the returned operations. A unique explicit
-   current-request recipe route is repeated in the per-turn system contract and enforced
-   independently by the tool executor. A failed dry run
+   current-request recipe suggestion may be repeated in the per-turn system contract, but
+   every request receives the same complete mutation tool schemas and the executor never
+   treats lexical classification as authority. A failed dry run
    permits at most one materially corrected retry. The loop keeps **two independent
    bounded budgets** over failed calls to either dry-run tool, because the two failure
    classes are not the same evidence. A domain rejection — the plan was built and judged
@@ -585,12 +601,14 @@ returns a fresh session with empty `history`; resume is an offer, never an error
       `exc_info`.
 
    Mutation dispatch is an adapter over `PipelineApplicationService`.
-   `dry_run_graph_edits` performs parse, exact evidence/revision capture, pure
-   operation replay, no-write save validation, schema-only lazy-plan validation, postcondition evaluation, semantic
+   `dry_run_graph_edits` captures the exact evidence/revision, calls
+   `build_verified_plan` for single-pass parsing, normalization, pure operation
+   replay, no-write save validation, schema-only lazy-plan validation, postcondition evaluation, semantic
    diff construction, and immutable plan storage while holding the shared
    save lock against concurrent GUI saves. `apply_graph_plan` then checks branch
    readiness and, under the same lock, reloads and compares all revision sources,
-   replays the stored normalized operations, recomputes the plan hash, checks
+   calls the same `build_verified_plan` path with the stored normalized operations,
+   requires complete plan equality and the same hash, checks
    one-use authority, invokes
    `SavePipelineService.save_graph_transactionally` once, reparses, verifies the
    actual diff, schema evidence, and postconditions, and publishes the standard pipeline
@@ -672,16 +690,19 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   the raw response. A failure after a stream object exists is never retried; exhausted
   rate limits retain the sanitized `databricks`/`rate_limit` failure.
   Before either provider request, every canonical tool
-  input schema is projected to a portable wire schema with a sixteen-property budget per
+  input schema is projected to a portable wire schema with a forty-property budget per
   tool. It retains object/array shape, property names, descriptions, common required fields,
   single scalar types, enums, and closed-object declarations; nullable scalar unions project
   to their non-null generation type. For a composition of closed object branches that fits
   the remaining budget, the projection unions branch properties, combines discriminator
   constants into one enum, recursively projects a property present in one branch or
-  identically declared across branches within the remaining budget, reduces conflicting
-  property schemas to a common portable type, intersects required fields, and remains closed. A
-  composition that does not fit remains a generic typed container. Patterns, ranges, and
-  other unsupported validation vocabulary are omitted. `_tools` independently validates
+  identically declared across branches within the remaining budget, merges different arrays
+  of closed object items by the same union/intersection rule, reduces other conflicting
+  property schemas to a common portable type, intersects required fields, and remains closed.
+  The bound preserves the complete merged recipe selection contract without using lexical
+  request-dependent narrowing. A composition that does not fit remains a generic typed
+  container. Patterns, ranges, and other unsupported validation vocabulary are omitted.
+  `_tools` independently validates
   the decoded call against the unchanged canonical operation schema, so the projection is a
   generation contract rather than an authorization or validation fallback. After the outer
   function-arguments object is parsed,

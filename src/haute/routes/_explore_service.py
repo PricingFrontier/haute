@@ -63,7 +63,7 @@ from haute.routes._job_lifecycle import (
     TerminalReason,
     bind_running_execution_metrics_publisher,
 )
-from haute.routes._job_store import JobStore
+from haute.routes._job_store import JobStore, RunningJobFields
 from haute.schemas import (
     ExecutionMetricsPayload,
     ExploreCacheReport,
@@ -81,6 +81,16 @@ from haute.schemas import (
 )
 
 logger = get_logger(component="server.explore")
+
+
+class _ExploreRunningJob(RunningJobFields):
+    kind: Literal["explore"]
+    progress: float
+    node_id: str
+    upstream_node_id: str
+    source: str
+    analysis_key: str
+
 
 # Keep report-cache identity tied to the underlying analysis dataframe and the
 # required report schema. Bump when older in-memory report payloads are
@@ -1059,18 +1069,17 @@ class ExploreService:
                 lambda cache_key: cache_key == key.cache_key
             )
 
-        job_id = self._store.create_job(
-            {
-                "kind": "explore",
-                "status": "running",
-                "progress": 0.0,
-                "message": "Starting Explore cache materialisation",
-                "node_id": body.node_id,
-                "upstream_node_id": spec.upstream_node_id,
-                "source": body.source,
-                "analysis_key": spec.report_cache_key,
-            }
-        )
+        initial_job: _ExploreRunningJob = {
+            "kind": "explore",
+            "status": "running",
+            "progress": 0.0,
+            "message": "Starting Explore cache materialisation",
+            "node_id": body.node_id,
+            "upstream_node_id": spec.upstream_node_id,
+            "source": body.source,
+            "analysis_key": spec.report_cache_key,
+        }
+        job_id = self._store.create_job(initial_job)
         token, previous_job_id = self._jobs.register_latest(spec.family_key, job_id)
         if previous_job_id is not None:
             self._lifecycle.transition(

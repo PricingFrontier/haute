@@ -51,13 +51,7 @@ from haute.assistant._ops import (
     dataset_schema_digest,
 )
 from haute.assistant._project_knowledge import build_project_knowledge, query_project_knowledge
-from haute.assistant._recipes import (
-    RecipeError,
-    explicit_dataset_directory,
-    explicit_primary_recipe_name,
-    request_requires_material_clarification,
-    route_recipe_request,
-)
+from haute.assistant._recipes import RecipeError
 from haute.assistant._recipes import plan_recipe as _plan_recipe
 from haute.assistant._render import render_pipeline_graph
 from haute.errors import HauteError
@@ -1575,7 +1569,6 @@ def build_tool_executor(
     *,
     session_id: str = "legacy",
     prior_messages: Sequence[Mapping[str, Any]] = (),
-    authoring_request: str = "",
 ) -> Callable[[str, dict[str, Any]], Awaitable[Mapping[str, object]]]:
     """Build the loop's non-raising, source-bound async tool dispatcher."""
 
@@ -1586,13 +1579,6 @@ def build_tool_executor(
     )
     pending_recipe_plans: dict[str, dict[str, object]] = {}
     pending_recipe_hash_by_id: dict[str, str] = {}
-    required_recipe_id = route_recipe_request(authoring_request)
-    material_input_required = request_requires_material_clarification(authoring_request)
-    showcase_dataset_root = (
-        explicit_dataset_directory(authoring_request)
-        if required_recipe_id == "parquet_showcase"
-        else None
-    )
 
     def observed_sources() -> tuple[ProjectSourceEvidence, ...]:
         return tuple(observed_project_sources[key] for key in sorted(observed_project_sources))
@@ -1609,12 +1595,6 @@ def build_tool_executor(
                 name,
                 f"Unknown assistant tool {name!r}. Choose one of: {', '.join(_TOOL_NAMES)}.",
             )
-        if name == "list_datasets" and showcase_dataset_root is not None:
-            arguments = {
-                **arguments,
-                "project_root": showcase_dataset_root,
-                "recursive": True,
-            }
         if name in _INTERNAL_PROJECT_TOOLS:
             try:
                 policy = resolve_egress_policy(Path.cwd().resolve())
@@ -1678,49 +1658,6 @@ def build_tool_executor(
                     **exc.fields,
                 ),
             )
-        if material_input_required and name in {
-            "plan_recipe",
-            "dry_run_recipe_plan",
-            "dry_run_graph_edits",
-            "apply_graph_plan",
-        }:
-            return _bounded_tool_result(
-                name,
-                _error(
-                    "material_input_required",
-                    "The request explicitly withholds required rating choices. Ask for "
-                    "factor values and missing-factor policy before planning a mutation.",
-                    required_inputs=("factor_values", "missing_factor_policy"),
-                ),
-            )
-        if (
-            name == "plan_recipe"
-            and required_recipe_id is not None
-            and arguments["recipe_id"] != required_recipe_id
-        ):
-            return _bounded_tool_result(
-                name,
-                _error(
-                    "recipe_route_mismatch",
-                    "The current request has an explicit deterministic recipe route. "
-                    "Use the required recipe id.",
-                    recipe_id=required_recipe_id,
-                ),
-            )
-        if name == "plan_recipe":
-            recipe_id = arguments["recipe_id"]
-            expected_name = explicit_primary_recipe_name(authoring_request, recipe_id)
-            name_argument = "output_name" if recipe_id == "response_output" else "name"
-            if expected_name is not None and arguments.get(name_argument) != expected_name:
-                return _bounded_tool_result(
-                    name,
-                    _error(
-                        "recipe_name_mismatch",
-                        "Preserve the primary recipe node name exactly as requested.",
-                        expected_name=expected_name,
-                        argument=name_argument,
-                    ),
-                )
         if name == "dry_run_graph_edits":
             if pending_recipe_plans:
                 return _bounded_tool_result(
@@ -1729,16 +1666,6 @@ def build_tool_executor(
                         "recipe_plan_requires_handle",
                         "A canonical recipe plan is pending. Pass its recipe_plan_hash to "
                         "dry_run_recipe_plan instead of copying its operations.",
-                    ),
-                )
-            if required_recipe_id is not None:
-                return _bounded_tool_result(
-                    name,
-                    _error(
-                        "recipe_route_required",
-                        "The current request has an explicit deterministic recipe route. "
-                        "Call plan_recipe with the required recipe id before dry-run.",
-                        recipe_id=required_recipe_id,
                     ),
                 )
             return _bounded_tool_result(

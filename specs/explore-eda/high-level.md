@@ -242,8 +242,13 @@ Out of scope (owned elsewhere):
   a newer UI's overview cards remain readable by, and rewritable through, an older parser/codegen
   pair. An empty `overview` dict is preserved as empty (not defaulted) so callers can choose to
   omit the config entirely rather than emit `overview={}`.
-- `validate_explore_charts` accepts only a list of dicts, each a complete version-1 card — a
-  versionless item is rejected, never migrated. A v1 chart requires
+- Canonical Pydantic chart models structurally validate each complete version-1 card;
+  `validate_explore_charts` is the stable persisted-config adapter that accepts only a list of
+  dicts, returns plain dicts, and maps validation failures to `ConfigError`. The same model schema
+  generates the browser's static chart types and standalone structural validator. Versionless
+  items are rejected, never migrated, and neither boundary repairs or materialises defaults.
+  Explicit Python and browser semantic layers retain identity, duplicate, stack, axis, and stable
+  error-policy checks that are not represented as a second structural schema. A v1 chart requires
   supported `version: 1`, unique non-empty id/name, Boolean enabled, `pivot_id` null or non-empty,
   `kind: "combo"`, one Rows category mapping, ordered Value encodings and exact-series overrides,
   complete primary/secondary axes, and a complete legend. Nested mapping ids, Value ids, and exact

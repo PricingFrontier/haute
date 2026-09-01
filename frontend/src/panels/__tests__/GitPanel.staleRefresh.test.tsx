@@ -94,7 +94,7 @@ describe("GitPanel stale refresh (generation guard)", () => {
     await resetGitStoreForTests()
   })
 
-  it("peeking triggers one refresh without replaying active nonce effects", async () => {
+  it("peeking enters one new scope without replaying mount-time nonce values", async () => {
     useGitStore.setState({ historyNonce: 1, commitNonce: 1 })
     mockGetMilestones.mockImplementation((_n: number, branch?: string | null) =>
       Promise.resolve(branch === "pricing/nick/spur" ? spurMilestones : devMilestones),
@@ -102,8 +102,10 @@ describe("GitPanel stale refresh (generation guard)", () => {
     mockGetPendingSaves.mockResolvedValue({ saves: [] })
 
     render(<GitPanel onClose={vi.fn()} />)
-    // Mount refresh + the already-active history and commit nonces.
-    await waitFor(() => expect(mockGetMilestones).toHaveBeenCalledTimes(3))
+    // The initially unresolved scope consumes its mount-time nonce values;
+    // resolving the working branch enters its own scope and revalidates once.
+    await waitFor(() => expect(mockGetMilestones).toHaveBeenCalledTimes(2))
+    const callsBeforePeek = mockGetMilestones.mock.calls.length
 
     act(() => useGitStore.getState().setPeekBranch("pricing/nick/spur"))
 
@@ -112,7 +114,7 @@ describe("GitPanel stale refresh (generation guard)", () => {
     )
     // Changing only the peek target must not replay the history/commit effects
     // through a changed refresh callback identity.
-    expect(mockGetMilestones).toHaveBeenCalledTimes(4)
+    expect(mockGetMilestones).toHaveBeenCalledTimes(callsBeforePeek + 1)
   })
 
   it("an earlier slow refresh resolving after a later fast one does not overwrite the later branch's rows", async () => {

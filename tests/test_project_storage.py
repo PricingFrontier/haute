@@ -26,6 +26,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import structlog.testing
 
 from haute import _git, _project_storage, _uc_transport
 from haute._git import GitDomainError, GitPushRejectedError
@@ -1045,6 +1046,76 @@ class TestUcContainerDeathSurvival:
         assert binding is not None
         assert binding.remote_url == UC_URL
         assert binding.branch == WORKING
+
+    def test_publish_emits_one_phase_separated_measurement(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        with structlog.testing.capture_logs() as logs:
+            _project_storage.publish_to_uc(UC_URL, project)
+
+        measurements = [
+            record for record in logs if record.get("event") == "uc_publish_measurement"
+        ]
+        assert len(measurements) == 1
+        measurement = measurements[0]
+        assert measurement["outcome"] == "published"
+        assert measurement["generation"] == 1
+        assert measurement["bundle_bytes"] > 0
+        phase_fields = (
+            "lease_fence_ms",
+            "bundle_create_ms",
+            "bundle_verify_ms",
+            "upload_ms",
+            "publish_fence_ms",
+            "pointer_write_ms",
+            "local_record_ms",
+            "cleanup_ms",
+            "network_ms",
+            "total_ms",
+        )
+        assert all(isinstance(measurement[field], float) for field in phase_fields)
+        assert all(measurement[field] >= 0 for field in phase_fields)
+        assert measurement["network_ms"] == pytest.approx(
+            measurement["lease_fence_ms"]
+            + measurement["upload_ms"]
+            + measurement["publish_fence_ms"]
+            + measurement["pointer_write_ms"]
+        )
+        assert not {
+            "url",
+            "writer_id",
+            "tip_sha",
+            "bundle_name",
+            "error",
+        }.intersection(measurement)
+
+    def test_failed_publish_still_emits_one_bounded_measurement(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def failing_verify(bundle: Path, cwd: Path | None = None) -> None:
+            raise _git.GitError("private verify detail")
+
+        monkeypatch.setattr(_git, "bundle_verify", failing_verify)
+        with structlog.testing.capture_logs() as logs:
+            with pytest.raises(StorageUnavailableError, match="packaged"):
+                _project_storage.publish_to_uc(UC_URL, project)
+
+        measurements = [
+            record for record in logs if record.get("event") == "uc_publish_measurement"
+        ]
+        assert len(measurements) == 1
+        measurement = measurements[0]
+        assert measurement["outcome"] == "failed"
+        assert measurement["generation"] == 1
+        assert measurement["bundle_bytes"] == 0
+        assert measurement["bundle_create_ms"] >= 0
+        assert measurement["bundle_verify_ms"] >= 0
+        assert measurement["upload_ms"] == 0
+        assert measurement["pointer_write_ms"] == 0
+        assert "private verify detail" not in repr(measurement)
 
     def test_populated_location_defers_to_a_restart(
         self, project: Path, files_api: _FakeFiles

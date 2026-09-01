@@ -7,7 +7,10 @@
 | `frontend/src/panels/ModellingConfig.tsx` | Modelling form orchestration, early training-job registration/cancellation, RAM estimate and GLM estimate wiring. |
 | `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset. |
 | `frontend/src/panels/NodePanel.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Five-pane hosting owned by [frontend-node-editors](../frontend-node-editors/low-level.md) and the accessible tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md), both consumed by modelling. |
-| `frontend/src/panels/OptimiserConfig.tsx` | Optimiser form, solve submission, source/constraint configuration and auto-range lifecycle. |
+| `frontend/src/panels/OptimiserConfig.tsx` | Optimiser form, solve submission, and source/constraint configuration. It delegates auto-range request identity and terminal presentation to `useOptimiserAutoRange`. |
+| `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | Constraint-bound, efficient-frontier, range, and step controls. It composes `useOptimiserAutoRange` beside the fields whose current constraint scope it owns, keeping request state out of the parent form. |
+| `frontend/src/panels/optimiser/OptimiserSolveStatus.tsx` | Pure solve estimate, stale-result, progress, terminal diagnostics, action, and convergence-result presentation. It receives the parent-owned solve transition and owns no request lifecycle state. |
+| `frontend/src/panels/optimiser/useOptimiserAutoRange.ts` | The single state authority for auto-range lifecycle: reducer-owned pending/error/terminal diagnostics, monotonic restart generation, document/config fence, abort/cancel ownership, polling, response validation, and completed-range publication. |
 | `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration, point selection, exports and ratebook detail materialisation. |
 | `frontend/src/panels/OptimiserDataPreview.tsx` | Bounded pre-solve scenario table, quote navigation, multi-series chart and statistics. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-memory and rejected-strategy banner shared with modelling progress, optimiser actions, and Explore. |
@@ -106,11 +109,18 @@
 2. Solve submission builds the current graph and records job/result state. Config estimates use
    the same stale-config pattern as modelling. API execution diagnostics are preserved in action
    errors/progress.
-3. Starting auto-range aborts/cancels the prior job, polls status every second with an abort-aware
-   delay, and applies completed ranges only when every configured constraint has a returned range.
-   The action remains available as **Restart auto range** while a request is active.
-   A locally aborted request is silent; a cancelled/superseded or other terminal status returned
-   by the server is shown in the local auto-range error area.
+3. `useOptimiserAutoRange` is the only authority for auto-range state and
+   request identity. Starting or restarting increments a monotonic generation,
+   captures the current document/config fence, aborts and best-effort cancels
+   the prior owned job, and polls status every second with an abort-aware delay.
+   Only the current generation may publish terminal state or apply completed
+   ranges, and completed output is accepted only when every configured
+   constraint has a returned finite range. A document/config replacement or
+   unmount retires and cancels the active generation. The action remains
+   available as **Restart auto range** while a request is active. A locally
+   aborted or superseded request is silent; a cancelled or other terminal
+   status returned by the server is shown in the reducer-owned auto-range
+   error area.
 4. `frontend/src/panels/OptimiserPreview.tsx` picks the available result tabs and selected frontier
    point. In ratebook mode a selected point without tables is materialised only on Rates/Summary;
    request sequence bookkeeping drops stale replies and persists accepted tables in the result

@@ -388,28 +388,6 @@ def request_requires_material_clarification(request: str) -> bool:
     )
 
 
-_PRIMARY_RECIPE_NAME_PATTERNS = {
-    "categorical_banding": re.compile(
-        r"\b(?:categorical\s+)?banding(?:\s+node)?\s+named\s+([A-Za-z_][A-Za-z0-9_]*)\b",
-        re.IGNORECASE,
-    ),
-    "continuous_banding": re.compile(
-        r"\b(?:continuous\s+)?banding(?:\s+node)?\s+named\s+([A-Za-z_][A-Za-z0-9_]*)\b",
-        re.IGNORECASE,
-    ),
-    "rating_step": re.compile(
-        r"\brating\s+step\s+named\s+([A-Za-z_][A-Za-z0-9_]*)\b", re.IGNORECASE
-    ),
-    "reference_join": re.compile(
-        r"\b(?:edge\s+)?join\s+named\s+([A-Za-z_][A-Za-z0-9_]*)\b", re.IGNORECASE
-    ),
-    "response_output": re.compile(
-        r"\bresponse\s+output\s+named\s+([A-Za-z_][A-Za-z0-9_]*)\b", re.IGNORECASE
-    ),
-}
-_ADD_NAMED_RECIPE = re.compile(r"\badd\s+([A-Za-z_][A-Za-z0-9_]*)\s*:", re.IGNORECASE)
-
-
 def explicit_dataset_directory(request: str) -> str | None:
     """Return one safe simple directory explicitly named by the user."""
 
@@ -421,19 +399,8 @@ def explicit_dataset_directory(request: str) -> str | None:
     return None
 
 
-def explicit_primary_recipe_name(request: str, recipe_id: str) -> str | None:
-    """Return only a primary node name stated in one closed lexical form."""
-
-    pattern = _PRIMARY_RECIPE_NAME_PATTERNS.get(recipe_id)
-    if pattern is not None and (match := pattern.search(request)) is not None:
-        return match.group(1)
-    if recipe_id != "parquet_showcase" and (match := _ADD_NAMED_RECIPE.search(request)) is not None:
-        return match.group(1)
-    return None
-
-
 def route_recipe_request(request: str) -> str | None:
-    """Return one conservative explicit recipe route, never a guessed tie."""
+    """Suggest one conservative recipe for prompt guidance, never as authority."""
 
     if is_explanation_only_request(request):
         return None
@@ -1203,7 +1170,6 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
 __all__ = [
     "RecipeError",
     "explicit_dataset_directory",
-    "explicit_primary_recipe_name",
     "is_explanation_only_request",
     "plan_recipe",
     "recipe_descriptor",

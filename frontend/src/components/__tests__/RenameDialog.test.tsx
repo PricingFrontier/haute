@@ -5,7 +5,7 @@ import RenameDialog from "../RenameDialog"
 function renderDialog(overrides: Partial<Parameters<typeof RenameDialog>[0]> = {}) {
   const props = {
     defaultValue: "My Node",
-    onConfirm: vi.fn(),
+    onConfirm: vi.fn(async () => ({ ok: true as const })),
     onCancel: vi.fn(),
     ...overrides,
   }
@@ -65,20 +65,31 @@ describe("RenameDialog", () => {
     expect(props.onCancel).toHaveBeenCalledTimes(1)
   })
 
-  it("submitting with a valid name calls onConfirm with trimmed value", () => {
+  it("submitting with a valid name calls onConfirm with trimmed value", async () => {
     const { props } = renderDialog()
     const input = screen.getByLabelText("Node name") as HTMLInputElement
     fireEvent.change(input, { target: { value: "  New Name  " } })
     fireEvent.click(screen.getByText("Rename"))
     expect(props.onConfirm).toHaveBeenCalledWith("New Name")
+    await screen.findByText("Rename")
   })
 
-  it("submitting via Enter key calls onConfirm", () => {
+  it("submitting via Enter key calls onConfirm", async () => {
     const { props } = renderDialog()
     const input = screen.getByLabelText("Node name") as HTMLInputElement
     fireEvent.change(input, { target: { value: "Enter Name" } })
     fireEvent.submit(input.closest("form")!)
     expect(props.onConfirm).toHaveBeenCalledWith("Enter Name")
+    await screen.findByText("Rename")
+  })
+
+  it("keeps the dialog open and shows a resolver error", async () => {
+    renderDialog({
+      onConfirm: vi.fn(async () => ({ ok: false as const, error: "identity service unavailable" })),
+    })
+    fireEvent.click(screen.getByText("Rename"))
+    expect(await screen.findByRole("alert")).toHaveTextContent("identity service unavailable")
+    expect(screen.getByRole("dialog")).toBeInTheDocument()
   })
 
   it("empty name submission does NOT call onConfirm", () => {

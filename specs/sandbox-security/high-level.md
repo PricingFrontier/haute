@@ -245,12 +245,12 @@ Out of scope (owned elsewhere, linked where relevant):
   router, and the `/ws/sync` WebSocket endpoint calls `websocket_rejection_reason`
   before `accept()`-ing a connection.
 - Depended on by `haute init` (project scaffolding, via `cli/_init_cmd.py`) and by
-  `_git.py`'s unborn-repo commit seed for `ensure_gitignore_guards`.
+  `_git_setup.py`'s unborn-repo commit seed for `ensure_gitignore_guards`.
 - Supplies numeric parsing helpers to `executor.py`, `trace.py`,
   `_execution_admission.py`, `assistant/_loop.py`, and the route callers
   `routes/pipeline.py`, `routes/json_cache.py`, `routes/output_assemble.py`,
   `routes/input_cache.py`, `routes/_optimiser_service.py`, and
-  `routes/_train_service.py`. This component owns the parsing helpers, not the
+  `routes/_training_lifecycle.py`. This component owns the parsing helpers, not the
   knobs' meanings, which belong to their respective components.
 
 ## Failure model

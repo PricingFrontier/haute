@@ -18,13 +18,18 @@ import functools
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from typing import Any
+from copy import deepcopy
+from dataclasses import dataclass
+from math import isfinite
+from types import MappingProxyType
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from fastapi import HTTPException
 
 from haute._logging import get_logger
+from haute.schemas import JobStatus
 
 _DEFAULT_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 _DEFAULT_HEAVY_OBJECT_TTL_SECONDS = 15 * 60  # 15 minutes
@@ -37,6 +42,140 @@ logger = get_logger(component="server.job_store")
 ArtifactCleaner = Callable[[dict[str, Any]], None]
 _ArtifactCleanup = tuple[str, tuple[dict[str, Any], ...]]
 _ARTIFACT_CLEANERS: dict[str, ArtifactCleaner] = {}
+
+RUNNING_STATUS: Literal["running"] = "running"
+TerminalReason = Literal[
+    "completed", "superseded", "timed_out", "cancelled", "memory_limited", "contract_error", "error"
+]
+LifecycleExpectedStatus = Literal["running", "completed"]
+TERMINAL_REASONS: frozenset[TerminalReason] = frozenset(
+    {
+        "completed",
+        "superseded",
+        "timed_out",
+        "cancelled",
+        "memory_limited",
+        "contract_error",
+        "error",
+    }
+)
+JOB_STATUSES: frozenset[JobStatus] = frozenset({RUNNING_STATUS, *TERMINAL_REASONS})
+_TERMINAL_REASON_PRECEDENCE: Mapping[TerminalReason, int] = {
+    "error": 10,
+    "contract_error": 20,
+    "memory_limited": 30,
+    "cancelled": 40,
+    "timed_out": 50,
+    "superseded": 60,
+}
+_LIFECYCLE_KEYS = frozenset({"status", "terminal_reason", "created_at", "ended_at", "completed_at"})
+
+
+class JobCommonFields(TypedDict):
+    status: JobStatus
+    created_at: float
+    message: NotRequired[str]
+    terminal_reason: NotRequired[TerminalReason]
+    ended_at: NotRequired[float]
+    completed_at: NotRequired[float]
+
+
+class RunningJobFields(TypedDict):
+    status: Literal["running"]
+    created_at: NotRequired[float]
+    message: NotRequired[str]
+
+
+def _validate_timestamp(name: str, value: object) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not isfinite(float(value))
+        or value < 0
+    ):
+        raise ValueError(f"{name} must be a finite, non-negative numeric value")
+    return float(value)
+
+
+def _validate_common_record(job: Mapping[str, Any]) -> None:
+    """Validate the lifecycle-owned portion of a stored record."""
+    status = job.get("status")
+    if not isinstance(status, str) or status not in JOB_STATUSES:
+        raise ValueError(f"Job record has invalid status: {status!r}")
+    if "created_at" not in job:
+        raise ValueError("Job record is missing created_at")
+    _validate_timestamp("created_at", job["created_at"])
+    if "message" in job and not isinstance(job["message"], str):
+        raise ValueError("Job record message must be a string")
+
+    if status == RUNNING_STATUS:
+        forbidden = {"terminal_reason", "ended_at", "completed_at"}.intersection(job)
+        if forbidden:
+            raise ValueError(f"Running job may not contain terminal metadata: {sorted(forbidden)}")
+        return
+
+    if job.get("terminal_reason") != status:
+        raise ValueError("Terminal job reason must match its status")
+    if "ended_at" not in job:
+        raise ValueError("Terminal job is missing ended_at")
+    _validate_timestamp("ended_at", job["ended_at"])
+    if status == "completed" and "completed_at" not in job:
+        raise ValueError("Completed job is missing completed_at")
+    if "completed_at" in job:
+        _validate_timestamp("completed_at", job["completed_at"])
+
+
+_DETACHED_CONTAINER_TYPES = (dict, list, set, tuple)
+
+
+def _detach_builtin(value: Any) -> Any:
+    """Copy a built-in container graph while preserving opaque object identity.
+
+    Seeding ``deepcopy``'s memo with every non-container object gives us its mature
+    cycle handling without accidentally copying solver, dataframe, timer, or other
+    runtime-owned payloads. Container subclasses are opaque as well: their copy
+    semantics belong to their defining type rather than to this storage boundary.
+    """
+    memo: dict[int, Any] = {}
+    visited: set[int] = set()
+
+    def preserve_opaque(item: Any) -> None:
+        item_id = id(item)
+        if item_id in visited:
+            return
+        visited.add(item_id)
+        if type(item) not in _DETACHED_CONTAINER_TYPES:
+            memo[item_id] = item
+            return
+        if isinstance(item, dict):
+            for key, nested in item.items():
+                preserve_opaque(key)
+                preserve_opaque(nested)
+            return
+        for nested in item:
+            preserve_opaque(nested)
+
+    preserve_opaque(value)
+    return deepcopy(value, memo)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class JobSnapshot(Mapping[str, Any]):
+    """Immutable, detached view of one stored job record."""
+
+    _record: Mapping[str, Any]
+
+    def __init__(self, record: Mapping[str, Any]) -> None:
+        object.__setattr__(self, "_record", MappingProxyType(_detach_builtin(dict(record))))
+
+    def __getitem__(self, key: str) -> Any:
+        return self._record[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._record)
+
+    def __len__(self) -> int:
+        return len(self._record)
 
 
 class _ArtifactCleanupState(threading.local):
@@ -125,6 +264,8 @@ class JobStore:
         cleanups: list[_ArtifactCleanup],
     ) -> None:
         """Detach expired jobs and append their artifact cleanup work."""
+        for job in self._jobs.values():
+            _validate_common_record(job)
         self._clear_expired_heavy_objects_locked(now)
         cutoff = now - self._ttl_seconds
         stale = [
@@ -194,6 +335,7 @@ class JobStore:
     def _clear_expired_heavy_objects_locked(self, now: float) -> None:
         """Strip completed-job heavy objects once their short retention expires."""
         for job_id, job in list(self._jobs.items()):
+            _validate_common_record(job)
             if job.get("status") != "completed":
                 continue
             if not any(key in job for key in _HEAVY_OBJECT_KEYS):
@@ -212,9 +354,11 @@ class JobStore:
         with self._write_lock:
             now = time.time()
             if job_id is not None:
+                job = self._jobs.get(job_id)
+                if job is not None:
+                    _validate_common_record(job)
                 if self._heavy_object_timers.get(job_id) is timer:
                     self._heavy_object_timers.pop(job_id, None)
-                job = self._jobs.get(job_id)
                 if job is not None and job.get("status") == "completed":
                     expires_at = self._heavy_objects_expires_at(job)
                     if expires_at <= now and any(key in job for key in _HEAVY_OBJECT_KEYS):
@@ -234,10 +378,12 @@ class JobStore:
         *,  # pragma: no mutate
         now: float,
     ) -> None:
+        _validate_common_record(job)
         cleaned = {k: v for k, v in job.items() if k not in _HEAVY_OBJECT_KEYS}
         cleaned.pop(_HEAVY_OBJECT_EXPIRES_AT_KEY, None)
         cleaned["heavy_objects_cleared_at"] = now
         cleaned["heavy_objects_retention_seconds"] = self._heavy_object_ttl_seconds
+        _validate_common_record(cleaned)
         self._jobs[job_id] = cleaned
         self._cancel_heavy_object_timer_locked(job_id)
 
@@ -290,8 +436,10 @@ class JobStore:
         *,  # pragma: no mutate
         now: float,
     ) -> tuple[dict[str, Any], bool, float | None]:  # pragma: no mutate
-        merged = {**old, **fields}
+        owned_fields = cast(dict[str, Any], _detach_builtin(fields))
+        merged = {**old, **owned_fields}
         schedule_cleanup = self._prepare_heavy_object_policy_locked(merged, now=now)
+        _validate_common_record(merged)
         expires_at = merged.get(_HEAVY_OBJECT_EXPIRES_AT_KEY)
         self._jobs[job_id] = merged
         self._record_running_activity_locked(job_id, merged, now=now)
@@ -300,6 +448,24 @@ class JobStore:
         ):
             self._cancel_heavy_object_timer_locked(job_id)
         return merged, schedule_cleanup, expires_at
+
+    @staticmethod
+    def _validate_expected_status(expected_status: str | None) -> None:
+        if expected_status is not None and expected_status not in JOB_STATUSES:
+            raise ValueError(f"Unknown expected job status: {expected_status!r}")
+
+    @staticmethod
+    def _validate_payload_fields(fields: Mapping[str, Any]) -> None:
+        forbidden = _LIFECYCLE_KEYS.intersection(fields)
+        if forbidden:
+            raise ValueError(
+                f"Generic job updates may not set lifecycle fields: {sorted(forbidden)}"
+            )
+
+    @staticmethod
+    def _snapshot(job: dict[str, Any]) -> JobSnapshot:
+        _validate_common_record(job)
+        return JobSnapshot(job)
 
     def _schedule_heavy_object_cleanup(self, job_id: str, expires_at: float) -> None:
         """Schedule active heavy-object cleanup; lazy sweeps remain the backstop."""
@@ -314,7 +480,10 @@ class JobStore:
         timer.daemon = True
         with self._write_lock:
             job = self._jobs.get(job_id)
-            if job is None or job.get("status") != "completed":
+            if job is None:
+                return
+            _validate_common_record(job)
+            if job.get("status") != "completed":
                 return
             if not any(key in job for key in _HEAVY_OBJECT_KEYS):
                 self._cancel_heavy_object_timer_locked(job_id)
@@ -371,45 +540,163 @@ class JobStore:
                 if refreshed_expires_at > current_expires_at:
                     updated = dict(job)
                     updated[_HEAVY_OBJECT_EXPIRES_AT_KEY] = refreshed_expires_at
+                    _validate_common_record(updated)
                     self._jobs[job_id] = updated
                     schedule_cleanup = True
                     expires_at = refreshed_expires_at
         self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
         return result
 
+    def transition_terminal(
+        self,
+        job_id: str,
+        *,
+        to: TerminalReason,
+        message: str | None = None,
+        fields: Mapping[str, Any] | None = None,
+        expected_status: LifecycleExpectedStatus = RUNNING_STATUS,
+        elapsed_seconds: float | None = None,
+        now: float | None = None,
+        fault_injector: Callable[[str], None] | None = None,
+    ) -> JobSnapshot | None:
+        """Apply the only public terminal-state transition protocol."""
+        if to not in TERMINAL_REASONS:
+            raise ValueError(f"Unsupported terminal reason: {to!r}")
+        if expected_status not in {RUNNING_STATUS, "completed"}:
+            raise ValueError("Lifecycle transitions may expect only 'running' or 'completed'")
+        if expected_status == "completed" and to != "error":
+            raise ValueError("A completed lifecycle record may only be corrected to 'error'")
+        payload = dict(fields or {})
+        self._validate_payload_fields(payload)
+        timestamp = _validate_timestamp("now", time.time() if now is None else now)
+        payload.update(status=to, terminal_reason=to, ended_at=timestamp)
+        if to == "completed":
+            payload.setdefault("completed_at", timestamp)
+        if message is not None:
+            payload["message"] = message
+        if elapsed_seconds is not None:
+            payload["elapsed_seconds"] = elapsed_seconds
+        if fault_injector is not None:
+            fault_injector("terminal_transition_before_write")
+        schedule_cleanup = False
+        expires_at: float | None = None
+        with self._write_lock:
+            old = self._jobs[job_id]
+            _validate_common_record(old)
+            if old.get("status") == expected_status:
+                merged, schedule_cleanup, expires_at = self._store_merged_job_locked(
+                    job_id, old, payload, now=timestamp
+                )
+            else:
+                old_reason = old.get("terminal_reason")
+                if not isinstance(old_reason, str) or old_reason not in TERMINAL_REASONS:
+                    return None
+                typed_old_reason = cast(TerminalReason, old_reason)
+                if typed_old_reason == "completed" or to == "completed":
+                    return None
+                if _TERMINAL_REASON_PRECEDENCE[to] <= _TERMINAL_REASON_PRECEDENCE[typed_old_reason]:
+                    return None
+                merged, schedule_cleanup, expires_at = self._store_merged_job_locked(
+                    job_id, old, payload, now=timestamp
+                )
+        if fault_injector is not None:
+            fault_injector("terminal_transition_before_cleanup_schedule")
+        self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
+        return self._snapshot(merged)
+
+    def compare_and_publish_completion(
+        self,
+        job_id: str,
+        *,
+        publish: Callable[[], Mapping[str, Any]],
+        message: str | None = None,
+        elapsed_seconds: float | None = None,
+        now: float | None = None,
+    ) -> JobSnapshot | None:
+        """Claim a running job, publish its result, and complete in one swap."""
+        if now is not None:
+            _validate_timestamp("now", now)
+        schedule_cleanup = False
+        expires_at: float | None = None
+        with self._write_lock:
+            old = self._jobs[job_id]
+            _validate_common_record(old)
+            if old.get("status") != RUNNING_STATUS:
+                return None
+            fields = publish()
+            if self._jobs.get(job_id) is not old:
+                raise RuntimeError("completion publisher must not mutate its job record")
+            if not isinstance(fields, Mapping):
+                raise ValueError("completion publisher must return a mapping")
+            payload = dict(fields)
+            self._validate_payload_fields(payload)
+            timestamp = _validate_timestamp("now", time.time() if now is None else now)
+            payload.update(
+                status="completed",
+                terminal_reason="completed",
+                ended_at=timestamp,
+                completed_at=timestamp,
+            )
+            if message is not None:
+                payload["message"] = message
+            if elapsed_seconds is not None:
+                payload["elapsed_seconds"] = elapsed_seconds
+            merged, schedule_cleanup, expires_at = self._store_merged_job_locked(
+                job_id, old, payload, now=timestamp
+            )
+        self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
+        return self._snapshot(merged)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def create_job(self, initial_status: dict[str, Any]) -> str:
+    def create_job(self, initial_status: RunningJobFields) -> str:
         """Generate a UUID, store *initial_status* with a timestamp, return the ID.
 
         Automatically evicts stale jobs before inserting.
         """
+        job = cast(dict[str, Any], _detach_builtin(dict(initial_status)))
+        if job.get("status") != RUNNING_STATUS:
+            raise ValueError("New jobs must have status 'running'")
+        terminal_fields = {
+            key for key in ("terminal_reason", "ended_at", "completed_at") if key in job
+        }
+        if terminal_fields:
+            raise ValueError(
+                f"New jobs may not include terminal metadata: {sorted(terminal_fields)}"
+            )
+        created_at = job.get("created_at")
+        if created_at is not None:
+            _validate_timestamp("created_at", created_at)
         with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
             self._evict_stale_locked(time.time(), artifact_cleanups)
             job_id = uuid.uuid4().hex[:12]
             now = time.time()
-            job = dict(initial_status)
             job.setdefault("created_at", now)
-            schedule_cleanup = self._prepare_heavy_object_policy_locked(job, now=now)
-            expires_at = job.get(_HEAVY_OBJECT_EXPIRES_AT_KEY)
+            _validate_common_record(job)
             self._jobs[job_id] = job
             self._record_running_activity_locked(job_id, job, now=now)
-        self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
         return job_id
 
-    def get_job(self, job_id: str) -> dict[str, Any] | None:  # pragma: no mutate
-        """Return the job dict for *job_id*, or ``None`` if not found.
+    def get_job(self, job_id: str) -> JobSnapshot | None:  # pragma: no mutate
+        """Return a detached job snapshot, or ``None`` if not found.
 
         Evicts stale jobs first so callers never see expired entries.
         """
         with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
             self._evict_stale_locked(time.time(), artifact_cleanups)
             job = self._jobs.get(job_id)
-        return job
+        return None if job is None else self._snapshot(job)
 
-    def update_job(self, job_id: str, **fields: Any) -> None:
+    def list_jobs(self) -> Mapping[str, JobSnapshot]:
+        """Return an immutable detached snapshot mapping after normal TTL eviction."""
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            self._evict_stale_locked(time.time(), artifact_cleanups)
+            snapshots = {job_id: self._snapshot(job) for job_id, job in self._jobs.items()}
+        return MappingProxyType(snapshots)
+
+    def update_job(self, job_id: str, **fields: Any) -> JobSnapshot:
         """Merge *fields* into the stored job dict — atomic swap.
 
         Delegates to :meth:`atomic_update` so callers never expose a
@@ -420,7 +707,10 @@ class JobStore:
 
         Raises ``KeyError`` if *job_id* does not exist.
         """
-        self.atomic_update(job_id, fields)
+        result = self.atomic_update(job_id, fields)
+        if result is None:  # No guard was supplied, so this is unreachable by contract.
+            raise RuntimeError("unguarded job update was unexpectedly skipped")
+        return result
 
     def atomic_update(
         self,
@@ -428,7 +718,7 @@ class JobStore:
         fields: dict[str, Any],
         *,
         expected_status: str | None = None,  # pragma: no mutate
-    ) -> dict[str, Any] | None:  # pragma: no mutate
+    ) -> JobSnapshot | None:  # pragma: no mutate
         """Replace the job dict with a merged copy — thread-safe.
 
         Instead of mutating the existing dict (which can race with
@@ -450,10 +740,13 @@ class JobStore:
 
         Raises ``KeyError`` if *job_id* does not exist.
         """
+        self._validate_payload_fields(fields)
+        self._validate_expected_status(expected_status)
         schedule_cleanup = False  # pragma: no mutate
         expires_at: float | None = None
         with self._write_lock:
             old = self._jobs[job_id]
+            _validate_common_record(old)
             if expected_status is not None and old.get("status") != expected_status:
                 return None
             merged, schedule_cleanup, expires_at = self._store_merged_job_locked(
@@ -463,7 +756,7 @@ class JobStore:
                 now=time.time(),
             )
         self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
-        return merged
+        return self._snapshot(merged)
 
     def atomic_update_if_heavy_present(
         self,
@@ -472,7 +765,7 @@ class JobStore:
         *,  # pragma: no mutate
         required_keys: tuple[str, ...],
         expected_status: str | None = None,  # pragma: no mutate
-    ) -> dict[str, Any] | None:  # pragma: no mutate
+    ) -> JobSnapshot | None:  # pragma: no mutate
         """Atomically update a job only if required heavy keys still exist.
 
         Returns ``None`` if the job no longer matches the expected status or if
@@ -481,10 +774,13 @@ class JobStore:
 
         Raises ``KeyError`` if *job_id* does not exist.
         """
+        self._validate_payload_fields(fields)
+        self._validate_expected_status(expected_status)
         schedule_cleanup = False  # pragma: no mutate
         expires_at: float | None = None
         with self._write_lock:
             old = self._jobs[job_id]
+            _validate_common_record(old)
             if expected_status is not None and old.get("status") != expected_status:
                 return None
             if any(old.get(key) is None for key in required_keys):
@@ -496,10 +792,10 @@ class JobStore:
                 now=time.time(),
             )
         self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
-        return merged
+        return self._snapshot(merged)
 
-    def require_job(self, job_id: str) -> dict[str, Any]:
-        """Return the job dict for *job_id*, or raise HTTP 404 if not found.
+    def require_job(self, job_id: str) -> JobSnapshot:
+        """Return a detached snapshot, or raise HTTP 404 if not found.
 
         Convenience wrapper around :meth:`get_job` that eliminates the
         repetitive ``if job is None: raise HTTPException(...)`` guard at
@@ -515,8 +811,8 @@ class JobStore:
         with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
             self._remove_job_locked(job_id, artifact_cleanups)
 
-    def require_completed_job(self, job_id: str) -> dict[str, Any]:
-        """Return the job dict for *job_id*, raising if missing or not completed.
+    def require_completed_job(self, job_id: str) -> JobSnapshot:
+        """Return a detached snapshot, raising if missing or not completed.
 
         Combines :meth:`require_job` (404 if not found) with a status
         check (400 if not ``"completed"``).  Eliminates the repetitive
@@ -538,16 +834,17 @@ class JobStore:
         on a raw ``jobs.items()`` iteration and never count already-expired
         entries.
         """
+        self._validate_expected_status(status)
         with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
             self._evict_stale_locked(time.time(), artifact_cleanups)
             result = any(job.get("status") == status for job in self._jobs.values())
         return result
 
-    def has_job_matching(self, predicate: Callable[[dict[str, Any]], bool]) -> bool:
+    def has_job_matching(self, predicate: Callable[[JobSnapshot], bool]) -> bool:
         """Return ``True`` if any live job matches *predicate* under the store lock."""
         with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
             self._evict_stale_locked(time.time(), artifact_cleanups)
-            result = any(predicate(job) for job in self._jobs.values())
+            result = any(predicate(self._snapshot(job)) for job in self._jobs.values())
         return result
 
     def clear_result_data(
@@ -569,21 +866,22 @@ class JobStore:
             job = self._jobs.get(job_id)
             if job is None:
                 return
+            _validate_common_record(job)
             cleaned = {k: v for k, v in job.items() if k not in keys}
             if not any(key in cleaned for key in _HEAVY_OBJECT_KEYS):
                 cleaned.pop(_HEAVY_OBJECT_EXPIRES_AT_KEY, None)
                 self._cancel_heavy_object_timer_locked(job_id)
+            _validate_common_record(cleaned)
             self._jobs[job_id] = cleaned
 
-    @property
-    def jobs(self) -> dict[str, dict[str, Any]]:
-        """Direct access to the underlying dict.
-
-        Provided for callsites that need to iterate (e.g. checking for
-        running jobs).  Prefer ``get_job`` / ``update_job`` for single-key
-        access.
-        """
-        return self._jobs
+    def clear_all(self) -> None:
+        """Remove every job and clear all namespace-owned auxiliary state."""
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            for job_id in tuple(self._jobs):
+                self._remove_job_locked(job_id, artifact_cleanups)
+            for job_id in tuple(self._heavy_object_timers):
+                self._cancel_heavy_object_timer_locked(job_id)
+            self._running_activity_at.clear()
 
 
 # ---------------------------------------------------------------------------

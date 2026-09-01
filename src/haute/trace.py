@@ -56,6 +56,7 @@ from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._trace_correlation import (
+    CorrelationWork,
     SchemaDiff,
     _compute_schema_diff,
     _correlate_rows_posthoc,
@@ -600,34 +601,51 @@ def execute_trace(
 
     correlation_diagnostics: list[dict[str, Any]] = []
     unresolved_rows: dict[str, tuple[str, int]] = {}
+    correlation_work = CorrelationWork()
+    correlation_started = time.perf_counter()
 
     # Extract correct row from each node via post-hoc correlation
     # (only if target node has output data)
-    if isinstance(target_output, pl.DataFrame):
-        cached_rows = _correlate_rows_posthoc(
-            eager_outputs,
-            order,
-            parents_of,
-            target_node_id,
-            row_index,
-            node_map=node_map,
-            diagnostics=correlation_diagnostics,
-            unresolved=unresolved_rows,
-            source_frames_of=source_frames_of,
-            traced_column=column,
-        )
-    else:
-        # Target node execution failed — build partial rows from available nodes
-        cached_rows = {}
-        for nid in order:
-            df = eager_outputs.get(nid)
-            if isinstance(df, pl.DataFrame):
-                if row_index < len(df):
-                    cached_rows[nid] = _jsonify_row(df.row(row_index, named=True))
+    try:
+        if isinstance(target_output, pl.DataFrame):
+            cached_rows = _correlate_rows_posthoc(
+                eager_outputs,
+                order,
+                parents_of,
+                target_node_id,
+                row_index,
+                node_map=node_map,
+                diagnostics=correlation_diagnostics,
+                unresolved=unresolved_rows,
+                source_frames_of=source_frames_of,
+                traced_column=column,
+                work=correlation_work,
+            )
+        else:
+            # Target node execution failed — build partial rows from available nodes
+            cached_rows = {}
+            for nid in order:
+                df = eager_outputs.get(nid)
+                if isinstance(df, pl.DataFrame):
+                    if row_index < len(df):
+                        cached_rows[nid] = _jsonify_row(df.row(row_index, named=True))
+                    else:
+                        cached_rows[nid] = {}
                 else:
                     cached_rows[nid] = {}
-            else:
-                cached_rows[nid] = {}
+    finally:
+        duration_ms = max(0.0, (time.perf_counter() - correlation_started) * 1000)
+        logger.info(
+            "trace_correlation_completed",
+            execution_origin=execution_origin,
+            duration_ms=duration_ms,
+            candidate_frames_considered=correlation_work.candidate_frames_considered,
+            match_scans=correlation_work.match_scans,
+            rows_scanned=correlation_work.rows_scanned,
+            key_columns_scanned=correlation_work.key_columns_scanned,
+            comparison_cells=correlation_work.comparison_cells,
+            ambiguity_count=correlation_work.ambiguity_count,
+        )
 
     # ---------- Build trace steps from cached rows ----------
     steps = _assemble_steps(

@@ -4,7 +4,9 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/panels/NodePanel.tsx` | Selects configuration/columns/instance views, routes the selected node to an editor, hosts the supported modelling node's five-pane strip and active-training indicator, and derives the per-edge `InputSource` list via `edgeInputName` (memoised on a per-edge signature covering edge id, source id/label, `sourceHandle`, the derived input name, and the `frameUnresolved` resolution state). |
+| `frontend/src/panels/NodePanel.tsx` | Composes the selected-node panel and memoised per-edge `InputSource` list. Its recovery inspector, generic tab strip, schema-warning banner, and editor body are pure local view components; scoped UI transitions are delegated to `useNodePanelSession`, and editor routing to `NodeConfigEditor`. |
+| `frontend/src/panels/useNodePanelSession.ts` | The single module authority for scoped panel UI: a node-keyed reducer owns the active generic tab and dismissed schema-warning identity, while its label-keyed rename session owns pending/error/request-generation state. Keyed scope replacement exposes defaults in the replacement render; asynchronous rename completions apply only while the initiating label session remains mounted and current. |
+| `frontend/src/panels/NodeConfigEditor.tsx` | Pure editor router over node type and supplied graph/config callbacks; owns no node-switch lifecycle state. |
 | `frontend/src/components/PipelineRepairDialog.tsx` | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned remove-only dry-run and confirmation UI invoked from the unavailable-node inspector. |
 | `frontend/src/panels/PreviewPanelTabs.tsx` | Generic ARIA tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md) and used by the node panel for the five modelling panes and active-training indicator. |
 | `frontend/src/panels/NodePalette.tsx` | Renders draggable node templates. |
@@ -83,25 +85,41 @@
 
 ## Control flow
 
-1. `frontend/src/panels/NodePanel.tsx` receives selection and graph context, chooses an editor
-   or generic tab, and passes config mutation callbacks and available preview/connection data.
+1. `frontend/src/panels/NodePanel.tsx` receives selection and graph context,
+   derives the selected node id as the panel-session key and delegates
+   lifecycle state to `useNodePanelSession`. Its reducer is the only authority
+   for the generic tab and dismissed schema-warning identity. The label editor
+   is separately keyed by the authored label and uses the same module's rename
+   session for pending/error/request-generation state. A node replacement is
+   rendered with the Config tab and clear warning/rename defaults immediately;
+   a successful label replacement clears rename state without resetting the
+   node's active tab. Neither transition depends on an effect that
+   synchronously resets local state. Rename completion is accepted only while
+   its initiating label session and monotonic request generation remain
+   current. `NodeConfigEditor` then chooses the editor and receives only config
+   callbacks plus available preview/connection data.
    For each upstream edge it builds an `InputSource`: `name` via
    `edgeInputName(edge, sourceNode, submodels)` (from frontend-graph-canvas's
-   `frontend/src/utils/apiInputPorts.ts`, mirroring the backend's `edge_input_name`). An
+   `frontend/src/utils/apiInputPorts.ts`, consuming authoritative backend identity metadata). An
    API-input edge whose `sourceHandle` is null/undefined uses the explicit `<unresolved>` marker.
-   A non-null handle naming no currently eligible frame keeps that handle **verbatim** as `name`.
+   A non-null handle absent from the server-supplied handle map also uses `<unresolved>`;
+   valid API frame handles map to their raw server-validated label.
    Both cases set `frameUnresolved: true`, so the chip shows the unresolved identity with its warning state
    instead of impersonating a resolved input or renaming it to the parent. The memo's
    staleness signature covers edge id, source id, source label, `sourceHandle`, the derived
    name, and the resolution state — so a frame rename (which rebinds the edge's
    `sourceHandle`) refreshes downstream chips, and a frame becoming resolvable under an
    unchanged name string clears the warning.
-2. `frontend/src/panels/LazyNodeEditors.tsx` loads the selected editor module. React suspense
+2. `frontend/src/panels/LazyNodeEditors.tsx` loads the editor module selected by
+   `NodeConfigEditor`. React suspense
    displays its loading boundary while that import is unresolved; already-loaded modules are
    reused by the module loader.
 3. Form controls keep an input draft locally and commit via blur/Enter where using
    `frontend/src/components/form/CommittedTextField.tsx`; grid components apply the same
-   one-gesture boundary in their own controlled cells.
+   one-gesture boundary in their own controlled cells. Node-label commits are async and
+   disabled while the prospective server identity resolves; failure remains inline and
+   leaves the graph untouched. API-input frame changes likewise resolve the candidate
+   identity before App atomically commits config, rebound edges, and dependent mappings.
 4. Schema, mapping, banding and rating editors derive visible rows from persisted config, accept
    user changes, normalise only at their documented conversion/update boundary, then invoke the
    panel callback. Rating factor changes filter `factorDtypes` atomically with `factors` and
@@ -687,7 +705,7 @@ indicator and keyboard
 contract is owned by
 [frontend-preview-explore](../frontend-preview-explore/low-level.md#modelling-config-panes).
 
-## Approved change contract — recovery-only node surfaces
+## Recovery-only node surfaces
 
 `frontend/src/nodes/PipelineNode.tsx` reads `_loadAvailability` independently of `_status` and
 renders accessible unavailable/blocked labels and distinct card styling. The metadata comes only
@@ -704,7 +722,7 @@ from starting preview/train/cache/schema/publication actions behind the App-leve
 Created read-only submodel instances retain the normal inert editor presentation, and all read-only
 update handlers reject calls.
 
-## Approved change contract — minimal unavailable-node removal
+## Minimal unavailable-node removal implementation
 
 `NodePanel` renders the repair affordance only for an `unavailable` recovery
 node when `useDocumentStatusStore.capabilities.can_repair` is true. It passes

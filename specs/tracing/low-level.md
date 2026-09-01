@@ -5,8 +5,9 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `PreviewReader` protocol, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-exports expression-parser and node-type enricher names as public convenience imports; `_trace_enrichment.py` owns its dependencies directly. |
-| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. JSON-safe row coercion (`_jsonify_row`), `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
-| `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), row-lineage-type detection (`detect_row_lineage_type`, backed by `_node_output_row_count` for multi-frame-safe row counting), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
+| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` under the compatibility name `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
+| `src/haute/_python_syntax.py` | Cross-component dependency owned by [codegen](../codegen/low-level.md): tracing consumes its LibCST-derived exact method-call names and positions; it does not mutate trace source. |
+| `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type detection (`detect_row_lineage_type`, backed by `_node_output_row_count` for multi-frame-safe row counting), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
 | `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the value-derived `build_waterfall_from_steps()` traced-path driver, and the C8 arithmetic-reconciliation guards. |
 
 ## Key types and data structures
@@ -55,6 +56,14 @@
   Supported results use `available` exactly through 16 candidates and
   `truncated` above 16. Unsupported results carry null count, no indices, and
   `unavailable`.
+- **`CorrelationWork`** (`_trace_correlation.py`, slots dataclass) — one
+  request-scoped, constant-space work recorder. `candidate_frames_considered`
+  counts parent DataFrames offered to `_match_parent_row`; `match_scans` counts
+  vectorised parent-match attempts; `rows_scanned` is the sum of frame heights
+  presented to those attempts; `key_columns_scanned` is the sum of key widths;
+  `comparison_cells` is the sum of `frame height × key width`; and
+  `ambiguity_count` counts ambiguous row outcomes and unresolved source-frame
+  ties. It stores no row values, keys, or per-candidate collections.
 - **`WaterfallEntry`** / **`WaterfallResult`** (`_trace_waterfall.py`, dataclasses)
   — `label`, `operation` (`"base"` / `"multiply"` / `"add"`), `value`, `delta`,
   `cumulative`, and `default_used` per entry; `WaterfallResult` wraps `entries`
@@ -90,13 +99,21 @@
   pair, in edge order. Lets both correlation and enrichment resolve which
   frame(s) of a multi-frame parent a given child edge actually consumes, mirroring
   the per-edge selection `_pick_source_frame` makes at execution time.
-- **`_ROW_REORDERING_TOKENS`** (`_trace_correlation.py`) — a fixed tuple of code
-  substrings (`.sort`, `.join(`, `.group_by(`, `.gather`, `.unique(`, `.pivot(`,
-  etc.) used to conservatively classify whether a node's code can reorder rows.
+- **`_ROW_REORDERING_METHODS`** (`_trace_correlation.py`) — an exact closed set of
+  method-call names (`sort`, `sort_by`, `join`, `group_by`, `gather`, `unique`,
+  `pivot`, etc.) compared with LibCST `MethodCallSite` results. Comments, strings,
+  longer attribute names, and an attribute that is not called are not operations.
 - **`_OPERATION_TYPE_TABLE`** (`_trace_enrichment.py`) — an ordered
   `(substrings, label)` table for sniffing a node's row-lineage operation from
   its code string; `cross_join` is checked before `join` so a cross join is never
   mislabelled.
+- **`_effective_node_code(config, node_map)`** (`_trace_enrichment.py`) — the
+  single code-selection rule used for the current step, recursive input-source
+  enrichment, and upstream-creator enrichment. Ordinary nodes use their own
+  code. An `instanceOf` node uses the referenced original's code when the
+  reference resolves, except that instance-local code containing
+  `.with_columns(` is authoritative. A missing reference leaves the local code
+  unchanged; an existing original with no code resolves to the empty string.
 
 ## Control flow
 
@@ -194,8 +211,9 @@ identical matching logic:
 2. **Fast path**: if the parent and child DataFrames have equal row counts and
    the child's row index is in range, try the parent row at that same
    positional index. Trust it only if (a) there are no shared columns and
-   either the parent has exactly one row or the child transform provably
-   cannot reorder (`_child_transform_may_reorder` returns `False`); or (b)
+   either the parent has exactly one row or the child's parsed structured call
+   sites contain no known reorder operation (`_child_transform_may_reorder`
+   returns `False`); or (b)
    there are shared columns, they all value-match, and either the child cannot
    reorder or `_match_rows_vectorized` over the full parent identifies exactly
    the expected physical row. There is no second uniqueness comparator or
@@ -255,6 +273,25 @@ per edge between that pair, in edge order:
      `DataFrame`.
 4. Return the per-node row dict (or `None`) map.
 
+The caller creates one `CorrelationWork` recorder and passes it through the
+walk. `execute_trace()` measures only this correlation phase and emits one
+`trace_correlation_completed` structured log containing the recorder fields,
+`execution_origin`, and `duration_ms`. The counters are operational telemetry;
+they are deliberately not added to the trace response contract.
+
+The reproducible performance corpus covers single-frame linear, multi-frame,
+join, and reordered/ambiguous typed-value workloads at 10,000 rows, alongside
+the existing cold/preview-cache/trace-cache paths. On the repository's ordinary
+CPU performance runner, each representative correlation must remain below
+500 ms and within all of these deterministic work ceilings: at most 8 candidate
+frames, 16 vectorised match scans, 160,000 scanned rows, 128 scanned key-column
+slots, and 1,280,000 comparison cells. These are regression ceilings, not a
+target to consume. Null and non-finite keys retain their typed semantics and
+ambiguity remains unresolved. Evidence below every ceiling retires the proposed
+sidecar/index: an index is introduced only after a representative workload
+crosses a ceiling and demonstrates parity plus bounded eviction with its owning
+execution cache.
+
 ### `enrich_steps()` (`_trace_enrichment.py`)
 
 Iterates every `TraceStep` (each step wrapped in its own outer `try`/`except` so
@@ -265,8 +302,10 @@ references. Tests patch `_trace_enrichment` itself; no dispatcher reads
 `sys.modules["haute.trace"]`, so enrichment has no import-order dependency on
 its public facade.
 
-1. Resolves the node's code, following `instanceOf` config to the original
-   node's code when the instance's own code has no `.with_columns(`.
+1. Resolves the node's code through `_effective_node_code`; the same helper is
+   used when deriving recursive input sources and when borrowing an upstream
+   creator's expression, so all three enrichment paths follow the identical
+   `instanceOf`/`.with_columns(` rule.
 2. Parses/evaluates the expression for `column` when the column is
    added/modified at this step, or (for the *target* step only) walks upstream
    to find the step that created a pass-through column and borrows its
@@ -428,11 +467,14 @@ snapshot deterministically.
   never broadens them by casting both sides to strings.
 - **Positional alignment is gated, never assumed from row-count equality alone.**
   Equal row counts between parent and child is necessary but not sufficient — a
-  row-reordering transform (sort/join/group_by/gather/sample/shuffle/unique/
-  top_k/bottom_k/explode/pivot/cross_join, per `_ROW_REORDERING_TOKENS`) can
+  row-reordering transform (sort/sort_by/join/group_by/gather/sample/shuffle/
+  unique/top_k/bottom_k/explode/pivot/cross_join, per
+  `_ROW_REORDERING_METHODS`) can
   produce the same row count as its input while permuting rows. When the code
-  cannot even be inspected, `_child_transform_may_reorder` conservatively assumes
-  it *can* reorder — failing loud (unresolved step) over guessing.
+  is absent or cannot be parsed by the structured syntax boundary,
+  `_child_transform_may_reorder` conservatively assumes it *can* reorder —
+  failing loud (unresolved step) over guessing. It never falls back to a
+  substring classification after a parse failure.
 - **Edge-join provenance is derived, not assumed by name (three rules, all
   sourced from `build_edge_join_kwargs`, the same kwargs `execute_edge_join`
   applies at runtime):** (1) a suffixed child column whose unsuffixed name exists
@@ -618,7 +660,10 @@ integration/regression suites:
   depends on against accidental drift.
 - **`tests/performance/test_preview_trace_perf.py`** — performance/benchmark
   coverage of the preview-cache-reuse path and the trace execution cache
-  (`haute.trace._cache`) under load, on a representative multi-branch graph.
+  (`haute.trace._cache`) under load, plus the 10,000-row linear, join,
+  multi-frame, reordered typed-value, and ambiguous correlation corpus. It
+  records the production `CorrelationWork` counters and enforces the work
+  ceilings above without introducing a test-only cost model.
   Enforces latency budgets: cached target preview `< 0.5s`, first trace backed
   by a full preview cache `< 0.8s`, trace-cache hit `< 0.3s`. Excluded from the
   default test run by the `perf` marker (`addopts = "-m 'not perf'"` in

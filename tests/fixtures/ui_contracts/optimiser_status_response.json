@@ -101,6 +101,6 @@
     "points_truncated": false,
     "job_id": null
   },
-  "terminal_reason": null,
+  "terminal_reason": "completed",
   "execution_metrics": null
 }

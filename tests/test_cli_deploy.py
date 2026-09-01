@@ -80,7 +80,6 @@ class TestDeploy:
         with (
             patch("haute.deploy._config.resolve_config", return_value=resolved),
             patch("haute.deploy._validators.validate_deploy", return_value=[]),
-            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
         ):
             result = runner.invoke(cli, ["deploy", "--dry-run"])
 
@@ -107,7 +106,6 @@ class TestDeploy:
             ) as resolve_pipeline,
             patch("haute.deploy._config.resolve_config", return_value=resolved) as resolve_deploy,
             patch("haute.deploy._validators.validate_deploy", return_value=[]),
-            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
         ):
             result = runner.invoke(cli, ["deploy", "--dry-run"])
 
@@ -129,7 +127,6 @@ class TestDeploy:
         with (
             patch("haute.deploy._config.resolve_config", return_value=resolved) as resolve_deploy,
             patch("haute.deploy._validators.validate_deploy", return_value=[]),
-            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
         ):
             result = runner.invoke(
                 cli,
@@ -182,7 +179,7 @@ class TestDeploy:
         assert "validation failed" in result.output.lower()
         resolved.close.assert_called_once_with()
 
-    def test_test_quote_failure_blocks_deploy(
+    def test_validation_quote_results_render_without_rescoring(
         self,
         runner: CliRunner,
         tmp_path: Path,
@@ -192,26 +189,27 @@ class TestDeploy:
         _make_toml(tmp_path)
 
         resolved = _mock_resolved()
-        tq_results = [
-            {"file": "ok.json", "rows": 5, "status": "ok", "time_ms": 10, "error": None},
-            {
-                "file": "bad.json",
-                "rows": 0,
-                "status": "error",
-                "time_ms": 5,
-                "error": "schema mismatch",
-            },
+        quote_results = [
+            {"file": "ok.json", "rows": 5, "status": "ok", "time_ms": 10, "error": ""},
         ]
 
         with (
             patch("haute.deploy._config.resolve_config", return_value=resolved),
-            patch("haute.deploy._validators.validate_deploy", return_value=[]),
-            patch("haute.deploy._validators.score_test_quotes", return_value=tq_results),
+            patch(
+                "haute.deploy._validators.validate_deploy",
+                return_value=quote_results,
+            ) as validate,
+            patch(
+                "haute.deploy._validators.score_test_quotes",
+                side_effect=AssertionError("CLI must render validation results without rescoring"),
+            ) as scorer,
         ):
             result = runner.invoke(cli, ["deploy", "--dry-run"])
 
-        assert result.exit_code == 1
-        assert "bad.json" in result.output
+        assert result.exit_code == 0, result.output
+        assert "ok.json" in result.output
+        validate.assert_called_once_with(resolved)
+        scorer.assert_not_called()
 
     def test_deploy_success_in_ci(
         self,
@@ -233,7 +231,6 @@ class TestDeploy:
         with (
             patch("haute.deploy._config.resolve_config", return_value=resolved),
             patch("haute.deploy._validators.validate_deploy", return_value=[]),
-            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
             patch("haute.deploy.deploy_resolved", return_value=deploy_result),
         ):
             result = runner.invoke(cli, ["deploy"])
@@ -270,9 +267,15 @@ class TestDeploy:
                 "haute.deploy.resolve_config",
                 return_value=divergent_resolved,
             ) as public_resolve,
-            patch("haute.deploy._validators.validate_deploy") as cli_validate,
+            patch(
+                "haute.deploy._validators.validate_deploy",
+                return_value=[],
+            ) as cli_validate,
             patch("haute.deploy.validate_deploy") as public_validate,
-            patch("haute.deploy._validators.score_test_quotes", return_value=[]) as mock_score,
+            patch(
+                "haute.deploy._validators.score_test_quotes",
+                side_effect=AssertionError("CLI must not score quotes outside validation"),
+            ) as mock_score,
             patch("haute.deploy.deploy_to_mlflow", return_value=deploy_result) as backend,
         ):
             result = runner.invoke(cli, ["deploy"])
@@ -282,7 +285,7 @@ class TestDeploy:
         public_resolve.assert_not_called()
         cli_validate.assert_called_once_with(validated_resolved)
         public_validate.assert_not_called()
-        mock_score.assert_called_once_with(validated_resolved)
+        mock_score.assert_not_called()
         backend.assert_called_once_with(validated_resolved)
 
     def test_deploy_import_error(
@@ -300,7 +303,6 @@ class TestDeploy:
         with (
             patch("haute.deploy._config.resolve_config", return_value=resolved),
             patch("haute.deploy._validators.validate_deploy", return_value=[]),
-            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
             patch(
                 "haute.deploy.deploy_resolved",
                 side_effect=ImportError("No module named 'mlflow'"),
@@ -326,7 +328,6 @@ class TestDeploy:
         with (
             patch("haute.deploy._config.resolve_config", return_value=resolved),
             patch("haute.deploy._validators.validate_deploy", return_value=[]),
-            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
             patch(
                 "haute.deploy.deploy_resolved", side_effect=NotImplementedError("sagemaker planned")
             ),
@@ -350,7 +351,6 @@ class TestDeploy:
         with (
             patch("haute.deploy._config.resolve_config", return_value=resolved),
             patch("haute.deploy._validators.validate_deploy", return_value=[]),
-            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
             patch("haute.deploy.deploy_resolved", side_effect=RuntimeError("backend bug")),
         ):
             result = runner.invoke(cli, ["deploy"])
@@ -372,7 +372,6 @@ class TestDeploy:
         with (
             patch("haute.deploy._config.resolve_config", return_value=resolved),
             patch("haute.deploy._validators.validate_deploy", return_value=[]),
-            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
         ):
             result = runner.invoke(cli, ["deploy", "--dry-run", "--endpoint-suffix", "-staging"])
 

@@ -47,6 +47,7 @@ const MULTI_FRAME_NODES: SimpleNode[] = [
       label: "API Input",
       description: "",
       nodeType: "apiInput",
+      _sourceHandleInputNames: { policies: "policies", drivers: "drivers" },
       config: {
         tables: [
           {

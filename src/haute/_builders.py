@@ -68,7 +68,9 @@ from haute._rating import (
 )
 from haute._rating_step_config import normalise_rating_tables
 from haute._registry import (
+    MODELLING_NODE_SEMANTICS,
     NODE_REGISTRY,
+    NodeInputPolicy,
 )
 from haute._registry import (
     register_exec as _register_exec_in_registry,
@@ -264,6 +266,15 @@ def _passthrough_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
     if dfs_by_name:
         return next(iter(dfs_by_name.values()))
     return dfs_positional[0] if dfs_positional else pl.LazyFrame()
+
+
+def _modelling_passthrough_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+    """Apply the modelling node's declared input-selection policy."""
+    if MODELLING_NODE_SEMANTICS.input_policy is NodeInputPolicy.FIRST_CONNECTED:
+        return _passthrough_fn(*dfs_positional, **dfs_by_name)
+    raise RuntimeError(
+        f"Unsupported modelling input policy: {MODELLING_NODE_SEMANTICS.input_policy!r}"
+    )
 
 
 def _explore_fn(df: _Frame) -> _Frame:
@@ -855,10 +866,10 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, optimiser_apply_fn, False
 
 
-@_register(NodeType.MODELLING, columns=_passthrough_columns)
+@_register(MODELLING_NODE_SEMANTICS.node_type, columns=_passthrough_columns)
 def _build_modelling(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # Pass-through in preview mode. Training happens via /api/modelling/train.
-    return ctx.func_name, _passthrough_fn, False
+    return ctx.func_name, _modelling_passthrough_fn, False
 
 
 def _validated_model_score_source(

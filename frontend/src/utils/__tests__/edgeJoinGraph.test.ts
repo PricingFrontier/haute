@@ -1,10 +1,12 @@
 import type { Edge, Node } from "@xyflow/react"
 import { describe, expect, it, vi } from "vitest"
 import {
+  finalizeResolvedEdgeJoinInsertion,
   insertEdgeJoinNode,
   insertEdgeJoinNodeFromSources,
   swapEdgeJoinInputs,
   validateEdgeJoinInsertionCandidate,
+  type EdgeJoinInsertSuccess,
 } from "../edgeJoinGraph"
 import { NODE_TYPES } from "../nodeTypes"
 
@@ -13,12 +15,37 @@ function node(id: string): Node {
     id,
     type: NODE_TYPES.POLARS,
     position: { x: 0, y: 0 },
-    data: { label: id, nodeType: NODE_TYPES.POLARS, config: {} },
+    data: {
+      label: id,
+      nodeType: NODE_TYPES.POLARS,
+      config: {},
+      _defaultInputName: id,
+      _sourceHandleInputNames: {},
+    },
   }
 }
 
 function edge(id: string, source: string, target: string, extra: Partial<Edge> = {}): Edge {
   return { id, source, target, ...extra }
+}
+
+function finalizeInsertion(
+  insertion: EdgeJoinInsertSuccess,
+  serverDefaultInputName: string,
+) {
+  return finalizeResolvedEdgeJoinInsertion(insertion, {
+    nodes: insertion.nodes.map((candidate) => candidate.id === insertion.newNodeId
+      ? {
+          ...candidate,
+          data: {
+            ...candidate.data,
+            _defaultInputName: serverDefaultInputName,
+            _sourceHandleInputNames: {},
+          },
+        }
+      : candidate),
+    edges: insertion.edges,
+  })
 }
 
 describe("validateEdgeJoinInsertionCandidate", () => {
@@ -81,6 +108,7 @@ describe("insertEdgeJoinNode", () => {
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
+    const finalized = finalizeInsertion(result, "server_assigned_join")
 
     expect(result.newNodeId).toBe("edgeJoin_1")
     const joinNode = result.nodes.find((n) => n.id === "edgeJoin_1")
@@ -119,8 +147,9 @@ describe("insertEdgeJoinNode", () => {
     ])
     expect(nodes).toHaveLength(3)
     expect(edges).toHaveLength(1)
-    expect(result.nodes.find((n) => n.id === "b")?.data.config).toMatchObject({
-      inputMapping: { a: "Edge_Join_1" },
+    expect(result.nodes.find((n) => n.id === "b")?.data.config).toEqual({})
+    expect(finalized.nodes.find((n) => n.id === "b")?.data.config).toMatchObject({
+      inputMapping: { a: "server_assigned_join" },
     })
   })
 
@@ -135,13 +164,14 @@ describe("insertEdgeJoinNode", () => {
     })
     expect(first.ok).toBe(true)
     if (!first.ok) return
+    const finalizedFirst = finalizeInsertion(first, "Edge_Join_1")
 
-    const segment = first.edges.find((e) => e.source === "edgeJoin_1" && e.target === "b")
+    const segment = finalizedFirst.edges.find((e) => e.source === "edgeJoin_1" && e.target === "b")
     expect(segment).toBeDefined()
 
     const second = insertEdgeJoinNode({
-      nodes: first.nodes,
-      edges: first.edges,
+      nodes: finalizedFirst.nodes,
+      edges: finalizedFirst.edges,
       targetEdgeId: segment!.id,
       connection: { source: "d" },
       position: { x: 100, y: 0 },
@@ -150,19 +180,20 @@ describe("insertEdgeJoinNode", () => {
 
     expect(second.ok).toBe(true)
     if (!second.ok) return
-    expect(second.nodes.some((n) => n.id === "edgeJoin_2")).toBe(true)
-    expect(second.nodes.map((n) => n.data.label)).toEqual(
+    const finalizedSecond = finalizeInsertion(second, "server_second_join")
+    expect(finalizedSecond.nodes.some((n) => n.id === "edgeJoin_2")).toBe(true)
+    expect(finalizedSecond.nodes.map((n) => n.data.label)).toEqual(
       expect.arrayContaining(["Edge Join 1", "Edge Join 2"]),
     )
-    expect(second.edges).toEqual(
+    expect(finalizedSecond.edges).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ source: "edgeJoin_1", target: "edgeJoin_2", targetHandle: "base" }),
         expect.objectContaining({ source: "edgeJoin_2", target: "b" }),
         expect.objectContaining({ source: "d", target: "edgeJoin_2", targetHandle: "join" }),
       ]),
     )
-    expect(second.nodes.find((n) => n.id === "b")?.data.config).toMatchObject({
-      inputMapping: { a: "Edge_Join_2" },
+    expect(finalizedSecond.nodes.find((n) => n.id === "b")?.data.config).toMatchObject({
+      inputMapping: { a: "server_second_join" },
     })
   })
 
@@ -174,6 +205,8 @@ describe("insertEdgeJoinNode", () => {
         label: "Request",
         nodeType: NODE_TYPES.API_INPUT,
         config: {},
+        _defaultInputName: null,
+        _sourceHandleInputNames: { raw_rows: "raw_rows" },
       },
     }
     const result = insertEdgeJoinNode({
@@ -189,7 +222,8 @@ describe("insertEdgeJoinNode", () => {
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.nodes.find((n) => n.id === "enriched")?.data.config).toMatchObject({
+    const finalized = finalizeInsertion(result, "Edge_Join_1")
+    expect(finalized.nodes.find((n) => n.id === "enriched")?.data.config).toMatchObject({
       inputMapping: { raw_rows: "Edge_Join_1" },
     })
   })
@@ -205,6 +239,10 @@ describe("insertEdgeJoinNode", () => {
         config: {
           definitionId: "definition_pricing",
           alias: "pricing_secondary",
+        },
+        _defaultInputName: null,
+        _sourceHandleInputNames: {
+          out__written_premium: "pricing_secondary__written_premium",
         },
       },
     }
@@ -236,7 +274,8 @@ describe("insertEdgeJoinNode", () => {
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.nodes.find((n) => n.id === "enriched")?.data.config).toMatchObject({
+    const finalized = finalizeInsertion(result, "Edge_Join_1")
+    expect(finalized.nodes.find((n) => n.id === "enriched")?.data.config).toMatchObject({
       inputMapping: { pricing_secondary__written_premium: "Edge_Join_1" },
     })
   })
@@ -263,7 +302,8 @@ describe("insertEdgeJoinNode", () => {
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.nodes.find((n) => n.id === "instance")?.data.config).toMatchObject({
+    const finalized = finalizeInsertion(result, "Edge_Join_1")
+    expect(finalized.nodes.find((n) => n.id === "instance")?.data.config).toMatchObject({
       inputMapping: {
         original_input: "Edge_Join_1",
         other_input: "other",
@@ -292,7 +332,8 @@ describe("insertEdgeJoinNode", () => {
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.nodes.find((n) => n.id === "output")?.data.config).toEqual({})
+    const finalized = finalizeInsertion(result, "Edge_Join_1")
+    expect(finalized.nodes.find((n) => n.id === "output")?.data.config).toEqual({})
   })
 
   it("fails before allocating an id when an apiInput frame identity is unresolved", () => {

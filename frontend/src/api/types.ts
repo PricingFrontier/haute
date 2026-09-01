@@ -1,8 +1,15 @@
 /** Shared API response/request types for the Haute backend. */
 
 // Re-export canonical types from their source locations
-import type { BackendNodeStatus, ColumnInfo } from "../types/node"
+import type { BackendNodeStatus, ColumnInfo, NodeTypeValue } from "../types/node"
 import type { PipelineEdge } from "../types/node"
+import type {
+  ExecutionStrategyBoundaryCollectionPayload as GeneratedExecutionStrategyCollection,
+  ExecutionStrategyBoundaryPayload as GeneratedExecutionStrategyBoundary,
+  ExecutionStrategyDiagnosticPayload as GeneratedExecutionStrategyDiagnostic,
+  ExecutionStrategyProvenancePayload as GeneratedExecutionStrategyProvenance,
+  ExecutionStrategyReasonPayload as GeneratedExecutionStrategyReason,
+} from "../generated/api-contracts.generated"
 export type { BackendNodeStatus, ColumnInfo, NodeStatus } from "../types/node"
 export type { TraceResult, TraceStep, TraceSchemaDiff } from "../types/trace"
 
@@ -19,6 +26,30 @@ export interface PipelineGraph {
   active_source?: string
   preserved_blocks?: string[]
   source_revision?: string | null
+}
+
+export interface EditorIdentityRequestNode {
+  node_id: string
+  label: string
+  node_type: NodeTypeValue
+  submodel_alias: string | null
+  source_handles: string[]
+}
+
+export interface EditorIdentityBatchRequest {
+  nodes: EditorIdentityRequestNode[]
+}
+
+export interface EditorNodeIdentity {
+  node_id: string
+  function_name: string
+  config_reference: string | null
+  default_input_name: string | null
+  source_handle_input_names: Record<string, string>
+}
+
+export interface EditorIdentityBatchResponse {
+  identities: EditorNodeIdentity[]
 }
 export interface SchemaWarning {
   column: string
@@ -88,61 +119,33 @@ export interface ExecutionMemoryPressureEvent {
   pressure_ratio: number
 }
 
-export type ExecutionStrategyStatus = "projected" | "admitted_eager" | "boundary" | "rejected" | "not_planned"
-export type ExecutionStrategy = "projected" | "schema-all-except" | "full-width-admitted-eager" | "unprojected-streaming-boundary" | "materialisation-boundary" | "unsupported" | "not-planned"
-export type ExecutionStrategyProfile = "preview_eager" | "lazy_sink" | "training_prep" | "optimiser_setup" | "explore_analysis" | "auto_range" | "deploy_live" | "deploy_batch" | "chunked_map_reduce"
-export type ExecutionStrategyBoundedness = "bounded" | "unbounded" | "unknown"
-export type ExecutionStrategyDetailState = "available" | "unavailable" | "truncated"
+export type ExecutionStrategyStatus = GeneratedExecutionStrategyDiagnostic["status"]
+export type ExecutionStrategy = GeneratedExecutionStrategyDiagnostic["strategy"]
+export type ExecutionStrategyProfile = GeneratedExecutionStrategyDiagnostic["profile"]
+export type ExecutionStrategyBoundedness = GeneratedExecutionStrategyDiagnostic["boundedness"]
+export type ExecutionStrategyDetailState = GeneratedExecutionStrategyDiagnostic["detail_state"]
 
-export interface ExecutionStrategyBoundary {
-  topological_rank: number
-  node_id: string
-  operator: string
-  boundary_kind: "unprojected-streaming-boundary" | "materialisation-boundary"
-}
+export type ExecutionStrategyBoundary = GeneratedExecutionStrategyBoundary
 
-export interface ExecutionStrategyReason {
-  reason_code: string
+export type ExecutionStrategyReason = GeneratedExecutionStrategyReason & {
   topological_rank: number | null
   node_id: string | null
   operator: string | null
-  message?: string | null
-  parent_node_id?: string | null
 }
 
-export interface ExecutionStrategyProvenance {
-  column: string
-  origin_kind: "seed" | "contract" | "expression" | "join_key" | "conservative_boundary"
-  source_node_id?: string | null
-  source_column?: string | null
-}
+export type ExecutionStrategyProvenance = GeneratedExecutionStrategyProvenance
 
-export interface ExecutionStrategyBoundedCollection<T> {
-  state: ExecutionStrategyDetailState
-  total_count: number | null
+export type ExecutionStrategyBoundedCollection<T> = {
+  state: GeneratedExecutionStrategyCollection["state"]
+  total_count: GeneratedExecutionStrategyCollection["total_count"]
   items: T[]
+  [key: string]: unknown
 }
 
-export interface ExecutionStrategyDiagnostic {
-  schema_version: 1
-  status: ExecutionStrategyStatus
-  strategy: ExecutionStrategy
-  profile: ExecutionStrategyProfile
-  boundedness: ExecutionStrategyBoundedness
-  reason_code: string
-  detail_state: ExecutionStrategyDetailState
+export type ExecutionStrategyDiagnostic = GeneratedExecutionStrategyDiagnostic & {
   boundaries: ExecutionStrategyBoundedCollection<ExecutionStrategyBoundary>
   reasons: ExecutionStrategyBoundedCollection<ExecutionStrategyReason>
   provenance: ExecutionStrategyBoundedCollection<ExecutionStrategyProvenance>
-  blocking_node_id?: string | null
-  blocking_operator?: string | null
-  remediation?: string | null
-  estimated_peak_bytes?: number | null
-  raw_estimated_peak_bytes?: number | null
-  estimate_calibration_factor_basis_points?: number | null
-  estimate_admission_basis?: "provided" | "projected_columns" | "complete_width_fallback" | null
-  headroom_bytes?: number | null
-  assumptions?: string[]
 }
 
 export interface ExecutionStreamabilityEvidence {

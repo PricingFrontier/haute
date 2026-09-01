@@ -21,6 +21,19 @@ import { ReactFlowProvider, type NodeProps } from "@xyflow/react"
 import PipelineNode from "../../nodes/PipelineNode"
 import type { PipelineFlowNode, PipelineNodeData } from "../../types/node"
 import { NODE_TYPES } from "../../utils/nodeTypes"
+import { apiInputFrameLabels } from "../../utils/apiInputPorts"
+
+function identity(config: Record<string, unknown>): Record<string, string> {
+  const labels = apiInputFrameLabels(config, new Set())
+  return Object.fromEntries(labels.map((label) => [label, label]))
+}
+
+function withIdentity(data: PipelineNodeData): PipelineNodeData {
+  return {
+    ...data,
+    _sourceHandleInputNames: identity((data.config as Record<string, unknown>) ?? {}),
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Mock useUpdateNodeInternals so we can assert it gets called on handle
@@ -47,6 +60,9 @@ function renderNode(
   const fullData: PipelineNodeData = {
     description: "",
     ...data,
+    ...(data.nodeType === NODE_TYPES.API_INPUT
+      ? { _sourceHandleInputNames: identity((data.config as Record<string, unknown>) ?? {}) }
+      : {}),
   }
   const props = {
     id: nodeId,
@@ -151,7 +167,7 @@ describe("Bundle 3c — useUpdateNodeInternals tracks apiInput frame labels", ()
           {...({
             id: "api_1",
             type: "custom",
-            data: updatedData,
+            data: withIdentity(updatedData),
             selected: false,
             isConnectable: true,
             positionAbsoluteX: 0,
@@ -200,7 +216,7 @@ describe("Bundle 3c — useUpdateNodeInternals tracks apiInput frame labels", ()
           {...({
             id: "api_1",
             type: "custom",
-            data: initialData,
+            data: withIdentity(initialData),
             selected: false,
             isConnectable: true,
             positionAbsoluteX: 0,
@@ -244,7 +260,7 @@ describe("Bundle 3c — useUpdateNodeInternals tracks apiInput frame labels", ()
           {...({
             id: "api_1",
             type: "custom",
-            data: editedData,
+            data: withIdentity(editedData),
             selected: false,
             isConnectable: true,
             positionAbsoluteX: 0,
@@ -280,7 +296,7 @@ describe("Bundle 3c — useUpdateNodeInternals tracks apiInput frame labels", ()
           {...({
             id: "api_1",
             type: "custom",
-            data: initialData,
+            data: withIdentity(initialData),
             selected: false,
             isConnectable: true,
             positionAbsoluteX: 0,
@@ -301,10 +317,10 @@ describe("Bundle 3c — useUpdateNodeInternals tracks apiInput frame labels", ()
           {...({
             id: "api_1",
             type: "custom",
-            data: {
+            data: withIdentity({
               ...initialData,
               config: { tables: eligibleTables(["beta", "alpha"]) },
-            },
+            }),
             selected: false,
             isConnectable: true,
             positionAbsoluteX: 0,
@@ -339,7 +355,7 @@ describe("Bundle 3c — useUpdateNodeInternals tracks apiInput frame labels", ()
           {...({
             id: "api_1",
             type: "custom",
-            data: initialData,
+            data: withIdentity(initialData),
             selected: false,
             isConnectable: true,
             positionAbsoluteX: 0,
@@ -373,7 +389,7 @@ describe("Bundle 3c — useUpdateNodeInternals tracks apiInput frame labels", ()
           {...({
             id: "api_1",
             type: "custom",
-            data: eligibleData,
+            data: withIdentity(eligibleData),
             selected: false,
             isConnectable: true,
             positionAbsoluteX: 0,

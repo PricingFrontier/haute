@@ -62,6 +62,7 @@ const PREAMBLE = "import polars as pl"
 
 const SUBMODELS: Record<string, unknown> = {
   sub1: {
+    _inputPortInputNames: { input: "server_input" },
     nodes: [
       {
         id: "s1",
@@ -105,6 +106,32 @@ describe("persisted-fingerprint serialized format", () => {
         submodels: SUBMODELS,
       }),
     ).toBe(EXPECTED_FINGERPRINT)
+  })
+
+  it("strips server-owned edge identities without dropping semantic edge data", () => {
+    const identityOnly = {
+      ...EDGE,
+      data: { _inputName: "server_input" },
+    } as PipelineEdge
+    const semantic = {
+      ...EDGE,
+      id: "semantic",
+      data: {
+        _inputName: "server_input",
+        routing: { mode: "explicit", _semanticKey: true },
+      },
+    } as PipelineEdge
+
+    const parsed = JSON.parse(serializeSnapshot({
+      nodes: [],
+      edges: [identityOnly, semantic],
+      preamble: "",
+      submodels: {},
+    })) as { edges: Array<Record<string, unknown>> }
+    expect(parsed.edges[0]).not.toHaveProperty("data")
+    expect(parsed.edges[1].data).toEqual({
+      routing: { mode: "explicit", _semanticKey: true },
+    })
   })
 
   it("is insensitive to object key insertion order at every level", () => {
@@ -199,5 +226,76 @@ describe("graph store produces the pinned format", () => {
 
     store.setSubmodelsRaw(SUBMODELS)
     expect(fingerprint()).toBe(EXPECTED_FINGERPRINT)
+  })
+
+  it("retains server identities in live undo snapshots", () => {
+    const node = {
+      ...NODE,
+      data: {
+        ...NODE.data,
+        _functionName: "server_price",
+        _defaultInputName: "server_price",
+        _sourceHandleInputNames: {},
+        _columns: [{ name: "price", dtype: "Float64" }],
+        _status: "ok",
+        _traceValue: { price: 10 },
+      },
+    } as Node
+    const edge = {
+      ...EDGE,
+      data: { _inputName: "server_price", _loadAvailability: "ready" },
+    } as PipelineEdge
+    const submodels = {
+      definition: {
+        definitionId: "definition",
+        _inputPortInputNames: { public_input: "server_public_input" },
+        graph: {
+          nodes: [{
+            id: "child",
+            position: { x: 0, y: 0 },
+            data: {
+              label: "Child",
+              _functionName: "server_child",
+              _defaultInputName: "server_child",
+              _sourceHandleInputNames: {},
+              _columns: [{ name: "child", dtype: "Int64" }],
+            },
+          }],
+          edges: [],
+        },
+      },
+    }
+    const store = useGraphStore.getState()
+    store.loadGraphSnapshot({ nodes: [node], edges: [edge], preamble: "", submodels })
+    store.setNodes((nodes) => nodes.map((candidate) => ({
+      ...candidate,
+      data: { ...candidate.data, label: "renamed" },
+    })))
+
+    useGraphStore.getState().undo()
+
+    const restored = useGraphStore.getState()
+    expect(restored.nodes[0]?.data).toMatchObject({
+      _functionName: "server_price",
+      _defaultInputName: "server_price",
+      _sourceHandleInputNames: {},
+    })
+    expect(restored.nodes[0]?.data).not.toHaveProperty("_columns")
+    expect(restored.nodes[0]?.data).not.toHaveProperty("_status")
+    expect(restored.nodes[0]?.data).not.toHaveProperty("_traceValue")
+    expect(restored.edges[0]?.data).toEqual({ _inputName: "server_price" })
+    const restoredDefinition = restored.submodels.definition as Record<string, unknown>
+    expect(restoredDefinition._inputPortInputNames).toEqual({
+      public_input: "server_public_input",
+    })
+    const restoredChild = (
+      restoredDefinition.graph as { nodes: Node[] }
+    ).nodes[0]
+    expect(restoredChild?.data).toMatchObject({
+      _functionName: "server_child",
+      _defaultInputName: "server_child",
+      _sourceHandleInputNames: {},
+    })
+    expect(restoredChild?.data).not.toHaveProperty("_columns")
   })
 })

@@ -12,7 +12,7 @@
 | `src/haute/cli/_lint.py` | `haute lint` — `LintConfig`, `handle_lint`, structural validation without execution. |
 | `src/haute/cli/_train.py` | `haute train` — `TrainConfig`, `handle_train`, loads a training script as a module, runs its `job`, prints a live progress bar. |
 | `src/haute/cli/_serve.py` | `haute serve` — `ServeConfig`, `handle_serve`, host-safety checks, dev/prod mode dispatch, uvicorn launch. |
-| `src/haute/cli/_deploy.py` | `haute deploy` — `DeployCliConfig`, `handle_deploy`, CI-gate check, resolve → validate → score test quotes → deploy pipeline. |
+| `src/haute/cli/_deploy.py` | `haute deploy` — `DeployCliConfig`, `handle_deploy`, CI-gate check, resolve → validate-and-score-once → render quote results → deploy pipeline. |
 | `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, sends test quotes to a live endpoint (Databricks or HTTP). |
 | `src/haute/cli/_status.py` | `haute status` — `StatusConfig`, `handle_status`, MLflow Model Registry lookup. |
 | `src/haute/cli/_impact.py` | `haute impact` — `ImpactConfig`, `handle_impact`, staging-vs-production comparison report; `_impact_databricks`/`_impact_http` transport backends. |
@@ -137,9 +137,10 @@ outside CI (`_detect_ci_env`). A TOML-configured pipeline path is also normalise
 `resolve_pipeline_file`; all command paths therefore share one missing/ambiguous-path contract.
 Applies CLI overrides (`pipeline_file`, `model_name`,
 `endpoint_suffix`) on top of the loaded config via `.override(**overrides)`. Then: `resolve_config`
-(parse/prune/collect artifacts/infer schemas) → `validate_deploy` (which already scores configured
-quotes as part of its aggregate gate) → `score_test_quotes` again for per-file timing/status output
-→ (return early if `--dry-run`) → `deploy_resolved`. Each stage prints a `✓`/`✗`
+(parse/prune/collect artifacts/infer schemas) → `validate_deploy` (which scores configured
+quotes once as part of its aggregate gate and returns the successful per-file results) → render
+those returned timing/status results → (return early if `--dry-run`) → `deploy_resolved`.
+The CLI never calls `score_test_quotes` directly. Each stage prints a `✓`/`✗`
 progress line. Resolution keeps its existing user-facing failure boundary;
 validation renders `DeployError`; target dispatch renders `DeployError`,
 `ImportError`, and `NotImplementedError`. An unexpected target-backend

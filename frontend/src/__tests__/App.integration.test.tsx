@@ -62,6 +62,36 @@ vi.mock("../api/client", async () => {
     checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
     // Pipeline endpoints
     loadPipeline: vi.fn(() => Promise.resolve(makePipelineEditorDocument({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))),
+    resolveEditorNodeIdentities: vi.fn(async (payload: {
+      nodes: Array<{
+        node_id: string
+        label: string
+        node_type: string
+        submodel_alias: string | null
+        source_handles: string[]
+      }>
+    }) => ({
+      identities: payload.nodes.map((node) => {
+        const functionName = node.label.trim().replaceAll(" ", "_").replaceAll("-", "_")
+        const special = node.node_type === "apiInput"
+          || node.node_type === "submodel"
+          || node.node_type === "submodelPort"
+        return {
+          node_id: node.node_id,
+          function_name: functionName,
+          config_reference: node.node_type === "submodel" || node.node_type === "submodelPort"
+            ? null
+            : `config/${node.node_type}/${functionName}.json`,
+          default_input_name: special ? null : functionName,
+          source_handle_input_names: Object.fromEntries(node.source_handles.map((handle) => [
+            handle,
+            node.node_type === "submodel"
+              ? `${node.submodel_alias}__${handle.slice("out__".length)}`
+              : handle,
+          ])),
+        }
+      }),
+    })),
     previewNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
     previewRecoveryNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
     dryRunRemoveUnavailableNode: vi.fn(() => Promise.resolve({})),
@@ -285,11 +315,21 @@ function resetAllStores(): void {
 
 /** Make a React Flow node with the minimum valid shape + a readable label. */
 function makeNode(id: string, label: string, nodeType = "polars"): { id: string; type: string; position: { x: number; y: number }; data: Record<string, unknown> } {
+  const functionName = label.trim().replaceAll(" ", "_").replaceAll("-", "_")
+  const special = nodeType === "apiInput" || nodeType === "submodel" || nodeType === "submodelPort"
   return {
     id,
     type: nodeType,
     position: { x: 0, y: 0 },
-    data: { label, description: "", nodeType, config: {} },
+    data: {
+      label,
+      description: "",
+      nodeType,
+      config: {},
+      _functionName: functionName,
+      _defaultInputName: special ? null : functionName,
+      _sourceHandleInputNames: {},
+    },
   }
 }
 
@@ -1178,6 +1218,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
         },
       ],
     }
+    apiNode.data._sourceHandleInputNames = { policies: "policies", drivers: "drivers" }
     return {
       nodes: [apiNode, makeNode("polars_1", "Driver Cleanup", "polars")],
       edges: [
@@ -1585,6 +1626,94 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore)
   })
 
+  it("leaves an ordinary rename untouched when identity resolution fails", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph()))
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    vi.mocked(api.resolveEditorNodeIdentities).mockRejectedValueOnce(
+      new Error("identity service unavailable"),
+    )
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByTestId("node-Other Source"))
+    const stateBefore = graphCommitStateBytes()
+    const label = await screen.findByTestId("node-panel-label-input")
+    fireEvent.change(label, { target: { value: "Renamed Source" } })
+    fireEvent.blur(label)
+
+    expect(await screen.findByTestId("node-panel-label-error")).toHaveTextContent(
+      "Rename failed: identity service unavailable",
+    )
+    expect(label).toHaveValue("Other Source")
+    expect(graphCommitStateBytes()).toBe(stateBefore)
+  })
+
+  it("does not overwrite a newer graph edit with a stale rename identity", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph()))
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    let resolveIdentity!: (value: Awaited<ReturnType<typeof api.resolveEditorNodeIdentities>>) => void
+    vi.mocked(api.resolveEditorNodeIdentities).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveIdentity = resolve }),
+    )
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByTestId("node-Other Source"))
+    const label = await screen.findByTestId("node-panel-label-input")
+    fireEvent.change(label, { target: { value: "Renamed Source" } })
+    fireEvent.blur(label)
+    await waitFor(() => expect(api.resolveEditorNodeIdentities).toHaveBeenCalled())
+
+    act(() => useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) =>
+      node.id === "original_2" ? { ...node, position: { x: 321, y: 0 } } : node)))
+    await waitFor(() => {
+      expect(useGraphStore.getState().nodes.find((node) => node.id === "original_2")?.position.x)
+        .toBe(321)
+    })
+    const stateAfterNewerEdit = graphCommitStateBytes()
+    await act(async () => {
+      resolveIdentity({
+        identities: [{
+          node_id: "ordinary_source",
+          function_name: "Renamed_Source",
+          default_input_name: "Renamed_Source",
+          source_handle_input_names: {},
+          config_reference: "config/polars/Renamed_Source.json",
+        }],
+      })
+    })
+
+    expect(await screen.findByTestId("node-panel-label-error")).toHaveTextContent(
+      /graph changed while identity resolution was running/,
+    )
+    expect(graphCommitStateBytes()).toBe(stateAfterNewerEdit)
+    expect(label).toHaveValue("Other Source")
+  })
+
+  it("leaves an API frame rename untouched when identity resolution fails", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeApiInputGraph()))
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    vi.mocked(api.resolveEditorNodeIdentities).mockRejectedValueOnce(
+      new Error("identity service unavailable"),
+    )
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByTestId("node-Quote Source"))
+    const stateBefore = graphCommitStateBytes()
+    const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
+    fireEvent.change(label, { target: { value: "driver_risk" } })
+    fireEvent.blur(label)
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)?.text).toBe(
+        "Update node failed: identity service unavailable",
+      )
+    })
+    expect(graphCommitStateBytes()).toBe(stateBefore)
+    expect(useGraphStore.getState().edges[0]?.sourceHandle).toBe("drivers")
+  })
+
   it("rejects an ordinary source rename that collides at a downstream target", async () => {
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph()))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
@@ -1707,6 +1836,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
+    const submodelsBefore = structuredClone(useGraphStore.getState().submodels)
 
     fireEvent.click(await screen.findByTestId("node-Quote Source"))
     const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
@@ -1720,7 +1850,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       ])
     })
     expect(screen.queryByTestId("api-input-table-1-label-error")).not.toBeInTheDocument()
-    expect(useGraphStore.getState().submodels).toEqual(graph.submodels)
+    expect(useGraphStore.getState().submodels).toEqual(submodelsBefore)
   })
 
   it("keeps internal child edge names isolated from an upstream frame rename", async () => {
@@ -1729,6 +1859,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     render(<App />)
     await waitForAppReady()
+    const submodelsBefore = structuredClone(useGraphStore.getState().submodels)
 
     fireEvent.click(await screen.findByTestId("node-Quote Source"))
     const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
@@ -1742,7 +1873,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       ])
     })
     expect(screen.queryByTestId("api-input-table-1-label-error")).not.toBeInTheDocument()
-    expect(useGraphStore.getState().submodels).toEqual(graph.submodels)
+    expect(useGraphStore.getState().submodels).toEqual(submodelsBefore)
   })
 
   it("W1.4: blanking a port label in the editor never reaches the graph — no synthesized port, edge intact", async () => {

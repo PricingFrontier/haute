@@ -14,7 +14,7 @@ BOUNDED_WRITE_CALLERS = {
     Path("src/haute/_execute_lazy.py"): "bounded_sink(",
     Path("src/haute/modelling/_training_job.py"): "bounded_sink(",
     Path("src/haute/routes/_optimiser_service.py"): "bounded_sink(",
-    Path("src/haute/routes/_train_service.py"): "bounded_sink(",
+    Path("src/haute/routes/_training_lifecycle.py"): "bounded_sink(",
     Path("src/haute/_codegen_builders.py"): "@pipeline.data_output(config=",
 }
 

@@ -350,7 +350,6 @@ describe("useGraphStore — consolidation", () => {
     // the render count for the assertion. This pattern is standard for
     // render-counting test helpers and safe because the counter is the
     // observable, not driving a render decision.
-    /* eslint-disable react-hooks/refs -- render-counting pattern; the ref IS the observable */
     function useSelectorRenderCount<T>(selector: (s: GraphStoreShape) => T) {
       const store = requireStore()
       const countRef = useRef(0)
@@ -358,7 +357,6 @@ describe("useGraphStore — consolidation", () => {
       const value = store(selector)
       return { count: countRef.current, value }
     }
-    /* eslint-enable react-hooks/refs */
 
     it("subscribing to nodes does NOT re-render when edges change", () => {
       const store = requireStore()

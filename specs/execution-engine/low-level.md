@@ -7,10 +7,11 @@
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `LRUCache`), `write_data_output()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, and output-destination containment. |
 | `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points, runtime-input fingerprints, `preview_lineage_cache_key`, `PREVIEW_EXECUTION_SEMANTICS_VERSION`, and the process-default dataframe execution-cache singleton. It is the stable application import boundary, but is not currently a thin re-export module. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
-| `src/haute/_execute_lazy.py` | The shared execution core: `_build_funcs` (per-node callable construction, shared by eager and lazy), `_execute_lazy` (lazy plan + structural parquet checkpointing + dataframe-cache seeding), `_execute_eager_core`/`EagerResult` (eager materialisation with contract checks), strict/non-strict `ContractResolution`, column-contract assertion helpers, multi-frame (`dict[label, Frame]`) source routing (`_pick_source_frame`). Graph preparation is consumed directly through `src/haute/projection.py::prepare_graph` and its prepared-plan value. |
+| `src/haute/_execute_lazy.py` | The shared execution core: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), `_execute_lazy` (lazy plan + structural parquet checkpointing + dataframe-cache seeding), and `_execute_eager_core`/`EagerResult` (eager materialisation and preview error adaptation). |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, strict-profile decisions, fan-in edge demands, materialisation/opaque boundaries, source-scan projection, and bounded strategy diagnostics. |
+| `src/haute/_execution_schemas.py` | Canonical Pydantic API DTOs for execution-strategy diagnostic boundaries, reasons, provenance, bounded collections, calibration, and the versioned diagnostic payload. `src/haute/schemas.py` re-exports the public models so existing imports remain stable. |
 | `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer and per-input backward column demand for the closed supported operation vocabulary. |
 | `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, deterministic request-local fault points, bounded opt-in terminal telemetry, cancellation-latency evidence, cleanup precedence, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
@@ -18,7 +19,7 @@
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`; owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component. |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
-| `src/haute/_topo.py` | `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), `ancestors` (BFS over reversed edges). |
+| `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), explicit `topo_sort_ids_filtered` (opt-in subset traversal returning both the order and every dropped edge/endpoint), and `ancestors` (BFS over reversed edges). The default sorter never silently ignores an unknown endpoint. |
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge→input-name derivation: apiInput-frame edge → its frame label verbatim, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, and edge-id construction. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
@@ -69,8 +70,14 @@
   uses the same result for one-input expressions, group-bys, and fan-in joins.
   `strategy_summary_payload()` reports projected/full-width/schema-derived/
   materialisation-boundary choices without shipping the full column sets.
-- **`ExecutionStrategyDiagnostic` / `ExecutionStrategyResult`** (`projection.py`) —
-  the sole schema-version-1 strategy result. The closed internal vocabulary is
+- **`ExecutionStrategyDiagnostic` / `ExecutionStrategyResult`** (`projection.py`,
+  frozen dataclasses) — the internal planning result. The corresponding public
+  API DTOs are the `ExecutionStrategy*Payload` models in
+  `_execution_schemas.py`; those Pydantic models are the generated structural
+  authority for the schema-version-1 network payload. Non-negative ranks,
+  counts, byte values, and headroom are capped at JavaScript's maximum safe
+  integer; boundary/reason collections cap at 32 items and provenance at 128.
+  The closed internal vocabulary is
   `projected`, `schema-all-except`, `full-width-admitted-eager`,
   `unprojected-streaming-boundary`, `materialisation-boundary`, `unsupported`, and
   `not-planned`; it maps exactly to API statuses `projected`, `admitted_eager`,
@@ -98,6 +105,25 @@
   None]`), `order`, `parents_of`, `node_map`, `id_to_name`, `errors`, `timings`,
   `memory_bytes`, `error_lines`, `available_columns`, `output_columns`,
   `frame_columns` (per-`(node_id, port_label)` schema for multi-frame emitters).
+- **`PreparedExecutionRequest` / `PreparedExecution`** (`_execute_lazy.py`, frozen
+  dataclasses) — the single eager/lazy preparation boundary. The request carries
+  the authored graph, selected target/source, required-column seeds, and active
+  execution profile. The result carries the canonical path-resolved graph, one
+  `PreparedGraph`, normalized required columns, strict/degraded contract policy,
+  child/fan-out indexes, complete-parent identity, and both relevant-edge and
+  all-edge incoming-route indexes. The result is consumed directly by both engines;
+  neither engine rebuilds these indexes.
+- **`NodeBoundaryRunner` / `NodeBoundary`** (`_execute_lazy.py`) — request-local
+  shared node orchestration. It resolves the effective contract once when a node
+  boundary opens, records the common execution checkpoint/column-demand metrics,
+  routes source frames from the prepared incoming edges, invokes the registered
+  callable, and applies identical input/output contract assertions. Eager-only
+  materialisation, lazy-only checkpoint/cache policy, and preview-only error
+  swallowing remain outside the runner and therefore remain explicit.
+- **`FilteredTopology`** (`_topo.py`, frozen dataclass) — result of the explicitly
+  named filtered traversal: ordered known node IDs plus every dropped edge and
+  the deterministic set of unknown endpoint IDs. `topo_sort_ids` instead raises
+  `UnknownEdgeEndpointError` before sorting when an edge names an unknown node.
 - **`ChunkPlan`** (`chunking.py`, frozen dataclass) — the proven physical plan:
   `source_node_id`, `chunk_start_node_id`, `target_node_id`, `node_ids`,
   `pre_chunk_node_ids`/`chunk_node_ids`, `chunk_size`/`source_chunk_size` (post row-
@@ -300,16 +326,31 @@ through a symlink, and HTTP graph payloads are validated against the configured
 project before execution so only a direct/operator-controlled caller can select
 an external pipeline.
 
-**`_execute_eager_core()`** (`_execute_lazy.py`): prepares the graph
-(`projection_planner.prepare_graph`, which topo-sorts via
-`_topo.topo_sort_ids` and prunes live-switch edges for the inactive scenario), re-
-validates graph-shape contracts for the nodes actually being executed (routes can
-submit raw frontend graphs that bypass the parser), computes a backward column-
-projection plan when required-column seeds are supplied, and builds per-node callables
-via `_build_funcs()`. It then walks `order` once: for each node, resolves its effective
-column contract (`_resolve_effective_contract`; only `PREVIEW_EAGER` degrades known
-`ConfigError`/`OSError`/MLflow boundary failures to opaque),
-checks input columns against the contract before calling the node function, calls it,
+**Shared preparation and node boundaries.** `_prepare_execution()` consumes a
+`PreparedExecutionRequest` before either engine starts policy-specific planning. It
+canonicalises runtime paths, calls `projection_planner.prepare_graph` once, validates
+graph-shape contracts for exactly the executed subset (routes can submit raw frontend
+graphs that bypass the parser), normalises required-column seeds, fixes the active
+strict/degraded contract policy, and builds child, full-parent, and incoming-edge
+indexes. Ancestor/live-switch filtering is explicit in `prepare_graph`; the strict
+topological sorter receives only the resulting relevant edges. Code that intentionally
+sorts a node subset with a broader edge set must call `topo_sort_ids_filtered` and
+inspect its dropped-edge evidence.
+
+Both engines construct one `NodeBoundaryRunner` from that result and their common
+function table. Opening a boundary resolves its effective column contract
+(`_resolve_effective_contract`; only `PREVIEW_EAGER` degrades known
+`ConfigError`/`OSError`/MLflow boundary failures to opaque), records the shared
+checkpoint/demand metric, and supplies edge-aligned frame routing. The runner applies
+the same pre-call input contract and simple-join schema checks and the same post-call
+output contract on both paths. It does not own collection, projection refinement,
+cache/checkpoint decisions, timings, or error adaptation.
+
+**`_execute_eager_core()`** (`_execute_lazy.py`): consumes the shared prepared
+execution, computes a backward column-projection plan when required-column seeds are
+supplied, and builds per-node callables via `_build_funcs()`. It then walks `order`
+once: for each node, the shared runner checks input columns against the contract before
+calling the node function, calls it,
 applies `selected_columns`/`column_renames`, checks output columns against the
 contract, and either materialises the result (`streaming_collect`) or — when
 `materialize_node_ids` restricts collection to a target-only preview — keeps it lazy
@@ -352,7 +393,8 @@ physical execution detail, not a logical demand: it is removed naturally by the
 consumer and must never broaden to the whole source or collapse the row count.
 
 **Sink/lazy execution (`execution.execute_lazy_graph` → `_execute_lazy._execute_lazy`).**
-Same graph preparation as the eager path, plus: optional seeding from a
+Consumes the same `PreparedExecution` and `NodeBoundaryRunner` as eager execution,
+plus: optional seeding from a
 `DataFrameExecutionCacheRequest` (skips rebuilding any node whose entire downstream
 lineage is already cache-covered, via a reverse topo pass computing
 `cache_covers_downstream`), a fuller backward projection analysis (checkpoint dir set,
@@ -705,8 +747,10 @@ fallback after a process failure.
 - **`topo_sort_ids`** is insertion-order deterministic (via `graphlib.TopologicalSorter`,
   not the previous heap-based sort), so callers must pass `node_ids` as an
   insertion-ordered sequence, never a `set`, or tie-break order becomes
-  hash-randomisation-dependent across process runs. Edges with an unknown endpoint are
-  silently dropped. `CycleError` reports every node participating in *any* cycle
+  hash-randomisation-dependent across process runs. An unknown endpoint raises
+  `UnknownEdgeEndpointError`; an intentional subset traversal must instead call
+  `topo_sort_ids_filtered` and inspect its dropped-edge evidence. `CycleError` reports
+  every node participating in *any* cycle
   (via `_find_cycle_nodes`'s Kahn-style peel), not just the one `graphlib.CycleError`
   names.
 - **Chunk AST whitelist treats frame names as chunk-safe only as a method-chain
@@ -883,6 +927,11 @@ fallback after a process failure.
   preview-column projection references columns not present on the target frame.
 - `CycleError` (`_topo.py`, extends `HauteError`) — raised from `topo_sort_ids` on a
   cyclic graph, listing every participating node.
+- `UnknownEdgeEndpointError` (`_topo.py`, extends `HauteError`) — strict topology
+  input contains an edge whose source or target is absent from `node_ids`. It carries
+  deterministic `unknown_node_ids` and dropped-edge evidence. Intentional subset
+  traversal uses `topo_sort_ids_filtered` instead and receives the same evidence in
+  its return value.
 - `ContractMismatchError` (`haute.errors`, extends `HauteError`) — raised by
   missing input/output columns and checkpoint/eager projection mismatches in
   `_execute_lazy.py`, and by chunking's `_project_frame`; it is re-raised with
@@ -1019,8 +1068,9 @@ fallback after a process failure.
 
 Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 
-- **`test_execute_lazy.py`** — the core suite: `_prune_live_switch_edges`,
-  graph preparation, `_execute_lazy`, `_build_funcs`, `_execute_eager_core` (swallow
+- **`test_execute_lazy.py`** — the core suite: `_prune_live_switch_edges`, shared
+  `PreparedExecution`/`NodeBoundaryRunner` preparation and routing parity,
+  `_execute_lazy`, `_build_funcs`, `_execute_eager_core` (swallow
   vs. raise, timings, memory accounting), `_apply_selected_columns`, `EagerResult`
   shape.
 - **`test_execute_lazy_contracts.py`** / **`test_execute_lazy_contract_coverage.py`**
@@ -1073,8 +1123,9 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   frames (nulls/NaN/inf anywhere, single-row chunks).
 - **`test_streaming_chunk_size_threading.py`** — thread-local streaming chunk-size
   propagation used by the chunk runner and bounded-collect helpers.
-- **`test_topo.py`**, **`test_topo_contracts.py`** — topological sort ordering, cycle
-  detection/reporting, ancestor traversal.
+- **`test_topo.py`**, **`test_topo_contracts.py`** — strict topological sort ordering,
+  unknown-endpoint failure, explicit filtered-traversal evidence, cycle
+  detection/reporting, and ancestor traversal.
 - **`test_graph_utils.py`** — `_execute_lazy` re-export surface,
   `_sanitize_func_name`, `ancestors`/`topo_sort_ids`
   via the `graph_utils` facade.
@@ -1117,12 +1168,12 @@ coverage of `_ADAPTIVE_MEMORY_POLICY`, `_PROFILE_MEMORY_ENV`, and
 `_PROFILE_PROCESS_RSS_ENV` for every `ExecutionProfile`, and exercises adaptive,
 fixed, strict-server, explicit-override, process-RSS, and in-flight-reservation paths.
 
-## Approved change contract — canonical-only execution interfaces
+## Canonical execution interfaces
 
-Under the [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
+Under the [canonical-only format policy](../README.md#canonical-only-format-policy),
 maintained execution call sites use the current typed planner, admission, runtime-input, and
-diagnostic result objects directly. Private compatibility wrappers, tuple projections, and
-test-only call shapes are removed together with their wrapper-specific tests.
+diagnostic result objects directly. No private compatibility wrappers, tuple projections, or
+test-only call shapes remain; tests exercise the maintained interfaces.
 
 ## Assistant interaction
 

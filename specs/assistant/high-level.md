@@ -220,9 +220,9 @@ that durable fact, in its original position after the mutation tool row.
   pipeline, without inaccessible resource paths.
 - `plan_recipe` — accept one flat, recipe-discriminated invocation, including an optional
   downstream response-output name plus explicit selected columns, expand it deterministically, and return
-  only an opaque content-addressed recipe-plan receipt; it never writes. On an explicitly
-  routed turn the provider sees only that recipe's exact argument branch, so nested fields
-  are not weakened by a cross-recipe portability projection.
+  only an opaque content-addressed recipe-plan receipt; it never writes. Every turn receives
+  the same complete closed discriminated union. The explicit structured `recipe_id`, not a
+  natural-language classifier, selects the branch that the executor validates and plans.
 - `dry_run_recipe_plan` — consume only that hash server-side and produce the same exact
   revision-bound plan as the primitive dry-run without asking the model to copy, extend, or
   reconstruct nested recipe JSON.
@@ -232,18 +232,21 @@ that durable fact, in its original position after the mutation tool row.
   operations.
 
 **Mutation semantics.** `dry_run_graph_edits` loads a canonical saved-state
-snapshot, applies the ordered primitive operations to a deep copy, invokes the
-save service's public no-write validation, evaluates the closed structural
-postconditions, and resolves affected terminal lazy schemas without collecting
-rows or invoking sinks. It stores an immutable plan containing the base
+snapshot and passes the closed operation batch through one `build_verified_plan`
+pipeline. That pipeline parses and normalizes the operations once, applies them
+to a deep copy, invokes the save service's public no-write validation, evaluates
+the closed structural postconditions, and resolves affected terminal lazy
+schemas without collecting rows or invoking sinks. It stores an immutable plan containing the base
 revision, semantic diff, verification tier, schema evidence, and plan hash. The provider-visible
 diff is bounded per category but carries complete counts, an explicit
 truncation flag, and a digest over the complete diff. Operations later in a
 batch may reference nodes created earlier by a batch-local ref.
 
 `apply_graph_plan` accepts only that stored plan hash. Under the shared save
-lock it reloads every revision source, rejects stale evidence, replays and
-revalidates the exact plan, checks its one-use authority, then commits once
+lock it reloads every revision source, rejects stale evidence, and passes the
+stored normalized operations through the same `build_verified_plan` pipeline.
+It requires byte-for-byte-equivalent canonical plan evidence and the same hash,
+checks the plan's one-use authority, then commits once
 through the transactional save
 service. The service reparses, compares the actual and expected visible diff
 and complete-diff digest, evaluates postconditions, re-proves the bound schema
@@ -305,7 +308,12 @@ terminate the stream.
   discriminator constants become one enum, and only requirements common to every branch
   remain required. A property present in only one branch, or declared identically across
   branches, is recursively projected within the remaining budget so its description and
-  affordable nested shape survive. Projection has a sixteen-property budget per tool; a composition that
+  affordable nested shape survive. When the same property is an array of different closed
+  object variants, their item fields are merged by the same rule instead of discarding the
+  item contract; shared requirements remain required and the variant descriptions are retained.
+  Projection has a forty-property budget per tool; this is
+  large enough for the complete structured recipe union without request-dependent schema
+  narrowing, while remaining an explicit bound. A composition that
   would exceed it remains a generic typed container. Unsupported validation vocabulary is
   omitted. The complete operation schema remains available through batched capability
   descriptors and remains the sole execution-time authority, so portability never weakens
@@ -406,9 +414,9 @@ terminate the stream.
   request-scoped SSE response maps one-to-one onto the turn lifecycle (SSE is new transport
   for the authoring backend, introduced deliberately here).
 
-## Approved change contract — ASSIST-A04 capability registry
+## Capability registry
 
-The node catalogue becomes one view of a versioned, library-owned capability
+The node catalogue is one view of a versioned, library-owned capability
 manifest. The manifest is the assistant's source of truth and contains:
 
 - the installed Haute version, manifest schema version, deterministic
@@ -441,10 +449,10 @@ returns `unsupported_capability`; malformed closed input returns
 `invalid_capability_query`. These are tool-level failures and never trigger a
 prompt-owned fallback vocabulary.
 
-The legacy `list_node_types` response remains a compatibility view generated
-from the manifest during the transition. It does not own facts independently.
+`list_node_types` is a compatibility view generated from the manifest. It does
+not own facts independently.
 
-## Approved change contract — ASSIST-A05 application services and authority
+## Application services and mutation authority
 
 Assistant reads and mutations are adapters over one typed Python application
 service. The service owns project snapshots, planning, dry-run, apply, and
@@ -479,7 +487,10 @@ Canonical request validation recognizes closed object unions discriminated by fi
 as `op` and `kind`. It selects the declared branch before validation so retry feedback
 names the exact safe schema path and a stable value-free reason, rather than collapsing all
 branch failures to a generic `oneOf` error. Those fields are retained in redacted history;
-submitted values are not.
+submitted values are not. The provider's primitive-operation branches are projected from
+the same `_wire_ops` model declarations that parse the canonical operation vocabulary;
+field membership, requiredness, discriminator values, and node-type enums are therefore not
+maintained in a second hand-written schema.
 
 Graph authoring never runs the graph, collects rows, invokes a sink, or
 materialises a configured output. Dry-run constructs the production lazy plan
@@ -497,7 +508,8 @@ explicit runtime authorization instead of reusing graph-plan authority.
 
 `apply_graph_plan` accepts a plan hash, not a replacement operation payload.
 Under the shared save lock it reloads the snapshot, rejects a stale revision,
-recomputes the normalized plan and hash, checks exact-plan authority, and
+recomputes the normalized plan, warnings, schema evidence, and hash through the
+same `build_verified_plan` path used by dry-run, checks exact-plan authority, and
 commits once through `SavePipelineService`. A plan is single-use; a repeated
 apply returns `plan_already_applied` with no write. Any changed authority fact
 invalidates the plan.
@@ -522,7 +534,7 @@ All are returned before a write except verification
 failure, which reports that the transactional save committed and preserves the
 ordinary ledger/undo path.
 
-## Approved change contract — ASSIST-A06 recipes and executable bundles
+## Recipes and executable bundles
 
 Recipes are versioned deterministic planners over the canonical primitive graph
 operations. Their descriptors declare closed argument schemas, unresolved user
@@ -567,12 +579,13 @@ a recipe handle is pending, and the handle clears only after its successful dedi
 dry-run. A model therefore cannot discover the specialist contract and then silently
 substitute a generic node.
 
-For each turn, a conservative deterministic router recognizes only a single unambiguous
-explicit recipe pattern: a band/banding term plus a continuous, range, breakpoint, bucket,
-or comparison-operator cue for continuous banding; a band/banding term plus categorical or
-discrete for categorical banding; join for a reference join; or the phrase rating step.
+For each turn, a conservative deterministic recognizer may suggest one recipe in the
+provider system guidance when a single unambiguous explicit pattern is present: a
+band/banding term plus a continuous, range, breakpoint, bucket, or comparison-operator cue
+for continuous banding; a band/banding term plus categorical or discrete for categorical
+banding; join for a reference join; or the phrase rating step.
 An explicit request to build, create, author, or make a Parquet pipeline as a showcase of
-multiple node types routes to `parquet_showcase`. The showcase cue accepts `showcase`, the
+multiple node types suggests `parquet_showcase`. The showcase cue accepts `showcase`, the
 closed phrase `node types`, or `many … types`, so a harmless typo in the intervening noun
 does not discard an otherwise explicit authoring request. With two to eight discovered Parquet
 datasets, that showcase route inspects every schema and ranks coherent pairs deterministically:
@@ -583,25 +596,24 @@ owns the safe connected transform and mapped output. It asks only when fewer tha
 eight datasets are discovered, or when the bounded set has no coherent pair. When a routed turn ends with
 `NEEDS_INPUT:`, immediately following clarification turns retain that route while each
 intervening turn also ends with `NEEDS_INPUT:`. A normal answer, completed mutation, or
-unqualified assistant response closes the chain, so old authoring authority is never revived.
-A standalone `response output` request routes to `response_output`;
-when a specialist recipe request also asks for a response output, that specialist route owns
-the downstream output instead. Categorical or discrete banding never routes to the
-continuous recipe. A unique match is appended to the provider system contract and bound
-independently to the tool executor. Without a unique route the provider catalog omits both
-recipe-planning tools, while the canonical internal registry retains the complete union.
-Primitive dry-run before the required recipe returns `recipe_route_required`;
-attempting a different recipe returns `recipe_route_mismatch`. No match or a
-request matching more than one recipe leaves routing unforced. Routing never
-supplies or infers recipe arguments. It preserves explicit primary recipe node names from
-closed `named NAME` and `add NAME:` forms: a mismatching provider argument is rejected with
-`recipe_name_mismatch` rather than silently changing user intent. Missing material choices require
-focused clarification. A rating-factor request which explicitly withholds factor values or
-missing-factor policy is deterministically clarification-only: the current-turn contract requires
-`NEEDS_INPUT:`, mutation tools are omitted from the provider catalog, and the source-bound
-executor rejects any bypass attempt with `material_input_required`. When a route is unique, the provider tool definition narrows
-`plan_recipe` to the matching closed branch while the executor still validates against the
-canonical discriminated union and independently enforces the route.
+unqualified assistant response closes the chain, so stale request guidance is never revived.
+A standalone `response output` request suggests `response_output`; when a specialist recipe
+request also asks for a response output, that specialist suggestion owns the downstream
+output instead. Categorical or discrete banding never suggests the continuous recipe. A
+unique match is appended only as advisory provider guidance. No lexical result changes the
+provider-visible tools or schemas, populates an argument, rewrites a tool call, or authorizes
+or rejects an executor operation. The source-bound executor constructor receives no user
+request text at all. Consequently equivalent phrasing, another locale, or a
+composed request remains free to submit any valid structured recipe or primitive plan.
+
+The fail-closed authority is the provider operation descriptor, the wire model's closed
+discriminated union, recipe argument validation, graph-semantic replay, exact plan hash,
+stale-snapshot check, and single-use receipt. Explicit names and apparently missing material
+choices remain prompt guidance: the model must not invent them, while a complete structured
+call is accepted regardless of whether a regular expression found the same words. Invalid or
+incomplete calls fail the canonical schema or recipe validator. The lexical-only
+`recipe_route_required`, `recipe_route_mismatch`, `recipe_name_mismatch`, and
+`material_input_required` executor verdicts do not exist.
 
 Packaged examples are versioned resource bundles with a closed manifest,
 pipeline source, sidecars, tiny synthetic data, expected graph/schema material,
@@ -640,7 +652,7 @@ marker in accumulated assistant text determines its non-mutation outcome even wh
 rounds streamed preparatory prose.
 
 
-## Approved change contract — ASSIST-A07 egress and project knowledge
+## Egress and project knowledge
 
 `[assistant.egress]` is required and closed. It contains exactly `trust`
 (`local`, `organization`, or `external`), `max_sensitivity` (`public`,
@@ -686,7 +698,7 @@ revisions, decisions, graph-update evidence, and value-free validation path/reas
 metadata; it does not copy raw row, source, document, configuration payloads, or
 deterministic payload digests into restartable history.
 
-## Approved change contract — ASSIST-A08 qualification gate
+## Provider qualification gate
 
 Model qualification is a versioned, repeatable evaluation lane, never part of
 deterministic unit tests. Held-out scenarios live outside package resources and

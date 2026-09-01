@@ -1070,7 +1070,7 @@ def test_publication_rolls_back_all_evaluation_artifacts(tmp_path: Path) -> None
         original(source, destination_path)
 
     with (
-        patch("haute.routes._train_service.os.replace", side_effect=fail),
+        patch("haute.routes._training_artifacts.os.replace", side_effect=fail),
         pytest.raises(OSError, match="report"),
     ):
         _publish_training_artifacts(
@@ -1117,10 +1117,10 @@ def test_windows_publication_retries_transient_contention_and_publishes_complete
             raise PermissionError("sharing violation")
         original(source, target)
 
-    monkeypatch.setattr("haute.routes._train_service.sys.platform", "win32")
+    monkeypatch.setattr("haute.routes._training_artifacts.sys.platform", "win32")
     with (
-        patch("haute.routes._train_service.os.replace", side_effect=transient),
-        patch("haute.routes._train_service.time.sleep") as sleep,
+        patch("haute.routes._training_artifacts.os.replace", side_effect=transient),
+        patch("haute.routes._training_artifacts.time.sleep") as sleep,
     ):
         published = _publish_training_artifacts(
             manifest,
@@ -1273,10 +1273,10 @@ def test_windows_publication_exhaustion_restores_complete_old_generation(
             raise PermissionError("sharing violation")
         original(source, target)
 
-    monkeypatch.setattr("haute.routes._train_service.sys.platform", "win32")
+    monkeypatch.setattr("haute.routes._training_artifacts.sys.platform", "win32")
     with (
-        patch("haute.routes._train_service.os.replace", side_effect=blocked),
-        patch("haute.routes._train_service.time.sleep") as sleep,
+        patch("haute.routes._training_artifacts.os.replace", side_effect=blocked),
+        patch("haute.routes._training_artifacts.time.sleep") as sleep,
         pytest.raises(TrainingArtifactPublicationError),
     ):
         _publish_training_artifacts(
@@ -1305,10 +1305,10 @@ def test_windows_publication_does_not_retry_non_contention_errors(
             raise OSError("disk failure")
         original(source, target)
 
-    monkeypatch.setattr("haute.routes._train_service.sys.platform", "win32")
+    monkeypatch.setattr("haute.routes._training_artifacts.sys.platform", "win32")
     with (
-        patch("haute.routes._train_service.os.replace", side_effect=failing),
-        patch("haute.routes._train_service.time.sleep") as sleep,
+        patch("haute.routes._training_artifacts.os.replace", side_effect=failing),
+        patch("haute.routes._training_artifacts.time.sleep") as sleep,
         pytest.raises(OSError, match="disk failure"),
     ):
         _publish_training_artifacts(
@@ -1482,7 +1482,7 @@ def test_train_service_keeps_completed_status_when_post_commit_cleanup_is_denied
     )
     with (
         patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob),
-        patch("haute.routes._train_service.shutil.rmtree", side_effect=deny_cleanup),
+        patch("haute.routes._training_lifecycle.shutil.rmtree", side_effect=deny_cleanup),
     ):
         thread = service._launch_background(
             job_id,
@@ -1533,7 +1533,7 @@ def test_parent_worker_cleanup_reports_all_failures_once(tmp_path: Path) -> None
             service._training_jobs, "release", side_effect=RuntimeError("registry release failed")
         ) as release,
         patch(
-            "haute.routes._train_service.shutil.rmtree",
+            "haute.routes._training_lifecycle.shutil.rmtree",
             side_effect=OSError("artifact cleanup failed"),
         ) as rmtree,
         pytest.raises(RuntimeError, match="registry release failed") as raised,
@@ -1624,7 +1624,7 @@ def test_train_service_publication_wins_late_cancel_and_records_elapsed(tmp_path
     with (
         patch("haute.modelling.TrainingJob", SilentSuccessfulTrainingJob),
         patch(
-            "haute.routes._train_service._publish_training_artifacts",
+            "haute.routes._training_lifecycle._publish_training_artifacts",
             side_effect=publish_while_cancel_waits,
         ),
     ):

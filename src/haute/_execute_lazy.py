@@ -7,7 +7,7 @@ import gc
 import hashlib
 import re
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -335,6 +335,184 @@ def _normalise_required_columns_by_node(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedExecutionRequest:
+    """The execution-independent inputs used to prepare a graph once."""
+
+    graph: PipelineGraph
+    target_node_id: str | None = None
+    source: str = "live"
+    required_columns_by_node: (
+        Mapping[str, Iterable[str] | projection_planner.AllExceptColumns] | None
+    ) = None
+    profile: ExecutionProfile | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedExecution:
+    """Read-only graph facts shared by the eager and lazy engines."""
+
+    graph: PipelineGraph
+    graph_plan: projection_planner.PreparedGraph
+    normalised_required_columns: Mapping[str, set[str] | projection_planner.AllExceptColumns]
+    strict_contract_resolution: bool
+    children_count: Mapping[str, int]
+    children_of: Mapping[str, tuple[str, ...]]
+    all_parents: Mapping[str, list[str]]
+    incoming_edges_by_target: Mapping[str, tuple[GraphEdge, ...]]
+    all_incoming_edges_by_target: Mapping[str, tuple[GraphEdge, ...]]
+
+
+def _prepare_execution(request: PreparedExecutionRequest) -> PreparedExecution:
+    """Resolve and index the graph facts that must agree across engines."""
+    graph = _resolve_graph_paths(request.graph)
+    graph_plan = projection_planner.prepare_graph(
+        graph, request.target_node_id, source=request.source
+    )
+    validate_pipeline_graph_shape_contracts(
+        graph,
+        graph_label=graph.pipeline_name or "execution",
+        node_ids_to_validate=(
+            set(graph_plan.order) if request.target_node_id is not None else None
+        ),
+    )
+    normalised = _normalise_required_columns_by_node(
+        request.required_columns_by_node, graph_plan.order
+    )
+    children_count = dict.fromkeys(graph_plan.order, 0)
+    children_of_lists: dict[str, list[str]] = {node_id: [] for node_id in graph_plan.order}
+    for node_id, parent_ids in graph_plan.parents_of.items():
+        for parent_id in parent_ids:
+            if parent_id in children_count:
+                children_count[parent_id] += 1
+                children_of_lists[parent_id].append(node_id)
+
+    def _edge_index(edges: Iterable[GraphEdge]) -> dict[str, tuple[GraphEdge, ...]]:
+        indexed: dict[str, list[GraphEdge]] = {}
+        for edge in edges:
+            indexed.setdefault(edge.target, []).append(edge)
+        return {target: tuple(target_edges) for target, target_edges in indexed.items()}
+
+    return PreparedExecution(
+        graph=graph,
+        graph_plan=graph_plan,
+        normalised_required_columns=normalised,
+        strict_contract_resolution=_strict_contract_resolution(request.profile),
+        children_count=children_count,
+        children_of={key: tuple(value) for key, value in children_of_lists.items()},
+        all_parents={node.id: graph.parents_of.get(node.id, []) for node in graph.nodes},
+        incoming_edges_by_target=_edge_index(graph_plan.relevant_edges),
+        all_incoming_edges_by_target=_edge_index(graph.edges),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class NodeBoundary:
+    """The resolved execution boundary for one graph node."""
+
+    node_id: str
+    node: GraphNode
+    fn: Callable
+    is_source: bool
+    parent_ids: tuple[str, ...]
+    incoming_edges: tuple[GraphEdge, ...]
+    contract: Contract | None
+    check_contract: bool
+    is_passthrough_runtime: bool
+
+
+class NodeBoundaryRunner:
+    """Shared node-boundary mechanics; collection and cache policy stay outside."""
+
+    def __init__(
+        self,
+        *,
+        prepared: PreparedExecution,
+        funcs: Mapping[str, tuple[Callable, bool]],
+        enforce_contracts: bool,
+        execution_context: ExecutionContext | None,
+        needed_columns: Mapping[str, frozenset[str] | None],
+    ) -> None:
+        self.prepared = prepared
+        self.funcs = funcs
+        self.enforce_contracts = enforce_contracts
+        self.execution_context = execution_context
+        self.needed_columns = needed_columns
+
+    def open(self, node_id: str) -> NodeBoundary:
+        node = self.prepared.graph_plan.node_map[node_id]
+        fn, is_source = self.funcs[node_id]
+        requested = self.needed_columns.get(node_id)
+        if self.execution_context is not None:
+            self.execution_context.record_column_widths(
+                node_id=node_id, requested_width=None if requested is None else len(requested)
+            )
+            self.execution_context.checkpoint(label="before_node", node_id=node_id)
+        contract = (
+            _resolve_effective_contract(
+                node, strict=self.prepared.strict_contract_resolution
+            ).contract
+            if self.enforce_contracts
+            else None
+        )
+        return NodeBoundary(
+            node_id=node_id,
+            node=node,
+            fn=fn,
+            is_source=is_source,
+            parent_ids=tuple(self.prepared.graph_plan.parents_of.get(node_id, ())),
+            incoming_edges=self.prepared.incoming_edges_by_target.get(node_id, ()),
+            contract=contract,
+            check_contract=contract is not None and _should_check_contract(contract),
+            is_passthrough_runtime=fn is _passthrough_fn,
+        )
+
+    def input_frames(self, boundary: NodeBoundary, outputs: Mapping[str, Any]) -> list[_Frame]:
+        return [_pick_source_frame(outputs[edge.source], edge) for edge in boundary.incoming_edges]
+
+    def invoke(self, boundary: NodeBoundary, input_frames: Sequence[_Frame] = ()) -> Any:
+        if boundary.is_source:
+            return boundary.fn()
+        if not input_frames:
+            raise ValueError(f"No input data available for node '{boundary.node_id}'")
+        if self.enforce_contracts:
+            _assert_simple_join_key_dtypes_compatible(
+                boundary.node, list(boundary.parent_ids), list(input_frames)
+            )
+        return boundary.fn(*input_frames)
+
+    def assert_inputs(
+        self,
+        boundary: NodeBoundary,
+        upstream_columns: frozenset[str],
+    ) -> None:
+        if (
+            not boundary.check_contract
+            or boundary.contract is None
+            or boundary.contract.inputs is None
+        ):
+            return
+        _assert_inputs_satisfy_contract(
+            boundary.node,
+            boundary.contract,
+            upstream_columns,
+        )
+
+    def assert_outputs(
+        self,
+        boundary: NodeBoundary,
+        output_columns: frozenset[str],
+    ) -> None:
+        if (
+            not boundary.check_contract
+            or boundary.contract is None
+            or boundary.contract.outputs is None
+            or boundary.is_passthrough_runtime
+        ):
+            return
+        _assert_outputs_satisfy_contract(boundary.node, boundary.contract, output_columns)
+
+
 def _strict_projection_for_context(
     execution_context: ExecutionContext | None,
     required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns],
@@ -474,8 +652,8 @@ def _is_plain_model_score(node: GraphNode) -> bool:
 
 def _assert_simple_join_key_dtypes_compatible(
     node: GraphNode,
-    input_ids: list[str],
-    input_lfs: list[_Frame],
+    input_ids: Sequence[str],
+    input_lfs: Sequence[_Frame],
 ) -> None:
     """Validate dtype parity for simple inferred multi-parent Polars joins."""
     if node.data.nodeType != NodeType.POLARS or len(input_ids) < 2:
@@ -541,8 +719,8 @@ def _assert_simple_join_key_dtypes_compatible(
 
 def _runtime_join_demands(
     node: GraphNode,
-    incoming_edges: list[GraphEdge],
-    input_lfs: list[_Frame],
+    incoming_edges: Sequence[GraphEdge],
+    input_lfs: Sequence[_Frame],
     projection: set[str] | frozenset[str] | None,
     existing_edge_demands: Mapping[
         projection_planner.ProjectionEdgeKey,
@@ -747,55 +925,39 @@ def _execute_lazy(
     Returns:
         (lazy_outputs, order, parents_of, id_to_name)
     """
-    graph = _resolve_graph_paths(graph)
+    prepared_execution = _prepare_execution(
+        PreparedExecutionRequest(
+            graph=graph,
+            target_node_id=target_node_id,
+            source=source,
+            required_columns_by_node=required_columns_by_node,
+            profile=execution_context.profile if execution_context is not None else None,
+        )
+    )
+    graph = prepared_execution.graph
     preserved_outputs = frozenset(preserve_node_ids or ())
     node_source_overrides = dict(source_by_node or {})
     if execution_context is not None:
         execution_context.checkpoint(label="lazy_start")
-    prepared = projection_planner.prepare_graph(
-        graph,
-        target_node_id,
-        source=source,
-    )
-    node_map = prepared.node_map
-    order = prepared.order
-    parents_of = prepared.parents_of
-    id_to_name = prepared.id_to_name
-    relevant_edges = prepared.relevant_edges
-    # Re-check graph-shape contracts for the nodes that will actually execute.
-    # The parser already validates parse-time graphs, but routes can build raw
-    # graphs from the frontend that bypass the parser; without this check, a
-    # malformed explore node would surface as a confusing Polars TypeError
-    # instead of a typed ParseError.
-    validate_pipeline_graph_shape_contracts(
-        graph,
-        graph_label=graph.pipeline_name or "execution",
-        node_ids_to_validate=set(order) if target_node_id is not None else None,
-    )
-    normalised_required_columns = _normalise_required_columns_by_node(
-        required_columns_by_node,
-        order,
-    )
+    graph_plan = prepared_execution.graph_plan
+    node_map = graph_plan.node_map
+    order = graph_plan.order
+    parents_of = graph_plan.parents_of
+    id_to_name = graph_plan.id_to_name
+    relevant_edges = graph_plan.relevant_edges
+    normalised_required_columns = prepared_execution.normalised_required_columns
     planning_required_columns: dict[
         str,
         set[str] | projection_planner.AllExceptColumns,
     ] = dict(normalised_required_columns)
-    strict_contract_resolution = _strict_contract_resolution(
-        execution_context.profile if execution_context is not None else None
-    )
     cache_request = dataframe_cache_request
 
     # Count downstream consumers per node so we can checkpoint fan-out
     # points (nodes whose output feeds >1 consumer).  Without this,
     # Polars duplicates the entire upstream plan for each branch —
     # e.g. a 38 GB JSONL scan runs twice when two siblings share a parent.
-    children_count: dict[str, int] = {nid: 0 for nid in order}
-    children_of: dict[str, list[str]] = {nid: [] for nid in order}
-    for nid, pids in parents_of.items():
-        for pid in pids:
-            if pid in children_count:
-                children_count[pid] += 1
-                children_of[pid].append(nid)
+    children_count = dict(prepared_execution.children_count)
+    children_of = prepared_execution.children_of
 
     cached_seed_outputs: dict[str, _Frame] = {}
     skip_cache_covered_nodes: set[str] = set()
@@ -933,7 +1095,7 @@ def _execute_lazy(
             elif nid in preserved_outputs:
                 cache_covers_downstream[nid] = False
             else:
-                children = children_of.get(nid, [])
+                children: Sequence[str] = children_of.get(nid, ())
                 cache_covers_downstream[nid] = bool(children) and all(
                     cache_covers_downstream.get(child_id, False) for child_id in children
                 )
@@ -970,7 +1132,7 @@ def _execute_lazy(
     else:
         public_strategy_result = execution_facade.plan_prepared_execution_strategy(
             order,
-            children_of,
+            {node_id: list(children) for node_id, children in children_of.items()},
             node_map,
             profile=strategy_profile,
             required_columns_by_node=planning_required_columns,
@@ -1005,7 +1167,7 @@ def _execute_lazy(
     )
 
     # Full parent lookup from ALL edges for instance resolution
-    all_parents = graph.parents_of
+    all_parents = prepared_execution.all_parents
 
     # Per-target incoming-edge lookup, in edge-declaration order, so each
     # node's function-parameter binding key can be derived from
@@ -1014,12 +1176,8 @@ def _execute_lazy(
     # ancestor-filtered) so live-switch-inactive edges don't surface here
     # — that would mismatch ``parents_of`` and break the binding-count
     # invariant on switch nodes.
-    incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
-    for edge in relevant_edges:
-        incoming_edges_by_target.setdefault(edge.target, []).append(edge)
-    all_incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
-    for edge in graph.edges:
-        all_incoming_edges_by_target.setdefault(edge.target, []).append(edge)
+    incoming_edges_by_target = prepared_execution.incoming_edges_by_target
+    all_incoming_edges_by_target = prepared_execution.all_incoming_edges_by_target
 
     # Build executable functions — delegates to _build_funcs with
     # row_limit=None (lazy path never caps source output).
@@ -1065,6 +1223,14 @@ def _execute_lazy(
                 execution_context.profile if execution_context is not None else None
             ),
         )
+
+    boundary_runner = NodeBoundaryRunner(
+        prepared=prepared_execution,
+        funcs=funcs,
+        enforce_contracts=enforce_contracts,
+        execution_context=execution_context,
+        needed_columns=needed_cols,
+    )
 
     # Execute - all intermediate results stay lazy
     lazy_outputs: dict[str, _Frame] = {}
@@ -1174,8 +1340,8 @@ def _execute_lazy(
 
     def _runtime_join_edge_demands(
         child_id: str,
-        incoming_edges: list[GraphEdge],
-        input_lfs: list[_Frame],
+        incoming_edges: Sequence[GraphEdge],
+        input_lfs: Sequence[_Frame],
     ) -> dict[projection_planner.ProjectionEdgeKey, set[str]]:
         return _runtime_join_demands(
             node_map[child_id],
@@ -1186,7 +1352,7 @@ def _execute_lazy(
             node_map,
         )
 
-    def _build_lazy_node(nid: str) -> tuple[_Frame, bool, GraphNode]:
+    def _build_lazy_node(boundary: NodeBoundary) -> tuple[_Frame, bool, GraphNode]:
         # May actually return ``(dict[str, _Frame], bool, GraphNode)`` for
         # multi-frame apiInput sources. Signature stays narrowed because every
         # consumer in this function passes the result through
@@ -1194,33 +1360,21 @@ def _execute_lazy(
         # ``# type: ignore[return-value]`` on the dict-return site captures it.
         nonlocal public_projection_plan, public_strategy_result
 
-        fn, is_source = funcs[nid]
-        node = node_map[nid]
-        requested_columns = needed_cols.get(nid)
-        if execution_context is not None:
-            execution_context.record_column_widths(
-                node_id=nid,
-                requested_width=(None if requested_columns is None else len(requested_columns)),
-            )
-        contract = (
-            _resolve_effective_contract(
-                node,
-                strict=strict_contract_resolution,
-            ).contract
-            if enforce_contracts
-            else None
-        )
-        check_here = bool(contract) and _should_check_contract(contract)  # type: ignore[arg-type]
+        nid = boundary.node_id
+        is_source = boundary.is_source
+        node = boundary.node
+        contract = boundary.contract
+        check_here = boundary.check_contract
         # Builder-wired ``_passthrough_fn`` means the node is in a stub
         # state (MODEL_SCORE without a model, OPTIMISER_APPLY without
         # an artifact).  Its declared contract describes the configured
         # shape the runtime does not produce yet; skip the output check
         # to preserve the "configure later" UX while still enforcing
         # contracts the moment a real function is wired.
-        is_passthrough_runtime = fn is _passthrough_fn
+        is_passthrough_runtime = boundary.is_passthrough_runtime
 
         if is_source:
-            lf = fn()
+            lf = boundary_runner.invoke(boundary)
         else:
             input_ids = parents_of.get(nid, [])
             missing = [pid for pid in input_ids if pid not in lazy_outputs]
@@ -1233,8 +1387,8 @@ def _execute_lazy(
             # so a multi-frame source (an apiInput emitting a per-frame dict,
             # commit 4) routes the right frame to each edge based on
             # ``edge.sourceHandle``. Single-frame sources pass through.
-            incoming_edges = incoming_edges_by_target.get(nid, [])
-            input_lfs = [_pick_source_frame(lazy_outputs[e.source], e) for e in incoming_edges]
+            incoming_edges = boundary.incoming_edges
+            input_lfs = boundary_runner.input_frames(boundary, lazy_outputs)
             if not input_lfs:
                 raise ValueError(f"No input data available for node '{nid}'")
 
@@ -1321,12 +1475,9 @@ def _execute_lazy(
                         upstream_cols = cached_cols
                     upstream_col_sets.append(upstream_cols)
                 upstream_cols = frozenset().union(*upstream_col_sets)
-                _assert_inputs_satisfy_contract(node, contract, upstream_cols)
+                boundary_runner.assert_inputs(boundary, upstream_cols)
 
-            if enforce_contracts:
-                _assert_simple_join_key_dtypes_compatible(node, input_ids, input_lfs)
-
-            lf = fn(*input_lfs)
+            lf = boundary_runner.invoke(boundary, input_lfs)
 
         if isinstance(lf, pl.DataFrame):
             if execution_context is not None:
@@ -1377,7 +1528,7 @@ def _execute_lazy(
                     node_id=nid,
                     output_width=len(out_cols),
                 )
-            _assert_outputs_satisfy_contract(node, contract, out_cols)
+            boundary_runner.assert_outputs(boundary, out_cols)
 
         return lf, is_source, node
 
@@ -1392,14 +1543,13 @@ def _execute_lazy(
             if execution_context is not None:
                 execution_context.checkpoint(label="lazy_dataframe_cache_seed_hit", node_id=nid)
             continue
-        if execution_context is not None:
-            execution_context.checkpoint(label="before_node", node_id=nid)
+        boundary = boundary_runner.open(nid)
         with (
             execution_context.stage("lazy_build", node_id=nid)
             if execution_context is not None
             else contextlib.nullcontext()
         ):
-            lf, is_source, node = _build_lazy_node(nid)
+            lf, is_source, node = _build_lazy_node(boundary)
 
         cache_materialized = False
         if cache_request is not None and nid not in cache_hit_rejected_node_ids:
@@ -1575,11 +1725,11 @@ def _build_funcs(
     order: list[str],
     node_map: dict[str, GraphNode],
     id_to_name: dict[str, str],
-    all_parents: dict[str, list[str]],
+    all_parents: Mapping[str, list[str]],
     build_node_fn: Callable,
     *,
-    incoming_edges_by_target: Mapping[str, list[GraphEdge]],
-    all_incoming_edges_by_target: Mapping[str, list[GraphEdge]],
+    incoming_edges_by_target: Mapping[str, Sequence[GraphEdge]],
+    all_incoming_edges_by_target: Mapping[str, Sequence[GraphEdge]],
     all_node_map: Mapping[str, GraphNode],
     row_limit: int | None = None,
     preamble_ns: dict | None = None,
@@ -1639,7 +1789,7 @@ def _build_funcs(
         orig_src_names = resolve_orig_source_names(
             node_map[nid],
             original_node_map,
-            all_incoming_edges_by_target,
+            {target: list(edges) for target, edges in all_incoming_edges_by_target.items()},
         )
         node_source = node_source_overrides.get(nid, source)
         _, fn, is_source = build_node_fn(
@@ -1793,32 +1943,23 @@ def _execute_eager_core(
         parents_of, node_map, id_to_name, errors, timings, and
         memory_bytes.
     """
-    graph = _resolve_graph_paths(graph)
-    prepared = projection_planner.prepare_graph(
-        graph,
-        target_node_id,
-        source=source,
+    prepared_execution = _prepare_execution(
+        PreparedExecutionRequest(
+            graph=graph,
+            target_node_id=target_node_id,
+            source=source,
+            required_columns_by_node=required_columns_by_node,
+            profile=execution_context.profile if execution_context is not None else None,
+        )
     )
-    node_map = prepared.node_map
-    order = prepared.order
-    parents_of = prepared.parents_of
-    id_to_name = prepared.id_to_name
-    relevant_edges = prepared.relevant_edges
-    # See _execute_lazy: the parser is bypassed for frontend-built graphs, so
-    # re-check graph-shape contracts on the executed subset to give a clean
-    # ParseError instead of a Polars TypeError.
-    validate_pipeline_graph_shape_contracts(
-        graph,
-        graph_label=graph.pipeline_name or "execution",
-        node_ids_to_validate=set(order) if target_node_id is not None else None,
-    )
-    normalised_required_columns = _normalise_required_columns_by_node(
-        required_columns_by_node,
-        order,
-    )
-    strict_contract_resolution = _strict_contract_resolution(
-        execution_context.profile if execution_context is not None else None
-    )
+    graph = prepared_execution.graph
+    graph_plan = prepared_execution.graph_plan
+    node_map = graph_plan.node_map
+    order = graph_plan.order
+    parents_of = graph_plan.parents_of
+    id_to_name = graph_plan.id_to_name
+    relevant_edges = graph_plan.relevant_edges
+    normalised_required_columns = prepared_execution.normalised_required_columns
     materialized_ids = None if materialize_node_ids is None else frozenset(materialize_node_ids)
     materialize_column_limits = dict(materialize_column_limits_by_node or {})
     for limit_node_id, limit in materialize_column_limits.items():
@@ -1828,16 +1969,12 @@ def _execute_eager_core(
             raise ValueError("materialize column limits must be positive integers")
 
     # Full parent lookup from ALL edges for instance resolution
-    all_parents = graph.parents_of
+    all_parents = prepared_execution.all_parents
 
     # Per-target incoming-edge lookup (eager path). Use ``relevant_edges``
     # so live-switch pruning is honoured.
-    incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
-    for edge in relevant_edges:
-        incoming_edges_by_target.setdefault(edge.target, []).append(edge)
-    all_incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
-    for edge in graph.edges:
-        all_incoming_edges_by_target.setdefault(edge.target, []).append(edge)
+    incoming_edges_by_target = prepared_execution.incoming_edges_by_target
+    all_incoming_edges_by_target = prepared_execution.all_incoming_edges_by_target
 
     # Fan-out count per node — how many direct children consume this
     # node's output.  Used to add a Polars ``.cache()`` hint when the
@@ -1846,13 +1983,7 @@ def _execute_eager_core(
     # upstream work.  A parent may be either a concrete DataFrame
     # (traditional eager preview/trace) or a LazyFrame (target-only
     # preview), and both can carry the hint into downstream collection.
-    children_count: dict[str, int] = dict.fromkeys(order, 0)
-    children_of: dict[str, list[str]] = {nid: [] for nid in order}
-    for _nid, _pids in parents_of.items():
-        for _pid in _pids:
-            if _pid in children_count:
-                children_count[_pid] += 1
-                children_of[_pid].append(_nid)
+    children_of = prepared_execution.children_of
 
     # Count fan-out by the selected source frame, rather than only by node.
     # A multi-frame producer can expose multiple independent source ports.
@@ -1919,6 +2050,13 @@ def _execute_eager_core(
         required_output_columns_by_node=builder_needed_cols,
         required_output_columns_by_port_by_node=api_port_columns_by_node,
         execution_profile=execution_context.profile if execution_context is not None else None,
+    )
+    boundary_runner = NodeBoundaryRunner(
+        prepared=prepared_execution,
+        funcs=funcs,
+        enforce_contracts=enforce_contracts,
+        execution_context=execution_context,
+        needed_columns=needed_cols,
     )
 
     # Value can be a single frame, None on failure, OR a per-frame dict
@@ -2001,23 +2139,11 @@ def _execute_eager_core(
         return full_columns
 
     for nid in order:
-        fn, is_source = funcs[nid]
-        node = node_map[nid]
-        if execution_context is not None:
-            requested_columns = needed_cols.get(nid)
-            execution_context.record_column_widths(
-                node_id=nid,
-                requested_width=(None if requested_columns is None else len(requested_columns)),
-            )
-        contract = (
-            _resolve_effective_contract(
-                node,
-                strict=strict_contract_resolution,
-            ).contract
-            if enforce_contracts
-            else None
-        )
-        check_here = bool(contract) and _should_check_contract(contract)  # type: ignore[arg-type]
+        boundary = boundary_runner.open(nid)
+        is_source = boundary.is_source
+        node = boundary.node
+        contract = boundary.contract
+        check_here = boundary.check_contract
         # A node that the builder chose to wire to ``_passthrough_fn`` is
         # running in a stub/unconfigured state (MODEL_SCORE without a
         # loaded model, OPTIMISER_APPLY without an artifact, etc.).  Its
@@ -2026,13 +2152,11 @@ def _execute_eager_core(
         # check to preserve the "drag node onto canvas, configure later"
         # UX while still enforcing contracts the moment a real function
         # is wired in.
-        is_passthrough_runtime = fn is _passthrough_fn
-        if execution_context is not None:
-            execution_context.checkpoint(label="before_node", node_id=nid)
+        is_passthrough_runtime = boundary.is_passthrough_runtime
         t0 = time.perf_counter()
         try:
             if is_source:
-                result = fn()
+                result = boundary_runner.invoke(boundary)
                 if row_limit and isinstance(result, (pl.LazyFrame, pl.DataFrame)):
                     result = result.head(row_limit)
             else:
@@ -2069,7 +2193,7 @@ def _execute_eager_core(
                 # emitting a per-frame dict) route per-edge by
                 # ``edge.sourceHandle``. Single-frame sources pass through.
                 input_lfs = []
-                incoming_edges_for_node = incoming_edges_by_target.get(nid, [])
+                incoming_edges_for_node = boundary.incoming_edges
                 for edge in incoming_edges_for_node:
                     pid = edge.source
                     if pid not in runtime_outputs:
@@ -2202,12 +2326,9 @@ def _execute_eager_core(
                             node_id=nid,
                             input_width=sum(len(columns) for columns in upstream_col_sets),
                         )
-                    _assert_inputs_satisfy_contract(node, contract, upstream_cols)  # type: ignore[arg-type]
+                    boundary_runner.assert_inputs(boundary, upstream_cols)
 
-                if enforce_contracts:
-                    _assert_simple_join_key_dtypes_compatible(node, input_ids, input_lfs)
-
-                result = fn(*input_lfs)
+                result = boundary_runner.invoke(boundary, input_lfs)
 
             # Multi-frame emit: a source may return ``dict[port_name, frame]``.
             # Materialise each frame's LazyFrame to DataFrame so the preview
@@ -2372,7 +2493,7 @@ def _execute_eager_core(
                 and contract.outputs is not None  # type: ignore[union-attr]
                 and not is_passthrough_runtime
             ):
-                _assert_outputs_satisfy_contract(node, contract, final_cols)  # type: ignore[arg-type]
+                boundary_runner.assert_outputs(boundary, final_cols)
 
             projection = needed_cols.get(nid)
             projected_columns: list[str] | None = None

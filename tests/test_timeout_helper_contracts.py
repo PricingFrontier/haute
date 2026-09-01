@@ -8,11 +8,17 @@ import time
 from unittest.mock import patch
 
 import pytest
+import structlog.testing
 
 from haute.routes._timeouts import (
+    BlockingWorkTimeoutError,
     _drain_background_future_result,
     run_blocking_with_response_timeout,
 )
+
+
+def _work_measurements(logs: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [record for record in logs if record.get("event") == "route_blocking_work_completed"]
 
 
 def test_drain_background_future_result_logs_ordinary_exception() -> None:
@@ -41,14 +47,31 @@ def test_drain_background_future_result_does_not_swallow_base_exception() -> Non
 
 @pytest.mark.asyncio
 async def test_run_blocking_with_response_timeout_returns_worker_result() -> None:
-    result = await run_blocking_with_response_timeout(
-        lambda value: value * 2,
-        21,
-        timeout=0.5,
-        operation="unit_test",
-    )
+    with structlog.testing.capture_logs() as logs:
+        result = await run_blocking_with_response_timeout(
+            lambda value: value * 2,
+            21,
+            timeout=0.5,
+            operation="unit_test",
+        )
 
     assert result == 42
+    (measurement,) = _work_measurements(logs)
+    assert measurement["operation"] == "unit_test"
+    assert measurement["outcome"] == "completed"
+    for field in ("queue_ms", "execution_ms", "response_wait_ms", "cleanup_ms"):
+        assert isinstance(measurement[field], float)
+        assert measurement[field] >= 0
+    assert measurement["queued_after_cleanup"] == 0
+    assert measurement["running_after_cleanup"] == 0
+    assert measurement["cancellation_waiters_after_cleanup"] == 0
+    assert not {
+        "args",
+        "kwargs",
+        "result",
+        "error",
+        "error_type",
+    }.intersection(measurement)
 
 
 @pytest.mark.asyncio
@@ -56,12 +79,16 @@ async def test_run_blocking_with_response_timeout_reraises_worker_exception() ->
     def blow_up() -> None:
         raise ValueError("worker failed")
 
-    with pytest.raises(ValueError, match="worker failed"):
-        await run_blocking_with_response_timeout(
-            blow_up,
-            timeout=0.5,
-            operation="unit_test",
-        )
+    with structlog.testing.capture_logs() as logs:
+        with pytest.raises(ValueError, match="worker failed"):
+            await run_blocking_with_response_timeout(
+                blow_up,
+                timeout=0.5,
+                operation="unit_test",
+            )
+
+    (measurement,) = _work_measurements(logs)
+    assert measurement["outcome"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -70,16 +97,22 @@ async def test_run_blocking_with_response_timeout_logs_and_reraises_timeout() ->
         time.sleep(0.05)
         return "late"
 
-    with patch("haute.routes._timeouts.logger") as mock_logger:
-        with pytest.raises(TimeoutError):
+    with structlog.testing.capture_logs() as logs:
+        with pytest.raises(BlockingWorkTimeoutError) as captured:
             await run_blocking_with_response_timeout(
                 sleep_past_deadline,
                 timeout=0.01,
                 operation="unit_timeout",
             )
+        await captured.value.background_task
+        await asyncio.sleep(0)
 
-    mock_logger.warning.assert_called_once()
-    assert "unit_timeout" in str(mock_logger.warning.call_args)
+    assert sum(record.get("event") == "route_work_response_timeout" for record in logs) == 1
+    (measurement,) = _work_measurements(logs)
+    assert measurement["outcome"] == "response_timeout"
+    assert measurement["running_at_response"] == 1
+    assert measurement["cleanup_ms"] > 0
+    assert measurement["running_after_cleanup"] == 0
 
 
 @pytest.mark.asyncio
@@ -94,26 +127,35 @@ async def test_run_blocking_with_response_timeout_cancellation_waits_for_worker(
         finished.set()
         return "done"
 
-    task = asyncio.create_task(
-        run_blocking_with_response_timeout(
-            wait_for_release,
-            timeout=1,
-            operation="unit_cancel",
+    with structlog.testing.capture_logs() as logs:
+        task = asyncio.create_task(
+            run_blocking_with_response_timeout(
+                wait_for_release,
+                timeout=1,
+                operation="unit_cancel",
+            )
         )
-    )
-    assert await asyncio.to_thread(started.wait, 1)
+        assert await asyncio.to_thread(started.wait, 1)
 
-    task.cancel()
-    await asyncio.sleep(0.05)
+        task.cancel()
+        await asyncio.sleep(0.05)
 
-    assert not task.done()
-    assert not finished.is_set()
+        assert not task.done()
+        assert not finished.is_set()
 
-    release_worker.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+        release_worker.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
     assert finished.is_set()
+    (measurement,) = _work_measurements(logs)
+    assert measurement["outcome"] == "request_cancelled"
+    assert measurement["running_at_response"] == 1
+    assert measurement["cancellation_waiters_at_response"] == 1
+    assert measurement["cleanup_ms"] >= 40
+    assert measurement["queued_after_cleanup"] == 0
+    assert measurement["running_after_cleanup"] == 0
+    assert measurement["cancellation_waiters_after_cleanup"] == 0
 
 
 @pytest.mark.asyncio

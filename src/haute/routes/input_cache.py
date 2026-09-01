@@ -6,8 +6,9 @@ import functools
 import os
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -44,7 +45,7 @@ from haute._source_cache import (
 )
 from haute.routes._background_jobs import CancellableJobRegistry, SingleFlightCoordinator
 from haute.routes._job_lifecycle import JobLifecycle, require_job_status
-from haute.routes._job_store import get_job_store
+from haute.routes._job_store import RunningJobFields, get_job_store
 from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.schemas import (
@@ -60,6 +61,22 @@ from haute.schemas import (
 
 router = APIRouter(prefix="/api/input-cache", tags=["input-cache"])
 logger = get_logger(component="input_cache")
+
+
+class _InputCacheQueuedProgress(TypedDict):
+    phase: Literal["queued"]
+    rows: int
+    batches: int
+    bytes: int
+
+
+class _InputCacheRunningJob(RunningJobFields):
+    identity_digest: str
+    identity: dict[str, object]
+    refresh: bool
+    build_class: BuildClass
+    progress: _InputCacheQueuedProgress
+
 
 _store = get_job_store("input_cache")
 _lifecycle = JobLifecycle(_store)
@@ -212,7 +229,7 @@ def _status_for_config(
     return _snapshot_payload(identity, cache_status)
 
 
-def _progress_payload(job: dict[str, Any]) -> InputCacheProgress:
+def _progress_payload(job: Mapping[str, Any]) -> InputCacheProgress:
     raw = job.get("progress")
     if not isinstance(raw, dict):
         raw = {}
@@ -227,7 +244,7 @@ def _progress_payload(job: dict[str, Any]) -> InputCacheProgress:
     )
 
 
-def _job_response(job_id: str, job: dict[str, Any]) -> InputCacheJobStatusResponse:
+def _job_response(job_id: str, job: Mapping[str, Any]) -> InputCacheJobStatusResponse:
     return InputCacheJobStatusResponse(
         job_id=job_id,
         identity_digest=str(job["identity_digest"]),
@@ -503,17 +520,16 @@ def build_input_cache(body: InputCacheBuildRequest) -> InputCacheBuildResponse:
                 detail=("input_cache_busy: The input snapshot build limit is currently reached."),
             )
 
-        job_id = _store.create_job(
-            {
-                "status": "running",
-                "identity_digest": identity.digest,
-                "identity": identity.payload,
-                "refresh": body.refresh,
-                "build_class": build_class,
-                "progress": {"phase": "queued", "rows": 0, "batches": 0, "bytes": 0},
-                "message": "Input snapshot build queued.",
-            }
-        )
+        initial_job: _InputCacheRunningJob = {
+            "status": "running",
+            "identity_digest": identity.digest,
+            "identity": identity.payload,
+            "refresh": body.refresh,
+            "build_class": build_class,
+            "progress": {"phase": "queued", "rows": 0, "batches": 0, "bytes": 0},
+            "message": "Input snapshot build queued.",
+        }
+        job_id = _store.create_job(initial_job)
         _singleflight.acquire(identity.digest, job_id=job_id, kind="input_cache_build")
         token, _ = _jobs.register_latest(identity.digest, job_id)
         _active_builds += 1
@@ -605,7 +621,7 @@ def _reset_for_tests() -> None:
     global _jobs, _singleflight, _active_builds
 
     with _start_lock:
-        _store.jobs.clear()
+        _store.clear_all()
         _jobs = CancellableJobRegistry()
         _singleflight = SingleFlightCoordinator()
         _active_builds = 0

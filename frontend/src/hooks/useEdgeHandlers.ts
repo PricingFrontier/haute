@@ -19,6 +19,7 @@ import {
 import { effectiveNodeType, isSubmodelInstanceConfig, nodeData } from "../types/node"
 import { NODE_TYPES, NODE_TYPE_META, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
 import {
+  finalizeResolvedEdgeJoinInsertion,
   insertEdgeJoinNode,
   insertEdgeJoinNodeFromSources,
   validateEdgeJoinInsertionCandidate,
@@ -26,6 +27,7 @@ import {
   type EdgeJoinInsertResult,
 } from "../utils/edgeJoinGraph"
 import { appEdge, appNode, selectOnlyNode } from "../utils/flowElements"
+import { attachEditorEdgeIdentities } from "../utils/editorIdentities"
 import { edgeJoinCanonicalTargetHandle, edgeJoinRoleConfigKey } from "../utils/edgeJoinRoles"
 import { normalizeDefaultTargetHandle } from "../utils/flowHandles"
 import type { ConnectionValidationResult } from "../utils/connectionValidation"
@@ -115,6 +117,7 @@ type UseEdgeHandlersParams = {
   clearTrace: () => void
   screenToFlowPosition: (pos: { x: number; y: number }) => { x: number; y: number }
   graphRefreshingRef: MutableRefObject<number>
+  resolveGraphIdentities: (nodes: readonly Node[], edges: readonly Edge[]) => Promise<{ nodes: Node[]; edges: Edge[] }>
   findEdgeIdAtPoint?: (point: { x: number; y: number }) => string | null
   validateConnection?: (connection: Connection) => ConnectionValidationResult
   commitBoundaryConnection?: (connection: Connection) => boolean
@@ -150,6 +153,7 @@ export default function useEdgeHandlers({
   clearTrace,
   screenToFlowPosition,
   graphRefreshingRef,
+  resolveGraphIdentities,
   findEdgeIdAtPoint = () => null,
   validateConnection,
   commitBoundaryConnection,
@@ -161,6 +165,7 @@ export default function useEdgeHandlers({
     sourceHandle: string | null
   } | null>(null)
   const edgeJoinCandidateEdgeIdRef = useRef<string | null>(null)
+  const structuralCreationSerialRef = useRef(0)
   const [edgeJoinCandidateEdgeId, setEdgeJoinCandidateEdgeId] = useState<string | null>(null)
 
   const clearEdgeJoinCandidate = useCallback(() => {
@@ -219,6 +224,17 @@ export default function useEdgeHandlers({
           e.targetHandle === targetHandle
       )
       if (exists) return
+      const identifiedEdge = (edge: Edge): Edge | null => {
+        try {
+          return attachEditorEdgeIdentities([edge], currentNodes)[0]
+        } catch (error: unknown) {
+          addToast(
+            "error",
+            `Connection rejected: ${error instanceof Error ? error.message : String(error)}`,
+          )
+          return null
+        }
+      }
       const targetNode = currentNodes.find((node) => node.id === params.target)
       if (targetNode && nodeData(targetNode).nodeType === NODE_TYPES.EDGE_JOIN) {
         const roleTargetHandle = edgeJoinCanonicalTargetHandle(targetHandle)
@@ -249,15 +265,14 @@ export default function useEdgeHandlers({
             },
           }
         })
-        const nextEdges = [
-          ...currentEdges,
-          appEdge({
-            source: params.source,
-            target: params.target,
-            sourceHandle: params.sourceHandle ?? null,
-            targetHandle: roleTargetHandle,
-          }),
-        ]
+        const nextEdge = identifiedEdge(appEdge({
+          source: params.source,
+          target: params.target,
+          sourceHandle: params.sourceHandle ?? null,
+          targetHandle: roleTargetHandle,
+        }))
+        if (!nextEdge) return
+        const nextEdges = [...currentEdges, nextEdge]
         pushSnapshot()
         setNodesRaw(nextNodes)
         setEdgesRaw(nextEdges)
@@ -268,15 +283,14 @@ export default function useEdgeHandlers({
       // For submodel nodes, keep the targetHandle so drill-in can route
       // edges to the correct internal port node.
 
-      setEdges((eds) => [
-        ...eds,
-        appEdge({
-          source: params.source,
-          target: params.target,
-          sourceHandle: params.sourceHandle ?? null,
-          targetHandle,
-        }),
-      ])
+      const nextEdge = identifiedEdge(appEdge({
+        source: params.source,
+        target: params.target,
+        sourceHandle: params.sourceHandle ?? null,
+        targetHandle,
+      }))
+      if (!nextEdge) return
+      setEdges((eds) => [...eds, nextEdge])
     },
     [addToast, commitBoundaryConnection, graphRef, pushSnapshot, setEdges, setEdgesRaw, setNodesRaw],
   )
@@ -302,26 +316,38 @@ export default function useEdgeHandlers({
         nodeIdCounterRef.current += 1
         return `${NODE_TYPES.EDGE_JOIN}_${nodeIdCounterRef.current}`
       }
-      const commitEdgeJoinResult = (result: EdgeJoinInsertResult) => {
+      const commitEdgeJoinResult = async (result: EdgeJoinInsertResult) => {
         if (!result.ok) {
           addToast("error", edgeJoinFailureMessages[result.reason])
           return
         }
 
-        const selected = result.nodes.find((node) => node.id === result.newNodeId) ?? null
-        pushSnapshot()
-        setNodesRaw(result.nodes)
-        setEdgesRaw(result.edges)
-        setSelectedNode(selected)
-        setLastSelectedId?.(selected?.id ?? null)
-        lastSelectedNodeRef.current = selected
-        clearTrace()
-        cancelPreview()
+        const capturedGraph = graphRef.current
+        const requestSerial = ++structuralCreationSerialRef.current
+        try {
+          const resolved = await resolveGraphIdentities(result.nodes, result.edges)
+          const finalized = finalizeResolvedEdgeJoinInsertion(result, resolved)
+          if (structuralCreationSerialRef.current !== requestSerial || graphRef.current !== capturedGraph) {
+            addToast("error", "Node creation was not applied because the graph changed while identity resolution was running.")
+            return
+          }
+          const selected = finalized.nodes.find((node) => node.id === result.newNodeId) ?? null
+          pushSnapshot()
+          setNodesRaw(finalized.nodes)
+          setEdgesRaw(finalized.edges)
+          setSelectedNode(selected)
+          setLastSelectedId?.(selected?.id ?? null)
+          lastSelectedNodeRef.current = selected
+          clearTrace()
+          cancelPreview()
+        } catch (err: unknown) {
+          addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
       }
 
       if (edgeJoinCandidateId && fromHandle?.type === "source") {
         const releasePoint = connectionEndPoint(event)
-        commitEdgeJoinResult(insertEdgeJoinNode({
+        void commitEdgeJoinResult(insertEdgeJoinNode({
           nodes: graphRef.current.nodes,
           edges: graphRef.current.edges,
           submodels,
@@ -341,7 +367,7 @@ export default function useEdgeHandlers({
         toHandle?.type === "source" &&
         targetNodeId
       ) {
-        commitEdgeJoinResult(insertEdgeJoinNodeFromSources({
+        void commitEdgeJoinResult(insertEdgeJoinNodeFromSources({
           nodes: graphRef.current.nodes,
           edges: graphRef.current.edges,
           base: {
@@ -397,7 +423,7 @@ export default function useEdgeHandlers({
       const releasePoint = connectionEndPoint(event)
       const targetEdgeId = findEdgeIdAtPoint(releasePoint)
       if (!targetEdgeId) return
-      commitEdgeJoinResult(insertEdgeJoinNode({
+      void commitEdgeJoinResult(insertEdgeJoinNode({
         nodes: graphRef.current.nodes,
         edges: graphRef.current.edges,
         submodels,
@@ -429,6 +455,7 @@ export default function useEdgeHandlers({
       setSelectedNode,
       submodels,
       validateConnection,
+      resolveGraphIdentities,
     ],
   )
 
@@ -537,12 +564,28 @@ export default function useEdgeHandlers({
         config,
       })
 
-      const selectedNewNode = { ...newNode, selected: true }
-      setNodes((nds) => selectOnlyNode([...nds, newNode], newNode.id))
-      setSelectedNode(selectedNewNode)
-      setLastSelectedId?.(selectedNewNode.id)
+      const capturedGraph = graphRef.current
+      const requestSerial = ++structuralCreationSerialRef.current
+      void (async () => {
+        try {
+          const resolved = await resolveGraphIdentities([newNode], [])
+          if (resolved.nodes.length !== 1 || resolved.nodes[0]?.id !== newNode.id || resolved.edges.length !== 0) {
+            throw new Error("identity resolver returned an invalid node")
+          }
+          if (structuralCreationSerialRef.current !== requestSerial || graphRef.current !== capturedGraph) {
+            addToast("error", "Node creation was not applied because the graph changed while identity resolution was running.")
+            return
+          }
+          const resolvedNode = { ...resolved.nodes[0], selected: true }
+          setNodes((nds) => selectOnlyNode([...nds, resolvedNode], resolvedNode.id))
+          setSelectedNode(resolvedNode)
+          setLastSelectedId?.(resolvedNode.id)
+        } catch (err: unknown) {
+          addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      })()
     },
-    [screenToFlowPosition, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast],
+    [screenToFlowPosition, nodeIdCounterRef, graphRef, setNodes, setSelectedNode, setLastSelectedId, addToast, resolveGraphIdentities],
   )
 
   return {

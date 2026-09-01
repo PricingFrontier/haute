@@ -214,8 +214,8 @@ scanner or claim whole-application WCAG conformance.
 Display identity and executable identity are one identity. `InputSource.name` is the input's
 single name — the chip text, the code argument, and the key persisted contracts use (the
 live-switch `input_scenario_map` and the instance `inputMapping`, both consumed by the
-backend). It is derived per edge by the shared `edgeInputName` helper, mirroring the backend's
-`edge_input_name` byte-for-byte, so the panel can never advertise a name the code does not
+backend). It is read per edge by the shared `edgeInputName` helper from server-owned editor
+identity metadata, so the panel can never advertise a name the code does not
 recognise. (An earlier interim design split `varName` from `displayLabel` to avoid touching
 executable contracts in a presentation-only release; that split itself produced the
 name-shown-but-not-callable confusion and was deliberately retired by the convergence release.)
@@ -249,7 +249,7 @@ An Edge Join with missing/ambiguous role edges, conflicting stored roles, an unk
 or invalid key shape remains visibly invalid and blocks save; the editor never infers a role or
 silently substitutes join keys.
 
-## Approved change contract — recovery diagnostics in node presentation
+## Recovery diagnostics in node presentation
 
 Editor-load availability is separate from transient execution status. A known recovered node uses
 its normal canvas card with an accessible `unavailable` or `blocked` load indicator; an unknown or
@@ -265,7 +265,7 @@ that state, so editor effects cannot start schema, preview, training, cache, or 
 behind disabled controls. Selection, panning, zooming, recovery preview, and diagnostic inspection
 remain available.
 
-## Approved change contract — minimal unavailable-node removal
+## Minimal unavailable-node removal
 
 An unavailable node inspector may offer `Remove node` only when the validated
 document capability allows repair and the node has a server recovery identity.

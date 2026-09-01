@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
-from haute._graph_utils import _edge_id, _sanitize_func_name
+from haute._graph_utils import _edge_id, canonical_downstream_identity
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -49,13 +49,6 @@ def qualified_runtime_node_id(instance_id: str, local_node_id: str) -> str:
     if not instance_id or not local_node_id:
         raise ValueError("Runtime submodel ids require non-empty instance and local ids.")
     return f"submodel_runtime/{quote(instance_id, safe='')}/{quote(local_node_id, safe='')}"
-
-
-def canonical_downstream_identity(alias: str, port_id: str) -> str:
-    """Return the stable config identity of one public submodel output."""
-    if not alias or not port_id:
-        raise ValueError("Canonical submodel output identities require alias and port id.")
-    return _sanitize_func_name(f"{alias}__{port_id}")
 
 
 def _definition_registry(graph: PipelineGraph) -> dict[str, SubmodelDefinition]:

@@ -2,49 +2,22 @@
 
 from __future__ import annotations
 
-import time
 import weakref
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from haute._execution_context import ExecutionContext, ExecutionMemoryPressureEvent
-from haute.routes._job_store import JobStore
-from haute.schemas import JobStatus
-
-RUNNING_STATUS = "running"
-
-TerminalReason = Literal[
-    "completed",
-    "superseded",
-    "timed_out",
-    "cancelled",
-    "memory_limited",
-    "contract_error",
-    "error",
-]
-
-TERMINAL_REASONS: frozenset[TerminalReason] = frozenset(
-    {
-        "completed",
-        "superseded",
-        "timed_out",
-        "cancelled",
-        "memory_limited",
-        "contract_error",
-        "error",
-    }
+from haute.routes._job_store import (
+    JOB_STATUSES,
+    RUNNING_STATUS,
+    TERMINAL_REASONS,
+    JobSnapshot,
+    JobStore,
+    LifecycleExpectedStatus,
+    TerminalReason,
 )
-JOB_STATUSES = frozenset({RUNNING_STATUS, *TERMINAL_REASONS})
-
-_TERMINAL_REASON_PRECEDENCE: Mapping[TerminalReason, int] = {
-    "error": 10,
-    "contract_error": 20,
-    "memory_limited": 30,
-    "cancelled": 40,
-    "timed_out": 50,
-    "superseded": 60,
-}
+from haute.schemas import JobStatus
 
 
 def bind_running_execution_metrics_publisher(
@@ -99,10 +72,10 @@ class JobLifecycle:
         to: TerminalReason,
         message: str | None = None,
         fields: Mapping[str, Any] | None = None,
-        expected_status: str | None = RUNNING_STATUS,
+        expected_status: LifecycleExpectedStatus = RUNNING_STATUS,
         elapsed_seconds: float | None = None,
         now: float | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> JobSnapshot | None:
         """Move a job to a terminal state according to reason precedence.
 
         ``expected_status`` protects normal running-to-terminal writes. If a
@@ -117,54 +90,31 @@ class JobLifecycle:
             raise ValueError("Lifecycle transitions may expect only 'running' or 'completed'")
         if expected_status == "completed" and to != "error":
             raise ValueError("A completed lifecycle record may only be corrected to 'error'")
-        timestamp = time.time() if now is None else now
-        update: dict[str, Any] = dict(fields or {})
-        update["status"] = to
-        update["terminal_reason"] = to
-        update["ended_at"] = timestamp
-        if to == "completed":
-            update.setdefault("completed_at", timestamp)
-        if message is not None:
-            update["message"] = message
-        if elapsed_seconds is not None:
-            update["elapsed_seconds"] = elapsed_seconds
-
-        schedule_cleanup = False
-        expires_at: float | None = None
-        if self.fault_injector is not None:
-            self.fault_injector("terminal_transition_before_write")
-        with self.store._write_lock:  # noqa: SLF001 - lifecycle is a JobStore collaborator.
-            old = self.store.jobs[job_id]
-            old_status = old.get("status")
-            if old_status == expected_status:
-                merged, schedule_cleanup, expires_at = self.store._store_merged_job_locked(  # noqa: SLF001
-                    job_id,
-                    old,
-                    update,
-                    now=timestamp,
-                )
-                result: dict[str, Any] | None = merged
-            else:
-                old_reason = old.get("terminal_reason")
-                if not isinstance(old_reason, str) or old_reason not in TERMINAL_REASONS:
-                    return None
-                typed_old_reason = cast(TerminalReason, old_reason)
-                if typed_old_reason == "completed" or to == "completed":
-                    return None
-                if _TERMINAL_REASON_PRECEDENCE[to] <= _TERMINAL_REASON_PRECEDENCE[typed_old_reason]:
-                    return None
-                merged, schedule_cleanup, expires_at = self.store._store_merged_job_locked(  # noqa: SLF001
-                    job_id,
-                    old,
-                    update,
-                    now=timestamp,
-                )
-                result = merged
-        if self.fault_injector is not None:
-            self.fault_injector("terminal_transition_before_cleanup_schedule")
-        self.store._schedule_heavy_object_cleanup_if_needed(  # noqa: SLF001
+        return self.store.transition_terminal(
             job_id,
-            schedule_cleanup,
-            expires_at,
+            to=to,
+            message=message,
+            fields=fields,
+            expected_status=expected_status,
+            elapsed_seconds=elapsed_seconds,
+            now=now,
+            fault_injector=self.fault_injector,
         )
-        return result
+
+    def publish_completion(
+        self,
+        job_id: str,
+        *,
+        publish: Callable[[], Mapping[str, Any]],
+        message: str | None = None,
+        elapsed_seconds: float | None = None,
+        now: float | None = None,
+    ) -> JobSnapshot | None:
+        """Atomically publish job-specific fields and mark a running job complete."""
+        return self.store.compare_and_publish_completion(
+            job_id,
+            publish=publish,
+            message=message,
+            elapsed_seconds=elapsed_seconds,
+            now=now,
+        )

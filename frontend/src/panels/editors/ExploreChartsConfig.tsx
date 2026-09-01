@@ -11,6 +11,12 @@ import useUIStore from "../../stores/useUIStore"
 import { NODE_GROUP_COLORS, PIVOT_CHART_COLORS } from "../../theme/colors"
 import {
   applyChartPreset,
+  CHART_AXES,
+  CHART_LEGEND_POSITIONS,
+  CHART_MARKS,
+  CHART_NUMBER_FORMATS,
+  CHART_ORIENTATIONS,
+  CHART_PRESETS,
   chartStackingMode,
   createExploreChart,
   detectChartPreset,
@@ -25,7 +31,7 @@ import {
   type ChartAxis,
   type ChartAxisConfig,
   type ChartMark,
-  type ChartNumberFormat,
+  type ChartOrientation,
   type ChartPreset,
   type ChartSeriesOverride,
   type ChartStackingMode,
@@ -53,6 +59,10 @@ import { useGraph } from "../useGraph"
 import type { SimpleNode } from "../editors"
 import useAutoUpdateExplorePivots from "../explore/useAutoUpdateExplorePivots"
 import useExplorePivotActions from "../explore/useExplorePivotActions"
+
+type ChartAxisChange = Partial<
+  Pick<ChartAxisConfig, "title" | "minimum" | "maximum" | "number_format">
+>
 
 type Props = {
   config: Record<string, unknown>
@@ -130,12 +140,6 @@ function SourceSchedulerMount({
     />
   )
 }
-const presets: ChartPreset[] = [
-  "combo",
-  "clustered_columns",
-  "stacked_columns",
-  "hundred_percent_stacked_columns",
-]
 const PRESET_LABELS: Readonly<Record<ChartPreset, string>> = {
   clustered_columns: "Clustered columns",
   stacked_columns: "Stacked columns",
@@ -148,15 +152,19 @@ const PRESET_ICONS: Readonly<Record<ChartPreset, typeof ChartColumn>> = {
   hundred_percent_stacked_columns: ChartColumnStacked,
   combo: ChartLine,
 }
-const formats: ChartNumberFormat[] = [
-  "inherit",
-  "number",
-  "integer",
-  "percent",
-  "currency_gbp",
-  "currency_usd",
-  "currency_eur",
-]
+const MARK_LABELS: Readonly<Record<ChartMark, string>> = {
+  column: "Column",
+  line: "Line",
+  area: "Area",
+}
+const AXIS_LABELS: Readonly<Record<ChartAxis, string>> = {
+  primary: "Primary",
+  secondary: "Secondary",
+}
+const ORIENTATION_LABELS: Readonly<Record<ChartOrientation, string>> = {
+  vertical: "Vertical columns",
+  horizontal: "Horizontal bars",
+}
 
 type PivotSourceStatus =
   | "unconfigured"
@@ -241,9 +249,9 @@ function StyleControls({
           value={style.mark}
           onChange={(e) => onChange({ mark: e.target.value as ChartMark })}
         >
-          <option value="column">Column</option>
-          <option value="line">Line</option>
-          <option value="area">Area</option>
+          {CHART_MARKS.map((mark) => (
+            <option key={mark} value={mark}>{MARK_LABELS[mark]}</option>
+          ))}
         </select>
       </Field>
       <Field label={`Axis for ${suffix}`}>
@@ -254,8 +262,11 @@ function StyleControls({
           value={style.axis}
           onChange={(e) => onAxisChange(e.target.value as ChartAxis)}
         >
-          <option value="primary">Primary</option>
-          {secondaryEnabled && <option value="secondary">Secondary</option>}
+          {CHART_AXES.filter(
+            (axis) => axis === "primary" || secondaryEnabled,
+          ).map((axis) => (
+            <option key={axis} value={axis}>{AXIS_LABELS[axis]}</option>
+          ))}
         </select>
       </Field>
       <Field label={`Stacking for ${suffix}`}>
@@ -364,7 +375,7 @@ function AxisFields({
   config: ChartAxisConfig
   updateAxis: (
     axis: "primary" | "secondary",
-    change: Record<string, unknown>,
+    change: ChartAxisChange,
   ) => void
 }) {
   const prefix = axis === "primary" ? "Primary" : "Secondary"
@@ -384,9 +395,11 @@ function AxisFields({
           className="rounded px-2 py-1 text-xs"
           style={INPUT_STYLE}
           value={config.number_format}
-          onChange={(e) => updateAxis(axis, { number_format: e.target.value })}
+          onChange={(e) => updateAxis(axis, {
+            number_format: e.target.value as ChartAxisConfig["number_format"],
+          })}
         >
-          {formats.map((f) => (
+          {CHART_NUMBER_FORMATS.map((f) => (
             <option key={f} value={f}>
               {f === "inherit" ? "General (automatic)" : f}
             </option>
@@ -424,7 +437,7 @@ function AxisFormattingBox({
   config: ChartAxisConfig
   updateAxis: (
     axis: "primary" | "secondary",
-    change: Record<string, unknown>,
+    change: ChartAxisChange,
   ) => void
 }) {
   return (
@@ -862,7 +875,7 @@ export default function ExploreChartsConfig({
     setMessage(null)
     if (trimmed !== chart.name) commit({ ...chart, name: trimmed })
   }
-  const updateAxis = (axis: "primary" | "secondary", change: Record<string, unknown>) =>
+  const updateAxis = (axis: "primary" | "secondary", change: ChartAxisChange) =>
     commit({ ...chart, axes: { ...chart.axes, [axis]: { ...chart.axes[axis], ...change } } })
   const firstUnused = () => {
     const ids = new Set([
@@ -975,7 +988,7 @@ export default function ExploreChartsConfig({
                   aria-label="Chart type"
                   className="flex flex-wrap items-center gap-1"
                 >
-                  {presets.map((p) => {
+                  {CHART_PRESETS.map((p) => {
                     const Icon = PRESET_ICONS[p]
                     const active = detectedPreset === p
                     return (
@@ -1008,12 +1021,7 @@ export default function ExploreChartsConfig({
                   aria-label="Orientation"
                   className="flex items-center gap-1"
                 >
-                  {(
-                    [
-                      ["vertical", "Vertical columns"],
-                      ["horizontal", "Horizontal bars"],
-                    ] as const
-                  ).map(([orientation, label]) => {
+                  {CHART_ORIENTATIONS.map((orientation) => {
                     const active = chart.orientation === orientation
                     return (
                       <button
@@ -1031,7 +1039,7 @@ export default function ExploreChartsConfig({
                             : "var(--text-secondary)",
                         }}
                       >
-                        {label}
+                        {ORIENTATION_LABELS[orientation]}
                       </button>
                     )
                   })}
@@ -1118,7 +1126,7 @@ export default function ExploreChartsConfig({
                         })
                       }
                     >
-                      {["top", "right", "bottom", "left"].map((x) => (
+                      {CHART_LEGEND_POSITIONS.map((x) => (
                         <option key={x}>{x}</option>
                       ))}
                     </select>

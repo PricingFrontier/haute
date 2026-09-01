@@ -769,7 +769,7 @@ describe("OptimiserPreview", () => {
       await waitFor(() => {
         expect(mockSaveOptimiser).toHaveBeenCalledWith({
           job_id: "job_123",
-          // sanitizeName(label) + node id: casing preserved, node-unique.
+          // portableKey(label) + node id: casing preserved, node-unique.
           output_path: "output/optimiser_My_Optimiser_opt_1.json",
           point_index: 0,
         })

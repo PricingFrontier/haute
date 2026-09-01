@@ -43,7 +43,6 @@ import {
   type SubmodelPortData,
 } from "../types/node"
 import { NODE_TYPES } from "./nodeTypes"
-import { sanitizeName } from "./sanitizeName"
 
 type ConfigLike = Record<string, unknown> | undefined | null
 
@@ -89,16 +88,12 @@ function rawLabel(table: Record<string, unknown>): string | null {
 }
 
 const ASCII_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
-const PYTHON_HARD_KEYWORDS = new Set([
-  "False", "None", "True", "and", "as", "assert", "async", "await",
-  "break", "class", "continue", "def", "del", "elif", "else", "except",
-  "finally", "for", "from", "global", "if", "import", "in", "is",
-  "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
-  "while", "with", "yield",
-])
 
-function isValidFrameLabel(label: string | null): label is string {
-  return label !== null && ASCII_IDENTIFIER_RE.test(label) && !PYTHON_HARD_KEYWORDS.has(label)
+function isValidFrameLabel(
+  label: string | null,
+  reservedLabels: ReadonlySet<string>,
+): label is string {
+  return label !== null && ASCII_IDENTIFIER_RE.test(label) && !reservedLabels.has(label)
 }
 
 /**
@@ -117,12 +112,15 @@ function isValidFrameLabel(label: string | null): label is string {
  * This list is consumed unchanged by visible rows, source handles, edge
  * reconciliation, and derived input-name surfaces.
  */
-function eligibleFrameLabels(emit: readonly Record<string, unknown>[]): string[] {
+function eligibleFrameLabels(
+  emit: readonly Record<string, unknown>[],
+  reservedLabels: ReadonlySet<string>,
+): string[] {
   const seen = new Set<string>()
   const labels: string[] = []
   for (const t of emit) {
     const label = rawLabel(t)
-    if (!isValidFrameLabel(label)) continue
+    if (!isValidFrameLabel(label, reservedLabels)) continue
     const folded = label.toLowerCase()
     if (seen.has(folded)) continue
     seen.add(folded)
@@ -137,8 +135,26 @@ function eligibleFrameLabels(emit: readonly Record<string, unknown>[]): string[]
  * This is the only frontend frame-label derivation. Every eligible frame uses
  * its label as its handle.
  */
-export function apiInputFrameLabels(config: ConfigLike): string[] {
-  return eligibleFrameLabels(emitTables(config))
+export function apiInputFrameLabels(
+  config: ConfigLike,
+  reservedLabels: ReadonlySet<string>,
+): string[] {
+  return eligibleFrameLabels(emitTables(config), reservedLabels)
+}
+
+/** Ordered handles whose executable identities were supplied by the server. */
+export function authoritativeSourceHandles(
+  node: { id: string; data: Record<string, unknown> },
+): string[] {
+  const value = node.data._sourceHandleInputNames
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`Node ${node.id} has no authoritative source-handle identities`)
+  }
+  const entries = Object.entries(value)
+  if (entries.some(([handle, inputName]) => handle.length === 0 || typeof inputName !== "string" || inputName.length === 0)) {
+    throw new Error(`Node ${node.id} has malformed source-handle identities`)
+  }
+  return entries.map(([handle]) => handle)
 }
 
 type SubmodelsLike = Record<string, unknown> | undefined
@@ -281,22 +297,40 @@ export function resolveSubmodelBoundaryNode(
  *
  * API-input frame handles are already canonical names and are returned
  * verbatim, including a stale non-null handle so the UI can identify the
- * unresolved edge. Ordinary sources use the shared backend-compatible
- * sanitizer. A submodel output is named from its stable alias plus public port
+ * unresolved edge. Ordinary sources consume authoritative backend identity
+ * metadata. A submodel output is named from its stable alias plus public port
  * id.
  */
 export const UNRESOLVED_INPUT_NAME = "<unresolved>"
+
+function sourceHandleInputName(
+  edge: SimpleEdge,
+  sourceNode: SimpleNode,
+): string {
+  const handle = edge.sourceHandle
+  if (handle === null || handle === undefined) return UNRESOLVED_INPUT_NAME
+  const mappings = sourceNode.data._sourceHandleInputNames
+  if (typeof mappings !== "object" || mappings === null || Array.isArray(mappings)) {
+    throw new Error(
+      `Cannot resolve input name for edge ${edge.id}: source ${sourceNode.id} has no authoritative handle identities`,
+    )
+  }
+  const inputName = (mappings as Record<string, unknown>)[handle]
+  if (typeof inputName !== "string" || inputName.length === 0) {
+    return UNRESOLVED_INPUT_NAME
+  }
+  return inputName
+}
 
 export function edgeInputName(
   edge: SimpleEdge,
   sourceNode: SimpleNode,
   submodels: SubmodelsLike = undefined,
 ): string {
+  const edgeInput = edge.data?._inputName
+  if (typeof edgeInput === "string" && edgeInput.length > 0) return edgeInput
   if (sourceNode.data.nodeType === NODE_TYPES.API_INPUT) {
-    if (edge.sourceHandle === null || edge.sourceHandle === undefined) {
-      return UNRESOLVED_INPUT_NAME
-    }
-    return edge.sourceHandle
+    return sourceHandleInputName(edge, sourceNode)
   }
   if (sourceNode.data.nodeType === NODE_TYPES.SUBMODEL_PORT) {
     const boundary = sourceNode.data as Partial<SubmodelPortData>
@@ -328,7 +362,7 @@ export function edgeInputName(
         + ": canonical submodel Input identity is malformed",
       )
     }
-    return sanitizeName(port.id)
+    return sourceHandleInputName(edge, sourceNode)
   }
   if (sourceNode.data.nodeType === NODE_TYPES.SUBMODEL) {
     if (!isSubmodelInstanceConfig(sourceNode.data.config)) {
@@ -338,17 +372,15 @@ export function edgeInputName(
       )
     }
     resolveSubmodelBoundaryNodes(sourceNode, edge.sourceHandle, "out", submodels)
-    const prefix = "out__"
-    if (!edge.sourceHandle?.startsWith(prefix) || edge.sourceHandle.length === prefix.length) {
-      throw new Error(
-        "Cannot derive input name for edge " + edge.id
-        + ": canonical submodel output handle is malformed",
-      )
-    }
-    const portId = edge.sourceHandle.slice(prefix.length)
-    return sanitizeName(sourceNode.data.config.alias + "__" + portId)
+    return sourceHandleInputName(edge, sourceNode)
   }
-  return sanitizeName(sourceNode.data.label)
+  const defaultInputName = sourceNode.data._defaultInputName
+  if (typeof defaultInputName !== "string" || defaultInputName.length === 0) {
+    throw new Error(
+      `Cannot resolve input name for edge ${edge.id}: source ${sourceNode.id} has no authoritative default input identity`,
+    )
+  }
+  return defaultInputName
 }
 /**
  * Derive every incoming input name for one executable target. `boundaryNodeId`
@@ -390,7 +422,21 @@ export function incomingEdgeInputNames({
       canonicalPortId = edge.targetHandle?.slice("in__".length)
     }
     if (canonicalPortId) {
-      names.push(sanitizeName(canonicalPortId))
+      const instanceConfig = boundaryNode?.data.config
+      if (!isSubmodelInstanceConfig(instanceConfig)) {
+        throw new Error(`Cannot resolve input name: submodel ${boundaryNodeId} has malformed identity`)
+      }
+      const definition = submodels?.[instanceConfig.definitionId]
+      if (!isSubmodelDefinition(definition, instanceConfig.definitionId)) {
+        throw new Error(`Cannot resolve input name: submodel definition ${instanceConfig.definitionId} is unavailable`)
+      }
+      const inputName = definition._inputPortInputNames?.[canonicalPortId]
+      if (typeof inputName !== "string" || inputName.length === 0) {
+        throw new Error(
+          `Cannot resolve input name: public input ${canonicalPortId} has no authoritative identity`,
+        )
+      }
+      names.push(inputName)
       continue
     }
     const sourceNode = nodesById.get(edge.source)
@@ -408,7 +454,7 @@ export function incomingEdgeInputNames({
 // `haute._api_input_schema._FILESYSTEM_SAFE_RE`. The backend derives
 // each frame's parquet filename from the sanitised label and rejects
 // (B2) any two labels whose sanitised forms collide. The `u` flag is
-// load-bearing for parity: Python regexes operate on code points, and
+// load-bearing for backend compatibility: Python regexes operate on code points, and
 // without it JavaScript matches UTF-16 units — an astral char (e.g. an
 // emoji) would become TWO underscores here but ONE on the backend,
 // silently desynchronising the collision check.
@@ -443,12 +489,13 @@ export type ApiInputLabelIssue =
 export function apiInputLabelIssue(
   candidate: string,
   otherLabels: readonly string[],
+  reservedLabels: ReadonlySet<string>,
 ): ApiInputLabelIssue | null {
   if (!candidate.trim()) return { kind: "blank" }
   if (!ASCII_IDENTIFIER_RE.test(candidate)) {
     return { kind: "identifier", reason: "ascii" }
   }
-  if (PYTHON_HARD_KEYWORDS.has(candidate)) {
+  if (reservedLabels.has(candidate)) {
     return { kind: "identifier", reason: "keyword" }
   }
   for (const other of otherLabels) {
@@ -491,8 +538,11 @@ export function apiInputLabelIssueMessage(issue: ApiInputLabelIssue | null): str
  * The set of `sourceHandle` values an apiInput's outgoing edges may
  * legitimately carry, given its config.
  */
-export function validSourceHandleKeys(config: ConfigLike): Set<string> {
-  return new Set(apiInputFrameLabels(config))
+export function validSourceHandleKeys(
+  config: ConfigLike,
+  reservedLabels: ReadonlySet<string>,
+): Set<string> {
+  return new Set(apiInputFrameLabels(config, reservedLabels))
 }
 
 export type ReconciledApiInputEdge = {
@@ -528,12 +578,14 @@ export function reconcileApiInputEdges<E extends SimpleEdge>({
   nodeId,
   config,
   edges,
+  reservedLabels,
 }: {
   nodeId: string
   config: ConfigLike
   edges: E[]
+  reservedLabels: ReadonlySet<string>
 }): ReconcileApiInputEdgesResult<E> {
-  const validKeys = validSourceHandleKeys(config)
+  const validKeys = validSourceHandleKeys(config, reservedLabels)
   const removed: ReconciledApiInputEdge[] = []
   const kept: E[] = []
   for (const edge of edges) {
@@ -573,7 +625,10 @@ function tableAt(tables: unknown[], i: number): Record<string, unknown> | null {
  * frames, matching `apiInputFrameLabels`). Also counts eligible
  * tables per label so collisions can be detected.
  */
-function portOwnership(config: ConfigLike): {
+function portOwnership(
+  config: ConfigLike,
+  reservedLabels: ReadonlySet<string>,
+): {
   ownerIndexByLabel: Map<string, number>
   eligibleCountByLabel: Map<string, number>
 } {
@@ -584,7 +639,7 @@ function portOwnership(config: ConfigLike): {
   tables.forEach((t, i) => {
     if (!t || typeof t !== "object" || !eligible.has(t as Record<string, unknown>)) return
     const label = rawLabel(t as Record<string, unknown>)
-    if (!isValidFrameLabel(label)) return
+    if (!isValidFrameLabel(label, reservedLabels)) return
     if (!ownerIndexByLabel.has(label)) ownerIndexByLabel.set(label, i)
     eligibleCountByLabel.set(label, (eligibleCountByLabel.get(label) ?? 0) + 1)
   })
@@ -630,11 +685,13 @@ export function migrateApiInputEdges<E extends SimpleEdge>({
   prevConfig,
   nextConfig,
   edges,
+  reservedLabels,
 }: {
   nodeId: string
   prevConfig: ConfigLike
   nextConfig: ConfigLike
   edges: E[]
+  reservedLabels: ReadonlySet<string>
 }): MigrateApiInputEdgesResult<E> {
   const prevTables = rawTables(prevConfig)
   const nextTables = rawTables(nextConfig)
@@ -642,8 +699,8 @@ export function migrateApiInputEdges<E extends SimpleEdge>({
     return { edges, rebound: [] }
   }
 
-  const prevOwnership = portOwnership(prevConfig)
-  const nextOwnership = portOwnership(nextConfig)
+  const prevOwnership = portOwnership(prevConfig, reservedLabels)
+  const nextOwnership = portOwnership(nextConfig, reservedLabels)
 
   const renameByOldLabel = new Map<string, string>()
   for (let i = 0; i < prevTables.length; i++) {
@@ -652,7 +709,10 @@ export function migrateApiInputEdges<E extends SimpleEdge>({
     if (!prevTable || !nextTable) continue
     const prevLabel = rawLabel(prevTable)
     const nextLabel = rawLabel(nextTable)
-    if (!isValidFrameLabel(prevLabel) || !isValidFrameLabel(nextLabel)) continue
+    if (
+      !isValidFrameLabel(prevLabel, reservedLabels)
+      || !isValidFrameLabel(nextLabel, reservedLabels)
+    ) continue
     if (prevLabel === nextLabel) continue
     // Same table identity: the iteration path must be unchanged.
     const prevPath = (prevTable as { path?: unknown }).path
@@ -677,7 +737,11 @@ export function migrateApiInputEdges<E extends SimpleEdge>({
     const to = renameByOldLabel.get(handle)
     if (to === undefined) return edge
     rebound.push({ edge, from: handle, to })
-    return { ...edge, sourceHandle: to }
+    return {
+      ...edge,
+      sourceHandle: to,
+      data: { ...edge.data, _inputName: to },
+    }
   })
   if (rebound.length === 0) return { edges, rebound }
   return { edges: next, rebound }
@@ -703,17 +767,26 @@ export function applyApiInputConfigChange<E extends SimpleEdge>({
   prevConfig,
   nextConfig,
   edges,
+  reservedLabels,
 }: {
   nodeId: string
   prevConfig: ConfigLike
   nextConfig: ConfigLike
   edges: E[]
+  reservedLabels: ReadonlySet<string>
 }): ApplyApiInputConfigChangeResult<E> {
-  const migration = migrateApiInputEdges({ nodeId, prevConfig, nextConfig, edges })
+  const migration = migrateApiInputEdges({
+    nodeId,
+    prevConfig,
+    nextConfig,
+    edges,
+    reservedLabels,
+  })
   const { edges: pruned, removed } = reconcileApiInputEdges({
     nodeId,
     config: nextConfig,
     edges: migration.edges,
+    reservedLabels,
   })
   return { edges: pruned, rebound: migration.rebound, removed }
 }

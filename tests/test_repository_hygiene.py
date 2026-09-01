@@ -71,7 +71,7 @@ _SCAN_SKIP_DIRS = {"__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
 
 # The only modules in src/haute/ allowed to import subprocess, and why.
 _SUBPROCESS_IMPORT_ALLOWLIST = {
-    "src/haute/_git.py",  # git chokepoint (caller)
+    "src/haute/_git_core.py",  # Git subprocess chokepoint
     "src/haute/_host_memory.py",  # nvidia-smi chokepoint (caller; function-local import)
     "src/haute/cli/_serve.py",  # npm chokepoint (caller, via _helpers._npm)
     "src/haute/deploy/_container.py",  # docker chokepoint (caller)
@@ -86,7 +86,7 @@ _SUBPROCESS_IMPORT_ALLOWLIST = {
 # The chokepoints that actually launch subprocesses (the two import-only
 # entries above never make calls, so they carry no text-mode call sites).
 _CALLER_CHOKEPOINTS = (
-    "src/haute/_git.py",
+    "src/haute/_git_core.py",
     "src/haute/_host_memory.py",
     "src/haute/cli/_serve.py",
     "src/haute/deploy/_container.py",
@@ -265,10 +265,12 @@ def test_text_mode_subprocess_calls_pin_utf8_in_caller_chokepoints() -> None:
 # tiny identity relation, usually coarser than the blessed one: a latent
 # collision site (two labels converge on one artefact) and a latent drift
 # site (its rules diverge as the blessed rules evolve).  There are exactly
-# two blessed sanitizer pairs, each frontend/backend twinned:
+# three sanctioned naming operations with deliberately different contracts;
+# only the filesystem-label operation is cross-runtime:
 #
-#   identifier pair:        src/haute/_graph_utils.py::_sanitize_func_name
-#                           <-> frontend/src/utils/sanitizeName.ts
+#   executable identity:    src/haute/_graph_utils.py::_sanitize_func_name
+#                           (backend only)
+#   browser persistence:    frontend/src/utils/portableKey.ts
 #   filesystem-label pair:  src/haute/_api_input_schema.py::
 #                           sanitise_label_for_filesystem
 #                           <-> frontend/src/utils/apiInputPorts.ts
@@ -299,7 +301,7 @@ _BACKEND_BLESSED_SANITIZERS = {
     "src/haute/_api_input_schema.py",  # sanitise_label_for_filesystem
 }
 _FRONTEND_BLESSED_SANITIZERS = {
-    "frontend/src/utils/sanitizeName.ts",  # identifier pair twin
+    "frontend/src/utils/portableKey.ts",  # browser-owned persistence keys
     "frontend/src/utils/apiInputPorts.ts",  # sanitiseLabelForFilesystem twin
 }
 
@@ -308,7 +310,7 @@ _FRONTEND_BLESSED_SANITIZERS = {
 _BACKEND_MINT_ALLOWLIST = {
     # Git branch-name slug from a username; collisions are cosmetic and
     # _validate_ref_name guards injection.
-    "src/haute/_git.py",
+    "src/haute/_git_core.py",
     # One-shot scaffold: project dir name -> package name at `haute init`;
     # single value, no collision space.
     "src/haute/cli/_init_cmd.py",
@@ -372,11 +374,16 @@ def _module_has_mint_shape(tree: ast.AST) -> bool:
 
 
 def _tracked_frontend_sources() -> list[str]:
+    # Include sanctioned files explicitly so a newly-added implementation is
+    # covered before its first commit; `git ls-files` does not report untracked
+    # files in a developer worktree.
+    candidates = set(_tracked_files()) | _FRONTEND_BLESSED_SANITIZERS | _FRONTEND_MINT_ALLOWLIST
     return sorted(
         rel
-        for rel in _tracked_files()
+        for rel in candidates
         if rel.startswith(_FRONTEND_SRC_PREFIX)
         and rel.endswith((".ts", ".tsx"))
+        and (_REPO_ROOT / rel).is_file()
         and not rel.endswith(".d.ts")
         and "__tests__" not in rel
         and "/testSupport/" not in rel  # vitest scaffolding, not product code
@@ -391,6 +398,7 @@ _FRONTEND_MINT_RES = (
     re.compile(r"\.replace\(\s*/\[\^"),  # character-class substitution regex
     re.compile(r"toLowerCase\(\)\s*\.\s*replace\("),  # fold-then-mint
     re.compile(r'\.replace\([^)\n]*,\s*"_"\s*\)'),  # replace-to-underscore
+    re.compile(r'\.push\(\s*"_"\s*\)'),  # character-wise separator mint
 )
 
 
@@ -433,7 +441,8 @@ def test_frontend_name_mints_confined_to_blessed_sanitizers_and_allowlist() -> N
     assert unexpected == [], (
         "New frontend name-mint shape (char-class substitution / fold-then-"
         "replace / replace-to-underscore) outside the blessed sanitizers. Route "
-        "the derivation through sanitizeName or sanitiseLabelForFilesystem, "
+        "the derivation through server-owned identity, portableKey, or the "
+        "filesystem-label helper; "
         "validate-and-reject instead of transforming, or add a reason-commented "
         f"allowlist entry here. Offenders: {unexpected}"
     )
@@ -446,7 +455,7 @@ def test_frontend_name_mints_confined_to_blessed_sanitizers_and_allowlist() -> N
 # Interpolated template literal ending in a persisted-artifact extension —
 # the sink where a derived name reaches disk.
 _FRONTEND_PERSIST_SINK_RE = re.compile(r"`[^`\n]*\$\{[^`\n]*\.(?:json|parquet)`")
-_FRONTEND_BLESSED_IMPORT_RE = re.compile(r'from\s+"[^"\n]*utils/(?:sanitizeName|apiInputPorts)"')
+_FRONTEND_BLESSED_IMPORT_RE = re.compile(r'from\s+"[^"\n]*utils/(?:portableKey|apiInputPorts)"')
 
 # Frontend files allowed to build a persistence path WITHOUT importing a
 # blessed sanitizer (e.g. every interpolated part is machine-derived, never
@@ -484,7 +493,7 @@ def test_frontend_persistence_path_builders_import_a_blessed_sanitizer() -> None
         "Frontend file builds an interpolated persistence path (template "
         "literal ending .json/.parquet) without importing a blessed sanitizer. "
         "Any user-derived part of a persisted filename must pass through "
-        "sanitizeName or sanitiseLabelForFilesystem (the optimiser-preview bug "
+        "portableKey or sanitiseLabelForFilesystem (the optimiser-preview bug "
         "class); if every interpolated part is machine-derived, add a "
         f"reason-commented allowlist entry. Offenders: {offenders}"
     )

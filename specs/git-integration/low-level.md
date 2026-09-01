@@ -4,7 +4,14 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_git.py` | All git CLI interaction. Subprocess wrappers, guardrails, the working/ledger branch-pair engine, content-addressed caches, deliberate remote fetch/push/fast-forward, branch manager operations (archive/delete/undelete/restore), and read paths (repository readiness, graph, milestones, ledger expansion, commit context). |
+| `src/haute/_git.py` | Stable import facade. Re-exports the route/public Git API and exception taxonomy from the cohesive domain modules below; owns no subprocess, mutable state, cache, or branch transaction. |
+| `src/haute/_git_core.py` | Sole Git command and repository-mutation boundary: exception taxonomy, prompt-proof subprocess adapters, fetch serialization/cooldowns, ref validation and branch-pair naming, guardrails, immutable object/ref queries, and content-addressed primitive caches (including parsed graph-log rows). Domain modules depend on this layer; it depends on none of them. |
+| `src/haute/_git_setup.py` | Repository and clone setup: repository readiness, identity, default/working-branch association, unborn-repository seeding, and Git preferences. |
+| `src/haute/_git_transactions.py` | Working/ledger branch-pair transactions: path-scoped saves, invariant checks, milestone merge/ref transaction, and branch creation/fork replay with compensating rollback. |
+| `src/haute/_git_read_models.py` | Immutable panel read models for repository/working-branch readiness and managed working-branch listings. It performs no mutation or fetch. |
+| `src/haute/_git_history.py` | Immutable history projection and safe historical materialisation: milestones, ledger saves, commit context, forest topology, use of the core's object-addressed log cache, and bounded archive extraction. |
+| `src/haute/_git_remote.py` | Deliberate remote synchronization and transport: remote configuration/listing, clone/bundle flows, pair divergence, fetch, push/bootstrap, fast-forward, and branch-away resolution. It uses the core command boundary and never owns clone-state files. |
+| `src/haute/_git_archive.py` | Local branch-pair movement and archive lifecycle: detached historical move, archive, delete/tombstone, undelete, and restore transactions with compensating rollback. |
 | `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Uses a bounded marker-aware identity cache, a stable project-path key across `git init`, a common-Git-directory key for linked worktrees, and weak lock values so idle repositories are evicted. It never invokes Git. |
 | `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
 | `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list owned by [sandbox-security](../sandbox-security/low-level.md) and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
@@ -16,7 +23,7 @@ All public types are Pydantic models defined in `src/haute/schemas.py` (not owne
 component but returned directly by `_git` functions — no dataclass-to-dict-to-model
 conversion in the routes).
 
-**Exceptions** (`_git.py`), forming a strict hierarchy:
+**Exceptions** (`_git_core.py`, re-exported by `_git.py`), forming a strict hierarchy:
 - `GitError(HauteError)` — base; wraps raw subprocess stderr.
   - `GitDomainError(GitError)` — hand-written, safe-to-surface message.
     - `GitGuardrailError(GitDomainError)` — guardrail block → HTTP 403.
@@ -29,7 +36,8 @@ conversion in the routes).
     - `GitMilestoneForkError(GitDomainError)` — carries a `GitMilestoneFork`; constructed
       only by `commit_milestone()`.
 
-**Branch-pair naming** (`_git.py`): `LEDGER_SUFFIX = "-save"`. `ledger_name(working)` /
+**Branch-pair naming** (`_git_core.py`, re-exported by `_git.py`):
+`LEDGER_SUFFIX = "-save"`. `ledger_name(working)` /
 `working_name(ledger)` are pure string transforms and inverses of each other.
 `branch_category(branch)` classifies any branch name into `"protected" | "ledger" |
 "working"` by checking membership in `_protected_branches()` first, then the ledger-suffix
@@ -46,6 +54,23 @@ not a hashability workaround.) `_FULL_SHA_RE` / `_is_full_sha()` gates the cache
 path: only a full 40-hex SHA is guaranteed immutable; a ref name (branch, `HEAD`, a tag)
 falls through to an uncached live subprocess on every call. `_get_default_branch` is also
 uncached because the selected remote and its symbolic `HEAD` are mutable ref-name state.
+
+**Domain import direction.** `_git_core`, `_git_lock`, and `_git_state` are leaves.
+Setup, transactions, read models, history, remote synchronization, and archive lifecycle
+may import those leaves and narrowly import one another in the direction documented by the
+control flows below; they never import the `_git` facade. `_git.py` imports domain modules
+only to re-export their stable surface. This keeps the graph acyclic and prevents a second
+subprocess or clone-state owner from appearing during future work.
+
+**Process boundary.** `_git_core.py` is the sole module that imports or invokes
+`subprocess`. Ordinary local commands use `_run_git`, `_run_git_ok`, or `_run_git_rc`.
+Commands that need an explicit timeout, non-interactive remote environment, replacement
+decoding, or binary output use the overloaded `_run_git_process` adapter. The adapter
+returns an immutable typed result (`str` output by default, `bytes` when `binary=True`) and
+translates only `subprocess.TimeoutExpired` into the core-owned
+`_GitProcessTimeoutError`; operating-system and Unicode failures retain their native types
+so each domain preserves its established fail/degrade policy. Domain modules never receive
+the `subprocess` module or construct a raw process call themselves.
 
 **Per-clone state files** (`_git_state.py`), all siblings under `<project_root>/.haute/`:
 `state.json` (`{"workingBranch": str}`), `prefs.json` (flat dict, currently one key:
@@ -500,7 +525,12 @@ temporary directories via the shared helpers in `tests/_git_helpers.py` (`git_ru
 `init_repo`); narrow subprocess seams are mocked only to make malformed advertisements,
 process failures, and precise ref-movement races deterministic.
 
-- **`tests/test_git_engine.py`** — the primary unit suite for `_git.py`, organized into
+- **`tests/test_service_domain_boundaries.py`** — structural contracts keep the
+  Git facade explicit, the domain-module import graph acyclic, subprocess
+  execution in `_git_core.py`, and the shared repository lock on every
+  serialized mutator.
+- **`tests/test_git_engine.py`** — the primary unit suite for the Git facade and domain
+  modules, organized into
   focused test classes covering: slugification, branch-category naming, ledger
   resolve/spawn, `commit_save` (including idempotent-no-op saves), milestone merge and its
   invariant checks, git identity get/set, working-branch status across all six states,

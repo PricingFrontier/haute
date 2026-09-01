@@ -31,7 +31,7 @@ import {
   type PipelineLoadStatus,
 } from "../types/pipelineDocument"
 import { columnsEqualByFingerprint, type ColumnFingerprintInput } from "../utils/columnFingerprint"
-import { apiInputFrameLabels } from "../utils/apiInputPorts"
+import { authoritativeSourceHandles } from "../utils/apiInputPorts"
 import {
   runtimeNodeIdForVisibleNode,
   type DrilledOccurrenceIdentity,
@@ -99,7 +99,10 @@ function nodeLabel(node: Node): string {
 function previewPortLabel(node: Node): string | undefined {
   const data = nodeData(node)
   if (data.nodeType !== NODE_TYPES.API_INPUT) return undefined
-  return apiInputFrameLabels(data.config)[0]
+  return authoritativeSourceHandles({
+    id: node.id,
+    data,
+  })[0]
 }
 
 type ColumnDef = ColumnFingerprintInput[number]

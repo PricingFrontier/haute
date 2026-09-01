@@ -91,21 +91,21 @@ def _sanitize_func_name(label: str) -> str:
     ASCII alnum / ``_`` survive unchanged.  Spaces and hyphens become
     underscores.  Every other character — punctuation, whitespace, and
     non-ASCII glyphs — is either dropped (ASCII punctuation, control
-    characters) or reversibly encoded as ``_x<hex>_`` for non-ASCII so
-    distinct labels produce distinct identifiers.
+    characters) or encoded as ``_x<hex>_`` for non-ASCII. Because spaces and
+    hyphens converge and ASCII punctuation is dropped, callers that admit
+    multiple labels must still reject output collisions.
 
     Invariants (see tests/test_parser_sanitize_contracts.py):
 
     - ASCII inputs are unchanged from pre-fix behaviour.
     - Output is always a valid Python identifier (``str.isidentifier()``).
-    - Different inputs produce different outputs (collisions across the
-      ASCII/non-ASCII boundary are eliminated).
+    - Non-ASCII code points remain distinguishable from ASCII text.
     - Idempotent: ``sanitize(sanitize(x)) == sanitize(x)``.  The encoded
       form ``_x<hex>_`` is itself all-ASCII alnum/underscore, so a second
       pass is a no-op.
 
-    Stays in sync with the frontend implementation in
-    ``frontend/src/utils/sanitizeName.ts``.
+    This is backend-owned executable identity; browser ``portableKey`` is not
+    a Python-compatible twin.
     """
     import keyword
 
@@ -123,7 +123,7 @@ def _sanitize_identifier_characters(label: str) -> str:
 
     This deliberately does not apply the function-name-specific empty,
     digit-leading, or keyword repairs.  Schema inference uses the same
-    reversible character mapping with frame-label repairs of its own.
+    character mapping with frame-label repairs of its own.
     """
     name = label.strip()
     name = name.replace(" ", "_").replace("-", "_")
@@ -148,13 +148,51 @@ def edge_input_name(edge: GraphEdge, source_node: GraphNode) -> str:
     edge uses the sanitised source-node label; source handles on ordinary
     nodes identify an output port and are not input names.
     """
-    if source_node.data.nodeType == "apiInput":
-        if edge.sourceHandle is None:
+    if str(source_node.data.nodeType) == "apiInput" and edge.sourceHandle is None:
+        # Name the malformed edge: executable_input_name has no edge context,
+        # and this identity is how callers locate the offending edge.
+        raise ValueError(f"apiInput edge {edge.id!r} has no sourceHandle/frame label")
+    return executable_input_name(
+        node_type=source_node.data.nodeType,
+        label=source_node.data.label,
+        source_handle=edge.sourceHandle,
+    )
+
+
+def canonical_downstream_identity(alias: str, port_id: str) -> str:
+    """Return the stable config identity of one public submodel output."""
+    if not alias or not port_id:
+        raise ValueError("Canonical submodel output identities require alias and port id.")
+    return _sanitize_func_name(f"{alias}__{port_id}")
+
+
+def executable_input_name(
+    *,
+    node_type: object,
+    label: str,
+    source_handle: str | None,
+    submodel_alias: str | None = None,
+) -> str:
+    """Derive one executable input identity without mutating graph data."""
+    kind = str(node_type)
+    if kind == "apiInput":
+        if source_handle is None:
+            raise ValueError("API input handles are required for executable identities.")
+        return source_handle
+    if kind == "submodel":
+        if source_handle is None or not submodel_alias:
+            raise ValueError("Submodel output identities require alias and source handle.")
+        prefix = "out__"
+        if not source_handle.startswith(prefix) or len(source_handle) == len(prefix):
             raise ValueError(
-                f"apiInput edge {edge.id!r} has no sourceHandle/frame label",
+                "Submodel output handles must use the canonical 'out__<port_id>' form."
             )
-        return edge.sourceHandle
-    return _sanitize_func_name(source_node.data.label)
+        return canonical_downstream_identity(submodel_alias, source_handle[len(prefix) :])
+    if kind == "submodelPort":
+        if source_handle is None:
+            raise ValueError("Submodel port identities require a source handle.")
+        return _sanitize_func_name(source_handle)
+    return _sanitize_func_name(label)
 
 
 def duplicate_input_names(names: list[str]) -> list[str]:
@@ -181,8 +219,8 @@ def build_instance_mapping(
 
     Priority: explicit mapping → exact name match → unambiguous substring
     match → positional. Used by the executor (alias injection) and codegen
-    (kwarg generation). The frontend mirrors this algorithm in NodePanel.tsx
-    (InstanceConfig auto-mapping).
+    (kwarg generation). The frontend's InstanceConfig auto-mapping consumes
+    authoritative identity metadata.
 
     Raises
     ------

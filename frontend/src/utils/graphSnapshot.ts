@@ -34,6 +34,16 @@ const REACT_FLOW_NODE_UI_FIELDS = [
 
 const REACT_FLOW_EDGE_UI_FIELDS = ["selected"] as const
 
+const LIVE_HISTORY_NODE_IDENTITY_FIELDS = new Set([
+  "_functionName",
+  "_defaultInputName",
+  "_sourceHandleInputNames",
+  "_configReference",
+])
+
+const LIVE_HISTORY_EDGE_IDENTITY_FIELDS = new Set(["_inputName"])
+const NO_RETAINED_METADATA = new Set<string>()
+
 function stripNodeUiFields(n: Node): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(n as unknown as Record<string, unknown>)) {
@@ -47,17 +57,65 @@ function stripEdgeUiFields(e: PipelineEdge): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(e as unknown as Record<string, unknown>)) {
     if ((REACT_FLOW_EDGE_UI_FIELDS as readonly string[]).includes(k)) continue
+    if (k === "data") {
+      const stripped = stripNodeDataMetadataFields(v)
+      if (
+        typeof stripped === "object"
+        && stripped !== null
+        && !Array.isArray(stripped)
+        && Object.keys(stripped).length === 0
+      ) continue
+      out[k] = stripped
+      continue
+    }
     out[k] = v
   }
   return out
 }
 
-function stripNodeDataMetadataFields(value: unknown): unknown {
+function stripNodeHistoryFields(n: Node): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(n as unknown as Record<string, unknown>)) {
+    if ((REACT_FLOW_NODE_UI_FIELDS as readonly string[]).includes(key)) continue
+    out[key] = key === "data"
+      ? stripNodeDataMetadataFields(value, LIVE_HISTORY_NODE_IDENTITY_FIELDS)
+      : value
+  }
+  return out
+}
+
+function stripEdgeHistoryFields(e: PipelineEdge): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(e as unknown as Record<string, unknown>)) {
+    if ((REACT_FLOW_EDGE_UI_FIELDS as readonly string[]).includes(key)) continue
+    if (key === "data") {
+      const stripped = stripNodeDataMetadataFields(
+        value,
+        LIVE_HISTORY_EDGE_IDENTITY_FIELDS,
+      )
+      if (
+        typeof stripped === "object"
+        && stripped !== null
+        && !Array.isArray(stripped)
+        && Object.keys(stripped).length === 0
+      ) continue
+      out[key] = stripped
+      continue
+    }
+    out[key] = value
+  }
+  return out
+}
+
+function stripNodeDataMetadataFields(
+  value: unknown,
+  retainedMetadata: ReadonlySet<string> = NO_RETAINED_METADATA,
+): unknown {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return value
 
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (k.startsWith("_")) continue
+    if (k.startsWith("_") && !retainedMetadata.has(k)) continue
     out[k] = v
   }
   return out
@@ -68,18 +126,39 @@ function stripGraphMetadataTransientFields(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stripGraphMetadataTransientFields)
 
   const record = value as Record<string, unknown>
-  if (typeof record.id === "string" && "data" in record) {
-    return stripNodeUiFields(record as unknown as Node)
-  }
   if (typeof record.source === "string" && typeof record.target === "string") {
     return stripEdgeUiFields(record as unknown as PipelineEdge)
+  }
+  if (typeof record.id === "string" && "data" in record) {
+    return stripNodeUiFields(record as unknown as Node)
   }
 
   const stripped: Record<string, unknown> = {}
   for (const [key, child] of Object.entries(record)) {
+    if (key === "_inputPortInputNames") continue
     stripped[key] = stripGraphMetadataTransientFields(child)
   }
   return stripped
+}
+
+function stripGraphHistoryTransientFields(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value
+  if (Array.isArray(value)) return value.map(stripGraphHistoryTransientFields)
+
+  const record = value as Record<string, unknown>
+  if (typeof record.source === "string" && typeof record.target === "string") {
+    return stripEdgeHistoryFields(record as unknown as PipelineEdge)
+  }
+  if (typeof record.id === "string" && "data" in record) {
+    return stripNodeHistoryFields(record as unknown as Node)
+  }
+
+  return Object.fromEntries(
+    Object.entries(record).map(([key, child]) => [
+      key,
+      stripGraphHistoryTransientFields(child),
+    ]),
+  )
 }
 
 function cloneGraphValue<T>(value: T, seen = new WeakMap<object, unknown>()): T {
@@ -160,9 +239,11 @@ export function serializeSnapshot(input: {
 }
 
 /**
- * Clone a history snapshot using the same persisted-graph boundary as
- * `serializeSnapshot`. React Flow presentation fields and transient node
- * metadata must not leak into undo/redo state.
+ * Clone a live history snapshot. React Flow presentation and volatile runtime
+ * fields are omitted, but server-owned editor identities are retained:
+ * undo/redo restores a live executable graph, not a persisted document.
+ * `serializeSnapshot` remains the separate boundary that strips identity
+ * metadata too.
  */
 export function cloneGraphSnapshot(input: {
   nodes: readonly Node[]
@@ -176,13 +257,15 @@ export function cloneGraphSnapshot(input: {
   submodels: Record<string, unknown>
 } {
   return {
-    nodes: input.nodes.map((node) => cloneGraphValue(stripNodeUiFields(node)) as Node),
+    nodes: input.nodes.map(
+      (node) => cloneGraphValue(stripNodeHistoryFields(node)) as Node,
+    ),
     edges: input.edges.map(
-      (edge) => cloneGraphValue(stripEdgeUiFields(edge)) as PipelineEdge,
+      (edge) => cloneGraphValue(stripEdgeHistoryFields(edge)) as PipelineEdge,
     ),
     preamble: input.preamble,
     submodels: cloneGraphValue(
-      stripGraphMetadataTransientFields(input.submodels),
+      stripGraphHistoryTransientFields(input.submodels),
     ) as Record<string, unknown>,
   }
 }

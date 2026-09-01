@@ -14,6 +14,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from haute._cache import GraphFingerprintMemo, canonical_json
+from haute._editor_identities import resolve_editor_identity
 from haute._env import float_env, int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -128,6 +129,9 @@ from haute.routes._timeouts import (
     run_blocking_with_response_timeout,
 )
 from haute.schemas import (
+    EditorIdentitiesRequest,
+    EditorIdentitiesResponse,
+    EditorIdentityResponseNode,
     ExecutionMetricsPayload,
     NodeMemoryInfo,
     NodeTimingInfo,
@@ -180,6 +184,34 @@ _TRACE_CONTRACT_REMOTE_IDENTITIES = frozenset(
 _VALUE_ERROR_REMOTE_IDENTITY = (ValueError.__module__, ValueError.__name__)
 
 router = APIRouter(prefix="/api", tags=["pipeline"])
+
+
+@router.post("/pipeline/editor-identities", response_model=EditorIdentitiesResponse)
+async def resolve_pipeline_editor_identities(
+    body: EditorIdentitiesRequest,
+) -> EditorIdentitiesResponse:
+    """Resolve editor identities without reading or writing project state."""
+    try:
+        identities: list[EditorIdentityResponseNode] = []
+        for node in body.nodes:
+            identity = resolve_editor_identity(
+                node_type=node.node_type,
+                label=node.label,
+                source_handles=node.source_handles,
+                submodel_alias=node.submodel_alias,
+            )
+            identities.append(
+                EditorIdentityResponseNode(
+                    node_id=node.node_id,
+                    function_name=identity.function_name,
+                    config_reference=identity.config_reference,
+                    default_input_name=identity.default_input_name,
+                    source_handle_input_names=identity.source_handle_input_names,
+                )
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return EditorIdentitiesResponse(identities=identities)
 
 
 # ── Timeouts (seconds) — resolved per request so env overrides set

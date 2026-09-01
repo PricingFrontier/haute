@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from haute._types import ModellingConfig
 from haute.modelling._training_job import TrainingJob
-from haute.routes import _train_service as train_service
+from haute.routes import _training_lifecycle as train_service
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import TrainService, _training_required_columns_by_node
 from haute.schemas import TrainRequest
