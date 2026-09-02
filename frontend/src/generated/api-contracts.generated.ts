@@ -54,13 +54,14 @@ export type State2 = 'available' | 'unavailable' | 'truncated';
 export type TotalCount2 = number | null;
 export type Remediation = string | null;
 export type SchemaVersion = 1;
-export type Status = 'projected' | 'admitted_eager' | 'boundary' | 'rejected' | 'not_planned';
+export type Status = 'projected' | 'admitted_eager' | 'boundary' | 'warned' | 'rejected' | 'not_planned';
 export type Strategy =
   | 'projected'
   | 'schema-all-except'
   | 'full-width-admitted-eager'
   | 'unprojected-streaming-boundary'
   | 'materialisation-boundary'
+  | 'full-width-conservative'
   | 'unsupported'
   | 'not-planned';
 

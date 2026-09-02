@@ -1,6 +1,6 @@
 import { AlertTriangle } from "lucide-react"
 import type { ExecutionMetrics } from "../api/types"
-import { buildExecutionDiagnostic, buildExecutionStrategyDiagnostic } from "../utils/executionDiagnostics"
+import { buildExecutionDiagnostic } from "../utils/executionDiagnostics"
 
 type ExecutionDiagnosticsSummaryProps = {
   metrics?: ExecutionMetrics | null
@@ -21,8 +21,7 @@ export default function ExecutionDiagnosticsSummary({
     errorCode,
   })
   if (!diagnostic) return null
-  const strategyDiagnostic = buildExecutionStrategyDiagnostic(metrics)
-  const summaryLabel = metrics?.execution_strategy?.status === "rejected" && strategyDiagnostic
+  const summaryLabel = diagnostic.kind === "strategy"
     ? "Execution strategy technical details"
     : "Technical details"
 

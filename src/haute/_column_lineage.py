@@ -32,6 +32,10 @@ class LineageOperationKind(StrEnum):
     RENAME = "rename"
     READ_COLUMNS = "read_columns"
     ROW_ONLY = "row_only"
+    DROP = "drop"
+    DROP_NULLS = "drop_nulls"
+    WITH_ROW_INDEX = "with_row_index"
+    UNPIVOT = "unpivot"
     SORT = "sort"
     UNIQUE = "unique"
     EXPLODE = "explode"
@@ -54,6 +58,9 @@ class LineageOperation:
     validate: str | None = None
     suffix: str | None = None
     subset_columns: frozenset[str] | None = frozenset()
+    strict: bool = True
+    produced_columns: tuple[str, ...] = ()
+    index_columns: frozenset[str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,15 +130,54 @@ _HORIZONTAL_PL_CALL_OUTPUTS = {
     "min_horizontal",
     "sum_horizontal",
 }
-_LITERAL_STRING_ARGUMENT_METHODS = frozenset(
+# Methods whose bare string arguments Polars 1.39.3 parses with
+# ``str_as_lit=True`` or as plain format/configuration strings, keyed by the
+# receiver namespace they must be called on.  The match is receiver-aware, so a
+# same-named method on another namespace does not inherit the registration.
+# Keep this registry closed: ``then``, ``over``, ``is_in``, ``contains_any``,
+# ``to_integer`` and friends intentionally stay out because a bare string names
+# another column there.  ``tests/test_column_lineage.py`` audits every entry
+# against the pinned Polars source.
+_LITERAL_STRING_ARGUMENT_METHODS: Mapping[str, frozenset[str]] = MappingProxyType(
     {
-        # String namespace parsing formats are scalar configuration, not
-        # column expressions.  Keep this registry closed: methods such as
-        # ``then`` and ``over`` intentionally remain unsupported because a
-        # bare string names another column there.
-        "to_date",
-        "to_datetime",
-        "strptime",
+        "str": frozenset(
+            {
+                "contains",
+                "count_matches",
+                "ends_with",
+                "extract",
+                "extract_all",
+                "extract_groups",
+                "find",
+                "json_path_match",
+                "replace",
+                "replace_all",
+                "split",
+                "split_exact",
+                "splitn",
+                "starts_with",
+                "strip_chars",
+                "strip_chars_end",
+                "strip_chars_start",
+                "strip_prefix",
+                "strip_suffix",
+                "strptime",
+                "to_date",
+                "to_datetime",
+                "to_time",
+            }
+        ),
+        "dt": frozenset(
+            {
+                "convert_time_zone",
+                "offset_by",
+                "replace_time_zone",
+                "round",
+                "strftime",
+                "to_string",
+                "truncate",
+            }
+        ),
     }
 )
 
@@ -229,8 +275,24 @@ def _literal_bool(node: ast.AST) -> bool | None:
     return None
 
 
-def _literal_columns(node: ast.AST) -> frozenset[str] | None:
+def _literal_column_name(node: ast.AST) -> str | None:
+    """Return a bare string Polars reads as exactly one column name.
+
+    ``*`` and ``^...$`` are selector syntax everywhere Polars accepts a bare
+    column name (``select``, ``drop``, ``drop_nulls``, ``sort``, ``unique``,
+    ``explode``, ``group_by``, lazy ``unpivot``, horizontal helpers), expanding
+    to zero or many columns at runtime. They therefore never prove one literal
+    column, and every consumer that reads a bare string as a column must fail
+    closed on them rather than size or project a single made-up name.
+    """
     name = _literal_string(node)
+    if name is None or name == "*" or (name.startswith("^") and name.endswith("$")):
+        return None
+    return name
+
+
+def _literal_columns(node: ast.AST) -> frozenset[str] | None:
+    name = _literal_column_name(node)
     if name is not None:
         return frozenset({name})
     if isinstance(node, (ast.List, ast.Tuple)):
@@ -275,10 +337,7 @@ def _pl_col_name(node: ast.AST) -> str | None:
         and not node.keywords
     ):
         return None
-    name = _literal_string(node.args[0])
-    if name is None or name == "*" or (name.startswith("^") and name.endswith("$")):
-        return None
-    return name
+    return _literal_column_name(node.args[0])
 
 
 def _polars_call_name(node: ast.Call) -> str | None:
@@ -375,9 +434,10 @@ def _collect_string_expression_columns(node: ast.AST, columns: set[str]) -> bool
     """
     if isinstance(node, ast.Constant):
         if isinstance(node.value, str):
-            if not node.value:
+            name = _literal_column_name(node)
+            if name is None:
                 return False
-            columns.add(node.value)
+            columns.add(name)
         return True
     if isinstance(node, (ast.List, ast.Tuple)):
         return all(_collect_string_expression_columns(element, columns) for element in node.elts)
@@ -475,7 +535,10 @@ def _referenced_columns(node: ast.AST) -> frozenset[str] | None:
                 and isinstance(child.func.value, ast.Attribute)
                 and child.func.value.attr == "name"
             )
-            if method == "alias" or is_name_suffix or method in _LITERAL_STRING_ARGUMENT_METHODS:
+            is_literal_argument_method = isinstance(child.func.value, ast.Attribute) and (
+                method in _LITERAL_STRING_ARGUMENT_METHODS.get(child.func.value.attr, frozenset())
+            )
+            if method == "alias" or is_name_suffix or is_literal_argument_method:
                 continue
             # Polars expression methods are inconsistent about whether bare
             # strings are literals or column expressions (for example,
@@ -621,7 +684,8 @@ def _normalise_expression_outputs(
         # Polars treats a bare string as a column expression in both
         # ``select`` and ``with_columns``.  Lists/tuples are accepted only by
         # select; with_columns requires each positional expression directly.
-        name = _literal_string(expression)
+        # A selector string (``*``/regex) is not one column and fails below.
+        name = _literal_column_name(expression)
         if name is not None:
             outputs.append((name, frozenset({name})))
             return True
@@ -645,7 +709,7 @@ def _normalise_expression_outputs(
     for keyword in call.keywords:
         if keyword.arg is None:
             return None
-        bare_column = _literal_string(keyword.value)
+        bare_column = _literal_column_name(keyword.value)
         if bare_column is not None:
             references = frozenset({bare_column})
         elif _may_evaluate_to_python_string(keyword.value):
@@ -718,7 +782,7 @@ def _parse_group_by_agg(
     for keyword in aggregate_call.keywords:
         if keyword.arg is None:
             return _ParseFailure("dynamic_aggregate", "agg")
-        bare_column = _literal_string(keyword.value)
+        bare_column = _literal_column_name(keyword.value)
         if bare_column is not None:
             references = frozenset({bare_column})
         elif _may_evaluate_to_python_string(keyword.value):
@@ -833,6 +897,147 @@ def _parse_join(
         how=how,
         validate=validate,
         suffix=suffix,
+    )
+
+
+def _is_literal_none(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _parse_drop(call: ast.Call) -> LineageOperation | _ParseFailure:
+    dropped: set[str] = set()
+    strict = True
+    for node in call.args:
+        parsed = _literal_columns(node)
+        if parsed is None:
+            return _ParseFailure("dynamic_drop", "drop")
+        dropped.update(parsed)
+    for keyword in call.keywords:
+        literal = None if keyword.arg != "strict" else _literal_bool(keyword.value)
+        if literal is None:
+            return _ParseFailure("dynamic_drop", "drop")
+        strict = literal
+    if not dropped:
+        return _ParseFailure("dynamic_drop", "drop")
+    return LineageOperation(
+        kind=LineageOperationKind.DROP,
+        method="drop",
+        subset_columns=frozenset(dropped),
+        # Polars requires every named column to exist for a strict drop.
+        referenced_columns=frozenset(dropped) if strict else frozenset(),
+        strict=strict,
+    )
+
+
+def _parse_drop_nulls(call: ast.Call) -> LineageOperation | _ParseFailure:
+    if len(call.args) > 1:
+        return _ParseFailure("dynamic_drop_nulls", "drop_nulls")
+    subset_node: ast.AST | None = call.args[0] if call.args else None
+    for keyword in call.keywords:
+        if keyword.arg != "subset" or subset_node is not None:
+            return _ParseFailure("dynamic_drop_nulls", "drop_nulls")
+        subset_node = keyword.value
+    subset: frozenset[str] | None = None
+    if subset_node is not None and not _is_literal_none(subset_node):
+        subset = _literal_columns(subset_node)
+        if subset is None:
+            return _ParseFailure("dynamic_drop_nulls", "drop_nulls")
+    return LineageOperation(
+        kind=LineageOperationKind.DROP_NULLS,
+        method="drop_nulls",
+        subset_columns=subset,
+        referenced_columns=subset if subset is not None else frozenset(),
+    )
+
+
+def _parse_with_row_index(call: ast.Call) -> LineageOperation | _ParseFailure:
+    failure = _ParseFailure("dynamic_with_row_index", "with_row_index")
+    if len(call.args) > 2:
+        return failure
+    name_node: ast.AST | None = call.args[0] if call.args else None
+    offset_node: ast.AST | None = call.args[1] if len(call.args) > 1 else None
+    for keyword in call.keywords:
+        if keyword.arg == "name" and name_node is None:
+            name_node = keyword.value
+        elif keyword.arg == "offset" and offset_node is None:
+            offset_node = keyword.value
+        else:
+            return failure
+    name = "index" if name_node is None else _literal_string(name_node)
+    if name is None:
+        return failure
+    if offset_node is not None and not (
+        isinstance(offset_node, ast.Constant)
+        and isinstance(offset_node.value, int)
+        and not isinstance(offset_node.value, bool)
+        and offset_node.value >= 0
+    ):
+        return failure
+    return LineageOperation(
+        kind=LineageOperationKind.WITH_ROW_INDEX,
+        method="with_row_index",
+        produced_columns=(name,),
+    )
+
+
+def _parse_unpivot(call: ast.Call, *, cardinality_only: bool) -> LineageOperation | _ParseFailure:
+    failure = _ParseFailure("dynamic_unpivot", "unpivot")
+    if len(call.args) > 1:
+        return failure
+    on_node: ast.AST | None = call.args[0] if call.args else None
+    index_node: ast.AST | None = None
+    variable_node: ast.AST | None = None
+    value_node: ast.AST | None = None
+    for keyword in call.keywords:
+        if keyword.arg == "on" and on_node is None:
+            on_node = keyword.value
+        elif keyword.arg == "index" and index_node is None:
+            index_node = keyword.value
+        elif keyword.arg == "variable_name" and variable_node is None:
+            variable_node = keyword.value
+        elif keyword.arg == "value_name" and value_node is None:
+            value_node = keyword.value
+        else:
+            return failure
+
+    on: frozenset[str] | None = None
+    if on_node is not None and not _is_literal_none(on_node):
+        on = _literal_columns(on_node)
+        if not on:
+            return failure
+    index: frozenset[str] = frozenset()
+    if index_node is not None and not _is_literal_none(index_node):
+        literal_index = _literal_columns(index_node)
+        if literal_index is None:
+            return failure
+        index = literal_index
+    names: list[str] = []
+    for node, default in ((variable_node, "variable"), (value_node, "value")):
+        if node is None or _is_literal_none(node):
+            names.append(default)
+            continue
+        literal_name = _literal_string(node)
+        if literal_name is None:
+            return failure
+        names.append(literal_name)
+    variable_name, value_name = names
+    if on is None and cardinality_only:
+        # Cardinality analysis never receives an input schema, so an omitted
+        # ``on`` list has no resolvable column count.
+        return failure
+    if (
+        variable_name == value_name
+        or {variable_name, value_name} & index
+        or (on is not None and on & index)
+    ):
+        return _ParseFailure("invalid_unpivot", "unpivot")
+    return LineageOperation(
+        kind=LineageOperationKind.UNPIVOT,
+        method="unpivot",
+        subset_columns=on,
+        index_columns=index,
+        produced_columns=(variable_name, value_name),
+        referenced_columns=(on or frozenset()) | index,
     )
 
 
@@ -951,7 +1156,7 @@ def _parse_call_sequence(
                     # A bare string predicate reads that boolean column, and
                     # an unseeable value could evaluate to one. ``fill_null``
                     # values are literals, so only ``filter`` needs either.
-                    predicate = _literal_string(argument)
+                    predicate = _literal_column_name(argument)
                     if predicate is not None:
                         collected.add(predicate)
                         continue
@@ -1058,6 +1263,18 @@ def _parse_call_sequence(
                     referenced_columns=frozenset(explode_columns),
                 )
             )
+        elif method in {"drop", "drop_nulls", "with_row_index", "unpivot"}:
+            if method == "drop":
+                parsed_frame = _parse_drop(call)
+            elif method == "drop_nulls":
+                parsed_frame = _parse_drop_nulls(call)
+            elif method == "with_row_index":
+                parsed_frame = _parse_with_row_index(call)
+            else:
+                parsed_frame = _parse_unpivot(call, cardinality_only=cardinality_only)
+            if isinstance(parsed_frame, _ParseFailure):
+                return [], parsed_frame
+            operations.append(parsed_frame)
         elif method == "join":
             parsed_join = _parse_join(call, input_names, cardinality_only=cardinality_only)
             if isinstance(parsed_join, _ParseFailure):
@@ -1245,7 +1462,39 @@ def _evaluate_program(
             schema = _join_output_schema(schema, right_schema, operation)
             if schema is None:
                 return _ParseFailure("join_schema_ambiguous", operation.method)
-        # Read/row/sort/unique/explode preserve the schema.
+        elif operation.kind is LineageOperationKind.DROP:
+            if schema is not None:
+                # A strict drop's dropped columns are already validated above
+                # through ``referenced_columns``.
+                assert operation.subset_columns is not None
+                schema = schema - operation.subset_columns
+        elif operation.kind is LineageOperationKind.WITH_ROW_INDEX:
+            if schema is None:
+                # Polars raises DuplicateError when the index name already
+                # exists. Without an exact schema, projecting that column away
+                # could turn the failure into a success, so fail closed.
+                return _ParseFailure("with_row_index_schema_unknown", operation.method)
+            index_name = operation.produced_columns[0]
+            if index_name in schema:
+                return _ParseFailure("invalid_with_row_index", operation.method)
+            schema = schema | {index_name}
+        elif operation.kind is LineageOperationKind.UNPIVOT:
+            assert operation.index_columns is not None
+            produced = frozenset(operation.produced_columns)
+            if schema is not None:
+                resolved_on = (
+                    operation.subset_columns
+                    if operation.subset_columns is not None
+                    else schema - operation.index_columns
+                )
+                if not resolved_on:
+                    return _ParseFailure("invalid_unpivot", operation.method)
+                schema = operation.index_columns | produced
+            elif operation.subset_columns is not None:
+                # Literal ``on``/``index`` name the whole output regardless of
+                # the upstream schema.
+                schema = operation.index_columns | produced
+        # Read/row/sort/unique/explode/drop_nulls preserve the schema.
         evaluated.append(
             _EvaluatedOperation(
                 operation=operation,
@@ -1364,6 +1613,28 @@ def analyze_polars_lineage(
                 demand |= set(item.before_schema)
             else:
                 demand |= set(operation.subset_columns)
+        elif operation.kind is LineageOperationKind.DROP:
+            assert operation.subset_columns is not None
+            demand = (demand - set(operation.subset_columns)) | set(operation.referenced_columns)
+        elif operation.kind is LineageOperationKind.DROP_NULLS:
+            if operation.subset_columns is None:
+                if item.before_schema is None:
+                    return _unsupported("drop_nulls_schema_unknown", operation.method)
+                demand |= set(item.before_schema)
+            else:
+                demand |= set(operation.subset_columns)
+        elif operation.kind is LineageOperationKind.WITH_ROW_INDEX:
+            demand -= {operation.produced_columns[0]}
+        elif operation.kind is LineageOperationKind.UNPIVOT:
+            assert operation.index_columns is not None
+            if operation.subset_columns is not None:
+                # Polars evaluates every ``on`` column regardless of which
+                # unpivoted values a later operation still needs.
+                demand = set(operation.index_columns) | set(operation.subset_columns)
+            elif item.before_schema is None:
+                return _unsupported("unpivot_schema_unknown", operation.method)
+            else:
+                demand = set(item.before_schema)
         elif operation.kind is LineageOperationKind.GROUP_BY_AGG:
             outputs = {name for name, _refs in operation.output_to_inputs}
             # As above, the group-by transfer is exact and validates demand.
@@ -1461,7 +1732,16 @@ def analyze_polars_cardinality(
             current = max(current, 1)
             peak = max(peak, current)
             evidence.append(f"operation[{index}].scalar_empty_frame_upper_bound={current}")
-        # Every other accepted operation is row-preserving or row-reducing.
+        elif operation.kind is LineageOperationKind.UNPIVOT:
+            # Cardinality parsing accepts ``unpivot`` only with a literal
+            # non-empty ``on`` list, which is exactly the expansion factor.
+            assert operation.subset_columns is not None
+            factor = len(operation.subset_columns)
+            current = current * factor
+            peak = max(peak, current)
+            evidence.append(f"operation[{index}].unpivot_factor={factor}")
+        # Every other accepted operation — drop, drop_nulls, with_row_index
+        # included — is row-preserving or row-reducing.
 
     evidence.extend(
         (

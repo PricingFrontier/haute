@@ -693,6 +693,26 @@ def _assert_simple_join_key_dtypes_compatible(
                 )
 
 
+def _conservative_strategy_passthrough(
+    previous_diagnostic: projection_planner.ExecutionStrategyDiagnostic,
+) -> dict[str, Any]:
+    """Carry a conservative strategy through a runtime projection rebuild.
+
+    ``full-width-conservative`` is decided once, at admission time, from the
+    absence of an estimate plus the presence of a hard worker cap.  A refined
+    plan cannot re-derive it, so the decision is passed through unchanged.
+    """
+
+    conservative = projection_planner.ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+    if previous_diagnostic.strategy is not conservative:
+        return {}
+    return {
+        "strategy": previous_diagnostic.strategy,
+        "reason_code": previous_diagnostic.reason_code,
+        "remediation": previous_diagnostic.remediation,
+    }
+
+
 def _runtime_join_demands(
     node: GraphNode,
     incoming_edges: Sequence[GraphEdge],
@@ -1412,6 +1432,8 @@ def _execute_lazy(
                     estimate_admission_basis=previous_diagnostic.estimate_admission_basis,
                     headroom_bytes=previous_diagnostic.headroom_bytes,
                     assumptions=previous_diagnostic.assumptions,
+                    boundary_operators=group_by_operators,
+                    **_conservative_strategy_passthrough(previous_diagnostic),
                 )
                 execution_context.projection_plan = public_strategy_result
             for incoming_edge, input_lf in zip(incoming_edges, input_lfs, strict=True):
@@ -2266,6 +2288,10 @@ def _execute_eager_core(
                                 ),
                                 headroom_bytes=previous_diagnostic.headroom_bytes,
                                 assumptions=previous_diagnostic.assumptions,
+                                boundary_operators=(
+                                    projection_planner.group_by_operators_by_node(order, node_map)
+                                ),
+                                **_conservative_strategy_passthrough(previous_diagnostic),
                             )
                         )
 

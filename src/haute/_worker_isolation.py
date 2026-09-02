@@ -709,9 +709,10 @@ def _isolated_worker_entrypoint(
     require_memory_limit: bool = False,
 ) -> None:
     lease = NativeMemoryLease()
+    applied = False
     try:
         if memory_limit_bytes is not None:
-            lease.apply(memory_limit_bytes, required=require_memory_limit)
+            applied = lease.apply(memory_limit_bytes, required=require_memory_limit)
     except BaseException as exc:
         envelope = _worker_error_envelope(exc)
         payload = _serialise_worker_payload(envelope)
@@ -719,7 +720,7 @@ def _isolated_worker_entrypoint(
         result_queue.close()
         result_queue.join_thread()
         return
-    with native_memory_backend_scope(lease.backend):
+    with native_memory_backend_scope(lease.backend if applied else None):
         try:
             envelope = ("ok", function(*args, **kwargs))
         except BaseException as exc:

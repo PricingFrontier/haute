@@ -18,6 +18,11 @@ The strategy shown for a run uses one of these outcomes:
   stream, but cannot safely project through this point.
 - **Materialisation boundary**: the operation needs a complete in-memory
   result. It is admitted only when its estimate fits the available headroom.
+- **Warned**: the operation needs a complete in-memory result, but Haute could
+  not estimate it. Because the run executes inside a worker with a hard memory
+  cap, Haute continued under the run's full reserved memory envelope and
+  reported the missing proof as a warning instead of stopping. The result is
+  correct, but the run may use more memory and time than an estimated plan.
 - **Rejected**: Haute will not run the shape for this profile because it cannot
   establish a safe bounded strategy.
 - **Not planned**: this surface does not yet use execution planning. It is not
@@ -48,13 +53,18 @@ original development-time source to remain readable.
 
 Haute never computes a global group-by independently in each generic chunk. When a
 workflow uses chunking, it executes the aggregation once under the same admission
-contract and chunks only a proven row-local suffix. If the estimate is unavailable or
-too large, Haute returns a typed memory/admission diagnostic rather than producing a
-partial or approximate aggregate.
+contract and chunks only a proven row-local suffix. If the estimate is too large,
+Haute returns a typed memory/admission diagnostic rather than producing a partial or
+approximate aggregate. If the estimate is unavailable, the outcome depends on where
+the run executes. Previews, Data Output writes, and Explore run inside a worker with
+a hard memory cap, so Haute runs the aggregation once under the run's full reserved
+memory envelope and reports a warning that names the missing proof. Training,
+optimiser work, and deployment run without that cap, so they still return the typed
+diagnostic, and its remediation says so.
 
 ## Reading diagnostics
 
-The compact profile identifies the strategy. For a boundary or rejection, read
+The compact profile identifies the strategy. For a boundary, warning, or rejection, read
 the **blocking node** and **operator** first, then the **estimated cost** and
 the proposed **remediation**. For example, an estimate that exceeds headroom
 usually calls for narrowing columns, filtering rows earlier, or changing the

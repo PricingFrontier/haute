@@ -190,6 +190,63 @@ def _make_optimiser_graph(data_path: str, config: dict | None = None) -> dict:
     return graph.model_dump()
 
 
+def _make_streaming_auto_range_graph(source_path: str, *, scenario_code: str | None = None) -> dict:
+    """Build source -> scenarioExpander -> optimiser, eligible for chunked auto-range."""
+    scenario_config: dict = {
+        "quote_id": "quote_id",
+        "column_name": "premium_multiplier",
+        "min_value": 0.9,
+        "max_value": 1.1,
+        "steps": 2,
+        "step_column": "scenario_index",
+    }
+    if scenario_code is not None:
+        scenario_config["code"] = scenario_code
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": _snapshot_parquet_data_input(source_path),
+                    },
+                },
+                {
+                    "id": "scenario",
+                    "data": {
+                        "label": "scenario",
+                        "nodeType": "scenarioExpander",
+                        "config": scenario_config,
+                    },
+                },
+                {
+                    "id": "opt",
+                    "data": {
+                        "label": "optimiser",
+                        "nodeType": "optimiser",
+                        "config": {
+                            "mode": "online",
+                            "objective": "not_needed_for_auto_range",
+                            "constraints": {"premium": {"min": 0.0}},
+                            "quote_id": "quote_id",
+                            "scenario_index": "scenario_index",
+                            "scenario_value": "premium_multiplier",
+                            "chunk_size": 2,
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "scenario").model_dump(),
+                make_edge("scenario", "opt").model_dump(),
+            ],
+        }
+    )
+    return graph.model_dump()
+
+
 def _make_estimate_projection_impossible_graph(left_path: str, right_path: str) -> dict:
     """Build a fan-in optimiser graph that needs parent ownership metadata."""
     graph = make_graph(
@@ -3239,7 +3296,7 @@ class TestEstimateRoute:
             }
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -3334,7 +3391,7 @@ class TestEstimateRoute:
             mode="online",
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -3434,7 +3491,7 @@ class TestEstimateRoute:
             mode="online",
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -3516,7 +3573,7 @@ class TestEstimateRoute:
             }
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -3603,7 +3660,7 @@ class TestEstimateRoute:
             }
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -3715,7 +3772,7 @@ class TestEstimateRoute:
             }
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -3815,7 +3872,7 @@ class TestEstimateRoute:
             }
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -4037,7 +4094,7 @@ class TestEstimateRoute:
         service = OptimiserSolveService(JobStore())
 
         with patch(
-            "haute.routes._optimiser_service._build_streaming_auto_range_plan",
+            "haute.chunking.chunk_plan",
             side_effect=ProjectionImpossibleError("missing parent ownership"),
         ):
             prepared = service._prepare_frontier_auto_range(body)
@@ -4067,81 +4124,138 @@ class TestEstimateRoute:
         ):
             service._prepare_frontier_auto_range(body)
 
-    def test_frontier_auto_range_prepare_does_not_fallback_after_chunk_plan_rejection(
+    def test_frontier_auto_range_prepare_records_chunk_plan_rejection_as_fallback(
         self,
         tmp_path,
     ):
-        """Eligible streaming shapes must fail loudly if the chunk planner rejects them."""
+        """A chunk-plan rejection loses the optimisation, it does not fail the request."""
+        from haute.errors import ChunkUserCodeUnsupportedError
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         source_path = tmp_path / "quotes.parquet"
         pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(str(source_path)),
-                        },
-                    },
-                    {
-                        "id": "scenario",
-                        "data": {
-                            "label": "scenario",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "column_name": "premium_multiplier",
-                                "steps": 2,
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["premium_multiplier", "scenario_index"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed",
-                                "constraints": {"premium": {"min": 0.0}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "premium_multiplier",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "scenario").model_dump(),
-                    make_edge("scenario", "opt").model_dump(),
-                ],
-            }
+        graph = _make_streaming_auto_range_graph(str(source_path))
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+
+        error = ChunkUserCodeUnsupportedError(
+            "forced chunk-plan rejection",
+            node_id="scenario",
+            node_type="scenarioExpander",
+            reason="unsupported_frame_method",
+            blocking_operator="sort",
+            line=1,
+            column=5,
+        )
+        with patch("haute.chunking.chunk_plan", side_effect=error):
+            prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
+
+        assert prepared["streaming_plan"] is None
+        fallback = prepared["chunk_fallback"]
+        assert fallback["code"] == "chunk_plan_unsupported"
+        assert fallback["node_id"] == "scenario"
+        assert fallback["reason"] == "unsupported_frame_method"
+        assert fallback["operator"] == "sort"
+        assert fallback["line"] == 1
+        assert fallback["column"] == 5
+
+    def test_frontier_auto_range_prepare_records_user_code_ineligibility_as_fallback(
+        self,
+        tmp_path,
+    ):
+        """Ineligible scenario post-processing code names the blocking operator."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        source_path = tmp_path / "quotes.parquet"
+        pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
+        graph = _make_streaming_auto_range_graph(
+            str(source_path),
+            scenario_code="df = df.sort('quote_id')",
         )
         body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
 
-        from haute.errors import ChunkPlanUnsupportedError
+        prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
 
-        with (
-            patch(
-                "haute.chunking.chunk_plan",
-                side_effect=ChunkPlanUnsupportedError("forced chunk-plan rejection"),
-            ),
-            pytest.raises(HTTPException) as exc_info,
-        ):
-            OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
+        assert prepared["streaming_plan"] is None
+        fallback = prepared["chunk_fallback"]
+        assert fallback["code"] == "chunk_user_code_ineligible"
+        assert fallback["node_id"] == "scenario"
+        assert fallback["reason"] == "unsupported_frame_method"
+        assert fallback["operator"] == "sort"
+        assert fallback["line"] == 1
 
-        assert exc_info.value.status_code == 422
-        assert "bounded streaming mode" in str(exc_info.value.detail)
-        assert "forced chunk-plan rejection" in str(exc_info.value.detail)
+    def test_frontier_auto_range_job_warns_about_recorded_chunk_fallback(
+        self,
+        tmp_path,
+    ):
+        """The classic path completes and reports the lost chunk optimisation."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import (
+            OptimiserFrontierAutoRangeRequest,
+            OptimiserFrontierAutoRangeStatusResponse,
+        )
+
+        source_path = tmp_path / "quotes.parquet"
+        pl.DataFrame({"quote_id": ["q1", "q2"], "premium": [100.0, 200.0]}).write_parquet(
+            source_path
+        )
+        graph = _make_streaming_auto_range_graph(
+            str(source_path),
+            scenario_code="df = df.sort('quote_id')",
+        )
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        prepared = service._prepare_frontier_auto_range(body)
+        assert prepared["streaming_plan"] is None
+        assert prepared["chunk_fallback"] is not None
+
+        service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+        job = store.require_job(job_id)
+        assert job["status"] == "completed"
+        result = job["result"]
+        assert "scenario" in result["warning"]
+        assert prepared["chunk_fallback"]["reason"] in result["warning"]
+        assert result["chunk_fallback"]["code"] == prepared["chunk_fallback"]["code"]
+
+        status = service.frontier_auto_range_status(job_id)
+        validated = OptimiserFrontierAutoRangeStatusResponse.model_validate(status.model_dump())
+        assert validated.result is not None
+        assert validated.result.chunk_fallback == result["chunk_fallback"]
+
+    def test_frontier_auto_range_job_without_fallback_has_no_warning(
+        self,
+        tmp_path,
+    ):
+        """A classic run with no lost optimisation carries neither warning nor payload."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        source_path = tmp_path / "quotes.parquet"
+        pl.DataFrame({"quote_id": ["q1", "q2"], "premium": [100.0, 200.0]}).write_parquet(
+            source_path
+        )
+        graph = _make_streaming_auto_range_graph(str(source_path))
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        prepared = service._prepare_frontier_auto_range(body)
+        prepared["streaming_plan"] = None
+        assert prepared["chunk_fallback"] is None
+
+        service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+        result = store.require_job(job_id)["result"]
+        assert result["warning"] is None
+        assert result["chunk_fallback"] is None
 
     def test_frontier_auto_range_prepare_prefers_auto_range_chunk_override(
         self,
@@ -16087,3 +16201,70 @@ class TestOptimiserMutationBoundaries:
         assert points[0]["lambda_volume"] == 0.0
         # Non-trivial precision is preserved (no integer truncation).
         assert points[1]["lambda_volume"] == pytest.approx(0.7128, rel=1e-6)
+
+
+def test_generic_chunk_plan_rejection_keeps_the_rejected_node(tmp_path) -> None:
+    """A rejection without a public payload still names the node the planner rejected."""
+    from haute.errors import ChunkPlanUnsupportedError
+    from haute.routes._job_store import JobStore
+    from haute.routes._optimiser_service import OptimiserSolveService
+    from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+    source_path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
+    graph = _make_streaming_auto_range_graph(str(source_path))
+    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+
+    error = ChunkPlanUnsupportedError(
+        "Node type is not chunk-safe in the V1 chunk contract.",
+        node_id="scenario",
+        node_type="scenarioExpander",
+    )
+    with patch("haute.chunking.chunk_plan", side_effect=error):
+        prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
+
+    assert prepared["streaming_plan"] is None
+    fallback = prepared["chunk_fallback"]
+    assert fallback["code"] == "chunk_plan_unsupported"
+    assert fallback["node_id"] == "scenario"
+    assert fallback["operator"] == "scenarioExpander"
+    assert fallback["reason"] == "Node type is not chunk-safe in the V1 chunk contract."
+    assert "at node 'scenario'" in fallback["message"]
+
+
+@pytest.mark.parametrize(
+    ("config", "expected_reason"),
+    [
+        ({"model_reuse_lifetime": "request"}, "model_reuse_lifetime"),
+        ({"model_reuse_lifetime": "batch", "code": "df = df"}, "post_processing_code"),
+        ({"model_reuse_lifetime": "batch", "column_renames": {"a": "b"}}, "column_renames"),
+    ],
+)
+def test_model_score_fallback_names_its_actual_blocker(config: dict, expected_reason: str) -> None:
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.routes._optimiser_service import _streaming_auto_range_node_is_eligible
+
+    node = GraphNode(
+        id="score",
+        data=NodeData(label="score", nodeType=NodeType.MODEL_SCORE, config=config),
+    )
+
+    eligible, fallback = _streaming_auto_range_node_is_eligible(node, frame_names=("df",))
+
+    assert eligible is False
+    assert fallback is not None
+    assert fallback.code == "model_score_ineligible"
+    assert fallback.node_id == "score"
+    assert fallback.operator == "modelScore"
+    assert fallback.reason == expected_reason
+    assert expected_reason in fallback.message
+
+    clean = GraphNode(
+        id="score",
+        data=NodeData(
+            label="score",
+            nodeType=NodeType.MODEL_SCORE,
+            config={"model_reuse_lifetime": "batch"},
+        ),
+    )
+    assert _streaming_auto_range_node_is_eligible(clean, frame_names=("df",)) == (True, None)

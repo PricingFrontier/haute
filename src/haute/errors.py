@@ -141,6 +141,45 @@ class ChunkPlanUnsupportedError(BoundedMemoryUnsupportedError):
     """Raised when a graph cannot prove a safe chunked execution plan."""
 
 
+class ChunkUserCodeUnsupportedError(ChunkPlanUnsupportedError):
+    """Raised when user Polars code is not provably chunk-local.
+
+    The public payload copies the classifier decision so callers can route the
+    work to the full executor and surface a warning naming the blocking
+    operator, closed reason, and source location without scraping the message.
+    """
+
+    error_code = "chunk_user_code_unsupported"
+    public_fields = ("node_id", "node_type", "reason", "blocking_operator", "line", "column")
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        node_id: str,
+        node_type: str,
+        reason: str,
+        blocking_operator: str | None,
+        line: int | None,
+        column: int | None,
+    ) -> None:
+        self.node_id = node_id
+        self.node_type = node_type
+        self.reason = reason
+        self.blocking_operator = blocking_operator
+        self.line = line
+        self.column = column
+        super().__init__(
+            message,
+            node_id=node_id,
+            node_type=node_type,
+            reason=reason,
+            blocking_operator=blocking_operator,
+            line=line,
+            column=column,
+        )
+
+
 class ChunkMemoryRiskError(BoundedMemoryUnsupportedError):
     """Raised when the minimum executable chunk exceeds its byte budget."""
 

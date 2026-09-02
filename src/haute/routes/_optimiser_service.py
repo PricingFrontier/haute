@@ -231,6 +231,7 @@ class _FrontierAutoRangeRunningJob(RunningJobFields):
     progress: float
     config: dict[str, Any]
     node_label: str
+    chunk_fallback: dict[str, Any] | None
 
 
 _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
@@ -558,6 +559,54 @@ class _StreamingAutoRangePlan:
     required_output_columns_by_node: Mapping[str, frozenset[str] | set[str] | None]
     base_required_columns: frozenset[str] | None
     chunk_plan: ChunkPlan
+
+
+@dataclass(frozen=True, slots=True)
+class _ChunkFallback:
+    """A lost chunk optimisation recorded on an auto-range job.
+
+    Chunk ineligibility never fails the request: the classic full-lazy path
+    produces identical results, so the job records why chunking was lost and
+    the completed result carries the message as a warning.
+    """
+
+    code: str
+    node_id: str | None
+    operator: str | None
+    reason: str | None
+    line: int | None
+    column: int | None
+    message: str
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "node_id": self.node_id,
+            "operator": self.operator,
+            "reason": self.reason,
+            "line": self.line,
+            "column": self.column,
+            "message": self.message,
+        }
+
+
+def _chunk_fallback_message(
+    *,
+    reason: str | None,
+    node_id: str | None,
+    operator: str | None,
+    line: int | None,
+) -> str:
+    detail = reason or "chunking unavailable"
+    if node_id:
+        detail = f"{detail} at node '{node_id}'"
+    qualifiers = [part for part in (operator, f"line {line}" if line is not None else None) if part]
+    if qualifiers:
+        detail = f"{detail} ({', '.join(qualifiers)})"
+    return (
+        f"Auto-range ran without chunking: {detail}; "
+        "results are identical but memory use may be higher."
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1015,22 +1064,66 @@ def _streaming_auto_range_node_is_eligible(
     node: GraphNode,
     *,
     frame_names: Iterable[str],
-) -> bool:
+) -> tuple[bool, _ChunkFallback | None]:
+    """Return chunk eligibility for one node plus any lost-optimisation record.
+
+    Structural rejections (a node type the streaming path never handles) are
+    silent; a node whose user code cannot be proven chunk-local reports the
+    classifier decision so the job can warn about the lost optimisation.
+    """
+    from haute.chunking import classify_chunk_local_polars_code
+
     node_type = node.data.nodeType
     config = node.data.config
     if node_type not in _STREAMING_AUTO_RANGE_ALLOWED_NODE_TYPES:
-        return False
+        return False, None
     if node_type == NodeType.MODEL_SCORE:
         # Model-score post-processing and column renames can be arbitrary
         # user-defined transforms; keep them on the full lazy path for now.
-        return (
-            config.get("model_reuse_lifetime") == "batch"
-            and not (config.get("code") or "").strip()
-            and not config.get("column_renames")
+        # Each ineligibility has its own stable reason so the warning names the
+        # actual blocker rather than a blanket "post-processing" label.
+        if config.get("model_reuse_lifetime") != "batch":
+            model_score_reason = "model_reuse_lifetime"
+        elif (config.get("code") or "").strip():
+            model_score_reason = "post_processing_code"
+        elif config.get("column_renames"):
+            model_score_reason = "column_renames"
+        else:
+            return True, None
+        return False, _ChunkFallback(
+            code="model_score_ineligible",
+            node_id=node.id,
+            operator="modelScore",
+            reason=model_score_reason,
+            line=None,
+            column=None,
+            message=_chunk_fallback_message(
+                reason=model_score_reason,
+                node_id=node.id,
+                operator="modelScore",
+                line=None,
+            ),
         )
-    if node_type == NodeType.SCENARIO_EXPANDER:
-        return _looks_chunk_local_user_code(config.get("code"), frame_names=("df",))
-    return _looks_chunk_local_user_code(config.get("code"), frame_names=frame_names)
+    decision = classify_chunk_local_polars_code(
+        config.get("code"),
+        frame_names=("df",) if node_type == NodeType.SCENARIO_EXPANDER else frame_names,
+    )
+    if decision.eligible:
+        return True, None
+    return False, _ChunkFallback(
+        code="chunk_user_code_ineligible",
+        node_id=node.id,
+        operator=decision.blocking_operator,
+        reason=decision.reason,
+        line=decision.line,
+        column=decision.column,
+        message=_chunk_fallback_message(
+            reason=decision.reason,
+            node_id=node.id,
+            operator=decision.blocking_operator,
+            line=decision.line,
+        ),
+    )
 
 
 def _upstream_slice_contains_node_type(
@@ -1062,24 +1155,24 @@ def _build_streaming_auto_range_plan(
     *,
     mode: str,
     required_columns_by_node: Mapping[str, Iterable[str]],
-) -> _StreamingAutoRangePlan | None:
+) -> tuple[_StreamingAutoRangePlan | None, _ChunkFallback | None]:
     """Build a strict online auto-range plan that chunks before expansion.
 
     The streaming plan is returned only when the shared chunk planner can prove
-    the scenario suffix.  A planner rejection is surfaced loudly so eligible
-    online auto-range shapes do not silently broaden into a high-memory path.
+    the scenario suffix.  Structural mismatches fall back silently; a lost
+    chunk optimisation is returned as a fallback record so the job can warn.
     """
     from haute._builders import resolve_instance_node
 
     if mode != "online":
-        return None
+        return None, None
 
     try:
         data_input_id = _resolve_online_auto_range_data_input_id(graph, node_id, config)
     except HTTPException:
-        return None
+        return None, None
     if not isinstance(data_input_id, str) or not data_input_id:
-        return None
+        return None, None
 
     node_map = graph.node_map
     downstream_to_upstream: list[str] = []
@@ -1089,23 +1182,24 @@ def _build_streaming_auto_range_plan(
     scenario_node_id: str | None = None
     while True:
         if current_id in seen:
-            return None
+            return None, None
         seen.add(current_id)
 
         raw_node = node_map.get(current_id)
         if raw_node is None:
-            return None
+            return None, None
         node = resolve_instance_node(raw_node, node_map)
         parent_ids = graph.parents_of.get(current_id, [])
         if len(parent_ids) != 1:
-            return None
+            return None, None
         frame_names = [
             _sanitize_func_name(node_map[parent_id].data.label)
             for parent_id in parent_ids
             if parent_id in node_map
         ]
-        if not _streaming_auto_range_node_is_eligible(node, frame_names=frame_names):
-            return None
+        eligible, fallback = _streaming_auto_range_node_is_eligible(node, frame_names=frame_names)
+        if not eligible:
+            return None, fallback
 
         downstream_to_upstream.append(current_id)
         if node.data.nodeType == NodeType.SCENARIO_EXPANDER:
@@ -1115,14 +1209,14 @@ def _build_streaming_auto_range_plan(
         current_id = parent_ids[0]
 
     if base_node_id is None or scenario_node_id is None:
-        return None
+        return None, None
     if _upstream_slice_contains_node_type(
         graph,
         base_node_id,
         NodeType.SCENARIO_EXPANDER,
         resolve_node=resolve_instance_node,
     ):
-        return None
+        return None, None
 
     chain_node_ids = tuple(reversed(downstream_to_upstream))
     try:
@@ -1149,20 +1243,68 @@ def _build_streaming_auto_range_plan(
             node_id=node_id,
             data_input_id=data_input_id,
         )
-        raise
+        payload = exc.to_payload() if exc.error_code is not None else {}
+        # A generic chunk-plan rejection still names the node it rejected in
+        # its context; never substitute the optimiser node for it.
+        context_node = exc.context.get("node_id") or exc.context.get("target_node_id")
+        fallback_node_id = (
+            payload.get("node_id") or (str(context_node) if context_node else None) or node_id
+        )
+        operator = payload.get("blocking_operator") or (
+            None if payload else exc.context.get("node_type")
+        )
+        reason = payload.get("reason") if payload else exc.message
+        line = payload.get("line")
+        return None, _ChunkFallback(
+            code="chunk_plan_unsupported",
+            node_id=fallback_node_id,
+            operator=operator,
+            reason=reason,
+            line=line,
+            column=payload.get("column"),
+            message=_chunk_fallback_message(
+                reason=reason,
+                node_id=fallback_node_id,
+                operator=operator,
+                line=line,
+            ),
+        )
+    except ProjectionImpossibleError as exc:
+        logger.info(
+            "frontier_auto_range_streaming_plan_projection_impossible",
+            error=str(exc),
+            node_id=node_id,
+        )
+        return None, _ChunkFallback(
+            code="projection_impossible",
+            node_id=node_id,
+            operator=None,
+            reason=str(exc),
+            line=None,
+            column=None,
+            message=_chunk_fallback_message(
+                reason=str(exc),
+                node_id=node_id,
+                operator=None,
+                line=None,
+            ),
+        )
     needed_by_node = generic_chunk_plan.required_columns_by_node
     base_needed = needed_by_node.get(base_node_id)
 
     required_output_columns_by_node = {
         chain_id: needed_by_node.get(chain_id) for chain_id in chain_node_ids
     }
-    return _StreamingAutoRangePlan(
-        base_node_id=base_node_id,
-        scenario_node_id=scenario_node_id,
-        chain_node_ids=chain_node_ids,
-        required_output_columns_by_node=required_output_columns_by_node,
-        base_required_columns=(frozenset(base_needed) if base_needed is not None else None),
-        chunk_plan=generic_chunk_plan,
+    return (
+        _StreamingAutoRangePlan(
+            base_node_id=base_node_id,
+            scenario_node_id=scenario_node_id,
+            chain_node_ids=chain_node_ids,
+            required_output_columns_by_node=required_output_columns_by_node,
+            base_required_columns=(frozenset(base_needed) if base_needed is not None else None),
+            chunk_plan=generic_chunk_plan,
+        ),
+        None,
     )
 
 
@@ -3266,6 +3408,7 @@ class OptimiserSolveService:
                 "message": "Estimating frontier range",
                 "config": dict(config),
                 "node_label": node.data.label,
+                "chunk_fallback": prepared.get("chunk_fallback"),
             }
             job_id = self._store.create_job(initial_job)
             execution_token = ExecutionCancellationToken()
@@ -3648,24 +3791,13 @@ class OptimiserSolveService:
             config,
             mode=mode,
         )
-        try:
-            streaming_plan = _build_streaming_auto_range_plan(
-                body.graph,
-                body.node_id,
-                config,
-                mode=mode,
-                required_columns_by_node=required_columns_by_node,
-            )
-        except ProjectionImpossibleError as exc:
-            logger.info(
-                "frontier_auto_range_streaming_plan_projection_impossible",
-                error=str(exc),
-                node_id=body.node_id,
-            )
-            streaming_plan = None
-        except ChunkPlanUnsupportedError as exc:
-            detail = f"Frontier auto range cannot run in bounded streaming mode: {exc}"
-            raise HTTPException(status_code=422, detail=detail) from exc
+        streaming_plan, chunk_fallback = _build_streaming_auto_range_plan(
+            body.graph,
+            body.node_id,
+            config,
+            mode=mode,
+            required_columns_by_node=required_columns_by_node,
+        )
         return {
             "node": node,
             "config": config,
@@ -3675,6 +3807,7 @@ class OptimiserSolveService:
             "timeout": timeout,
             "required_columns_by_node": required_columns_by_node,
             "streaming_plan": streaming_plan,
+            "chunk_fallback": (chunk_fallback.payload() if chunk_fallback is not None else None),
         }
 
     def _run_frontier_auto_range_job(
@@ -3690,6 +3823,7 @@ class OptimiserSolveService:
         timeout: int,
         required_columns_by_node: Mapping[str, Iterable[str]],
         streaming_plan: _StreamingAutoRangePlan | None,
+        chunk_fallback: dict[str, Any] | None = None,
         execution_context: ExecutionContext | None = None,
     ) -> OptimiserFrontierAutoRangeResponse:
         del node, mode, timeout
@@ -3797,7 +3931,10 @@ class OptimiserSolveService:
                 response = OptimiserFrontierAutoRangeResponse(
                     status="ok",
                     ranges=response_ranges,
-                    warning=None,
+                    warning=(
+                        str(chunk_fallback["message"]) if chunk_fallback is not None else None
+                    ),
+                    chunk_fallback=chunk_fallback,
                 )
                 self._lifecycle.transition(
                     job_id,

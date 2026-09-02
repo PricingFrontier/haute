@@ -305,6 +305,64 @@ describe("DataPreview", () => {
     expect(screen.getByText(/Define the node columns before previewing/)).toBeInTheDocument()
   })
 
+  it("surfaces a warned execution strategy as a preview warning, not an error", () => {
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      execution_strategy: {
+        schema_version: 1,
+        status: "warned",
+        strategy: "full-width-conservative",
+        profile: "preview_eager",
+        boundedness: "unbounded",
+        reason_code: "materialisation_estimate_unavailable_conservative",
+        detail_state: "available",
+        boundaries: { state: "available", total_count: 0, items: [] },
+        reasons: { state: "available", total_count: 0, items: [] },
+        provenance: { state: "available", total_count: 0, items: [] },
+        blocking_node_id: "competitor_premiums",
+        blocking_operator: "group_by",
+        headroom_bytes: 2048,
+        remediation: "Give this aggregation a bounded key set.",
+      },
+    })
+    render(<DataPreview data={makePreview({ execution_metrics: metrics })} />)
+
+    expect(screen.queryByLabelText("Preview execution error details")).not.toBeInTheDocument()
+    const warning = screen.getByLabelText("Preview execution warning details")
+    fireEvent.click(warning)
+    expect(screen.getByText("Execution ran without a memory estimate")).toBeInTheDocument()
+    expect(screen.getAllByText(/competitor_premiums/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Give this aggregation a bounded key set/)).toHaveLength(1)
+    expect(screen.queryByText(/Boundaries:/)).not.toBeInTheDocument()
+  })
+
+  it("appends the memory-pressure message once to a warned execution strategy", () => {
+    const base = makeExecutionMetricsFixture({
+      execution_strategy: {
+        schema_version: 1,
+        status: "warned",
+        strategy: "full-width-conservative",
+        profile: "preview_eager",
+        boundedness: "unbounded",
+        reason_code: "materialisation_estimate_unavailable_conservative",
+        detail_state: "available",
+        boundaries: { state: "available", total_count: 0, items: [] },
+        reasons: { state: "available", total_count: 0, items: [] },
+        provenance: { state: "available", total_count: 0, items: [] },
+        blocking_node_id: "competitor_premiums",
+        blocking_operator: "group_by",
+        headroom_bytes: 2048,
+        remediation: "Give this aggregation a bounded key set.",
+      },
+    })
+    render(<DataPreview data={makePreview({ execution_metrics: base })} />)
+
+    const warning = screen.getByLabelText("Preview execution warning details")
+    fireEvent.click(warning)
+    expect(screen.getByText("Execution ran without a memory estimate")).toBeInTheDocument()
+    expect(screen.getAllByText(/Memory pressure reached 75% of the preview budget\./)).toHaveLength(1)
+  })
+
   it("cell click calls onCellClick with row index and column", () => {
     const onCellClick = vi.fn()
     render(<DataPreview data={makePreview()} onCellClick={onCellClick} />)

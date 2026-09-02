@@ -2494,3 +2494,125 @@ def test_execute_lazy_rejects_left_on_right_on_join_key_dtype_mismatch() -> None
 
     assert excinfo.value.context["left_key"] == "quote_id"
     assert excinfo.value.context["right_key"] == "policy_id"
+
+
+def test_conservative_strategy_survives_runtime_join_refinement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A warned plan keeps its strategy and group-by operator through a rebuild."""
+    from haute._execution_context import ExecutionAdmission
+    from haute._native_memory_limit import native_memory_backend_scope
+    from haute._ram_estimate import MaterialisationEstimate
+
+    graph = make_graph(
+        {
+            "nodes": [
+                {"id": "left", "data": {"label": "left", "nodeType": "dataInput", "config": {}}},
+                {"id": "right", "data": {"label": "right", "nodeType": "dataInput", "config": {}}},
+                {
+                    "id": "joined",
+                    "data": {
+                        "label": "joined",
+                        "nodeType": "polars",
+                        "config": {"code": "df = left.join(right, on='quote_id')"},
+                    },
+                },
+                {
+                    "id": "agg",
+                    "data": {
+                        "label": "agg",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = joined.group_by('quote_id').agg("
+                                "pl.col('right_value').sum().alias('total'))"
+                            )
+                        },
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": make_output_config(["quote_id", "total"]),
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("left", "joined").model_dump(),
+                make_edge("right", "joined").model_dump(),
+                make_edge("joined", "agg").model_dump(),
+                make_edge("agg", "out").model_dump(),
+            ],
+        }
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "left":
+            return (
+                node.id,
+                lambda: pl.DataFrame({"quote_id": ["q1"], "left_unused": [100]}).lazy(),
+                True,
+            )
+        if node.id == "right":
+            return (
+                node.id,
+                lambda: pl.DataFrame({"quote_id": ["q1"], "right_value": [2]}).lazy(),
+                True,
+            )
+        if node.id == "joined":
+            return node.id, lambda left, right: left.join(right, on="quote_id"), False
+        if node.id == "agg":
+            return (
+                node.id,
+                lambda df: df.group_by("quote_id").agg(pl.col("right_value").sum().alias("total")),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    def unavailable(_graph, node_ids, **_kwargs):
+        return [
+            (node_id, MaterialisationEstimate.unavailable("metadata_unavailable"))
+            for node_id in node_ids
+        ]
+
+    monkeypatch.setattr(execution_facade, "estimate_materialisation_boundaries", unavailable)
+    limit = 1 << 30
+    context = ExecutionContext(
+        operation="test_conservative_rebuild",
+        profile=ExecutionProfile.LAZY_SINK,
+        admission=ExecutionAdmission(
+            operation="test_conservative_rebuild",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=limit,
+            rss_at_admission_bytes=10,
+            rss_limit_bytes=10 + limit,
+            headroom_bytes=limit,
+            config_key="test",
+        ),
+    )
+
+    with native_memory_backend_scope("rlimit"):
+        outputs, *_ = _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="out",
+            execution_context=context,
+        )
+
+    assert outputs["out"].collect().select("quote_id", "total").to_dict(as_series=False) == {
+        "quote_id": ["q1"],
+        "total": [2],
+    }
+    result = context.projection_plan
+    assert result is not None
+    assert result.strategy is projection_planner.ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+    assert result.status is projection_planner.ExecutionStrategyStatus.WARNED
+    assert result.diagnostic.reason_code == "materialisation_estimate_unavailable_conservative"
+    assert result.diagnostic.blocking_node_id == "agg"
+    assert result.diagnostic.blocking_operator == "group_by"
+    assert "proof_gap=agg:metadata_unavailable" in result.diagnostic.assumptions
+    diagnostics = result.projection_plan.diagnostics_payload(profile=result.profile)
+    assert diagnostics is not None
+    assert diagnostics["edge_reasons"]["left->joined"]["rule"] == "runtime_inferred_streaming"

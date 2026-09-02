@@ -548,6 +548,8 @@ def test_entrypoint_holds_native_lease_until_matching_ack_then_releases(
         def apply(self, *_args, **_kwargs):
             events.append("apply")
             self.backend = "windows_job"
+            # A real lease reports success; the worker exposes the backend only then.
+            return True
 
         def restore(self):
             events.append("restore")

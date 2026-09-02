@@ -1426,6 +1426,9 @@ class ExecutionContext:
         elif strategy_value in {
             "full-width-admitted-eager",
             "materialisation-boundary",
+            # A conservative run still materialises at its group-by boundary;
+            # only the estimate that would have sized it is missing.
+            "full-width-conservative",
         }:
             streamability = "materialising"
         else:

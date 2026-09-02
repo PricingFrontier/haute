@@ -217,8 +217,16 @@ and structured classification layer.
 `start_frontier_auto_range` uses `_prepare_frontier_auto_range` to validate config/mode, resolve
 chunk size/partition count/timeout, compute the required-column projection, and attempt to
 prove a `_StreamingAutoRangePlan` (`_build_streaming_auto_range_plan`), falling back to
-the classic non-streaming path when the plan cannot be proven (`ProjectionImpossibleError`) or
-raising a 422 when the chunking itself is unsupported (`ChunkPlanUnsupportedError`).
+the classic non-streaming path when the plan cannot be proven. A structural reason (ratebook
+mode, no resolvable data input, no scenario expander on the chain) falls back silently because
+chunking never applied. A lost chunk optimisation is reported: when a chain node's user code is
+chunk-ineligible (`classify_chunk_local_polars_code`), when a model-score node keeps
+post-processing code or renames, or when `chunk_plan` raises `ChunkPlanUnsupportedError`
+(including `ProjectionImpossibleError`-driven projection gaps), the preparation records a
+`chunk_fallback` payload (`code`, `node_id`, `operator`, `reason`, `line`, `column`,
+`message`) on the job and the completed result's `warning` string names the node and reason.
+The classic path then runs under the same admitted context. Chunk ineligibility is never an
+HTTP 422; the 422 mapping remains for bounded streaming-collect failures.
 
 - `start_frontier_auto_range` — **background**: under `_start_lock`, idempotently
   returns the existing job id if an auto-range job with the same graph fingerprint and node id is
@@ -561,11 +569,17 @@ returned as a generic `status: "error"` payload.
   background offload preserves that semantics — an in-flight frontier sweep never blocks a new
   solve/estimate/auto-range submission for the same graph/node.
 - **Streaming auto-range only engages for provably row-local pipeline chains.**
-  `_looks_chunk_local_user_code` uses an AST allow-list to decide whether user code between the
-  data-input node and the scenario expander is safe to run per-chunk; anything not provably
-  row-local (global state, ordering-sensitive logic, arbitrary custom code) silently falls back
-  to the full non-streaming estimate path rather than raising — this is a memory/latency
-  trade-off, not a correctness gate.
+  `classify_chunk_local_polars_code` (the shared receiver-aware AST classifier) decides whether
+  user code between the data-input node and the scenario expander is safe to run per-chunk;
+  anything not provably row-local (global state, ordering-sensitive logic, arbitrary custom
+  code) falls back to the full non-streaming estimate path rather than raising, and the lost
+  optimisation is recorded rather than hidden: `_streaming_auto_range_node_is_eligible` returns
+  the classifier decision as a `chunk_user_code_ineligible` fallback, a model-score node reports
+  `model_score_ineligible` with the reason `model_reuse_lifetime`, `post_processing_code`, or
+  `column_renames`, and a `chunk_plan` rejection reports `chunk_plan_unsupported` with the node
+  the planner rejected (from the error's public payload or its `node_id`/`target_node_id`
+  context), never the optimiser node. This is a memory/latency trade-off, not a correctness
+  gate.
 - **Cancellation and graph/node exclusion have separate owners.** `_jobs` owns one cancellation
   token per solve/auto-range job; `_graph_node_setup_singleflight` owns only graph/node exclusion.
   Worker scopes release both once, after the actual worker has stopped, so a cancelled job keeps
@@ -594,8 +608,9 @@ returned as a generic `status: "error"` payload.
   missing ratebook banding source, malformed frontier-point data, incomplete job summaries), 404
   (job not found or wrong job type), 409 (concurrent job/graph-node conflict, a frontier sweep
   already running for the target solve job, or an atomic job-store update losing a race against a
-  concurrent state change), 422 (`ProjectionImpossibleError`/`ChunkPlanUnsupportedError`/
-  `BoundedMemoryUnsupportedError`, and the frontier compute-budget rejection), 410 (a valid
+  concurrent state change), 422 (`ProjectionImpossibleError` and `BoundedMemoryUnsupportedError`
+  from solve setup or a bounded streaming collect, and the frontier compute-budget rejection;
+  auto-range chunk-plan and projection gaps are recorded fallbacks, never 422), 410 (a valid
   server-owned handle whose artifact is no longer present), 500 (a background
   worker thread failing to even start; a generic/unclassified pipeline or grid failure; an
   invalid server-owned artifact handle; a corrupt persisted artifact), 507

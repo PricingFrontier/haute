@@ -845,6 +845,7 @@ const STRATEGY_STATUS = {
   "full-width-admitted-eager": "admitted_eager",
   "unprojected-streaming-boundary": "boundary",
   "materialisation-boundary": "boundary",
+  "full-width-conservative": "warned",
   unsupported: "rejected",
   "not-planned": "not_planned",
 } as const

@@ -600,6 +600,15 @@ def test_heavy_execution_admission_counts_in_flight_budget(
                 memory_sampler=lambda: 100,
             )
         assert exc_info.value.reason == "in_flight_memory_budget_exceeded"
+        # The refusal names the work it lost to, not just the byte totals.
+        assert exc_info.value.in_flight_operations == ("optimiser_setup:optimiser_setup_a",)
+        assert exc_info.value.to_payload()["in_flight_operations"] == [
+            "optimiser_setup:optimiser_setup_a"
+        ]
+        from haute.routes._memory_messages import memory_limit_user_message
+
+        message = memory_limit_user_message(exc_info.value, operation_noun="Optimiser estimate")
+        assert "reserved by optimiser_setup:optimiser_setup_a" in message
 
         first.release_admission()
 
@@ -5406,3 +5415,85 @@ def test_deploy_pyfunc_predict_creates_admitted_live_context(monkeypatch) -> Non
     assert context.memory_limit_bytes == 128 * 1024 * 1024
     assert context.admission is not None
     assert context.admission.rss_at_admission_bytes == 11_000
+
+
+def test_conservative_strategy_reports_materialising_streamability() -> None:
+    """A warned conservative run still materialises at its group-by boundary."""
+    from types import SimpleNamespace
+
+    from haute.execution import (
+        BoundedDiagnosticCollection,
+        ExecutionBoundedness,
+        ExecutionStrategy,
+        ExecutionStrategyDiagnostic,
+    )
+
+    context = ExecutionContext(operation="sink", profile=ExecutionProfile.LAZY_SINK)
+    diagnostic = ExecutionStrategyDiagnostic.create(
+        strategy=ExecutionStrategy.FULL_WIDTH_CONSERVATIVE,
+        profile=ExecutionProfile.LAZY_SINK,
+        boundedness=ExecutionBoundedness.UNBOUNDED,
+        reason_code="materialisation_estimate_unavailable_conservative",
+        boundaries=BoundedDiagnosticCollection.available([]),
+        reasons=BoundedDiagnosticCollection.available([]),
+        provenance=BoundedDiagnosticCollection.available([]),
+    )
+    context.projection_plan = SimpleNamespace(diagnostic=diagnostic)  # type: ignore[assignment]
+
+    payload = context.metrics_payload(status="completed")
+
+    assert payload["execution_strategy"]["status"] == "warned"
+    assert payload["streamability"] == "materialising"
+    assert (
+        "materialisation_estimate_unavailable_conservative"
+        in (payload["streamability_evidence"]["items"])
+    )
+
+
+def test_in_flight_refusal_names_sorted_unique_holders_up_to_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Holders are ``profile:operation``, deduplicated, sorted, and capped at eight."""
+    from haute._execution_admission import (
+        _MAX_REPORTED_IN_FLIGHT_OPERATIONS,
+        create_admitted_execution_context,
+    )
+
+    _clear_execution_memory_env(monkeypatch)
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "1")
+
+    held = []
+    # Ten distinct operations plus one duplicate name: eleven reservations, ten
+    # distinct labels, of which only the first eight sorted labels are reported.
+    operations = [f"setup_{index:02d}" for index in range(10)] + ["setup_00"]
+    try:
+        for operation in operations:
+            held.append(
+                create_admitted_execution_context(
+                    operation=operation,
+                    profile=ExecutionProfile.OPTIMISER_SETUP,
+                    memory_sampler=lambda: 100,
+                )
+            )
+        monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", str(20 * 1024))
+        with pytest.raises(ExecutionAdmissionError) as exc_info:
+            create_admitted_execution_context(
+                operation="train_prepare",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+            )
+    finally:
+        for context in held:
+            context.release_admission()
+
+    error = exc_info.value
+    assert error.reason == "in_flight_memory_budget_exceeded"
+    assert error.in_flight_reserved_bytes == 11 * 1024 * 1024
+    assert _MAX_REPORTED_IN_FLIGHT_OPERATIONS == 8
+    assert error.in_flight_operations == tuple(
+        f"optimiser_setup:setup_{index:02d}" for index in range(8)
+    )
+    assert error.to_payload()["in_flight_operations"] == list(error.in_flight_operations)

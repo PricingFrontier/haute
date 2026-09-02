@@ -58,8 +58,12 @@ def memory_limit_user_message(
             if reserved is None or allowed is None:
                 detail = ""
             else:
+                holders = (
+                    f" by {', '.join(exc.in_flight_operations)}" if exc.in_flight_operations else ""
+                )
                 detail = (
-                    f" ({format_byte_size(reserved)} reserved, {format_byte_size(allowed)} allowed)"
+                    f" ({format_byte_size(reserved)} reserved{holders}, "
+                    f"{format_byte_size(allowed)} allowed)"
                 )
             return (
                 f"{operation_noun} was not started because other running work has "

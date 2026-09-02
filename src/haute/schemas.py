@@ -2586,6 +2586,7 @@ class OptimiserFrontierAutoRangeResponse(BaseModel):
     ranges: dict[str, OptimiserFrontierRange] = Field(default_factory=dict)
     method: str = "scenario_envelope"
     warning: str | None = None
+    chunk_fallback: dict[str, Any] | None = None
 
 
 class OptimiserFrontierAutoRangeStartResponse(BaseModel):

@@ -297,6 +297,7 @@ describe("parseExecutionStrategyDiagnostic", () => {
     ["full-width-admitted-eager", "admitted_eager"],
     ["unprojected-streaming-boundary", "boundary"],
     ["materialisation-boundary", "boundary"],
+    ["full-width-conservative", "warned"],
     ["unsupported", "rejected"],
     ["not-planned", "not_planned"],
   ])("accepts the V1 %s strategy mapping", (strategy, status) => {

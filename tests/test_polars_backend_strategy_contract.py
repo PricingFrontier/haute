@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from datetime import date
 from pathlib import Path
 
 import polars as pl
@@ -10,6 +11,7 @@ from pydantic import ValidationError
 
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._execution_schemas import MAX_JSON_SAFE_INTEGER
+from haute._native_memory_limit import native_memory_backend_scope
 from haute._ram_estimate import MaterialisationEstimate
 from haute.chunking import ChunkPlanRequest, chunk_plan
 from haute.errors import ChunkPlanUnsupportedError, GroupByExecutionUnsupportedError
@@ -52,6 +54,7 @@ _STATUS_BY_STRATEGY = {
     ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: ExecutionStrategyStatus.ADMITTED_EAGER,
     ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: ExecutionStrategyStatus.BOUNDARY,
     ExecutionStrategy.MATERIALISATION_BOUNDARY: ExecutionStrategyStatus.BOUNDARY,
+    ExecutionStrategy.FULL_WIDTH_CONSERVATIVE: ExecutionStrategyStatus.WARNED,
     ExecutionStrategy.UNSUPPORTED: ExecutionStrategyStatus.REJECTED,
     ExecutionStrategy.NOT_PLANNED: ExecutionStrategyStatus.NOT_PLANNED,
 }
@@ -1129,3 +1132,317 @@ def test_strategy_provenance_snapshots_one_shot_projection_seeds(tmp_path: Path)
         (item["column"], item["origin_kind"], item["source_node_id"])
         for item in result.diagnostic.provenance.items
     } >= {("x", "seed", "source")}
+
+
+# ---------------------------------------------------------------------------
+# Provable Polars shapes admit a boundary identically across every profile
+# ---------------------------------------------------------------------------
+
+_GROUP_BY_PREMIUM = "df = df.group_by('segment').agg(pl.col('premium').sum().alias('premium'))"
+_GROUP_BY_VALUE = "df = df.group_by('segment').agg(pl.col('value').sum().alias('total'))"
+
+_PROVABLE_SHAPES: tuple[tuple[str, str, str, str], ...] = (
+    ("control_filter", "df = df.filter(pl.col('premium') > 0)", _GROUP_BY_PREMIUM, "premium"),
+    ("drop", "df = df.drop('extra')", _GROUP_BY_PREMIUM, "premium"),
+    ("drop_nulls_subset", "df = df.drop_nulls(subset=['premium'])", _GROUP_BY_PREMIUM, "premium"),
+    ("drop_nulls", "df = df.drop_nulls()", _GROUP_BY_PREMIUM, "premium"),
+    ("with_row_index", "df = df.with_row_index('row_id')", _GROUP_BY_PREMIUM, "premium"),
+    ("str_contains", "df = df.filter(pl.col('s').str.contains('x'))", _GROUP_BY_PREMIUM, "premium"),
+    (
+        "dt_truncate",
+        "df = df.with_columns(pl.col('t').dt.truncate('1mo').alias('month'))",
+        _GROUP_BY_PREMIUM,
+        "premium",
+    ),
+    (
+        "literal_unpivot",
+        "df = df.unpivot(on=['premium', 'extra'], index=['segment'])",
+        _GROUP_BY_VALUE,
+        "total",
+    ),
+)
+
+_SHAPE_PARAMS = [
+    pytest.param(shape[1], shape[2], shape[3], id=shape[0]) for shape in _PROVABLE_SHAPES
+]
+
+
+def _write_shape_source(path: Path) -> None:
+    rows = 20
+    pl.DataFrame(
+        {
+            "segment": [f"seg-{index % 4}" for index in range(rows)],
+            "premium": [None if index % 7 == 0 else float(index) for index in range(rows)],
+            "extra": list(range(rows)),
+            "s": [
+                None if index % 5 == 0 else f"a{'x' if index % 2 else 'y'}{index}"
+                for index in range(rows)
+            ],
+            "t": [
+                None if index % 6 == 0 else date(2024, 1 + (index % 12), 1 + (index % 28))
+                for index in range(rows)
+            ],
+        },
+        schema={
+            "segment": pl.String,
+            "premium": pl.Float64,
+            "extra": pl.Int64,
+            "s": pl.String,
+            "t": pl.Date,
+        },
+    ).write_parquet(str(path))
+
+
+def _shape_group_by_graph(
+    path: Path,
+    transform_code: str,
+    group_by_code: str,
+    output_column: str,
+):
+    _write_shape_source(path)
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(path),
+                    },
+                },
+                {
+                    "id": "shape",
+                    "data": {
+                        "label": "shape",
+                        "nodeType": "polars",
+                        "config": {"code": transform_code},
+                    },
+                },
+                {
+                    "id": "agg",
+                    "data": {
+                        "label": "agg",
+                        "nodeType": "polars",
+                        "config": {"code": group_by_code},
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {
+                            "outputMapping": [
+                                {
+                                    "source_port": "agg",
+                                    "source_column": output_column,
+                                    "output_path": f"$[:].{output_column}",
+                                    "enabled": True,
+                                }
+                            ]
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "shape").model_dump(),
+                make_edge("shape", "agg").model_dump(),
+                make_edge("agg", "out").model_dump(),
+            ],
+        }
+    )
+
+
+def _plan_shape(profile: ExecutionProfile, graph):
+    return plan_execution_strategy(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=profile,
+        ),
+        execution_context=_context(
+            profile,
+            memory_limit_bytes=1 << 30,
+            headroom_bytes=1 << 30,
+        ),
+    )
+
+
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+@pytest.mark.parametrize(("transform_code", "group_by_code", "output_column"), _SHAPE_PARAMS)
+def test_provable_shapes_admit_a_real_estimated_boundary_on_every_profile(
+    tmp_path: Path,
+    profile: ExecutionProfile,
+    transform_code: str,
+    group_by_code: str,
+    output_column: str,
+) -> None:
+    graph = _shape_group_by_graph(
+        tmp_path / "rows.parquet", transform_code, group_by_code, output_column
+    )
+
+    result = _plan_shape(profile, graph)
+
+    assert result.strategy is ExecutionStrategy.MATERIALISATION_BOUNDARY
+    assert result.status is ExecutionStrategyStatus.BOUNDARY
+    assert result.diagnostic.blocking_node_id == "agg"
+    assert result.diagnostic.blocking_operator == "group_by"
+    assert isinstance(result.diagnostic.estimated_peak_bytes, int)
+    assert result.diagnostic.estimated_peak_bytes > 0
+
+
+@pytest.mark.parametrize(("transform_code", "group_by_code", "output_column"), _SHAPE_PARAMS)
+def test_provable_shape_diagnostics_differ_only_in_the_configured_profile(
+    tmp_path: Path,
+    transform_code: str,
+    group_by_code: str,
+    output_column: str,
+) -> None:
+    graph = _shape_group_by_graph(
+        tmp_path / "rows.parquet", transform_code, group_by_code, output_column
+    )
+
+    payloads = {}
+    for profile in ExecutionProfile:
+        payload = _plan_shape(profile, graph).diagnostic.to_dict()
+        assert payload.pop("profile") == profile.value
+        payloads[profile] = payload
+
+    distinct = list(payloads.values())
+    assert all(payload == distinct[0] for payload in distinct)
+
+
+def _plan_group_by(
+    profile: ExecutionProfile,
+    *,
+    context: ExecutionContext | None,
+    estimate: MaterialisationEstimate | None,
+):
+    return plan_execution_strategy(
+        ProjectionRequest(
+            graph=_group_by_graph(),
+            target_node_id="out",
+            profile=profile,
+        ),
+        execution_context=context,
+        materialisation_estimate=estimate,
+    )
+
+
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+def test_unavailable_estimate_runs_conservatively_under_a_native_cap(
+    profile: ExecutionProfile,
+) -> None:
+    context = _context(profile)
+    with native_memory_backend_scope("rlimit"):
+        result = _plan_group_by(
+            profile,
+            context=context,
+            estimate=MaterialisationEstimate.unavailable("metadata_unavailable"),
+        )
+
+    assert context.projection_plan is result
+    assert result.strategy is ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+    assert result.status is ExecutionStrategyStatus.WARNED
+    assert result.diagnostic.boundedness is ExecutionBoundedness.UNBOUNDED
+    assert result.diagnostic.reason_code == "materialisation_estimate_unavailable_conservative"
+    assert result.diagnostic.blocking_node_id == "agg"
+    assert result.diagnostic.blocking_operator == "group_by"
+    assert result.diagnostic.headroom_bytes == 100
+    assert result.diagnostic.estimated_peak_bytes is None
+    assert result.diagnostic.raw_estimated_peak_bytes is None
+    assert result.diagnostic.estimate_calibration_factor_basis_points is None
+    assert result.diagnostic.estimate_admission_basis is None
+    assert result.projection_plan.materialisation_boundaries == frozenset({"agg"})
+    assert tuple(result.diagnostic.assumptions) == (
+        "proof_gap=metadata_unavailable",
+        "reserved_envelope_bytes=100",
+        "hard_cap_backend=rlimit",
+        "disabled_optimisations=estimate_based_admission",
+    )
+    remediation = result.diagnostic.remediation
+    assert remediation is not None
+    assert "metadata_unavailable" in remediation
+    assert len(remediation) <= 512
+    payload = ExecutionStrategyDiagnosticPayload.model_validate(result.diagnostic.to_dict())
+    assert payload.status == "warned"
+
+
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+def test_absent_estimate_runs_conservatively_under_a_native_cap(
+    profile: ExecutionProfile,
+) -> None:
+    with native_memory_backend_scope("rlimit"):
+        result = _plan_group_by(profile, context=_context(profile), estimate=None)
+
+    assert result.strategy is ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+    assert result.status is ExecutionStrategyStatus.WARNED
+    # ``plan_execution_strategy`` derives the estimate itself when the caller
+    # supplies none, so the proof gap is the estimator's, not "not requested".
+    assert "proof_gap=materialisation_estimate_not_supplied" in result.diagnostic.assumptions
+
+
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+def test_unavailable_estimate_without_a_native_cap_is_rejected(
+    profile: ExecutionProfile,
+) -> None:
+    with pytest.raises(GroupByExecutionUnsupportedError) as error:
+        _plan_group_by(
+            profile,
+            context=_context(profile),
+            estimate=MaterialisationEstimate.unavailable("metadata_unavailable"),
+        )
+
+    assert error.value.reason_code == "materialisation_estimate_unavailable"
+    assert "metadata_unavailable" in error.value.remediation
+    assert "without a hard worker memory cap" in error.value.remediation
+
+
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+def test_a_native_cap_does_not_admit_other_group_by_rejections(
+    profile: ExecutionProfile,
+) -> None:
+    with native_memory_backend_scope("rlimit"):
+        with pytest.raises(GroupByExecutionUnsupportedError) as missing_admission:
+            _plan_group_by(
+                profile,
+                context=None,
+                estimate=MaterialisationEstimate.unavailable("metadata_unavailable"),
+            )
+        with pytest.raises(GroupByExecutionUnsupportedError) as too_large:
+            _plan_group_by(
+                profile,
+                context=_context(profile),
+                estimate=MaterialisationEstimate.available(101),
+            )
+
+    assert missing_admission.value.reason_code == "execution_admission_unavailable"
+    assert too_large.value.reason_code == "materialisation_exceeds_headroom"
+
+
+def test_real_estimator_gap_is_conservative_under_a_cap_and_rejected_without_one(
+    tmp_path: Path,
+) -> None:
+    graph = _shape_group_by_graph(
+        tmp_path / "rows.parquet",
+        "df = df.unpivot(index=['segment'])",
+        _GROUP_BY_VALUE,
+        "total",
+    )
+
+    with native_memory_backend_scope("rlimit"):
+        result = _plan_shape(ExecutionProfile.PREVIEW_EAGER, graph)
+
+    assert result.strategy is ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+    assert result.status is ExecutionStrategyStatus.WARNED
+    proof_gap = next(
+        item for item in result.diagnostic.assumptions if item.startswith("proof_gap=")
+    )
+    assert "dynamic_unpivot" in proof_gap
+
+    with pytest.raises(GroupByExecutionUnsupportedError) as error:
+        _plan_shape(ExecutionProfile.PREVIEW_EAGER, graph)
+
+    assert error.value.reason_code == "materialisation_estimate_unavailable"
+    assert "dynamic_unpivot" in error.value.remediation

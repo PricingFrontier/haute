@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -2719,3 +2720,129 @@ def test_training_estimate_refuses_zero_headroom_instead_of_flooring() -> None:
     with patch("haute._ram_estimate.available_ram_bytes", return_value=0):
         with pytest.raises(RuntimeError, match="available memory is exhausted"):
             estimate_safe_training_rows(graph, "src1", _build_dummy_node_fn)
+
+
+# ---------------------------------------------------------------------------
+# Provable Polars shapes beneath a materialisation boundary
+# ---------------------------------------------------------------------------
+
+_GROUP_BY_PREMIUM = "df = df.group_by('segment').agg(pl.col('premium').sum().alias('premium'))"
+_GROUP_BY_VALUE = "df = df.group_by('segment').agg(pl.col('value').sum().alias('total'))"
+
+PROVABLE_SHAPES: tuple[tuple[str, str, str], ...] = (
+    ("control_filter", "df = df.filter(pl.col('premium') > 0)", _GROUP_BY_PREMIUM),
+    ("drop", "df = df.drop('extra')", _GROUP_BY_PREMIUM),
+    ("drop_nulls_subset", "df = df.drop_nulls(subset=['premium'])", _GROUP_BY_PREMIUM),
+    ("drop_nulls", "df = df.drop_nulls()", _GROUP_BY_PREMIUM),
+    ("with_row_index", "df = df.with_row_index('row_id')", _GROUP_BY_PREMIUM),
+    ("str_contains", "df = df.filter(pl.col('s').str.contains('x'))", _GROUP_BY_PREMIUM),
+    (
+        "dt_truncate",
+        "df = df.with_columns(pl.col('t').dt.truncate('1mo').alias('month'))",
+        _GROUP_BY_PREMIUM,
+    ),
+    (
+        "literal_unpivot",
+        "df = df.unpivot(on=['premium', 'extra'], index=['segment'])",
+        _GROUP_BY_VALUE,
+    ),
+)
+
+_PROVABLE_SHAPE_ROWS = 20
+
+
+def _write_shape_source(path: Path) -> None:
+    """A parquet with the column types every provable shape exercises."""
+    rows = _PROVABLE_SHAPE_ROWS
+    pl.DataFrame(
+        {
+            "segment": [f"seg-{index % 4}" for index in range(rows)],
+            "premium": [None if index % 7 == 0 else float(index) for index in range(rows)],
+            "extra": [index for index in range(rows)],
+            "s": [
+                None if index % 5 == 0 else f"a{'x' if index % 2 else 'y'}{index}"
+                for index in range(rows)
+            ],
+            "t": [
+                None if index % 6 == 0 else date(2024, 1 + (index % 12), 1 + (index % 28))
+                for index in range(rows)
+            ],
+        },
+        schema={
+            "segment": pl.String,
+            "premium": pl.Float64,
+            "extra": pl.Int64,
+            "s": pl.String,
+            "t": pl.Date,
+        },
+    ).write_parquet(str(path))
+
+
+def _shape_graph(path: Path, transform_code: str, group_by_code: str) -> PipelineGraph:
+    source = _make_source_node(
+        node_id="source",
+        node_type="dataInput",
+        config=_ready_file_input_config(path),
+    )
+    transform = _make_transform_node(node_id="shape", config={"code": transform_code})
+    group_by = _make_transform_node(node_id="agg", config={"code": group_by_code})
+    return PipelineGraph(
+        nodes=[source, transform, group_by],
+        edges=[
+            GraphEdge(id="e1", source=source.id, target=transform.id),
+            GraphEdge(id="e2", source=transform.id, target=group_by.id),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("transform_code", "group_by_code"),
+    [pytest.param(shape[1], shape[2], id=shape[0]) for shape in PROVABLE_SHAPES],
+)
+def test_provable_polars_shapes_keep_the_group_by_estimate_available(
+    tmp_path: Path,
+    transform_code: str,
+    group_by_code: str,
+) -> None:
+    path = tmp_path / "shapes.parquet"
+    _write_shape_source(path)
+    graph = _shape_graph(path, transform_code, group_by_code)
+
+    estimate = _boundary_estimate(graph, "agg")
+
+    assert estimate.state is MaterialisationEstimateState.AVAILABLE, estimate.unavailable_reason
+    assert estimate.estimated_peak_bytes is not None
+    assert estimate.estimated_peak_bytes > 0
+
+
+def test_dynamic_unpivot_keeps_the_group_by_estimate_unavailable(tmp_path: Path) -> None:
+    """Without a literal ``on`` list the expansion factor has no length evidence."""
+    path = tmp_path / "shapes.parquet"
+    _write_shape_source(path)
+    graph = _shape_graph(path, "df = df.unpivot(index=['segment'])", _GROUP_BY_VALUE)
+
+    estimate = _boundary_estimate(graph, "agg")
+
+    assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
+    assert estimate.unavailable_reason is not None
+    assert estimate.unavailable_reason.startswith("row_cardinality_unavailable:")
+    assert "dynamic_unpivot" in estimate.unavailable_reason
+
+
+def test_literal_unpivot_cardinality_is_bounded_by_the_on_column_count() -> None:
+    """A two-column literal ``unpivot`` is exactly a doubling of the input rows."""
+    index = _cardinality_index_for_node(
+        NodeType.POLARS,
+        {"code": "df = df.unpivot(on=['premium', 'extra'], index=['segment'])"},
+    )
+    index.cardinality_by_target[("parent-0", None)] = _ResolvedRowCardinality.proven(
+        _PROVABLE_SHAPE_ROWS,
+        _PROVABLE_SHAPE_ROWS,
+        ("source=parent-0",),
+    )
+
+    result = _resolve_row_cardinality_from_index(index, "target", None)
+
+    assert result.available, result.unavailable_reason
+    assert result.output_rows == 2 * _PROVABLE_SHAPE_ROWS
+    assert result.peak_rows == 2 * _PROVABLE_SHAPE_ROWS

@@ -144,7 +144,11 @@ running heavy work in a child process the parent can kill on timeout or memory l
   transforms are provably row-local — and then streams bounded batches through it,
   never holding more than one chunk's worth of intermediate rows. Any node or user-code
   construct outside the proven-safe set fails chunk *planning*, not execution, so
-  callers can fall back to the always-correct full executor. The shipped runner is
+  callers can fall back to the always-correct full executor. User code is classified
+  by a receiver-aware AST walk alone: comments and string literals cannot affect
+  eligibility, a same-named method on another namespace does not inherit an
+  admission, and every rejection is a structured decision naming the blocking
+  operator, a closed reason code, and the source line. The shipped runner is
   deliberately serial (`max_in_flight_chunks=1`); it does not execute chunks in
   parallel. A non-root `chunk_start_node_id` requires the caller to supply a
   `start_frame`; the runner bounds the suffix from that frame onward and does not
@@ -152,10 +156,13 @@ running heavy work in a child process the parent can kill on timeout or memory l
 - **Strategy decisions use one versioned public vocabulary.** The shared planner
   reports version 1 as `projected`, `schema-all-except`,
   `full-width-admitted-eager`, `unprojected-streaming-boundary`,
-  `materialisation-boundary`, `unsupported`, or `not-planned`, with an exact API
-  status, profile, boundedness, reason code, and available/unavailable/truncated
-  detail state. Diagnostics are JSON-safe, deterministically capped, and never carry
-  plans, frames, source values, or other user data.
+  `materialisation-boundary`, `full-width-conservative`, `unsupported`, or
+  `not-planned`, with an exact API status (`projected`, `admitted_eager`,
+  `boundary`, `warned`, `rejected`, or `not_planned`), profile, boundedness, reason
+  code, and available/unavailable/truncated detail state. `warned` is the only
+  status that continues execution without an estimate, and it exists only where a
+  native worker cap bounds the run. Diagnostics are JSON-safe, deterministically
+  capped, and never carry plans, frames, source values, or other user data.
 - **Group-by is an admitted global boundary in every materialising workflow.** No
   execution profile rejects a graph merely because its relevant lineage contains a
   group-by. Preview, lazy sinks, training, optimiser setup and auto-range, Explore,
@@ -165,8 +172,24 @@ running heavy work in a child process the parent can kill on timeout or memory l
   request-local row-count, schema, and width metadata to that estimate instead of
   depending on a stale or absent source path. A chunk runner never evaluates the global
   aggregation independently per chunk; the group-by is executed once under admission
-  before a proven row-local suffix is chunked. Missing admission, unavailable estimates,
-  and excess headroom remain distinct typed failures.
+  before a proven row-local suffix is chunked. Missing admission and excess headroom
+  remain distinct typed failures. An unavailable estimate has exactly two outcomes.
+  When the planner runs inside a worker whose native memory cap is active, which is
+  how Data Output writes, preview and trace, Explore, and JSON cache builds execute,
+  the group-by still runs once as a materialisation boundary but under the run's
+  full admitted envelope, `min(memory_limit_bytes, headroom_bytes)`, the same number
+  the parent installed as that worker's native cap; the strategy is
+  `full-width-conservative` with status `warned`, and its diagnostic names the node,
+  the operator, the estimator's proof gap, the reserved envelope, the disabled
+  estimate-based admission, the cap backend, and remediation. A conservative run that
+  exceeds its envelope terminates exactly like any other worker memory breach: a typed
+  failure, no partial artifact, admission released once. Everywhere else, including
+  training preparation, optimiser stages, deploy scoring, and any host without a
+  native cap, an unavailable estimate remains the typed
+  `materialisation_estimate_unavailable` failure, whose remediation states that the
+  surface runs without a hard worker cap. The warning is never a silent fallback: it
+  reaches every surface's execution diagnostics through the same strategy payload as
+  an admitted boundary.
 - **A proven API-input demand is applied before payload loading.** For a target
   lineage, the executor derives the JSON `apiInput` ports that actually feed the
   prepared graph and, where projection analysis proves a concrete demand, the
@@ -180,7 +203,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
   node-shape exceptions. Identity assignment and supported operations publish both
   their exact output schema
   when it is knowable and their backward input demand. Literal `select`,
-  `with_columns`, `rename`, `filter`, row-only slicing, `sort`, `unique`, `explode`,
+  `with_columns`, `rename`, `filter`, `drop`, `drop_nulls`, `with_row_index`,
+  row-only slicing, `sort`, `unique`, `explode`, literal `unpivot`,
   closed `group_by(...).agg(...)`, and mechanically attributable joins therefore
   compose before or after one another, including multiple joins and two ports from
   one source node. A terminal literal select or closed aggregate supplies its own
@@ -189,7 +213,11 @@ running heavy work in a child process the parent can kill on timeout or memory l
   named outputs, `filter` predicates and constraint names, and `pl.when`
   predicates and constraint names — the proof demands that column exactly, and a
   rename always demands every rename source because a strict rename requires them
-  at runtime. Dynamic
+  at runtime; a strict drop demands every dropped column for the same reason.
+  String and temporal expression methods are attributable only through an audited
+  registry of methods whose bare string arguments Polars parses as literals, so a
+  `str.contains` predicate is proven while an unregistered method with a direct
+  string argument keeps the boundary. Dynamic
   selectors, unregistered expression helpers, helper/control-flow-dependent frame mutation,
   unsupported join
   semantics, unknown schemas needed for ownership, ambiguous names, or any
@@ -384,16 +412,20 @@ running heavy work in a child process the parent can kill on timeout or memory l
   calibration factor so repeated under-estimation tightens later admission rather
   than remaining an unobserved operational risk.
 - **Join expansion is bounded mathematically before admission.** Source and per-port
-  row counts propagate through row-preserving/reducing operations and every proven
-  join. A many-to-many join uses the finite Cartesian upper bound; `1:1`, `1:m`, and
+  row counts propagate through row-preserving/reducing operations (including
+  `drop`, `drop_nulls`, `with_row_index`, and audited string or temporal
+  predicates), every proven join, and the bounded expansion of a literal `unpivot`,
+  which multiplies the bound by exactly its unpivoted column count. A many-to-many
+  join uses the finite Cartesian upper bound; `1:1`, `1:m`, and
   `m:1` validation contracts tighten that bound according to which key side is
   unique. Cross, outer, semi, and anti joins each use their own safe formula. The
   materialisation estimate uses the greatest row bound reached before or within the
-  boundary, rather than the largest ancestor source. Dynamic joins, `explode`, an
-  opaque row-changing transform, or a source without a row count make the estimate
-  unavailable with the blocking node and reason. Haute never substitutes an
-  arbitrary join multiplier, so admission either has auditable finite evidence or
-  fails conservatively before execution.
+  boundary, rather than the largest ancestor source. Dynamic joins, `explode`,
+  `unpivot` without a literal column list, an opaque row-changing transform, or a
+  source without a row count make the estimate unavailable with the blocking node
+  and reason. Haute never substitutes an arbitrary join or expansion multiplier, so
+  admission either has auditable finite evidence or fails conservatively before
+  execution.
 - **Metadata-only RAM estimation, not a sample run.** An earlier probe-based approach
   ran a 1,000-row sample through the pipeline before training; inner joins with no key
   overlap in a small sample produced zero rows and broke the estimate. Reading
@@ -483,7 +515,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
   construct, or graph shape the chunk contract does not have a proof for raises
   `ChunkPlanUnsupportedError` at *plan* time; there is no silent fallback to full
   materialisation inside the chunk runner itself — callers choose the full executor
-  explicitly.
+  explicitly. A user-code rejection is the `ChunkUserCodeUnsupportedError` subclass,
+  whose public payload names the node, the blocking operator, the closed reason code,
+  and the source line and column. Chunk ineligibility changes the physical strategy,
+  never the validity of the pipeline: the frontier auto-range surface routes an
+  ineligible or unplannable suffix to its classic full-lazy path and reports the lost
+  chunk optimisation as a result warning instead of an HTTP 422.
 - **Isolated-worker failures are reclassified into typed errors** rather than leaking
   raw `multiprocessing` exit codes: a remote Python exception becomes
   `IsolatedWorkerRemoteError`, a process that exits without a result payload becomes
@@ -499,9 +536,17 @@ running heavy work in a child process the parent can kill on timeout or memory l
   user work (Linux cgroup v2 where delegated, otherwise `RLIMIT_AS`; Windows Job
   Object) and rejects an unsupported host. Parent RSS observation is a secondary
   watchdog, not a substitute for a kernel cap. `best_effort` is an explicit
-  compatibility opt-out and never reports hard enforcement. macOS has no dependable
+  compatibility opt-out: it never claims hard enforcement when installation fails or
+  is unsupported, and a native cap it does install is reported as active evidence
+  only for the request that installed it. macOS has no dependable
   per-process hard-memory primitive for this contract, so workloads there must select
   `best_effort` explicitly; Haute never silently relabels RSS sampling as a hard cap.
+  Hard-cap evidence is request-scoped: a worker's lease reports its backend only
+  between a successful cap installation and the following release, a failed
+  best-effort attempt after an earlier successful request leaves no evidence, and
+  both worker entrypoints expose the backend to the request only when the
+  installation for that request succeeded. The conservative execution policy reads
+  that evidence and never an inherited value.
 - **A worker result remains inside the hard-cap window until transport is complete.**
   One-shot workers synchronously serialize and flush their bounded result channel before
   exiting; the parent joins the process before accepting that payload. Warm workers keep

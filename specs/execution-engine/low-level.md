@@ -12,7 +12,7 @@
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, strict-profile decisions, fan-in edge demands, materialisation/opaque boundaries, source-scan projection, and bounded strategy diagnostics. |
 | `src/haute/_execution_schemas.py` | Canonical Pydantic API DTOs for execution-strategy diagnostic boundaries, reasons, provenance, bounded collections, calibration, and the versioned diagnostic payload. `src/haute/schemas.py` re-exports the public models so existing imports remain stable. |
-| `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer and per-input backward column demand for the closed supported operation vocabulary. |
+| `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer, per-input backward column demand, and a closed row-effect class (row-preserving, row-non-increasing, bounded-expansion, or unavailable) for the supported operation vocabulary, plus the audited per-namespace registry of `str`/`dt` expression methods whose bare string arguments Polars parses as literals. |
 | `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, deterministic request-local fault points, bounded opt-in terminal telemetry, cancellation-latency evidence, cleanup precedence, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
 | `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve fault, collect-count, and typed-error telemetry. |
@@ -25,7 +25,7 @@
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
 | `src/haute/_native_memory_limit.py` | Required/best-effort native memory enforcement for isolated workers: aggregate Linux cgroup and Windows Job Object leases, single-process RLIMIT compatibility, fork-safe ownership, and the context-local active-backend proof used to prevent unaccounted descendant parallelism. |
 | `src/haute/routes/_isolated_worker_async.py` | Async route bridge for cancellable isolated-worker transactions: runs the blocking supervisor off-loop, propagates route cancellation/timeout without thread-compute fallback, drains the supervisor to termination, preserves the primary failure when cleanup also fails, and provides the shared linearizable cancellation/publication gate. |
-| `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks from projected target width, and rejects an over-budget single target row), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the AST-based row-local user-code whitelist. |
+| `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks from projected target width, and rejects an over-budget single target row), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the receiver-aware AST row-local user-code classifier (`classify_chunk_local_polars_code()` returning a `ChunkLocalDecision`; `is_chunk_local_polars_code()` is its boolean view) with its frame-method, expression-method, namespace-method, and Polars-function allowlists. |
 | `src/haute/_host_memory.py` | Host memory observation: `available_ram_bytes()` (per-platform probes behind one shared result contract, including Linux cgroup v2/v1 headroom clamping resolved at the process's own cgroup with ancestor-min semantics — each probe reports a real measurement or a recorded failure reason, never fabricated capacity) and `available_vram_bytes()` (the first GPU's total VRAM via nvidia-smi — the CatBoost single-device sizing basis — or nothing when no GPU is present; detection failures other than an absent binary are logged with a reason). Owns the nvidia-smi subprocess chokepoint. |
 | `src/haute/_ram_estimate.py` | Workload-side estimation: `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), `estimate_gpu_vram_bytes()`, and the `MaterialisationEstimate` contract consumed by strategy planning. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
 | `src/haute/_cardinality.py` | Pure, overflow-safe join row-bound formulas for every supported join strategy. It validates finite non-negative input bounds and the closed Polars uniqueness contract (`m:m`, `1:1`, `1:m`, `m:1`) and returns both the upper bound and auditable evidence. |
@@ -79,9 +79,14 @@
   integer; boundary/reason collections cap at 32 items and provenance at 128.
   The closed internal vocabulary is
   `projected`, `schema-all-except`, `full-width-admitted-eager`,
-  `unprojected-streaming-boundary`, `materialisation-boundary`, `unsupported`, and
+  `unprojected-streaming-boundary`, `materialisation-boundary`,
+  `full-width-conservative`, `unsupported`, and
   `not-planned`; it maps exactly to API statuses `projected`, `admitted_eager`,
-  `boundary`, `rejected`, and `not_planned`. Required fields also include profile,
+  `boundary`, `warned`, `rejected`, and `not_planned`
+  (`full-width-conservative` is the only `warned` strategy). The addition of
+  `full-width-conservative`/`warned` was made within schema version 1: the Pydantic
+  DTO, the generated frontend contracts, and the frontend guards changed together,
+  and every other unknown value stays invalid. Required fields also include profile,
   `bounded|unbounded|unknown`, reason code, and
   `available|unavailable|truncated` detail state.
 - **`ExecutionAdmission`** (frozen dataclass) — the immutable admission decision
@@ -155,9 +160,18 @@
 - **`RowCardinalityAnalysis`** (`_column_lineage.py`, frozen dataclass) — the
   fail-closed row analogue of column lineage for a linear Polars program. It reports
   the output and peak finite upper bounds plus operation evidence, or the exact
-  unsupported operation/reason. Join operations carry their literal `validate`
-  contract into the shared formulas; `explode` is unavailable because no list-length
-  evidence exists.
+  unsupported operation/reason. Every accepted operation has a closed row-effect
+  class. `filter`, `fill_null`, `drop`, `drop_nulls`, `rename`, `with_columns`,
+  `with_row_index`, `sort`, row-only slicing, and `select` are row-preserving or
+  row-non-increasing (a scalar `select`/`with_columns` still materialises one row
+  over an empty frame); `unique` and `group_by(...).agg(...)` are row-non-increasing;
+  `unpivot` with a literal non-empty `on` list is bounded expansion by exactly that
+  column count and records `unpivot_factor=<count>` in its evidence; join operations
+  carry their literal `validate` contract into the shared formulas. `explode`,
+  `unpivot` without a literal `on` list (`dynamic_unpivot`), and the audited
+  row-expanding expression methods are unavailable because no length evidence
+  exists. Cardinality analysis shares the lineage parser but never an input schema,
+  so it cannot resolve an omitted `on` list from upstream columns.
 - **Available RAM** (`_host_memory.available_ram_bytes`) — tries the platform
   sources in a fixed order (Linux `/proc/meminfo` `MemAvailable`, POSIX
   `sysconf` pages, macOS Mach VM counters, Windows `GlobalMemoryStatusEx`);
@@ -468,7 +482,10 @@ prepares the graph the same way as the other two paths, identifies the chunk-sta
 node (single `DATA_INPUT` root, or an explicit `chunk_start_node_id`), classifies
 every node from `chunk_start_node_id` to the target via `_capability_for_node()`
 (consulting `_CHUNK_CAPABILITY_DECLARATIONS`, validating chunk-local user code for
-`POLARS`/`SCENARIO_EXPANDER` nodes via `is_chunk_local_polars_code()`), validates the
+`POLARS`/`SCENARIO_EXPANDER` nodes and post-read Data Input code via
+`classify_chunk_local_polars_code()`, whose ineligible `ChunkLocalDecision` becomes a
+`ChunkUserCodeUnsupportedError` carrying the node, blocking operator, reason, line, and
+column), validates the
 chunk suffix is a single-parent chain, and sizes chunks either from an explicit
 `chunk_size` or from `target_chunk_bytes` (which requires building the real projected
 target-output schema through `execute_lazy_graph` and either costing fixed-width
@@ -496,7 +513,12 @@ delegated cgroup-v2 child with a finite `memory.max` and otherwise applies
 `RLIMIT_AS`; Windows assigns the child to a Job Object with a finite aggregate
 job-memory commit limit, so descendants cannot each consume the complete admitted
 budget. Limits are growth budgets: the native baseline is measured before the
-hard ceiling is installed. Independently, the parent samples child RSS and
+hard ceiling is installed. `NativeMemoryLease.apply()` clears its recorded backend
+before attempting an installation and `restore()` clears it after releasing the
+cap, so `lease.backend` is non-`None` only while a cap installed by the current
+request is active; `_isolated_worker_entrypoint` and the warm interactive worker
+loop enter `native_memory_backend_scope` with that backend only when `apply()`
+returned `True`. Independently, the parent samples child RSS and
 terminates it when the configured cap is crossed; this watchdog is secondary
 defence and observability, never evidence that a hard kernel cap exists.
 `process_memory_caps_supported()` therefore means a native hard cap is available,
@@ -617,13 +639,41 @@ fallback after a process failure.
   program, with inert imports, docstrings, and scalar literal helpers. It turns each
   supported call into an
   operation with a forward schema transfer and a backward demand transfer. Literal
-  `select`/`select_seq`, `with_columns`, `rename`, `filter`, `fill_null`, row-only
-  slicing, `sort`, literal-subset `unique`, literal `explode`, closed
-  `group_by(...).agg(...)`, and supported literal-key joins can be composed in one
-  chain. Every expression or aggregate that Polars executes contributes its input
-  columns even if a later select omits its output. A select or aggregate establishes
-  an exact schema without requiring an upstream schema; rename and join collision
-  decisions use exact schemas and otherwise fail closed.
+  `select`/`select_seq`, `with_columns`, `rename`, `filter`, `fill_null`, literal
+  `drop`, `drop_nulls`, `with_row_index`, row-only slicing, `sort`, literal-subset
+  `unique`, literal `explode`, literal `unpivot`, closed `group_by(...).agg(...)`, and
+  supported literal-key joins can be composed in one chain. Every expression or
+  aggregate that Polars executes contributes its input columns even if a later
+  select omits its output. A select, an aggregate, or an `unpivot` whose `on` and
+  `index` are both literal establishes an exact schema without requiring an upstream
+  schema; rename, join, `with_row_index`, and `unpivot` collision decisions use exact
+  schemas and otherwise fail closed (`invalid_rename`, `join_schema_ambiguous`,
+  `invalid_with_row_index`, `invalid_unpivot`). A strict `drop` demands every dropped
+  column because Polars requires them at runtime, and `drop(strict=False)` demands
+  none; `drop_nulls` without a subset and `unpivot` without a literal `on` list
+  demand the exact upstream schema and fail closed without one
+  (`drop_nulls_schema_unknown`, `unpivot_schema_unknown`); `with_row_index` produces
+  its index column and demands nothing, and without an exact schema it fails closed
+  (`with_row_index_schema_unknown`) because Polars raises on a duplicate index name
+  and projecting that column away could otherwise hide the failure. Non-literal
+  arguments to any of these operations return the operation's `dynamic_<method>`
+  reason. A bare `*` or `^...$` string is selector syntax wherever Polars accepts a
+  column name and expands to zero or many columns on the lazy path, so it never
+  proves one literal column: every bare-string column read (`select`/`with_columns`
+  names, `drop`, `drop_nulls`, `sort`, `unique`, `explode`, `unpivot`, group-by keys
+  and aggregate names, `filter` predicates, and horizontal helpers) returns the
+  operation's dynamic reason for it, exactly as `pl.col('^...$')` already did.
+  Expression methods are attributable only when their bare string arguments are
+  provably literals. The closed `_LITERAL_STRING_ARGUMENT_METHODS` registry names,
+  per `str` or `dt` receiver namespace, the methods Polars parses with
+  `str_as_lit=True` or as plain format/configuration strings (for example
+  `str.contains`, `str.starts_with`, `str.replace`, `str.strip_chars`,
+  `str.to_date`, `dt.truncate`, `dt.offset_by`, `dt.convert_time_zone`); the match
+  is receiver-aware, so a same-named method on another namespace does not inherit
+  it. A method outside the registry with a direct string argument remains
+  unsupported. `tests/test_column_lineage.py` verifies the registry against the
+  pinned Polars source, so an upgrade that changes a registered method's string
+  semantics fails the suite instead of silently under-demanding.
 - **Lineage inputs are incoming edges, not parent node ids.** Each input binding
   carries its complete `ProjectionEdgeKey`, executable `edge_input_name`, and exact
   schema when one is available. Exact API schemas are resolved per source handle;
@@ -662,7 +712,8 @@ fallback after a process failure.
   and keeps both edges full-width under edge-join diagnostics; it never overwrites
   one role's demand with the other or collapses their identities.
 - **Unsupported syntax stays visible.** Dynamic selectors/keys, dataframe-dependent
-  helper assignments, unregistered expression functions or string-argument methods,
+  helper assignments, unregistered expression functions, string-argument methods
+  outside the audited `str`/`dt` literal-argument registry,
   branches/loops/functions, unsupported join options, schema-
   dependent ownership without an exact schema, and operations without a registered
   transfer return a structured unsupported lineage result. The planner retains the
@@ -768,6 +819,40 @@ fallback after a process failure.
   boundaries); `fill_null`/`is_in` are admitted only in their literal-value /
   literal-collection forms (strategy fills and column-haystack membership read across
   rows or the full column, which a chunk boundary changes).
+- **The chunk classifier is a receiver-aware AST walk with a closed decision
+  vocabulary.** There is no textual prefilter: a comment or string literal containing
+  `.sort(` cannot affect eligibility. Frame-level methods are admitted only when the
+  receiver derives from a frame (`_ROW_LOCAL_DF_METHOD_NAMES`), bare expression methods
+  only on an expression receiver (`_ROW_LOCAL_EXPR_METHOD_NAMES`), namespace methods only
+  on their `str`/`dt` receiver (`_ROW_LOCAL_NAMESPACE_METHOD_NAMES`, keyed by namespace),
+  and top-level helpers only from `pl.` (`_ROW_LOCAL_POLARS_FUNCTIONS`); a same-named
+  method elsewhere is rejected, so `pl.col('x').list.sort()` never inherits a `sort`
+  decision and `df.sort(...)` never inherits a `list.sort` one. Every admitted entry
+  cites a chunked-equals-full proof case and the inventory test keeps the allowlists and
+  proofs one-to-one. `Expr.replace` is admitted only with a literal scalar mapping (a
+  dict of scalars, or literal `old`/`new` sequences; the deprecated `default=` form is
+  rejected); `str`/`dt` methods are admitted only with literal arguments, and
+  `str.to_date`, `str.to_datetime`, `str.to_time`, and `str.strptime` additionally
+  require an explicit non-empty literal `format`, because Polars otherwise infers the
+  format from the data and two chunks can infer differently. Methods whose validator
+  admits more than one materially distinct shape declare those shapes in
+  `_ADMITTED_CALL_SHAPES` (for example `expr.replace`: `mapping`, `old_new`; the
+  temporal parsers: `explicit_format_lenient`, `explicit_format_strict`), and the proof
+  inventory requires a chunked-equals-full proof per declared shape, comparing raised
+  exception classes as well as frames. `classify_chunk_local_polars_code(code, frame_names=...)`
+  returns `ChunkLocalDecision(eligible, reason, blocking_operator, line, column)` with
+  the closed reasons `eligible`, `empty_code`, `no_frame_names`, `syntax_error`,
+  `unsupported_statement`, `assignment_not_frame_derived`,
+  `frame_embedded_in_expression`, `unsupported_frame_method`,
+  `unsupported_expression_method`, `unsupported_namespace_method`,
+  `unsupported_polars_function`, `unsupported_call_shape`, and
+  `unsupported_expression`; the operator is the method, function, frame, or AST node
+  name that blocked the walk and the location is its 1-based source line and column.
+  The first blocking construct in source order wins: sibling children are visited by
+  source position, so a dictionary value or a conditional body reports before a
+  textually later key or test. `with_row_index`, forward or
+  backward fills, column-derived `is_in`, categorical or Enum casts, joins, ordering,
+  uniqueness, windows, group-bys, and global reductions stay rejected.
 - **`_IN_FLIGHT_PROFILE_SET`** deliberately excludes `PREVIEW_EAGER` and
   `DEPLOY_LIVE` — only the batch-shaped "heavy" profiles reserve a process-wide
   in-flight memory share; interactive/low-latency paths are not throttled by
@@ -861,24 +946,49 @@ fallback after a process failure.
 
   | Profile | Version-1 result |
   | --- | --- |
-  | Every `ExecutionProfile` | `materialisation-boundary` only when admission and estimate fit |
+  | Every `ExecutionProfile` | `materialisation-boundary` when admission and estimate fit; `full-width-conservative` when admission is present, the estimate is unavailable, and `current_native_memory_backend()` reports an active cap; otherwise a typed rejection |
 
   The group-by remains a materialisation boundary inside the caller's admitted budget;
   a streaming sink or chunked consumer is not treated as proof that the aggregation
   itself streams. The lazy executor runs the graph-aware request planner so the estimate
   is derived from the same prepared target lineage before any node executes. Every
-  materialising profile requires a context with
-  admission, positive memory/headroom, and `MaterialisationEstimate(state=available)` satisfying
+  materialising profile requires a context with admission and positive
+  memory/headroom. The ordinary admission branch additionally requires
+  `MaterialisationEstimate(state=available)` satisfying
   `estimated_peak_bytes <= min(memory_limit_bytes, headroom_bytes)` (equality is
-  admitted). Missing/non-positive admission yields
-  `execution_admission_unavailable`; unavailable estimate yields
-  `materialisation_estimate_unavailable`; excess yields
-  `materialisation_exceeds_headroom`. There is no chunk/streaming fallback. An
-  unavailable estimate appends the estimator's own reason (its `<node>:<reason>` detail,
-  such as `source_row_count_unavailable` or `target_schema_unavailable`) to the
-  rejection's remediation. The estimator already knows which node it could not measure
-  and why; discarding that left an analyst with "provide readable metadata" and no way
-  to tell an unreadable file from an unsummarisable source shape.
+  admitted); the unavailable-estimate branch is the next bullet. Missing/non-positive
+  admission yields `execution_admission_unavailable`; excess yields
+  `materialisation_exceeds_headroom`. There is no chunk/streaming fallback.
+- **An unavailable estimate is warned under a native cap and rejected without one.**
+  `_finalise_execution_strategy` consults
+  `haute._native_memory_limit.current_native_memory_backend()`, which is set only
+  while a worker's native lease is active. With an active backend the result is
+  strategy `full-width-conservative`, status `warned`, boundedness `unbounded`,
+  `reason_code="materialisation_estimate_unavailable_conservative"`; the projection
+  plan still records the group-by as a materialisation boundary (so
+  `blocking_node_id`/`blocking_operator` point at it exactly as for
+  `materialisation-boundary`), `headroom_bytes` carries the reserved envelope
+  `min(memory_limit_bytes, headroom_bytes)`, every estimate field
+  (`estimated_peak_bytes`, `raw_estimated_peak_bytes`, calibration factor, admission
+  basis) is `None`, and `assumptions` carries
+  `proof_gap=<estimator detail>`, `reserved_envelope_bytes=<n>`,
+  `hard_cap_backend=<cgroup|rlimit|windows_job>`, and
+  `disabled_optimisations=estimate_based_admission`. The remediation (≤512 chars)
+  states that the run continued under its full envelope because the estimate was
+  unavailable, repeats the proof gap, and asks for readable source metadata or a
+  provable rewrite of the blocking operator. The lazy executor's runtime projection
+  rebuilds pass the previous `full-width-conservative` strategy, reason, and
+  remediation through unchanged; every other strategy is re-derived from the refined
+  plan as before. Estimate calibration ignores conservative runs because they carry
+  no estimate. Without an active backend the unavailable estimate is the typed
+  `GroupByExecutionUnsupportedError` with `materialisation_estimate_unavailable`,
+  and its remediation ends with the sentence "This surface runs without a hard
+  worker memory cap, so Haute cannot run the plan conservatively here." In both
+  outcomes the estimator's own reason (its `<node>:<reason>` detail, such as
+  `source_row_count_unavailable` or `target_schema_unavailable`) is retained. The
+  estimator already knows which node it could not measure and why; discarding that
+  left an analyst with "provide readable metadata" and no way to tell an unreadable
+  file from an unsummarisable source shape.
 - **Runtime sources participate in group-by admission.** When an execution surface
   replaces graph inputs with in-memory frames, as deploy scoring does, the planner uses
   those exact frames as request-local source metadata for row cardinality, schema, and
@@ -995,7 +1105,13 @@ fallback after a process failure.
   raised before a bounded operation starts (the RSS sampler returned `None`, RSS has
   no positive headroom below a configured process cap, or the in-flight budget is
   exhausted);
-  carries `to_payload()` with the same shape family as the mid-run variant.
+  carries `to_payload()` with the same shape family as the mid-run variant. An
+  in-flight refusal additionally carries `in_flight_reserved_bytes`,
+  `in_flight_limit_bytes`, and `in_flight_operations`: the reservations held at the
+  moment of refusal as `<profile>:<operation>` labels, deduplicated, sorted by code
+  point, and truncated to the first `_MAX_REPORTED_IN_FLIGHT_OPERATIONS` (8) labels
+  while the byte totals stay exact over every holder. The user-facing message names
+  those labels ("reserved by ...") so a refusal identifies the work it lost to.
 - `RuntimeError` from admission configuration — raised before context creation for
   an unknown `HAUTE_EXECUTION_MEMORY_POLICY`, a malformed/non-positive explicit
   memory or RSS limit, an invalid OS-reserve override, or a non-positive RAM sample.
@@ -1008,6 +1124,12 @@ fallback after a process failure.
   also raised defensively inside `iter_chunked_frames` if the runtime graph no longer
   matches the plan it was built from (`_assert_plan_matches_prepared_graph`,
   `_assert_runner_shape`).
+- `ChunkUserCodeUnsupportedError` (`haute.errors`, extends `ChunkPlanUnsupportedError`)
+  — the user-code rejection with a public contract: `error_code`
+  `chunk_user_code_unsupported` and public fields `node_id`, `node_type`, `reason`,
+  `blocking_operator`, `line`, and `column`, copied from the `ChunkLocalDecision` that
+  rejected the code. Callers that catch `ChunkPlanUnsupportedError` still catch it;
+  callers that surface a warning read `to_payload()` instead of scraping the message.
 - `IsolatedWorkerError` hierarchy (`_worker_isolation.py`) —
   `IsolatedWorkerStartError` (process failed to start), `IsolatedWorkerRemoteError`
   (child raised a Python exception; carries `remote_type`/`remote_message`/
@@ -1065,12 +1187,14 @@ fallback after a process failure.
 - `tests/test_builder_edge_cases.py` — builder edge cases for instance resolution, constants, outputs, live-switch/scenario expansion, banding, dispatch, and empty frames.
 - `tests/test_column_renames.py` — column-rename application for configured, empty, missing, and edge-name mappings.
 - `tests/test_compute_needed_columns.py` — topology, contract-algebra, and one-computation-per-node performance invariants for backward needed-column analysis.
-- `tests/test_column_lineage.py` — operation-level schema/demand transfer and
+- `tests/test_column_lineage.py` — operation-level schema/demand transfer, the
+  row-effect bound of every accepted operation, the executable audit of the
+  literal-string-argument method registry against the pinned Polars source, and
   differential execution checks: running supported programs against projected
   inputs must equal running the same programs against full-width inputs.
 - `tests/test_cardinality.py` — overflow-safe join-cardinality formulas, uniqueness
   contracts, evidence payloads, invalid bounds, and row-cardinality lineage analysis.
-- `tests/test_column_lineage_properties.py` — Hypothesis differential properties for the closed Polars column-lineage model, including projected-versus-full execution equivalence.
+- `tests/test_column_lineage_properties.py` — Hypothesis differential properties for the closed Polars column-lineage model, including projected-versus-full execution equivalence and row-count bounds that hold over empty, null-heavy, and NaN-heavy frames.
 - `tests/test_interactive_route_isolation.py` — preview and trace routes execute serialisable production targets through the spawn-worker boundary.
 - `tests/test_interactive_worker_pool.py` — warm interactive-worker pool readiness, protocol, timeout, cancellation, RSS-limit, replacement, and execution-mode contracts.
 - `tests/test_native_memory_limit.py` — native-backend selection, strict-policy
@@ -1085,7 +1209,8 @@ fallback after a process failure.
 - `tests/test_data_input_chunking.py` — Data Input provider snapshots and chunk-plan/runner execution, including unsupported chunk plans.
 - `tests/test_extract_column_refs.py` — extraction of referenced columns across empty/minimal, selected/excluded, and node-config shapes.
 - `tests/test_graph_input_identity.py` — edge-derived pipeline input-name derivation contract across source handles and graph edges.
-- `tests/test_polars_backend_strategy_contract.py` — execution-strategy planning, boundedness/diagnostics payloads, projection/chunking, and error contracts.
+- `tests/test_polars_backend_strategy_contract.py` — execution-strategy planning, boundedness/diagnostics payloads, projection/chunking, and error contracts, including the cross-profile table that plans each admitted Polars shape (row-preserving, row-reducing, bounded-expansion, and audited string/temporal predicates ahead of a group-by) under every `ExecutionProfile` with the real estimator and requires identical strategy diagnostics apart from the profile itself; it also proves that an unavailable estimate becomes the `warned` `full-width-conservative` strategy under an active native cap (`native_memory_backend_scope`) and the typed `materialisation_estimate_unavailable` rejection without one, with admission and headroom failures unchanged in both.
+- `tests/test_data_io_nodes.py` — sink execution and publication: the isolated output worker's admission release and failure classification, atomic staging/commit, overwrite and race handling, and the end-to-end group-by sink, including a conservative (`warned`) run whose written frame equals plain Polars and whose metrics payload carries the warned strategy.
 - `tests/test_scenario_propagation.py` — active scenario propagation through routes, executor, builders, and live-switch pruning.
 - `tests/test_streaming_collect_contract.py` — static contract that bounded callers use `streaming_collect` across execution/deploy/training/optimiser modules.
 
@@ -1135,7 +1260,11 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   through the route/service layers that construct admitted contexts for real
   operations (training, optimiser setup, deploy).
 - **`test_chunk_plan.py`** — per-`NodeType` chunk-capability contract tests,
-  including `validate_chunk_capability_declarations()`'s completeness check.
+  including `validate_chunk_capability_declarations()`'s completeness check, and the
+  classifier decision contract: comments and string literals cannot change
+  eligibility, every rejection names its operator, closed reason, and source
+  location, namespace admissions are receiver-specific, and a rejected polars node
+  raises `ChunkUserCodeUnsupportedError` with that payload.
 - **`test_chunk_runner.py`** — `iter_chunked_frames`/`run_chunked_reduce` execution,
   cancellation and checkpoint cleanup on failure.
 - **`test_chunk_whitelist_proofs.py`** — the AST whitelist's correctness contract: de-
@@ -1143,7 +1272,10 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   `hypothesis`-driven property test per whitelisted construct
   (`test_whitelisted_construct_chunked_equals_full`) that runs the construct through
   the real chunk runner against full lazy execution on randomised, boundary-heavy
-  frames (nulls/NaN/inf anywhere, single-row chunks).
+  frames (nulls/NaN/inf anywhere, empty strings and dates, single-row chunks),
+  including every namespace-keyed `str`/`dt` admission and the literal-mapping
+  `replace` shape; the inventory test fails when an allowlist entry has no proof or
+  a proof cites a retired entry.
 - **`test_streaming_chunk_size_threading.py`** — thread-local streaming chunk-size
   propagation used by the chunk runner and bounded-collect helpers.
 - **`test_topo.py`**, **`test_topo_contracts.py`** — strict topological sort ordering,
@@ -1156,8 +1288,11 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   probes for every source and failure path (driving the real ctypes
   structures), plus one darwin-gated unmocked real-kernel assertion.
 - **`test_ram_estimate.py`** —
-  source-metadata resolution (including edge-join key coalescing), and the
-  downsample decision. Per-port JSON `apiInput` sizing is exercised against a
+  source-metadata resolution (including edge-join key coalescing), the
+  downsample decision, and the availability of a group-by estimate behind the
+  proven row-preserving, row-reducing, bounded-expansion, and audited
+  string/temporal shapes (with `unpivot` multiplying the resolved cardinality
+  by its literal column count and an omitted `on` list staying unavailable). Per-port JSON `apiInput` sizing is exercised against a
   cache built by the same writer the engine reads — each emitted table sized
   from its own parquet, the committed layer used when working holds no match,
   and an unemitted port, a stale cache, an unusable path, a missing data file

@@ -2,11 +2,36 @@ import { describe, expect, it } from "vitest"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 import {
   buildExecutionDiagnostic,
+  buildExecutionStrategyDiagnostic,
   buildExecutionFailureMessage,
+  buildMemoryPressureDiagnostic,
   executionJobStatusFromReason,
+  executionWarningNodeIds,
   executionTerminalReasonFromError,
   shouldShowMemoryPressureDiagnostic,
 } from "../executionDiagnostics"
+
+function warnedMetrics(overrides: Parameters<typeof makeExecutionMetricsFixture>[0]) {
+  return makeExecutionMetricsFixture({
+    execution_strategy: {
+      schema_version: 1,
+      status: "warned",
+      strategy: "full-width-conservative",
+      profile: "preview_eager",
+      boundedness: "unbounded",
+      reason_code: "materialisation_estimate_unavailable_conservative",
+      detail_state: "available",
+      boundaries: { state: "available", total_count: 0, items: [] },
+      reasons: { state: "available", total_count: 0, items: [] },
+      provenance: { state: "available", total_count: 0, items: [] },
+      blocking_node_id: "aggregate",
+      blocking_operator: "group_by",
+      headroom_bytes: 2048,
+      remediation: "Give this aggregation a bounded key set.",
+    },
+    ...overrides,
+  })
+}
 
 describe("executionDiagnostics", () => {
   it("builds a concise memory-pressure summary with technical details", () => {
@@ -16,6 +41,68 @@ describe("executionDiagnostics", () => {
     expect(diagnostic?.details).toContain("RSS 1.7 KB of 2.9 KB limit")
     expect(diagnostic?.details).toContain("Headroom used 1.5 KB of 2.0 KB")
     expect(diagnostic?.details).toContain("Stage collect")
+  })
+
+  it("builds a warned strategy diagnostic naming the blocking node and reserved envelope", () => {
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      execution_strategy: {
+        schema_version: 1,
+        status: "warned",
+        strategy: "full-width-conservative",
+        profile: "preview_eager",
+        boundedness: "unbounded",
+        reason_code: "materialisation_estimate_unavailable_conservative",
+        detail_state: "available",
+        boundaries: { state: "available", total_count: 0, items: [] },
+        reasons: { state: "available", total_count: 0, items: [] },
+        provenance: { state: "available", total_count: 0, items: [] },
+        blocking_node_id: "aggregate",
+        blocking_operator: "group_by",
+        headroom_bytes: 2048,
+        remediation: "Give this aggregation a bounded key set.",
+      },
+    })
+
+    const diagnostic = buildExecutionStrategyDiagnostic(metrics)
+
+    expect(diagnostic?.message).toBe("Execution ran without a memory estimate at 'aggregate' (group_by)")
+    expect(diagnostic?.details).toContain("Reserved envelope 2.0 KB")
+    expect(diagnostic?.details).toContain("Reason materialisation_estimate_unavailable_conservative")
+    expect(diagnostic?.details).toContain("Remediation Give this aggregation a bounded key set.")
+    expect(buildExecutionDiagnostic(metrics)).toEqual(diagnostic)
+    expect(diagnostic?.kind).toBe("strategy")
+  })
+
+  it("lets memory pressure and terminal memory limits outrank a warned strategy", () => {
+    const withoutPressure = warnedMetrics({ memory_pressure_events: [] })
+    const withPressure = warnedMetrics({})
+
+    expect(buildExecutionDiagnostic(withoutPressure)?.kind).toBe("strategy")
+    expect(buildExecutionDiagnostic(withoutPressure)?.message).toBe(
+      "Execution ran without a memory estimate at 'aggregate' (group_by)",
+    )
+
+    const pressureDiagnostic = buildExecutionDiagnostic(withPressure)
+    expect(pressureDiagnostic?.kind).toBe("pressure")
+    expect(pressureDiagnostic?.message).toBe("Memory pressure reached 75% of the preview budget.")
+
+    expect(buildMemoryPressureDiagnostic(withoutPressure)).toBeNull()
+    expect(buildMemoryPressureDiagnostic(withPressure)?.kind).toBe("pressure")
+
+    expect(
+      buildExecutionFailureMessage(
+        "Stopped",
+        warnedMetrics({ status: "memory_limited", terminal_reason: "memory_limited" }),
+        { prefix: "Preview failed" },
+      ),
+    ).toBe("Preview failed: memory pressure reached 75% of the preview budget. RSS 1.7 KB of 2.9 KB limit.")
+  })
+
+  it("marks the requested and blocking nodes as warned for a warned strategy", () => {
+    expect(
+      executionWarningNodeIds(warnedMetrics({ memory_pressure_events: [] }), "requested"),
+    ).toEqual(["requested", "aggregate"])
   })
 
   it.each(["contract_error", "timed_out", "cancelled", "superseded"] as const)(

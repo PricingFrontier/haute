@@ -182,13 +182,21 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
     """Strict V1 API DTO for one shared execution-planning decision."""
 
     schema_version: Literal[1]
-    status: Literal["projected", "admitted_eager", "boundary", "rejected", "not_planned"]
+    status: Literal[
+        "projected",
+        "admitted_eager",
+        "boundary",
+        "warned",
+        "rejected",
+        "not_planned",
+    ]
     strategy: Literal[
         "projected",
         "schema-all-except",
         "full-width-admitted-eager",
         "unprojected-streaming-boundary",
         "materialisation-boundary",
+        "full-width-conservative",
         "unsupported",
         "not-planned",
     ]
@@ -234,6 +242,7 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
             "full-width-admitted-eager": "admitted_eager",
             "unprojected-streaming-boundary": "boundary",
             "materialisation-boundary": "boundary",
+            "full-width-conservative": "warned",
             "unsupported": "rejected",
             "not-planned": "not_planned",
         }[self.strategy]

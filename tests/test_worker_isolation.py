@@ -1598,3 +1598,34 @@ class TestSpawnableInterpreter:
             assert os.access(resolved, os.X_OK)
         finally:
             spawn.set_executable(original)
+
+
+def test_isolated_entrypoint_exposes_no_backend_when_best_effort_apply_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stale lease evidence must not become the request's active backend."""
+    import haute._worker_isolation as isolation_mod
+    from haute._native_memory_limit import current_native_memory_backend
+
+    results = _EntrypointQueue()
+    monkeypatch.setattr(
+        isolation_mod,
+        "NativeMemoryLease",
+        lambda: SimpleNamespace(
+            backend="rlimit",
+            apply=lambda *_args, **_kwargs: False,
+            restore=lambda: None,
+            close=lambda: None,
+        ),
+    )
+
+    isolation_mod._isolated_worker_entrypoint(
+        results,
+        current_native_memory_backend,
+        (),
+        {},
+        64,
+        False,
+    )
+
+    assert pickle.loads(results.get_nowait()) == ("ok", None)

@@ -10,6 +10,7 @@ import { formatBytes } from "./formatBytes"
 export type ExecutionDiagnostic = {
   message: string
   details: string[]
+  kind?: "strategy" | "pressure"
 }
 
 export type ExecutionFailureMessageOptions = {
@@ -95,9 +96,16 @@ function strategyLabel(status: ExecutionStrategyDiagnostic["status"]): string {
     projected: "Projection strategy applied",
     boundary: "Execution boundary required",
     admitted_eager: "Eager execution admitted",
+    warned: "Execution continued under a reserved memory envelope",
     rejected: "Execution strategy rejected",
     not_planned: "Execution strategy was not planned",
   }[status]
+}
+
+/** ` at '<node>' (<operator>)`, omitting the parts the diagnostic leaves null. */
+export function executionStrategyLocation(strategy: ExecutionStrategyDiagnostic): string {
+  if (!strategy.blocking_node_id) return ""
+  return ` at '${strategy.blocking_node_id}'${strategy.blocking_operator ? ` (${strategy.blocking_operator})` : ""}`
 }
 
 function rawCollectionDetail<T>(name: string, collection: { state: string; total_count: number | null; items: T[] }): string {
@@ -114,13 +122,22 @@ export function buildExecutionStrategyDiagnostic(
   if (strategy.blocking_node_id) details.push(`Blocking node ${strategy.blocking_node_id}`)
   if (strategy.blocking_operator) details.push(`Operator ${strategy.blocking_operator}`)
   if (strategy.estimated_peak_bytes !== undefined && strategy.estimated_peak_bytes !== null) details.push(`Estimated materialisation cost ${formatBytes(strategy.estimated_peak_bytes)}`)
-  if (strategy.headroom_bytes !== undefined && strategy.headroom_bytes !== null) details.push(`Available headroom ${formatBytes(strategy.headroom_bytes)}`)
+  if (strategy.headroom_bytes !== undefined && strategy.headroom_bytes !== null) {
+    details.push(
+      strategy.status === "warned"
+        ? `Reserved envelope ${formatBytes(strategy.headroom_bytes)}`
+        : `Available headroom ${formatBytes(strategy.headroom_bytes)}`,
+    )
+  }
   details.push(`Reason ${strategy.reason_code}`)
   if (strategy.remediation) details.push(`Remediation ${strategy.remediation}`)
   details.push(rawCollectionDetail("Boundaries", strategy.boundaries))
   details.push(rawCollectionDetail("Reasons", strategy.reasons))
   details.push(rawCollectionDetail("Provenance", strategy.provenance))
-  return { message: strategyLabel(strategy.status), details }
+  const message = strategy.status === "warned"
+    ? `Execution ran without a memory estimate${executionStrategyLocation(strategy)}`
+    : strategyLabel(strategy.status)
+  return { message, details, kind: "strategy" }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -264,6 +281,12 @@ export function executionWarningNodeIds(
     }
   }
 
+  if (metrics.execution_strategy?.status === "warned") {
+    nodeIds.add(requestedNodeId)
+    const blockingNodeId = metrics.execution_strategy.blocking_node_id
+    if (blockingNodeId) nodeIds.add(blockingNodeId)
+  }
+
   if (shouldShowMemoryPressureDiagnostic(metrics)) {
     nodeIds.add(requestedNodeId)
     const pressureNodeIds = metrics.memory_pressure_events
@@ -275,14 +298,10 @@ export function executionWarningNodeIds(
   return [...nodeIds]
 }
 
-export function buildExecutionDiagnostic(
+export function buildMemoryPressureDiagnostic(
   metrics: ExecutionMetrics | null | undefined,
   options: ExecutionDiagnosticOptions = {},
 ): ExecutionDiagnostic | null {
-  const strategyDiagnostic = buildExecutionStrategyDiagnostic(metrics)
-  if (metrics?.execution_strategy?.status === "rejected" && strategyDiagnostic) {
-    return strategyDiagnostic
-  }
   if (!shouldShowMemoryPressureDiagnostic(metrics, options) || !metrics) return null
   const event = highestPressureEvent(metrics)
   if (!event) return null
@@ -297,7 +316,26 @@ export function buildExecutionDiagnostic(
   return {
     message: `Memory pressure reached ${pressurePercent(event)}% of the ${profileLabel(metrics.profile)} budget.`,
     details,
+    kind: "pressure",
   }
+}
+
+/**
+ * The diagnostic a surface should render for this execution. A rejected
+ * strategy outranks everything; memory pressure (including a terminal
+ * memory-limit failure) outranks a warned strategy, which is informational.
+ */
+export function buildExecutionDiagnostic(
+  metrics: ExecutionMetrics | null | undefined,
+  options: ExecutionDiagnosticOptions = {},
+): ExecutionDiagnostic | null {
+  const strategyDiagnostic = buildExecutionStrategyDiagnostic(metrics)
+  const strategyStatus = metrics?.execution_strategy?.status
+  if (strategyStatus === "rejected" && strategyDiagnostic) return strategyDiagnostic
+  const pressureDiagnostic = buildMemoryPressureDiagnostic(metrics, options)
+  if (pressureDiagnostic) return pressureDiagnostic
+  if (strategyStatus === "warned" && strategyDiagnostic) return strategyDiagnostic
+  return null
 }
 
 export function buildExecutionFailureMessage(
@@ -312,7 +350,7 @@ export function buildExecutionFailureMessage(
     return baseMessage?.trim() || prefix || "Execution failed"
   }
 
-  const diagnostic = buildExecutionDiagnostic(metrics)
+  const diagnostic = buildMemoryPressureDiagnostic(metrics)
   if (!diagnostic) return baseMessage?.trim() || prefix || "Execution failed"
 
   const firstDetail = diagnostic.details[0]

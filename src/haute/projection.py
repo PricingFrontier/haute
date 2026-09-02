@@ -70,6 +70,7 @@ class ExecutionStrategy(StrEnum):
     FULL_WIDTH_ADMITTED_EAGER = "full-width-admitted-eager"
     UNPROJECTED_STREAMING_BOUNDARY = "unprojected-streaming-boundary"
     MATERIALISATION_BOUNDARY = "materialisation-boundary"
+    FULL_WIDTH_CONSERVATIVE = "full-width-conservative"
     UNSUPPORTED = "unsupported"
     NOT_PLANNED = "not-planned"
 
@@ -78,6 +79,7 @@ class ExecutionStrategyStatus(StrEnum):
     PROJECTED = "projected"
     ADMITTED_EAGER = "admitted_eager"
     BOUNDARY = "boundary"
+    WARNED = "warned"
     REJECTED = "rejected"
     NOT_PLANNED = "not_planned"
 
@@ -101,6 +103,7 @@ _STATUS_BY_STRATEGY: Mapping[ExecutionStrategy, ExecutionStrategyStatus] = Mappi
         ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: ExecutionStrategyStatus.ADMITTED_EAGER,
         ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: ExecutionStrategyStatus.BOUNDARY,
         ExecutionStrategy.MATERIALISATION_BOUNDARY: ExecutionStrategyStatus.BOUNDARY,
+        ExecutionStrategy.FULL_WIDTH_CONSERVATIVE: ExecutionStrategyStatus.WARNED,
         ExecutionStrategy.UNSUPPORTED: ExecutionStrategyStatus.REJECTED,
         ExecutionStrategy.NOT_PLANNED: ExecutionStrategyStatus.NOT_PLANNED,
     }
@@ -771,6 +774,9 @@ def build_execution_strategy_result(
             ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: "full_width_admitted",
             ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: ("unprojected_streaming_boundary"),
             ExecutionStrategy.MATERIALISATION_BOUNDARY: ("group_by_materialisation_admitted"),
+            ExecutionStrategy.FULL_WIDTH_CONSERVATIVE: (
+                "materialisation_estimate_unavailable_conservative"
+            ),
             ExecutionStrategy.UNSUPPORTED: "unsupported",
             ExecutionStrategy.NOT_PLANNED: "not_planned",
         }[strategy]
@@ -794,6 +800,11 @@ def build_execution_strategy_result(
             ExecutionStrategy.MATERIALISATION_BOUNDARY: (
                 "Keep the materialisation within the reported memory headroom or narrow its input."
             ),
+            ExecutionStrategy.FULL_WIDTH_CONSERVATIVE: (
+                "The run continued under its full reserved memory envelope because the "
+                "materialisation estimate was unavailable. Provide readable source metadata "
+                "or rewrite the blocking operator so Haute can prove the estimate."
+            ),
             ExecutionStrategy.UNSUPPORTED: (
                 "Narrow the input or remove the unsupported operator before running this profile."
             ),
@@ -808,6 +819,7 @@ def build_execution_strategy_result(
         ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: ExecutionBoundedness.BOUNDED,
         ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: ExecutionBoundedness.UNBOUNDED,
         ExecutionStrategy.MATERIALISATION_BOUNDARY: ExecutionBoundedness.UNBOUNDED,
+        ExecutionStrategy.FULL_WIDTH_CONSERVATIVE: ExecutionBoundedness.UNBOUNDED,
         ExecutionStrategy.UNSUPPORTED: ExecutionBoundedness.UNKNOWN,
         ExecutionStrategy.NOT_PLANNED: ExecutionBoundedness.UNKNOWN,
     }[strategy]
@@ -889,6 +901,11 @@ def build_execution_strategy_result(
     )
     primary_boundary_kind = {
         ExecutionStrategy.MATERIALISATION_BOUNDARY: (
+            ExecutionStrategy.MATERIALISATION_BOUNDARY.value
+        ),
+        # A conservative run still materialises at the group-by; its blocking
+        # boundary is that materialisation, not an earlier projection boundary.
+        ExecutionStrategy.FULL_WIDTH_CONSERVATIVE: (
             ExecutionStrategy.MATERIALISATION_BOUNDARY.value
         ),
         ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: (

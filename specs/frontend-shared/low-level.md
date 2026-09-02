@@ -536,10 +536,14 @@ producer's Python-only canonical-JSON tie-break.
 
 The parser enforces the authoritative mapping: `projected` and `schema-all-except` map to
 `projected`; `full-width-admitted-eager` to `admitted_eager`;
-`unprojected-streaming-boundary` and `materialisation-boundary` to `boundary`; `unsupported`
-to `rejected`; and `not-planned` to `not_planned`. The shared UI states are therefore
-`projected`, `boundary`, `admitted_eager`, `rejected`, and `not_planned`, plus a distinct
-diagnostic-unavailable render state.
+`unprojected-streaming-boundary` and `materialisation-boundary` to `boundary`;
+`full-width-conservative` to `warned`; `unsupported` to `rejected`; and `not-planned` to
+`not_planned`. The shared UI states are therefore `projected`, `boundary`, `admitted_eager`,
+`warned`, `rejected`, and `not_planned`, plus a distinct diagnostic-unavailable render state.
+`warned` means the run completed under its full reserved memory envelope because the
+group-by estimate was unavailable; it is rendered as a warning, never an error, and a
+terminal memory-limit failure or a memory-pressure event on the same run takes precedence
+over the warned strategy in every consumer.
 
 Consumers ignore unknown additive fields only within version 1. Missing or malformed required
 fields and unknown version-1 enum values throw; unsupported higher versions produce diagnostic

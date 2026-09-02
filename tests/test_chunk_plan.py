@@ -14,9 +14,14 @@ from haute.chunking import (
     ChunkPlanRequest,
     chunk_capability_declarations,
     chunk_plan,
+    classify_chunk_local_polars_code,
     validate_chunk_capability_declarations,
 )
-from haute.errors import ChunkMemoryRiskError, ChunkPlanUnsupportedError
+from haute.errors import (
+    ChunkMemoryRiskError,
+    ChunkPlanUnsupportedError,
+    ChunkUserCodeUnsupportedError,
+)
 from haute.graph_utils import NodeType
 from tests.conftest import make_edge, make_graph, make_output_config
 
@@ -652,3 +657,177 @@ def test_chunk_plan_rejects_opaque_rating_step_user_code():
                 required_columns_by_node={"out": {"quote_id"}},
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# Chunk-local classifier: closed reasons, blocking operators, source locations.
+#
+# The classifier is a receiver-aware AST walk with no textual prefilter, so
+# comments and string literals cannot change a verdict and every rejection
+# names the construct that stopped the walk.
+# ---------------------------------------------------------------------------
+
+
+def _classify(code: str):
+    return classify_chunk_local_polars_code(code, frame_names=("df",))
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        pytest.param("# never .sort( here\ndf = df.filter(pl.col('a') > 0)", id="comment"),
+        pytest.param("df = df.filter(pl.col('a') != '.sort(')", id="string-literal"),
+    ],
+)
+def test_comments_and_string_literals_do_not_change_eligibility(code: str) -> None:
+    decision = _classify(code)
+    assert decision.eligible
+    assert decision.reason == "eligible"
+    assert decision.blocking_operator is None
+
+
+def test_classifier_reports_unsupported_frame_method() -> None:
+    decision = _classify("df = df.sort('a')")
+    assert not decision.eligible
+    assert decision.reason == "unsupported_frame_method"
+    assert decision.blocking_operator == "sort"
+    assert decision.line == 1
+    assert decision.column is not None
+
+
+def test_classifier_reports_unsupported_namespace_method() -> None:
+    decision = _classify("df = df.with_columns(pl.col('a').list.sort().alias('b'))")
+    assert not decision.eligible
+    assert decision.reason == "unsupported_namespace_method"
+    assert decision.blocking_operator == "list.sort"
+    assert decision.line == 1
+
+
+def test_classifier_admits_whitelisted_string_namespace_method() -> None:
+    decision = _classify("df = df.filter(pl.col('s').str.contains('x'))")
+    assert decision.eligible
+    assert decision.reason == "eligible"
+
+
+def test_classifier_rejects_namespace_method_with_expression_argument() -> None:
+    decision = _classify("df = df.filter(pl.col('s').str.contains(pl.col('t')))")
+    assert not decision.eligible
+    assert decision.reason == "unsupported_call_shape"
+    assert decision.blocking_operator == "contains"
+    assert decision.line == 1
+
+
+def test_classifier_rejects_map_elements_with_a_location() -> None:
+    decision = _classify("df = df.with_columns(pl.col('a').map_elements(lambda v: v))")
+    assert not decision.eligible
+    assert decision.blocking_operator == "map_elements"
+    assert decision.line == 1
+    assert decision.column is not None
+
+
+def test_classifier_reports_unsupported_statement() -> None:
+    decision = _classify("for x in range(2):\n    df = df")
+    assert not decision.eligible
+    assert decision.reason == "unsupported_statement"
+    assert decision.blocking_operator == "For"
+    assert decision.line == 1
+
+
+def test_classifier_reports_frame_embedded_in_expression() -> None:
+    decision = _classify("df = df.with_columns(y=df)")
+    assert not decision.eligible
+    assert decision.reason == "frame_embedded_in_expression"
+    assert decision.blocking_operator == "df"
+    assert decision.line == 1
+
+
+def test_classifier_reports_the_first_blocking_construct_in_source_order() -> None:
+    first = _classify("df = df.sort('a')\ndf = df.with_columns(pl.col('a').list.sort())")
+    assert first.reason == "unsupported_frame_method"
+    assert first.blocking_operator == "sort"
+    assert first.line == 1
+
+    swapped = _classify("df = df.with_columns(pl.col('a').list.sort())\ndf = df.sort('a')")
+    assert swapped.reason == "unsupported_namespace_method"
+    assert swapped.blocking_operator == "list.sort"
+    assert swapped.line == 1
+
+
+def test_classifier_reports_the_textually_first_blocking_dict_entry() -> None:
+    """AST field order visits every ``Dict`` key before any value, so a blocking
+    VALUE that precedes a blocking KEY must still be the one reported."""
+    code = "df = df.rename({'a': df.sort('x'), df.list.sort(): 'b'})"
+    decision = _classify(code)
+    assert not decision.eligible
+    assert decision.reason == "unsupported_frame_method"
+    assert decision.blocking_operator == "sort"
+    assert decision.line == 1
+    assert decision.column == code.index("df.sort(") + 1
+
+
+def test_classifier_reports_the_textually_first_ifexp_branch() -> None:
+    """An ``IfExp`` stores ``test`` before the textually earlier ``body``."""
+    code = "df = df.with_columns(y=df.sort('x') if df.unique() else 1)"
+    decision = _classify(code)
+    assert not decision.eligible
+    assert decision.reason == "unsupported_frame_method"
+    assert decision.blocking_operator == "sort"
+    assert decision.line == 1
+    assert decision.column == code.index("df.sort(") + 1
+
+
+def test_classifier_reports_the_textually_first_call_argument() -> None:
+    """A blocking positional argument that follows an earlier blocking argument
+    must not be reported ahead of it."""
+    code = "df = df.select(df.sort('x'), df.unique())"
+    decision = _classify(code)
+    assert not decision.eligible
+    assert decision.reason == "unsupported_frame_method"
+    assert decision.blocking_operator == "sort"
+    assert decision.column == code.index("df.sort(") + 1
+
+
+def test_classifier_reports_a_positional_argument_before_a_later_keyword() -> None:
+    decision = _classify("df = df.select(df.sort('x'), y=df.unique())")
+    assert decision.blocking_operator == "sort"
+
+    swapped = _classify("df = df.select(df.unique(), y=df.sort('x'))")
+    assert swapped.blocking_operator == "unique"
+
+
+def test_chunk_plan_raises_chunk_user_code_unsupported_with_the_decision_payload() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                _node("source", "dataInput", {"path": "quotes.parquet"}),
+                _node("xform", "polars", {"code": "df = source.sort('a')"}),
+                _node("out", "output", make_output_config(["quote_id"])),
+            ],
+            "edges": [
+                make_edge("source", "xform").model_dump(),
+                make_edge("xform", "out").model_dump(),
+            ],
+        }
+    )
+    request = ChunkPlanRequest(
+        graph=graph,
+        target_node_id="out",
+        chunk_size=10,
+        required_columns_by_node={"out": {"quote_id"}},
+    )
+    decision = classify_chunk_local_polars_code("df = source.sort('a')", frame_names=("source",))
+
+    with pytest.raises(ChunkUserCodeUnsupportedError) as excinfo:
+        chunk_plan(request)
+
+    payload = excinfo.value.to_payload()
+    assert payload["error_code"] == "chunk_user_code_unsupported"
+    assert payload["reason"] == decision.reason == "unsupported_frame_method"
+    assert payload["blocking_operator"] == decision.blocking_operator == "sort"
+    assert payload["line"] == decision.line
+    assert payload["column"] == decision.column
+    assert payload["node_id"] == "xform"
+
+    # Callers that route to the full executor still catch the base class.
+    with pytest.raises(ChunkPlanUnsupportedError):
+        chunk_plan(request)

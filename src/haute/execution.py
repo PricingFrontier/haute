@@ -56,6 +56,7 @@ from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
 from haute._json_flatten import cache_state_signature_for_graph
+from haute._native_memory_limit import current_native_memory_backend
 from haute._path_resolution import _infer_project_root, resolve_runtime_file_path
 from haute._ram_estimate import (
     MaterialisationEstimate,
@@ -443,6 +444,12 @@ def _group_by_rejection(
         # Discarding that left the analyst with "provide readable metadata" and
         # no way to tell an unreadable file from an unsummarisable source shape.
         remediation = f"{remediation} Estimator reported: {estimate_detail}."
+    if reason_code == "materialisation_estimate_unavailable":
+        # Without a hard cap there is no bounded envelope to run inside.
+        remediation = (
+            f"{remediation} This surface runs without a hard worker memory cap, "
+            "so Haute cannot run the plan conservatively here."
+        )
     return GroupByExecutionUnsupportedError(
         "Group-by materialisation could not be admitted for this execution.",
         node_id=node_id,
@@ -505,51 +512,76 @@ def _finalise_execution_strategy(
             materialisation_estimate is None
             or materialisation_estimate.state is MaterialisationEstimateState.UNAVAILABLE
         ):
-            raise _group_by_rejection(
-                node_id=node_id,
-                operator=operator,
-                profile=profile,
-                reason_code="materialisation_estimate_unavailable",
-                estimated_peak_bytes=None,
-                headroom_bytes=headroom_bytes,
-                estimate_detail=(
-                    materialisation_estimate.unavailable_reason
-                    if materialisation_estimate is not None
-                    else "no materialisation estimate was requested"
+            detail = (
+                materialisation_estimate.unavailable_reason
+                if materialisation_estimate is not None
+                else "no materialisation estimate was requested"
+            )
+            backend = current_native_memory_backend()
+            if backend is None:
+                raise _group_by_rejection(
+                    node_id=node_id,
+                    operator=operator,
+                    profile=profile,
+                    reason_code="materialisation_estimate_unavailable",
+                    estimated_peak_bytes=None,
+                    headroom_bytes=headroom_bytes,
+                    estimate_detail=detail,
+                )
+            # A hard worker cap bounds the process, so the run continues under
+            # its full reserved envelope instead of being rejected outright.
+            projection_plan = with_materialisation_boundaries(
+                projection_plan,
+                group_by_operators,
+            )
+            strategy = ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+            reason_code = "materialisation_estimate_unavailable_conservative"
+            assumptions = (
+                f"proof_gap={detail}",
+                f"reserved_envelope_bytes={headroom_bytes}",
+                f"hard_cap_backend={backend}",
+                "disabled_optimisations=estimate_based_admission",
+            )
+            remediation = (
+                "The run continued under its full reserved memory envelope of "
+                f"{headroom_bytes} bytes because the materialisation estimate was "
+                f"unavailable ({detail}). Provide readable source metadata or rewrite "
+                f"'{operator}' at '{node_id}' so Haute can prove the estimate; the run "
+                "may use more memory and time than an estimated boundary."
+            )[:512]
+        else:
+            raw_estimated_peak_bytes = materialisation_estimate.estimated_peak_bytes
+            assert raw_estimated_peak_bytes is not None
+            calibrated = calibrate_materialisation_bytes(profile, raw_estimated_peak_bytes)
+            estimated_peak_bytes = calibrated.calibrated_bytes
+            estimate_calibration_factor_basis_points = calibrated.factor_basis_points
+            estimate_admission_basis = materialisation_estimate.basis.value
+            if estimated_peak_bytes > headroom_bytes:
+                raise _group_by_rejection(
+                    node_id=node_id,
+                    operator=operator,
+                    profile=profile,
+                    reason_code="materialisation_exceeds_headroom",
+                    estimated_peak_bytes=estimated_peak_bytes,
+                    headroom_bytes=headroom_bytes,
+                )
+            projection_plan = with_materialisation_boundaries(
+                projection_plan,
+                group_by_operators,
+            )
+            strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
+            reason_code = "group_by_materialisation_admitted"
+            remediation = "Keep the admitted boundary within its reported memory headroom."
+            assumptions = (
+                *materialisation_estimate.assumptions,
+                f"raw_estimated_peak_bytes={raw_estimated_peak_bytes}",
+                f"calibrated_estimated_peak_bytes={estimated_peak_bytes}",
+                (
+                    "estimate_calibration_factor_basis_points="
+                    f"{estimate_calibration_factor_basis_points}"
                 ),
+                f"estimate_admission_basis={estimate_admission_basis}",
             )
-        raw_estimated_peak_bytes = materialisation_estimate.estimated_peak_bytes
-        assert raw_estimated_peak_bytes is not None
-        calibrated = calibrate_materialisation_bytes(profile, raw_estimated_peak_bytes)
-        estimated_peak_bytes = calibrated.calibrated_bytes
-        estimate_calibration_factor_basis_points = calibrated.factor_basis_points
-        estimate_admission_basis = materialisation_estimate.basis.value
-        if estimated_peak_bytes > headroom_bytes:
-            raise _group_by_rejection(
-                node_id=node_id,
-                operator=operator,
-                profile=profile,
-                reason_code="materialisation_exceeds_headroom",
-                estimated_peak_bytes=estimated_peak_bytes,
-                headroom_bytes=headroom_bytes,
-            )
-        projection_plan = with_materialisation_boundaries(
-            projection_plan,
-            group_by_operators,
-        )
-        strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
-        reason_code = "group_by_materialisation_admitted"
-        remediation = "Keep the admitted boundary within its reported memory headroom."
-        assumptions = (
-            *materialisation_estimate.assumptions,
-            f"raw_estimated_peak_bytes={raw_estimated_peak_bytes}",
-            f"calibrated_estimated_peak_bytes={estimated_peak_bytes}",
-            (
-                "estimate_calibration_factor_basis_points="
-                f"{estimate_calibration_factor_basis_points}"
-            ),
-            f"estimate_admission_basis={estimate_admission_basis}",
-        )
 
     return build_execution_strategy_result(
         projection_plan,

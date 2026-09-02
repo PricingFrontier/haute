@@ -623,6 +623,7 @@
             "projected",
             "admitted_eager",
             "boundary",
+            "warned",
             "rejected",
             "not_planned"
           ],
@@ -636,6 +637,7 @@
             "full-width-admitted-eager",
             "unprojected-streaming-boundary",
             "materialisation-boundary",
+            "full-width-conservative",
             "unsupported",
             "not-planned"
           ],
