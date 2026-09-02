@@ -408,7 +408,3 @@ class ContractMismatchError(HauteError):
     The error always names the offending node id and the symmetric
     column diff so a user can fix a typo'd contract in one edit.
     """
-
-
-class ProjectionImpossibleError(ContractMismatchError, BoundedMemoryUnsupportedError):
-    """Raised when bounded projection cannot determine a safe column subset."""

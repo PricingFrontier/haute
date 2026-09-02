@@ -53,7 +53,7 @@ from haute._dataframe_execution_cache import (
 )
 from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._graph_utils import upstream_node_ids
+from haute._graph_utils import _sanitize_func_name, upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
 from haute._json_flatten import cache_state_signature_for_graph
 from haute._native_memory_limit import current_native_memory_backend
@@ -87,12 +87,12 @@ from haute.projection import (
     ProjectionRequest,
     build_execution_strategy_result,
     compute_prepared_plan,
+    group_by_operators_by_input_names,
     group_by_operators_by_node,
     normalise_required_columns_by_node,
     prepare_graph,
     ratebook_factor_required_columns,
     source_scan_projection,
-    strict_projection_required,
     with_api_input_port_projection_boundaries,
     with_materialisation_boundaries,
 )
@@ -260,10 +260,6 @@ def plan_execution_strategy(
         children_of,
         prepared.node_map,
         required_columns_by_node=required_columns_by_node,
-        strict_projection=strict_projection_required(
-            request.profile,
-            required_columns_by_node,
-        ),
         relevant_edges=prepared.relevant_edges,
     )
     projection_plan = with_api_input_port_projection_boundaries(
@@ -271,7 +267,11 @@ def plan_execution_strategy(
         prepared.node_map,
         prepared.relevant_edges,
     )
-    group_by_operators = group_by_operators_by_node(prepared.order, prepared.node_map)
+    group_by_operators = group_by_operators_by_node(
+        prepared.order,
+        prepared.node_map,
+        relevant_edges=prepared.relevant_edges,
+    )
     resolved_estimate: MaterialisationEstimate | None
     if group_by_operators:
         if materialisation_estimate is _AUTO_MATERIALISATION_ESTIMATE:
@@ -375,7 +375,6 @@ def plan_prepared_execution_strategy(
         children_of,
         dict(node_map),
         required_columns_by_node=required_columns_by_node,
-        strict_projection=strict_projection_required(profile, required_columns_by_node),
         relevant_edges=prepared_relevant_edges,
     )
     if prepared_relevant_edges is not None:
@@ -384,7 +383,26 @@ def plan_prepared_execution_strategy(
             node_map,
             prepared_relevant_edges,
         )
-    group_by_operators = group_by_operators_by_node(order, node_map)
+    if prepared_relevant_edges is not None:
+        group_by_operators = group_by_operators_by_node(
+            order,
+            node_map,
+            relevant_edges=prepared_relevant_edges,
+        )
+    else:
+        # Without edges the parent labels still reproduce what
+        # ``edge_input_name`` yields for every non-apiInput edge; apiInput
+        # frame labels live on the edge handle and are therefore only known
+        # when edges are supplied.
+        input_names_by_node: dict[str, set[str]] = {}
+        for parent, children in children_of.items():
+            parent_node = node_map.get(parent)
+            if parent_node is None:
+                continue
+            name = _sanitize_func_name(parent_node.data.label)
+            for child in children:
+                input_names_by_node.setdefault(child, set()).add(name)
+        group_by_operators = group_by_operators_by_input_names(order, node_map, input_names_by_node)
     result = _finalise_execution_strategy(
         projection_plan,
         profile=profile,

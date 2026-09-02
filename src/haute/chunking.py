@@ -27,6 +27,7 @@ from haute._polars_io_registry import (
     PolarsIoConfigError,
     validate_data_input_config,
 )
+from haute._polars_operations import OperationReceiver, chunk_admitted_names
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, streaming_collect
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import (
@@ -416,62 +417,9 @@ validate_chunk_capability_declarations()
 # not whitelisted; rejected code fails chunk planning loudly and callers route
 # to the existing full (non-chunked) executor, which is always correct.
 # ---------------------------------------------------------------------------
-_ROW_LOCAL_DF_METHOD_NAMES = frozenset(
-    {
-        "cast",  # proof: df_cast
-        "drop",  # proof: df_drop
-        "drop_nulls",  # proof: df_drop_nulls
-        "filter",  # proof: df_filter
-        "fill_nan",  # proof: df_fill_nan (value-only signature in polars)
-        "fill_null",  # proof: df_fill_null_value (value form only; see shape validator)
-        "rename",  # proof: df_rename
-        "select",  # proof: df_select
-        "with_columns",  # proof: df_with_columns
-        "with_columns_seq",  # proof: df_with_columns_seq
-    }
-)
-_ROW_LOCAL_EXPR_METHOD_NAMES = frozenset(
-    {
-        "abs",  # proof: expr_abs
-        "alias",  # proof: expr_alias
-        "cast",  # proof: expr_cast
-        "ceil",  # proof: expr_ceil
-        "clip",  # proof: expr_clip
-        "exp",  # proof: expr_exp
-        "fill_nan",  # proof: expr_fill_nan (value-only signature in polars)
-        "fill_null",  # proof: expr_fill_null_value (value form only; see shape validator)
-        "floor",  # proof: expr_floor
-        "is_between",  # proof: expr_is_between
-        "is_finite",  # proof: expr_is_finite
-        "is_in",  # proof: expr_is_in_literal (literal collections only; see shape validator)
-        "is_infinite",  # proof: expr_is_infinite
-        "is_nan",  # proof: expr_is_nan
-        "is_not_nan",  # proof: expr_is_not_nan
-        "is_not_null",  # proof: expr_is_not_null
-        "is_null",  # proof: expr_is_null
-        "log",  # proof: expr_log
-        "not_",  # proof: expr_not
-        "otherwise",  # proof: expr_when_then_otherwise
-        "replace",  # proof: expr_replace (literal mapping only; see shape validator)
-        "round",  # proof: expr_round
-        "sqrt",  # proof: expr_sqrt
-        "then",  # proof: expr_when_then_otherwise
-    }
-)
-_ROW_LOCAL_POLARS_FUNCTIONS = frozenset(
-    {
-        "all_horizontal",  # proof: fn_all_horizontal
-        "any_horizontal",  # proof: fn_any_horizontal
-        "coalesce",  # proof: fn_coalesce
-        "col",  # proof: fn_col
-        "concat_str",  # proof: fn_concat_str
-        "lit",  # proof: fn_lit
-        "max_horizontal",  # proof: fn_max_horizontal
-        "mean_horizontal",  # proof: fn_mean_horizontal
-        "sum_horizontal",  # proof: fn_sum_horizontal
-        "when",  # proof: expr_when_then_otherwise
-    }
-)
+_ROW_LOCAL_DF_METHOD_NAMES = chunk_admitted_names(OperationReceiver.FRAME)
+_ROW_LOCAL_EXPR_METHOD_NAMES = chunk_admitted_names(OperationReceiver.EXPR)
+_ROW_LOCAL_POLARS_FUNCTIONS = chunk_admitted_names(OperationReceiver.POLARS_FUNCTION)
 # Attribute namespaces that polars exposes on an expression.  Recognising all of
 # them (not just the admitted ones) keeps ``expr.<ns>.<method>()`` classified as
 # ``unsupported_namespace_method`` instead of falling into the generic
@@ -480,53 +428,12 @@ _ROW_LOCAL_NAMESPACE_NAMES = frozenset(
     {"str", "dt", "list", "arr", "struct", "cat", "bin", "name", "meta"}
 )
 # Per-namespace admitted methods.  Each entry cites a proof case in
-# tests/test_chunk_whitelist_proofs.py (tag ``("expr.<ns>", "<method>")``).
+# tests/test_chunk_whitelist_proofs.py (tag ``("expr.<ns>", "<method>")``) in
+# its registry ``note``.
 _ROW_LOCAL_NAMESPACE_METHOD_NAMES: Mapping[str, frozenset[str]] = MappingProxyType(
     {
-        "str": frozenset(
-            {
-                "contains",
-                "ends_with",
-                "extract",
-                "len_chars",
-                "pad_end",
-                "pad_start",
-                "replace",
-                "replace_all",
-                "slice",
-                "split",
-                "starts_with",
-                "strip_chars",
-                "strip_prefix",
-                "strip_suffix",
-                "strptime",
-                "to_date",
-                "to_datetime",
-                "to_lowercase",
-                "to_time",
-                "to_uppercase",
-                "zfill",
-            }
-        ),
-        "dt": frozenset(
-            {
-                "date",
-                "day",
-                "epoch",
-                "hour",
-                "minute",
-                "month",
-                "offset_by",
-                "ordinal_day",
-                "quarter",
-                "second",
-                "strftime",
-                "to_string",
-                "truncate",
-                "weekday",
-                "year",
-            }
-        ),
+        namespace: chunk_admitted_names(OperationReceiver.NAMESPACE, namespace)
+        for namespace in ("str", "dt")
     }
 )
 
@@ -887,7 +794,13 @@ def _plan_chunk_sizes(
     target_row_bytes = _estimate_target_row_bytes(
         request,
         projection,
-        has_group_by=bool(group_by_operators_by_node(prepared.order, prepared.node_map)),
+        has_group_by=bool(
+            group_by_operators_by_node(
+                prepared.order,
+                prepared.node_map,
+                relevant_edges=prepared.relevant_edges,
+            )
+        ),
     )
     source_columns = projection.needed_by_node.get(chunk_start_node_id)
     source_row_bytes = (

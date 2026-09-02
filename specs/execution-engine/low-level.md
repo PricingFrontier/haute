@@ -10,9 +10,10 @@
 | `src/haute/_execute_lazy.py` | The shared execution core: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), `_execute_lazy` (lazy plan + structural parquet checkpointing + dataframe-cache seeding), and `_execute_eager_core`/`EagerResult` (eager materialisation and preview error adaptation). |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
-| `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, strict-profile decisions, fan-in edge demands, materialisation/opaque boundaries, source-scan projection, and bounded strategy diagnostics. |
+| `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, source-scan projection, and bounded strategy diagnostics. |
 | `src/haute/_execution_schemas.py` | Canonical Pydantic API DTOs for execution-strategy diagnostic boundaries, reasons, provenance, bounded collections, calibration, and the versioned diagnostic payload. `src/haute/schemas.py` re-exports the public models so existing imports remain stable. |
 | `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer, per-input backward column demand, and a closed row-effect class (row-preserving, row-non-increasing, bounded-expansion, or unavailable) for the supported operation vocabulary, plus the audited per-namespace registry of `str`/`dt` expression methods whose bare string arguments Polars parses as literals. |
+| `src/haute/_polars_operations.py` | The closed, receiver-aware registry of recognised Polars operations (`PolarsOperation` entries keyed by receiver, namespace, and name) with their class, current policy, expansion, chunk-proof status, and lineage support, plus the lookup helpers the chunk classifier, the lineage/cardinality analyser, and the planner derive their vocabularies from. Import-time validation rejects duplicate keys and class/policy/expansion combinations that contradict each other. |
 | `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, deterministic request-local fault points, bounded opt-in terminal telemetry, cancellation-latency evidence, cleanup precedence, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
 | `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve fault, collect-count, and typed-error telemetry. |
@@ -411,9 +412,9 @@ Consumes the same `PreparedExecution` and `NodeBoundaryRunner` as eager executio
 plus: optional seeding from a
 `DataFrameExecutionCacheRequest` (skips rebuilding any node whose entire downstream
 lineage is already cache-covered, via a reverse topo pass computing
-`cache_covers_downstream`), a fuller backward projection analysis (checkpoint dir set,
-non-live source, explicit required columns, or strict-projection profile all trigger
-it), then `_build_funcs()` for the nodes still needing construction. Each node's lazy
+`cache_covers_downstream`), a fuller backward projection analysis (a checkpoint dir,
+a non-live source, or explicit required columns triggers it; the execution profile
+never does), then `_build_funcs()` for the nodes still needing construction. Each node's lazy
 frame is built by `_build_lazy_node()` (contract-checked the same way as eager),
 optionally materialised into the shared dataframe cache
 (`materialize_lazy_frame_with_cache`), and then passed through
@@ -711,6 +712,18 @@ fallback after a process failure.
   distinguish those physical edges, the edge-join rule validates both role handles
   and keeps both edges full-width under edge-join diagnostics; it never overwrites
   one role's demand with the other or collapses their identities.
+- **Projection decisions do not depend on the execution profile.** The planner has no
+  strict-profile switch. A multi-parent polars node and user code with an unbounded
+  projection contract keep a visible full-width boundary in every profile; a fan-in
+  join whose code cannot be parsed or whose `how`/`suffix` is not literal, and a
+  projection seed that cannot replace opaque demand from several downstream
+  consumers, keep the boundary and record a `ProjectionReason` (`fan_in_join_unparsed`,
+  `fan_in_join_dynamic_arguments`, `projection_seed_blocked_by_opaque_fan_out`) instead
+  of raising. Only a contradictory declared contract is an error
+  (`ContractMismatchError`), in every profile. Given the same graph and inputs, two
+  profiles may differ in budgets, in eager-versus-streaming output mechanics, and in
+  the diagnostic labels that describe those mechanics, never in which columns or
+  boundaries the plan keeps.
 - **Unsupported syntax stays visible.** Dynamic selectors/keys, dataframe-dependent
   helper assignments, unregistered expression functions, string-argument methods
   outside the audited `str`/`dt` literal-argument registry,
@@ -819,6 +832,61 @@ fallback after a process failure.
   boundaries); `fill_null`/`is_in` are admitted only in their literal-value /
   literal-collection forms (strategy fills and column-haystack membership read across
   rows or the full column, which a chunk boundary changes).
+- **The operation registry is the single operation vocabulary.**
+  `haute._polars_operations.POLARS_OPERATIONS` is a frozen mapping keyed by
+  `(receiver, namespace, name)` where the receiver is `frame`, `expr`, `namespace`,
+  or `polars_function`. Each `PolarsOperation` carries `operation_class`
+  (`row_local`, `order_dependent`, `row_expanding`, `fan_in_stateful`, `opaque`),
+  `policy` (`row_local`, `streaming`, `materialisation_boundary`, `opaque`),
+  `expansion` (`none`, `bounded`, `unbounded`), `chunk_admitted`, `lineage_supported`,
+  and a one-line note. Import-time validation rejects duplicate keys, a missing note,
+  a chunk admission outside `row_local`, a materialisation policy outside
+  `fan_in_stateful`, and an expansion outside `row_expanding` or `opaque` (an opaque
+  callback such as `map_batches` may record its unbounded expansion). The chunk classifier's frame, expression,
+  namespace, and `pl` allowlists are the registry's `chunk_admitted` names; the
+  cardinality analyser's unbounded-expansion expression set is the registry's
+  `unbounded` expressions; the planner's materialisation-boundary operators are the
+  registry's frame methods with the `materialisation_boundary` policy (today
+  `group_by`/`groupby`), matched receiver-aware in evaluation order. The
+  classifier tracks, for every simple name, whether it is a *frame* (one of
+  the node's input frame names per incoming edge, as `_build_funcs` binds
+  them, `df`, or a name bound from a frame), a *provable non-frame* (`pl`
+  itself, a literal, an operator or comparison result, a `pl`-rooted
+  expression chain through a registered `pl` function, a function or lambda
+  object, or a name definitely rebound to one of those), or a *may-frame*
+  (every other name: a preamble name, a function parameter, or a name bound
+  from a call the analyser cannot see through, such as a user function, a
+  preamble helper, or an unregistered `pl` constructor like `pl.concat`). A
+  materialising call counts unless its receiver is a provable non-frame, so a
+  preamble frame's `group_by`, a helper's returned frame, and a parameter
+  inside a user function all admit a boundary, while
+  `pl.col(...).list.group_by(...)` never does. Facts are captured in Python
+  evaluation order (receiver before arguments, the first `and`/`or` operand
+  and the first comparator before the rest, dictionary pairs in order, a
+  comprehension's first iterable in the enclosing scope); one assignment binds
+  all of its targets from the captured facts (parallel semantics, so a tuple
+  swap moves the frame fact with the value); and function and lambda bodies
+  are analysed in a scoped environment whose parameters are may-frames. A
+  definite rebinding (a top-level statement, or a walrus in a position that is
+  always evaluated) to a provable non-frame removes the frame fact only for
+  the code that follows, so rebinding an alias after its group-by cannot hide
+  the boundary. Bindings inside nested blocks, short-circuit operands,
+  conditional branches, lambda and function bodies, and comprehensions are
+  may-bindings that can add a frame fact but never remove one; unresolvable
+  shapes (unpacking from an unknown value, starred, loop, `with`, and
+  comprehension targets) and every mutable container (a list, set, or dict
+  display or comprehension, whatever it holds, since it may receive a frame
+  later) yield may-frames, a tuple is a provable non-frame only when every
+  element is, and a subscript, attribute, or augmented assignment marks the
+  root name it mutates as a may-frame, so an unsupported shape can only add a
+  boundary, never hide one. A same-named method on a `pl` expression never
+  creates a
+  boundary. Every other registered global operation (`sort`, `unique`,
+  `join`, windows, rolling and dynamic group-bys, `explode`, `unpivot`) currently
+  streams through the lazy engine without per-operator admission; that policy is
+  recorded as `streaming` and changing it requires the memory evidence the roadmap
+  package for admitted global policies owns. `tests/test_polars_operations.py` keeps
+  every derived set equal to the registry.
 - **The chunk classifier is a receiver-aware AST walk with a closed decision
   vocabulary.** There is no textual prefilter: a comment or string literal containing
   `.sort(` cannot affect eligibility. Frame-level methods are admitted only when the
@@ -1195,6 +1263,8 @@ fallback after a process failure.
 - `tests/test_cardinality.py` — overflow-safe join-cardinality formulas, uniqueness
   contracts, evidence payloads, invalid bounds, and row-cardinality lineage analysis.
 - `tests/test_column_lineage_properties.py` — Hypothesis differential properties for the closed Polars column-lineage model, including projected-versus-full execution equivalence and row-count bounds that hold over empty, null-heavy, and NaN-heavy frames.
+- `tests/test_polars_operations.py` — the operation registry's invariants (frozen, unique receiver-aware keys, import-time validation of class/policy/expansion), the consistency of every analyser's derived vocabulary with the registry, and representative snippets per class proving the chunk classifier and the lineage/cardinality analyser agree with the registered class.
+- `tests/test_polars_compatibility_corpus.py` — the version-pinned compatibility corpus: `tests/polars_compatibility_corpus.json` records, for representative shapes across every maintained namespace, the classification they receive today (lineage support, cardinality availability, chunk eligibility, and the planner strategy under an admitted context) together with the pinned Polars version; the test fails on any difference, so a Polars upgrade or analyser change cannot silently turn a working shape into a rejection, and every change to the corpus is a reviewed edit of that file.
 - `tests/test_interactive_route_isolation.py` — preview and trace routes execute serialisable production targets through the spawn-worker boundary.
 - `tests/test_interactive_worker_pool.py` — warm interactive-worker pool readiness, protocol, timeout, cancellation, RSS-limit, replacement, and execution-mode contracts.
 - `tests/test_native_memory_limit.py` — native-backend selection, strict-policy

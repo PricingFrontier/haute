@@ -14,7 +14,11 @@ from haute._execution_schemas import MAX_JSON_SAFE_INTEGER
 from haute._native_memory_limit import native_memory_backend_scope
 from haute._ram_estimate import MaterialisationEstimate
 from haute.chunking import ChunkPlanRequest, chunk_plan
-from haute.errors import ChunkPlanUnsupportedError, GroupByExecutionUnsupportedError
+from haute.errors import (
+    ChunkPlanUnsupportedError,
+    ContractMismatchError,
+    GroupByExecutionUnsupportedError,
+)
 from haute.execution import (
     BoundedDiagnosticCollection,
     DiagnosticDetailState,
@@ -637,6 +641,178 @@ def _opaque_fan_out_graph():
     )
 
 
+def _fan_in_source(node_id: str) -> dict:
+    return {
+        "id": node_id,
+        "data": {
+            "label": node_id,
+            "nodeType": "dataInput",
+            "config": make_file_input_config(f"{node_id}.parquet"),
+        },
+    }
+
+
+def _multi_parent_polars_graph():
+    """A multi-parent Polars node with no fan-in ownership contract."""
+    return make_graph(
+        {
+            "nodes": [
+                _fan_in_source("left"),
+                _fan_in_source("right"),
+                {
+                    "id": "join",
+                    "data": {
+                        "label": "join",
+                        "nodeType": "polars",
+                        "config": {"code": "df = combine(left, right)"},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("left", "join").model_dump(),
+                make_edge("right", "join").model_dump(),
+            ],
+        }
+    )
+
+
+def _dynamic_suffix_fan_in_join_graph():
+    """A declared fan-in join whose ``suffix`` is not a literal."""
+    return make_graph(
+        {
+            "nodes": [
+                _fan_in_source("left"),
+                _fan_in_source("right"),
+                {
+                    "id": "join",
+                    "data": {
+                        "label": "join",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "suffix = pick_suffix()\n"
+                                "df = left.join(right, on='quote_id', suffix=suffix)"
+                            ),
+                            "contract": {
+                                "inputs": ["quote_id", "premium"],
+                                "outputs": [],
+                                "inputs_by_parent": {
+                                    "left": ["quote_id", "premium"],
+                                    "right": ["quote_id", "premium"],
+                                },
+                            },
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("left", "join").model_dump(),
+                make_edge("right", "join").model_dump(),
+            ],
+        }
+    )
+
+
+_UNPROVABLE_FAN_IN_GRAPHS = {
+    "multi_parent_polars": _multi_parent_polars_graph,
+    "dynamic_suffix_join": _dynamic_suffix_fan_in_join_graph,
+}
+
+_UNPROVABLE_FAN_IN_REASONS = {
+    "multi_parent_polars": "polars_lineage_unsupported",
+    "dynamic_suffix_join": "fan_in_join_dynamic_arguments",
+}
+
+
+def _plan_unprovable_fan_in(profile: ExecutionProfile, graph):
+    return plan_execution_strategy(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="join",
+            profile=profile,
+            required_columns_by_node={"join": {"premium"}},
+        ),
+        materialisation_estimate=None,
+    )
+
+
+@pytest.mark.parametrize("graph_name", sorted(_UNPROVABLE_FAN_IN_GRAPHS))
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+def test_unprovable_fan_in_keeps_a_full_width_boundary_on_every_profile(
+    profile: ExecutionProfile,
+    graph_name: str,
+) -> None:
+    result = _plan_unprovable_fan_in(profile, _UNPROVABLE_FAN_IN_GRAPHS[graph_name]())
+
+    assert result.strategy is ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY
+    assert result.projection_plan.needed_by_node["left"] is None
+    assert result.projection_plan.needed_by_node["right"] is None
+    assert _UNPROVABLE_FAN_IN_REASONS[graph_name] in {
+        item.get("reason_code") for item in result.diagnostic.reasons.items
+    }
+
+
+@pytest.mark.parametrize("graph_name", sorted(_UNPROVABLE_FAN_IN_GRAPHS))
+def test_unprovable_fan_in_plans_differ_only_in_the_configured_profile(
+    graph_name: str,
+) -> None:
+    graph = _UNPROVABLE_FAN_IN_GRAPHS[graph_name]()
+
+    payloads = []
+    for profile in ExecutionProfile:
+        result = _plan_unprovable_fan_in(profile, graph)
+        payload = result.diagnostic.to_dict()
+        assert payload.pop("profile") == profile.value
+        payloads.append(
+            (
+                dict(result.projection_plan.needed_by_node),
+                result.projection_plan.diagnostics.to_dict(),
+                payload,
+            )
+        )
+
+    assert all(payload == payloads[0] for payload in payloads)
+
+
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+def test_contradictory_declared_contract_still_raises_on_every_profile(
+    profile: ExecutionProfile,
+) -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                _fan_in_source("left"),
+                _fan_in_source("right"),
+                {
+                    "id": "join",
+                    "data": {
+                        "label": "join",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": "df = left.join(right, on='quote_id', how='left')",
+                            "contract": {
+                                "inputs": ["quote_id"],
+                                "outputs": [],
+                                "inputs_by_parent": {
+                                    "left": ["quote_id"],
+                                    "right": None,
+                                },
+                            },
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("left", "join").model_dump(),
+                make_edge("right", "join").model_dump(),
+            ],
+        }
+    )
+
+    with pytest.raises(ContractMismatchError):
+        _plan_unprovable_fan_in(profile, graph)
+
+
 def test_canonical_topological_ranks_use_lexical_tie_breaks() -> None:
     children = {"z": ["out"], "a": ["out"], "out": []}
 
@@ -645,7 +821,7 @@ def test_canonical_topological_ranks_use_lexical_tie_breaks() -> None:
     assert dict(_canonical_topological_ranks(["out", "a", "z"], children)) == expected
 
 
-def test_non_strict_opaque_fan_out_reports_that_the_seed_cannot_apply() -> None:
+def test_opaque_fan_out_reports_that_the_seed_cannot_apply() -> None:
     result = plan_execution_strategy(
         ProjectionRequest(
             graph=_opaque_fan_out_graph(),
@@ -795,6 +971,279 @@ def test_prepared_and_request_planners_return_the_same_contract() -> None:
 
     assert prepared_result.diagnostic.to_dict() == request_result.diagnostic.to_dict()
     assert prepared_result.needed_by_node == request_result.needed_by_node
+
+
+def _receiver_graph(code: str, *, source_label: str = "claims"):
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": source_label,
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config("missing.parquet"),
+                    },
+                },
+                {
+                    "id": "agg",
+                    "data": {
+                        "label": "agg",
+                        "nodeType": "polars",
+                        "config": {"code": code},
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {
+                            "outputMapping": [
+                                {
+                                    "source_port": "agg",
+                                    "source_column": "premium",
+                                    "output_path": "$[:].premium",
+                                    "enabled": True,
+                                }
+                            ]
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "agg").model_dump(),
+                make_edge("agg", "out").model_dump(),
+            ],
+        }
+    )
+
+
+_AGG = "agg(pl.col('premium').sum().alias('premium'))"
+
+
+_NON_FRAME_RECEIVER_CODES = [
+    # An expression-namespace method is never a frame receiver.
+    "df = df.with_columns(pl.col('x').list.group_by('segment').alias('y'))",
+    # A registered ``pl`` expression function builds an expression, not a frame.
+    "stats = pl.col('premium').group_by('segment')\ndf = df.filter(pl.col('premium') > 0)",
+    # A name definitely rebound to an expression is not a frame receiver.
+    (
+        "tmp = pl.col('premium')\n"
+        "stats = tmp.group_by('segment')\n"
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "df = tmp"
+    ),
+    # A definite walrus rebinding to a non-frame removes the frame fact.
+    (
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "(tmp := pl.col('premium'))\n"
+        "stats = tmp.group_by('segment')\n"
+        "df = df.filter(pl.col('premium') > 0)"
+    ),
+    # A chained rebinding to a non-frame removes every name in the chain.
+    (
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "tmp = other = pl.col('premium')\n"
+        "stats = tmp.group_by('segment')\n"
+        "df = df.filter(pl.col('premium') > 0)"
+    ),
+    # A tuple swap moves the frame fact with the value: ``tmp`` now holds the
+    # expression, so its group-by is not a boundary.
+    (
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "other = pl.col('premium')\n"
+        "tmp, other = other, tmp\n"
+        "stats = tmp.group_by('segment')\n"
+        "df = other.filter(pl.col('premium') > 0)"
+    ),
+    # A walrus later in the right-hand side binds ``other`` to the expression.
+    (
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "tmp, other = tmp, (tmp := pl.col('premium'))\n"
+        "stats = other.group_by('segment')\n"
+        "df = tmp.filter(pl.col('premium') > 0)"
+    ),
+    # The first comparator of a chained comparison is always evaluated, so
+    # its walrus definitely rebinds ``tmp`` to the expression.
+    (
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "ok = 1 < (tmp := pl.col('premium'))\n"
+        "stats = tmp.group_by('segment')\n"
+        "df = df.filter(pl.col('premium') > 0)"
+    ),
+    # Dictionary displays evaluate key/value pairs in order: the walrus in the
+    # first value runs before the second key reads ``tmp``.
+    (
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "d = {'a': (tmp := pl.col('premium')), tmp.group_by('segment'): 2}\n"
+        "df = df.filter(pl.col('premium') > 0)"
+    ),
+    # A function object is a provable non-frame.
+    (
+        "def tmp(part):\n"
+        "    return part\n"
+        "stats = tmp.group_by('segment')\n"
+        "df = df.filter(pl.col('premium') > 0)"
+    ),
+    # A tuple of provable non-frames cannot be mutated into holding a frame.
+    "t = (1, 2)\nstats = t[0].group_by('segment')\ndf = df.filter(pl.col('premium') > 0)",
+    # Augmenting a provable non-frame with another keeps it a non-frame.
+    "n = 0\nn += 1\nstats = n.group_by('segment')\ndf = df.filter(pl.col('premium') > 0)",
+    # A walrus in the augmented right-hand side rebinds ``n`` to a non-frame
+    # before the store, and the stored sum is a non-frame too.
+    ("n = 0\nn += (n := 1)\nstats = n.group_by('segment')\ndf = df.filter(pl.col('premium') > 0)"),
+]
+
+
+@pytest.mark.parametrize("code", _NON_FRAME_RECEIVER_CODES)
+def test_group_by_on_a_non_frame_receiver_is_not_a_materialisation_boundary(
+    code: str,
+) -> None:
+    result = plan_execution_strategy(
+        ProjectionRequest(
+            graph=_receiver_graph(code),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    assert result.strategy in {
+        ExecutionStrategy.PROJECTED,
+        ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY,
+    }
+    assert result.projection_plan.materialisation_boundaries == frozenset()
+
+
+_FRAME_RECEIVER_CODES = [
+    f"df = df.group_by('segment').{_AGG}",
+    f"df = claims.group_by('segment').{_AGG}",
+    f"tmp = df.filter(pl.col('premium') > 0)\ndf = tmp.group_by('segment').{_AGG}",
+    # Rebinding the alias after its group-by cannot hide the boundary.
+    (f"tmp = df.filter(pl.col('premium') > 0)\ndf = tmp.group_by('segment').{_AGG}\ntmp = 0"),
+    # A frame bound inside a block is a may-frame afterwards.
+    (f"if True:\n    tmp = df.filter(pl.col('premium') > 0)\ndf = tmp.group_by('segment').{_AGG}"),
+    # A non-frame rebinding inside a block never removes a frame name.
+    (
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "if False:\n"
+        "    tmp = 0\n"
+        f"df = tmp.group_by('segment').{_AGG}"
+    ),
+    # A walrus binding roots in the frame it wraps.
+    f"df = (tmp := df.filter(pl.col('premium') > 0)).group_by('segment').{_AGG}",
+    # Every name in a chained assignment becomes a frame.
+    f"tmp = other = df.filter(pl.col('premium') > 0)\ndf = other.group_by('segment').{_AGG}",
+    # Element-wise unpacking binds each name from its own value.
+    f"tmp, n = df.filter(pl.col('premium') > 0), 3\ndf = tmp.group_by('segment').{_AGG}",
+    # Unpacking from an unresolvable value marks the names as may-frames.
+    f"tmp, n = build()\ndf = tmp.group_by('segment').{_AGG}",
+    # A walrus rebinding in a branch that may not run cannot remove a frame.
+    (
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "x = 1 if True else (tmp := 0)\n"
+        f"df = tmp.group_by('segment').{_AGG}"
+    ),
+    # A loop target may hold a frame.
+    f"for tmp in [df]:\n    df = tmp.group_by('segment').{_AGG}",
+    # A tuple swap uses parallel-assignment semantics: ``other`` receives the
+    # frame that ``tmp`` held before the assignment.
+    (
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "other = 0\n"
+        "tmp, other = other, tmp\n"
+        f"df = other.group_by('segment').{_AGG}"
+    ),
+    # A chained self-referential assignment binds from the pre-assignment value.
+    (
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "tmp = other = tmp.filter(pl.col('premium') < 10)\n"
+        f"df = other.group_by('segment').{_AGG}"
+    ),
+    # The first element's fact is captured before the later walrus rebinds
+    # ``tmp``, and the assignment restores the frame to ``tmp``.
+    (
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "tmp, other = tmp, (tmp := 0)\n"
+        f"df = tmp.group_by('segment').{_AGG}"
+    ),
+    # A short-circuit expression with a frame operand may yield the frame.
+    f"tmp = 0 or df.filter(pl.col('premium') > 0)\ndf = tmp.group_by('segment').{_AGG}",
+    # A conditional expression with a frame branch may yield the frame.
+    f"tmp = 0 if False else df.filter(pl.col('premium') > 0)\ndf = tmp.group_by('segment').{_AGG}",
+    # A comprehension target may hold a frame drawn from its iterable.
+    f"df = [part.group_by('segment').{_AGG} for part in [df]][0]",
+    # A later comparator of a chained comparison may be skipped, so its walrus
+    # cannot remove the frame fact.
+    (
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "ok = 1 > 2 > (tmp := 0)\n"
+        f"df = tmp.group_by('segment').{_AGG}"
+    ),
+    # A lambda body may never run, so its walrus cannot remove the frame fact.
+    (
+        "tmp = df.filter(pl.col('premium') > 0)\n"
+        "f = lambda: (tmp := 0)\n"
+        f"df = tmp.group_by('segment').{_AGG}"
+    ),
+    # An unbound name may be a preamble frame.
+    "stats = lookup.group_by('segment')\ndf = df.filter(pl.col('premium') > 0)",
+    # A function parameter may hold a frame inside the body.
+    (f"def aggregate(part):\n    return part.group_by('segment').{_AGG}\ndf = aggregate(df)"),
+    # A lambda parameter may hold a frame inside the body.
+    f"aggregate = lambda part: part.group_by('segment').{_AGG}\ndf = aggregate(df)",
+    # The result of a call the analyser cannot see through may be a frame.
+    f"tmp = build(df)\ndf = tmp.group_by('segment').{_AGG}",
+    f"df = build(df).group_by('segment').{_AGG}",
+    # An unregistered ``pl`` function may construct a frame.
+    f"df = pl.concat([df, df])\ndf = df.group_by('segment').{_AGG}",
+    # A container holding a frame yields a frame when subscripted.
+    f"df = [df][0].group_by('segment').{_AGG}",
+    # A mutable container may receive a frame after it is built.
+    f"frames = []\nframes.append(df)\ndf = frames[0].group_by('segment').{_AGG}",
+    # A subscript assignment marks the container's name as a may-frame.
+    f"d = {{}}\nd['k'] = df\ndf = d['k'].group_by('segment').{_AGG}",
+    # An augmented assignment with a frame operand makes the name a may-frame.
+    f"t = ()\nt += (df,)\ndf = t[0].group_by('segment').{_AGG}",
+    # The augmented target is read before its right-hand side runs, so a
+    # walrus there cannot discard the frame the target already held.
+    f"t = (df,)\nt += (t := ())\ndf = t[0].group_by('segment').{_AGG}",
+    # An attribute assignment marks the object's name as a may-frame.
+    (f"def cache():\n    return 0\ncache.frame = df\ndf = cache.frame.group_by('segment').{_AGG}"),
+]
+
+
+@pytest.mark.parametrize("code", _FRAME_RECEIVER_CODES)
+def test_group_by_on_a_frame_receiver_is_a_materialisation_boundary(code: str) -> None:
+    with pytest.raises(GroupByExecutionUnsupportedError):
+        plan_execution_strategy(
+            ProjectionRequest(
+                graph=_receiver_graph(code),
+                target_node_id="out",
+                profile=ExecutionProfile.LAZY_SINK,
+            ),
+            materialisation_estimate=None,
+        )
+
+
+def test_prepared_planner_without_edges_detects_a_parent_label_frame_receiver() -> None:
+    graph = _receiver_graph(
+        "df = claims.group_by('segment').agg(pl.col('premium').sum().alias('premium'))"
+    )
+    prepared = prepare_graph(graph, "out", source="live")
+    children: dict[str, list[str]] = {node_id: [] for node_id in prepared.order}
+    for child_id, parents in prepared.parents_of.items():
+        for parent_id in parents:
+            children[parent_id].append(child_id)
+
+    with pytest.raises(GroupByExecutionUnsupportedError):
+        plan_prepared_execution_strategy(
+            prepared.order,
+            children,
+            prepared.node_map,
+            profile=ExecutionProfile.LAZY_SINK,
+            materialisation_estimate=None,
+        )
 
 
 def _context(

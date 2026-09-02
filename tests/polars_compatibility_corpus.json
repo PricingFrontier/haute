@@ -1,0 +1,1120 @@
+{
+  "polars_version": "1.39.3",
+  "shapes": [
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.select(['segment', 'premium', 'extra'])",
+      "expansion": "none",
+      "id": "frame_select",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "select",
+      "policy": "row_local",
+      "receiver": "frame",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns((pl.col('premium') * 2).alias('doubled'))",
+      "expansion": "none",
+      "id": "frame_with_columns",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "with_columns",
+      "policy": "row_local",
+      "receiver": "frame",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.filter(pl.col('premium') > 0)",
+      "expansion": "none",
+      "id": "frame_filter",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "filter",
+      "policy": "row_local",
+      "receiver": "frame",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.rename({'extra': 'extra_renamed'})",
+      "expansion": "none",
+      "id": "frame_rename",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "rename",
+      "policy": "row_local",
+      "receiver": "frame",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "unsupported_operation",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.cast({'extra': pl.Float64})",
+      "expansion": "none",
+      "id": "frame_cast",
+      "lineage": "unsupported_operation",
+      "namespace": null,
+      "operation": "cast",
+      "policy": "row_local",
+      "receiver": "frame",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.col('premium').fill_null(0.0))",
+      "expansion": "none",
+      "id": "frame_fill_null",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "fill_null",
+      "policy": "row_local",
+      "receiver": "expr",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.drop('extra')",
+      "expansion": "none",
+      "id": "frame_drop",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "drop",
+      "policy": "row_local",
+      "receiver": "frame",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.drop_nulls(subset=['premium'])",
+      "expansion": "none",
+      "id": "frame_drop_nulls",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "drop_nulls",
+      "policy": "row_local",
+      "receiver": "frame",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "sort",
+        "eligible": false,
+        "reason": "unsupported_frame_method"
+      },
+      "class": "order_dependent",
+      "code": "df = df.sort('premium')",
+      "expansion": "none",
+      "id": "frame_sort",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "sort",
+      "policy": "streaming",
+      "receiver": "frame",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "unique",
+        "eligible": false,
+        "reason": "unsupported_frame_method"
+      },
+      "class": "order_dependent",
+      "code": "df = df.unique(subset=['segment'])",
+      "expansion": "none",
+      "id": "frame_unique",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "unique",
+      "policy": "streaming",
+      "receiver": "frame",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "head",
+        "eligible": false,
+        "reason": "unsupported_frame_method"
+      },
+      "class": "order_dependent",
+      "code": "df = df.head(10)",
+      "expansion": "none",
+      "id": "frame_head",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "head",
+      "policy": "streaming",
+      "receiver": "frame",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "with_row_index",
+        "eligible": false,
+        "reason": "unsupported_frame_method"
+      },
+      "class": "order_dependent",
+      "code": "df = df.with_row_index('row_id')",
+      "expansion": "none",
+      "id": "frame_with_row_index",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "with_row_index",
+      "policy": "streaming",
+      "receiver": "frame",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "shift",
+        "eligible": false,
+        "reason": "unsupported_expression_method"
+      },
+      "class": "order_dependent",
+      "code": "df = df.with_columns(pl.col('premium').shift(1).alias('previous'))",
+      "expansion": "none",
+      "id": "expr_shift",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "shift",
+      "policy": "streaming",
+      "receiver": "expr",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "cum_sum",
+        "eligible": false,
+        "reason": "unsupported_expression_method"
+      },
+      "class": "order_dependent",
+      "code": "df = df.with_columns(pl.col('premium').cum_sum().alias('running'))",
+      "expansion": "none",
+      "id": "expr_cum_sum",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "cum_sum",
+      "policy": "streaming",
+      "receiver": "expr",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "row_expansion_unbounded",
+      "chunk": {
+        "blocking_operator": "explode",
+        "eligible": false,
+        "reason": "unsupported_frame_method"
+      },
+      "class": "row_expanding",
+      "code": "df = df.explode('l')",
+      "expansion": "unbounded",
+      "id": "frame_explode",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "explode",
+      "policy": "streaming",
+      "receiver": "frame",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "unpivot",
+        "eligible": false,
+        "reason": "unsupported_frame_method"
+      },
+      "class": "row_expanding",
+      "code": "df = df.unpivot(on=['premium', 'extra'], index=['segment'])",
+      "expansion": "bounded",
+      "id": "frame_unpivot_literal",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "unpivot",
+      "policy": "streaming",
+      "receiver": "frame",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "dynamic_unpivot",
+      "chunk": {
+        "blocking_operator": "unpivot",
+        "eligible": false,
+        "reason": "unsupported_frame_method"
+      },
+      "class": "row_expanding",
+      "code": "df = df.unpivot(index=['segment'])",
+      "expansion": "bounded",
+      "id": "frame_unpivot_dynamic",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "unpivot",
+      "policy": "streaming",
+      "receiver": "frame",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "row_expansion_unbounded",
+      "chunk": {
+        "blocking_operator": "list.explode",
+        "eligible": false,
+        "reason": "unsupported_namespace_method"
+      },
+      "class": "row_expanding",
+      "code": "df = df.with_columns(pl.col('l').list.explode())",
+      "expansion": "unbounded",
+      "id": "list_explode",
+      "lineage": "lineage_proven",
+      "namespace": "list",
+      "operation": "explode",
+      "policy": "streaming",
+      "receiver": "namespace",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "group_by",
+        "eligible": false,
+        "reason": "unsupported_frame_method"
+      },
+      "class": "fan_in_stateful",
+      "code": "df = df.group_by('segment').agg(pl.col('premium').sum().alias('premium'))",
+      "expansion": "none",
+      "id": "frame_group_by",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "group_by",
+      "policy": "materialisation_boundary",
+      "receiver": "frame",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "join",
+        "eligible": false,
+        "reason": "unsupported_frame_method"
+      },
+      "class": "fan_in_stateful",
+      "code": "df = df.join(df, on='segment', how='left')",
+      "expansion": "none",
+      "id": "frame_join_self",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "join",
+      "policy": "streaming",
+      "receiver": "frame",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "dynamic_with_columns",
+      "chunk": {
+        "blocking_operator": "sum",
+        "eligible": false,
+        "reason": "unsupported_expression_method"
+      },
+      "class": "fan_in_stateful",
+      "code": "df = df.with_columns(pl.col('premium').sum().over('segment').alias('segment_total'))",
+      "expansion": "none",
+      "id": "expr_over",
+      "lineage": "dynamic_with_columns",
+      "namespace": null,
+      "operation": "over",
+      "policy": "streaming",
+      "receiver": "expr",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "unsupported_operation",
+      "chunk": {
+        "blocking_operator": "rolling",
+        "eligible": false,
+        "reason": "unsupported_frame_method"
+      },
+      "class": "fan_in_stateful",
+      "code": "df = df.rolling(index_column='t', period='30d').agg(pl.col('premium').sum().alias('premium'))",
+      "expansion": "none",
+      "id": "frame_rolling",
+      "lineage": "unsupported_operation",
+      "namespace": null,
+      "operation": "rolling",
+      "policy": "streaming",
+      "receiver": "frame",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "unsupported_operation",
+      "chunk": {
+        "blocking_operator": "group_by_dynamic",
+        "eligible": false,
+        "reason": "unsupported_frame_method"
+      },
+      "class": "fan_in_stateful",
+      "code": "df = df.group_by_dynamic('t', every='1mo').agg(pl.col('premium').sum().alias('premium'))",
+      "expansion": "none",
+      "id": "frame_group_by_dynamic",
+      "lineage": "unsupported_operation",
+      "namespace": null,
+      "operation": "group_by_dynamic",
+      "policy": "streaming",
+      "receiver": "frame",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "sum",
+        "eligible": false,
+        "reason": "unsupported_expression_method"
+      },
+      "class": "fan_in_stateful",
+      "code": "df = df.select(pl.col('segment'), pl.col('premium').sum().alias('premium'))",
+      "expansion": "none",
+      "id": "expr_sum_reduction",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "sum",
+      "policy": "streaming",
+      "receiver": "expr",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "unsupported_operation",
+      "chunk": {
+        "blocking_operator": "map_batches",
+        "eligible": false,
+        "reason": "unsupported_frame_method"
+      },
+      "class": "opaque",
+      "code": "df = df.map_batches(lambda frame: frame)",
+      "expansion": "none",
+      "id": "frame_map_batches",
+      "lineage": "unsupported_operation",
+      "namespace": null,
+      "operation": "map_batches",
+      "policy": "opaque",
+      "receiver": "frame",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "row_expansion_unbounded",
+      "chunk": {
+        "blocking_operator": "map_elements",
+        "eligible": false,
+        "reason": "unsupported_expression_method"
+      },
+      "class": "opaque",
+      "code": "df = df.with_columns(pl.col('extra').map_elements(lambda value: value).alias('mapped'))",
+      "expansion": "none",
+      "id": "expr_map_elements",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "map_elements",
+      "policy": "opaque",
+      "receiver": "expr",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "unsupported_operation",
+      "chunk": {
+        "blocking_operator": "pipe",
+        "eligible": false,
+        "reason": "unsupported_frame_method"
+      },
+      "class": "opaque",
+      "code": "df = df.pipe(lambda frame: frame)",
+      "expansion": "none",
+      "id": "frame_pipe",
+      "lineage": "unsupported_operation",
+      "namespace": null,
+      "operation": "pipe",
+      "policy": "opaque",
+      "receiver": "frame",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.filter(pl.col('s').str.contains('x'))",
+      "expansion": "none",
+      "id": "str_contains_literal",
+      "lineage": "lineage_proven",
+      "namespace": "str",
+      "operation": "contains",
+      "policy": "row_local",
+      "receiver": "namespace",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.col('s').str.to_uppercase().alias('s_upper'))",
+      "expansion": "none",
+      "id": "str_to_uppercase",
+      "lineage": "lineage_proven",
+      "namespace": "str",
+      "operation": "to_uppercase",
+      "policy": "row_local",
+      "receiver": "namespace",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.col('s').str.replace('x', 'y').alias('s_replaced'))",
+      "expansion": "none",
+      "id": "str_replace",
+      "lineage": "lineage_proven",
+      "namespace": "str",
+      "operation": "replace",
+      "policy": "row_local",
+      "receiver": "namespace",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.col('s').str.to_date('%Y-%m-%d').alias('s_date'))",
+      "expansion": "none",
+      "id": "str_to_date_with_format",
+      "lineage": "lineage_proven",
+      "namespace": "str",
+      "operation": "to_date",
+      "policy": "row_local",
+      "receiver": "namespace",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "to_date",
+        "eligible": false,
+        "reason": "unsupported_call_shape"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.col('s').str.to_date().alias('s_date'))",
+      "expansion": "none",
+      "id": "str_to_date_without_format",
+      "lineage": "lineage_proven",
+      "namespace": "str",
+      "operation": "to_date",
+      "policy": "row_local",
+      "receiver": "namespace",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "contains",
+        "eligible": false,
+        "reason": "unsupported_call_shape"
+      },
+      "class": "row_local",
+      "code": "df = df.filter(pl.col('s').str.contains(pl.col('segment')))",
+      "expansion": "none",
+      "id": "str_contains_column_argument",
+      "lineage": "lineage_proven",
+      "namespace": "str",
+      "operation": "contains",
+      "policy": "row_local",
+      "receiver": "namespace",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.col('t').dt.year().alias('year'))",
+      "expansion": "none",
+      "id": "dt_year",
+      "lineage": "lineage_proven",
+      "namespace": "dt",
+      "operation": "year",
+      "policy": "row_local",
+      "receiver": "namespace",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.col('t').dt.truncate('1mo').alias('month'))",
+      "expansion": "none",
+      "id": "dt_truncate",
+      "lineage": "lineage_proven",
+      "namespace": "dt",
+      "operation": "truncate",
+      "policy": "row_local",
+      "receiver": "namespace",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.col('t').dt.offset_by('1d').alias('shifted'))",
+      "expansion": "none",
+      "id": "dt_offset_by",
+      "lineage": "lineage_proven",
+      "namespace": "dt",
+      "operation": "offset_by",
+      "policy": "row_local",
+      "receiver": "namespace",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.sum_horizontal('premium', 'extra').alias('total'))",
+      "expansion": "none",
+      "id": "fn_sum_horizontal",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "sum_horizontal",
+      "policy": "row_local",
+      "receiver": "polars_function",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.when(pl.col('premium') > 0).then(1).otherwise(0).alias('flag'))",
+      "expansion": "none",
+      "id": "fn_when_then_otherwise",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "when",
+      "policy": "row_local",
+      "receiver": "polars_function",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "blocking_operator": "pl.min_horizontal",
+        "eligible": false,
+        "reason": "unsupported_polars_function"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.min_horizontal('premium', 'extra').alias('lowest'))",
+      "expansion": "none",
+      "id": "fn_min_horizontal",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": "min_horizontal",
+      "policy": "row_local",
+      "receiver": "polars_function",
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "dynamic_with_columns",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": "row_local",
+      "code": "df = df.with_columns(pl.concat_str(['segment', 's']).alias('joined'))",
+      "expansion": "none",
+      "id": "fn_concat_str",
+      "lineage": "dynamic_with_columns",
+      "namespace": null,
+      "operation": "concat_str",
+      "policy": "row_local",
+      "receiver": "polars_function",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "row_expansion_unbounded",
+      "chunk": {
+        "blocking_operator": "pl.all",
+        "eligible": false,
+        "reason": "unsupported_polars_function"
+      },
+      "class": "opaque",
+      "code": "df = df.select(pl.all())",
+      "expansion": "none",
+      "id": "fn_all_selector",
+      "lineage": "dynamic_select",
+      "namespace": null,
+      "operation": "all",
+      "policy": "opaque",
+      "receiver": "polars_function",
+      "strategy": {
+        "rejected": "materialisation_estimate_unavailable"
+      },
+      "strategy_under_cap": {
+        "reason_code": "materialisation_estimate_unavailable_conservative",
+        "status": "warned",
+        "strategy": "full-width-conservative"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": null,
+      "code": "# .sort(\ndf = df.filter(pl.col('premium') > 0)",
+      "expansion": null,
+      "id": "decoy_comment_mentions_sort",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": null,
+      "policy": null,
+      "receiver": null,
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    },
+    {
+      "cardinality": "cardinality_proven",
+      "chunk": {
+        "eligible": true,
+        "reason": "eligible"
+      },
+      "class": null,
+      "code": "df = df.filter(pl.col('s') != '.sort(')",
+      "expansion": null,
+      "id": "decoy_string_literal_mentions_sort",
+      "lineage": "lineage_proven",
+      "namespace": null,
+      "operation": null,
+      "policy": null,
+      "receiver": null,
+      "strategy": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      },
+      "strategy_under_cap": {
+        "reason_code": "group_by_materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
+      }
+    }
+  ]
+}

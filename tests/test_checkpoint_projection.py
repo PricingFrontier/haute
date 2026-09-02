@@ -23,10 +23,18 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
-from haute.errors import ContractMismatchError, ProjectionImpossibleError
+from haute.errors import ContractMismatchError
 from haute.projection import compute_prepared_plan
-from tests._projection_helpers import pair_value
+from tests._projection_helpers import edge_keys_for_pair, pair_value
 from tests.conftest import make_output_config
+
+
+def _edge_reason(plan, source, target):
+    """Return the diagnostic reason for the unique ``source -> target`` edge."""
+    keys = edge_keys_for_pair(plan.diagnostics.edge_reasons, source, target)
+    assert len(keys) == 1
+    return plan.diagnostics.edge_reasons[keys[0]]
+
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -457,15 +465,12 @@ def _needed_by_node(
     children_of,
     node_map,
     required_columns_by_node=None,
-    *,
-    strict_projection=False,
 ):
     return compute_prepared_plan(
         order,
         children_of,
         node_map,
         required_columns_by_node,
-        strict_projection=strict_projection,
     ).needed_by_node
 
 
@@ -734,38 +739,10 @@ class TestComputeNeededColumns:
         assert needed["src"] == {"col"}
 
 
-class TestProjectionImpossibleDiagnostics:
-    """Strict projection diagnostics for bounded/projection-seeded execution."""
+class TestUnprovableProjectionDiagnostics:
+    """Cannot-prove projection cases keep a boundary and record a reason."""
 
-    def test_strict_projection_uses_boundary_for_opaque_fan_in_without_parent_contract(self):
-        nodes = [
-            _source_node("left"),
-            _source_node("right"),
-            _transform_node("join"),
-            _output_node("out", fields=["quote_id", "premium"]),
-        ]
-        node_map = {n.id: n for n in nodes}
-        order = ["left", "right", "join", "out"]
-        parents_of = {
-            "left": [],
-            "right": [],
-            "join": ["left", "right"],
-            "out": ["join"],
-        }
-        children_of = _build_children_of(order, parents_of)
-
-        plan = compute_prepared_plan(
-            order,
-            children_of,
-            node_map,
-            strict_projection=True,
-        )
-
-        assert plan.needed_by_node["join"] == {"quote_id", "premium"}
-        assert plan.needed_by_node["left"] is None
-        assert plan.needed_by_node["right"] is None
-
-    def test_non_strict_projection_allows_opaque_fan_in(self):
+    def test_projection_uses_boundary_for_opaque_fan_in_without_parent_contract(self):
         nodes = [
             _source_node("left"),
             _source_node("right"),
@@ -784,10 +761,11 @@ class TestProjectionImpossibleDiagnostics:
 
         plan = compute_prepared_plan(order, children_of, node_map)
 
+        assert plan.needed_by_node["join"] == {"quote_id", "premium"}
         assert plan.needed_by_node["left"] is None
         assert plan.needed_by_node["right"] is None
 
-    def test_strict_projection_rejects_seed_that_conflicts_with_opaque_sibling(self):
+    def test_seed_blocked_by_opaque_fan_out_keeps_boundary_with_reason(self):
         nodes = [
             _source_node("src"),
             _node("mid", NodeType.LIVE_SWITCH),
@@ -804,16 +782,19 @@ class TestProjectionImpossibleDiagnostics:
         }
         children_of = _build_children_of(order, parents_of)
 
-        with pytest.raises(ProjectionImpossibleError, match="Projection seed"):
-            compute_prepared_plan(
-                order,
-                children_of,
-                node_map,
-                required_columns_by_node={"mid": {"a"}},
-                strict_projection=True,
-            )
+        plan = compute_prepared_plan(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"mid": {"a"}},
+        )
 
-    def test_strict_projection_reports_unparseable_join_inference(self):
+        assert plan.needed_by_node["mid"] is None
+        reason = plan.diagnostics.node_reasons["mid"]
+        assert reason.rule == "projection_seed_blocked_by_opaque_fan_out"
+        assert reason.details["seeded_columns"] == ("a",)
+
+    def test_unparseable_join_inference_keeps_boundary_with_reason(self):
         nodes = [
             _source_node("left"),
             _source_node("right"),
@@ -842,15 +823,54 @@ class TestProjectionImpossibleDiagnostics:
         }
         children_of = _build_children_of(order, parents_of)
 
-        with pytest.raises(ProjectionImpossibleError, match="could not be parsed"):
-            compute_prepared_plan(
-                order,
-                children_of,
-                node_map,
-                strict_projection=True,
-            )
+        plan = compute_prepared_plan(order, children_of, node_map)
 
-    def test_strict_projection_allows_concrete_inputs_by_parent_join(self):
+        assert plan.needed_by_node["left"] is None
+        assert plan.needed_by_node["right"] is None
+        reason = _edge_reason(plan, "left", "join")
+        assert reason.rule == "fan_in_join_unparsed"
+        assert "join" in reason.message
+
+    def test_dynamic_join_arguments_keep_boundary_with_reason(self):
+        nodes = [
+            _source_node("left"),
+            _source_node("right"),
+            _node(
+                "join",
+                NodeType.POLARS,
+                code=(
+                    "suffix = compute_suffix()\ndf = left.join(right, on='quote_id', suffix=suffix)"
+                ),
+                contract={
+                    "inputs": ["quote_id", "premium"],
+                    "outputs": [],
+                    "inputs_by_parent": {
+                        "left": ["quote_id", "premium"],
+                        "right": ["quote_id", "premium"],
+                    },
+                },
+            ),
+            _output_node("out", fields=["quote_id", "premium"]),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["left", "right", "join", "out"]
+        parents_of = {
+            "left": [],
+            "right": [],
+            "join": ["left", "right"],
+            "out": ["join"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        plan = compute_prepared_plan(order, children_of, node_map)
+
+        assert plan.needed_by_node["left"] is None
+        assert plan.needed_by_node["right"] is None
+        reason = _edge_reason(plan, "left", "join")
+        assert reason.rule == "fan_in_join_dynamic_arguments"
+        assert "join" in reason.message
+
+    def test_projection_allows_concrete_inputs_by_parent_join(self):
         nodes = [
             _source_node("left"),
             _source_node("right"),
@@ -879,17 +899,12 @@ class TestProjectionImpossibleDiagnostics:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = compute_prepared_plan(
-            order,
-            children_of,
-            node_map,
-            strict_projection=True,
-        )
+        plan = compute_prepared_plan(order, children_of, node_map)
 
         assert pair_value(plan.edge_demands, "left", "join") == {"quote_id", "left_value"}
         assert pair_value(plan.edge_demands, "right", "join") == {"quote_id", "right_value"}
 
-    def test_lazy_execution_required_seed_enables_strict_projection(self, tmp_path):
+    def test_lazy_execution_required_seed_projects_fan_in(self, tmp_path):
         nodes = [
             _source_node("left"),
             _source_node("right"),
@@ -922,7 +937,7 @@ class TestProjectionImpossibleDiagnostics:
 
         assert outputs["out"].collect().to_dict(as_series=False) == {"quote_id": ["q1"]}
 
-    def test_lazy_execution_bounded_profile_is_strict_without_required_seed(
+    def test_lazy_execution_bounded_profile_without_required_seed(
         self,
         tmp_path,
     ):

@@ -247,7 +247,7 @@ def _make_streaming_auto_range_graph(source_path: str, *, scenario_code: str | N
     return graph.model_dump()
 
 
-def _make_estimate_projection_impossible_graph(left_path: str, right_path: str) -> dict:
+def _make_estimate_contract_free_fan_in_graph(left_path: str, right_path: str) -> dict:
     """Build a fan-in optimiser graph that needs parent ownership metadata."""
     graph = make_graph(
         {
@@ -1599,7 +1599,7 @@ class TestEstimateRoute:
             }
         ).write_parquet(left_path)
         pl.DataFrame({"quote_id": ["q1", "q2"], "volume": [1.0, 0.8]}).write_parquet(right_path)
-        graph = _make_estimate_projection_impossible_graph(
+        graph = _make_estimate_contract_free_fan_in_graph(
             str(left_path),
             str(right_path),
         )
@@ -4079,33 +4079,11 @@ class TestEstimateRoute:
         assert prepared["chunk_size"] == _default_auto_range_chunk_size()
         assert prepared["partition_count"] == _default_auto_range_partitions()
 
-    def test_frontier_auto_range_prepare_treats_projection_plan_failure_as_ineligible(
-        self,
-        scored_data,
-    ):
-        """The streaming probe must not escape before the auto-range job wrapper."""
-        from haute.errors import ProjectionImpossibleError
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserFrontierAutoRangeRequest
-
-        graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-        service = OptimiserSolveService(JobStore())
-
-        with patch(
-            "haute.chunking.chunk_plan",
-            side_effect=ProjectionImpossibleError("missing parent ownership"),
-        ):
-            prepared = service._prepare_frontier_auto_range(body)
-
-        assert prepared["streaming_plan"] is None
-
     def test_frontier_auto_range_prepare_does_not_hide_contract_errors(
         self,
         scored_data,
     ):
-        """Only projection-impossible preflight failures are streaming ineligibility."""
+        """Only chunk-plan preflight rejections are streaming ineligibility."""
         from haute.errors import ContractMismatchError
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -7642,47 +7620,6 @@ class TestExecutePipelineArgs:
         assert "bounded streaming mode" in job["message"]
         build_grid.assert_not_called()
         launch_background.assert_not_called()
-
-    def test_execute_pipeline_maps_projection_impossible_to_422(self, scored_data, tmp_path):
-        from haute.errors import ProjectionImpossibleError
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserSolveRequest
-
-        graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
-
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
-
-        with (
-            patch(
-                "haute.routes._optimiser_service.execute_lazy_graph",
-                side_effect=ProjectionImpossibleError(
-                    "Fan-in join projection requires literal how/suffix arguments.",
-                    node_id="join",
-                    node_type="polars",
-                ),
-            ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
-            patch("haute.executor._compile_preamble", return_value={}),
-            pytest.raises(HTTPException) as exc_info,
-        ):
-            service._execute_pipeline(
-                body,
-                job_id,
-                checkpoint_dir,
-                required_columns_by_node={"source": frozenset({"volume"})},
-            )
-
-        assert exc_info.value.status_code == 422
-        assert "bounded projection" in str(exc_info.value.detail)
-        job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
-        assert job["terminal_reason"] == "contract_error"
 
     def test_estimate_passes_optimiser_seed_to_execute_pipeline(self, scored_data):
         from haute.routes import optimiser as optimiser_module

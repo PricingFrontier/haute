@@ -71,7 +71,6 @@ HauteError
 │   ├── RatingFactorMissingError
 │   └── RatingFactorDtypeContractError
 └── ContractMismatchError
-    └── ProjectionImpossibleError (also extends BoundedMemoryUnsupportedError)
 ```
 `_api_input_schema.ApiInputSchemaError` and `_output_assembler.OutputMappingSchemaError`
 (with `OutputNestingKeyError`) are direct `HauteError` subclasses supplied by

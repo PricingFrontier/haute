@@ -221,8 +221,8 @@ the classic non-streaming path when the plan cannot be proven. A structural reas
 mode, no resolvable data input, no scenario expander on the chain) falls back silently because
 chunking never applied. A lost chunk optimisation is reported: when a chain node's user code is
 chunk-ineligible (`classify_chunk_local_polars_code`), when a model-score node keeps
-post-processing code or renames, or when `chunk_plan` raises `ChunkPlanUnsupportedError`
-(including `ProjectionImpossibleError`-driven projection gaps), the preparation records a
+post-processing code or renames, or when `chunk_plan` raises `ChunkPlanUnsupportedError`,
+the preparation records a
 `chunk_fallback` payload (`code`, `node_id`, `operator`, `reason`, `line`, `column`,
 `message`) on the job and the completed result's `warning` string names the node and reason.
 The classic path then runs under the same admitted context. Chunk ineligibility is never an
@@ -608,9 +608,9 @@ returned as a generic `status: "error"` payload.
   missing ratebook banding source, malformed frontier-point data, incomplete job summaries), 404
   (job not found or wrong job type), 409 (concurrent job/graph-node conflict, a frontier sweep
   already running for the target solve job, or an atomic job-store update losing a race against a
-  concurrent state change), 422 (`ProjectionImpossibleError` and `BoundedMemoryUnsupportedError`
-  from solve setup or a bounded streaming collect, and the frontier compute-budget rejection;
-  auto-range chunk-plan and projection gaps are recorded fallbacks, never 422), 410 (a valid
+  concurrent state change), 422 (`BoundedMemoryUnsupportedError` from solve setup or a bounded
+  streaming collect, and the frontier compute-budget rejection; a projection gap keeps a
+  full-width boundary and an auto-range chunk-plan gap is a recorded fallback, never 422), 410 (a valid
   server-owned handle whose artifact is no longer present), 500 (a background
   worker thread failing to even start; a generic/unclassified pipeline or grid failure; an
   invalid server-owned artifact handle; a corrupt persisted artifact), 507
@@ -637,7 +637,7 @@ returned as a generic `status: "error"` payload.
   execution-context-driven cancellation (`_coerce_stopped_terminal_reason` maps it to
   `cancelled`/`superseded`/`timed_out` as appropriate).
 - **Domain exception types specifically handled**: `BoundedMemoryUnsupportedError`,
-  `ChunkPlanUnsupportedError`, `ContractMismatchError`, `ProjectionImpossibleError`,
+  `ChunkPlanUnsupportedError`, `ContractMismatchError`,
   `SchemaMismatchError` (`haute.errors`); `ExecutionAdmissionError`
   (`haute._execution_admission`); `ExecutionCancelledError`,
   `ExecutionMemoryLimitExceededError` (`haute._execution_context`); `BackgroundJobStoppedError`

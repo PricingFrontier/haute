@@ -37,102 +37,28 @@ allowlists. Global operations are never executed independently in each chunk.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EXEC-P04 | Planned | P2 | Give the pinned Polars surface one support-first execution policy and certification suite. |
 | EXEC-P05 | Decision | P2 | Build snapshots for eager-only or schema-unknown inputs automatically inside a warned hard-capped worker. |
 | EXEC-P06 | Planned | P2 | Run training preparation and multi-row deploy scoring inside hard-capped workers so the warned policy reaches them. |
+| EXEC-P07 | Planned | P2 | Admit sort, unique, join, and window materialisation with peak-memory evidence instead of unproven streaming. |
 
 ## Planned improvements
 
-`EXEC-P04` is the next startable package. The operation-effect proof, the
-warned, hard-capped conservative execution policy, and the receiver-aware chunk
-classifier that it builds on are current behaviour specified in the
-execution-engine and optimiser specifications: an unavailable estimate runs
-once under the full reserved envelope on the worker-backed surfaces (Data
-Output writes, preview and trace, Explore, JSON cache builds) and remains a
-typed rejection elsewhere, and a chunk-ineligible auto-range suffix falls back
-to the full-lazy path with a recorded warning. `EXEC-P06` extends the
-conservative policy to the thread-backed modelling and deploy surfaces;
-optimiser surfaces wait for `ROAD-WORKER-04`.
+`EXEC-P06` is the next startable package. The operation registry, the
+profile-independent projection planner, the operation-effect proof, the
+warned, hard-capped conservative execution policy, the receiver-aware chunk
+classifier, and the version-pinned compatibility corpus that it builds on are
+current behaviour specified in the execution-engine and optimiser
+specifications: an unavailable estimate runs once under the full reserved
+envelope on the worker-backed surfaces (Data Output writes, preview and trace,
+Explore, JSON cache builds) and remains a typed rejection elsewhere, and a
+chunk-ineligible auto-range suffix falls back to the full-lazy path with a
+recorded warning. `EXEC-P06` extends the conservative policy to the
+thread-backed modelling and deploy surfaces; optimiser surfaces wait for
+`ROAD-WORKER-04`.
 `EXEC-P05` requires an explicit architecture decision and is not startable
 until the specification amendment it names is approved. Each package extends a
 closed, tested optimisation model while retaining a general conservative
 execution path. No package creates an unbounded in-process eager fallback.
-
-### EXEC-P04 — Certify a support-first Polars operation policy
-
-**Why:** Group-by has an explicit materialisation boundary and memory gate, but
-other whole-frame or stateful operations are classified inconsistently. Dynamic
-group-bys, joins, sort, unique, pivot or unpivot, explode, rolling or window
-operations, and opaque batch callbacks are rejected by chunk planning yet do
-not all receive an equivalent full-lazy preflight policy. This is both a user
-consistency problem and a robustness gap.
-
-**Plan:** Make one receiver-aware Polars operation registry authoritative for
-lineage/cardinality analysis, projection, admission, and chunk planning. Record
-whether an operation is row-local, order-dependent, fan-in stateful,
-row-expanding, or opaque. Prefer inspection of the sandbox-built Polars lazy
-plan where it is stable and sufficient; use source AST evidence for authored
-contracts that the Polars plan cannot retain. Comments, literals, aliases, and
-non-Polars methods must not create false classifications.
-
-For each recognised global operation, select the best policy supported by
-evidence: proven streaming or spill-safe execution; an operator-specific
-admitted materialisation estimate; or one admitted pre-materialisation followed
-by a proven chunk-local suffix. Every other sandbox-valid operation defaults to
-the current pessimistically admitted, hard-capped conservative execution with a
-warning on worker-backed surfaces, and to the warned typed rejection elsewhere,
-never to an operation-name rejection. Prioritise complete common coverage
-across `LazyFrame` and expression string, temporal, list, struct, aggregation,
-join, rolling, window, reshape, and callback namespaces, including dynamic
-group-by, sort/unique, bounded and as-of joins, pivot/unpivot, `explode`,
-`map_elements`, and `map_batches`. Do not treat every global operation as if
-it were a group-by.
-
-Remove profile names from semantic proof decisions. Given the same graph and
-inputs, workflows may differ because their memory/time budgets and requested
-outputs differ, but not because one profile has an unrelated operator
-allowlist. If projection cannot be proved but full-width execution has an
-admissible bound, retain all columns at the boundary; contradictory declared
-contracts remain hard errors. The optimiser's input planning, which OPT-P13
-extracts into its own module, consumes this registry through the shared
-planner and keeps no operator list of its own.
-
-Maintain a version-pinned compatibility corpus that records whether each
-representative standard Polars shape is optimised or uses the warned fallback.
-An upgrade may improve that classification, but cannot silently turn a working
-shape into a rejection. Newly encountered operations enter the warned fallback
-automatically; adding them to an optimisation class still requires proof.
-
-**Acceptance:** A table-driven cross-profile contract covers every registered
-operation and verifies identical classification across Data Output, preview,
-Explore, modelling, optimiser, and deploy. Full-versus-planned equivalence
-tests cover ordering, schema, row multiplicity, and multi-input column
-retention. Peak-memory calibration or spill evidence supports every newly
-admitted global policy. False positives on comments, literals, and non-Polars
-methods are absent; aliases and ordinary chained Polars calls are detected.
-Unknown operations execute through the conservative envelope on worker-backed
-surfaces and report stable, bounded, sanitised warning codes and actionable
-remediation on every user-facing surface. Warnings state when projection,
-chunking, streaming, or estimate-based admission was unavailable and
-distinguish that from an actual execution failure.
-
-The compatibility corpus runs against every supported workflow and includes
-representative standard operations from each maintained namespace. A Polars
-version upgrade must rerun it and cannot merge if an operation changes value,
-schema, ordering, warning visibility, or working-to-rejected status without an
-approved specification change. Hard-failure tests prove that no fallback runs
-without an enforceable reserved envelope and that resource exhaustion cannot
-damage the server or publish partial results.
-
-**Dependencies:** The current chunk-classifier decision contract, the
-conservative-execution policy, the projection and execution strategy
-contracts, and the Polars version pin.
-
-**Evidence:** `src/haute/projection.py`; `src/haute/_column_lineage.py`;
-`src/haute/chunking.py`; `src/haute/execution.py`;
-`tests/test_projection_planner.py`; `tests/test_projection_lineage_integration.py`;
-`tests/test_execute_lazy.py`; `tests/test_polars_backend_strategy_contract.py`;
-`tests/performance/test_execution_engine_certification.py`.
 
 ### EXEC-P05 — Build snapshots for eager-only inputs automatically
 
@@ -235,3 +161,44 @@ isolation stays with ROAD-WORKER-04.
 `src/haute/deploy/_container.py`; `src/haute/_worker_isolation.py`;
 `tests/test_modelling_routes.py`; `tests/test_deploy_internals.py`;
 `tests/test_worker_isolation.py`.
+
+### EXEC-P07 — Admit global operations beyond group-by with memory evidence
+
+**Why:** The operation registry records `sort`, `unique`, `join`, `join_asof`,
+window expressions, rolling and dynamic group-bys, `explode`, and `unpivot` as
+streaming through the lazy engine without per-operator admission. Polars'
+streaming engine buffers the build side of a join, the whole input of a sort,
+and every window partition in memory, so those operations are only as bounded
+as the host. Unlike group-by they have no estimate-based gate and no
+conservative envelope, and the logical plan Polars prints cannot show which
+nodes fall back to in-memory execution.
+
+**Plan:** For each registered fan-in stateful or order-dependent frame
+operation, measure peak RSS in the performance lane over representative widths
+and row counts with the pinned Polars version, then select the narrowest policy
+the evidence supports: proven streaming or spill-safe execution (keep the
+`streaming` policy and record the evidence), an operator-specific admitted
+materialisation estimate (the cardinality bound times physical width, with a
+join's build side sized from its own port), or one admitted pre-materialisation
+followed by a proven chunk-local suffix. Change a registry policy only with
+that evidence, add the operator to the planner's boundary set, and extend the
+cross-profile contract and the compatibility corpus in the same change. Do not
+treat every global operation as a group-by: an operation the evidence proves
+bounded keeps streaming.
+
+**Acceptance:** Peak-memory calibration or spill evidence in the performance
+lane supports every policy change. Full-versus-planned equivalence tests cover
+ordering, schema, row multiplicity, and multi-input column retention for every
+newly admitted operation. The compatibility corpus records each operation's
+policy before and after the change. Operations without evidence keep the
+`streaming` policy they have today, and unknown operations keep the
+conservative policy.
+
+**Dependencies:** The operation registry and compatibility corpus, the
+cardinality proof, the materialisation-calibration contract, and the
+performance lane.
+
+**Evidence:** `src/haute/_polars_operations.py`; `src/haute/projection.py`;
+`src/haute/_ram_estimate.py`;
+`tests/performance/test_execution_engine_certification.py`;
+`tests/test_polars_compatibility_corpus.py`.

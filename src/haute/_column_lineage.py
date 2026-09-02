@@ -22,6 +22,7 @@ from types import MappingProxyType
 
 from haute._cardinality import join_cardinality_upper_bound, normalise_join_validation
 from haute._edge_join import narrow_join_parent_demand
+from haute._polars_operations import unbounded_expansion_expression_methods
 
 
 class LineageOperationKind(StrEnum):
@@ -182,26 +183,40 @@ _LITERAL_STRING_ARGUMENT_METHODS: Mapping[str, frozenset[str]] = MappingProxyTyp
 )
 
 # These expression operations can construct more outer rows than their input
-# frame supplies. Keeping this closed list beside the AST parser makes the
-# cardinality proof independent from column-lineage support: an expression can
-# have exact column dependencies while still being unsafe to size by input row
-# count. Polars is pinned; dependency upgrades must audit additions to Expr's
-# variable-length API before extending this set or the safe direct-call set.
-_ROW_EXPANDING_EXPRESSION_METHODS = frozenset(
+# frame supplies. The closed list lives in the shared Polars operation registry
+# so the chunk classifier and this analyser cannot classify a name differently;
+# it makes the cardinality proof independent from column-lineage support (an
+# expression can have exact column dependencies while still being unsafe to
+# size by input row count). Polars is pinned; dependency upgrades must audit
+# additions to Expr's variable-length API before extending the registry or the
+# safe direct-call set.
+_ROW_EXPANDING_EXPRESSION_METHODS = unbounded_expansion_expression_methods()
+
+# The frame methods ``_parse_call_sequence`` accepts. Exposed so the registry
+# audit can assert it agrees exactly with ``lineage_supported`` frame entries.
+_LINEAGE_FRAME_METHODS = frozenset(
     {
-        "append",
-        "deserialize",
+        "agg",
+        "drop",
+        "drop_nulls",
         "explode",
-        "extend_constant",
-        "flatten",
-        "from_json",
-        "gather",
-        "hist",
-        "map_batches",
-        "pipe",
-        "register_plugin",
-        "sample",
-        "search_sorted",
+        "fill_null",
+        "filter",
+        "group_by",
+        "groupby",
+        "head",
+        "join",
+        "limit",
+        "rename",
+        "select",
+        "select_seq",
+        "slice",
+        "sort",
+        "tail",
+        "unique",
+        "unpivot",
+        "with_columns",
+        "with_row_index",
     }
 )
 _ROW_BOUND_SAFE_POLARS_CALLS = frozenset(

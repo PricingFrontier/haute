@@ -198,6 +198,26 @@ running heavy work in a child process the parent can kill on timeout or memory l
   nodes never share or overwrite a demand. The runtime loader reads only those port
   payloads and projects them before downstream materialisation. Generated/deploy
   callers that request the source itself retain full-bundle semantics.
+- **One operation registry classifies every recognised Polars operation.**
+  `haute._polars_operations` is the closed, receiver-aware table of the frame
+  methods, expression methods, `str`/`dt` namespace methods, and top-level `pl`
+  helpers the analysers recognise. Each entry records its class (row-local,
+  order-dependent, row-expanding, fan-in stateful, or opaque), its current
+  execution policy (row-local, streaming, materialisation boundary, or opaque),
+  whether it has a chunked-equals-full proof, and whether lineage has a transfer
+  for it. Lineage, cardinality, projection, and chunk planning derive their
+  vocabularies from that table: chunk planning admits only registered row-local
+  operations that carry a proof, cardinality treats registered unbounded-expansion
+  expressions as unavailable, and the planner's materialisation boundaries come
+  from the registered fan-in stateful frame methods whose policy is a
+  materialisation boundary. An operation outside the registry is opaque
+  everywhere: lineage keeps a visible boundary, cardinality is unavailable, chunk
+  planning rejects it, and execution follows the conservative policy. Comments,
+  literals, aliases, and non-Polars methods cannot create a classification because
+  every consumer inspects receiver-aware AST calls only. Admitting a new
+  optimisation for a registered operation still requires its proof; a policy
+  change for a streaming operation requires the memory evidence a later roadmap
+  package owns.
 - **Polars projection is one compositional lineage proof.** Opaque-contract Polars
   code is parsed into a fail-closed linear frame-operation model rather than a set of
   node-shape exceptions. Identity assignment and supported operations publish both
@@ -314,7 +334,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   Hive-partition predicates and required columns in the optimized scan, pruning
   irrelevant files/columns before checkpointing, caching, or response materialisation.
   Fan-in demand attribution comes only from operand/contract/join-key/schema evidence;
-  ambiguous ownership is an observable boundary (or a strict-profile failure), never
+  ambiguous ownership is an observable boundary in every execution profile, never
   a guessed source assignment.
 - **Input identity is 1:1 and edge-derived.** Every incoming edge of a node has
   exactly one *input name*, derived by `edge_input_name` (`_graph_utils.py`): an

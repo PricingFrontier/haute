@@ -489,17 +489,6 @@ class NodeBoundaryRunner:
         _assert_outputs_satisfy_contract(boundary.node, boundary.contract, output_columns)
 
 
-def _strict_projection_for_context(
-    execution_context: ExecutionContext | None,
-    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns],
-) -> bool:
-    """Return whether projection-impossible cases should fail loudly."""
-    return execution_context is not None and projection_planner.strict_projection_required(
-        execution_context.profile,
-        required_columns_by_node,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Adaptive checkpoint strategy
 # ---------------------------------------------------------------------------
@@ -1115,7 +1104,9 @@ def _execute_lazy(
     strategy_profile = (
         execution_context.profile if execution_context is not None else ExecutionProfile.LAZY_SINK
     )
-    group_by_operators = projection_planner.group_by_operators_by_node(order, node_map)
+    group_by_operators = projection_planner.group_by_operators_by_node(
+        order, node_map, relevant_edges=relevant_edges
+    )
     if group_by_operators and not schema_only:
         # A materialising group-by needs the request planner's source-aware RAM
         # estimate. The prepared-only planner deliberately cannot derive one
@@ -1153,10 +1144,6 @@ def _execute_lazy(
             children_of,
             node_map,
             normalised_required_columns,
-            strict_projection=_strict_projection_for_context(
-                execution_context,
-                normalised_required_columns,
-            ),
             relevant_edges=relevant_edges,
         )
         if cache_broadens_projection
@@ -2004,10 +1991,6 @@ def _execute_eager_core(
             children_of,
             node_map,
             required_columns_by_node=normalised_required_columns,
-            strict_projection=_strict_projection_for_context(
-                execution_context,
-                normalised_required_columns,
-            ),
             relevant_edges=relevant_edges,
         )
     else:
@@ -2289,7 +2272,11 @@ def _execute_eager_core(
                                 headroom_bytes=previous_diagnostic.headroom_bytes,
                                 assumptions=previous_diagnostic.assumptions,
                                 boundary_operators=(
-                                    projection_planner.group_by_operators_by_node(order, node_map)
+                                    projection_planner.group_by_operators_by_node(
+                                        order,
+                                        node_map,
+                                        relevant_edges=relevant_edges,
+                                    )
                                 ),
                                 **_conservative_strategy_passthrough(previous_diagnostic),
                             )

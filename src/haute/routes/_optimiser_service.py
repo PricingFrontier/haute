@@ -85,7 +85,6 @@ from haute.errors import (
     BoundedMemoryUnsupportedError,
     ChunkPlanUnsupportedError,
     ContractMismatchError,
-    ProjectionImpossibleError,
     SchemaMismatchError,
 )
 from haute.execution import (
@@ -1267,26 +1266,6 @@ def _build_streaming_auto_range_plan(
                 node_id=fallback_node_id,
                 operator=operator,
                 line=line,
-            ),
-        )
-    except ProjectionImpossibleError as exc:
-        logger.info(
-            "frontier_auto_range_streaming_plan_projection_impossible",
-            error=str(exc),
-            node_id=node_id,
-        )
-        return None, _ChunkFallback(
-            code="projection_impossible",
-            node_id=node_id,
-            operator=None,
-            reason=str(exc),
-            line=None,
-            column=None,
-            message=_chunk_fallback_message(
-                reason=str(exc),
-                node_id=node_id,
-                operator=None,
-                line=None,
             ),
         )
     needed_by_node = generic_chunk_plan.required_columns_by_node
@@ -4643,20 +4622,6 @@ class OptimiserSolveService:
                 execution_context=execution_context,
             )
             raise contract_error_http_exception(exc) from None
-        except ProjectionImpossibleError as exc:
-            error_msg = f"Pipeline cannot run with bounded projection: {exc}"
-            logger.warning(
-                "pipeline_projection_impossible",
-                error=str(exc),
-                node_id=body.node_id,
-            )
-            self._record_http_setup_failure(
-                job_id,
-                status_code=422,
-                detail=error_msg,
-                execution_context=execution_context,
-            )
-            raise HTTPException(status_code=422, detail=error_msg) from exc
         except (ContractMismatchError, SchemaMismatchError) as exc:
             error_msg = f"Pipeline execution failed: {exc}"
             logger.warning(

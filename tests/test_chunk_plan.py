@@ -23,6 +23,7 @@ from haute.errors import (
     ChunkUserCodeUnsupportedError,
 )
 from haute.graph_utils import NodeType
+from haute.projection import group_by_operators_by_node, prepare_graph
 from tests.conftest import make_edge, make_graph, make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -76,6 +77,59 @@ def _source_output_graph(path: Path, output_fields: list[str]):
             "edges": [make_edge("source", "out").model_dump()],
         }
     )
+
+
+def test_chunk_group_by_evidence_is_receiver_aware(tmp_path: Path) -> None:
+    """The chunk planner's ``has_group_by`` evidence ignores non-frame receivers."""
+    path = _write_projected_source(tmp_path)
+
+    def _prepared(code: str):
+        graph = make_graph(
+            {
+                "nodes": [
+                    _node("source", "dataInput", {"path": str(path)}),
+                    _node("shape", "polars", {"code": code}),
+                    _node("out", "output", make_output_config(["premium"])),
+                ],
+                "edges": [
+                    make_edge("source", "shape").model_dump(),
+                    make_edge("shape", "out").model_dump(),
+                ],
+            }
+        )
+        return prepare_graph(graph, "out", source="live")
+
+    expression_prepared = _prepared(
+        "stats = pl.col('premium').list.group_by('quote_id')\ndf = df.filter(pl.col('premium') > 0)"
+    )
+    assert not group_by_operators_by_node(
+        expression_prepared.order,
+        expression_prepared.node_map,
+        relevant_edges=expression_prepared.relevant_edges,
+    )
+
+    # An unbound name may be a preamble frame, so its group-by is evidence.
+    preamble_prepared = _prepared(
+        "stats = lookup.group_by('quote_id')\ndf = df.filter(pl.col('premium') > 0)"
+    )
+    assert dict(
+        group_by_operators_by_node(
+            preamble_prepared.order,
+            preamble_prepared.node_map,
+            relevant_edges=preamble_prepared.relevant_edges,
+        )
+    ) == {"shape": "group_by"}
+
+    frame_prepared = _prepared(
+        "df = df.group_by('quote_id').agg(pl.col('premium').sum().alias('premium'))"
+    )
+    assert dict(
+        group_by_operators_by_node(
+            frame_prepared.order,
+            frame_prepared.node_map,
+            relevant_edges=frame_prepared.relevant_edges,
+        )
+    ) == {"shape": "group_by"}
 
 
 def test_chunk_capability_registry_mentions_every_node_type() -> None:
