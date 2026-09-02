@@ -252,6 +252,43 @@ def test_seeded_sequential_optuna_suggestions_are_reproducible_and_conditional()
     )
 
 
+# Golden sequence: the first four TPESampler suggestions for a two-parameter
+# search space at seed 7. The reproducibility test above compares two draws in
+# one process and so passes under any sampler stream; Optuna does not promise
+# sampler output is stable across patch releases and the ``optuna>=4.9.0,<4.10``
+# specifier admits patches, so this literal is what detects a stream move.
+# Generated on optuna 4.9.0 (the floor and the lock are the same version). If
+# it moves, a re-run of an old tuning config produces a different tuned model:
+# record the Optuna bump as a decision, and tell users the ``sampler_version``
+# field of tuning_plan.json is how they tell an old run's stream from the new.
+_GOLDEN_TPE_SEQUENCE_SEED_7 = [
+    {"depth": 6, "learning_rate": 0.01},
+    {"depth": 10, "learning_rate": 0.01},
+    {"depth": 6, "learning_rate": 0.01},
+    {"depth": 4, "learning_rate": 0.1},
+]
+
+
+def test_seeded_tpe_suggestions_match_the_golden_sequence() -> None:
+    config = parse(
+        tuning_raw(search_space={"depth": [4, 6, 8, 10], "learning_rate": [0.01, 0.03, 0.1]})
+    )
+    sampler = optuna.samplers.TPESampler(seed=config.seed)
+    study = optuna.create_study(direction="maximize", sampler=sampler)
+    values: list[dict[str, object]] = []
+    for index in range(4):
+        trial = study.ask()
+        values.append(suggest_parameters(trial, config, {"grow_policy": "SymmetricTree"}))
+        study.tell(trial, float(index))
+
+    assert values == _GOLDEN_TPE_SEQUENCE_SEED_7, (
+        f"TPESampler seeded stream changed on optuna {optuna.__version__}: the same tuning "
+        "config now proposes different trials, so re-running an old config yields a different "
+        "tuned model. Record the bump deliberately; tuning_plan.json's sampler_version field "
+        "identifies which stream an old run used."
+    )
+
+
 def test_sampled_parameters_override_without_dropping_untouched_nested_json() -> None:
     base = {
         "iterations": 100,

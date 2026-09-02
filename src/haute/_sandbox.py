@@ -29,6 +29,9 @@ import builtins
 import os
 import pickle
 import string
+import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -655,9 +658,9 @@ def _resolve_allowed_global(
     class. Everything else raises ``UnpicklingError``.
     """
     if (module, name) in _ALLOWED_PICKLE_GLOBALS:
-        return resolver(module, name)
+        return _resolve_installed(resolver, module, name)
     if (module, name) in _ALLOWED_PICKLE_CLASSES:
-        obj = resolver(module, name)
+        obj = _resolve_installed(resolver, module, name)
         if isinstance(obj, type):
             return obj
         raise _blocked_pickle_error(
@@ -666,6 +669,76 @@ def _resolve_allowed_global(
             f"expected an allowlisted class, but {module}.{name} resolved to a non-class callable",
         )
     raise _blocked_pickle_error(module, name, "not in the allowlist")
+
+
+def _resolve_installed(resolver: Any, module: str, name: str) -> Any:
+    """Resolve an allowlisted ``module.name``, naming a package that is absent.
+
+    The allowlist names other projects' module paths, some of which
+    (LightGBM, XGBoost) are not installed in every environment.  Only a
+    ``ModuleNotFoundError`` for the entry's own top-level package becomes the
+    uniform blocked-pickle error; a missing module deeper in the tree is a
+    broken install and propagates unchanged.
+    """
+    package = module.partition(".")[0]
+    try:
+        return resolver(module, name)
+    except ModuleNotFoundError as exc:
+        if exc.name != package:
+            raise
+        raise _blocked_pickle_error(
+            module,
+            name,
+            f"allowlisted, but `{package}` is not installed in this environment",
+        ) from exc
+
+
+class ArtifactVersionMismatchError(HauteError):
+    """A persisted estimator was written by a different library version than the loader's."""
+
+
+def _sklearn_inconsistent_version_warning() -> type[Warning] | None:
+    """scikit-learn's version-mismatch warning class, or ``None`` if scikit-learn is absent.
+
+    Only a missing ``sklearn`` package counts as absent -- the same
+    discrimination ``safe_joblib_load`` applies to joblib -- so a scikit-learn
+    install that is present but broken surfaces instead of being ignored.
+    """
+    try:
+        from sklearn.exceptions import InconsistentVersionWarning
+    except ModuleNotFoundError as exc:
+        if exc.name != "sklearn":
+            raise
+        return None
+    warning_cls: type[Warning] = InconsistentVersionWarning
+    return warning_cls
+
+
+@contextmanager
+def _estimator_version_mismatch_is_an_error() -> Iterator[None]:
+    """Promote scikit-learn's ``InconsistentVersionWarning`` to a haute error.
+
+    ``BaseEstimator.__setstate__`` compares the pickled ``_sklearn_version`` to
+    the installed ``sklearn.__version__`` and only *warns* on a mismatch, after
+    which the estimator behaves however it behaves.  A model trained on one
+    machine and deployed from another must fail here, not score.  The filter
+    is scoped to the load: ``catch_warnings`` restores the process-wide filter
+    state on exit.
+    """
+    warning_cls = _sklearn_inconsistent_version_warning()
+    if warning_cls is None:
+        yield
+        return
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", warning_cls)
+        try:
+            yield
+        except warning_cls as exc:
+            # scikit-learn's own message names both versions; keep it whole.
+            raise ArtifactVersionMismatchError(
+                f"Refusing to load an estimator persisted under a different "
+                f"scikit-learn version. {exc}"
+            ) from exc
 
 
 class _RestrictedUnpickler(pickle.Unpickler):
@@ -688,7 +761,7 @@ def safe_unpickle(path: str | Path) -> Any:
     Also validates the path is within the project root.
     """
     validated = validate_project_path(path)
-    with open(validated, "rb") as f:
+    with open(validated, "rb") as f, _estimator_version_mismatch_is_an_error():
         return _RestrictedUnpickler(f).load()
 
 
@@ -752,4 +825,5 @@ def safe_joblib_load(path: str | Path) -> Any:
                     "Installed joblib is incompatible with Haute's restricted loader: "
                     "the numpy_pickle unpickler constructor is unsupported"
                 ) from exc
-            return unpickler.load()
+            with _estimator_version_mismatch_is_an_error():
+                return unpickler.load()

@@ -31,7 +31,9 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import anthropic
 import httpx
+import openai
 import pytest
 
 from haute.assistant._config import AssistantConfig, EgressPolicy
@@ -43,6 +45,7 @@ from haute.assistant._providers import (
     TextDelta,
     ToolCallRequest,
     TurnStop,
+    _classify_sdk_error,
 )
 
 # ---------------------------------------------------------------------------
@@ -1244,6 +1247,27 @@ class TestDatabricksProvider:
                 )
             )
         assert exc_info.value.provider == "databricks"
+
+
+@pytest.mark.parametrize("sdk", [anthropic, openai])
+@pytest.mark.parametrize(
+    ("class_name", "category"),
+    [
+        ("AuthenticationError", "authentication"),
+        ("RateLimitError", "rate_limit"),
+        ("APIConnectionError", "connection"),
+        ("APITimeoutError", "connection"),
+        ("BadRequestError", "status"),
+        ("InternalServerError", "status"),
+    ],
+)
+def test_installed_sdk_exception_classes_keep_classification_contract(
+    sdk: object, class_name: str, category: str
+) -> None:
+    cls = getattr(sdk, class_name)
+    error = cls.__new__(cls)
+    classified = _classify_sdk_error(sdk.__name__, error)
+    assert classified.failure_class == category
 
 
 class TestErrorClassification:

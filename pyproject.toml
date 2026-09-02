@@ -32,6 +32,13 @@ dependencies = [
     "websockets>=16.0,<17",
     "pydantic>=2.12.5,<3",
     "polars>=1.39.3,<2",
+    # Direct dependency, not just transitive: parquet metadata reads, the
+    # parquet writer in _json_shred, the model scorer and _database_io all
+    # import pyarrow themselves. Cap: pyarrow 25.0.0 segfaults in
+    # pq.read_metadata on Linux x86-64 (issue #192; 24.0.0 was clean in the
+    # same CI probe). Floor: 23.0.1 is the lowest version any CI lane has
+    # exercised (the lock); nothing below it is known to work.
+    "pyarrow>=23.0.1,<25",
     "click>=8.4.2,<9",
     "python-multipart>=0.0.31,<0.1",
     "python-dotenv>=1.2.2,<2",
@@ -55,6 +62,13 @@ dependencies = [
     # Direct dependency (not just transitive via catboost): the GLM
     # dispersion estimator uses scipy.optimize.minimize_scalar.
     "scipy>=1.16.0,<2",
+    # Direct dependency (not just transitive via mlflow and catboost): every
+    # pyfunc score and every categorical CatBoost pool goes through
+    # to_pandas() and select_dtypes(include=["datetimetz"]) in _mlflow_io, and
+    # that frame feeds MLflow's schema enforcement. pandas 3 changes the default
+    # string dtype and copy semantics, so the cap is the point; the floor is
+    # the version CI has run (the lock).
+    "pandas>=2.3,<3",
     "xxhash>=3.6.0,<4",
     "packaging>=25.0,<26",
     # Assistant provider SDKs are core: the assistant ships in every install

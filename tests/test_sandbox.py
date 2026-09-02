@@ -13,7 +13,11 @@ import pytest
 from packaging.requirements import Requirement
 
 from haute._sandbox import (
+    _ALLOWED_PICKLE_CLASSES,
+    _ALLOWED_PICKLE_GLOBALS,
+    ArtifactVersionMismatchError,
     UnsafeCodeError,
+    _resolve_allowed_global,
     safe_globals,
     safe_joblib_load,
     safe_unpickle,
@@ -172,6 +176,51 @@ class TestSafeUnpickle:
         with pytest.raises(ValueError, match="outside.*project root"):
             safe_unpickle(str(f))
 
+    def test_sklearn_version_mismatch_is_an_error_not_a_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """An estimator pickled under another scikit-learn must refuse to load.
+
+        ``BaseEstimator.__setstate__`` compares the pickled ``_sklearn_version``
+        to the installed ``sklearn.__version__`` and only warns on mismatch, so
+        the load path is real scikit-learn, not a mock.  ``__getstate__`` stamps
+        the *current* version at dump time, so the stale pickle is produced by
+        dumping under a patched module version rather than by setting the
+        attribute by hand.
+        """
+        import sklearn
+        import sklearn.base
+        from sklearn.linear_model import LinearRegression
+
+        set_project_root(tmp_path)
+        model = LinearRegression().fit([[0.0], [1.0]], [1.0, 3.0])
+        f = tmp_path / "stale.pkl"
+        with monkeypatch.context() as patched:
+            patched.setattr(sklearn.base, "__version__", "0.0.1")
+            f.write_bytes(pickle.dumps(model))
+
+        with pytest.raises(ArtifactVersionMismatchError) as excinfo:
+            safe_unpickle(str(f))
+
+        message = str(excinfo.value)
+        assert "0.0.1" in message
+        assert sklearn.__version__ in message
+
+    def test_version_mismatch_filter_does_not_leak_into_process_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The promotion is scoped to the load; the process-wide filters are untouched."""
+        import warnings
+
+        set_project_root(tmp_path)
+        f = tmp_path / "plain.pkl"
+        f.write_bytes(pickle.dumps({"a": 1}))
+        before = list(warnings.filters)
+
+        assert safe_unpickle(str(f)) == {"a": 1}
+
+        assert list(warnings.filters) == before
+
 
 class TestSafeJoblibLoad:
     """Verify joblib loading goes through the restricted unpickler."""
@@ -246,6 +295,29 @@ class TestSafeJoblibLoad:
         np.testing.assert_array_equal(result.coef_, model.coef_)
         assert result.intercept_ == model.intercept_
         np.testing.assert_array_equal(result.predict(x), expected)
+
+    def test_sklearn_version_mismatch_is_an_error_via_joblib(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The joblib loader applies the same version-mismatch promotion as pickle."""
+        import joblib
+        import sklearn
+        import sklearn.base
+        from sklearn.linear_model import LinearRegression
+
+        set_project_root(tmp_path)
+        model = LinearRegression().fit([[0.0], [1.0]], [1.0, 3.0])
+        f = tmp_path / "stale.joblib"
+        with monkeypatch.context() as patched:
+            patched.setattr(sklearn.base, "__version__", "0.0.1")
+            joblib.dump(model, str(f))
+
+        with pytest.raises(ArtifactVersionMismatchError) as excinfo:
+            safe_joblib_load(str(f))
+
+        message = str(excinfo.value)
+        assert "0.0.1" in message
+        assert sklearn.__version__ in message
 
     def test_fitted_random_forest_round_trips(self, tmp_path: Path):
         """A fitted tree ensemble (RandomForest) round-trips if available.
@@ -2346,3 +2418,96 @@ class TestCaseInsensitiveContainment:
         target.touch()
         with pytest.raises(ValueError, match="outside.*project root"):
             validate_project_path(str(target))
+
+
+# ---------------------------------------------------------------------------
+# Pickle allowlist entries resolve against the real installed packages
+# ---------------------------------------------------------------------------
+
+# Top-level module -> distribution name, for every third-party prefix the
+# allowlist names. A new prefix must be mapped here or the test fails loudly.
+_PICKLE_ALLOWLIST_DISTRIBUTIONS = {
+    "catboost": "catboost",
+    "joblib": "joblib",
+    "lightgbm": "lightgbm",
+    "numpy": "numpy",
+    "pandas": "pandas",
+    "polars": "polars",
+    "sklearn": "scikit-learn",
+    "xgboost": "xgboost",
+}
+_PICKLE_ALLOWLIST_STDLIB = frozenset({"builtins", "copyreg", "_codecs"})
+
+
+def _allowlist_entry(module: str, name: str) -> object:
+    """Import an allowlist entry, or skip when its distribution is absent.
+
+    The allowlist names other projects' private module paths; a rename there
+    is invisible until a model fails to load. Consulting the installed package
+    is the only check that means anything, so an entry whose distribution is
+    not installed here is reported as unverified rather than passed.
+    """
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    package = module.partition(".")[0]
+    if package not in _PICKLE_ALLOWLIST_STDLIB:
+        assert package in _PICKLE_ALLOWLIST_DISTRIBUTIONS, (
+            f"map the allowlist prefix {package!r} to its distribution in this test"
+        )
+        distribution_name = _PICKLE_ALLOWLIST_DISTRIBUTIONS[package]
+        try:
+            distribution(distribution_name)
+        except PackageNotFoundError:
+            pytest.skip(
+                f"{distribution_name} is not installed, so the allowlist entry "
+                f"{module}.{name} is unverified in this environment"
+            )
+    return getattr(import_module(module), name)
+
+
+class TestPickleAllowlistResolves:
+    """Every allowlist entry is asked of the real installed package."""
+
+    @pytest.mark.parametrize(("module", "name"), sorted(_ALLOWED_PICKLE_CLASSES))
+    def test_class_entry_resolves_to_a_class(self, module: str, name: str) -> None:
+        resolved = _allowlist_entry(module, name)
+        assert isinstance(resolved, type), (
+            f"{module}.{name} is allowlisted as a class but resolves to {resolved!r}; "
+            "the restricted unpickler will now block models that reference it"
+        )
+
+    @pytest.mark.parametrize(("module", "name"), sorted(_ALLOWED_PICKLE_GLOBALS))
+    def test_global_entry_resolves_to_a_callable(self, module: str, name: str) -> None:
+        resolved = _allowlist_entry(module, name)
+        assert callable(resolved), f"{module}.{name} is allowlisted but is not callable"
+
+    def test_missing_allowlisted_package_is_a_blocked_pickle_error(self) -> None:
+        """An allowlisted entry whose package is absent is reported as such."""
+
+        def resolver(module: str, name: str) -> object:
+            raise ModuleNotFoundError(f"No module named {module!r}", name="xgboost")
+
+        with pytest.raises(pickle.UnpicklingError, match="`xgboost` is not installed"):
+            _resolve_allowed_global(resolver, "xgboost.sklearn", "XGBModel")
+
+    def test_broken_install_deeper_in_the_tree_propagates(self) -> None:
+        """Only the entry's own top-level package counts as absent."""
+
+        def resolver(module: str, name: str) -> object:
+            raise ModuleNotFoundError("No module named 'scipy.sparse'", name="scipy.sparse")
+
+        with pytest.raises(ModuleNotFoundError, match="scipy.sparse"):
+            _resolve_allowed_global(resolver, "xgboost.sklearn", "XGBModel")
+
+    def test_real_unpickler_reports_absent_xgboost(self) -> None:
+        """The real ``find_class`` path in an environment without xgboost."""
+        import importlib.util
+        import io
+
+        from haute._sandbox import _RestrictedUnpickler
+
+        if importlib.util.find_spec("xgboost") is not None:
+            pytest.skip("xgboost is installed here; the absent-package path is not reachable")
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        with pytest.raises(pickle.UnpicklingError, match="`xgboost` is not installed"):
+            unpickler.find_class("xgboost.sklearn", "XGBModel")

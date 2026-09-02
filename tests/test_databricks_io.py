@@ -299,11 +299,75 @@ def test_iter_batches_rejects_schemaless_empty_result() -> None:
 
 def test_retry_integrity_detects_lost_rows() -> None:
     with pytest.raises(FetchIntegrityError, match="lost rows"):
-        _assert_no_rows_lost_after_retry(table="cat.sch.tbl", rows_received=3, rows_consumed=4)
+        _assert_no_rows_lost_after_retry(
+            table="cat.sch.tbl", rows_received=3, rows_consumed=4, rows_consumed_previously=None
+        )
 
 
 def test_retry_integrity_accepts_matching_row_count() -> None:
-    _assert_no_rows_lost_after_retry(table="cat.sch.tbl", rows_received=3, rows_consumed=3)
+    _assert_no_rows_lost_after_retry(
+        table="cat.sch.tbl", rows_received=3, rows_consumed=3, rows_consumed_previously=None
+    )
+    _assert_no_rows_lost_after_retry(
+        table="cat.sch.tbl", rows_received=5, rows_consumed=5, rows_consumed_previously=3
+    )
+
+
+def test_retry_integrity_fails_closed_on_a_missing_counter() -> None:
+    """``None`` is not a matching count: an unsupported counter never passes."""
+    with pytest.raises(FetchIntegrityError, match="lost rows"):
+        _assert_no_rows_lost_after_retry(
+            table="cat.sch.tbl", rows_received=3, rows_consumed=None, rows_consumed_previously=3
+        )
+
+
+def test_retry_integrity_rejects_a_counter_that_goes_backwards() -> None:
+    """A counter going backwards is a semantic change, reported as such and
+    before the equality check, so it cannot be misread as lost rows or pass
+    by coincidence."""
+    with pytest.raises(FetchIntegrityError, match="went backwards from 4 to 1"):
+        _assert_no_rows_lost_after_retry(
+            table="cat.sch.tbl", rows_received=1, rows_consumed=1, rows_consumed_previously=4
+        )
+
+
+def test_iter_batches_tracks_cursor_position_across_batches_after_a_retry() -> None:
+    class _ResettingCursor(_Cursor):
+        """Counter that matches the first post-retry batch, then resets."""
+
+        def fetchmany_arrow(self, batch_size: int) -> pa.Table:
+            result = super().fetchmany_arrow(batch_size)
+            if self.rownumber == 3:
+                self.rownumber = 1
+            return result
+
+    cursor = _ResettingCursor(
+        [RuntimeError("transient"), pa.table({"x": [1, 2]}), pa.table({"x": [3]})]
+    )
+    with pytest.raises(FetchIntegrityError, match="went backwards from 2 to 1"):
+        _stream(cursor, MagicMock())
+
+
+def test_real_databricks_cursor_exposes_rownumber() -> None:
+    """The retry guard reads ``cursor.rownumber``; ask the real connector class.
+
+    The fake above restates the assumption by construction, so only the
+    installed ``databricks.sql.client.Cursor`` can say whether it still holds.
+    Presence is checked on the class: the property is meaningless before
+    ``execute`` and needs a live connection to instantiate.
+    """
+    try:
+        from databricks.sql.client import Cursor
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"databricks", "databricks.sql", "databricks.sql.client"}:
+            raise
+        pytest.skip(f"databricks-sql-connector is not installed ({exc.name}); contract unverified")
+
+    assert hasattr(Cursor, "rownumber"), (
+        "databricks.sql.client.Cursor no longer exposes rownumber: the fetch-retry "
+        "integrity guard in haute._databricks_io reads it, and will now fail closed on "
+        "every retried fetch. Find the connector's replacement row-position attribute."
+    )
 
 
 def test_snapshot_builder_publishes_through_source_cache_store(tmp_path: Path) -> None:

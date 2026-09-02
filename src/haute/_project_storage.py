@@ -348,7 +348,8 @@ _ASKPASS_SCRIPT = """#!/bin/sh
 # file, a git config, or a command line.
 case "$1" in
   Username*) printf '%s' "${HAUTE_GIT_USERNAME:-x-access-token}" ;;
-  *) printf '%s' "${HAUTE_GIT_TOKEN}" ;;
+  Password*) printf '%s' "${HAUTE_GIT_TOKEN}" ;;
+  *) exit 1 ;;
 esac
 """
 

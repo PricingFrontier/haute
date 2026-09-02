@@ -540,7 +540,7 @@ def _wrap_pyfunc(model: Any) -> ScoringModel:
 
 def _extract_pyfunc_features(model: Any) -> list[str]:
     """Extract feature names from a pyfunc model's signature."""
-    sig = getattr(getattr(model, "metadata", None), "signature", None)
+    sig = getattr(model.metadata, "signature", None)
     if sig is None:
         return []
     inputs = sig.inputs
