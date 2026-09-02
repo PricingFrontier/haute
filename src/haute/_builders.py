@@ -22,6 +22,11 @@ import polars as pl
 
 import haute.projection as projection
 from haute._code_extraction import INCOMPLETE_TRANSFORM_MESSAGE
+from haute._config_validation import (
+    reject_removed_config_keys,
+    resolve_exact_input_index,
+    resolve_optimiser_data_input,
+)
 from haute._contracts import (
     _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
 )
@@ -760,30 +765,33 @@ def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # Pass-through in preview mode. Solving happens via /api/optimiser/solve.
     # When data_input is configured, select that specific input so the
     # preview shows scenario-expanded data rather than a banding source.
-    data_input_id = ctx.config.get("data_input")
-    if data_input_id and ctx.node_map and data_input_id in ctx.node_map:
-        target_name = _sanitize_func_name(ctx.node_map[data_input_id].data.label)
-        if target_name in ctx.source_names:
-            idx = ctx.source_names.index(target_name)
+    data_input = resolve_optimiser_data_input(
+        ctx.config,
+        ctx.source_names,
+        node_label=ctx.func_name,
+    )
+    if data_input is not None:
+        _i_captured = ctx.source_names.index(data_input)
+        _src_names_captured = list(ctx.source_names)
 
-            _i_captured = idx
-            _src_names_captured = list(ctx.source_names)
-
-            def _optimiser_select(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-                if dfs_by_name:
-                    dfs = tuple(
-                        dfs_by_name[name] for name in _src_names_captured if name in dfs_by_name
-                    )
-                else:
-                    dfs = dfs_positional
-                if len(dfs) <= _i_captured:
+        def _optimiser_select(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+            if dfs_by_name:
+                try:
+                    dfs = tuple(dfs_by_name[name] for name in _src_names_captured)
+                except KeyError as exc:
                     raise ValueError(
-                        f"Optimiser expected input at index {_i_captured} but only "
-                        f"received {len(dfs)} input(s)",
-                    )
-                return dfs[_i_captured]
+                        "Optimiser did not receive every declared connected input name.",
+                    ) from exc
+            else:
+                dfs = dfs_positional
+            if len(dfs) <= _i_captured:
+                raise ValueError(
+                    f"Optimiser expected input at index {_i_captured} but only "
+                    f"received {len(dfs)} input(s)",
+                )
+            return dfs[_i_captured]
 
-            return ctx.func_name, _optimiser_select, False
+        return ctx.func_name, _optimiser_select, False
     return ctx.func_name, _passthrough_fn, False
 
 
@@ -826,7 +834,6 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _artifact_path = config.get("artifact_path", "")
     _ratebook_input = config.get("ratebook_input", "")
     _source_names = list(ctx.source_names)
-    _source_ids = list(ctx.source_ids)
     _source_type = config.get("sourceType", "")
     _run_id = config.get("run_id", "")
     _registered_model = config.get("registered_model", "")
@@ -860,7 +867,6 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             *dfs,
             config=_config_captured,
             source_names=_source_names,
-            source_ids=_source_ids,
         )
 
     return ctx.func_name, optimiser_apply_fn, False
@@ -1122,12 +1128,10 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
 @_register(NodeType.EDGE_JOIN, opaque=True)
 def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
+    build_edge_join_kwargs(ctx.config)
     base_index, join_index = resolve_edge_join_role_indices(
-        ctx.config,
-        ctx.source_ids,
         ctx.target_handles,
     )
-    build_edge_join_kwargs(ctx.config)
     source_ids = list(ctx.source_ids)
 
     def edge_join_fn(*dfs: _Frame) -> _Frame:
@@ -1201,6 +1205,8 @@ def _build_node_fn(
     if node_map:
         node = resolve_instance_node(node, node_map)
 
+    reject_removed_config_keys(node.data.nodeType, node.data.config)
+
     if source_names is None:
         source_names = []
     if source_ids is None:
@@ -1247,38 +1253,20 @@ def _build_node_fn(
 def _select_optimiser_apply_input(
     dfs: tuple[_Frame, ...],
     artifact: dict[str, Any],
-    ratebook_input: str,
+    ratebook_input: Any,
     source_names: list[str],
-    source_ids: list[str],
 ) -> _Frame:
     """Select the dataframe to apply without letting config override artifact mode."""
     if artifact.get("mode", "online") != "ratebook":
         return dfs[0] if dfs else pl.LazyFrame()
 
-    if not ratebook_input:
-        # Ratebook apply with no configured ``ratebook_input`` falls back to the
-        # first connected input.  Surface the unconfigured state so the user can
-        # set the picker explicitly when the graph has multiple ratebook inputs.
-        logger.warning(
-            "optimiser_apply_ratebook_input_unset",
-            source_ids=source_ids,
-            source_names=source_names,
-        )
-        return dfs[0] if dfs else pl.LazyFrame()
-
-    if not source_ids:
-        raise ValueError(
-            "optimiserApply ratebook_input requires connected input source_ids; "
-            f"got ratebook_input={ratebook_input!r} with source_names={source_names!r}",
-        )
-
-    if ratebook_input not in source_ids:
-        raise ValueError(
-            "optimiserApply ratebook_input "
-            f"{ratebook_input!r} is not one of the connected input node ids: {source_ids!r}",
-        )
-
-    index = source_ids.index(ratebook_input)
+    index = resolve_exact_input_index(
+        ratebook_input,
+        source_names,
+        required=True,
+        node_label="optimiserApply",
+        field_name="ratebook_input",
+    )
     if index >= len(dfs):
         raise ValueError(
             "optimiserApply expected ratebook_input "

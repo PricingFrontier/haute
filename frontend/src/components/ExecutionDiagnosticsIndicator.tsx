@@ -1,6 +1,9 @@
 import { AlertCircle, AlertTriangle } from "lucide-react"
 import type { ExecutionMetrics } from "../api/types"
-import { buildExecutionDiagnostic } from "../utils/executionDiagnostics"
+import {
+  buildExecutionDiagnostic,
+  executionProjectionWarning,
+} from "../utils/executionDiagnostics"
 
 type ExecutionDiagnosticsIndicatorProps = {
   metrics?: ExecutionMetrics | null
@@ -31,12 +34,9 @@ function strategyIndicator(metrics: ExecutionMetrics): IndicatorContent | null {
     }
   }
 
-  const projectionBoundary = strategy.boundaries.items.find(
-    (boundary) => boundary.boundary_kind === "unprojected-streaming-boundary",
-  )
-  if (strategy.strategy === "materialisation-boundary" && !projectionBoundary) return null
-  const nodeId = projectionBoundary?.node_id ?? strategy.blocking_node_id
-  const operator = projectionBoundary?.operator ?? strategy.blocking_operator
+  const projectionWarning = executionProjectionWarning(metrics)
+  if (!projectionWarning) return null
+  const { boundary: projectionBoundary, nodeId, operator } = projectionWarning
   const location = nodeId ? ` at '${nodeId}'${operator ? ` (${operator})` : ""}` : ""
 
   return {

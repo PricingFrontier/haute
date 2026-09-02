@@ -554,7 +554,7 @@ snapshot deterministically.
 | Any other exception during waterfall assembly | — | Caught, logged (`waterfall_build_failed`, WARNING, `exc_info=True`), converted to `{"error": ..., "error_type": ...}` |
 | Any exception during a single enrichment concern (expression parse/eval, chain, input sources, rename detection, node-type enrichment, row-lineage detection) | `_trace_enrichment.py`, per-concern `try`/`except` | Caught, logged at WARNING with `exc_info=True`, surfaced as an `error`/`error_type` key on the relevant field (`expression`, `calculation`, `node_detail`, or the `row_lineage_type` string itself as `"error: ..."`) — never re-raised |
 | Any exception escaping an entire step's enrichment (outer catch-all in `enrich_steps`) | `_trace_enrichment.py` | Caught, logged (`trace_enrichment_step_failed`), an `error` marker is set on `step.node_detail` if not already present, and the loop continues to the next step |
-| `ValueError` (edge-join misconfiguration) | `_build_parent_match_row` — a node wired as a parent of an `edgeJoin` that matches neither its `baseInput` nor `joinInput` | Propagates unchanged out of `_correlate_rows_posthoc` |
+| `ValueError` (edge-join misconfiguration) | `_build_parent_match_row` — an `edgeJoin` parent edge has no valid `base`/`join` target role, or the role topology is ambiguous | Propagates unchanged out of `_correlate_rows_posthoc` |
 | `ValueError` (missing/unselectable base frame) | `_build_parent_match_row` — the edge-join's base parent has no materialized output, is a multi-frame bundle with no wired/selectable frame handle, or names a missing frame while correlating the join parent | Propagates unchanged with join/base context; never leaks `AttributeError` |
 
 ## Testing

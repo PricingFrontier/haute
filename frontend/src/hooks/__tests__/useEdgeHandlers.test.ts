@@ -594,10 +594,7 @@ describe("useEdgeHandlers", () => {
     const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
     expect(nextNodes.find((node) => node.id === "edgeJoin_1")).toMatchObject({
       data: {
-        config: {
-          baseInput: "base",
-          joinInput: "lookup",
-        },
+        config: {},
       },
     })
   })
@@ -762,18 +759,15 @@ describe("useEdgeHandlers", () => {
     const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
     expect(nextNodes.find((node) => node.id === "edgeJoin_1")).toMatchObject({
       data: {
-        config: {
-          baseInput: "base",
-          joinInput: "lookup",
-        },
+        config: {},
       },
     })
   })
 
-  it("onConnectEnd updates edgeJoin baseInput when connecting to the base handle", () => {
+  it("onConnectEnd records the base role only on the target handle", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
-      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: { baseInput: "old", joinInput: "lookup" } } } as unknown as Node,
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
       {
         id: "quotes",
         data: {
@@ -796,13 +790,9 @@ describe("useEdgeHandlers", () => {
     })
 
     expect(params.pushSnapshot).toHaveBeenCalledOnce()
-    expect(params.setNodesRaw).toHaveBeenCalledOnce()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).toHaveBeenCalledOnce()
-    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
-    expect(nextNodes.find((n) => n.id === "join1")?.data.config).toMatchObject({
-      baseInput: "quotes",
-      joinInput: "lookup",
-    })
+    expect(params.graphRef.current.nodes.find((n) => n.id === "join1")?.data.config).toEqual({})
     const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
     expect(nextEdges).toEqual([
       expect.objectContaining({
@@ -817,7 +807,7 @@ describe("useEdgeHandlers", () => {
   it("onConnectEnd leaves an edgeJoin role update atomic when source identity is unavailable", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
-      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: { joinInput: "lookup" } } } as unknown as Node,
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
       { id: "quotes", data: { label: "Quotes", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
     ]
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -841,7 +831,7 @@ describe("useEdgeHandlers", () => {
   it("onConnectEnd normalises the bottom edgeJoin drop target to the join role", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
-      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: { baseInput: "base", joinInput: "removed" } } } as unknown as Node,
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
       { id: "base", data: { label: "Base", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
       identifiedNode("lookup", NODE_TYPES.POLARS, { label: "Lookup", config: {} }),
     ]
@@ -858,13 +848,9 @@ describe("useEdgeHandlers", () => {
     })
 
     expect(params.pushSnapshot).toHaveBeenCalledOnce()
-    expect(params.setNodesRaw).toHaveBeenCalledOnce()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).toHaveBeenCalledOnce()
-    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
-    expect(nextNodes.find((n) => n.id === "join1")?.data.config).toMatchObject({
-      baseInput: "base",
-      joinInput: "lookup",
-    })
+    expect(params.graphRef.current.nodes.find((n) => n.id === "join1")?.data.config).toEqual({})
     const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
     expect(nextEdges).toEqual(expect.arrayContaining([
       expect.objectContaining({ source: "base", target: "join1", targetHandle: "base" }),
@@ -894,7 +880,7 @@ describe("useEdgeHandlers", () => {
   it("onConnectEnd rejects duplicate edgeJoin role connections", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
-      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: { baseInput: "a", joinInput: "b" } } } as unknown as Node,
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
     ]
     params.graphRef.current.edges = [
       { id: "e-a-join", source: "a", target: "join1", targetHandle: "base" } as Edge,
@@ -915,7 +901,7 @@ describe("useEdgeHandlers", () => {
   it("onConnectEnd rejects a third edgeJoin input", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
-      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: { baseInput: "a", joinInput: "b" } } } as unknown as Node,
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
     ]
     params.graphRef.current.edges = [
       { id: "e-a-join", source: "a", target: "join1", targetHandle: "base" } as Edge,
@@ -968,8 +954,6 @@ describe("useEdgeHandlers", () => {
         nodeType: NODE_TYPES.EDGE_JOIN,
         _defaultInputName: "server_edgeJoin_1",
         config: {
-          baseInput: "a",
-          joinInput: "c",
           how: "left",
           suffix: "_right",
         },
@@ -1066,7 +1050,7 @@ describe("useEdgeHandlers", () => {
   it("onConnectEnd ignores input-handle drops on an existing edge", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
-      { id: "a", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "a", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS, _defaultInputName: "base" } } as unknown as Node,
       { id: "b", position: { x: 300, y: 0 }, data: { label: "Downstream", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
       { id: "c", position: { x: 0, y: 160 }, data: { label: "Input", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
     ]
@@ -1133,8 +1117,6 @@ describe("useEdgeHandlers", () => {
         label: "Edge Join 1",
         nodeType: NODE_TYPES.EDGE_JOIN,
         config: {
-          baseInput: "base",
-          joinInput: "lookup",
           how: "left",
           suffix: "_right",
         },
@@ -1976,7 +1958,7 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
     ])
   })
 
-  it("onConnectEnd seeds role config on an edgeJoin node that has no config object", () => {
+  it("onConnectEnd leaves edgeJoin config untouched when adding a role", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
       { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN } } as unknown as Node,
@@ -1992,10 +1974,9 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
     })
 
     expect(params.pushSnapshot).toHaveBeenCalledOnce()
-    expect(params.setNodesRaw).toHaveBeenCalledOnce()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).toHaveBeenCalledOnce()
-    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
-    expect(nextNodes.find((n) => n.id === "join1")?.data.config).toEqual({ baseInput: "quotes" })
+    expect(params.graphRef.current.nodes.find((n) => n.id === "join1")?.data.config).toBeUndefined()
     const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
     expect(nextEdges).toEqual([
       expect.objectContaining({ source: "quotes", target: "join1", targetHandle: "base" }),
@@ -2020,7 +2001,7 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
         {
           isValid: null,
           fromNode: { id: "a" },
-          fromHandle: { id: "a_out", type: "source" },
+          fromHandle: { id: null, type: "source" },
           toNode: null,
         } as never,
       )
@@ -2080,7 +2061,7 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
     expect(params.setSelectedNode).not.toHaveBeenCalled()
   })
 
-  it("onConnectEnd rejects joining a node's two outputs together as a self-join", () => {
+  it("continues to reject direct same-node source-to-source gestures", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
       { id: "split", position: { x: 0, y: 0 }, data: { label: "Split", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
@@ -2101,16 +2082,8 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
     })
 
     expect(useToastStore.getState().toasts).toEqual([
-      expect.objectContaining({
-        type: "error",
-        text: "Edge join rejected: choose a different dataframe to join",
-      }),
+      expect.objectContaining({ type: "error", text: "Edge join rejected: choose a different dataframe to join" }),
     ])
-    expect(params.pushSnapshot).not.toHaveBeenCalled()
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
-    expect(params.setSelectedNode).not.toHaveBeenCalled()
-    expect(params.lastSelectedNodeRef.current).toBeNull()
   })
 
   it("onConnectEnd rejects a source-to-source join from a node that is no longer in the graph", () => {
@@ -2171,7 +2144,7 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
     expect(params.pushSnapshot).toHaveBeenCalledOnce()
     const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
     expect(nextNodes.find((node) => node.id === "edgeJoin_1")).toMatchObject({
-      data: { config: { baseInput: "base", joinInput: "lookup" } },
+      data: { config: { how: "left", suffix: "_right" } },
     })
     const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
     expect(nextEdges).toEqual([
@@ -2404,7 +2377,6 @@ describe("useEdgeHandlers edge-join insertion candidates", () => {
   it.each([
     ["stale edge", "lookup", "missing-edge"],
     ["incomplete edge", "lookup", "edge-stale"],
-    ["self join", "base", "edge-base-middle"],
     ["cycle", "middle", "edge-base-middle"],
   ] as const)("does not expose feedback for a %s candidate", (_label, sourceId, edgeId) => {
     const params = candidateParams()

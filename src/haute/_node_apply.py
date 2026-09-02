@@ -251,23 +251,18 @@ def apply_optimiser_apply_from_config(
     config: dict[str, Any] | str | PathLike[str],
     base_dir: str | Path | None = None,
     source_names: list[str] | None = None,
-    source_ids: list[str] | None = None,
 ) -> _Frame:
     """Apply a saved optimiser artifact to the selected input frame.
 
     The generated-code twin of the executor's ``_build_optimiser_apply``.
     Loads the artifact (file or MLflow) named by *config*, selects the
-    ratebook input (via ``ratebook_input`` matched against *source_ids*),
+    ratebook input (via ``ratebook_input`` matched against *source_names*),
     and dispatches to the online / ratebook apply.  When no source is
     configured the node is a passthrough (first frame), mirroring the
     executor's unconfigured branch.
 
-    *dfs* are the incoming frames in declared order; *source_names* /
-    *source_ids* are aligned identifier lists.  In generated standalone
-    code the sidecar's ``ratebook_input`` is remapped to the source
-    function name, so *source_ids* there are the parameter names; in the
-    executor they are the graph node ids.  Either way selection is
-    positional, so both agree.
+    *dfs* are the incoming frames in declared order and *source_names* are
+    their executable incoming-edge names.
     """
     cfg = _resolve_node_config(config, base_dir)
 
@@ -293,7 +288,6 @@ def apply_optimiser_apply_from_config(
     optimised_value_col = cfg.get("optimised_value_column", "")
     ratebook_input = cfg.get("ratebook_input", "")
     names = list(source_names) if source_names is not None else []
-    ids = list(source_ids) if source_ids is not None else []
 
     if source_type in ("run", "registered"):
         from haute._optimiser_io import load_mlflow_optimiser_artifact
@@ -313,7 +307,7 @@ def apply_optimiser_apply_from_config(
     # lazily to keep this module free of an executor import cycle.
     from haute._builders import _dispatch_apply, _select_optimiser_apply_input
 
-    input_lf = _select_optimiser_apply_input(dfs, artifact, ratebook_input, names, ids)
+    input_lf = _select_optimiser_apply_input(dfs, artifact, ratebook_input, names)
     return _dispatch_apply(input_lf, artifact, version_col, optimised_value_col)
 
 

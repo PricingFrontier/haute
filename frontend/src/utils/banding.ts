@@ -1,5 +1,6 @@
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import type { FactorLevelOrder } from "../panels/optimiser/ratebookFactorTables"
+import { edgeInputName } from "./apiInputPorts"
 import { NODE_TYPES } from "./nodeTypes"
 
 type CollectLevelsOptions = { includeDefault?: boolean }
@@ -131,21 +132,35 @@ export function extractBandingLevels(allNodes: SimpleNode[]): Record<string, str
   return classifyBandingLevels(allNodes).levels
 }
 
-function configuredBandingSourceId(node: SimpleNode | undefined): string | null {
+function configuredBandingSourceName(node: SimpleNode | undefined): string | null {
   const config = node?.data.config
   if (!isPlainObject(config)) return null
-  return nonblankString(config.banding_source)
+  const value = config.banding_source
+  return typeof value === "string" && value.length > 0 ? value : null
 }
 
-function singleDirectBandingInputId(nodeId: string, allNodes: SimpleNode[], edges: SimpleEdge[]): string | null {
-  const sourceIds = new Set(edges.filter(edge => edge.target === nodeId).map(edge => edge.source))
-  const bandingInputs = allNodes.filter(node => sourceIds.has(node.id) && node.data.nodeType === NODE_TYPES.BANDING)
-  return bandingInputs.length === 1 ? bandingInputs[0].id : null
+function configuredDirectBandingInput(
+  nodeId: string,
+  configuredName: string,
+  allNodes: SimpleNode[],
+  edges: SimpleEdge[],
+): SimpleNode | undefined {
+  const nodeMap = new Map(allNodes.map(node => [node.id, node]))
+  const matches = edges
+    .filter(edge => edge.target === nodeId)
+    .flatMap((edge) => {
+      const source = nodeMap.get(edge.source)
+      if (!source || source.data.nodeType !== NODE_TYPES.BANDING) return []
+      return edgeInputName(edge, source) === configuredName ? [source] : []
+    })
+  return matches.length === 1 ? matches[0] : undefined
 }
 
-/** Resolve the configured source, or one direct Banding input, with defaults last. */
+/** Resolve one exact configured incoming-edge name, with defaults last. */
 export function bandingLevelOrderForOptimiser(nodeId: string, allNodes: SimpleNode[], edges: SimpleEdge[]): FactorLevelOrder {
   const optimiserNode = allNodes.find(node => node.id === nodeId)
-  const bandingSourceId = configuredBandingSourceId(optimiserNode) ?? singleDirectBandingInputId(nodeId, allNodes, edges)
-  return bandingSourceId ? extractBandingLevelOrderForNode(allNodes, bandingSourceId) : {}
+  const configuredName = configuredBandingSourceName(optimiserNode)
+  if (!configuredName) return {}
+  const bandingInput = configuredDirectBandingInput(nodeId, configuredName, allNodes, edges)
+  return bandingInput ? classifyBandingNode(bandingInput, { includeDefault: true }).levels : {}
 }

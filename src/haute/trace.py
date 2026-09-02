@@ -63,6 +63,7 @@ from haute._trace_correlation import (
     _jsonify_row,
     _match_rows_vectorized,
     _RowMatchStatus,
+    edge_join_role_edges,
 )
 from haute._trace_enrichment import (
     detect_row_lineage_type,
@@ -84,6 +85,7 @@ from haute.executor import (
     _pipeline_dir,
 )
 from haute.graph_utils import (
+    GraphEdge,
     NodeType,
     PipelineGraph,
     _execute_eager_core,
@@ -546,17 +548,23 @@ def execute_trace(
             "trace a node downstream of a specific frame instead."
         )
 
-    # Edge sourceHandles record which frame of a multi-frame source each
-    # child EDGE consumes (the selection _pick_source_frame makes at
-    # execution time); the correlation walk makes the same per-edge
-    # selection.  One entry per edge: a multi-frame source can feed the
-    # same child through several edges, each naming a distinct frame
-    # (e.g. the four-port apiInput → OUTPUT topology), so collapsing to
-    # one handle per (source, target) pair would correlate against an
-    # arbitrary frame.
-    source_frames_of: dict[tuple[str, str], list[str | None]] = {}
+    # Preserve every physical edge.  Edge Join input roles are defined by
+    # targetHandle, and a multi-frame source can feed both roles of one join.
+    edge_metadata: dict[tuple[str, str], list[tuple[str | None, str | None]]] = {}
+    incoming_edges_of: dict[str, list[GraphEdge]] = {}
     for e in graph.edges:
-        source_frames_of.setdefault((e.source, e.target), []).append(e.sourceHandle)
+        edge_metadata.setdefault((e.source, e.target), []).append((e.sourceHandle, e.targetHandle))
+        incoming_edges_of.setdefault(e.target, []).append(e)
+    source_frames_of = {
+        pair: [source_handle for source_handle, _ in metadata_edges]
+        for pair, metadata_edges in edge_metadata.items()
+    }
+    edge_join_roles: dict[str, tuple[str, str]] = {}
+    for node in nodes:
+        if node.data.nodeType != NodeType.EDGE_JOIN:
+            continue
+        roles = edge_join_role_edges(node, edge_metadata)
+        edge_join_roles[node.id] = (roles.base.source_id, roles.join.source_id)
 
     # ---------- Verify row identity ----------
     # If the frontend sent the clicked row's values, verify that the
@@ -617,7 +625,7 @@ def execute_trace(
                 node_map=node_map,
                 diagnostics=correlation_diagnostics,
                 unresolved=unresolved_rows,
-                source_frames_of=source_frames_of,
+                edge_metadata=edge_metadata,
                 traced_column=column,
                 work=correlation_work,
             )
@@ -666,6 +674,7 @@ def execute_trace(
         source,
         preamble_ns=preamble_ns,
         source_frames_of=source_frames_of,
+        incoming_edges_of=incoming_edges_of,
     )
 
     # ---------- Column relevance: tag then prune irrelevant ancestors ----------
@@ -719,6 +728,7 @@ def execute_trace(
             final_output_value=output_value,
             parents_of=parents_of,
             node_map=node_map,
+            edge_join_roles=edge_join_roles,
             integer_output_node_ids=integer_output_node_ids,
             final_output_is_integer=_is_integer_output_column(
                 eager_outputs,

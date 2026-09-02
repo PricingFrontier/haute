@@ -415,8 +415,6 @@ def test_json_api_input_ports_resolve_when_their_consumer_is_an_edge_join() -> N
     join = _make_source_node(node_id="join_api", config={"path": "data/join.jsonl"})
     joined = _make_edge_join_node(
         config={
-            "baseInput": "base_api",
-            "joinInput": "join_api",
             "how": "left",
             "on": ["quote_id"],
             "coalesce": False,
@@ -430,12 +428,14 @@ def test_json_api_input_ports_resolve_when_their_consumer_is_an_edge_join() -> N
                 source=base.id,
                 target=joined.id,
                 sourceHandle="policies",
+                targetHandle="base",
             ),
             GraphEdge(
                 id="e2",
                 source=join.id,
                 target=joined.id,
                 sourceHandle="claims",
+                targetHandle="join",
             ),
         ],
     )
@@ -758,8 +758,6 @@ class TestEstimateSafeTrainingRows:
             node_id="joined",
             label="joined",
             config={
-                "baseInput": "base",
-                "joinInput": "join",
                 "how": "left",
                 "on": ["quote_id"],
                 "validate": "1:1",
@@ -804,8 +802,6 @@ class TestEstimateSafeTrainingRows:
         joined = _make_transform_node(
             node_id="joined",
             config={
-                "baseInput": "left",
-                "joinInput": "right",
                 "how": "left",
                 "on": ["id"],
                 "validate": "m:m",
@@ -910,8 +906,6 @@ class TestEstimateSafeTrainingRows:
             node_id="joined",
             label="joined",
             config={
-                "baseInput": "base",
-                "joinInput": "join",
                 "how": "left",
                 "on": ["quote_id"],
                 "validate": "1:1",
@@ -967,8 +961,6 @@ class TestEstimateSafeTrainingRows:
             node_id="joined",
             label="joined",
             config={
-                "baseInput": "base",
-                "joinInput": "join",
                 "how": "left",
                 "on": ["quote_id"],
                 "validate": "1:1",
@@ -1028,8 +1020,6 @@ class TestEstimateSafeTrainingRows:
             node_id="joined",
             label="joined",
             config={
-                "baseInput": "base",
-                "joinInput": "join",
                 "how": "left",
                 "on": ["quote_id"],
                 "validate": "1:1",
@@ -1089,8 +1079,6 @@ class TestEstimateSafeTrainingRows:
             node_id="joined",
             label="joined",
             config={
-                "baseInput": "base",
-                "joinInput": "join",
                 "how": "left",
                 "leftOn": ["id"],
                 "rightOn": ["jid"],
@@ -1150,8 +1138,6 @@ class TestEstimateSafeTrainingRows:
             node_id="joined",
             label="joined",
             config={
-                "baseInput": "base",
-                "joinInput": "join",
                 "how": "left",
                 "leftOn": ["id"],
                 "rightOn": ["jid"],
@@ -1210,8 +1196,6 @@ class TestEstimateSafeTrainingRows:
             node_id="joined",
             label="joined",
             config={
-                "baseInput": "base",
-                "joinInput": "join",
                 "how": "left",
                 "on": ["quote_id"],
                 "validate": "1:1",
@@ -1378,8 +1362,6 @@ class TestDetailedEdgeJoinColumnResolution:
         """Selected columns remain usable when edgeJoin role metadata is incomplete."""
         joined = _make_edge_join_node(
             config={
-                "baseInput": "base",
-                "joinInput": "join",
                 "how": "left",
                 "on": ["quote_id"],
                 "selected_columns": ["premium", "premium"],
@@ -1396,7 +1378,6 @@ class TestDetailedEdgeJoinColumnResolution:
                 joined,
                 graph,
                 "live",
-                {"joined": ("base",)},
             )
             is None
         )
@@ -1405,8 +1386,6 @@ class TestDetailedEdgeJoinColumnResolution:
         """RAM estimation only synthesizes schemas for inner and left joins."""
         joined = _make_edge_join_node(
             config={
-                "baseInput": "base",
-                "joinInput": "join",
                 "how": "right",
                 "on": ["quote_id"],
             },
@@ -1418,7 +1397,6 @@ class TestDetailedEdgeJoinColumnResolution:
                 joined,
                 graph,
                 "live",
-                {"joined": ("base", "join")},
             )
             is None
         )
@@ -1439,8 +1417,6 @@ class TestDetailedEdgeJoinColumnResolution:
         )
         joined = _make_edge_join_node(
             config={
-                "baseInput": "base",
-                "joinInput": "join",
                 "how": "left",
                 "on": ["quote_id"],
             },
@@ -1458,7 +1434,6 @@ class TestDetailedEdgeJoinColumnResolution:
                 joined,
                 graph,
                 "live",
-                {"joined": ("base", "join")},
             )
             is None
         )
@@ -1486,8 +1461,6 @@ class TestEdgeJoinKeyColumnsOnPath:
         base = _make_source_node(node_id="base", node_type="dataInput")
         joined = _make_edge_join_node(
             config={
-                "baseInput": "base",
-                "joinInput": "join",
                 "how": "left",
                 "leftOn": ["quote_id"],
                 "rightOn": ["external_quote_id"],
@@ -1522,8 +1495,6 @@ class TestEdgeJoinKeyColumnsOnPath:
         )
         joined = _make_edge_join_node(
             config={
-                "baseInput": "base",
-                "joinInput": "join",
                 "how": "left",
                 "leftOn": ["quote_id"],
                 "rightOn": ["external_quote_id"],
@@ -1761,6 +1732,14 @@ def test_row_cardinality_resolution_proves_closed_node_semantics(
         (NodeType.SCENARIO_EXPANDER, {}, 2, "invalid_input_cardinality"),
         (NodeType.RATING_STEP, {}, 2, "invalid_input_cardinality"),
         (NodeType.OPTIMISER, {"data_input": "absent"}, 1, "invalid_optimiser_input"),
+        (NodeType.OPTIMISER, {"data_input": 0}, 1, "invalid_optimiser_input"),
+        (NodeType.OPTIMISER, {}, 2, "invalid_optimiser_input"),
+        (
+            NodeType.OPTIMISER_APPLY,
+            {"optimiser_mode": "ratebook"},
+            1,
+            "invalid_optimiser_apply_input",
+        ),
         (NodeType.EXTERNAL_FILE, {}, 0, "external_object_row_cardinality_unknown"),
         (NodeType.DATA_OUTPUT, {}, 2, "invalid_input_cardinality"),
     ],
@@ -1774,6 +1753,31 @@ def test_row_cardinality_resolution_refuses_ambiguous_or_invalid_semantics(
 
     assert not result.available
     assert result.unavailable_reason == reason
+
+
+def test_ratebook_apply_cardinality_uses_exact_incoming_edge_name() -> None:
+    index = _cardinality_index_for_node(
+        NodeType.OPTIMISER_APPLY,
+        {"optimiser_mode": "ratebook", "ratebook_input": "banded_quotes"},
+        2,
+    )
+    index.node_map["parent-0"].data.label = "scored_quotes"
+    index.node_map["parent-1"].data.label = "banded_quotes"
+    index.cardinality_by_target[("parent-0", None)] = _ResolvedRowCardinality.proven(
+        11,
+        12,
+        ("source=parent-0",),
+    )
+    index.cardinality_by_target[("parent-1", None)] = _ResolvedRowCardinality.proven(
+        7,
+        8,
+        ("source=parent-1",),
+    )
+
+    result = _resolve_row_cardinality_from_index(index, "target", None)
+
+    assert result.available
+    assert result.output_rows == 7
 
 
 def test_cardinality_helpers_fail_closed_for_invalid_bindings_and_missing_nodes() -> None:
@@ -1943,7 +1947,7 @@ def test_cardinality_resolution_detects_cycles_and_invalid_join_or_score_inputs(
         _resolve_row_cardinality_from_index(score, "target", None).unavailable_reason
         == "input_cardinality_unavailable"
     )
-    optimiser = _cardinality_index_for_node(NodeType.OPTIMISER, {"data_input": "parent-0"})
+    optimiser = _cardinality_index_for_node(NodeType.OPTIMISER, {"data_input": "Unnamed"})
     resolved = _resolve_row_cardinality_from_index(optimiser, "target", None)
     assert resolved.available and resolved.output_rows == 4
 

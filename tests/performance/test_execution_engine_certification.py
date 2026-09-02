@@ -139,8 +139,6 @@ def test_extreme_many_to_many_join_skew_is_estimated_and_rejected_without_execut
             label="joined",
             nodeType=NodeType.EDGE_JOIN,
             config={
-                "baseInput": "left",
-                "joinInput": "right",
                 "how": "inner",
                 "on": ["id"],
                 "validate": "m:m",

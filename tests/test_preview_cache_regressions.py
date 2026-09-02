@@ -188,6 +188,7 @@ def _ratebook_apply_preview(tmp_path: Path) -> dict[str, object]:
 
     graph = _make_graph(data_path, artifact_path)
     graph.nodes[1].data.config["optimised_value_column"] = "optimised_premium"
+    graph.nodes[1].data.config["ratebook_input"] = "source"
 
     result = execute_graph(
         graph,

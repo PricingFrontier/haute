@@ -308,19 +308,27 @@ def _abort_if_vite_port_in_use() -> None:
 def _detect_dev_frontend_dir() -> Path | None:
     """Return the ``frontend/`` dir iff dev mode is viable, else ``None``.
 
-    Dev mode requires both a discoverable ``frontend/`` directory and
-    its ``node_modules`` to be installed. When ``_find_frontend_dir``
-    raises (e.g. running from a wheel install with no checkout), we
-    swallow the ``FileNotFoundError`` and signal "fall through to prod
-    mode" by returning ``None``.
+    Prefer a frontend discovered from the working directory, then fall back
+    to the frontend beside an editable Haute source checkout.  The latter is
+    what lets ``haute serve`` run from a separate user project while still
+    serving the local library's current TypeScript rather than a potentially
+    older generated bundle.  Either frontend must have ``node_modules``
+    installed; wheel installs have no source checkout and use packaged assets.
     """
     try:
         frontend_dir = _find_frontend_dir()
     except FileNotFoundError:
+        frontend_dir = None
+    if frontend_dir is not None and (frontend_dir / "node_modules").is_dir():
+        return frontend_dir
+
+    source_root = _source_checkout_root()
+    if source_root is None:
         return None
-    if not (frontend_dir / "node_modules").exists():
+    source_frontend = source_root / "frontend"
+    if not (source_frontend / "node_modules").is_dir():
         return None
-    return frontend_dir
+    return source_frontend
 
 
 def _schedule_browser_open(url: str, delay: float) -> None:

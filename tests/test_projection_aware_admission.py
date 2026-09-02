@@ -319,8 +319,6 @@ def _joined_group_by_graph(tmp_path, *, validate: str = "m:m"):
                         "label": "joined",
                         "nodeType": "edgeJoin",
                         "config": {
-                            "baseInput": "left",
-                            "joinInput": "right",
                             "how": "inner",
                             "on": ["id"],
                             "validate": validate,

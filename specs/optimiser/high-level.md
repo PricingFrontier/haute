@@ -115,6 +115,18 @@ rather than silently rendering a plausible-looking but wrong explanation.
 
 Invariants:
 
+- `data_input`, `banding_source`, and Optimiser Apply's `ratebook_input` name one connected
+  incoming edge by its exact executable input name. Runtime resolution matches that name to the
+  edge and then selects the edge's source frame; it never treats the value as a graph node id or
+  falls back through the retired representation. The removed `scored_input` and `factors_input`
+  fields are rejected at parse, save, execution, and code-generation boundaries rather than
+  being migrated, ignored, or dropped from a sidecar. Distinct frames from one API Input therefore
+  remain independently selectable. If a ratebook Optimiser selects its data and banding frames
+  from two physical edges of the same multi-frame source, projection preserves those edges at
+  full width rather than conflating their different column demands by source node id. A ratebook
+  Optimiser Apply requires `ratebook_input` even
+  when only one edge is connected; an empty selector never means "first edge". Online apply
+  remains a single-primary-input operation and does not interpret `ratebook_input`.
 - A completed solve is never persisted as an artifact if it contains a NaN or Infinity value
   anywhere in the payload, or (for ratebook) if it is missing its factor tables or the ordered
   `factor_dtypes` descriptor for any table — an artifact is what production pricing reads from.

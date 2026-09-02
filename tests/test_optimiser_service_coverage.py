@@ -18,7 +18,7 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
-from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.routes._optimiser_service import (
     _APPLY_ARTIFACT_DIR_PREFIX,
     _APPLY_RESULT_FILENAME,
@@ -250,9 +250,20 @@ def test_orphan_cleanup_silent_on_success() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _optimiser_graph(config: dict[str, Any]) -> PipelineGraph:
+def _optimiser_graph(
+    config: dict[str, Any],
+    *,
+    parent_ids: tuple[str, ...] = (),
+) -> PipelineGraph:
     return PipelineGraph(
         nodes=[
+            *[
+                GraphNode(
+                    id=parent_id,
+                    data=NodeData(label=parent_id, nodeType=NodeType.DATA_INPUT),
+                )
+                for parent_id in parent_ids
+            ],
             GraphNode(
                 id="opt_1",
                 data=NodeData(
@@ -262,7 +273,10 @@ def _optimiser_graph(config: dict[str, Any]) -> PipelineGraph:
                 ),
             ),
         ],
-        edges=[],
+        edges=[
+            GraphEdge(id=f"e_{parent_id}_opt_1", source=parent_id, target="opt_1")
+            for parent_id in parent_ids
+        ],
     )
 
 
@@ -272,7 +286,10 @@ def test_side_input_ids_empty_for_online_mode() -> None:
 
 
 def test_side_input_ids_returns_banding_source_for_ratebook() -> None:
-    graph = _optimiser_graph({"mode": "ratebook", "banding_source": "band_1"})
+    graph = _optimiser_graph(
+        {"mode": "ratebook", "banding_source": "band_1"},
+        parent_ids=("band_1",),
+    )
     assert _optimiser_side_input_ids(graph, "opt_1") == frozenset({"band_1"})
 
 

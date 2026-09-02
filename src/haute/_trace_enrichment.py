@@ -41,7 +41,7 @@ from haute._expression_parser import (
     parse_expression,
     parse_expression_chain,
 )
-from haute._graph_utils import _sanitize_func_name
+from haute._graph_utils import edge_input_name, select_edge_source_output
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._rating import (
@@ -54,7 +54,7 @@ from haute._rating import (
 from haute._rating_step_config import normalise_rating_tables
 
 if TYPE_CHECKING:
-    from haute._types import GraphNode
+    from haute._types import GraphEdge, GraphNode
     from haute.trace import TraceStep
 
 logger = get_logger(component="trace_enrichment")
@@ -827,7 +827,6 @@ def enrich_optimiser_apply(
     | tuple[pl.DataFrame | pl.LazyFrame, ...]
     | None = None,
     source_names: list[str] | None = None,
-    source_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Enrich an optimiserApply node trace."""
     from haute._optimiser_apply_explainability import explain_optimiser_apply_from_config
@@ -838,7 +837,6 @@ def enrich_optimiser_apply(
         output_row,
         input_frames=input_frames or [],
         source_names=source_names,
-        source_ids=source_ids,
     )
 
 
@@ -1397,6 +1395,28 @@ def _resolve_factor_input_dtypes(
     return resolved
 
 
+def _resolve_optimiser_apply_inputs(
+    node_id: str,
+    eager_outputs: Mapping[str, Any],
+    node_map: Mapping[str, GraphNode],
+    incoming_edges_of: Mapping[str, Sequence[GraphEdge]] | None,
+) -> tuple[list[pl.DataFrame | pl.LazyFrame], list[str]]:
+    """Return runtime-aligned frames and exact names for optimiser apply tracing."""
+    input_frames: list[pl.DataFrame | pl.LazyFrame] = []
+    source_names: list[str] = []
+    for edge in (incoming_edges_of or {}).get(node_id, ()):
+        source_node = node_map.get(edge.source)
+        source_output = eager_outputs.get(edge.source)
+        if source_node is None or source_output is None:
+            continue
+        frame = select_edge_source_output(source_output, edge)
+        if not isinstance(frame, (pl.DataFrame, pl.LazyFrame)):
+            continue
+        input_frames.append(frame)
+        source_names.append(edge_input_name(edge, source_node))
+    return input_frames, source_names
+
+
 def enrich_steps(
     steps: list[TraceStep],
     node_map: dict[str, Any],
@@ -1406,6 +1426,7 @@ def enrich_steps(
     source: str,
     preamble_ns: dict[str, Any] | None = None,
     source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None = None,
+    incoming_edges_of: Mapping[str, Sequence[GraphEdge]] | None = None,
 ) -> None:
     """Enrich trace steps in-place with expression/calculation/detail data.
 
@@ -1419,6 +1440,11 @@ def enrich_steps(
     ``sourceHandle`` of every edge between them — the per-edge frame
     selection for multi-frame sources, used to scope parent-frame
     lookups to the frame(s) a node actually consumes.
+
+    *incoming_edges_of* preserves the physical incoming edges in execution
+    order. Optimiser Apply uses it to keep materialised frames aligned with
+    their exact executable input names, including multiple frames emitted by
+    one API Input node.
     """
     completed_memo: dict[_EnrichmentMemoKey, dict[str, Any]] = {}
     frame_identity = _enrichment_frame_identity(eager_outputs)
@@ -1807,24 +1833,18 @@ def enrich_steps(
                 elif node_type == "liveSwitch":
                     detail = enrich_live_switch(cfg, source)
                 elif node_type == "optimiserApply":
-                    parent_ids = parents_of.get(step.node_id, [])
-                    input_frames: list[pl.DataFrame | pl.LazyFrame] = [
-                        eager_outputs[pid]
-                        for pid in parent_ids
-                        if isinstance(eager_outputs.get(pid), pl.DataFrame)
-                    ]
-                    source_names = [
-                        _sanitize_func_name(node_map[pid].data.label)
-                        for pid in parent_ids
-                        if pid in node_map
-                    ]
+                    input_frames, source_names = _resolve_optimiser_apply_inputs(
+                        step.node_id,
+                        eager_outputs,
+                        node_map,
+                        incoming_edges_of,
+                    )
                     detail = enrich_optimiser_apply(
                         cfg,
                         step.input_values,
                         step.output_values,
                         input_frames=input_frames,
                         source_names=source_names,
-                        source_ids=[pid for pid in parent_ids if pid in node_map],
                     )
                 if detail is not None:
                     step.node_detail = detail

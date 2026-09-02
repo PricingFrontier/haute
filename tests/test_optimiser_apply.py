@@ -17,7 +17,7 @@ from haute._builders import _apply_online, _apply_ratebook, _build_node_fn
 from haute._config_builder import _build_node_config
 from haute._types import GraphNode, NodeData, NodeType
 from haute.codegen import _generate_node_code, _node_to_code
-from haute.errors import RatingFactorDtypeContractError
+from haute.errors import ConfigError, RatingFactorDtypeContractError
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -168,12 +168,12 @@ class TestBuildConfig:
                 "optimiser_apply": True,
                 "source_type": "file",
                 "artifact_path": "artifacts/ratebook.json",
-                "ratebook_input": "banding-node",
+                "ratebook_input": "banded_quotes",
             },
             body="",
             param_names=["scored_quotes", "banded_quotes"],
         )
-        assert config["ratebook_input"] == "banding-node"
+        assert config["ratebook_input"] == "banded_quotes"
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +193,8 @@ class TestCodegen:
         # Body applies the artifact via the shared helper (not a no-op
         # passthrough) so a standalone pipeline.run() actually optimises.
         assert "apply_optimiser_apply_from_config(" in code
-        assert "source_ids=['score_models']" in code
+        assert "source_names=['score_models']" in code
+        assert "source_ids=" not in code
 
     def test_codegen_empty_config(self):
         node = _make_node({}, label="apply_opt")
@@ -244,11 +245,11 @@ class TestCodegen:
             {
                 "sourceType": "file",
                 "artifact_path": "a.json",
-                "ratebook_input": "banding-node",
+                "ratebook_input": "banded_quotes",
             },
         )
         code = _generate_node_code(node, source_names=["scored_quotes", "banded_quotes"])
-        assert "ratebook_input='banding-node'" in code
+        assert "ratebook_input='banded_quotes'" in code
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +367,17 @@ class TestExecutorOnline:
 
 
 class TestExecutorRatebook:
+    def test_ratebook_apply_rejects_missing_input_selector_even_with_one_frame(
+        self,
+        write_artifact,
+    ):
+        path = write_artifact(_make_ratebook_artifact())
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["base"])
+
+        with pytest.raises(ConfigError, match="ratebook_input.*required"):
+            fn(pl.DataFrame({"region": ["London"]}).lazy()).collect()
+
     def test_ratebook_apply_basic(self, write_artifact):
         path = write_artifact(_make_ratebook_artifact())
         df = pl.DataFrame(
@@ -375,7 +387,7 @@ class TestExecutorRatebook:
                 "price": [100.0, 200.0, 150.0],
             }
         )
-        node = _make_node({"sourceType": "file", "artifact_path": path})
+        node = _make_node({"sourceType": "file", "artifact_path": path, "ratebook_input": "base"})
         _, fn, _ = _build_node_fn(node, source_names=["base"])
         result = fn(df.lazy()).collect()
         assert "region_optimised_factor" in result.columns
@@ -409,7 +421,7 @@ class TestExecutorRatebook:
                 "price": [100.0, 200.0],
             }
         )
-        node = _make_node({"sourceType": "file", "artifact_path": path})
+        node = _make_node({"sourceType": "file", "artifact_path": path, "ratebook_input": "base"})
         _, fn, _ = _build_node_fn(node, source_names=["base"])
         result = fn(df.lazy()).collect()
         assert "region_optimised_factor" in result.columns
@@ -433,6 +445,7 @@ class TestExecutorRatebook:
             {
                 "sourceType": "file",
                 "artifact_path": path,
+                "ratebook_input": "base",
                 "optimised_value_column": "selected_price_factor",
             }
         )
@@ -455,7 +468,7 @@ class TestExecutorRatebook:
                 "price": [100.0],
             }
         )
-        node = _make_node({"sourceType": "file", "artifact_path": path})
+        node = _make_node({"sourceType": "file", "artifact_path": path, "ratebook_input": "base"})
         _, fn, _ = _build_node_fn(node, source_names=["base"])
         with structlog.testing.capture_logs() as logs:
             result = fn(df.lazy()).collect()
@@ -480,7 +493,7 @@ class TestExecutorRatebook:
                 "price": [100.0, 200.0],
             }
         )
-        node = _make_node({"sourceType": "file", "artifact_path": path})
+        node = _make_node({"sourceType": "file", "artifact_path": path, "ratebook_input": "base"})
         _, fn, _ = _build_node_fn(node, source_names=["base"])
         with structlog.testing.capture_logs() as logs:
             result = fn(df.lazy()).collect()
@@ -500,7 +513,7 @@ class TestExecutorRatebook:
                 "price": [100.0, 200.0],
             }
         )
-        node = _make_node({"sourceType": "file", "artifact_path": path})
+        node = _make_node({"sourceType": "file", "artifact_path": path, "ratebook_input": "base"})
         _, fn, _ = _build_node_fn(node, source_names=["base"])
         with structlog.testing.capture_logs() as logs:
             result = fn(df.lazy()).collect()
@@ -530,7 +543,7 @@ class TestExecutorRatebook:
                 "price": [100.0],
             }
         )
-        node = _make_node({"sourceType": "file", "artifact_path": path})
+        node = _make_node({"sourceType": "file", "artifact_path": path, "ratebook_input": "base"})
         _, fn, _ = _build_node_fn(node, source_names=["base"])
         with structlog.testing.capture_logs() as logs:
             result = fn(df.lazy()).collect()
@@ -545,7 +558,7 @@ class TestExecutorRatebook:
         artifact["factor_tables"] = {}
         path = write_artifact(artifact)
         df = pl.DataFrame({"x": [1, 2]})
-        node = _make_node({"sourceType": "file", "artifact_path": path})
+        node = _make_node({"sourceType": "file", "artifact_path": path, "ratebook_input": "base"})
         _, fn, _ = _build_node_fn(node, source_names=["base"])
         result = fn(df.lazy()).collect()
         # Should pass through with version column added
@@ -572,7 +585,7 @@ class TestExecutorRatebook:
             {
                 "sourceType": "file",
                 "artifact_path": path,
-                "ratebook_input": "banding-node",
+                "ratebook_input": "banded_quotes",
             }
         )
         _, fn, _ = _build_node_fn(
@@ -584,6 +597,48 @@ class TestExecutorRatebook:
 
         assert result["region"].to_list() == ["Manchester", "London"]
         assert result["region_optimised_factor"].to_list() == pytest.approx([0.98, 1.05])
+
+    def test_ratebook_apply_selects_exact_frame_name_not_shared_source_id(self, write_artifact):
+        path = write_artifact(_make_ratebook_artifact())
+        node = _make_node(
+            {
+                "sourceType": "file",
+                "artifact_path": path,
+                "ratebook_input": "banded_quotes",
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            source_names=["scored_quotes", "banded_quotes"],
+            source_ids=["api_request", "api_request"],
+        )
+        scored = pl.DataFrame({"region": ["London"]}).lazy()
+        banded = pl.DataFrame({"region": ["Manchester"]}).lazy()
+
+        result = fn(scored, banded).collect()
+
+        assert result["region"].to_list() == ["Manchester"]
+
+    def test_ratebook_apply_rejects_node_id_selector_when_names_are_connected(self, write_artifact):
+        path = write_artifact(_make_ratebook_artifact())
+        node = _make_node(
+            {
+                "sourceType": "file",
+                "artifact_path": path,
+                "ratebook_input": "api_request",
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            source_names=["scored_quotes", "banded_quotes"],
+            source_ids=["api_request", "api_request"],
+        )
+
+        with pytest.raises(ConfigError, match="api_request"):
+            fn(
+                pl.DataFrame({"region": ["London"]}).lazy(),
+                pl.DataFrame({"region": ["Manchester"]}).lazy(),
+            ).collect()
 
     def test_ratebook_apply_rejects_stale_configured_input(self, write_artifact):
         path = write_artifact(_make_ratebook_artifact())
@@ -600,13 +655,13 @@ class TestExecutorRatebook:
             source_ids=["scored-node", "banding-node"],
         )
 
-        with pytest.raises(ValueError, match="deleted-banding-node"):
+        with pytest.raises(ConfigError, match="deleted-banding-node"):
             fn(
                 pl.DataFrame({"region": ["London"]}).lazy(),
                 pl.DataFrame({"region": ["Manchester"]}).lazy(),
             ).collect()
 
-    def test_ratebook_apply_requires_source_ids_for_configured_input(self, write_artifact):
+    def test_ratebook_apply_does_not_require_source_ids_for_configured_input(self, write_artifact):
         path = write_artifact(_make_ratebook_artifact())
         node = _make_node(
             {
@@ -620,11 +675,12 @@ class TestExecutorRatebook:
             source_names=["scored_quotes", "banded_quotes"],
         )
 
-        with pytest.raises(ValueError, match="source_ids"):
-            fn(
-                pl.DataFrame({"region": ["London"]}).lazy(),
-                pl.DataFrame({"region": ["Manchester"]}).lazy(),
-            ).collect()
+        result = fn(
+            pl.DataFrame({"region": ["London"]}).lazy(),
+            pl.DataFrame({"region": ["Manchester"]}).lazy(),
+        ).collect()
+
+        assert result["region"].to_list() == ["Manchester"]
 
     def test_online_apply_ignores_ratebook_input_and_uses_first_dataframe(self, write_artifact):
         path = write_artifact(_make_online_artifact(lambdas={"predicted_volume": 0.0}))
@@ -717,7 +773,7 @@ class TestExecutorRatebookComposite:
                 "price": [100.0, 200.0, 300.0],
             }
         )
-        node = _make_node({"sourceType": "file", "artifact_path": path})
+        node = _make_node({"sourceType": "file", "artifact_path": path, "ratebook_input": "base"})
         _, fn, _ = _build_node_fn(node, source_names=["base"])
         result = fn(df.lazy()).collect()
         assert result["channel:age_band_optimised_factor"].to_list() == pytest.approx(
@@ -775,7 +831,7 @@ class TestExecutorRatebookComposite:
                 "price": [100.0],
             }
         )
-        node = _make_node({"sourceType": "file", "artifact_path": path})
+        node = _make_node({"sourceType": "file", "artifact_path": path, "ratebook_input": "base"})
         _, fn, _ = _build_node_fn(node, source_names=["base"])
         result = fn(df.lazy()).collect()
         assert result["channel:age_band_optimised_factor"][0] == pytest.approx(1.05)

@@ -16,7 +16,7 @@
 import type { Node } from "@xyflow/react"
 
 /** Config keys that store node ID references. */
-const NODE_REF_FIELDS = ["data_input", "banding_source", "instanceOf"] as const
+const NODE_REF_FIELDS = ["instanceOf"] as const
 
 export interface ConfigRefWarning {
   nodeId: string

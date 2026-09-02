@@ -149,11 +149,12 @@ can still leave OS-temporary files behind.
    by the setup worker and published as the solve job's `memory_limited` terminal status, not
    returned as a synchronous HTTP 507 from the already-completed `/solve` submission.
 2. Runs the pipeline up to the optimiser node via `_execute_pipeline` — see below.
-3. Resolves the actual scored-data lazy frame via `_resolve_data_input_frame`.
+3. Resolves the configured exact `data_input` name to one incoming edge and selects that edge's
+   source frame via `_resolve_data_input_frame`; node-id matching is not accepted.
 4. Validates schema and value contracts and projects/casts to solver dtypes via
    `_validate_and_project`.
-5. For ratebook mode only, extracts and persists the banding-source factor columns to a parquet
-   artifact (`_extract_factors`).
+5. For ratebook mode only, resolves `banding_source` through the same exact edge-name contract,
+   then extracts and persists that edge's factor frame to a parquet artifact (`_extract_factors`).
 6. Explicitly drops the lazy-output references and runs `gc.collect()` before building the grid,
    to release memory ahead of the (often large) grid-build step.
 7. Sinks the scored data to a temp parquet and builds the solver's `QuoteGrid` via
@@ -425,7 +426,7 @@ the neutral-miss path.
 ### Trace explainability (`src/haute/_optimiser_apply_explainability.py`)
 
 `explain_optimiser_apply_from_config(config, input_row, output_row, *, input_frames,
-source_names, source_ids)` is the sole public entry point:
+source_names)` is the sole public entry point:
 
 1. Loads the artifact the `OPTIMISER_APPLY` node was configured with (`_load_artifact_from_config`
    — file or MLflow, delegating to `_optimiser_io.py`), reading `mode` from it (defaulting to
@@ -433,8 +434,15 @@ source_names, source_ids)` is the sole public entry point:
    misconfiguration).
 2. Selects the correct parent lazy frame from `input_frames` (`_select_optimiser_apply_input`,
    shared with the runtime executor in `haute._builders`, so the trace path resolves the same
-   input the real apply ran against).
+   input the real apply ran against). A ratebook artifact requires a non-empty
+   `ratebook_input` matching exactly one executable `source_names` entry; missing, stale, and
+   ambiguous values fail. There is no first-connected-input default. Online artifacts use their
+   primary frame and ignore `ratebook_input`.
 3. Dispatches to `_explain_online` or `_explain_ratebook`.
+
+RAM cardinality estimation follows the same selector identity when `optimiser_mode` is known to
+be `ratebook`: `ratebook_input` must be present and match one exact executable incoming-edge name.
+It never estimates a missing or stale selector by choosing the first connected frame.
 
 `_explain_online` builds the online apply input frame
 (`_prepare_online_apply_frame`), constructs a `price_contour.ApplyOptimiser` with the artifact's

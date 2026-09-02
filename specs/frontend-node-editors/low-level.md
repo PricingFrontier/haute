@@ -65,7 +65,9 @@
   key persisted contracts use (the live-switch `input_scenario_map`, the instance
   `inputMapping`) — derived per edge by `edgeInputName` (an API-input edge's frame label
   verbatim; a submodel `out__` edge's child sanitised label; else the sanitised source-node
-  label). `sourceLabel` is the raw source-node label used in tooltips and removal titles;
+  label). `sourceLabel` is provenance metadata used only to explain an unresolved source;
+  resolved tooltips, removal titles, and selectors identify the edge by `name`, never by the
+  source-node label or id;
   `edgeId` is the stable chip key and removal target; `frameUnresolved` marks an API-input edge
   whose frame could not be resolved, rendering the chip in its warning state. `name` is
   required, so every fixture constructing an `InputSource` fails to compile until it declares
@@ -129,9 +131,12 @@
    fetched for each later editor mount, while consumers mounting during one pending fetch share
    that request. Request state is local to the editor; the editor never assumes an out-of-order response still describes a
    changed node unless its own effect/request guards accept it.
-6. `EdgeJoinEditor` derives its two role displays from canonical `base`/`join` incoming handles
-   and the matching `baseInput`/`joinInput` config. The swap callback is owned by the graph canvas
-   because handles and config must move in one graph transaction. Selecting `cross` clears
+6. `EdgeJoinEditor` derives its two role displays exclusively from canonical `base`/`join`
+   incoming handles. Role text and its truncation tooltip are
+   resolved with the shared `edgeInputName` helper, including API-input frame handles and submodel
+   output identities, so internal source-node ids never replace the edge's executable name. The
+   swap callback is owned by the graph canvas so both handles move in one graph transaction.
+   Selecting `cross` clears
    `on`/`leftOn`/`rightOn`; selecting another mode exposes either same-name rows (`on`) or paired
    rows (`leftOn`/`rightOn`) and each key-mode switch clears the inactive representation. The
    join type list is exactly `inner`, `left`, `right`, `full`, `semi`, `anti`, `cross`.
@@ -536,7 +541,9 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   occurs. Name-referencing config can never half-apply or overwrite an existing key.
 - An ordinary source-label rename derives the old and new `edgeInputName` for every outgoing
   edge and uses the same duplicate preflight and atomic mapping migration as an API-frame rename.
-  Sanitisation-only no-ops do not rewrite mappings.
+  Sanitisation-only no-ops do not rewrite mappings. The same transaction rewrites scalar
+  exact-input selectors on downstream Optimiser (`data_input`, `banding_source`) and Optimiser
+  Apply (`ratebook_input`) nodes when their selected edge is renamed.
 - `edgeInputName` resolves an editor-only edge sourced by a drilled submodel's composite Input by
   matching the edge's opaque `sourceHandle` to the existing `SubmodelBoundaryPort.id`, then
   sanitising that port's `label`. A missing handle, non-Input boundary, or unknown row is an
@@ -560,11 +567,17 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   source label otherwise — so display and persisted identity cannot diverge. An unresolvable
   API-input edge renders the block header in the explicit unresolved state (parent label
   retained as identifying text plus a visible warning marker), never a normal-looking fallback.
-- Edge Join roles are never editable ids: they come from role-bound edges and can only be
-  exchanged by the atomic swap action. Cross joins persist no keys. Non-cross joins use either
+- Edge Join roles are never config values: they come exclusively from the incoming edges'
+  `targetHandle="base"` / `targetHandle="join"` values and can only be exchanged by the atomic
+  swap action. Creating, connecting, swapping, splitting, or deleting role edges does not write
+  a second role representation into node config. Two distinct frame edges from one API Input are
+  valid when their exact input names differ. Cross joins persist no keys. Non-cross joins use either
   a non-empty normalised `on` list or equal-length non-empty `leftOn`/`rightOn` lists; both forms
   cannot coexist. The UI lists all and only the backend-supported modes: `inner`, `left`,
-  `right`, `full`, `semi`, `anti`, and `cross`.
+  `right`, `full`, `semi`, `anti`, and `cross`. Its diagnostic panel uses danger tokens because
+  every listed issue blocks a valid save. Each visible blank or known-missing join-key selection is
+  marked with `aria-invalid` and a danger border, including the active mode's required empty
+  control or controls when a non-cross join has no keys.
 
 (The former NOTE here — two frames of one API input sharing one sanitised `varName`, leaving
 `input_scenario_map` unable to distinguish them — is resolved by the input-identity
@@ -602,8 +615,8 @@ case mounts the real `ExplorePivotsConfig` consumer and proves that a cold cache
 renders the report's post-code fields as field-palette actions without waiting for preview rows.
 `frontend/src/__tests__/editors/EdgeJoinEditor.test.tsx` pins fixed role displays and swap
 availability, all seven join options, same-name/asymmetric mode transitions, automatic key
-clearing for `cross`, advanced Polars options, and visible diagnostics for conflicting role/key
-state.
+clearing for `cross`, advanced Polars options, and visible diagnostics for invalid role-edge/key
+state, including danger styling and field-level invalid-key borders.
 
 The input-identity work is pinned by `frontend/src/panels/__tests__/NodePanel.test.tsx`
 (`name` derivation for API-frame edges — sole frame included — ordinary sources, and submodel
@@ -626,6 +639,12 @@ derivation. Because `InputSource.name` replaces the former `varName`/`displayLab
 every suite constructing `InputSource` fixtures (Transform, RatingStep, LiveSwitch,
 ScenarioExpander, ModelScore, OptimiserApply, Banding, ExternalFile, ExploreCode, and the
 hover suite) migrates its fixtures — a compile-time-loud migration, not a runtime fallback.
+
+Optimiser and Optimiser Apply selector tests additionally pin that option text and persisted
+values are the exact per-edge names, including two frames from one API Input; source node ids and
+labels never appear as selector identities. A selected input rename is migrated atomically, while
+an unmatched stale value is visibly invalid and is never translated through the old node-id
+representation.
 
 Browser coverage for authoring flows is in `frontend/e2e/data-io-nodes.spec.ts`,
 `frontend/e2e/persistence/api-input-render-gate.spec.ts`,

@@ -26,8 +26,6 @@ def regions() -> pl.LazyFrame:
 
 
 @pipeline.edge_join(
-    base_input="quotes",
-    join_input="regions",
     how="left",
     left_on=["region"],
     right_on=["region"],

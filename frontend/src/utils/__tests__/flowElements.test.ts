@@ -15,7 +15,7 @@ describe("flowElements", () => {
       id: "edgeJoin_7",
       type: NODE_TYPES.EDGE_JOIN,
       position: { x: 12, y: 34 },
-      config: { baseInput: "base", joinInput: "lookup" },
+      config: {},
     })
 
     expect(node).toMatchObject({
@@ -30,8 +30,6 @@ describe("flowElements", () => {
         config: {
           how: "left",
           suffix: "_right",
-          baseInput: "base",
-          joinInput: "lookup",
         },
       },
     })

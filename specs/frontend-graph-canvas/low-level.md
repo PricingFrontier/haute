@@ -46,7 +46,7 @@
 | `frontend/src/utils/makePreviewData.ts` | `makePreviewData` — `PreviewData` constructor with defaults. |
 | `frontend/src/utils/columnFingerprint.ts` | `columnFingerprint`/`columnsEqualByFingerprint` — collision-safe column-schema fingerprinting. |
 | `frontend/src/utils/activePreview.ts` | `previewForActiveNode` — filters preview data to the currently active node. |
-| `frontend/src/utils/validateConfigRefs.ts` | `validateConfigRefs`/`formatConfigRefWarnings` — flags `data_input`/`banding_source`/`instanceOf` config fields pointing at non-existent node ids (graph-level or submodel-internal). |
+| `frontend/src/utils/validateConfigRefs.ts` | `validateConfigRefs`/`formatConfigRefWarnings` — flags `instanceOf` fields pointing at non-existent node ids; edge-name selectors are validated against their target's exact incoming-edge identities instead. |
 | `frontend/src/utils/layout.ts` | `getLayoutedElements` plus `nodeIdsNeedingLayout`/`mergeLayoutedNodePositions` for partial imported-graph layout; finite positions including the origin are authoritative. Also owns `clusterSnap`/`alignPositions` coordinate snapping. |
 | `frontend/src/utils/connectionValidation.ts` | `isPipelineConnectionValid` — the graph-level `isValidConnection` React Flow validator, including ordinary executable input-name uniqueness, strict public-port validation and one-binding-per-input enforcement, and null-API-handle rejection in every gesture direction. |
 | `frontend/src/utils/flowElements.ts` | `appNode`/`appEdge`/`nodeLabel`/`edgeId`/`deselectNodes`/`selectOnlyNode` — node/edge factories and id/selection helpers. |
@@ -430,8 +430,17 @@ newer overlapping transform.
     ids follow the visual top-to-bottom order, and the name
     span keeps its `api-input-body-label-<label>` test id. Edge-join nodes
     short-circuit to an entirely separate marker/pill render before the
-    ordinary card renders at all; their status and warning dots sit inside the
-    visible marker ellipse rather than outside its right edge.
+    ordinary card renders at all. The canvas status projection promotes a
+    backend `ok` result to the client-only `warning` state for the requested
+    node whenever its completed run displays an execution warning, and for any
+    node explicitly implicated by that diagnostic (for example an unprojected-
+    streaming boundary or memory-pressure event). `PipelineNode` likewise treats
+    an `ok` result carrying schema warnings as warning-complete. Both paths use
+    one yellow completion dot rather than a green success dot plus a duplicate
+    warning dot. A schema warning without a completed status remains a
+    standalone yellow dot, and running/error retain their existing precedence.
+    Edge-join status and standalone warning dots sit inside the visible marker
+    ellipse rather than outside its right edge.
 12. **Node delete (`useNodeHandlers.handleDeleteNode`).** Calls
     `setNodesAndEdges` once (node filter + edge filter closed over the same
     call, one undo entry), nulls `selectedNode`/`previewData` if they
@@ -462,12 +471,11 @@ newer overlapping transform.
     re-runs `validateEdgeJoinInsertionCandidate` through
     `insertEdgeJoinNode` before committing the rewrite. `commitConnection`
     special-cases an edge-join *target*: it resolves the canonical
-    base/join role for the target handle, rejects a second input to an
-    already-filled role or a third input overall, stores the source node id
-    into the edge-join's `config` under that role's key, and pushes one
-    snapshot before applying nodes/edges via the raw setters (so the
-    role-config write and the new edge land in the same undo entry as the
-    edge itself). Before an ordinary edge or an edge-join role edge enters
+    base/join role for the target handle, and rejects a second input to an
+    already-filled role or a third input overall. The role-bearing edge is the
+    sole authority; no source node id is copied into node config. It pushes one
+    snapshot before applying the edge via the raw setters. Before an ordinary
+    edge or an edge-join role edge enters
     live state or history, `attachEditorEdgeIdentities` derives its exact
     `_inputName` from the source node's server-owned default/handle metadata.
     Missing or malformed source identity produces a visible error and leaves
@@ -1001,8 +1009,9 @@ again through the editor and save paths.
     and sink-only types; edge-join marker geometry including join-handle
     top/bottom/both flipping as the join source moves across the marker;
     diff ring and moved-outline rendering; instance/LIVE/API badges;
-    status dot (ok/error/running-pulse) and warning-dot behaviour
-    (including error-suppresses-warning); trace dim/hover-dim/motion-disabled
+    status dot (clean-ok/warning/error/running-pulse) and standalone
+    schema-warning-dot behaviour (including warning-complete deduplication and
+    error-suppresses-warning); trace dim/hover-dim/motion-disabled
     states; aria-label composition (type, label, status, instance, trace);
     the api-input frame-row body (instance-name suppression with ≥1
     visible frame, the single-frame name row, the zero-frame name +
@@ -1337,7 +1346,7 @@ again through the editor and save paths.
   Playwright geometry evidence for the frame-row body: for one, two,
   three, and eight emitted frames, each frame row's bounding-box vertical
   centre coincides with its output handle's centre within ≤3 CSS px —
-  asserted plain, with status and warning dots present, with a
+  asserted plain, with a warning-complete dot present, with a
   trace-active value pill, and with a ≥40-character truncating label in
   the row set; edges carry
   the correct labelled `sourceHandle` after render, save/reload, and an

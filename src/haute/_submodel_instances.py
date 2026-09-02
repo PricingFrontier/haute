@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
-from haute._graph_utils import _edge_id, canonical_downstream_identity
+from haute._graph_utils import (
+    _edge_id,
+    _sanitize_func_name,
+    canonical_downstream_identity,
+    edge_input_name,
+)
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -21,16 +26,8 @@ from haute._types import (
 from haute.errors import ParseError
 
 _GLOBAL_NODE_REFERENCE_FIELDS: frozenset[str] = frozenset({"instanceOf"})
-_NODE_REFERENCE_FIELDS: dict[NodeType, frozenset[str]] = {
-    NodeType.EDGE_JOIN: frozenset({"baseInput", "joinInput"}),
-    NodeType.OPTIMISER: frozenset(
-        {
-            "scored_input",
-            "factors_input",
-            "data_input",
-            "banding_source",
-        }
-    ),
+_INPUT_SELECTOR_FIELDS: dict[NodeType, frozenset[str]] = {
+    NodeType.OPTIMISER: frozenset({"data_input", "banding_source"}),
     NodeType.OPTIMISER_APPLY: frozenset({"ratebook_input"}),
 }
 
@@ -293,11 +290,33 @@ def _output_port(
     )
 
 
-def _node_reference_fields(node_type: NodeType) -> frozenset[str]:
-    return _GLOBAL_NODE_REFERENCE_FIELDS | _NODE_REFERENCE_FIELDS.get(
-        node_type,
-        frozenset(),
-    )
+def rewrite_input_selectors(
+    nodes: list[GraphNode],
+    rename_map_by_node: dict[str, dict[str, str]],
+) -> list[GraphNode]:
+    """Rewrite exact incoming-edge selectors after a graph boundary rename."""
+    rewritten: list[GraphNode] = []
+    for node in nodes:
+        renames = rename_map_by_node.get(node.id, {})
+        fields = _INPUT_SELECTOR_FIELDS.get(node.data.nodeType, frozenset())
+        config = dict(node.data.config)
+        changed = False
+        for field in fields:
+            selected = config.get(field)
+            replacement = renames.get(selected) if isinstance(selected, str) else None
+            if replacement is not None:
+                config[field] = replacement
+                changed = True
+        if not changed:
+            rewritten.append(node)
+            continue
+        rewritten.append(
+            node.model_copy(
+                deep=True,
+                update={"data": node.data.model_copy(update={"config": config})},
+            )
+        )
+    return rewritten
 
 
 def rewrite_node_references(
@@ -310,7 +329,7 @@ def rewrite_node_references(
         config = dict(node.data.config)
         changed = False
         references = reference_map_by_node.get(node.id, {})
-        for field in _node_reference_fields(node.data.nodeType):
+        for field in _GLOBAL_NODE_REFERENCE_FIELDS:
             reference = config.get(field)
             replacement = references.get(reference) if isinstance(reference, str) else None
             if replacement is not None:
@@ -345,7 +364,7 @@ def _rewrite_config_references(
     reference_map: dict[str, str],
 ) -> dict[str, Any]:
     config = dict(node.data.config)
-    for field in _node_reference_fields(node.data.nodeType):
+    for field in _GLOBAL_NODE_REFERENCE_FIELDS:
         if field not in config:
             continue
         raw_reference = config[field]
@@ -478,6 +497,42 @@ def _expanded_edge(
     )
 
 
+def _boundary_edge_input_name(
+    edge: GraphEdge,
+    node_map: dict[str, GraphNode],
+) -> str:
+    """Return the executable input name on a graph that may contain submodels."""
+    source = node_map[edge.source]
+    if source.data.nodeType == NodeType.SUBMODEL:
+        config = _parse_instance_config(source)
+        if config is None or not edge.sourceHandle:
+            raise ParseError(
+                "Submodel output edge cannot provide an executable input name.",
+                edge_id=edge.id,
+                source=edge.source,
+                source_handle=edge.sourceHandle,
+            )
+        prefix = "out__"
+        if not edge.sourceHandle.startswith(prefix) or edge.sourceHandle == prefix:
+            raise ParseError(
+                "Submodel output edge has a malformed public-port handle.",
+                edge_id=edge.id,
+                source_handle=edge.sourceHandle,
+            )
+        return canonical_downstream_identity(
+            config.alias,
+            edge.sourceHandle.removeprefix(prefix),
+        )
+    try:
+        return edge_input_name(edge, source)
+    except ValueError as exc:
+        raise ParseError(
+            "Graph edge cannot provide an executable input name.",
+            edge_id=edge.id,
+            source=edge.source,
+        ) from exc
+
+
 def _deduplicate_edges(edges: list[GraphEdge]) -> list[GraphEdge]:
     seen: set[tuple[str, str, str | None, str | None, str | None, str | None]] = set()
     result: list[GraphEdge] = []
@@ -587,54 +642,6 @@ def expand_submodel_instances(
     }
     reference_maps = {instance_id: dict(id_map) for instance_id, id_map in id_maps.items()}
 
-    def add_reference(
-        reference_map: dict[str, str],
-        *,
-        key: str,
-        value: str,
-        instance: ResolvedSubmodelInstance,
-        edge: GraphEdge,
-    ) -> None:
-        previous = reference_map.get(key)
-        if previous is not None and previous != value:
-            raise ParseError(
-                "Submodel boundary reference maps ambiguously to multiple runtime ids.",
-                instance_id=instance.node.id,
-                definition_id=instance.config.definition_id,
-                edge_id=edge.id,
-                reference=key,
-                runtime_ids=sorted({previous, value}),
-            )
-        reference_map[key] = value
-
-    for edge in graph.edges:
-        target_instance = instances.get(edge.target)
-        if target_instance is None or edge.target not in selected_ids:
-            continue
-        input_port = _input_port(target_instance, edge)
-        source_instance = instances.get(edge.source)
-        if edge.source in selected_ids:
-            if source_instance is None:
-                raise ParseError(
-                    "Selected submodel source instance could not be resolved.", edge_id=edge.id
-                )
-            output = _output_port(source_instance, edge)
-            source_identity = id_maps[edge.source][output.source.node_id]
-        elif source_instance is not None:
-            output = _output_port(source_instance, edge)
-            source_identity = canonical_downstream_identity(
-                source_instance.config.alias, output.port_id
-            )
-        else:
-            source_identity = edge.source
-        add_reference(
-            reference_maps[edge.target],
-            key=input_port.port_id,
-            value=source_identity,
-            instance=target_instance,
-            edge=edge,
-        )
-
     cloned_nodes: list[GraphNode] = []
     cloned_edges: list[GraphEdge] = []
     for instance in selected:
@@ -653,6 +660,31 @@ def expand_submodel_instances(
             "Qualified submodel runtime ids collide with the parent graph.",
             node_ids=collisions,
         )
+
+    remaining_nodes = [node for node in graph.nodes if node.id not in selected_ids]
+    expanded_node_map = {node.id: node for node in [*remaining_nodes, *cloned_nodes]}
+    selector_renames: dict[str, dict[str, str]] = {}
+
+    def add_selector_rename(
+        *,
+        target_id: str,
+        old_name: str,
+        new_name: str,
+        edge_id: str,
+    ) -> None:
+        if old_name == new_name:
+            return
+        target_map = selector_renames.setdefault(target_id, {})
+        previous = target_map.get(old_name)
+        if previous is not None and previous != new_name:
+            raise ParseError(
+                "Submodel boundary input name maps ambiguously after expansion.",
+                edge_id=edge_id,
+                target_id=target_id,
+                input_name=old_name,
+                expanded_input_names=sorted({previous, new_name}),
+            )
+        target_map[old_name] = new_name
 
     expanded_parent_edges: list[GraphEdge] = []
     for edge in graph.edges:
@@ -707,46 +739,34 @@ def expand_submodel_instances(
 
         for source, source_handle, source_port in source_variants:
             for target, target_handle, target_port in target_variants:
-                expanded_parent_edges.append(
-                    _expanded_edge(
-                        source=source,
-                        target=target,
-                        source_handle=source_handle,
-                        target_handle=target_handle,
-                        source_port=source_port,
-                        target_port=target_port,
-                    )
+                expanded_edge = _expanded_edge(
+                    source=source,
+                    target=target,
+                    source_handle=source_handle,
+                    target_handle=target_handle,
+                    source_port=source_port,
+                    target_port=target_port,
+                )
+                expanded_parent_edges.append(expanded_edge)
+                if edge.source not in selected_ids and edge.target not in selected_ids:
+                    # Neither endpoint changes identity, so the executable
+                    # input name is unchanged and no selector can be affected.
+                    continue
+                if edge.target in selected_ids:
+                    assert target_instance is not None
+                    old_name = _sanitize_func_name(_input_port(target_instance, edge).port_id)
+                else:
+                    old_name = _boundary_edge_input_name(edge, graph.node_map)
+                new_name = _boundary_edge_input_name(expanded_edge, expanded_node_map)
+                add_selector_rename(
+                    target_id=target,
+                    old_name=old_name,
+                    new_name=new_name,
+                    edge_id=edge.id,
                 )
 
-    parent_reference_maps: dict[str, dict[str, str]] = {}
-    for edge in graph.edges:
-        source_instance = instances.get(edge.source)
-        if (
-            source_instance is None
-            or edge.source not in selected_ids
-            or edge.target in selected_ids
-        ):
-            continue
-        output = _output_port(source_instance, edge)
-        key = canonical_downstream_identity(source_instance.config.alias, output.port_id)
-        value = id_maps[edge.source][output.source.node_id]
-        target_map = parent_reference_maps.setdefault(edge.target, {})
-        previous = target_map.get(key)
-        if previous is not None and previous != value:
-            raise ParseError(
-                "Parent boundary reference maps ambiguously to multiple runtime ids.",
-                instance_id=edge.source,
-                edge_id=edge.id,
-                target_id=edge.target,
-                reference=key,
-                runtime_ids=sorted({previous, value}),
-            )
-        target_map[key] = value
-
-    remaining_nodes = rewrite_node_references(
-        [node for node in graph.nodes if node.id not in selected_ids],
-        parent_reference_maps,
-    )
+    remaining_nodes = rewrite_input_selectors(remaining_nodes, selector_renames)
+    cloned_nodes = rewrite_input_selectors(cloned_nodes, selector_renames)
     remaining_instances = {
         instance.config.definition_id
         for instance_id, instance in instances.items()

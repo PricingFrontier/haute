@@ -553,7 +553,9 @@ def test_multi_frame_correlation_records_cost(
         node_map=node_map,
         diagnostics=diagnostics,
         unresolved=unresolved,
-        source_frames_of={("api", "target"): ["policies", "drivers"]},
+        edge_metadata={
+            ("api", "target"): [("policies", None), ("drivers", None)],
+        },
         traced_column="premium",
         work=work,
     )

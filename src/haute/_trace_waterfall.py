@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -167,6 +168,7 @@ def _reject_renamed_join_branch_origins(
     parents_of: dict[str, list[str]],
     origin_ids: list[str],
     node_map: dict[str, Any] | None,
+    edge_join_roles: Mapping[str, tuple[str, str]] | None,
 ) -> None:
     """Reject origins from a join branch whose colliding column was suffixed."""
     steps_by_id = {step.node_id: step for step in steps}
@@ -174,9 +176,14 @@ def _reject_renamed_join_branch_origins(
         config = _edge_join_config(node_map, step.node_id)
         if config is None:
             continue
-        base_id = config.get("baseInput")
-        join_id = config.get("joinInput")
-        if not isinstance(base_id, str) or not isinstance(join_id, str):
+        roles = (edge_join_roles or {}).get(step.node_id)
+        if roles is None:
+            continue
+        base_id, join_id = roles
+        # With both roles fed by one node, node-id lineage cannot tell the
+        # two physical inputs apart.  Do not reject a branch on invented
+        # provenance.
+        if base_id == join_id:
             continue
         suffix = config.get("suffix") or EDGE_JOIN_DEFAULT_SUFFIX
         if not isinstance(suffix, str) or not suffix:
@@ -214,6 +221,7 @@ def _ensure_single_column_lineage(
     column: str,
     parents_of: dict[str, list[str]] | None,
     node_map: dict[str, Any] | None,
+    edge_join_roles: Mapping[str, tuple[str, str]] | None,
 ) -> None:
     """Reject waterfalls whose candidate column origins are on separate branches."""
     if parents_of is None:
@@ -240,7 +248,9 @@ def _ensure_single_column_lineage(
                 f"({branch_nodes}); the waterfall cannot compare consecutive values "
                 "until the branch lineage is disambiguated"
             )
-    _reject_renamed_join_branch_origins(steps, column, parents_of, origin_ids, node_map)
+    _reject_renamed_join_branch_origins(
+        steps, column, parents_of, origin_ids, node_map, edge_join_roles
+    )
 
 
 def _check_display_consistency(
@@ -503,6 +513,7 @@ def build_waterfall_from_steps(
     final_output_value: Any,
     parents_of: dict[str, list[str]] | None = None,
     node_map: dict[str, Any] | None = None,
+    edge_join_roles: Mapping[str, tuple[str, str]] | None = None,
     integer_output_node_ids: set[str] | None = None,
     final_output_is_integer: bool = False,
 ) -> list[dict[str, Any]] | dict[str, Any] | None:
@@ -536,7 +547,7 @@ def build_waterfall_from_steps(
             # Nothing numeric to reconcile against — a waterfall would be
             # unverifiable, so the feature does not apply.
             return None
-        _ensure_single_column_lineage(steps, column, parents_of, node_map)
+        _ensure_single_column_lineage(steps, column, parents_of, node_map, edge_join_roles)
 
         waterfall_steps: list[dict[str, Any]] = []
         value_before: float | None = None

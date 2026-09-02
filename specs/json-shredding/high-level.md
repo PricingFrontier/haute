@@ -185,10 +185,11 @@ strategies `inner`, `left`, `right`, `full`, `semi`, `anti`, and `cross`.
 non-empty `on` key (one name or a list shared by both frames) or both
 non-empty `leftOn` and `rightOn` keys with equal lengths; `on` cannot coexist
 with the paired form. The base and join frames are explicit roles, not inferred
-from edge order, and both connected source ids must be distinct. Every persisted
+from edge order. Every persisted
 incoming edge carries its role as `targetHandle="base"` or `targetHandle="join"`;
-exactly one of each is required and each handle must agree with
-`baseInput`/`joinInput`. A handle-less or partially handled join is invalid.
+exactly one of each is required. Those handles are the sole role authority, so two different
+frame edges from one API Input are valid and no `baseInput`/`joinInput` config is stored. A
+handle-less or partially handled join is invalid, as is the removed config/decorator role form.
 
 ## Design rationale
 

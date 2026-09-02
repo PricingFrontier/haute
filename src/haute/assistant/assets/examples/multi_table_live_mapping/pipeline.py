@@ -29,8 +29,6 @@ def driver_rows(drivers: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.edge_join(
-    base_input="quote_rows",
-    join_input="driver_rows",
     how="left",
     on=["driver_id"],
     validate="1:1",

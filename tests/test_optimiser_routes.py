@@ -20,6 +20,7 @@ from fastapi import HTTPException
 
 from haute._config_builder import _build_node_config
 from haute._sandbox import set_project_root
+from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import NodeType
 from haute.routes._optimiser_limits import (
     APPLY_PREVIEW_ROW_LIMIT,
@@ -43,6 +44,20 @@ from tests.conftest import build_test_input_snapshot, make_edge, make_graph
 from tests.job_store_support import replace_job, seed_job
 from tests.optimiser_fixtures import frontier_result as _frontier_result
 from tests.optimiser_fixtures import poll_frontier_until_done as _poll_frontier_until_done
+
+
+def _optimiser_helper_graph(*sources: str) -> PipelineGraph:
+    return PipelineGraph(
+        nodes=[
+            *[
+                GraphNode(id=source, data=NodeData(label=source, nodeType="dataInput"))
+                for source in sources
+            ],
+            GraphNode(id="opt", data=NodeData(label="opt", nodeType="optimiser")),
+        ],
+        edges=[GraphEdge(id=f"e_{source}_opt", source=source, target="opt") for source in sources],
+    )
+
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -675,7 +690,7 @@ class TestSolveRoute:
         )
         graph = _make_optimiser_graph(scored_data)
         lazy_outputs = {
-            "opt": pl.LazyFrame(
+            "source": pl.LazyFrame(
                 {
                     "quote_id": ["q1"],
                     "scenario_index": [0],
@@ -723,7 +738,7 @@ class TestSolveRoute:
         def slow_execute(*args, **kwargs):
             setup_started.set()
             time.sleep(0.25)
-            return {"opt": scored_lf}
+            return {"source": scored_lf}
 
         def mark_launched(*args, **kwargs):
             launch_called.set()
@@ -792,11 +807,11 @@ class TestSolveRoute:
             config={
                 "mode": "ratebook",
                 "factor_columns": [["region"]],
-                "banding_source": "banding",
+                "banding_source": "source",
             },
         )
         lazy_outputs = {
-            "opt": pl.LazyFrame(
+            "source": pl.LazyFrame(
                 {
                     "quote_id": ["q1"],
                     "scenario_index": [0],
@@ -847,7 +862,7 @@ class TestSolveRoute:
 
         graph = _make_optimiser_graph(scored_data)
         lazy_outputs = {
-            "opt": pl.LazyFrame(
+            "source": pl.LazyFrame(
                 {
                     "quote_id": ["q1", "q1"],
                     "scenario_index": [0, 1],
@@ -998,7 +1013,7 @@ class TestSolveRoute:
                                 "scenario_index": "scenario_index",
                                 "scenario_value": "scenario_value",
                                 "factor_columns": [["channel_band"], ["proposer_age_band"]],
-                                "banding_source": "age_veh_banding",
+                                "banding_source": "Age_Veh_Banding",
                                 "data_input": "source",
                             },
                         },
@@ -1607,7 +1622,7 @@ class TestEstimateRoute:
         prepared["streaming_plan"] = None
 
         with (
-            patch.object(service, "_execute_pipeline", return_value={"opt": source_lf}),
+            patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
             patch(
                 "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
                 side_effect=AssertionError("range derivation should not run"),
@@ -1675,7 +1690,7 @@ class TestEstimateRoute:
         prepared["streaming_plan"] = None
 
         with (
-            patch.object(service, "_execute_pipeline", return_value={"opt": source_lf}),
+            patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
             patch(
                 "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
                 side_effect=AssertionError("range derivation should not run"),
@@ -1732,7 +1747,7 @@ class TestEstimateRoute:
         prepared["streaming_plan"] = None
 
         with (
-            patch.object(service, "_execute_pipeline", return_value={"opt": source_lf}),
+            patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
             patch(
                 "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
                 side_effect=AssertionError("range derivation should not run"),
@@ -1820,7 +1835,7 @@ class TestEstimateRoute:
         real_bounded_collect_batches = optimiser_service.bounded_collect_batches
 
         with (
-            patch.object(service, "_execute_pipeline", return_value={"opt": source_lf}),
+            patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
             patch.object(
                 optimiser_service,
                 "bounded_collect_batches",
@@ -2132,7 +2147,7 @@ class TestEstimateRoute:
         solve_body = OptimiserSolveRequest(graph=graph, node_id="opt")
         auto_body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
         lazy_outputs = {
-            "opt": pl.LazyFrame(
+            "source": pl.LazyFrame(
                 {
                     "quote_id": ["q1"],
                     "scenario_index": [0],
@@ -2971,7 +2986,7 @@ class TestEstimateRoute:
             patch.object(
                 service,
                 "_execute_pipeline",
-                return_value={"opt": pl.scan_parquet(scored_data)},
+                return_value={"source": pl.scan_parquet(scored_data)},
             ),
             patch(
                 "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
@@ -3010,7 +3025,7 @@ class TestEstimateRoute:
             patch.object(
                 service,
                 "_execute_pipeline",
-                return_value={"opt": pl.scan_parquet(scored_data)},
+                return_value={"source": pl.scan_parquet(scored_data)},
             ),
             patch(
                 "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
@@ -3055,7 +3070,7 @@ class TestEstimateRoute:
             patch.object(
                 service,
                 "_execute_pipeline",
-                return_value={"opt": missing_constraint_lf},
+                return_value={"source": missing_constraint_lf},
             ),
             pytest.raises(HTTPException),
         ):
@@ -3095,7 +3110,7 @@ class TestEstimateRoute:
             patch.object(
                 service,
                 "_execute_pipeline",
-                return_value={"opt": numeric_quote_id_lf},
+                return_value={"source": numeric_quote_id_lf},
             ),
             pytest.raises(HTTPException),
         ):
@@ -4333,7 +4348,14 @@ class TestEstimateRoute:
             }
         )
         path = tmp_path / "ratebook_scored.parquet"
+        banding_path = tmp_path / "ratebook_banding.parquet"
         df.write_parquet(path)
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "territory": ["north", "south"],
+            }
+        ).write_parquet(banding_path)
         graph = _make_optimiser_graph(
             str(path),
             config={
@@ -4341,8 +4363,22 @@ class TestEstimateRoute:
                 "objective": "expected_income",
                 "constraints": {"expected_margin": {"max": 35.0}},
                 "factor_columns": [["territory"]],
+                "data_input": "source",
+                "banding_source": "Territory_Banding",
             },
         )
+        graph["nodes"].insert(
+            1,
+            {
+                "id": "banding_node",
+                "data": {
+                    "label": "Territory Banding",
+                    "nodeType": "dataInput",
+                    "config": _snapshot_parquet_data_input(str(banding_path)),
+                },
+            },
+        )
+        graph["edges"].append(make_edge("banding_node", "opt").model_dump())
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
@@ -7156,6 +7192,234 @@ class TestExecutePipelineArgs:
             )
         }
 
+    def test_shared_multi_frame_source_seeds_reach_the_planner_without_failing(self):
+        """Solve seeds for two frames of one source must survive strict projection.
+
+        A node-keyed seed on the shared source is rejected by the strict
+        planner (the source has two physical consumers), so the helper must
+        seed the optimiser node itself; this drives the helper output through
+        the real planner rather than hand-crafting the seed shape.
+        """
+        from haute._execution_context import ExecutionProfile
+        from haute.projection import ProjectionRequest, plan
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "request",
+                        "data": {
+                            "label": "Quote_Input_1",
+                            "nodeType": "apiInput",
+                            "config": {
+                                "contract": "opaque",
+                                "tables": [
+                                    {"label": "quote_info", "path": "$[:].quotes", "emit": True},
+                                    {
+                                        "label": "rating_factors",
+                                        "path": "$[:].factors",
+                                        "emit": True,
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "ratebook",
+                                "objective": "expected_income",
+                                "constraints": {"volume": {"min": 0.9}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "scenario_value",
+                                "factor_columns": [["territory_band"]],
+                                "data_input": "quote_info",
+                                "banding_source": "rating_factors",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e_quotes",
+                        "source": "request",
+                        "sourceHandle": "quote_info",
+                        "target": "opt",
+                    },
+                    {
+                        "id": "e_factors",
+                        "source": "request",
+                        "sourceHandle": "rating_factors",
+                        "target": "opt",
+                    },
+                ],
+            }
+        )
+        config = graph.nodes[-1].data.config
+
+        seeds = _optimiser_solve_required_columns_by_node(graph, "opt", config)
+
+        assert set(seeds) == {"opt"}
+        projection = plan(
+            ProjectionRequest(
+                graph=graph,
+                target_node_id="opt",
+                profile=ExecutionProfile.OPTIMISER_SETUP,
+                required_columns_by_node={
+                    node_id: set(columns) for node_id, columns in seeds.items()
+                },
+            )
+        )
+        assert projection.needed_by_node["request"] is None
+
+    def test_shared_multi_frame_source_is_never_a_dataframe_cache_candidate(self):
+        """The per-node cache cannot materialise a dict-of-frames source output."""
+        from haute.routes._optimiser_service import _optimiser_dataframe_cache_node_ids
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "request",
+                        "data": {
+                            "label": "Quote_Input_1",
+                            "nodeType": "apiInput",
+                            "config": {
+                                "tables": [
+                                    {"label": "quote_info", "path": "$[:].quotes", "emit": True},
+                                    {
+                                        "label": "rating_factors",
+                                        "path": "$[:].factors",
+                                        "emit": True,
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "ratebook",
+                                "objective": "expected_income",
+                                "constraints": {},
+                                "factor_columns": [["territory_band"]],
+                                "data_input": "quote_info",
+                                "banding_source": "rating_factors",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e_quotes",
+                        "source": "request",
+                        "sourceHandle": "quote_info",
+                        "target": "opt",
+                    },
+                    {
+                        "id": "e_factors",
+                        "source": "request",
+                        "sourceHandle": "rating_factors",
+                        "target": "opt",
+                    },
+                ],
+            }
+        )
+
+        cache_node_ids = _optimiser_dataframe_cache_node_ids(
+            graph,
+            optimiser_node_id="opt",
+            execution_target_node_id="opt",
+            explicit_target_node=False,
+        )
+
+        assert "request" not in cache_node_ids
+
+    def test_execute_pipeline_runs_uncached_when_every_cache_candidate_is_filtered(
+        self,
+        tmp_path,
+    ):
+        """Shared multi-frame setup must not build an empty cache request."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "request",
+                        "data": {
+                            "label": "Quote_Input_1",
+                            "nodeType": "apiInput",
+                            "config": {
+                                "tables": [
+                                    {"label": "quote_info", "path": "$[:].quotes", "emit": True},
+                                    {
+                                        "label": "rating_factors",
+                                        "path": "$[:].factors",
+                                        "emit": True,
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "ratebook",
+                                "objective": "expected_income",
+                                "constraints": {},
+                                "factor_columns": [["territory_band"]],
+                                "data_input": "quote_info",
+                                "banding_source": "rating_factors",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e_quotes",
+                        "source": "request",
+                        "sourceHandle": "quote_info",
+                        "target": "opt",
+                    },
+                    {
+                        "id": "e_factors",
+                        "source": "request",
+                        "sourceHandle": "rating_factors",
+                        "target": "opt",
+                    },
+                ],
+            }
+        )
+        body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        service = OptimiserSolveService(JobStore())
+        captured: dict = {}
+
+        def fake_execute_lazy_graph(*_args, **kwargs):
+            captured.update(kwargs)
+            return ({"request": {}},)
+
+        with patch(
+            "haute.routes._optimiser_service.execute_lazy_graph",
+            side_effect=fake_execute_lazy_graph,
+        ):
+            outputs = service._execute_pipeline(body, "job-1", tmp_path)
+
+        assert outputs == {"request": {}}
+        assert captured["dataframe_cache_request"] is None
+
     def test_solve_passes_optimiser_seed_to_execute_pipeline(self, scored_data):
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -7169,7 +7433,11 @@ class TestExecutePipelineArgs:
         service = OptimiserSolveService(store)
         launch_called = threading.Event()
         with (
-            patch.object(service, "_execute_pipeline", return_value={"opt": scored_lf}) as execute,
+            patch.object(
+                service,
+                "_execute_pipeline",
+                return_value={"source": scored_lf},
+            ) as execute,
             patch.object(service, "_build_grid", return_value=object()),
             patch.object(
                 service,
@@ -7211,7 +7479,7 @@ class TestExecutePipelineArgs:
         store = JobStore()
         service = OptimiserSolveService(store)
         with (
-            patch.object(service, "_execute_pipeline", return_value={"opt": scored_lf}),
+            patch.object(service, "_execute_pipeline", return_value={"source": scored_lf}),
             patch(
                 "haute.routes._optimiser_service.streaming_collect",
                 side_effect=error,
@@ -7532,7 +7800,11 @@ class TestExecutePipelineArgs:
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
         prepared = service._prepare_frontier_auto_range(body)
         prepared["streaming_plan"] = None
-        with patch.object(service, "_execute_pipeline", return_value={"opt": scored_lf}) as execute:
+        with patch.object(
+            service,
+            "_execute_pipeline",
+            return_value={"source": scored_lf},
+        ) as execute:
             response = service._run_frontier_auto_range_job(body, job_id, **prepared)
 
         assert response.status == "ok"
@@ -12678,7 +12950,9 @@ class TestSolveRatebookUnit:
         lazy_outputs = {"banding_node": mock_df.lazy()}
         config = {"banding_source": "banding_node", "factor_columns": [["region"]]}
 
-        result = OptimiserSolveService._extract_factors(lazy_outputs, config, "ratebook")
+        result = OptimiserSolveService._extract_factors(
+            lazy_outputs, _optimiser_helper_graph("banding_node"), "opt", config, "ratebook"
+        )
         assert result["kind"] == "optimiser_ratebook_factors"
         assert result["columns"] == ["quote_id", "region"]
         assert pl.read_parquet(result["path"]).to_dicts() == [{"quote_id": "q1", "region": "N"}]
@@ -12687,7 +12961,9 @@ class TestSolveRatebookUnit:
         """_extract_factors returns None for online mode."""
         from haute.routes._optimiser_service import OptimiserSolveService
 
-        result = OptimiserSolveService._extract_factors({}, {}, "online")
+        result = OptimiserSolveService._extract_factors(
+            {}, _optimiser_helper_graph(), "opt", {}, "online"
+        )
         assert result is None
 
     def test_extract_factors_no_banding_source(self):
@@ -12697,6 +12973,8 @@ class TestSolveRatebookUnit:
         with pytest.raises(HTTPException, match="missing_node"):
             OptimiserSolveService._extract_factors(
                 {"other_node": MagicMock()},
+                _optimiser_helper_graph("missing_node"),
+                "opt",
                 {"banding_source": "missing_node", "factor_columns": [["region"]]},
                 "ratebook",
             )
@@ -12751,6 +13029,8 @@ class TestSolveRatebookUnit:
         ):
             OptimiserSolveService._extract_factors(
                 lazy_outputs,
+                _optimiser_helper_graph("banding_node"),
+                "opt",
                 config,
                 "ratebook",
                 execution_context=execution_context,
@@ -12804,6 +13084,8 @@ class TestSolveRatebookUnit:
         ):
             OptimiserSolveService._extract_factors(
                 lazy_outputs,
+                _optimiser_helper_graph("banding_node"),
+                "opt",
                 config,
                 "ratebook",
                 execution_context=execution_context,
@@ -13754,11 +14036,15 @@ class TestResolveDataInputFrame:
         lazy_outputs = {"data_node": mock_lf, "opt": MagicMock()}
         config = {"data_input": "data_node"}
 
-        result = service._resolve_data_input_frame(lazy_outputs, config, "opt", job_id)
+        result = service._resolve_data_input_frame(
+            lazy_outputs, _optimiser_helper_graph("data_node"), config, "opt", job_id
+        )
         assert result is mock_lf
 
-    def test_falls_back_to_node_id(self):
-        """When data_input is not set, uses node_id output."""
+    def test_node_output_without_incoming_edge_raises_400(self):
+        """An optimiser without an incoming edge cannot use its own output as data."""
+        from fastapi import HTTPException
+
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
 
@@ -13770,8 +14056,16 @@ class TestResolveDataInputFrame:
         lazy_outputs = {"opt": mock_lf}
         config = {}
 
-        result = service._resolve_data_input_frame(lazy_outputs, config, "opt", job_id)
-        assert result is mock_lf
+        with pytest.raises(HTTPException) as exc_info:
+            service._resolve_data_input_frame(
+                lazy_outputs, _optimiser_helper_graph(), config, "opt", job_id
+            )
+
+        assert exc_info.value.status_code == 400
+        assert "no data" in exc_info.value.detail.lower()
+        job = store.require_job(job_id)
+        assert job["status"] == "contract_error"
+        assert job["terminal_reason"] == "contract_error"
 
     def test_configured_data_input_missing_raises_400(self):
         """A configured data_input must be present instead of falling back."""
@@ -13788,7 +14082,9 @@ class TestResolveDataInputFrame:
         config = {"data_input": "missing_data"}
 
         with pytest.raises(HTTPException) as exc_info:
-            service._resolve_data_input_frame(lazy_outputs, config, "opt", job_id)
+            service._resolve_data_input_frame(
+                lazy_outputs, _optimiser_helper_graph("missing_data"), config, "opt", job_id
+            )
 
         assert exc_info.value.status_code == 400
         assert "missing_data" in exc_info.value.detail
@@ -13811,9 +14107,15 @@ class TestResolveDataInputFrame:
         config = {}
 
         with pytest.raises(HTTPException) as exc_info:
-            service._resolve_data_input_frame(lazy_outputs, config, "opt", job_id)
+            service._resolve_data_input_frame(
+                lazy_outputs, _optimiser_helper_graph(), config, "opt", job_id
+            )
+
         assert exc_info.value.status_code == 400
         assert "no data" in exc_info.value.detail.lower()
+        job = store.require_job(job_id)
+        assert job["status"] == "contract_error"
+        assert job["terminal_reason"] == "contract_error"
 
 
 class TestLaunchBackground:

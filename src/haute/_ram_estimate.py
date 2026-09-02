@@ -784,6 +784,26 @@ def _passthrough_cardinality(
     )
 
 
+def _edge_index_for_input_name(
+    edge_results: Sequence[tuple[GraphEdge, _ResolvedRowCardinality]],
+    index: _EstimateGraphIndex,
+    input_name: object,
+) -> int | None:
+    """Return the position of the one edge whose executable name is *input_name*.
+
+    Estimation never raises for a stale or ambiguous selector; ``None`` lets
+    the caller report the cardinality as unavailable instead.
+    """
+    if not isinstance(input_name, str) or not input_name:
+        return None
+    matching = [
+        edge_index
+        for edge_index, (edge, _result) in enumerate(edge_results)
+        if edge_input_name(edge, index.node_map[edge.source]) == input_name
+    ]
+    return matching[0] if len(matching) == 1 else None
+
+
 def _resolve_row_cardinality_from_index(
     index: _EstimateGraphIndex,
     target_node_id: str,
@@ -839,14 +859,9 @@ def _resolve_row_cardinality_from_index(
     if node_type is NodeType.EDGE_JOIN:
         if len(edge_results) != 2:
             return _ResolvedRowCardinality.unavailable(target_node_id, "invalid_join_arity")
-        source_ids = [edge.source for edge, _result in edge_results]
         target_handles = [edge.targetHandle for edge, _result in edge_results]
         try:
-            left_index, right_index = resolve_edge_join_role_indices(
-                node.data.config,
-                source_ids,
-                target_handles,
-            )
+            left_index, right_index = resolve_edge_join_role_indices(target_handles)
             kwargs = build_edge_join_kwargs(node.data.config)
             left = parents[left_index]
             right = parents[right_index]
@@ -963,19 +978,20 @@ def _resolve_row_cardinality_from_index(
                 "input_cardinality_unavailable",
             )
         selected_index = 0
-        data_input_id = node.data.config.get("data_input")
-        if isinstance(data_input_id, str) and data_input_id:
-            matching = [
-                index
-                for index, (edge, _result) in enumerate(edge_results)
-                if edge.source == data_input_id
-            ]
-            if len(matching) != 1:
+        data_input = node.data.config.get("data_input")
+        if data_input not in (None, ""):
+            matched = _edge_index_for_input_name(edge_results, index, data_input)
+            if matched is None:
                 return _ResolvedRowCardinality.unavailable(
                     target_node_id,
                     "invalid_optimiser_input",
                 )
-            selected_index = matching[0]
+            selected_index = matched
+        elif len(edge_results) > 1:
+            return _ResolvedRowCardinality.unavailable(
+                target_node_id,
+                "invalid_optimiser_input",
+            )
         return _passthrough_cardinality(target_node_id, parents, selected_index)
 
     if node_type is NodeType.OPTIMISER_APPLY:
@@ -984,6 +1000,18 @@ def _resolve_row_cardinality_from_index(
                 target_node_id,
                 "input_cardinality_unavailable",
             )
+        if node.data.config.get("optimiser_mode") == "ratebook":
+            matched = _edge_index_for_input_name(
+                edge_results,
+                index,
+                node.data.config.get("ratebook_input"),
+            )
+            if matched is None:
+                return _ResolvedRowCardinality.unavailable(
+                    target_node_id,
+                    "invalid_optimiser_apply_input",
+                )
+            return _passthrough_cardinality(target_node_id, parents, matched)
         output_rows = max(cast(int, result.output_rows) for result in parents)
         return _ResolvedRowCardinality.proven(
             output_rows,
@@ -1142,21 +1170,18 @@ def _resolve_target_columns(
 
 def _edge_join_input_roles(
     node: GraphNode,
-    parents: Mapping[str, Sequence[str]],
-) -> tuple[str, str] | None:
-    incoming = parents.get(node.id, ())
-    base_input = node.data.config.get("baseInput")
-    join_input = node.data.config.get("joinInput")
-    if (
-        len(incoming) != 2
-        or not isinstance(base_input, str)
-        or not isinstance(join_input, str)
-        or base_input not in incoming
-        or join_input not in incoming
-        or base_input == join_input
-    ):
+    index: _EstimateGraphIndex,
+) -> tuple[GraphEdge, GraphEdge] | None:
+    incoming = [edge for edge in index.pruned_edges if edge.target == node.id]
+    if len(incoming) != 2:
         return None
-    return base_input, join_input
+    try:
+        base_index, join_index = resolve_edge_join_role_indices(
+            [edge.targetHandle for edge in incoming]
+        )
+    except ConfigError:
+        return None
+    return incoming[base_index], incoming[join_index]
 
 
 def _dedupe_columns(columns: Iterable[str]) -> tuple[str, ...]:
@@ -1232,32 +1257,28 @@ def _resolve_edge_join_columns(
     node: GraphNode,
     graph: PipelineGraph,
     source: str,
-    parents: Mapping[str, Sequence[str]],
     *,
     _index: _EstimateGraphIndex | None = None,
 ) -> _ResolvedTargetColumns | None:
     index = _index or _EstimateGraphIndex.build(graph, source)
-    return _resolve_edge_join_columns_from_index(node, index, parents=parents)
+    return _resolve_edge_join_columns_from_index(node, index)
 
 
 def _resolve_edge_join_columns_from_index(
     node: GraphNode,
     index: _EstimateGraphIndex,
-    *,
-    parents: Mapping[str, Sequence[str]] | None = None,
 ) -> _ResolvedTargetColumns | None:
-    parents = parents or index.parents
-    roles = _edge_join_input_roles(node, parents)
+    roles = _edge_join_input_roles(node, index)
     if roles is None:
         return None
-    base_input, join_input = roles
+    base_edge, join_edge = roles
     kwargs = build_edge_join_kwargs(node.data.config)
     how = kwargs["how"]
     if how not in {"inner", "left"}:
         return None
 
-    base_resolved = index.resolve_columns(base_input, index.parent_port(node.id, base_input))
-    join_resolved = index.resolve_columns(join_input, index.parent_port(node.id, join_input))
+    base_resolved = index.resolve_columns(base_edge.source, base_edge.sourceHandle)
+    join_resolved = index.resolve_columns(join_edge.source, join_edge.sourceHandle)
     if base_resolved is None or join_resolved is None:
         return None
 
@@ -1291,9 +1312,8 @@ def _resolve_edge_join_column_names(
     node: GraphNode,
     graph: PipelineGraph,
     source: str,
-    parents: Mapping[str, Sequence[str]],
 ) -> tuple[str, ...] | None:
-    resolved = _resolve_edge_join_columns(node, graph, source, parents)
+    resolved = _resolve_edge_join_columns(node, graph, source)
     return resolved.columns if resolved is not None else None
 
 
@@ -1385,14 +1405,14 @@ def _edge_join_key_columns_on_path(
             continue
         base_keys, joined_keys = edge_join_key_columns_by_role(node.data.config)
         join_keys.update(base_keys)
-        roles = _edge_join_input_roles(node, index.parents)
+        roles = _edge_join_input_roles(node, index)
         if roles is None:
             join_keys.update(joined_keys)
             continue
 
-        _, join_input = roles
+        _, join_edge = roles
         resolved = index.resolve_columns(nid)
-        join_resolved = index.resolve_columns(join_input, index.parent_port(node.id, join_input))
+        join_resolved = index.resolve_columns(join_edge.source, join_edge.sourceHandle)
         if resolved is None or join_resolved is None:
             join_keys.update(joined_keys)
             continue

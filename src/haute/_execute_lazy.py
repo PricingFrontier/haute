@@ -38,6 +38,7 @@ from haute._graph_utils import (
     duplicate_input_names,
     edge_input_name,
     resolve_orig_source_names,
+    select_edge_source_output,
     upstream_node_ids,
 )
 from haute._logging import get_logger
@@ -133,31 +134,7 @@ def _pick_source_frame(
     ``KeyError`` for an edge whose ``sourceHandle`` doesn't match any frame
     the source actually emits.
     """
-    if isinstance(source_output, dict):
-        if not source_output:
-            # Edge is intact; the source emitted no frames at all. Blaming
-            # the edge ("expected one of: []") would mislead — flag the
-            # source as the broken piece.
-            raise RuntimeError(
-                f"Source node {edge.source!r} emitted no frames. Check the "
-                "node's configuration: at least one emit-true table with "
-                "selected columns is required for a multi-frame apiInput.",
-            )
-        sh = edge.sourceHandle
-        if sh is None:
-            raise ValueError(
-                f"Edge from multi-frame node {edge.source!r} has no sourceHandle. "
-                f"Expected one of: {sorted(source_output.keys())}.",
-            )
-        if sh not in source_output:
-            raise KeyError(
-                f"Edge from {edge.source!r} references frame {sh!r}, "
-                f"but the source emits: {sorted(source_output.keys())}.",
-            )
-        # source_output is `Any` (dict-of-frames); narrowing to `_Frame`
-        # is correct at runtime — see function docstring.
-        return cast(_Frame, source_output[sh])
-    return cast(_Frame, source_output)
+    return cast(_Frame, select_edge_source_output(source_output, edge))
 
 
 def _resolve_graph_paths(graph: PipelineGraph) -> PipelineGraph:
@@ -748,7 +725,9 @@ def _runtime_join_demands(
     left_keys: set[str]
     right_keys: set[str]
     if node.data.nodeType is NodeType.EDGE_JOIN:
-        base_index, join_index = resolve_edge_join_role_indices(node.data.config, input_ids)
+        base_index, join_index = resolve_edge_join_role_indices(
+            [edge.targetHandle for edge in incoming_edges]
+        )
         left_edge = incoming_edges[base_index]
         right_edge = incoming_edges[join_index]
         base_keys, join_keys = edge_join_key_columns_by_role(node.data.config)

@@ -484,13 +484,8 @@ class Pipeline(NodeRegistry):
         node = self._node_map.get(node_name)
         if node is None or node.config.get("_node_type") != NodeType.EDGE_JOIN or not incoming:
             return incoming
-        source_ids = [edge.source for edge in incoming]
         target_handles = [edge.target_port for edge in incoming]
-        base_index, join_index = resolve_edge_join_role_indices(
-            node.config,
-            source_ids,
-            target_handles,
-        )
+        base_index, join_index = resolve_edge_join_role_indices(target_handles)
         return [incoming[base_index], incoming[join_index]]
 
     def _resolve_output_node(self, order: list[Node]) -> Node:

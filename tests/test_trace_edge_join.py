@@ -46,7 +46,7 @@ def _edge_join_graph(
     right_path = tmp_path / "right.parquet"
     left_df.write_parquet(left_path)
     right_df.write_parquet(right_path)
-    config = {"baseInput": LEFT_ID, "joinInput": RIGHT_ID, **join_config}
+    config = dict(join_config)
     edges = [
         make_edge(LEFT_ID, JOIN_ID, target_handle="base"),
         make_edge(RIGHT_ID, JOIN_ID, target_handle="join"),

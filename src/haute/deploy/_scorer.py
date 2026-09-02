@@ -782,7 +782,6 @@ def _score_graph_lazy(
             _opt_col = config.get("optimised_value_column", "")
             _ratebook_input = config.get("ratebook_input", "")
             _src_names = list(source_names)
-            _src_ids = list(source_ids)
             _st = config.get("sourceType", "")
 
             # File-based with remap
@@ -798,7 +797,6 @@ def _score_graph_lazy(
                         _optimised_value_col: str = _opt_col,
                         _rb_input: str = _ratebook_input,
                         _src_names_arg: list[str] = _src_names,
-                        _src_ids_arg: list[str] = _src_ids,
                     ) -> _Frame:
                         from haute._builders import _dispatch_apply, _select_optimiser_apply_input
                         from haute._optimiser_io import load_optimiser_artifact
@@ -809,7 +807,6 @@ def _score_graph_lazy(
                             artifact,
                             _rb_input,
                             _src_names_arg,
-                            _src_ids_arg,
                         )
                         return _dispatch_apply(lf, artifact, _version_col, _optimised_value_col)
 
@@ -831,7 +828,6 @@ def _score_graph_lazy(
                     _optimised_value_col: str = _opt_col,
                     _rb_input: str = _ratebook_input,
                     _src_names_arg: list[str] = _src_names,
-                    _src_ids_arg: list[str] = _src_ids,
                 ) -> _Frame:
                     from haute._builders import _dispatch_apply, _select_optimiser_apply_input
                     from haute._optimiser_io import load_mlflow_optimiser_artifact
@@ -847,7 +843,6 @@ def _score_graph_lazy(
                         artifact,
                         _rb_input,
                         _src_names_arg,
-                        _src_ids_arg,
                     )
                     return _dispatch_apply(lf, artifact, _version_col, _optimised_value_col)
 

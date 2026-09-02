@@ -8,16 +8,15 @@ from typing import Any
 import polars as pl
 
 from haute._cardinality import normalise_join_validation
+from haute._config_validation import reject_removed_config_keys
 from haute._polars_utils import execution_collect
-from haute._types import EDGE_JOIN_CONFIG_KEYS
+from haute._types import EDGE_JOIN_CONFIG_KEYS, NodeType
 from haute.errors import ConfigError
 
 EDGE_JOIN_DEFAULT_HOW = "left"
 EDGE_JOIN_DEFAULT_SUFFIX = "_right"
 
 EDGE_JOIN_DECORATOR_TO_CONFIG: dict[str, str] = {
-    "base_input": "baseInput",
-    "join_input": "joinInput",
     "left_on": "leftOn",
     "right_on": "rightOn",
     "maintain_order": "maintainOrder",
@@ -28,11 +27,9 @@ EDGE_JOIN_CONFIG_TO_DECORATOR: dict[str, str] = {
 }
 
 _ALLOWED_HOW = frozenset({"inner", "left", "right", "full", "semi", "anti", "cross"})
-# Keep these role handles/config keys in sync with frontend/src/utils/edgeJoinRoles.ts.
-_ROLE_HANDLE_TO_CONFIG_KEY = {
-    "base": "baseInput",
-    "join": "joinInput",
-}
+# Keep these role handles in sync with frontend/src/utils/edgeJoinRoles.ts.
+_ROLE_HANDLES = frozenset({"base", "join"})
+_LEGACY_ROLE_DECORATOR_ARGS = frozenset({"base_input", "join_input"})
 
 
 JoinKey = str | list[str]
@@ -40,6 +37,13 @@ JoinKey = str | list[str]
 
 def normalise_edge_join_decorator_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Convert edge-join decorator kwargs into graph config keys."""
+    legacy = sorted(_LEGACY_ROLE_DECORATOR_ARGS.intersection(kwargs))
+    if legacy:
+        raise ConfigError(
+            "edgeJoin decorator role arguments are no longer supported; "
+            "use incoming target ports 'base' and 'join'.",
+            legacy_arguments=legacy,
+        )
     config: dict[str, Any] = {}
     for key, value in kwargs.items():
         config[EDGE_JOIN_DECORATOR_TO_CONFIG.get(key, key)] = value
@@ -61,101 +65,26 @@ def edge_join_config_to_decorator_kwargs(config: dict[str, Any]) -> list[tuple[s
 
 
 def resolve_edge_join_role_indices(
-    config: dict[str, Any],
-    source_ids: Sequence[str],
-    target_handles: Sequence[str | None] | None = None,
+    target_handles: Sequence[str | None] | None,
 ) -> tuple[int, int]:
-    """Resolve base/join input roles against connected source ids."""
-    if len(source_ids) != 2:
+    """Resolve base/join roles solely from aligned incoming target handles."""
+    if target_handles is None or len(target_handles) != 2:
         raise ConfigError(
-            "edgeJoin nodes require exactly two connected inputs.",
-            connected_input_node_ids=list(source_ids),
+            "edgeJoin nodes require exactly two incoming target handles: "
+            "one 'base' and one 'join'.",
+            targetHandles=None if target_handles is None else list(target_handles),
         )
-    if len(set(source_ids)) != len(source_ids):
+    if set(target_handles) != _ROLE_HANDLES:
         raise ConfigError(
-            "edgeJoin connected inputs must be distinct.",
-            connected_input_node_ids=list(source_ids),
-        )
-
-    base_input = _required_role(config, "baseInput")
-    join_input = _required_role(config, "joinInput")
-    if base_input == join_input:
-        raise ConfigError(
-            "edgeJoin baseInput and joinInput must be distinct.",
-            baseInput=base_input,
-            joinInput=join_input,
-        )
-
-    missing = [role for role in (base_input, join_input) if role not in source_ids]
-    if missing:
-        raise ConfigError(
-            "edgeJoin role input is not connected to the node.",
-            missing=missing,
-            connected_input_node_ids=list(source_ids),
-        )
-
-    if target_handles is not None:
-        validate_edge_join_target_handles(config, source_ids, target_handles)
-
-    return source_ids.index(base_input), source_ids.index(join_input)
-
-
-def validate_edge_join_target_handles(
-    config: dict[str, Any],
-    source_ids: Sequence[str],
-    target_handles: Sequence[str | None],
-) -> None:
-    """Validate optional React Flow role handles against edge-join config."""
-    if len(source_ids) != len(target_handles):
-        raise ConfigError(
-            "edgeJoin targetHandle metadata must align with connected inputs.",
-            connected_input_node_ids=list(source_ids),
+            "edgeJoin targetHandle roles must be exactly one 'base' and one 'join'.",
             targetHandles=list(target_handles),
         )
-
-    present_handles = [handle for handle in target_handles if handle is not None]
-    if len(present_handles) != len(target_handles):
-        raise ConfigError(
-            "edgeJoin targetHandle roles are required on every incoming edge; "
-            "use exactly one 'base' and one 'join' handle.",
-            connected_input_node_ids=list(source_ids),
-            targetHandles=list(target_handles),
-        )
-
-    if set(present_handles) != set(_ROLE_HANDLE_TO_CONFIG_KEY):
-        raise ConfigError(
-            "edgeJoin targetHandle roles must be exactly 'base' and 'join'.",
-            connected_input_node_ids=list(source_ids),
-            targetHandles=list(target_handles),
-        )
-
-    for source_id, target_handle in zip(source_ids, target_handles, strict=True):
-        if target_handle is None:
-            raise ConfigError(
-                "edgeJoin targetHandle must be 'base' or 'join'.",
-                source=source_id,
-                targetHandle=target_handle,
-            )
-        config_key = _ROLE_HANDLE_TO_CONFIG_KEY.get(target_handle)
-        if config_key is None:
-            raise ConfigError(
-                "edgeJoin targetHandle must be 'base' or 'join'.",
-                source=source_id,
-                targetHandle=target_handle,
-            )
-        expected_source = _required_role(config, config_key)
-        if source_id != expected_source:
-            raise ConfigError(
-                "edgeJoin targetHandle conflicts with configured baseInput/joinInput.",
-                source=source_id,
-                targetHandle=target_handle,
-                baseInput=config.get("baseInput"),
-                joinInput=config.get("joinInput"),
-            )
+    return target_handles.index("base"), target_handles.index("join")
 
 
 def build_edge_join_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     """Validate config and return kwargs for ``LazyFrame.join``."""
+    reject_removed_config_keys(NodeType.EDGE_JOIN, config)
     how = config.get("how") or EDGE_JOIN_DEFAULT_HOW
     if not isinstance(how, str) or how not in _ALLOWED_HOW:
         raise ConfigError(
@@ -334,13 +263,6 @@ def execute_edge_join(
     if collect_eager and not base_is_lazy and not join_is_lazy:
         return execution_collect(result)
     return result
-
-
-def _required_role(config: dict[str, Any], key: str) -> str:
-    value = config.get(key)
-    if not isinstance(value, str) or value == "":
-        raise ConfigError(f"edgeJoin requires a non-empty {key}.", key=key, value=value)
-    return value
 
 
 def _normalise_key(value: Any, field: str) -> JoinKey | None:

@@ -76,6 +76,36 @@ const DEFAULT_GRAPH_NODES: SimpleNode[] = [
 ]
 const DEFAULT_GRAPH_EDGES: SimpleEdge[] = [{ id: "e1", source: "input_1", target: "opt_1" }]
 
+function withAuthoritativeInputIdentities(
+  nodes: SimpleNode[],
+  edges: SimpleEdge[],
+): SimpleNode[] {
+  return nodes.map((node) => {
+    if (node.data.nodeType === "apiInput") {
+      const handleNames = edges
+        .filter((edge) => edge.source === node.id && typeof edge.sourceHandle === "string")
+        .map((edge) => edge.sourceHandle as string)
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          _defaultInputName: null,
+          _sourceHandleInputNames: Object.fromEntries(handleNames.map((name) => [name, name])),
+        },
+      }
+    }
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        _defaultInputName: node.data._defaultInputName
+          ?? node.data.label.replace(/[^A-Za-z0-9_]+/g, "_"),
+        _sourceHandleInputNames: node.data._sourceHandleInputNames ?? {},
+      },
+    }
+  })
+}
+
 // ── Default props ──
 type MakePropsOverrides = Partial<Parameters<typeof OptimiserConfig>[0]> & {
   allNodes?: SimpleNode[]
@@ -116,7 +146,12 @@ function makeProps(overrides: MakePropsOverrides = {}) {
   }
   return {
     componentProps,
-    graph: { allNodes, edges, submodels, preamble },
+    graph: {
+      allNodes: withAuthoritativeInputIdentities(allNodes, edges),
+      edges,
+      submodels,
+      preamble,
+    },
   }
 }
 
@@ -198,6 +233,11 @@ beforeEach(() => {
   mockHandleRemoveConstraint.mockReset()
   mockHandleConstraintColumnChange.mockReset()
   mockHandleConstraintValueChange.mockReset()
+  mockUseDataInputColumns.mockReset().mockReturnValue([
+    { name: "premium", dtype: "Float64" },
+    { name: "loss_ratio", dtype: "Float64" },
+    { name: "volume", dtype: "Float64" },
+  ])
   vi.mocked(classifyBandingNode).mockReset()
   vi.mocked(classifyBandingNode).mockReturnValue({
     levels: {},
@@ -244,15 +284,89 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
 
   describe("Input / Objective selection", () => {
+    it("uses distinct executable edge input names for optimiser selectors", () => {
+      const props = makeProps({
+        config: { _nodeId: "opt_1", mode: "ratebook", data_input: "quote_info", banding_source: "Banding_node", objective: "premium", constraints: {} },
+        allNodes: [
+          { id: "api", data: { label: "Quote API", description: "", nodeType: "apiInput", config: {} } },
+          { id: "banding", data: { label: "Banding node", description: "", nodeType: "banding", config: {} } },
+        ],
+        edges: [
+          { id: "quotes", source: "api", sourceHandle: "quote_info", target: "opt_1" },
+          { id: "drivers", source: "api", sourceHandle: "driver_info", target: "opt_1" },
+          { id: "banding-edge", source: "banding", target: "opt_1" },
+        ],
+      })
+      renderConfig(props)
+
+      const selects = screen.getAllByRole("combobox") as HTMLSelectElement[]
+      expect(selects[0]).toHaveValue("quote_info")
+      expect(Array.from(selects[0].options).map((option) => [option.value, option.text])).toEqual(
+        expect.arrayContaining([["quote_info", "quote_info"], ["driver_info", "driver_info"]]),
+      )
+      expect(selects.find((select) => select.getAttribute("aria-label") === "Rating Factor Source")).toHaveValue("Banding_node")
+    })
+
     it("shows input node selector with connected nodes", () => {
       renderConfig(makeProps())
       // The dropdown should contain the connected node option
-      expect(screen.getByText("Data Input")).toBeInTheDocument()
+      expect(screen.getByText("Data_Input")).toBeInTheDocument()
     })
 
     it("shows 'No inputs connected' when no edges exist", () => {
       renderConfig(makeProps({ edges: [] }))
       expect(screen.getByText(/No inputs connected/)).toBeInTheDocument()
+    })
+
+    it("rejects a stale exact data-input selection even when one input remains", () => {
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          data_input: "removed_input",
+          objective: "premium",
+          constraints: {},
+        },
+      }))
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "The configured Objectives & Constraints input is not connected.",
+      )
+      expect(screen.getByRole("option", { name: "Missing input" })).toBeInTheDocument()
+      expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
+      expect(mockUseDataInputColumns).toHaveBeenCalledWith(
+        "",
+        expect.any(Array),
+        expect.any(Array),
+        undefined,
+        undefined,
+        expect.any(Object),
+      )
+    })
+
+    it("rejects a falsey non-string data-input selector instead of inferring one input", () => {
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          data_input: 0,
+          objective: "premium",
+          constraints: {},
+        },
+      }))
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "The configured Objectives & Constraints input must be an input name.",
+      )
+      expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
+      expect(mockUseDataInputColumns).toHaveBeenCalledWith(
+        "",
+        expect.any(Array),
+        expect.any(Array),
+        undefined,
+        undefined,
+        expect.any(Object),
+      )
     })
 
     it("objective column dropdown lists data input columns", () => {
@@ -271,7 +385,7 @@ describe("OptimiserConfig", () => {
         config: {
           _nodeId: "opt_1",
           mode: "online",
-          data_input: "input_1",
+          data_input: "Data_Input",
           objective: "expected_margin",
           constraints: {},
         },
@@ -281,7 +395,7 @@ describe("OptimiserConfig", () => {
       renderConfig(props)
 
       expect(mockUseDataInputColumns).toHaveBeenCalledWith(
-        "input_1",
+        "opt_1",
         props.graph.allNodes,
         props.graph.edges,
         undefined,
@@ -293,7 +407,7 @@ describe("OptimiserConfig", () => {
       )
     })
 
-    it("prefers the configured data-input node columns over other upstream columns", () => {
+    it("fetches the selected optimiser input without mixing multi-input upstream columns", () => {
       const dataInputNode = {
         id: "input_1",
         data: {
@@ -318,7 +432,7 @@ describe("OptimiserConfig", () => {
         config: {
           _nodeId: "opt_1",
           mode: "online",
-          data_input: "input_1",
+          data_input: "Data_Input",
           objective: "expected_margin",
           constraints: {},
         },
@@ -336,17 +450,16 @@ describe("OptimiserConfig", () => {
       renderConfig(props)
 
       expect(mockUseDataInputColumns).toHaveBeenCalledWith(
-        "input_1",
+        "opt_1",
         props.graph.allNodes,
         props.graph.edges,
         undefined,
         undefined,
         {
-          enabled: false,
-          fallbackColumns: [{ name: "expected_margin", dtype: "Float64" }],
+          enabled: true,
+          fallbackColumns: [],
         },
       )
-      expect(screen.getByText(/expected_margin \(Float64\)/)).toBeInTheDocument()
       expect(screen.queryByText(/rating_factor_only \(Utf8\)/)).not.toBeInTheDocument()
     })
 
@@ -355,7 +468,7 @@ describe("OptimiserConfig", () => {
         config: {
           _nodeId: "opt_1",
           mode: "online",
-          data_input: "input_1",
+          data_input: "Data_Input",
           objective: "expected_margin",
           constraints: {},
         },
@@ -366,7 +479,7 @@ describe("OptimiserConfig", () => {
       renderConfig(props)
 
       expect(mockUseDataInputColumns).toHaveBeenCalledWith(
-        "input_1",
+        "opt_1",
         props.graph.allNodes,
         props.graph.edges,
         undefined,
@@ -419,13 +532,74 @@ describe("OptimiserConfig", () => {
       expect(screen.getByRole("alert")).toHaveTextContent(/removed_banding/)
     })
 
+    it("treats a whitespace-decorated Banding input name as stale", () => {
+      vi.mocked(classifyBandingNode).mockReturnValue({
+        levels: { age_band: ["Young"] },
+        configuredOutputs: ["age_band"],
+        zeroLevelOutputs: [],
+        zeroLevelIssues: [],
+      })
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "ratebook",
+          objective: "premium",
+          constraints: {},
+          banding_source: " Age_Vehicle_Banding ",
+          factor_columns: [["age_band"]],
+        },
+        allNodes: [
+          { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataInput", config: {} } },
+          { id: "banding_1", data: { label: "Age Vehicle Banding", description: "", nodeType: "banding", config: {} } },
+        ],
+        edges: [
+          { id: "e1", source: "input_1", target: "opt_1" },
+          { id: "e2", source: "banding_1", target: "opt_1" },
+        ],
+      }))
+
+      expect(screen.getByRole("alert")).toHaveTextContent(/Age_Vehicle_Banding/)
+    })
+
+    it("does not rewrite a falsey non-string Banding selector to the sole input", () => {
+      const made = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "ratebook",
+          data_input: "Data_Input",
+          objective: "premium",
+          constraints: {},
+          banding_source: 0,
+        },
+        allNodes: [
+          { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataInput", config: {} } },
+          { id: "banding_1", data: { label: "Banding", description: "", nodeType: "banding", config: {} } },
+        ],
+        edges: [
+          { id: "e1", source: "input_1", target: "opt_1" },
+          { id: "e2", source: "banding_1", target: "opt_1" },
+        ],
+      })
+
+      renderConfig(made)
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "The configured Rating Factor Source must be an input name.",
+      )
+      expect(made.componentProps.onUpdate).not.toHaveBeenCalledWith(
+        "banding_source",
+        "Banding",
+      )
+      expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
+    })
+
     it("warns for zero-level outputs while keeping healthy factor controls", () => {
       vi.mocked(classifyBandingNode).mockReturnValue({
         levels: { healthy_band: ["Yes"] }, configuredOutputs: ["healthy_band", "empty_band"],
         zeroLevelOutputs: ["empty_band"], zeroLevelIssues: [{ outputColumn: "empty_band" }],
       })
       renderConfig(makeProps({
-        config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {}, banding_source: "banding_1" },
+        config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {}, banding_source: "Banding" },
         allNodes: [
           { id: "banding_1", data: { label: "Banding", description: "", nodeType: "banding", config: {} } },
         ],
@@ -454,9 +628,9 @@ describe("OptimiserConfig", () => {
               { id: "e2", source: "banding_1", target: "opt_1" },
             ],
           }))
-      // "My Banding" appears in the select option; use getAllByText since
+      // The exact executable name appears in the select option; use getAllByText since
       // banding factor buttons may also render the label
-      expect(screen.getAllByText("My Banding").length).toBeGreaterThanOrEqual(1)
+      expect(screen.getAllByText("My_Banding").length).toBeGreaterThanOrEqual(1)
     })
 
     it("auto-selects all banding factors for a loaded ratebook config with no factor_columns key", async () => {
@@ -478,7 +652,8 @@ describe("OptimiserConfig", () => {
           mode: "ratebook",
           objective: "premium",
           constraints: {},
-          banding_source: "banding_1",
+          data_input: "Data_Input",
+          banding_source: "Age_Vehicle_Banding",
         },
         allNodes: [
           { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataInput", config: {} } },
@@ -523,7 +698,7 @@ describe("OptimiserConfig", () => {
           mode: "ratebook",
           objective: "premium",
           constraints: {},
-          banding_source: "banding_1",
+          banding_source: "Old_Banding",
           factor_columns: [["old_factor"]],
         },
         allNodes: [
@@ -539,7 +714,7 @@ describe("OptimiserConfig", () => {
       }), onUpdate)
 
       fireEvent.change(screen.getByRole("combobox", { name: "Rating Factor Source" }), {
-        target: { value: "banding_2" },
+        target: { value: "New_Banding" },
       })
 
       await waitFor(() => {
@@ -547,7 +722,7 @@ describe("OptimiserConfig", () => {
       })
       expect(onUpdate).toHaveBeenCalledTimes(1)
       expect(onUpdate).toHaveBeenCalledWith({
-        banding_source: "banding_2",
+        banding_source: "New_Banding",
         factor_columns: [["new_factor"]],
       })
     })
@@ -569,7 +744,7 @@ describe("OptimiserConfig", () => {
           mode: "ratebook",
           objective: "premium",
           constraints: {},
-          banding_source: "banding_1",
+          banding_source: "Age_Vehicle_Banding",
           factor_columns: [],
         },
         allNodes: [

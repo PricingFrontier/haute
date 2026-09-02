@@ -12,6 +12,7 @@ import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 import { NODE_TYPES } from "../../utils/nodeTypes"
+import type { NodeStatus } from "../../types/node"
 import type { TraceResult } from "../../types/trace"
 
 vi.mock("@xyflow/react", async () => {
@@ -84,7 +85,7 @@ function makeParams(overrides: Partial<Parameters<typeof useTracing>[0]> = {}) {
     submodels: {},
     submodelsRef: { current: {} },
     preambleRef: { current: "" },
-    nodeStatuses: {} as Record<string, "ok" | "error" | "running">,
+    nodeStatuses: {} as Record<string, NodeStatus>,
     hoveredNodeId: null,
     ...overrides,
   }
@@ -475,12 +476,12 @@ describe("useTracing", () => {
   })
 
   it("nodesWithStatus applies status from nodeStatuses", () => {
-    const params = makeParams({ nodeStatuses: { n1: "ok", n2: "error" } })
+    const params = makeParams({ nodeStatuses: { n1: "warning", n2: "error" } })
     const { result } = renderHook(() => useTracing(params))
     const statusMap = Object.fromEntries(
       result.current.nodesWithStatus.map((n) => [n.id, n.data._status]),
     )
-    expect(statusMap.n1).toBe("ok")
+    expect(statusMap.n1).toBe("warning")
     expect(statusMap.n2).toBe("error")
   })
 

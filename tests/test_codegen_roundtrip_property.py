@@ -249,8 +249,6 @@ def _capstone_root_graph(
             NodeType.EDGE_JOIN,
             _opaque(
                 {
-                    "baseInput": left,
-                    "joinInput": api,
                     "how": "left",
                     "leftOn": ["quote_id"],
                     "rightOn": ["quote_id"],
@@ -602,11 +600,8 @@ def _node_id_remap(graph: PipelineGraph) -> dict[str, str]:
 
 
 _NODE_REFERENCE_CONFIG_FIELDS: dict[NodeType, frozenset[str]] = {
-    # EdgeJoin role fields store graph node ids in GUI state but generated
-    # source can only represent function names. Remapping these two fields is
-    # the C1 contract; every other string config value is user data unless it
-    # is explicitly added here with a test.
-    NodeType.EDGE_JOIN: frozenset({"baseInput", "joinInput"}),
+    # EdgeJoin roles are represented by incoming edge target handles.
+    NodeType.EDGE_JOIN: frozenset(),
 }
 
 
@@ -872,24 +867,15 @@ def test_non_reference_config_literals_are_not_remapped() -> None:
     assert original != rewritten
 
 
-def test_edge_join_reference_fields_are_remapped_for_c1() -> None:
-    """C1 role ids are the narrow, intentional exception to exact strings."""
+def test_edge_join_config_does_not_contain_legacy_reference_fields() -> None:
     remap = {"ui:left-source:7": "Left_Source_7", "ui/right-source:8": "Right_Source_8"}
     assert _canonical_config(
         NodeType.EDGE_JOIN,
-        {
-            "baseInput": "ui:left-source:7",
-            "joinInput": "ui/right-source:8",
-            "suffix": "ui:left-source:7",
-        },
+        {"suffix": "ui:left-source:7"},
         remap,
     ) == _canonical_config(
         NodeType.EDGE_JOIN,
-        {
-            "baseInput": "Left_Source_7",
-            "joinInput": "Right_Source_8",
-            "suffix": "ui:left-source:7",
-        },
+        {"suffix": "ui:left-source:7"},
         remap,
     )
 

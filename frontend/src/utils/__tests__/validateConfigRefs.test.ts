@@ -20,28 +20,21 @@ describe("validateConfigRefs", () => {
     expect(validateConfigRefs(nodes)).toEqual([])
   })
 
-  it("detects stale data_input reference", () => {
+  it("does not treat data_input names as node references", () => {
     const nodes = [
       makeNode("ds1", "DataSource"),
       makeNode("opt1", "Optimiser", { data_input: "Polars_8" }),
     ]
     const warnings = validateConfigRefs(nodes)
-    expect(warnings).toHaveLength(1)
-    expect(warnings[0]).toEqual({
-      nodeId: "opt1",
-      nodeLabel: "Optimiser",
-      field: "data_input",
-      referencedId: "Polars_8",
-    })
+    expect(warnings).toEqual([])
   })
 
-  it("detects stale banding_source reference", () => {
+  it("does not treat banding_source names as node references", () => {
     const nodes = [
       makeNode("opt1", "Optimiser", { banding_source: "deleted_node" }),
     ]
     const warnings = validateConfigRefs(nodes)
-    expect(warnings).toHaveLength(1)
-    expect(warnings[0].field).toBe("banding_source")
+    expect(warnings).toEqual([])
   })
 
   it("detects stale instanceOf reference", () => {
@@ -59,7 +52,7 @@ describe("validateConfigRefs", () => {
       makeNode("n2", "Node2", { instanceOf: "missing2" }),
     ]
     const warnings = validateConfigRefs(nodes)
-    expect(warnings).toHaveLength(2)
+    expect(warnings).toHaveLength(1)
   })
 
   it("ignores empty string references", () => {
@@ -125,15 +118,14 @@ describe("validateConfigRefs", () => {
     })
   })
 
-  it("still warns for a missing target even when other submodels are present", () => {
+  it("does not validate executable input names against submodel node ids", () => {
     // Submodels exist but none export the referenced id → not over-suppressed.
     const nodes = [makeNode("opt", "Optimiser", { data_input: "deleted_node" })]
     const submodels = {
       m: { graph: { nodes: [{ id: "something_else", data: { label: "y" } }], edges: [] } },
     }
     const warnings = validateConfigRefs(nodes, submodels)
-    expect(warnings).toHaveLength(1)
-    expect(warnings[0].referencedId).toBe("deleted_node")
+    expect(warnings).toEqual([])
   })
 
   it("handles an omitted submodel collection", () => {

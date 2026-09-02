@@ -130,6 +130,20 @@ def test_submodel_output_identity_uses_port_id_not_boundary_handle_prefix() -> N
         )
 
 
+def test_submodel_edge_uses_alias_and_public_output_port_identity() -> None:
+    source = GraphNode(
+        id="pricing_instance",
+        data=NodeData(
+            label="Pricing",
+            nodeType=NodeType.SUBMODEL,
+            config={"definitionId": "pricing_definition", "alias": "pricing_secondary"},
+        ),
+    )
+    edge = _edge("pricing_instance", source_handle="out__written-premium")
+
+    assert graph_utils.edge_input_name(edge, source) == "pricing_secondary__written_premium"
+
+
 def test_editor_identity_resolver_owns_keyword_unicode_and_config_paths() -> None:
     keyword_identity = resolve_editor_identity(
         node_type=NodeType.API_INPUT,

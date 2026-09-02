@@ -35,7 +35,6 @@ def explain_optimiser_apply_from_config(
     *,
     input_frames: list[pl.DataFrame | pl.LazyFrame] | tuple[pl.DataFrame | pl.LazyFrame, ...],
     source_names: list[str] | None = None,
-    source_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build structured optimiserApply trace detail for one clicked output row."""
     artifact: dict[str, Any] | None = None
@@ -59,7 +58,6 @@ def explain_optimiser_apply_from_config(
             artifact,
             input_frames,
             source_names or [],
-            source_ids or [],
         )
         if mode == "ratebook":
             return _explain_ratebook(config, artifact, parent_frame, input_row, output_row)
@@ -115,7 +113,6 @@ def _select_frame_from_inputs(
     artifact: dict[str, Any],
     input_frames: list[pl.DataFrame | pl.LazyFrame] | tuple[pl.DataFrame | pl.LazyFrame, ...],
     source_names: list[str],
-    source_ids: list[str],
 ) -> pl.LazyFrame:
     if not input_frames:
         raise OptimiserApplyTraceError(
@@ -124,9 +121,8 @@ def _select_frame_from_inputs(
     return _select_optimiser_apply_input(
         tuple(_as_lazy(frame) for frame in input_frames),
         artifact,
-        str(config.get("ratebook_input", "") or ""),
+        config.get("ratebook_input"),
         source_names,
-        source_ids,
     )
 
 

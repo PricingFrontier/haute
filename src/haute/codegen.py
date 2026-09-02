@@ -19,6 +19,7 @@ from haute._codegen_builders import (
     _sanitize_description,
 )
 from haute._config_io import config_path_for_node, has_config_folder
+from haute._config_validation import reject_removed_config_keys
 from haute._contracts import (
     OPAQUE_CONTRACT_SENTINEL,
     Contract,
@@ -247,7 +248,6 @@ def _node_to_code(
     node: GraphNode,
     source_names: list[str] | None = None,
     source_ids: list[str] | None = None,
-    source_func_names: list[str] | None = None,
 ) -> str:
     """Generate code for a single node.
 
@@ -262,40 +262,7 @@ def _node_to_code(
     if source_ids is None:
         source_ids = []
 
-    original_source_ids = source_ids
-    source_names, source_ids = _role_order_node_sources(node, source_names, source_ids)
-    if source_func_names is not None:
-        source_func_names, _ = _role_order_node_sources(
-            node,
-            source_func_names,
-            original_source_ids,
-        )
-
     code = _generate_node_code(node, source_names)
-
-    # Edge-join role metadata identifies the connected source functions so
-    # the parser can reconstruct the graph.  The function parameters above
-    # are intentionally the edge-derived input names (an apiInput frame is a
-    # frame label), so keep those names in the signature/body while emitting
-    # source-function names in the role kwargs.
-    if node.data.nodeType == NodeType.EDGE_JOIN and source_func_names is not None:
-        if len(source_func_names) != 2 or len(source_names) != 2:
-            raise ParseError(
-                "edgeJoin codegen source function names and input names are out of sync.",
-                node_id=node.id,
-                node_label=node.data.label,
-                source_names=source_names,
-                source_func_names=source_func_names,
-            )
-        code = code.replace(
-            f"base_input={_safe_str(source_names[0])}",
-            f"base_input={_safe_str(source_func_names[0])}",
-            1,
-        ).replace(
-            f"join_input={_safe_str(source_names[1])}",
-            f"join_input={_safe_str(source_func_names[1])}",
-            1,
-        )
 
     node_type = node.data.nodeType
     if has_config_folder(node_type):
@@ -340,27 +307,6 @@ def _node_to_code(
     return code
 
 
-def _role_order_node_sources(
-    node: GraphNode,
-    source_names: list[str],
-    source_ids: list[str],
-) -> tuple[list[str], list[str]]:
-    """Return source names/ids in role order for role-sensitive node types."""
-    if node.data.nodeType != NodeType.EDGE_JOIN:
-        return source_names, source_ids
-    if len(source_names) != len(source_ids):
-        raise ParseError(
-            "edgeJoin codegen source names and ids are out of sync.",
-            node_id=node.id,
-            node_label=node.data.label,
-            source_names=source_names,
-            source_ids=source_ids,
-        )
-    base_index, join_index = resolve_edge_join_role_indices(node.data.config, source_ids)
-    order = [base_index, join_index]
-    return [source_names[index] for index in order], [source_ids[index] for index in order]
-
-
 def _generate_node_code(node: GraphNode, source_names: list[str] | None = None) -> str:
     """Dispatch to the type-specific codegen builder via the unified registry.
 
@@ -372,6 +318,8 @@ def _generate_node_code(node: GraphNode, source_names: list[str] | None = None) 
     """
     if source_names is None:
         source_names = []
+
+    reject_removed_config_keys(node.data.nodeType, node.data.config)
 
     entry = NODE_REGISTRY.get(node.data.nodeType)
     if entry is None or entry.codegen is None:
@@ -584,12 +532,8 @@ def _validate_duplicate_node_inputs(
 def _order_edge_join_incoming_edges(
     edges: list[GraphEdge],
     node_map: dict[str, GraphNode],
-    *,
-    source_id_for_edge: Callable[[GraphEdge], str] | None = None,
 ) -> list[GraphEdge]:
     """Order each edgeJoin node's incoming edges as base then join."""
-    # A resolver changes only the identity used for role validation; the
-    # returned edges retain their canonical placeholder endpoints and handles.
     incoming_by_target: dict[str, list[GraphEdge]] = {}
     for edge in edges:
         incoming_by_target.setdefault(edge.target, []).append(edge)
@@ -608,16 +552,8 @@ def _order_edge_join_incoming_edges(
             ordered.extend(group)
             emitted_edge_join_targets.add(edge.target)
             continue
-        source_ids = [
-            source_id_for_edge(incoming) if source_id_for_edge is not None else incoming.source
-            for incoming in group
-        ]
         target_handles = [incoming.targetHandle for incoming in group]
-        base_index, join_index = resolve_edge_join_role_indices(
-            target_node.data.config,
-            source_ids,
-            target_handles,
-        )
+        base_index, join_index = resolve_edge_join_role_indices(target_handles)
         ordered.extend([group[base_index], group[join_index]])
         emitted_edge_join_targets.add(edge.target)
     return ordered
@@ -635,7 +571,7 @@ def _build_instance_of_map(sorted_nodes: list[GraphNode]) -> dict[str, str]:
 
 #: Type alias for a function that generates code for a single node.
 _NodeCodeFn = Callable[
-    [GraphNode, list[str] | None, list[str] | None, list[str] | None],
+    [GraphNode, list[str] | None, list[str] | None],
     str,
 ]
 _ConnectPair = tuple[str, str, str | None, str | None]
@@ -651,7 +587,6 @@ def _generate_pipeline_lines(
     id_to_func: dict[str, str],
     node_sources: dict[str, list[str]],
     connect_pairs: list[_ConnectPair],
-    node_source_func_names: dict[str, list[str]] | None = None,
     node_source_ids: dict[str, list[str]] | None = None,
     preserved_blocks: list[str] | None = None,
     submodel_imports: list[str] | None = None,
@@ -766,8 +701,7 @@ def _generate_pipeline_lines(
     for node in originals:
         srcs = node_sources.get(node.id, [])
         src_ids = (node_source_ids or {}).get(node.id, [])
-        src_func_names = (node_source_func_names or {}).get(node.id, [])
-        lines.append(node_to_code_fn(node, srcs, src_ids, src_func_names))
+        lines.append(node_to_code_fn(node, srcs, src_ids))
         lines.append("")
 
     for node in instances:
@@ -911,7 +845,6 @@ def _submodel_node_to_code(
     node: GraphNode,
     source_names: list[str] | None = None,
     source_ids: list[str] | None = None,
-    source_func_names: list[str] | None = None,
 ) -> str:
     """Generate code for a single node inside a submodel file.
 
@@ -922,7 +855,6 @@ def _submodel_node_to_code(
         node,
         source_names=source_names,
         source_ids=source_ids,
-        source_func_names=source_func_names,
     )
     code = code.replace("@pipeline.", "@submodel.", 1)
     if node.data.nodeType == NodeType.EDGE_JOIN:
@@ -967,34 +899,50 @@ def _canonical_definition_source_metadata(
     definition: SubmodelDefinition,
     ordered_edges: list[GraphEdge],
     node_map: dict[str, GraphNode],
-    id_to_func: dict[str, str],
 ) -> tuple[
     dict[str, list[str]],
     dict[str, list[str]],
-    dict[str, list[str]],
 ]:
-    """Build child-node inputs from public bindings followed by internal edges."""
+    """Build child-node inputs, ordering edge-join bindings by target role."""
+    bindings_by_target: dict[str, list[tuple[str, str, str | None]]] = {}
+
+    def add_binding(
+        target_id: str,
+        name: str,
+        source_id: str,
+        target_handle: str | None,
+    ) -> None:
+        bindings_by_target.setdefault(target_id, []).append((name, source_id, target_handle))
+
     node_sources: dict[str, list[str]] = {}
     node_source_ids: dict[str, list[str]] = {}
-    node_source_func_names: dict[str, list[str]] = {}
 
     for port in definition.input_ports:
         parameter_name = _sanitize_func_name(port.port_id)
         for target in port.targets:
-            node_sources.setdefault(target.node_id, []).append(parameter_name)
-            node_source_ids.setdefault(target.node_id, []).append(port.port_id)
-            node_source_func_names.setdefault(target.node_id, []).append(parameter_name)
+            add_binding(target.node_id, parameter_name, port.port_id, target.handle_id)
 
     for edge in ordered_edges:
         source_node = node_map[edge.source]
-        node_sources.setdefault(edge.target, []).append(
-            _edge_input_name_for_codegen(edge, source_node)
+        add_binding(
+            edge.target,
+            _edge_input_name_for_codegen(edge, source_node),
+            edge.source,
+            edge.targetHandle,
         )
-        node_source_ids.setdefault(edge.target, []).append(edge.source)
-        node_source_func_names.setdefault(edge.target, []).append(id_to_func[edge.source])
+
+    for target_id, bindings in bindings_by_target.items():
+        target_node = node_map[target_id]
+        if target_node.data.nodeType == NodeType.EDGE_JOIN:
+            base_index, join_index = resolve_edge_join_role_indices(
+                [binding[2] for binding in bindings]
+            )
+            bindings = [bindings[base_index], bindings[join_index]]
+        node_sources[target_id] = [binding[0] for binding in bindings]
+        node_source_ids[target_id] = [binding[1] for binding in bindings]
 
     _validate_duplicate_node_inputs(node_sources, node_map)
-    return node_sources, node_source_ids, node_source_func_names
+    return node_sources, node_source_ids
 
 
 def _graph_to_code_multi_instances(
@@ -1063,15 +1011,10 @@ def _graph_to_code_multi_instances(
         )
         sorted_child_nodes = _topo_sort(child_graph.nodes, child_edges)
         child_id_to_func = _build_id_to_func(sorted_child_nodes)
-        (
-            child_node_sources,
-            child_node_source_ids,
-            child_node_source_func_names,
-        ) = _canonical_definition_source_metadata(
+        child_node_sources, child_node_source_ids = _canonical_definition_source_metadata(
             definition,
             child_edges,
             child_node_map,
-            child_id_to_func,
         )
 
         incoming_context: dict[str, list[str]] = {}
@@ -1110,7 +1053,6 @@ def _graph_to_code_multi_instances(
             id_to_func=child_id_to_func,
             node_sources=child_node_sources,
             connect_pairs=child_connect_pairs,
-            node_source_func_names=child_node_source_func_names,
             node_source_ids=child_node_source_ids,
             preserved_blocks=child_graph.preserved_blocks or None,
             definition_id=definition_id,
@@ -1134,23 +1076,7 @@ def _graph_to_code_multi_instances(
                     node_id=node_id,
                 )
 
-    def parent_edge_source_identity(edge: GraphEdge) -> str:
-        source_instance = instances.get(edge.source)
-        if source_instance is None:
-            return edge.source
-        port_id = _canonical_port_id(
-            edge.sourceHandle,
-            prefix="out__",
-            edge=edge,
-            endpoint="source",
-        )
-        return canonical_downstream_identity(source_instance.config.alias, port_id)
-
-    ordered_parent_edges = _order_edge_join_incoming_edges(
-        list(graph.edges),
-        node_map,
-        source_id_for_edge=parent_edge_source_identity,
-    )
+    ordered_parent_edges = _order_edge_join_incoming_edges(list(graph.edges), node_map)
     sorted_root_nodes = _topo_sort(
         root_nodes,
         [
@@ -1162,7 +1088,6 @@ def _graph_to_code_multi_instances(
     root_id_to_func = _build_id_to_func(sorted_root_nodes)
     root_node_sources: dict[str, list[str]] = {}
     root_node_source_ids: dict[str, list[str]] = {}
-    root_node_source_func_names: dict[str, list[str]] = {}
 
     for edge in ordered_parent_edges:
         if edge.target not in root_node_ids:
@@ -1172,7 +1097,6 @@ def _graph_to_code_multi_instances(
             source_node = node_map[edge.source]
             source_name = _edge_input_name_for_codegen(edge, source_node)
             source_id = edge.source
-            source_func_name = root_id_to_func[edge.source]
         else:
             port_id = _canonical_port_id(
                 edge.sourceHandle,
@@ -1183,10 +1107,8 @@ def _graph_to_code_multi_instances(
             source_identity = canonical_downstream_identity(source_instance.config.alias, port_id)
             source_name = source_identity
             source_id = source_identity
-            source_func_name = source_identity
         root_node_sources.setdefault(edge.target, []).append(source_name)
         root_node_source_ids.setdefault(edge.target, []).append(source_id)
-        root_node_source_func_names.setdefault(edge.target, []).append(source_func_name)
 
     _validate_duplicate_node_inputs(root_node_sources, node_map)
 
@@ -1251,7 +1173,6 @@ def _graph_to_code_multi_instances(
         id_to_func=root_id_to_func,
         node_sources=root_node_sources,
         connect_pairs=connect_pairs,
-        node_source_func_names=root_node_source_func_names,
         node_source_ids=root_node_source_ids,
         preserved_blocks=(
             preserved_blocks if preserved_blocks is not None else graph.preserved_blocks or None
@@ -1306,10 +1227,6 @@ def graph_to_code_multi(
     id_to_func = _build_id_to_func(sorted_nodes)
     node_sources, node_source_ids = _build_node_input_metadata(edges, node_map)
     _validate_duplicate_node_inputs(node_sources, node_map)
-    node_source_func_names = {
-        target_id: [id_to_func[source_id] for source_id in source_ids]
-        for target_id, source_ids in node_source_ids.items()
-    }
     connect_pairs = [
         (
             id_to_func.get(edge.source, edge.source),
@@ -1329,7 +1246,6 @@ def graph_to_code_multi(
         id_to_func=id_to_func,
         node_sources=node_sources,
         connect_pairs=connect_pairs,
-        node_source_func_names=node_source_func_names,
         node_source_ids=node_source_ids,
         preserved_blocks=all_preserved or None,
         node_to_code_fn=_node_to_code,

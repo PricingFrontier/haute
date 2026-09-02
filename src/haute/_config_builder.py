@@ -22,7 +22,11 @@ from haute._code_extraction import (
     _extract_user_code,
 )
 from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder, load_node_config
-from haute._config_validation import validate_node_config, warn_unrecognized_config_keys
+from haute._config_validation import (
+    reject_removed_config_keys,
+    validate_node_config,
+    warn_unrecognized_config_keys,
+)
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import normalise_edge_join_decorator_kwargs
 from haute._explore_charts import validate_explore_charts
@@ -74,6 +78,7 @@ def _build_node_config(
     param_names: list[str],
 ) -> dict[str, Any]:
     """Build the config dict for a node given its type and decorator kwargs."""
+    reject_removed_config_keys(node_type, decorator_kwargs)
     config: dict[str, Any] = {}
     if node_type == NodeType.API_INPUT:
         config["path"] = decorator_kwargs.get("path", "")

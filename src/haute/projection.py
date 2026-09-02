@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Generic, NamedTuple, TypeVar
+from typing import Any, Generic, NamedTuple, TypeVar, cast
 
 from haute._cache import canonical_json
 from haute._column_lineage import ColumnLineageAnalysis, analyze_polars_lineage
@@ -1704,70 +1704,84 @@ class OptimiserParentDemandRule:
     def parent_demands(
         self,
         node: GraphNode,
-        parent_ids: Iterable[str],
+        incoming_edges: Iterable[GraphEdge],
+        node_map: Mapping[str, GraphNode],
         my_needed: set[str] | None,
         seeded_required: Mapping[str, set[str] | AllExceptColumns],
     ) -> ParentDemandResult | None:
-        parent_set = set(parent_ids)
+        incoming = list(incoming_edges)
+        parent_set = {edge.source for edge in incoming}
+        edge_count_by_parent: dict[str, int] = {}
+        for edge in incoming:
+            edge_count_by_parent[edge.source] = edge_count_by_parent.get(edge.source, 0) + 1
         if not parent_set or node.data.nodeType != NodeType.OPTIMISER:
             return None
 
         config = node.data.config
         configured_data_input = config.get("data_input")
         banding_source = config.get("banding_source")
-        data_input = configured_data_input
-        if not isinstance(data_input, str) or not data_input:
-            data_input = next(iter(parent_set)) if len(parent_set) == 1 else None
-        if not isinstance(data_input, str) or not data_input:
+        named_edges = [(edge, edge_input_name(edge, node_map[edge.source])) for edge in incoming]
+
+        if configured_data_input in (None, "") and len(named_edges) == 1:
+            data_edge = named_edges[0][0]
+        elif not isinstance(configured_data_input, str) or not configured_data_input:
             raise ContractMismatchError(
                 "Multi-parent optimiser projection requires a configured data_input.",
                 node_id=node.id,
                 node_type=node.data.nodeType.value,
-                incoming_parent_ids=sorted(parent_set),
+                incoming_input_names=sorted(name for _edge, name in named_edges),
             )
-        if data_input not in parent_set:
-            raise ContractMismatchError(
-                "Configured optimiser data_input is not connected to the optimiser node.",
-                node_id=node.id,
-                node_type=node.data.nodeType.value,
-                data_input=data_input,
-                incoming_parent_ids=sorted(parent_set),
-            )
+        else:
+            data_matches = [edge for edge, name in named_edges if name == configured_data_input]
+            if len(data_matches) != 1:
+                raise ContractMismatchError(
+                    "Configured optimiser data_input is not one exact connected input name.",
+                    node_id=node.id,
+                    node_type=node.data.nodeType.value,
+                    data_input=configured_data_input,
+                    incoming_input_names=sorted(name for _edge, name in named_edges),
+                )
+            data_edge = data_matches[0]
 
-        seeded_data_input = seeded_required.get(data_input)
+        data_parent = data_edge.source
+        seeded_data_input = seeded_required.get(data_parent)
         data_input_columns = (
             set(seeded_data_input)
             if my_needed is None and isinstance(seeded_data_input, set)
             else my_needed
         )
         by_parent: dict[str, set[str] | None] = {parent_id: set() for parent_id in parent_set}
-        by_parent[data_input] = None if data_input_columns is None else set(data_input_columns)
+        by_parent[data_parent] = None if data_input_columns is None else set(data_input_columns)
 
         if config.get("mode", "online") == "ratebook":
             if not isinstance(banding_source, str) or not banding_source:
-                if len(parent_set) == 1:
-                    return ParentDemandResult(
-                        default=None,
-                        by_parent=by_parent,
-                        rule_name=self.name,
-                    )
                 raise ContractMismatchError(
                     "Ratebook optimiser projection requires a configured banding_source.",
                     node_id=node.id,
                     node_type=node.data.nodeType.value,
-                    incoming_parent_ids=sorted(parent_set),
+                    incoming_input_names=sorted(name for _edge, name in named_edges),
                 )
-            if banding_source not in parent_set:
+            banding_matches = [edge for edge, name in named_edges if name == banding_source]
+            if len(banding_matches) != 1:
                 raise ContractMismatchError(
-                    "Configured ratebook banding_source is not connected to the optimiser node.",
+                    "Configured ratebook banding_source is not one exact connected input name.",
                     node_id=node.id,
                     node_type=node.data.nodeType.value,
                     banding_source=banding_source,
-                    incoming_parent_ids=sorted(parent_set),
+                    incoming_input_names=sorted(name for _edge, name in named_edges),
                 )
+            banding_parent = banding_matches[0].source
             factor_columns = ratebook_factor_required_columns(config)
-            existing = by_parent[banding_source]
-            by_parent[banding_source] = None if existing is None else set(existing) | factor_columns
+            existing = by_parent[banding_parent]
+            by_parent[banding_parent] = None if existing is None else set(existing) | factor_columns
+
+        # ParentDemandResult is keyed by source node, so it cannot express
+        # different column sets for parallel frames from one multi-frame
+        # source. Keep those physical edges full-width after validating their
+        # exact selectors instead of applying either frame's demand to both.
+        for parent_id, edge_count in edge_count_by_parent.items():
+            if edge_count > 1:
+                by_parent[parent_id] = None
 
         return ParentDemandResult(
             default=None,
@@ -1782,7 +1796,8 @@ POLARS_COLUMN_LINEAGE_RULE_NAME = "polars_column_lineage"
 
 def parent_demands_for_node(
     node: GraphNode,
-    parent_ids: Iterable[str],
+    incoming_edges: Iterable[GraphEdge],
+    node_map: Mapping[str, GraphNode],
     my_needed: set[str] | None,
     seeded_required: Mapping[str, set[str] | AllExceptColumns],
 ) -> ParentDemandResult | None:
@@ -1791,7 +1806,7 @@ def parent_demands_for_node(
     Return optimiser-specific parent demands when configured.
     """
     return _OPTIMISER_PARENT_DEMAND_RULE.parent_demands(
-        node, parent_ids, my_needed, seeded_required
+        node, incoming_edges, node_map, my_needed, seeded_required
     )
 
 
@@ -2050,7 +2065,7 @@ class EdgeJoinFanInRule:
     def parent_demands(
         self,
         node: GraphNode,
-        parent_ids: Iterable[str],
+        incoming_edges: Iterable[GraphEdge],
         base_contribution: set[str],
         referenced: set[str],
         parent_produced: Mapping[str, set[str] | None],
@@ -2058,15 +2073,27 @@ class EdgeJoinFanInRule:
         strict_projection: bool,
     ) -> ParentDemandResult:
         _ = (referenced, strict_projection)
-        parent_set = set(parent_ids)
+        incoming = list(incoming_edges)
+        parent_set = {edge.source for edge in incoming}
         # Resolve roles and validate config; fail loudly on stale/missing roles.
-        source_ids = sorted(parent_set)
         base_index, join_index = resolve_edge_join_role_indices(
-            node.data.config,
-            source_ids,
+            [edge.targetHandle for edge in incoming],
         )
-        base_parent = source_ids[base_index]
-        join_parent = source_ids[join_index]
+        base_parent = incoming[base_index].source
+        join_parent = incoming[join_index].source
+
+        if base_parent == join_parent:
+            # Two distinct frames from a multi-output node can legitimately
+            # occupy the two roles. Parent-level contracts cannot express a
+            # different demand for each physical edge, so validate the join
+            # and keep both edges full-width instead of overwriting one role's
+            # demand with the other in ``by_parent``.
+            build_edge_join_kwargs(node.data.config)
+            return ParentDemandResult(
+                default=None,
+                by_parent={base_parent: None},
+                rule_name=self.name,
+            )
 
         # An opaque parent (produced is None) cannot prove column ownership, so
         # keep the boundary full-width rather than risk dropping a column.
@@ -2111,7 +2138,7 @@ def _parent_produced_columns(parent: GraphNode) -> set[str] | None:
 
 def edge_join_fan_in_demands_for_node(
     node: GraphNode,
-    parent_ids: Iterable[str],
+    incoming_edges: Iterable[GraphEdge],
     base_contribution: set[str],
     referenced: set[str],
     parent_produced: Mapping[str, set[str] | None],
@@ -2119,11 +2146,12 @@ def edge_join_fan_in_demands_for_node(
     strict_projection: bool,
 ) -> ParentDemandResult | None:
     """Return routed demands for an opaque-contract edge-join fan-in node."""
-    if node.data.nodeType != NodeType.EDGE_JOIN or len(set(parent_ids)) <= 1:
+    incoming = list(incoming_edges)
+    if node.data.nodeType != NodeType.EDGE_JOIN or len(incoming) <= 1:
         return None
     return _EDGE_JOIN_FAN_IN_RULE.parent_demands(
         node,
-        parent_ids,
+        incoming,
         base_contribution,
         referenced,
         parent_produced,
@@ -3079,6 +3107,43 @@ def compute_prepared_plan(
             continue
 
         if len(incoming) != len(parent_ids):
+            if node.data.nodeType == NodeType.EDGE_JOIN:
+                parent_produced = {
+                    parent_id: _parent_produced_columns(node_map[parent_id])
+                    for parent_id in parent_ids
+                }
+                edge_join_demands = edge_join_fan_in_demands_for_node(
+                    node,
+                    incoming,
+                    set() if my_needed is None else set(my_needed),
+                    set(),
+                    parent_produced,
+                    strict_projection=strict_projection,
+                )
+                # This block already establishes the helper's Edge Join and
+                # multi-edge preconditions, so its optional case is unreachable.
+                store_parent_result(
+                    incoming,
+                    cast(ParentDemandResult, edge_join_demands),
+                    message="edge-join fan-in ownership rule",
+                )
+                continue
+            if node.data.nodeType == NodeType.OPTIMISER:
+                optimiser_demands = parent_demands_for_node(
+                    node,
+                    incoming,
+                    node_map,
+                    my_needed,
+                    seeded_required,
+                )
+                # The node type and non-empty parent set likewise make the
+                # generic helper's optional case unreachable here.
+                store_parent_result(
+                    incoming,
+                    cast(ParentDemandResult, optimiser_demands),
+                    message="optimiser exact-input ownership rule",
+                )
+                continue
             # Every remaining rule addresses parents by node id.  Parallel
             # incoming edges from one source (typically different API ports)
             # cannot be routed by those contracts without conflating their
@@ -3096,7 +3161,8 @@ def compute_prepared_plan(
 
         routed_demands = parent_demands_for_node(
             node,
-            parent_ids,
+            incoming,
+            node_map,
             my_needed,
             seeded_required,
         )
@@ -3127,7 +3193,7 @@ def compute_prepared_plan(
             }
             edge_join_demands = edge_join_fan_in_demands_for_node(
                 node,
-                parent_ids,
+                incoming,
                 set(my_needed),
                 set(),
                 parent_produced,

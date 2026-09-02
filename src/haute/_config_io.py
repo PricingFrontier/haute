@@ -112,6 +112,10 @@ def _config_node_type_from_path(path: Path) -> NodeType | None:
 
 
 def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None) -> dict[str, Any]:
+    if node_type is not None:
+        from haute._config_validation import reject_removed_config_keys
+
+        reject_removed_config_keys(node_type, config)
     if node_type == NodeType.BANDING:
         return expand_banding_config_from_sidecar(config)
     if node_type == NodeType.RATING_STEP:
@@ -120,6 +124,10 @@ def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None)
 
 
 def _prepare_config_for_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str, Any]:
+    from haute._config_validation import reject_removed_config_keys
+
+    reject_removed_config_keys(node_type, config)
+
     # Drop user-code keys and internal `_*` keys before the typed allowlist.
     filtered = {k: v for k, v in config.items() if k not in _CODE_KEYS and not k.startswith("_")}
     filtered = cast(dict[str, Any], _strip_internal_keys(filtered))
@@ -145,35 +153,6 @@ def _prepare_config_for_sidecar(node_type: NodeType, config: dict[str, Any]) -> 
     if node_type == NodeType.RATING_STEP:
         return normalise_rating_step_config(filtered)
     return filtered
-
-
-def _remap_config_ids_for_saved_graph(
-    node_type: NodeType,
-    config: dict[str, Any],
-    saved_node_id_by_graph_id: dict[str, str],
-    *,
-    node_label: str | None = None,
-) -> dict[str, Any]:
-    """Translate GUI node ids in config to ids produced by parsing saved Python."""
-    if node_type != NodeType.OPTIMISER_APPLY:
-        return config
-
-    ratebook_input = config.get("ratebook_input")
-    if not isinstance(ratebook_input, str) or not ratebook_input:
-        return config
-    saved_id = saved_node_id_by_graph_id.get(ratebook_input)
-    if saved_id is None:
-        # The configured upstream node is no longer in the graph (deleted,
-        # renamed, or the GUI never persisted it).  Surface this so the
-        # user can re-pick the ratebook source instead of the apply node
-        # silently falling back to the first connected input at runtime.
-        logger.warning(
-            "ratebook_input_remap_unresolved",
-            ratebook_input=ratebook_input,
-            node_label=node_label,
-        )
-        return config
-    return {**config, "ratebook_input": saved_id}
 
 
 # ---------------------------------------------------------------------------
@@ -348,9 +327,6 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
     so the original file on disk is preserved.
     """
     configs: dict[str, str] = {}
-    saved_node_id_by_graph_id = {
-        node.id: _sanitize_func_name(node.data.label) for node in graph.nodes
-    }
     for node in graph.nodes:
         nt = node.data.nodeType
         if not has_config_folder(nt):
@@ -361,13 +337,7 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
             continue
         func_name = _sanitize_func_name(node.data.label)
         rel_path = config_path_for_node(nt, func_name).as_posix()
-        config = _remap_config_ids_for_saved_graph(
-            nt,
-            node.data.config,
-            saved_node_id_by_graph_id,
-            node_label=node.data.label,
-        )
-        filtered = _prepare_config_for_sidecar(nt, config)
+        filtered = _prepare_config_for_sidecar(nt, node.data.config)
         configs[rel_path] = json.dumps(filtered, indent=2, ensure_ascii=False) + "\n"
     return configs
 

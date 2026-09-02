@@ -310,8 +310,8 @@ with the contract derived from the rest of the node's config raises, naming whic
 (inputs/outputs) mismatched and what was missing or extra on each. Ambiguous or absent
 pipeline-file resolution raises, enumerating every candidate it considered. Not being inside
 a Haute project (no `haute.toml`, or no git repository above it) raises. Unrecognised config
-keys are logged at WARNING and dropped or ignored rather than failing the surrounding
-operation. Two other deliberate continue paths are explicit: an unresolved
-`optimiserApply.ratebook_input` id logs a warning and preserves the original id, while
-plural discovery skips a candidate whose contents cannot be read. Neither path is described
-as the component's only non-raising case.
+keys are logged at WARNING and dropped or ignored rather than failing the surrounding operation,
+except retired identity fields whose presence is an explicit contract error. Optimiser
+`data_input`/`banding_source` and Optimiser Apply `ratebook_input` persist exact incoming-edge
+names and are never remapped from node ids; an unmatched name fails graph/runtime validation.
+Plural discovery still skips a candidate whose contents cannot be read.

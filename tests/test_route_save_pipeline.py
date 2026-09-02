@@ -281,6 +281,28 @@ def _make_submodel_graph(
     )
 
 
+class TestValidateOptimiserInputSelectors:
+    def test_validate_graph_rejects_stale_selector_before_writing(self, tmp_path: Path) -> None:
+        graph = _make_graph(
+            _make_node("quotes", "quotes", "dataInput", {"path": "quotes.parquet"}),
+            _make_node(
+                "apply",
+                "apply",
+                "optimiserApply",
+                {"optimiser_mode": "ratebook", "ratebook_input": "stale"},
+            ),
+            edges=[_make_edge("quotes", "apply")],
+        )
+        service = SavePipelineService(tmp_path)
+
+        with pytest.raises(HTTPException) as exc_info:
+            service.validate_graph(graph, source_file="pipeline.py")
+
+        assert exc_info.value.status_code == 400
+        assert "ratebook_input" in exc_info.value.detail
+        assert not (tmp_path / "pipeline.py").exists()
+
+
 class TestValidateUniqueSanitizedNamesRecursiveScope:
     """Global (root + submodel) scope for the save-side name guard.
 
@@ -1122,8 +1144,6 @@ class TestSaveEndpointIntegration:
                         "label": "Join Rates",
                         "nodeType": "edgeJoin",
                         "config": {
-                            "baseInput": "quotes",
-                            "joinInput": "lookup",
                             "how": "left",
                         },
                     },

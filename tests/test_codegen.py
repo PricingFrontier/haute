@@ -752,7 +752,7 @@ class TestGraphToCode:
                             "config": {
                                 "sourceType": "file",
                                 "artifact_path": "artifacts/ratebook.json",
-                                "ratebook_input": "banding-node",
+                                "ratebook_input": "age_veh_banding",
                             },
                         },
                     },
@@ -772,11 +772,12 @@ class TestGraphToCode:
             ")" in code
         )
         # The body delegates to the shared apply helper, passing every frame
-        # plus the aligned source-id list; ratebook_input selection happens at
+        # plus the aligned exact input-name list; ratebook_input selection happens at
         # runtime inside the helper (differential harness pins the value).
         assert "apply_optimiser_apply_from_config(" in code
         assert "scored_quotes, age_veh_banding," in code
-        assert "source_ids=['scored_quotes', 'age_veh_banding']" in code
+        assert "source_names=['scored_quotes', 'age_veh_banding']" in code
+        assert "source_ids=" not in code
         compile(code, "<test>", "exec")
 
     def test_optimiser_apply_online_mode_ignores_stale_ratebook_input_return(self):
@@ -808,7 +809,7 @@ class TestGraphToCode:
                                 "sourceType": "run",
                                 "run_id": "online-run",
                                 "optimiser_mode": "online",
-                                "ratebook_input": "banding-node",
+                                "ratebook_input": "stale_banding",
                             },
                         },
                     },
@@ -856,7 +857,7 @@ class TestGraphToCode:
                             "config": {
                                 "sourceType": "run",
                                 "run_id": "missing-run",
-                                "ratebook_input": "banding-node",
+                                "ratebook_input": "age_veh_banding",
                             },
                         },
                     },
@@ -906,7 +907,7 @@ class TestGraphToCode:
                             "config": {
                                 "sourceType": "file",
                                 "artifact_path": "artifacts/ratebook.json",
-                                "ratebook_input": "banding-node",
+                                "ratebook_input": "age_veh_banding",
                             },
                         },
                     },
@@ -930,6 +931,118 @@ class TestGraphToCode:
         assert any(
             e.source == "age_veh_banding" and e.target == "apply_optimisation" for e in parsed.edges
         )
+
+    @pytest.mark.parametrize("banding_source", [None, "stale_banding"])
+    def test_ratebook_optimiser_requires_exact_banding_source(self, banding_source):
+        config = {"mode": "ratebook", "data_input": "quotes"}
+        if banding_source is not None:
+            config["banding_source"] = banding_source
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "quotes",
+                        "data": {
+                            "label": "quotes",
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("quotes.parquet"),
+                        },
+                    },
+                    {
+                        "id": "optimiser",
+                        "data": {"label": "optimiser", "nodeType": "optimiser", "config": config},
+                    },
+                ],
+                "edges": [{"id": "e", "source": "quotes", "target": "optimiser"}],
+            }
+        )
+        with pytest.raises(ConfigError, match="banding_source"):
+            graph_to_code(graph)
+
+    def test_online_optimiser_rejects_provided_stale_banding_source(self):
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "quotes",
+                        "data": {
+                            "label": "quotes",
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("quotes.parquet"),
+                        },
+                    },
+                    {
+                        "id": "optimiser",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "data_input": "quotes",
+                                "banding_source": "stale_banding",
+                            },
+                        },
+                    },
+                ],
+                "edges": [{"id": "e", "source": "quotes", "target": "optimiser"}],
+            }
+        )
+        with pytest.raises(ConfigError, match="banding_source"):
+            graph_to_code(graph)
+
+    @pytest.mark.parametrize("ratebook_input", [None, "stale_banding"])
+    def test_ratebook_apply_requires_exact_ratebook_input(self, ratebook_input):
+        config = {"optimiser_mode": "ratebook"}
+        if ratebook_input is not None:
+            config["ratebook_input"] = ratebook_input
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "quotes",
+                        "data": {
+                            "label": "quotes",
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("quotes.parquet"),
+                        },
+                    },
+                    {
+                        "id": "apply",
+                        "data": {"label": "apply", "nodeType": "optimiserApply", "config": config},
+                    },
+                ],
+                "edges": [{"id": "e", "source": "quotes", "target": "apply"}],
+            }
+        )
+        with pytest.raises(ConfigError, match="ratebook_input"):
+            graph_to_code(graph)
+
+    def test_apply_without_known_mode_rejects_stale_ratebook_input(self):
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "quotes",
+                        "data": {
+                            "label": "quotes",
+                            "nodeType": "dataInput",
+                            "config": _file_input_config("quotes.parquet"),
+                        },
+                    },
+                    {
+                        "id": "apply",
+                        "data": {
+                            "label": "apply",
+                            "nodeType": "optimiserApply",
+                            "config": {"ratebook_input": "stale"},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e", "source": "quotes", "target": "apply"}],
+            }
+        )
+        with pytest.raises(ConfigError, match="ratebook_input"):
+            graph_to_code(graph)
 
 
 # ---------------------------------------------------------------------------
@@ -2221,7 +2334,7 @@ class TestPassthroughAndBehaviouralCodegen:
                 "data": {
                     "label": "Merge",
                     "nodeType": node_type,
-                    "config": {},
+                    "config": {"data_input": "left"} if node_type == "optimiser" else {},
                 },
             }
         )

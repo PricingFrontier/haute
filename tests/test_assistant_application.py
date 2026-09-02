@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from haute.assistant._ops import AssistantOperationError, PlanStore
-from haute.errors import ConfigError
+from haute.assistant._wire_ops import OpValidationError
 
 PIPELINE_SOURCE = """\
 import polars as pl
@@ -108,7 +108,7 @@ class TestDryRun:
                     "how": "left",
                     "on": ["x"],
                 },
-                "baseInput",
+                "unknown config key",
             ),
             (
                 {
@@ -119,7 +119,7 @@ class TestDryRun:
                     "leftOn": ["x"],
                     "rightOn": ["x"],
                 },
-                "cannot combine on with leftOn/rightOn",
+                "unknown config key",
             ),
         ],
     )
@@ -132,7 +132,7 @@ class TestDryRun:
         service = _service(project_root)
         before = (project_root / "main.py").read_bytes()
 
-        with pytest.raises(ConfigError, match=message):
+        with pytest.raises(OpValidationError, match=message):
             service.dry_run(
                 "main.py",
                 [

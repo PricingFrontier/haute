@@ -380,7 +380,7 @@ function InstancePanel({
               name: srcNode ? edgeInputName(e, srcNode, submodels) : (() => {
                 throw new Error(`Cannot derive instance input name: source node ${e.source} is missing`)
               })(),
-              label: srcNode ? srcNode.data.label : e.source,
+              label: srcNode ? edgeInputName(e, srcNode, submodels) : e.source,
             }
           })
 

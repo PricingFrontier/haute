@@ -32,6 +32,7 @@ from haute._execution_context import (
     ExecutionTelemetryEvent,
     _bounded_telemetry_attributes,
 )
+from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.errors import ContractMismatchError, SchemaMismatchError
 from haute.graph_utils import NodeType, _execute_eager_core, _execute_lazy
 from haute.schemas import ExecutionMetricsPayload
@@ -4557,6 +4558,47 @@ def test_admit_deploy_execution_rejects_negative_row_count() -> None:
         admit_deploy_execution(operation="deploy_quote", row_count=-1)
 
 
+def _minimal_optimiser_setup_graph() -> PipelineGraph:
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_INPUT.value,
+                        "config": {
+                            "inputType": "inline",
+                            "format": "records",
+                            "records": [
+                                {
+                                    "quote_id": "q1",
+                                    "scenario_index": 0,
+                                    "scenario_value": 1.0,
+                                    "expected_income": 10.0,
+                                }
+                            ],
+                        },
+                    },
+                },
+                {
+                    "id": "opt",
+                    "data": {
+                        "label": "opt",
+                        "nodeType": NodeType.OPTIMISER.value,
+                        "config": {
+                            "objective": "expected_income",
+                            "constraints": {},
+                            "data_input": "source",
+                        },
+                    },
+                },
+            ],
+            "edges": [{"id": "e_source_opt", "source": "source", "target": "opt"}],
+        }
+    )
+
+
 def test_optimiser_start_creates_admitted_setup_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4569,21 +4611,7 @@ def test_optimiser_start_creates_admitted_setup_context(
         "haute._execution_admission.current_rss_bytes",
         lambda: 128 * 1024 * 1024,
     )
-    graph = make_graph(
-        {
-            "nodes": [
-                {
-                    "id": "opt",
-                    "data": {
-                        "label": "opt",
-                        "nodeType": NodeType.OPTIMISER.value,
-                        "config": {"objective": "expected_income", "constraints": {}},
-                    },
-                },
-            ],
-            "edges": [],
-        }
-    )
+    graph = _minimal_optimiser_setup_graph()
     body = OptimiserSolveRequest(graph=graph, node_id="opt")
     scored_lf = pl.LazyFrame(
         {
@@ -4599,7 +4627,7 @@ def test_optimiser_start_creates_admitted_setup_context(
 
     def fake_execute_pipeline(*_args, **kwargs):
         captured["execution_context"] = kwargs["execution_context"]
-        return {"opt": scored_lf}
+        return {"source": scored_lf}
 
     with (
         patch("haute.routes._optimiser_service.threading.Thread", _ImmediateThread),
@@ -4636,21 +4664,7 @@ def test_optimiser_cancel_during_setup_prevents_worker_launch(
     from haute.schemas import OptimiserSolveRequest
 
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
-    graph = make_graph(
-        {
-            "nodes": [
-                {
-                    "id": "opt",
-                    "data": {
-                        "label": "opt",
-                        "nodeType": NodeType.OPTIMISER.value,
-                        "config": {"objective": "expected_income", "constraints": {}},
-                    },
-                },
-            ],
-            "edges": [],
-        }
-    )
+    graph = _minimal_optimiser_setup_graph()
     body = OptimiserSolveRequest(graph=graph, node_id="opt")
     scored_lf = pl.LazyFrame(
         {
@@ -4670,7 +4684,7 @@ def test_optimiser_cancel_during_setup_prevents_worker_launch(
 
     with (
         patch("haute.routes._optimiser_service.threading.Thread", _ImmediateThread),
-        patch.object(service, "_execute_pipeline", return_value={"opt": scored_lf}),
+        patch.object(service, "_execute_pipeline", return_value={"source": scored_lf}),
         patch.object(service, "_validate_and_project", return_value=([], scored_lf)),
         patch.object(service, "_extract_factors", return_value=None),
         patch.object(service, "_build_grid", side_effect=cancel_during_grid),
@@ -4698,21 +4712,7 @@ def test_optimiser_start_maps_admission_failure_to_http_507(
         "haute._execution_admission.current_rss_bytes",
         lambda: 65 * 1024 * 1024,
     )
-    graph = make_graph(
-        {
-            "nodes": [
-                {
-                    "id": "opt",
-                    "data": {
-                        "label": "opt",
-                        "nodeType": NodeType.OPTIMISER.value,
-                        "config": {"objective": "expected_income", "constraints": {}},
-                    },
-                },
-            ],
-            "edges": [],
-        }
-    )
+    graph = _minimal_optimiser_setup_graph()
 
     store = JobStore()
     service = OptimiserSolveService(store)
@@ -4743,21 +4743,7 @@ def test_optimiser_start_maps_runtime_memory_failure_to_http_507(
     monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_BYTES", "512")
     samples = iter([1, 1, 600])
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: next(samples))
-    graph = make_graph(
-        {
-            "nodes": [
-                {
-                    "id": "opt",
-                    "data": {
-                        "label": "opt",
-                        "nodeType": NodeType.OPTIMISER.value,
-                        "config": {"objective": "expected_income", "constraints": {}},
-                    },
-                },
-            ],
-            "edges": [],
-        }
-    )
+    graph = _minimal_optimiser_setup_graph()
     service = OptimiserSolveService(JobStore())
     memory_error = ExecutionMemoryLimitExceededError(
         "optimiser_solve",
@@ -4793,21 +4779,7 @@ def test_optimiser_start_records_setup_stage_metrics_when_memory_limited(
     monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_BYTES", "512")
     samples = iter([1, 1, 600])
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: next(samples))
-    graph = make_graph(
-        {
-            "nodes": [
-                {
-                    "id": "opt",
-                    "data": {
-                        "label": "opt",
-                        "nodeType": NodeType.OPTIMISER.value,
-                        "config": {"objective": "expected_income", "constraints": {}},
-                    },
-                },
-            ],
-            "edges": [],
-        }
-    )
+    graph = _minimal_optimiser_setup_graph()
     scored_lf = pl.LazyFrame(
         {
             "quote_id": ["q1"],
@@ -4821,7 +4793,7 @@ def test_optimiser_start_records_setup_stage_metrics_when_memory_limited(
 
     with (
         patch("haute.routes._optimiser_service.threading.Thread", _ImmediateThread),
-        patch.object(service, "_execute_pipeline", return_value={"opt": scored_lf}),
+        patch.object(service, "_execute_pipeline", return_value={"source": scored_lf}),
     ):
         response = service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
 
@@ -4847,21 +4819,7 @@ def test_optimiser_start_preserves_typed_memory_http_exception_metrics(
 
     monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
-    graph = make_graph(
-        {
-            "nodes": [
-                {
-                    "id": "opt",
-                    "data": {
-                        "label": "opt",
-                        "nodeType": NodeType.OPTIMISER.value,
-                        "config": {"objective": "expected_income", "constraints": {}},
-                    },
-                },
-            ],
-            "edges": [],
-        }
-    )
+    graph = _minimal_optimiser_setup_graph()
     scored_lf = pl.LazyFrame(
         {
             "quote_id": ["q1"],
@@ -4876,7 +4834,7 @@ def test_optimiser_start_preserves_typed_memory_http_exception_metrics(
 
     with (
         patch("haute.routes._optimiser_service.threading.Thread", _ImmediateThread),
-        patch.object(service, "_execute_pipeline", return_value={"opt": scored_lf}),
+        patch.object(service, "_execute_pipeline", return_value={"source": scored_lf}),
         patch.object(
             service,
             "_validate_and_project",
@@ -4913,6 +4871,14 @@ def test_optimiser_extract_factors_sinks_without_projected_frame_budget() -> Non
 
     handle = OptimiserSolveService._extract_factors(
         {"band": pl.LazyFrame({"quote_id": ["q1"], "factor": ["A"]})},
+        PipelineGraph(
+            nodes=[
+                GraphNode(id="band", data=NodeData(label="band", nodeType="dataInput")),
+                GraphNode(id="opt", data=NodeData(label="opt", nodeType="optimiser")),
+            ],
+            edges=[GraphEdge(id="e_band_opt", source="band", target="opt")],
+        ),
+        "opt",
         {"banding_source": "band", "factor_columns": [["factor"]]},
         "ratebook",
         execution_context=context,

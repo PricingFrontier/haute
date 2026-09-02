@@ -146,12 +146,7 @@ def _branch_join_graph(
                 "data": {
                     "label": "join",
                     "nodeType": "edgeJoin",
-                    "config": {
-                        "baseInput": "left",
-                        "joinInput": "right",
-                        "how": "inner",
-                        "on": "key",
-                    },
+                    "config": {"how": "inner", "on": "key"},
                 },
             }
         ),
@@ -188,12 +183,7 @@ def _same_origin_branch_join_graph(tmp_path):
                         "data": {
                             "label": "join",
                             "nodeType": "edgeJoin",
-                            "config": {
-                                "baseInput": "base",
-                                "joinInput": "side",
-                                "how": "inner",
-                                "on": "key",
-                            },
+                            "config": {"how": "inner", "on": "key"},
                         },
                     }
                 ),

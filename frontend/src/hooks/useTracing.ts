@@ -7,6 +7,7 @@ import {
   isSubmodelDefinition,
   isSubmodelInstanceConfig,
   nodeData,
+  type NodeStatus,
 } from "../types/node"
 import { traceCell } from "../api/client"
 import { resolveGraphFromRefs } from "../utils/buildGraph"
@@ -39,7 +40,7 @@ interface TracingParams {
   activeSubmodelIdentity: DrilledOccurrenceIdentity | null
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   preambleRef: React.MutableRefObject<string>
-  nodeStatuses: Record<string, "ok" | "error" | "running">
+  nodeStatuses: Record<string, NodeStatus>
   hoveredNodeId: string | null
   refreshPreview?: (node: Node) => void
 }
@@ -595,7 +596,7 @@ export default function useTracing({
   // Map can't grow without bound.
   interface CachedProjection {
     source: Node
-    status: "ok" | "error" | "running" | undefined
+    status: NodeStatus | undefined
     traceActive: boolean
     traceDimmed: boolean
     hoverDimmed: boolean

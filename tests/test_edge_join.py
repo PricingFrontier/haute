@@ -10,6 +10,7 @@ import pytest
 
 from haute._config_validation import VALID_KEYS, warn_unrecognized_config_keys
 from haute._edge_join import (
+    build_edge_join_kwargs,
     edge_join_config_to_decorator_kwargs,
     execute_edge_join,
     resolve_edge_join_role_indices,
@@ -46,7 +47,7 @@ def _build_edge_join(
         _edge_join_node(config),
         source_ids=source_ids,
         source_names=source_names or source_ids,
-        target_handles=target_handles,
+        target_handles=target_handles or ["base", "join"],
     )
 
 
@@ -62,13 +63,12 @@ def test_edge_join_node_type_and_decorator_contract() -> None:
 
     pipeline = Pipeline("joins")
 
-    @pipeline.edge_join(base_input="quotes", join_input="lookup", how="left", on=["region"])
+    @pipeline.edge_join(how="left", on=["region"])
     def join_rates(quotes: pl.LazyFrame, lookup: pl.LazyFrame) -> pl.LazyFrame:
         return quotes.join(lookup, on="region", how="left")
 
     node = pipeline.nodes[0]
     assert node.config["_node_type"] is NodeType.EDGE_JOIN
-    assert node.config["baseInput"] == "quotes"
 
 
 def test_execute_edge_join_collects_two_eager_frames_when_requested() -> None:
@@ -94,8 +94,6 @@ def test_edge_join_decorator_registers_original_function_like_other_nodes() -> N
         return quotes
 
     registered = pipeline.edge_join(
-        base_input="quotes",
-        join_input="lookup",
         how="left",
         on=["region"],
     )(join_rates)
@@ -107,7 +105,7 @@ def test_edge_join_decorator_registers_original_function_like_other_nodes() -> N
 def test_edge_join_invalid_config_fails_when_shared_helper_runs() -> None:
     pipeline = Pipeline("joins")
 
-    @pipeline.edge_join(base_input="quotes", join_input="lookup")
+    @pipeline.edge_join
     def join_rates(quotes: pl.LazyFrame, lookup: pl.LazyFrame) -> pl.LazyFrame:
         return pipeline._apply_edge_join("join_rates", quotes, lookup)
 
@@ -118,8 +116,6 @@ def test_edge_join_invalid_config_fails_when_shared_helper_runs() -> None:
 
 def test_edge_join_config_keys_are_registered() -> None:
     expected = {
-        "baseInput",
-        "joinInput",
         "how",
         "on",
         "leftOn",
@@ -130,12 +126,12 @@ def test_edge_join_config_keys_are_registered() -> None:
         "maintainOrder",
     }
     assert expected <= VALID_KEYS[NodeType.EDGE_JOIN]
+    assert "baseInput" not in VALID_KEYS[NodeType.EDGE_JOIN]
+    assert "joinInput" not in VALID_KEYS[NodeType.EDGE_JOIN]
     assert (
         warn_unrecognized_config_keys(
             NodeType.EDGE_JOIN,
             {
-                "baseInput": "quotes",
-                "joinInput": "lookup",
                 "how": "left",
                 "on": ["region"],
                 "suffix": "_lookup",
@@ -164,8 +160,6 @@ def lookup() -> pl.LazyFrame:
 
 
 @pipeline.edge_join(
-    base_input="quotes",
-    join_input="lookup",
     how="left",
     left_on=["region"],
     right_on=["rating_region"],
@@ -183,15 +177,13 @@ def join_rates(quotes: pl.LazyFrame, lookup: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
-pipeline.connect("lookup", "join_rates")
-pipeline.connect("quotes", "join_rates")
+pipeline.connect("lookup", "join_rates", target_port="join")
+pipeline.connect("quotes", "join_rates", target_port="base")
 """
     graph = parse_pipeline_file(_write_pipeline(tmp_path, code))
     node = graph.node_map["join_rates"]
     assert node.data.nodeType is NodeType.EDGE_JOIN
     assert node.data.config == {
-        "baseInput": "quotes",
-        "joinInput": "lookup",
         "how": "left",
         "leftOn": ["region"],
         "rightOn": ["rating_region"],
@@ -228,8 +220,6 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(tmp_path: P
             ),
             _edge_join_node(
                 {
-                    "baseInput": "quotes",
-                    "joinInput": "lookup",
                     "how": "left",
                     "on": ["region"],
                     "suffix": "_lookup",
@@ -245,8 +235,8 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(tmp_path: P
     code = graph_to_code(graph, pipeline_name="joins")
 
     assert "@pipeline.edge_join(" in code
-    assert 'base_input="quotes"' in code
-    assert 'join_input="lookup"' in code
+    assert "base_input=" not in code
+    assert "join_input=" not in code
     assert "on=['region']" in code
     assert ".join(" not in code
     assert 'return pipeline._apply_edge_join("Join_Rates", quotes, lookup)' in code
@@ -278,8 +268,8 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(tmp_path: P
     parsed = parse_pipeline_file(_write_pipeline(tmp_path, code))
     parsed_join = parsed.node_map["Join_Rates"]
     assert parsed_join.data.nodeType is NodeType.EDGE_JOIN
-    assert parsed_join.data.config["baseInput"] == "quotes"
-    assert parsed_join.data.config["joinInput"] == "lookup"
+    assert "baseInput" not in parsed_join.data.config
+    assert "joinInput" not in parsed_join.data.config
     parsed_edges = {(edge.source, edge.target): edge for edge in parsed.edges}
     assert parsed_edges[("quotes", "Join_Rates")].targetHandle == "base"
     assert parsed_edges[("lookup", "Join_Rates")].targetHandle == "join"
@@ -328,8 +318,6 @@ def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
             ),
             _edge_join_node(
                 {
-                    "baseInput": "dataInput_5",
-                    "joinInput": "polars_2",
                     "how": "left",
                     "on": ["region"],
                 }
@@ -358,20 +346,22 @@ def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
     parsed_join = parsed.node_map["Join_Rates"]
     parsed_source_ids = [edge.source for edge in parsed.edges if edge.target == "Join_Rates"]
 
-    # The reloaded roles must resolve against the sanitized node ids.
+    # The reloaded roles must remain on the physical incoming edges.
+    parsed_target_handles = [
+        edge.targetHandle for edge in parsed.edges if edge.target == "Join_Rates"
+    ]
     base_index, join_index = resolve_edge_join_role_indices(
-        parsed_join.data.config,
-        parsed_source_ids,
+        parsed_target_handles,
     )
     assert parsed_source_ids[base_index] == "Data_Source_5"
     assert parsed_source_ids[join_index] == "Enrich_Step"
 
-    assert 'base_input="Data_Source_5"' in code
-    assert 'join_input="Enrich_Step"' in code
+    assert "base_input=" not in code
+    assert "join_input=" not in code
     assert "dataInput_5" not in code
     assert "polars_2" not in code
-    assert parsed_join.data.config["baseInput"] == "Data_Source_5"
-    assert parsed_join.data.config["joinInput"] == "Enrich_Step"
+    assert "baseInput" not in parsed_join.data.config
+    assert "joinInput" not in parsed_join.data.config
 
     # Preview off the generated module produces the joined frame.
     namespace = {"__file__": str(path)}
@@ -384,7 +374,7 @@ def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
     assert _edge_join_decorator_line(resaved) == _edge_join_decorator_line(code)
 
 
-def test_edge_join_codegen_fails_loudly_when_role_references_missing_node() -> None:
+def test_edge_join_codegen_fails_loudly_when_base_role_handle_is_missing() -> None:
     graph = PipelineGraph(
         nodes=[
             GraphNode(
@@ -397,8 +387,6 @@ def test_edge_join_codegen_fails_loudly_when_role_references_missing_node() -> N
             ),
             _edge_join_node(
                 {
-                    "baseInput": "ghost_7",
-                    "joinInput": "lookup",
                     "how": "left",
                     "on": ["region"],
                 }
@@ -406,43 +394,56 @@ def test_edge_join_codegen_fails_loudly_when_role_references_missing_node() -> N
         ],
         edges=[
             GraphEdge(id="e_quotes_join", source="quotes", target="join"),
-            GraphEdge(id="e_lookup_join", source="lookup", target="join"),
+            GraphEdge(id="e_lookup_join", source="lookup", target="join", targetHandle="join"),
         ],
     )
 
-    with pytest.raises(ConfigError, match="not connected") as exc_info:
+    with pytest.raises(ConfigError, match="targetHandle.*base.*join"):
         graph_to_code(graph, pipeline_name="joins")
-    assert exc_info.value.context["missing"] == ["ghost_7"]
 
 
-def test_edge_join_codegen_fails_loudly_when_base_and_join_share_a_node() -> None:
+def test_edge_join_codegen_allows_distinct_frames_from_one_api_input_node() -> None:
     graph = PipelineGraph(
         nodes=[
             GraphNode(
-                id="quotes",
-                data=NodeData(label="quotes", nodeType=NodeType.CONSTANT, config={}),
-            ),
-            GraphNode(
-                id="lookup",
-                data=NodeData(label="lookup", nodeType=NodeType.CONSTANT, config={}),
+                id="request",
+                data=NodeData(label="request", nodeType=NodeType.API_INPUT, config={}),
             ),
             _edge_join_node(
                 {
-                    "baseInput": "quotes",
-                    "joinInput": "quotes",
                     "how": "left",
                     "on": ["region"],
                 }
             ),
         ],
         edges=[
-            GraphEdge(id="e_quotes_join", source="quotes", target="join"),
-            GraphEdge(id="e_lookup_join", source="lookup", target="join"),
+            GraphEdge(
+                id="e_quotes_join",
+                source="request",
+                sourceHandle="quotes",
+                target="join",
+                targetHandle="base",
+            ),
+            GraphEdge(
+                id="e_lookup_join",
+                source="request",
+                sourceHandle="lookup",
+                target="join",
+                targetHandle="join",
+            ),
         ],
     )
 
-    with pytest.raises(ConfigError, match="distinct"):
-        graph_to_code(graph, pipeline_name="joins")
+    code = graph_to_code(graph, pipeline_name="joins")
+
+    assert (
+        'pipeline.connect("request", "Join_Rates", source_port="quotes", target_port="base")'
+        in code
+    )
+    assert (
+        'pipeline.connect("request", "Join_Rates", source_port="lookup", target_port="join")'
+        in code
+    )
 
 
 def _submodel_edge_join_graph() -> PipelineGraph:
@@ -487,8 +488,6 @@ def _submodel_edge_join_graph() -> PipelineGraph:
                                 "label": "Join",
                                 "nodeType": "edgeJoin",
                                 "config": {
-                                    "baseInput": "base",
-                                    "joinInput": "lookup",
                                     "how": "left",
                                     "on": ["id"],
                                 },
@@ -533,12 +532,15 @@ def test_submodel_parent_codegen_preserves_external_edge_join_target_role() -> N
     assert "submodel._apply_edge_join" in files["modules/rating.py"]
 
 
-def test_submodel_edge_join_decorator_kwargs_use_public_input_identity() -> None:
-    """A child edge join names a boundary input by its declared public port id."""
+def test_submodel_edge_join_codegen_uses_public_input_role_edge() -> None:
+    """A child edge join carries its boundary role on the generated connect."""
     files = graph_to_code_multi(_submodel_edge_join_graph(), pipeline_name="main")
 
-    assert 'base_input="base"' in files["modules/rating.py"]
-    assert 'join_input="Lookup"' in files["modules/rating.py"]
+    module = files["modules/rating.py"]
+    assert "base_input=" not in module
+    assert "join_input=" not in module
+    assert "'targets': [{'nodeId': 'join', 'handleId': 'base'}]" in module
+    assert 'submodel.connect("Lookup", "Join", target_port="join")' in module
 
 
 def _external_edge_join_with_groupable_inputs() -> PipelineGraph:
@@ -574,8 +576,6 @@ def _external_edge_join_with_groupable_inputs() -> PipelineGraph:
                     label="Join",
                     nodeType=NodeType.EDGE_JOIN,
                     config={
-                        "baseInput": "base",
-                        "joinInput": "lookup",
                         "how": "left",
                         "on": ["id"],
                     },
@@ -623,25 +623,15 @@ def test_submodel_parent_codegen_resolves_external_edge_join_source_roles(
     definition = result.graph.submodels[occurrence.data.config["definitionId"]]
     output_port_by_source = {port.source.node_id: port.port_id for port in definition.output_ports}
 
-    def role_identity(source_id: str) -> str:
-        if source_id not in selected_ids:
-            return source_id
-        return f"inputs__{output_port_by_source[source_id]}"
-
-    expected_base_id = role_identity("base")
-    expected_join_id = role_identity("lookup")
     join_config = result.graph.node_map["join"].data.config
-    assert join_config["baseInput"] == expected_base_id
-    assert join_config["joinInput"] == expected_join_id
+    assert "baseInput" not in join_config
+    assert "joinInput" not in join_config
 
     files = graph_to_code_multi(result.graph, pipeline_name="main")
 
     main = files["main.py"]
-    expected_base_name = expected_base_id if "base" in selected_ids else "Base"
-    expected_join_name = expected_join_id if "lookup" in selected_ids else "Lookup"
-    assert (
-        f'@pipeline.edge_join(base_input="{expected_base_name}", join_input="{expected_join_name}"'
-    ) in main
+    assert "base_input=" not in main
+    assert "join_input=" not in main
     for source_id, target_port, root_name in (
         ("base", "base", "Base"),
         ("lookup", "join", "Lookup"),
@@ -661,10 +651,15 @@ def test_submodel_parent_codegen_resolves_external_edge_join_source_roles(
 
     flattened = flatten_graph(result.graph)
     flattened_join_config = flattened.node_map["join"].data.config
-    assert flattened_join_config["baseInput"] == (
+    assert "baseInput" not in flattened_join_config
+    assert "joinInput" not in flattened_join_config
+    flattened_sources_by_role = {
+        edge.targetHandle: edge.source for edge in flattened.edges if edge.target == "join"
+    }
+    assert flattened_sources_by_role["base"] == (
         qualified_runtime_node_id(occurrence.id, "base") if "base" in selected_ids else "base"
     )
-    assert flattened_join_config["joinInput"] == (
+    assert flattened_sources_by_role["join"] == (
         qualified_runtime_node_id(occurrence.id, "lookup") if "lookup" in selected_ids else "lookup"
     )
     graph_to_code(flattened, pipeline_name="main")
@@ -688,7 +683,6 @@ def test_flattening_submodel_restores_external_edge_join_target_role() -> None:
     flattened = flatten_graph(_submodel_edge_join_graph())
 
     join_id = qualified_runtime_node_id("rating-instance", "join")
-    lookup_id = qualified_runtime_node_id("rating-instance", "lookup")
     edge = next(
         candidate
         for candidate in flattened.edges
@@ -696,8 +690,8 @@ def test_flattening_submodel_restores_external_edge_join_target_role() -> None:
     )
     assert edge.targetHandle == "base"
     join_config = flattened.node_map[join_id].data.config
-    assert join_config["baseInput"] == "src"
-    assert join_config["joinInput"] == lookup_id
+    assert "baseInput" not in join_config
+    assert "joinInput" not in join_config
     graph_to_code(flattened, pipeline_name="main")
 
 
@@ -712,7 +706,7 @@ def test_edge_join_pipeline_run_honours_configured_roles_for_reversed_connects()
     def lookup() -> pl.DataFrame:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
-    @pipeline.edge_join(base_input="quotes", join_input="lookup", how="left", on=["region"])
+    @pipeline.edge_join(how="left", on=["region"])
     def join_rates(base: pl.DataFrame, join: pl.DataFrame) -> pl.DataFrame:
         return base.lazy().join(join.lazy(), on="region", how="left").collect()
 
@@ -736,7 +730,7 @@ def test_edge_join_pipeline_run_calls_function_body_like_other_nodes() -> None:
     def lookup() -> pl.DataFrame:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
-    @pipeline.edge_join(base_input="quotes", join_input="lookup", how="left", on=["region"])
+    @pipeline.edge_join(how="left", on=["region"])
     def join_rates(base: pl.DataFrame, _join: pl.DataFrame) -> pl.DataFrame:
         return base.with_columns(pl.lit("called").alias("body_result"))
 
@@ -761,7 +755,7 @@ def test_edge_join_pipeline_run_can_use_shared_edge_join_helper() -> None:
     def lookup() -> pl.DataFrame:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
-    @pipeline.edge_join(base_input="quotes", join_input="lookup", how="left", on=["region"])
+    @pipeline.edge_join(how="left", on=["region"])
     def join_rates(base: pl.DataFrame, join: pl.DataFrame) -> pl.DataFrame:
         return pipeline._apply_edge_join("join_rates", base, join)
 
@@ -785,7 +779,7 @@ def test_edge_join_pipeline_score_can_use_shared_edge_join_helper() -> None:
     def lookup() -> pl.DataFrame:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
-    @pipeline.edge_join(base_input="quotes", join_input="lookup", how="left", on=["region"])
+    @pipeline.edge_join(how="left", on=["region"])
     def join_rates(base: pl.DataFrame, join: pl.DataFrame) -> pl.DataFrame:
         return pipeline._apply_edge_join("join_rates", base, join)
 
@@ -798,16 +792,42 @@ def test_edge_join_pipeline_score_can_use_shared_edge_join_helper() -> None:
     assert result["factor"].to_list() == [1.1, 0.9, None]
 
 
-def test_edge_join_builder_joins_by_configured_source_ids() -> None:
+def test_codegen_edge_join_uses_ports_without_legacy_role_decorator_args() -> None:
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="quotes",
+                data=NodeData(label="quotes", nodeType=NodeType.CONSTANT, config={"values": []}),
+            ),
+            GraphNode(
+                id="lookup",
+                data=NodeData(label="lookup", nodeType=NodeType.CONSTANT, config={"values": []}),
+            ),
+            _edge_join_node({"how": "left", "on": ["region"]}),
+        ],
+        edges=[
+            GraphEdge(id="lookup_join", source="lookup", target="join", targetHandle="join"),
+            GraphEdge(id="quotes_join", source="quotes", target="join", targetHandle="base"),
+        ],
+    )
+
+    code = graph_to_code(graph, pipeline_name="joins")
+
+    assert "base_input=" not in code
+    assert "join_input=" not in code
+    assert 'pipeline.connect("quotes", "Join_Rates", target_port="base")' in code
+    assert 'pipeline.connect("lookup", "Join_Rates", target_port="join")' in code
+
+
+def test_edge_join_builder_joins_by_target_handle_roles() -> None:
     _, fn, is_source = _build_edge_join(
         {
-            "baseInput": "quotes",
-            "joinInput": "lookup",
             "how": "left",
             "on": ["region"],
             "suffix": "_lookup",
         },
         source_ids=["lookup", "quotes"],
+        target_handles=["join", "base"],
     )
     assert is_source is False
 
@@ -823,8 +843,6 @@ def test_edge_join_builder_joins_by_configured_source_ids() -> None:
 def test_edge_join_builder_supports_left_on_right_on() -> None:
     _, fn, _ = _build_edge_join(
         {
-            "baseInput": "quotes",
-            "joinInput": "lookup",
             "how": "inner",
             "leftOn": ["region"],
             "rightOn": ["rating_region"],
@@ -840,21 +858,27 @@ def test_edge_join_builder_supports_left_on_right_on() -> None:
     assert result["factor"].to_list() == [1.1]
 
 
-def test_edge_join_builder_rejects_target_handle_role_mismatch() -> None:
-    with pytest.raises(ConfigError, match="targetHandle.*baseInput"):
+def test_edge_join_builder_rejects_duplicate_target_handle_roles() -> None:
+    with pytest.raises(ConfigError, match="targetHandle.*base.*join"):
         _build_edge_join(
             {
-                "baseInput": "quotes",
-                "joinInput": "lookup",
                 "how": "left",
                 "on": ["region"],
             },
             source_ids=["quotes", "lookup"],
-            target_handles=["join", "base"],
+            target_handles=["join", "join"],
         )
 
 
-def test_edge_join_codegen_rejects_target_handle_role_mismatch() -> None:
+@pytest.mark.parametrize("target_handles", [None, ["base"], ["base", "join", "join"]])
+def test_edge_join_roles_require_exactly_two_target_handles(
+    target_handles: list[str] | None,
+) -> None:
+    with pytest.raises(ConfigError, match="exactly two incoming target handles"):
+        resolve_edge_join_role_indices(target_handles)
+
+
+def test_edge_join_codegen_rejects_duplicate_target_handle_roles() -> None:
     graph = PipelineGraph(
         nodes=[
             GraphNode(
@@ -867,8 +891,6 @@ def test_edge_join_codegen_rejects_target_handle_role_mismatch() -> None:
             ),
             _edge_join_node(
                 {
-                    "baseInput": "quotes",
-                    "joinInput": "lookup",
                     "how": "left",
                     "on": ["region"],
                 }
@@ -876,23 +898,20 @@ def test_edge_join_codegen_rejects_target_handle_role_mismatch() -> None:
         ],
         edges=[
             GraphEdge(id="e_quotes_join", source="quotes", target="join", targetHandle="join"),
-            GraphEdge(id="e_lookup_join", source="lookup", target="join", targetHandle="base"),
+            GraphEdge(id="e_lookup_join", source="lookup", target="join", targetHandle="join"),
         ],
     )
 
-    with pytest.raises(ConfigError, match="targetHandle.*baseInput"):
+    with pytest.raises(ConfigError, match="targetHandle.*base.*join"):
         graph_to_code(graph, pipeline_name="joins")
 
 
 @pytest.mark.parametrize(
     ("config", "message"),
     [
-        ({"joinInput": "lookup", "on": ["region"]}, "baseInput"),
-        ({"baseInput": "quotes", "joinInput": "lookup", "how": "cross", "on": ["region"]}, "cross"),
+        ({"how": "cross", "on": ["region"]}, "cross"),
         (
             {
-                "baseInput": "quotes",
-                "joinInput": "lookup",
                 "on": ["region"],
                 "leftOn": ["region"],
             },
@@ -900,16 +919,12 @@ def test_edge_join_codegen_rejects_target_handle_role_mismatch() -> None:
         ),
         (
             {
-                "baseInput": "quotes",
-                "joinInput": "lookup",
                 "leftOn": ["region", "vehicle"],
                 "rightOn": ["rating_region"],
             },
             "same number",
         ),
-        ({"baseInput": "quotes", "joinInput": "lookup"}, "join keys"),
-        ({"baseInput": "quotes", "joinInput": "missing", "on": ["region"]}, "not connected"),
-        ({"baseInput": "quotes", "joinInput": "quotes", "on": ["region"]}, "distinct"),
+        ({}, "join keys"),
     ],
 )
 def test_edge_join_builder_invalid_config_fails_loudly(
@@ -950,7 +965,7 @@ def _run_builder_edge_join(
 ) -> pl.DataFrame:
     """Execute through the graph-executor builder surface (lazy join)."""
     _, fn, _ = _build_edge_join(
-        {**config, "baseInput": "base_src", "joinInput": "lookup_src"},
+        config,
         source_ids=["base_src", "lookup_src"],
     )
     return fn(base_df.lazy(), join_df.lazy()).collect()
@@ -977,11 +992,7 @@ def _run_pipeline_edge_join(
     def lookup_src() -> pl.DataFrame:
         return join_df
 
-    decorator_kwargs = dict(
-        edge_join_config_to_decorator_kwargs(
-            {**config, "baseInput": "base_src", "joinInput": "lookup_src"}
-        )
-    )
+    decorator_kwargs = dict(edge_join_config_to_decorator_kwargs(config))
 
     @pipeline.edge_join(**decorator_kwargs)
     def joined(base_src: pl.DataFrame, lookup_src: pl.DataFrame) -> pl.DataFrame:
@@ -1461,8 +1472,6 @@ def test_edge_join_runtime_validate_violation_attributed_to_join_node_in_graph_e
             ),
             _edge_join_node(
                 {
-                    "baseInput": "base_src",
-                    "joinInput": "lookup_src",
                     "how": "left",
                     "on": ["k"],
                     "validate": "1:1",
@@ -1509,14 +1518,44 @@ def test_edge_join_runtime_numeric_key_widths_upcast_to_supertype() -> None:
 
 
 def test_edge_join_rejects_handleless_incoming_edges() -> None:
-    with pytest.raises(ConfigError, match="targetHandle.*required"):
+    with pytest.raises(ConfigError, match="targetHandle.*base.*join"):
         _build_edge_join(
             {
-                "baseInput": "quotes",
-                "joinInput": "lookup",
                 "how": "left",
                 "on": ["region"],
             },
             source_ids=["quotes", "lookup"],
             target_handles=[None, None],
         )
+
+
+def test_edge_join_roles_come_from_target_handles_even_when_source_ids_match() -> None:
+    """Two API frames may originate at one API node but occupy different roles."""
+    _, fn, _ = _build_edge_join(
+        {"how": "left", "on": ["region"]},
+        source_ids=["api_request", "api_request"],
+        source_names=["lookup_frame", "quotes_frame"],
+        target_handles=["join", "base"],
+    )
+
+    lookup = pl.DataFrame({"region": ["N"], "factor": [1.1]}).lazy()
+    quotes = pl.DataFrame({"region": ["N", "S"], "quote_id": [1, 2]}).lazy()
+    result = fn(lookup, quotes).collect()
+
+    assert result["quote_id"].to_list() == [1, 2]
+    assert result["factor"].to_list() == [1.1, None]
+
+
+@pytest.mark.parametrize("role_key", ["baseInput", "joinInput"])
+def test_edge_join_rejects_legacy_config_role_selectors(role_key: str) -> None:
+    config = {"how": "left", "on": ["region"], role_key: "legacy-source"}
+
+    with pytest.raises(ConfigError, match=role_key):
+        build_edge_join_kwargs(config)
+
+
+def test_edge_join_decorator_rejects_legacy_role_selector_arguments() -> None:
+    pipeline = Pipeline("joins")
+
+    with pytest.raises(ConfigError, match="base_input"):
+        pipeline.edge_join(base_input="quotes", how="left", on=["region"])

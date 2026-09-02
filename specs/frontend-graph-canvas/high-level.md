@@ -138,8 +138,10 @@ well as occurrence-specific positions and bindings.
   use the same semibold primary-text typography as node names.
 - **Visual state.** Nodes show: a selection border; a dashed border for
   submodel instances; a "LIVE" badge on live-switch nodes when the active
-  data source is live; a status dot for ok/error/running; a warning dot for
-  schema warnings (suppressed when status is error); trace-active/dimmed/
+  data source is live; one run-status dot that is green for a clean success,
+  yellow for a successful run with an execution or schema warning, red for an
+  error, and pulsing while running; a standalone yellow warning dot only when
+  schema warnings exist without a completed run status; trace-active/dimmed/
   hover-dimmed opacity and glow; and, in the read-only comparison view, a
   diff ring (solid glow for added/removed/changed, dashed outline for
   moved-only). Edge-join status and warning dots stay within the visible

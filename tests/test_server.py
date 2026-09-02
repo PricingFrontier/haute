@@ -445,8 +445,6 @@ class TestPreviewNode:
                         "label": "Join Rates",
                         "nodeType": "edgeJoin",
                         "config": {
-                            "baseInput": "quotes",
-                            "joinInput": "lookup",
                             "how": "left",
                         },
                     },

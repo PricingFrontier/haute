@@ -978,12 +978,12 @@ describe("usePipelineAPI", () => {
   it.each([
     [
       "non-cross joins without keys",
-      { baseInput: "quotes", joinInput: "lookup", how: "left" },
+      { how: "left" },
       "Non-cross joins need join keys.",
     ],
     [
       "cross joins with keys",
-      { baseInput: "quotes", joinInput: "lookup", how: "cross", on: ["policy_id"] },
+      { how: "cross", on: ["policy_id"] },
       "Cross joins must not configure join keys.",
     ],
   ])("handleSave blocks invalid edgeJoin config before posting for %s", async (_caseName, config, message) => {
@@ -1722,6 +1722,82 @@ describe("usePipelineAPI", () => {
     })
     // Wait for the async preview to resolve
     await waitFor(() => expect(result.current.nodeStatuses).toEqual({ n1: "ok", n0: "ok" }))
+  })
+
+  it("promotes the node owning a projection warning to warning-complete", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
+    mockPreview.mockResolvedValue({
+      node_id: "n1",
+      status: "ok",
+      columns: [{ name: "a", dtype: "f64" }],
+      preview: [{ a: 1 }],
+      row_count: 1,
+      column_count: 1,
+      node_statuses: { n1: "ok", n0: "ok" },
+      execution_metrics: makeExecutionMetricsFixture({
+        memory_pressure_event_count: 0,
+        retained_memory_pressure_event_count: 0,
+        memory_pressure_events: [],
+        execution_strategy: {
+          schema_version: 1,
+          status: "boundary",
+          strategy: "unprojected-streaming-boundary",
+          profile: "preview_eager",
+          boundedness: "bounded",
+          reason_code: "unprojected_streaming_boundary",
+          detail_state: "available",
+          boundaries: {
+            state: "available",
+            total_count: 1,
+            items: [{
+              topological_rank: 0,
+              node_id: "n0",
+              operator: "dataInput",
+              boundary_kind: "unprojected-streaming-boundary",
+            }],
+          },
+          reasons: { state: "available", total_count: 0, items: [] },
+          provenance: { state: "available", total_count: 0, items: [] },
+          blocking_node_id: "n0",
+          blocking_operator: "dataInput",
+          remediation: "Define the input columns.",
+        },
+      }),
+    })
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(makeNode("n1"), { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.nodeStatuses).toEqual({ n1: "warning", n0: "warning" }))
+  })
+
+  it("promotes successful schema-warning results to warning-complete", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
+    mockPreview.mockResolvedValue({
+      node_id: "n1",
+      status: "ok",
+      columns: [{ name: "a", dtype: "f64" }],
+      preview: [{ a: 1 }],
+      row_count: 1,
+      column_count: 1,
+      node_statuses: { n1: "ok", n0: "ok" },
+      node_schema_warnings: {
+        n0: [{ column: "legacy", status: "extra" }],
+      },
+    })
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(makeNode("n1"), { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.nodeStatuses).toEqual({ n1: "ok", n0: "warning" }))
   })
 
   it("fetchPreview writes preview schema through the raw node setter", async () => {

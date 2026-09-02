@@ -148,9 +148,10 @@ execution, lint, deploy, or strict post-save verification.
 **Sidecar write path.** `_config_io.collect_node_configs(graph)` walks a `PipelineGraph`,
 skips node types without a config folder, instance nodes (`config["instanceOf"]` set), and
 nodes flagged `config["_load_error"]` (protects the on-disk file from a bad in-memory state
-clobbering it), remaps `optimiserApply.ratebook_input` from a GUI node id to the codegen-
-stable id via `_remap_config_ids_for_saved_graph` (logging a WARNING and leaving the config
-unchanged if the referenced upstream node can't be resolved), filters each config through
+clobbering it), preserves exact incoming-edge names in Optimiser and Optimiser Apply config
+without node-id remapping. Before allowlist filtering, known removed identity fields are rejected:
+Edge Join's `baseInput`/`joinInput` and Optimiser's `scored_input`/`factors_input` never become a
+silent write-time migration. Each accepted config is then filtered through
 `_prepare_config_for_sidecar` (strips `code`/`_`-prefixed keys recursively via
 `_strip_internal_keys`, applies the `VALID_KEYS` allowlist — logging any dropped keys at
 WARNING — then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result

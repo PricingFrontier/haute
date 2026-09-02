@@ -1,11 +1,6 @@
-import {
-  EDGE_JOIN_BASE_CONFIG_KEY,
-  EDGE_JOIN_BASE_HANDLE,
-  EDGE_JOIN_JOIN_CONFIG_KEY,
-  EDGE_JOIN_JOIN_HANDLE,
-  edgeJoinCanonicalTargetHandle,
-} from "./edgeJoinRoles"
+import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_HANDLE, edgeJoinCanonicalTargetHandle } from "./edgeJoinRoles"
 import { NODE_TYPE_META, NODE_TYPES } from "./nodeTypes"
+import { apiInputFrameColumns } from "./apiInputPorts"
 
 export type EdgeJoinColumnInfo = {
   name: string
@@ -27,12 +22,8 @@ export type EdgeJoinValidationEdge = {
   id: string
   source: string
   target: string
+  sourceHandle?: string | null
   targetHandle?: string | null
-}
-
-export type EdgeJoinConnectedInput = {
-  sourceId: string
-  label: string
 }
 
 export type EdgeJoinAnalysis = {
@@ -42,11 +33,8 @@ export type EdgeJoinAnalysis = {
   joinRoleEdges: EdgeJoinValidationEdge[]
   baseRoleEdge?: EdgeJoinValidationEdge
   joinRoleEdge?: EdgeJoinValidationEdge
-  connectedInputs: EdgeJoinConnectedInput[]
   baseRoleInput: string
   joinRoleInput: string
-  baseInput: string
-  joinInput: string
   how: string
   suffix: string
   onKeys: string[]
@@ -102,9 +90,9 @@ export function analyzeEdgeJoinNode({
   const baseRoleInput = baseRoleEdge?.source ?? ""
   const joinRoleInput = joinRoleEdge?.source ?? ""
 
-  const connectedInputs = uniqueConnectedInputs(incomingEdges, nodeMap)
-  const baseInput = readOptionalString(config[EDGE_JOIN_BASE_CONFIG_KEY], EDGE_JOIN_BASE_CONFIG_KEY, diagnostics)
-  const joinInput = readOptionalString(config[EDGE_JOIN_JOIN_CONFIG_KEY], EDGE_JOIN_JOIN_CONFIG_KEY, diagnostics)
+  if (Object.hasOwn(config, "baseInput") || Object.hasOwn(config, "joinInput")) {
+    diagnostics.push("Edge Join input roles are stored on incoming edge handles; remove legacy baseInput/joinInput config.")
+  }
   const how = readJoinHow(config.how, diagnostics)
   const suffix = readOptionalString(config.suffix, "suffix", diagnostics) || String(EDGE_JOIN_DEFAULT_CONFIG.suffix)
   const onKeys = readKeyList(config.on, "on", diagnostics)
@@ -116,23 +104,17 @@ export function analyzeEdgeJoinNode({
 
   addRoleDiagnostics({
     diagnostics,
-    baseInput,
-    joinInput,
     incomingEdges,
     baseRoleEdges,
     joinRoleEdges,
-    baseRoleEdge,
-    joinRoleEdge,
-    connectedInputs,
-    nodeMap,
   })
 
   const hasSameConfig = onKeys.length > 0
   const hasPairedConfig = leftKeys.length > 0 || rightKeys.length > 0
   const hasSameValues = onKeys.some(Boolean)
   const hasPairedValues = leftKeys.some(Boolean) || rightKeys.some(Boolean)
-  const baseColumns = getColumns(nodeMap.get(baseRoleInput || baseInput))
-  const joinColumns = getColumns(nodeMap.get(joinRoleInput || joinInput))
+  const baseColumns = getColumns(baseRoleEdge, nodeMap.get(baseRoleInput))
+  const joinColumns = getColumns(joinRoleEdge, nodeMap.get(joinRoleInput))
   const commonColumns = commonColumnOptions(baseColumns, joinColumns)
 
   if (hasSameConfig && hasPairedConfig) {
@@ -161,11 +143,8 @@ export function analyzeEdgeJoinNode({
     joinRoleEdges,
     baseRoleEdge,
     joinRoleEdge,
-    connectedInputs,
     baseRoleInput,
     joinRoleInput,
-    baseInput,
-    joinInput,
     how,
     suffix,
     onKeys,
@@ -250,7 +229,13 @@ function readKeyList(value: unknown, field: string, diagnostics: string[]): stri
   return []
 }
 
-function getColumns(node: EdgeJoinValidationNode | undefined): EdgeJoinColumnInfo[] {
+function getColumns(
+  edge: EdgeJoinValidationEdge | undefined,
+  node: EdgeJoinValidationNode | undefined,
+): EdgeJoinColumnInfo[] {
+  if (edge && node?.data?.nodeType === NODE_TYPES.API_INPUT && Array.isArray(node.data.config?.tables)) {
+    return apiInputFrameColumns(node.data.config, edge.sourceHandle)
+  }
   return node?.data?._columns ?? []
 }
 
@@ -263,45 +248,16 @@ function commonColumnOptions(
   return baseColumns.filter((column) => joinNames.has(column.name))
 }
 
-function uniqueConnectedInputs(
-  edges: EdgeJoinValidationEdge[],
-  nodeMap: Map<string, EdgeJoinValidationNode>,
-): EdgeJoinConnectedInput[] {
-  const seen = new Set<string>()
-  const inputs: EdgeJoinConnectedInput[] = []
-  for (const edge of edges) {
-    if (seen.has(edge.source)) continue
-    seen.add(edge.source)
-    inputs.push({
-      sourceId: edge.source,
-      label: nodeLabel(edge.source, nodeMap),
-    })
-  }
-  return inputs
-}
-
 function addRoleDiagnostics({
   diagnostics,
-  baseInput,
-  joinInput,
   incomingEdges,
   baseRoleEdges,
   joinRoleEdges,
-  baseRoleEdge,
-  joinRoleEdge,
-  connectedInputs,
-  nodeMap,
 }: {
   diagnostics: string[]
-  baseInput: string
-  joinInput: string
   incomingEdges: EdgeJoinValidationEdge[]
   baseRoleEdges: EdgeJoinValidationEdge[]
   joinRoleEdges: EdgeJoinValidationEdge[]
-  baseRoleEdge?: EdgeJoinValidationEdge
-  joinRoleEdge?: EdgeJoinValidationEdge
-  connectedInputs: EdgeJoinConnectedInput[]
-  nodeMap: Map<string, EdgeJoinValidationNode>
 }) {
   if (incomingEdges.length !== 2) {
     diagnostics.push(`Edge joins need exactly two connected inputs; found ${incomingEdges.length}.`)
@@ -312,33 +268,6 @@ function addRoleDiagnostics({
   if (joinRoleEdges.length !== 1) {
     diagnostics.push("Connect exactly one input to the join handle.")
   }
-  if (!baseInput) diagnostics.push("baseInput must be configured.")
-  if (!joinInput) diagnostics.push("joinInput must be configured.")
-  if (baseInput && joinInput && baseInput === joinInput) {
-    diagnostics.push("baseInput and joinInput must be distinct.")
-  }
-
-  const connectedIds = new Set(connectedInputs.map((input) => input.sourceId))
-  if (baseInput && !connectedIds.has(baseInput)) {
-    diagnostics.push(`Base Input ${baseInput} is not connected to this edge join.`)
-  }
-  if (joinInput && !connectedIds.has(joinInput)) {
-    diagnostics.push(`Join Input ${joinInput} is not connected to this edge join.`)
-  }
-  if (baseInput && baseRoleEdge && baseInput !== baseRoleEdge.source) {
-    diagnostics.push(
-      `Base Input is set to ${baseInput}, but the connected base handle is ${nodeLabel(baseRoleEdge.source, nodeMap)}.`,
-    )
-  }
-  if (joinInput && joinRoleEdge && joinInput !== joinRoleEdge.source) {
-    diagnostics.push(
-      `Join Input is set to ${joinInput}, but the connected join handle is ${nodeLabel(joinRoleEdge.source, nodeMap)}.`,
-    )
-  }
-}
-
-function nodeLabel(nodeId: string, nodeMap: Map<string, EdgeJoinValidationNode>): string {
-  return nodeMap.get(nodeId)?.data?.label ?? nodeId
 }
 
 function addColumnDiagnostics(

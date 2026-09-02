@@ -13,7 +13,7 @@
 
 ## Key types and data structures
 
-- **`_NodeCodeFn`** (`codegen.py`) — `Callable[[GraphNode, list[str] | None, list[str] | None, list[str] | None], str]`; the injected per-node code generator (`_node_to_code` for pipelines, `_submodel_node_to_code` for submodel files), parameterizing `_generate_pipeline_lines` so both file kinds share one assembly routine. The fourth argument carries the per-edge source *function* names, kept alongside the edge-derived input names so edge-join role kwargs (`base_input`/`join_input`) can reference the connected source functions for parser reconstruction while the signature uses the input names.
+- **`_NodeCodeFn`** (`codegen.py`) — `Callable[[GraphNode, list[str] | None, list[str] | None], str]`; the injected per-node code generator (`_node_to_code` for pipelines, `_submodel_node_to_code` for submodel files), parameterizing `_generate_pipeline_lines` so both file kinds share one assembly routine. Edge Join input lists are ordered base-then-join from their role-bearing edges before this boundary; there is no parallel source-function-name channel.
 - **`_ConnectPair`** (`codegen.py`) — `tuple[str, str, str | None, str | None]`: `(src_func, tgt_func, source_port, target_port)`. `source_port`/`target_port` are `None` for the bare `connect("a", "b")` form used by ordinary single-output sources. Every `apiInput` edge — including one from a sole-frame source — carries its frame label as `source_port`, so the generated file always names the frame each connection delivers; a bare connect from an `apiInput` is not emitted.
 - **`CodegenBuilder`** (`_codegen_builders.py`) — `Callable[[GraphNode, list[str]], str]`; the signature every `_gen_*` function implements. Registered per `NodeType` into `NODE_REGISTRY[node_type].codegen` (see `haute._registry`); `NODE_REGISTRY` pairs each type's codegen builder with its exec-side runtime builder from `haute._builders`, and `validate_registry_complete` enforces both are present for every type.
 - **`MethodCallSite` / `StructuredSyntaxError`** (`_python_syntax.py`) — an immutable
@@ -87,20 +87,22 @@ fresh markers.
 
 ### `_node_to_code` (per-node dispatch)
 
-1. `_role_order_node_sources` — for `EDGE_JOIN` nodes only, reorders
-   `source_names`/`source_ids` into base-then-join using
-   `resolve_edge_join_role_indices` (from `haute._edge_join`); a no-op for
-   every other node type.
-2. `_generate_node_code` — looks up `NODE_REGISTRY[node.data.nodeType].codegen`
+1. `_order_edge_join_incoming_edges` runs before per-node dispatch and orders
+   each Edge Join's physical incoming edges base-then-join from their
+   `targetHandle` values. It requires exactly one `base` and one `join` handle.
+2. `_node_to_code` passes the already edge-derived `source_names` to
+   `_generate_node_code`; its parallel `source_ids` are used only to attribute
+   column-contract parent names and never to resolve input roles or selectors.
+3. `_generate_node_code` — looks up `NODE_REGISTRY[node.data.nodeType].codegen`
    and calls it; raises `KeyError` if either the entry or its codegen builder
    is missing.
-3. If `has_config_folder(node_type)` (from `haute._config_io`), locate the
+4. If `has_config_folder(node_type)` (from `haute._config_io`), locate the
    first `\ndef ` in the generated code and replace everything before it
    with `@pipeline.<decorator>(config=<path>)`. The decorator lookup uses the
    complete `NODE_TYPE_TO_DECORATOR` mapping; a missing mapping or missing
    generated `def` raises `HauteError` with node context rather than silently
    defaulting or skipping the rewrite.
-4. `_format_contract_kwarg` computes the `contract=...` kwarg text (or
+5. `_format_contract_kwarg` computes the `contract=...` kwarg text (or
    `None` for instance nodes whose contract comes from the referenced
    original node); if present, `_inject_contract_kwarg` asks the structured
    syntax boundary to add it to the first authored decorator, with any
@@ -304,10 +306,11 @@ preamble global, matching the generated function's local assignment.
   `df = (x.filter(...)).join(...)` both fail the proof and are left
   untouched.
 - **`EDGE_JOIN` codegen dispatch bypassing role ordering** — `_gen_edge_join`
-  itself re-validates `len(source_names) == 2` and that both `baseInput`/
-  `joinInput` are present in config, even though `_role_order_node_sources`
-  should have already guaranteed this; documented as defensive against
-  direct callers, not reachable via `graph_to_code`.
+  itself re-validates `len(source_names) == 2`. Graph assembly validates exactly one `base` and
+  one `join` target handle and orders the physical edges before building source names. The
+  generated decorator contains join options only; explicit `connect(..., target_port=...)` calls
+  preserve roles for parser reconstruction. Retired `base_input`/`join_input` decorator arguments
+  and `baseInput`/`joinInput` config are rejected rather than migrated.
 - **Cross-boundary edge-join role resolution at a submodel boundary** —
   `build_edge_join_boundary_target_roles` (from `haute._edge_join`)
   resolves which `target_port` an edge crossing INTO a submodel-hosted
@@ -357,13 +360,13 @@ preamble global, matching the generated function's local assignment.
 | Duplicate sanitized function names across root graph + submodels, including exact duplicate labels | `ParseError` (all colliding buckets listed) | `codegen._error_on_name_collisions` |
 | Duplicate derived input names among one node's incoming edges | `ParseError` (target node + colliding input name) | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | An `apiInput` edge carrying no `source_port`/`sourceHandle` (only reachable via a hand-edited file — the editor cannot create one) | `ParseError` naming the edge and source node | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
-| `edgeJoin` codegen source names/ids desynced | `ParseError` | `codegen._role_order_node_sources` |
+| `edgeJoin` incoming edges do not carry exactly one `base` and one `join` target handle | `ConfigError` | `codegen._order_edge_join_incoming_edges` |
 | Canonical submodel occurrence, definition, public handle, port id, or internal port endpoint is malformed | `ParseError` | `codegen.graph_to_code_multi` canonical preflight; no source is emitted. |
 | Parent edge endpoint is neither a root node nor a registered occurrence (e.g. a definition-owned child id used as a parent endpoint) | `ParseError` naming the edge, endpoint side, and node id | `codegen.graph_to_code_multi` canonical preflight; no source is emitted. |
 | `graph_to_code` called on a graph that actually produces >1 file | `ConfigError` | `codegen.graph_to_code` |
 | Any emitted file fails `ast.parse` | `ConfigError` | `codegen._assert_emitted_files_parse` |
 | `polars` transform has no code (any source count) | No error — emits a `NotImplementedError`-raising placeholder so the graph still saves; fails at run time, warned at save time | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
-| `edgeJoin` codegen called with `!= 2` sources, or missing `baseInput`/`joinInput` | `ConfigError` | `_codegen_builders._gen_edge_join` |
+| `edgeJoin` codegen called with `!= 2` sources | `ConfigError` | `_codegen_builders._gen_edge_join` |
 | `Explore` node with `!= 1` incoming edge | `ParseError` | `_codegen_builders._gen_explore` |
 | Codegen dispatched on a `SUBMODEL`/`SUBMODEL_PORT` occurrence | `RuntimeError` | `_codegen_builders._gen_submodel_placeholder_unreachable` |
 | Extraction engine given an unknown `kind` | `KeyError` | `_code_extraction.extract_user_code` |

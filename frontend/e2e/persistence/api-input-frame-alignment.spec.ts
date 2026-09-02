@@ -536,7 +536,7 @@ test.describe("apiInput frame-row alignment and identity", () => {
     })
   }
 
-  test("status and warning dots coexist without displacing the frame handles", async ({
+  test("warning-complete dot stays clear of the frame handles", async ({
     page,
   }) => {
     const labels = frameLabels(3)
@@ -550,8 +550,9 @@ test.describe("apiInput frame-row alignment and identity", () => {
     await previewResponsePromise
 
     const node = page.getByTestId(`node-${API_NODE_LABEL}`)
-    await expect(node.getByLabel("Node ok")).toBeVisible()
-    await expect(node.getByLabel("Node has schema warnings")).toBeVisible()
+    await expect(node.getByLabel("Node warning")).toBeVisible()
+    await expect(node.getByLabel("Node ok")).toHaveCount(0)
+    await expect(node.getByLabel("Node has schema warnings")).toHaveCount(0)
     await expectFrameRowsAligned(page, labels)
   })
 

@@ -9,7 +9,10 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from haute._graph_utils import _edge_id, edge_input_name
-from haute._submodel_instances import canonical_downstream_identity, rewrite_node_references
+from haute._submodel_instances import (
+    canonical_downstream_identity,
+    rewrite_input_selectors,
+)
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -229,6 +232,10 @@ def _normalise_public_input_config_names(
         changed = False
         direct_renames = renames_by_target.get(node.id)
         if direct_renames:
+            rewritten_node = rewrite_input_selectors([node], {node.id: direct_renames})[0]
+            rewritten_config = dict(rewritten_node.data.config)
+            changed = changed or rewritten_config != config
+            config = rewritten_config
             if "input_scenario_map" in config:
                 rewritten = _rewrite_mapping_keys(
                     config["input_scenario_map"],
@@ -473,19 +480,20 @@ def create_submodel_graph(
         port_id = output_ids[(edge.source, edge.sourceHandle)]
         target_map = parent_reference_maps.setdefault(edge.target, {})
         identity = canonical_downstream_identity(sm_name, port_id)
-        previous = target_map.get(edge.source)
+        old_name = edge_input_name(edge, graph.node_map[edge.source])
+        previous = target_map.get(old_name)
         if previous is not None and previous != identity:
             raise SubmodelValidationError(
                 code="boundary_reference_collision",
                 status_code=400,
                 detail=(
                     "Cannot create submodel: parent node "
-                    f"{edge.target!r} would map source {edge.source!r} to both "
+                    f"{edge.target!r} would map input {old_name!r} to both "
                     f"{previous!r} and {identity!r}."
                 ),
             )
-        target_map[edge.source] = identity
-    parent_nodes = rewrite_node_references(parent_nodes, parent_reference_maps)
+        target_map[old_name] = identity
+    parent_nodes = rewrite_input_selectors(parent_nodes, parent_reference_maps)
     local_child_nodes = _normalise_public_input_config_names(
         local_child_nodes,
         cross_edges,

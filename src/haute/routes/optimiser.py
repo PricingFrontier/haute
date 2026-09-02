@@ -325,12 +325,10 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
                 target_node_id=data_input_id or body.node_id,
                 execution_context=execution_context,
             )
-            resolution_config = dict(config)
-            if isinstance(data_input_id, str) and data_input_id:
-                resolution_config["data_input"] = data_input_id
             source_lf = _solve_service._resolve_data_input_frame(
                 lazy_outputs,
-                resolution_config,
+                body.graph,
+                config,
                 body.node_id,
                 job_id,
             )

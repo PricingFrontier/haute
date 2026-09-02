@@ -155,13 +155,18 @@ backend API modules own validation and persistence.
   Relationships is not exposed as an Explore pane. Pivots hosts its card workflow in that
   position, and its selection is remembered independently per Explore node like the other panes.
 - The Edge Join editor presents the canvas-bound dominant/base and joining roles as fixed
-  connections with one atomic swap action. Swapping updates the incoming role handles and
-  `baseInput`/`joinInput` config together. Join type choices are exactly `inner`, `left`,
+  connections with one atomic swap action. Each role displays the executable input name
+  contributed by that exact edge, using the same identity rule as other node editors: an API
+  Input edge displays its selected frame label, while an ordinary edge displays the upstream
+  node's executable input name. Internal source-node identities are not exposed in the role text
+  or its truncation tooltip. Swapping updates only the incoming role handles in one graph
+  transaction. Join type choices are exactly `inner`, `left`,
   `right`, `full`, `semi`, `anti`, and `cross`. A cross join has no key controls or persisted
   keys; every other mode requires either one-or-more same-name `on` keys or equal-length,
   non-empty `leftOn`/`rightOn` pairs, and the two key forms cannot coexist.
 - Renaming an ordinary source or an API-input frame atomically migrates downstream
-  `input_scenario_map` and instance `inputMapping` references. A duplicate post-rename input
+  `input_scenario_map`, instance `inputMapping`, and exact-name Optimiser/Optimiser Apply input
+  selectors. A duplicate post-rename input
   name rejects the entire edit and is shown inline; no graph or mapping change is partially
   applied.
 - Data Input and Data Output obtain a fresh capability payload when an editor mounts; mounts
@@ -245,9 +250,13 @@ to the parent node and never a normal-looking entry. WebSocket-synchronised grap
 null-handle API-input edge so the user can repair the source file without silently losing
 topology. Such an edge is displayed with the explicit `<unresolved>` marker and warning state;
 it never crashes the panel or aliases the API input's sole emitted table.
-An Edge Join with missing/ambiguous role edges, conflicting stored roles, an unknown join mode,
-or invalid key shape remains visibly invalid and blocks save; the editor never infers a role or
-silently substitutes join keys.
+An Edge Join with missing/ambiguous role edges, an unknown join mode, or invalid key shape remains
+visibly invalid and blocks save; the editor never infers a role or silently substitutes join
+keys. Edge Join diagnostics use the danger/error treatment rather than warning colours. Empty or
+otherwise invalid visible join-key controls expose `aria-invalid` and a red border; when a
+non-cross join has no keys, this applies to the required control or controls in the active key
+mode. The incoming edges' `base`/`join` target handles are the only persisted role authority;
+the removed `baseInput`/`joinInput` config representation has no compatibility path.
 
 ## Recovery diagnostics in node presentation
 

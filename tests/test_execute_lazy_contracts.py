@@ -942,8 +942,6 @@ def test_bounded_lazy_execution_runtime_projects_builtin_edge_join_and_final_dia
                         "label": "joined",
                         "nodeType": "edgeJoin",
                         "config": {
-                            "baseInput": "base",
-                            "joinInput": "competitor",
                             "how": "left",
                             "on": ["quote_id"],
                             "suffix": "_right",
@@ -953,8 +951,8 @@ def test_bounded_lazy_execution_runtime_projects_builtin_edge_join_and_final_dia
                 },
             ],
             "edges": [
-                make_edge("base", "joined").model_dump(),
-                make_edge("competitor", "joined").model_dump(),
+                make_edge("base", "joined", target_handle="base").model_dump(),
+                make_edge("competitor", "joined", target_handle="join").model_dump(),
             ],
         }
     )
@@ -1030,8 +1028,6 @@ def test_eager_preview_runtime_projects_builtin_edge_join_and_final_diagnostic()
                         "label": "joined",
                         "nodeType": "edgeJoin",
                         "config": {
-                            "baseInput": "base",
-                            "joinInput": "competitor",
                             "how": "left",
                             "on": ["quote_id"],
                             "suffix": "_right",
@@ -1041,8 +1037,8 @@ def test_eager_preview_runtime_projects_builtin_edge_join_and_final_diagnostic()
                 },
             ],
             "edges": [
-                make_edge("base", "joined").model_dump(),
-                make_edge("competitor", "joined").model_dump(),
+                make_edge("base", "joined", target_handle="base").model_dump(),
+                make_edge("competitor", "joined", target_handle="join").model_dump(),
             ],
         }
     )
