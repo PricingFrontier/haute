@@ -329,7 +329,7 @@ class TestGenerateAppSource:
         )
         captured: dict[str, object] = {}
 
-        def reject_admission(*, operation: str, row_count: int):
+        def reject_admission(*, operation: str, row_count: int, profile=None):
             captured["operation"] = operation
             captured["row_count"] = row_count
             raise admission_error
@@ -338,6 +338,10 @@ class TestGenerateAppSource:
             raise AssertionError("Polars DataFrame should not be built before admission")
 
         monkeypatch.setattr(module, "admit_deploy_execution", reject_admission)
+        monkeypatch.setattr(
+            "haute.deploy._scorer.admit_deploy_execution",
+            reject_admission,
+        )
         monkeypatch.setattr(module.pl, "DataFrame", fail_dataframe)
 
         response = TestClient(module.app).post("/quote", json=[{"age": 30}, {"age": 31}])
@@ -754,7 +758,7 @@ class TestGenerateAppSource:
 
         response = TestClient(module.app).post(
             "/quote",
-            json=[{"age": 30}, {"age": 31}],
+            json=[{"age": 30}],
             headers={"accept": "application/x-ndjson"},
         )
 
@@ -798,7 +802,7 @@ class TestGenerateAppSource:
 
         response = TestClient(module.app).post(
             "/quote",
-            json=[{"age": 30}, {"age": 31}],
+            json=[{"age": 30}],
             headers={"accept": "application/x-ndjson"},
         )
 

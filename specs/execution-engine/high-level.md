@@ -175,7 +175,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
   before a proven row-local suffix is chunked. Missing admission and excess headroom
   remain distinct typed failures. An unavailable estimate has exactly two outcomes.
   When the planner runs inside a worker whose native memory cap is active, which is
-  how Data Output writes, preview and trace, Explore, and JSON cache builds execute,
+  how Data Output writes, preview and trace, Explore, JSON cache builds, training
+  preparation, and multi-row deploy scoring execute,
   the group-by still runs once as a materialisation boundary but under the run's
   full admitted envelope, `min(memory_limit_bytes, headroom_bytes)`, the same number
   the parent installed as that worker's native cap; the strategy is
@@ -184,8 +185,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
   estimate-based admission, the cap backend, and remediation. A conservative run that
   exceeds its envelope terminates exactly like any other worker memory breach: a typed
   failure, no partial artifact, admission released once. Everywhere else, including
-  training preparation, optimiser stages, deploy scoring, and any host without a
-  native cap, an unavailable estimate remains the typed
+  optimiser stages, single-row live deploy scoring, and any host without a native
+  cap, an unavailable estimate remains the typed
   `materialisation_estimate_unavailable` failure, whose remediation states that the
   surface runs without a hard worker cap. The warning is never a silent fallback: it
   reaches every surface's execution diagnostics through the same strategy payload as

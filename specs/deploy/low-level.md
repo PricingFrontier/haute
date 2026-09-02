@@ -8,7 +8,8 @@
 | `src/haute/deploy/_config.py` | `DeployConfig` (user input), target sub-configs (`DatabricksConfig`, `ContainerConfig`, `AzureContainerAppsConfig`, `AwsEcsConfig`, `GcpRunConfig`, `SafetyConfig`, `CIConfig`), `haute.toml` loading + schema validation, base-image pinning validation, `.env` loading, `resolve_config()` producing `ResolvedDeploy`. |
 | `src/haute/deploy/_pruner.py` | Graph pruning to the output node's ancestors; `liveSwitch` live-branch collapsing; output/input/source node discovery. |
 | `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts, and retained Data Inputs; path resolution plus canonical provider/schema validation and a bounded one-row readability probe. MLflow-sourced optimiser applies are deliberately not bundled. |
-| `src/haute/deploy/_schema.py` | Input schema inference (read source file schema) and output schema inference (dry-run scoring with the bundled artefacts), with a graph-and-artefact-fingerprint-keyed on-disk cache. |
+| `src/haute/deploy/_schema.py` | Input schema inference (read source file schema), output schema inference (dry-run scoring with the bundled artefacts) with a graph-and-artefact-fingerprint-keyed on-disk cache, and bundle-time, target-aware batch strategy planning (`infer_deploy_execution_policy`) over the shared one-row sample (`_read_sample_row`), with a hard-capped-worker dry-run fallback (`_capped_worker_output_schema`) for an unprovable group-by. |
+| `src/haute/deploy/_batch_scoring.py` | Multi-row `/quote` scoring in a hard-capped spawn worker: the picklable `BatchScoreRequest`/`BatchScoreOutcome` pair, the child entrypoint `score_batch_worker`, and the parent supervisor helpers `prepare_batch_scoring` / `accept_batch_outcome` / `deploy_batch_timeout_seconds`. |
 | `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
 | `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison; `score_test_quotes`. |
 | `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
@@ -35,7 +36,9 @@
 - **`ResolvedDeploy`** (`src/haute/deploy/_config.py`) — the target-agnostic handoff object, created only
   by `resolve_config()`: `config`, `full_graph`, `pruned_graph`, `input_node_ids`,
   `output_node_id`, `artifacts` (`dict[str, Path]`), `input_schema`/`output_schema`
-  (`dict[str, str]` of column name → Polars dtype string), `removed_node_ids`.
+  (`dict[str, str]` of column name → Polars dtype string), `execution_policy` (the
+  bundle-time batch strategy record from `_schema.py::infer_deploy_execution_policy`),
+  `removed_node_ids`.
 - **`DeployResult`** (`_mlflow.py`) — returned by every backend: `model_name`,
   `model_version`, `model_uri`, `endpoint_url` (`None` if no endpoint configured/created),
   `manifest_path`.
@@ -48,6 +51,30 @@
   `temporary_paths` (registered-model temp files), `retained_lazy_frames` (kept alive
   when `output_fields` narrows the final select), `_cleaned_up` guard. `cleanup()` is
   idempotent and always releases execution admission.
+- **`BatchScoreRequest`** (`_batch_scoring.py`, frozen dataclass) — the only evidence that
+  crosses the spawn boundary: `graph`, `input_node_ids`, `output_node_id`,
+  `artifact_paths`, `output_fields`, `input_path` (parent-written JSON rows),
+  `result_path` (child-written parquet), `operation`.
+- **`BatchScoreOutcome`** (`_batch_scoring.py`, frozen dataclass) — the child's picklable
+  return: `row_count`, `execution_metrics` (the child context's payload), and on failure
+  `failure_kind` (`contract` | `bounded` | `memory` | `cancelled` | `error`), `detail`,
+  `payload`.
+- **`BatchScorePlan`** (`_batch_scoring.py`, slotted dataclass) — parent-owned resources
+  for one supervised worker: `request`, `budget` (`IsolatedExecutionBudget`),
+  `execution_context` (the admitted `DEPLOY_BATCH` parent context), `worker_config`,
+  `temp_dir`. `cleanup(preserve_primary_error=...)` removes the temp directory and
+  releases the parent admission exactly once (idempotent).
+- **`BatchScoreResult`** / **`BatchScoreError`** (`_batch_scoring.py`) — the accepted
+  result (`result_path`, `row_count`, `execution_metrics`) and the typed parent-side
+  failure carrying `kind`, `detail`, `payload`.
+- **`BatchScoreCleanupError`** (`_batch_scoring.py`) — raised when the batch temp
+  directory (request rows plus scored parquet) could not be removed and no primary error
+  is in flight; a data-retention defect is never swallowed.
+- **Deploy execution policy** (`_schema.py::infer_deploy_execution_policy`) — the
+  bundle-time record on `ResolvedDeploy.execution_policy`, in the manifest, and on
+  `/health`: `schema_version`, `profile` (`"deploy_batch"`), `runtime`
+  (`hard_capped_worker` | `in_process`), `status`, `strategy`, `reason_code`,
+  `blocking_node_id`, `blocking_operator`, `remediation`.
 - **`ContainerBuildResult`** (`_container.py`) — intermediate result of
   `build_and_push_image`: `image_tag`, `manifest_path`, `build_dir`, `model_name`,
   `model_version`.
@@ -59,7 +86,8 @@
   every target and the generated runtime code (`_container.py`'s `app.py` template,
   `_model_code.py`'s `HauteModel.load_context`): `haute_version`, `pipeline_name`,
   `pipeline_file`, `target`, `created_at`, `created_by`, `input_node_ids`,
-  `output_node_id`, `output_fields`, `input_schema`, `output_schema`, `artifacts`
+  `output_node_id`, `output_fields`, `input_schema`, `output_schema`, `execution_policy`,
+  `artifacts`
   (name → posix path), `pruned_graph` (full `model_dump()`), `nodes_deployed`,
   `nodes_skipped`, `nodes_skipped_names`.
 
@@ -98,12 +126,54 @@
    manifest provenance.
 8. `infer_input_schema()` (call `collect_schema()` on the first input node's source;
    lazy readers avoid row collection, while the existing plain-JSON reader may parse
-   eagerly) and
-   `infer_output_schema()` (dry-run score up to one sample row through the pruned graph using
-   the just-collected artefact paths, cached by graph+artefact-identity fingerprint).
+   eagerly).
+   Then `infer_deploy_execution_policy()` plans the served `DEPLOY_BATCH` strategy once,
+   over the same one-row sample (`_read_sample_row`) and the same bundled-contract graph
+   preparation `_scorer._score_graph_lazy` performs, under a short-lived
+   `deploy_bundle_policy` admission released in `finally`. The record is target-aware:
+   `resolve_config` passes `batch_runtime="hard_capped_worker"` for a target in
+   `_CONTAINER_BASED_TARGETS` and `"in_process"` otherwise (Databricks pyfunc, which
+   scores multi-row inputs in the serving process via
+   `_model_code.py::HauteModel.predict`), and the value is recorded as the policy's
+   `runtime`. Bundle time has no native cap, so a `GroupByExecutionUnsupportedError` with
+   `reason_code == "materialisation_estimate_unavailable"` is translated — for
+   `hard_capped_worker` only — into the policy that worker will actually apply
+   (`status="warned"`, `strategy="full-width-conservative"`, the runtime
+   `reason_code="materialisation_estimate_unavailable_conservative"`, a remediation naming
+   the hard-capped envelope); for `in_process` it raises `DeployError`, because that
+   runtime has no cap and would reject the same group-by on every request. Every other
+   planning rejection, and an `unsupported` strategy, raises `DeployError` naming the
+   blocking node and operator for both runtimes. The record is logged once
+   (`deploy_execution_policy`, warning when warned).
+   Only then `infer_output_schema()` (dry-run score up to one sample row through the
+   pruned graph using the just-collected artefact paths, cached by
+   graph+artefact-identity fingerprint).
+   The dry-run scores uncapped under `DEPLOY_LIVE`, so a group-by whose materialisation
+   estimate is unavailable is rejected there even though the served batch would run it
+   conservatively. That one rejection
+   (`GroupByExecutionUnsupportedError(reason_code="materialisation_estimate_unavailable")`)
+   falls back to `_capped_worker_output_schema`: the same one-row dry-run re-run inside
+   the *served* batch worker — `prepare_batch_scoring(...,
+   operation="deploy_bundle_schema")` + `run_isolated_worker(score_batch_worker, ...)` +
+   `accept_batch_outcome`, then `pl.read_parquet_schema()` over the parquet the worker
+   wrote, with `plan.cleanup(primary_error=...)` on every path. The group-by therefore
+   runs once under its full hard-capped envelope, exactly the policy the manifest records,
+   and the schema is read from what the worker actually produced. The one-row sample
+   bounds only the request-derived side of the graph — a group-by over a bundled static
+   source still materialises that source in full — so the admission gate is never simply
+   relaxed here; the cap is what keeps the bundle build bounded. A `BatchScoreError` from
+   the child (the group-by exceeded the cap, say) or any `IsolatedWorker*Error`
+   (including `IsolatedWorkerMemoryLimitUnsupportedError` on a host that cannot install a
+   cap) raises `DeployError` naming the node and operator from the original rejection: the
+   bundle could not prove the served batch path can produce the schema, and the deployed
+   endpoint would fail the same way on every batch request. Every other rejection
+   propagates.
+   This ordering is deliberate: policy inference needs only the sample, and an
+   `in_process` target must refuse an unprovable group-by before any capped dry-run is
+   attempted.
    Validate `output_fields` as a non-empty, duplicate-free list of non-empty strings
    present in that full schema, then retain the projected schema in configured order.
-9. Assemble and return `ResolvedDeploy`.
+9. Assemble and return `ResolvedDeploy`, carrying the policy on `execution_policy`.
 
 **Validation (`_validators.py::validate_deploy`)** — called by `deploy()` after
 `resolve_config()`, before dispatch. Runs seven structural checks (output, inputs,
@@ -155,9 +225,25 @@ an independently relocatable contract.
 **Generated container HTTP runtime (`_container.py::_generate_app_source`)**
 1. Startup loads `deploy_manifest.json`, reconstructs `PipelineGraph`, and resolves the
    request-body limit. `GET /health` returns status, model/version, deployed-node count,
-   the manifest input/output schemas, and
-   `memory_enforcement="admission_rss_best_effort"`. This describes application
-   admission/RSS checkpoints, not an OS or container hard memory limit.
+   the manifest input/output schemas,
+   `memory_enforcement="admission_rss_best_effort"` (this describes application
+   admission/RSS checkpoints for single-row live scoring, not an OS or container hard
+   memory limit), `batch_memory_enforcement`
+   (`_worker_isolation.resolve_worker_memory_enforcement()` — `"required"` or
+   `"best_effort"`, the hard-cap policy multi-row batches run under), and
+   `execution_policy` (the manifest's bundle-time strategy record).
+   Startup is fail-closed on that record: `_require_fail_closed_batch_enforcement`
+   raises `RuntimeError` at module load when the policy's `status` is `"warned"` — a
+   promise that only holds while the batch worker runs under an enforced hard cap — and
+   `resolve_worker_memory_enforcement()` is not `"required"`. The message names the
+   policy, the blocking node/operator, and `HAUTE_WORKER_MEMORY_ENFORCEMENT=required`.
+   Without the gate, a `best_effort` host whose cap installation fails would start a
+   child with no native backend, and the planner would reject the unavailable estimate on
+   every batch request while `/health` still advertised conservative execution. Under
+   `required` enforcement a host that cannot install a cap instead answers each batch
+   with the typed 507 `native_memory_cap_unavailable` (`run_isolated_worker` raises
+   `IsolatedWorkerMemoryLimitUnsupportedError`, mapped through
+   `isolated_worker_memory_detail`).
 2. `POST /quote` reads JSON through `_request_limits.read_limited_json_body` before
    constructing a `DataFrame`. A JSON object becomes a one-row request; a JSON array is
    used as the batch; any other JSON top-level value returns HTTP 400. Array element
@@ -168,7 +254,36 @@ an independently relocatable contract.
    `row_count`, `returned_rows`, `truncated`, `limit`, and execution metrics. At most
    1,000 rows are returned in that envelope even though `row_count` records the full
    result.
-4. An `Accept` header containing `application/x-ndjson` or `application/ndjson` selects
+4. A request with more than one row never scores in the service process. `_quote_batch`
+   calls `_batch_scoring.prepare_batch_scoring` in the threadpool (admits one
+   `DEPLOY_BATCH` context — the batch path always admits that profile whatever the
+   row count, so the bundle's one-row schema dry-run runs under the served envelope
+   and the batch `modelScore` contract —, derives `isolated_execution_budget`, creates a private
+   `haute_deploy_batch_*` temp directory, writes `input.json`), then awaits
+   `routes._isolated_worker_async.run_isolated_worker_async(score_batch_worker,
+   request, budget, config=...)` — one spawn per batch, `process_name="haute-deploy-batch"`,
+   `memory_limit_bytes` equal to the admitted headroom, `timeout_seconds` from
+   `deploy_batch_timeout_seconds()` (`HAUTE_DEPLOY_BATCH_TIMEOUT`, default 300s). The
+   child creates a worker-local context (`create_isolated_execution_context`), builds the
+   request `DataFrame` and scores it through `score_graph_lazy`, sinks the result to
+   `result.parquet` under a `deploy_batch_sink` stage, and returns row count plus its own
+   `metrics_payload`. Because the child runs under a native cap, an unavailable
+   materialisation estimate is warned and run conservatively there instead of rejected.
+   `accept_batch_outcome` validates the outcome type, re-reads the parquet's row count,
+   and rejects a missing/unreadable/mismatched file. The parent renders the same JSON
+   envelope from that parquet (`head(limit)`) with the child's `execution_metrics`, or
+   streams every row as NDJSON through `bounded_collect_batches` into the same spool. The
+   plan's `cleanup()` runs on every path.
+5. Batch error mapping: `BatchScoreError` kinds `contract`/`bounded` → 422 (the child's
+   payload, else the typed bounded envelope), `memory` → 507, `cancelled` → 499,
+   `error` → 500 `deploy_internal_error`; `IsolatedWorkerMemoryLimitExceededError`,
+   `IsolatedWorkerMemoryLimitUnsupportedError`, a crash whose exit code looks
+   memory-bound, and a remote memory type → 507 carrying
+   `_worker_isolation.isolated_worker_memory_detail(exc, operation="deploy_quote",
+   memory_limit_bytes=plan.budget.memory_limit_bytes)`; `IsolatedWorkerTimeoutError` →
+   504 `{"error_code": "deploy_batch_timeout", "operation": "deploy_quote",
+   "timeout_seconds": ...}`; every other worker death → logged 500.
+6. An `Accept` header containing `application/x-ndjson` or `application/ndjson` selects
    `score_graph_lazy()` and ordered, bounded collection in 50,000-row chunks. Rows are
    encoded into a `SpooledTemporaryFile` from Starlette's worker threadpool before
    response headers are committed; the spool spills to disk above its memory threshold
@@ -255,6 +370,33 @@ not bypass the cumulative streamed-byte check. Malformed/negative headers and in
 JSON have separate structured payloads. A body exactly at the configured limit is valid.
 
 ## Edge cases and invariants
+
+- **Live scoring adds no per-request process spawn.** A one-row `/quote` (a JSON object,
+  or a one-element array) scores in the service process exactly as before; only
+  `len(rows) > 1` reaches `_batch_scoring`. A warm worker pool is deliberately out of
+  scope.
+- **Exactly one worker per batch request**, launched with the parent's admitted headroom
+  as its hard RSS cap. The child never re-admits: `create_isolated_execution_context`
+  rebuilds the budget locally, and the parent context is released exactly once by
+  `BatchScorePlan.cleanup`, on every success and every failure path.
+- **The batch temp directory is private and always removed — loudly.** The parent owns
+  `haute_deploy_batch_*/input.json` and `result.parquet`; the child removes a partial
+  `result.parquet` on every classified failure, and `cleanup(primary_error=...)` removes
+  the directory after the JSON envelope or the NDJSON spool has been materialised.
+  Removal never uses `ignore_errors`: with no primary error in flight a failure raises
+  `BatchScoreCleanupError` and the request is answered with a 500 instead of the computed
+  response (a leftover copy of the request rows is a data-retention defect even after a
+  good score); with a primary error in flight the failure is attached to it as a note and
+  logged `deploy_batch_cleanup_failed`, so the original failure still reaches the client.
+  `prepare_batch_scoring` cleans up a setup failure the same way. The parent admission is
+  released exactly once either way.
+- **The bundle's policy is only as strong as the target's runtime.** A `warned` /
+  `full-width-conservative` record is issued only for `runtime == "hard_capped_worker"`;
+  the in-process (Databricks) runtime fails the bundle instead of promising a cap it does
+  not have. The serving host must honour the same promise: a container carrying a
+  `warned` policy refuses to start unless `HAUTE_WORKER_MEMORY_ENFORCEMENT=required`, so
+  the manifest can never advertise conservative execution that the running service would
+  not actually perform.
 
 - **Pipeline-relative path resolution wins within the project**
   (`_bundler.py::_resolve_path`): local paths use
@@ -357,7 +499,15 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | `ExecutionCancelledError` | Execution engine | Caught in `/quote` → HTTP 499 with `job_id`/`operation` context. |
 | Public `HauteError` (`ContractResolutionError`, `PreambleError`, and other errors with a stable `error_code`) | Execution engine or preamble compilation during scoring | Caught in `/quote` → HTTP 422 with `to_payload()`; server routes use the same stable public payload contract. |
 | `NotImplementedError` | `src/haute/deploy/__init__.py::_validate_target` (planned targets: `sagemaker`, `azure-ml`), `_container.py::_update_service` (platform-container service update not yet built) | Uncaught to caller; the `_update_service` message names the built image tag (which is pushed only when a registry was configured). |
-| Any other `Exception` | Runtime scoring inside `/quote` | Caught by the container's catch-all, logged via `logger.exception("deploy_quote_failed")`, returned as HTTP 500 with `error_code: "deploy_internal_error"`. The MLflow `pyfunc` predict path has no equivalent catch-all. |
+| `DeployError` (capped schema dry-run) | `_schema.py::infer_output_schema` when the fallback's worker fails: a `BatchScoreError` from the child, or any `IsolatedWorker*Error` (`IsolatedWorkerMemoryLimitUnsupportedError` on a host without native caps included) | Propagates from `resolve_config()`; names the blocking node/operator from the original group-by rejection and states that the served batch path could not be proven. |
+| `RuntimeError` (startup) | Generated `app.py`'s `_require_fail_closed_batch_enforcement` at module load: a `warned` execution policy with `HAUTE_WORKER_MEMORY_ENFORCEMENT` other than `required` | Uncaught — the service refuses to start rather than failing every batch request. |
+| `IsolatedWorkerMemoryLimitUnsupportedError` | `run_isolated_worker` under `required` enforcement on a host that cannot install a native cap | Caught in `_quote_batch` → HTTP 507 with `reason: "native_memory_cap_unavailable"`. |
+| `BatchScoreCleanupError` | `_batch_scoring.py::_remove_batch_temp_dir` (temp directory removal failed with no primary error in flight) | Caught in `_quote_batch`'s `finally`, logged `deploy_quote_batch_cleanup_failed`, replaces the computed response with HTTP 500 `deploy_internal_error`. With a primary error in flight it is attached to that error as a note instead. |
+| `BatchScoreError` | `_batch_scoring.py::accept_batch_outcome` (classified child failure, wrong outcome type, missing/unreadable/row-count-mismatched result parquet) | Caught in `_quote_batch` → 422 (`contract`/`bounded`), 507 (`memory`), 499 (`cancelled`), 500 (`error`). |
+| `IsolatedWorkerMemoryLimitExceededError` / `IsolatedWorkerMemoryLimitUnsupportedError` / memory-bound `IsolatedWorkerCrashedError` / memory-typed `IsolatedWorkerRemoteError` | `_worker_isolation.run_isolated_worker` supervising the batch child | Caught in `_quote_batch` → HTTP 507 with `isolated_worker_memory_detail(...)`. |
+| `IsolatedWorkerTimeoutError` | Batch worker exceeded `deploy_batch_timeout_seconds()` | Caught in `_quote_batch` → HTTP 504 `deploy_batch_timeout`. |
+| Any other `IsolatedWorkerError` | Batch worker supervision | Caught in `_quote_batch`, logged `deploy_quote_batch_failed`, HTTP 500 `deploy_internal_error`. |
+| Any other `Exception` | Runtime scoring inside `/quote` (live path) or parent-side batch supervision in `_quote_batch` | Caught by the container's catch-all, logged via `logger.exception("deploy_quote_failed")` (live) or `logger.exception("deploy_quote_batch_failed")` (batch, after `BatchScorePlan.cleanup`), returned as HTTP 500 with `error_code: "deploy_internal_error"`. The MLflow `pyfunc` predict path has no equivalent catch-all. |
 
 `build_and_push_image` and `deploy_to_mlflow` both wrap their build-directory-writing
 steps in `try/except BaseException: shutil.rmtree(...); raise` — cleanup happens on
@@ -391,6 +541,33 @@ what they cover:
   admission, cancellation, memory and bounded-streaming error mappings; body-limit env
   precedence and streamed-byte enforcement; JSON response truncation/envelope boundaries;
   NDJSON streaming; Dockerfile dependency pins and build-directory cleanup.
+- **`test_deploy_batch_scoring.py`** — the multi-row path end to end: a one-row request
+  launching no worker; a two-row request launching exactly one
+  `haute-deploy-batch` worker with the budget's memory limit and
+  `deploy_batch_timeout_seconds()`; the unchanged JSON envelope carrying the child's
+  metrics and the NDJSON stream over every sunk row; every `failure_kind`, every worker
+  memory/timeout/crash mapping, and every unpublishable success outcome — each asserting
+  one parent admission release and a removed temp directory; the child in process
+  (parquet written, row count, `admission.profile == "deploy_batch"`, result file removed
+  and child admission released on each failure kind); two real spawns (a scored batch,
+  and an unprovable group-by completing as `warned` /
+  `full-width-conservative` under the worker's cap); and
+  `infer_deploy_execution_policy` (ok record, translated warning for the capped worker,
+  `DeployError` for the in-process runtime and for other rejections, one bundle-time
+  release) plus the manifest and `/health` fields. `TestOutputSchemaConservativeFallback`
+  covers the capped-worker fallback on a cache miss (a real spawn admitted as
+  `DEPLOY_BATCH`, the schema read from the worker's parquet) and proves a provable graph still scores
+  its dry-run row; `TestBatchCleanupFailsLoud` injects an `rmtree` failure for a
+  successful batch, a handled child failure, a setup failure, and a direct
+  `plan.cleanup()`; `TestFailClosedBatchEnforcement` covers the startup gate (warned
+  policy refused under `best_effort`, accepted under `required`, provable policy always
+  accepted) and the typed 507 `native_memory_cap_unavailable` a cap-less `required` host
+  returns. `TestOutputSchemaConservativeFallback` covers the capped-worker schema
+  fallback: a real spawn (nothing patched across the boundary) asserting exactly one
+  `haute-deploy-batch` worker ran and the aggregated column's dtype came back, a provable
+  graph spawning nothing, and both failure mappings (`IsolatedWorkerMemoryLimitUnsupportedError`
+  and a child `BatchScoreError`) surfacing as `DeployError`. `tests/test_deploy_internals.py` adds the two `resolve_config`
+  cache-miss regressions (container target bundles the warning, Databricks refuses).
 - **`test_deploy_contract_integrity.py`** — static-data-source schema drift detection,
   `validate_deploy` failing on bad test quotes, feature-contract bundling end-to-end.
 - **`test_deploy_dispatch.py`** — `_dispatch_resolved` routing for every target family

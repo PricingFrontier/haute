@@ -23,7 +23,7 @@
 | `src/haute/modelling/_export.py` | `generate_training_script()` code generation for standalone Python training scripts. |
 | `src/haute/routes/modelling.py` | FastAPI router for training, status/cancel, estimates, MLflow check/log, export, model-cache clear, and dispersion jobs. |
 | `src/haute/routes/_train_service.py` | Stable compatibility facade that re-exports `TrainService` and the established helper seams consumed by the router/tests. It owns no job state, worker entrypoint, preparation algorithm, or artifact mutation. |
-| `src/haute/routes/_training_preparation.py` | Training input preparation rules: deterministic sampling, feature/metadata demand and projection, modelling-node lookup, row-limit and RAM/VRAM feasibility helpers. |
+| `src/haute/routes/_training_preparation.py` | Training input preparation rules plus the hard-capped preparation worker: deterministic sampling, feature/metadata demand and projection, modelling-node lookup, row-limit and RAM/VRAM feasibility helpers, the picklable `TrainingPreparationRequest`/`TrainingPreparationOutcome`/`TrainingPreparationFailure` transport, the in-process core `prepare_training_data`, the spawn entrypoint `prepare_training_data_worker`, and the target/task gate `_validate_target_task_pairing`. |
 | `src/haute/routes/_training_evaluation.py` | Route-side evaluation and GLM-dispersion rules: family/link validation, dispersion parameter contracts, and immutable evaluation-preview projection. |
 | `src/haute/routes/_training_worker.py` | Spawn-picklable training/dispersion worker protocol: request validation, child execution context, curated failure taxonomy, bounded progress/result payloads, and the two process entrypoints. It publishes only staged manifests. |
 | `src/haute/routes/_training_artifacts.py` | Sole parent-side training artifact publication owner: manifest/path/size/digest validation, strict evaluation/tuning reloads, rollback-capable generation replacement, and stale tuning retirement. |
@@ -206,14 +206,39 @@
    compute required-column demand per node (`_training_required_columns_by_node`);
    create an admitted `ExecutionContext` with the already-registered cancellation token
    (RAM ceiling + cancellation) via
-   `create_admitted_execution_context`; `_execute_and_sink` runs the upstream pipeline
-   lazily, derives and records the version-1 feature-selection diagnostic from the
-   materialised schema, rejects HTTP 422/`contract_error` if target/metadata/exclusion
-   rules leave no feature columns, validates the required columns actually arrived,
-   projects away excluded columns while retaining explicit `feature_columns` even
-   when a stale `exclude` entry also names them, and streams the result to a temp parquet with
-   `bounded_sink`;
-   `training_target_task_issue` (`_target_check.py`) then validates the sunk parquet's
+   `create_admitted_execution_context`. `_training_lifecycle.py::TrainService._execute_and_sink`
+   is then a **parent supervisor only** — no training data is materialised in the server
+   process:
+   - it takes the budget envelope with `_execution_admission.py::isolated_execution_budget`
+     (an admitted `execution_context` is required — `ValueError` otherwise), computes the
+     remaining job timeout from `start_time`/`timeout` via `_worker_timing` (a non-positive
+     remainder records `timeout()` and raises `ExecutionCancelledError` without launching), and
+     builds the worker config — every fallible setup step runs **before** the temp parquet
+     exists, so a setup failure cannot orphan one. Only then does it create the parent-owned
+     temp parquet (`_training_preparation.py::create_training_parquet_path`); from that point
+     supervision runs inside a `try` whose `except BaseException` backstop discards the path,
+     so the only exit that keeps it is a successful hand-off;
+   - it launches exactly one spawn worker,
+     `run_isolated_worker(prepare_training_data_worker, request, budget, config=...)`, with
+     `worker_config_for_memory_policy(memory_limit_bytes=budget.memory_limit_bytes,
+     timeout_seconds=<remaining>, stop_reason=lambda: cancellation_reason(job_id),
+     process_name="haute-training-prep")`. The child installs the matching native cap for
+     exactly the parent's admitted headroom, so an unavailable materialisation estimate ahead
+     of a group-by plans `full-width-conservative`/`warned` inside the worker instead of the
+     `materialisation_estimate_unavailable` rejection an uncapped surface must raise;
+   - the request is plain picklable data (`graph`, `node_id`, `job_id`, `source`,
+     `parquet_path`, modelling `config`, `project_root`, `streaming_chunk_size`, `row_limit`,
+     `exclude`, `keep_columns`, `required_columns_by_node`, `preamble_supplied`); the child
+     never touches the `JobStore`.
+   `_training_preparation.py::prepare_training_data` is the child core: it recompiles the
+   preamble when supplied, runs the upstream pipeline lazily, derives the version-1
+   feature-selection diagnostic from the materialised schema, rejects HTTP
+   422/`contract_error` if target/metadata/exclusion rules leave no feature columns, validates
+   the required columns actually arrived, projects away excluded columns while retaining
+   explicit `feature_columns` even when a stale `exclude` entry also names them, streams the
+   result to the parent's temp parquet with `bounded_sink` under the context's
+   `training_sink_write` stage, and then runs the target/task gate;
+   `training_target_task_issue` (`_target_check.py`) validates the sunk parquet's
    target column against the configured task and the effective metric set
    (`effective_metrics` — explicit config metrics or the objective-implied defaults,
    the same derivation `build_training_job_kwargs` uses; a malformed metrics config
@@ -224,7 +249,41 @@
    even under `task="regression"`, or set explicitly) gates on the metric-keyed
    branch; either removes the temp parquet and rejects HTTP 422/`contract_error`
    with a message naming the target column, task, and offending metrics, before any
-   fit worker is spawned;
+   fit worker is spawned.
+   Cleanup is fail-loud on both sides. `_training_preparation.py::_remove_prepared_parquet`
+   raises rather than logging an `OSError`: a swallowed removal failure would leave real
+   training data on disk while the job records a failure claiming no artifact exists. In the
+   child, `_finalise_preparation_failure` removes the parquet for every failure arm and, when
+   removal fails, degrades the outcome to a 500 `error` whose message names the surviving file
+   while `fields` keeps the original `error_detail` and adds `cleanup_error` — the first cause
+   is never hidden. In the parent, `TrainService._discard_prepared_parquet` maps a removal
+   failure on any path to `_fail_preparation_worker(message="Training preparation cleanup
+   failed: <exc>")` (500/`error`), never a bare exception.
+   Expected child failures are returned, never raised across the boundary: a
+   `TrainingPreparationFailure` carries `terminal_reason`
+   (`contract_error`|`memory_limited`|`error`), the job `message`/`fields`, and the
+   `http_status_code`/`http_detail`, computed in the child with the same
+   `_http_failure_job_parts`/`contract_error_job_fields`/`_memory_limit_http_exception`
+   helpers the in-thread path used, so job records and HTTP payloads are unchanged. Every
+   child failure removes the parquet first — no partial training artifact ever exists.
+   The parent maps the outcome: a `failure` transitions to its `terminal_reason` and raises
+   the paired `HTTPException`; a success whose `parquet_path` differs from the parent's, or
+   whose file is missing or empty, is a 500 `error` ("Training preparation worker did not
+   produce its prepared data."); `IsolatedWorkerStoppedError` raises `ExecutionCancelledError`
+   (the outer branch reads the registry for cancelled vs. timed_out);
+   `IsolatedWorkerTimeoutError` records `timeout()` then raises it;
+   `IsolatedWorkerMemoryLimitExceededError`, `IsolatedWorkerMemoryLimitUnsupportedError`,
+   a crash whose exit code reads memory-limited, and an `IsolatedWorkerRemoteError` whose
+   `remote_type` is a memory type become `memory_limited`/507 with
+   `_worker_isolation.py::isolated_worker_memory_detail` labelled `budget.operation` — the
+   admitted context's own operation, so the dispersion flow (which admits
+   `operation="dispersion_estimate"` and reuses this supervisor) is never mislabelled as
+   `training_pipeline`; the child's own memory payload already carries it, since its context is
+   built from the same budget; any
+   other worker failure logs `training_preparation_worker_failed` and becomes a 500 `error`.
+   The child's `execution_metrics` payload is the one persisted on the job. Admission is
+   released exactly once — by `_parent_worker_cleanup` after the fit worker, or by the
+   `finally` in `_prepare_and_launch_training` on failure — never inside `_execute_and_sink`.
    `_launch_background` builds the `TrainingJob` via `build_training_job_kwargs`
    (`params` overridden by the GPU-adjusted `train_params`), creates a same-filesystem
    staging root, and starts a daemon supervisor thread around a spawn child.
@@ -693,6 +752,30 @@ rows/features) and retry.
 - `tests/test_service_domain_boundaries.py` keeps the training facade explicit,
   the extracted service-module graph acyclic, and lifecycle state ownership out
   of preparation, evaluation, worker-protocol, and artifact leaves.
+- `tests/test_training_preparation_worker.py` pins the hard-capped preparation
+  worker: exactly one `haute-training-prep` launch per preparation with the budget's
+  `memory_limit_bytes`, the remaining job timeout, and a `stop_reason` that reads the
+  live cancellation registry; every outcome in the mapping table (each in-child
+  `failure` kind, a success whose file is missing, stopped/timed-out/crashed
+  with-and-without a memory guess, RSS-breach, unsupported cap, and remote memory
+  vs. non-memory errors) with its terminal job state, `error_code`/`http_status_code`/
+  `error_detail`, exactly one parent admission release, and no parquet left behind;
+  a real spawn proving the parquet hand-off and `execution_metrics.admission`
+  (`profile="training_prep"`, the budget's limit); a real spawn whose unavailable
+  materialisation estimate ahead of a group-by reports
+  `execution_strategy.status="warned"` / `strategy="full-width-conservative"`; and a
+  hand-off parity check that the worker's parquet matches the in-process core's schema
+  and rows. `TestPreparationCleanupFailsLoud` proves the fail-loud cleanup contract (an
+  unremovable parquet degrades a child 422 to a 500 `error` that still carries the original
+  `error_detail` plus `cleanup_error`; a parent-side removal failure ends the job 500 `error`;
+  the success path is untouched), `TestDispersionWorkerMemoryOperation` proves a dispersion
+  worker-memory failure is labelled `operation="dispersion_estimate"` on both the 507 and the
+  job's `error_detail`, and `TestPreparationTempPathOwnership` proves a setup failure before
+  launch (an invalid `HAUTE_WORKER_MEMORY_ENFORCEMENT`) ends the job `error` with no
+  `haute_train_*.parquet` left behind. `tests/test_modelling_routes.py::TestTrainingProjection` covers the child
+  core directly (projection forwarding, bounded-sink and target/task-gate contract
+  failures, memory failures) with `execute_lazy_graph` patched at
+  `haute.routes._training_preparation.execute_lazy_graph`.
 - `tests/performance/test_catboost_contiguity_perf.py` records the MOD-M05
   Fortran-versus-C CatBoost handoff evidence and enforces layout, allocation, and
   result-equivalence facts; it is opt-in under the `perf` marker.

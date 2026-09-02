@@ -4163,10 +4163,11 @@ def test_optimiser_auto_range_start_creates_admitted_context(monkeypatch) -> Non
     assert background_context.admission is not None
 
 
-def test_train_execute_and_sink_forwards_execution_context(tmp_path) -> None:
-    from haute.routes._job_store import JobStore
-    from haute.routes._train_service import TrainService
-    from haute.schemas import TrainRequest
+def test_train_prepare_training_data_forwards_execution_context(tmp_path) -> None:
+    from haute.routes._training_preparation import (
+        TrainingPreparationRequest,
+        prepare_training_data,
+    )
 
     graph = make_graph(
         {
@@ -4183,9 +4184,7 @@ def test_train_execute_and_sink_forwards_execution_context(tmp_path) -> None:
             "edges": [],
         }
     )
-    body = TrainRequest(graph=graph, node_id="model")
-    service = TrainService(JobStore())
-    job_id = service._store.create_job({"status": "running"})
+    job_id = "job-forwards-context"
     context = ExecutionContext(
         operation="training",
         profile=ExecutionProfile.TRAINING_PREP,
@@ -4198,20 +4197,27 @@ def test_train_execute_and_sink_forwards_execution_context(tmp_path) -> None:
         captured.update(kwargs)
         return {"model": pl.DataFrame({"target": [1.0]}).lazy()}, ["model"], {}, {}
 
+    tmp_parquet = str(tmp_path / "prepared.parquet")
+    request = TrainingPreparationRequest(
+        graph=graph,
+        node_id="model",
+        job_id=job_id,
+        source="live",
+        parquet_path=tmp_parquet,
+        config={},
+        project_root=str(tmp_path),
+    )
     with patch(
-        "haute.routes._training_lifecycle.execute_lazy_graph", side_effect=fake_execute_lazy
+        "haute.routes._training_preparation.execute_lazy_graph", side_effect=fake_execute_lazy
     ):
-        tmp_parquet = service._execute_and_sink(
-            body,
-            preamble_ns=None,
-            row_limit=None,
-            job_id=job_id,
-            execution_context=context,
-        )
+        outcome = prepare_training_data(request, execution_context=context)
 
+    assert outcome.failure is None
     assert captured["execution_context"] is context
     assert any(metric.name == "training_sink_write" for metric in context.metrics.snapshot())
-    stored_metrics = service._store.require_job(job_id)["execution_metrics"]
+    # The child's own payload is the one the supervisor persists on the job.
+    stored_metrics = outcome.execution_metrics
+    assert stored_metrics is not None
     assert stored_metrics["operation"] == "training"
     assert stored_metrics["job_id"] == job_id
     assert pl.read_parquet(tmp_parquet)["target"].to_list() == [1.0]

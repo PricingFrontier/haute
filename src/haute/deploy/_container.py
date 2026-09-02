@@ -269,7 +269,27 @@ from haute.deploy._request_limits import (
     deploy_quote_request_body_limit_bytes,
     read_limited_json_body,
 )
+from haute._worker_isolation import (
+    IsolatedWorkerCrashedError,
+    IsolatedWorkerError,
+    IsolatedWorkerMemoryLimitExceededError,
+    IsolatedWorkerMemoryLimitUnsupportedError,
+    IsolatedWorkerRemoteError,
+    IsolatedWorkerTimeoutError,
+    isolated_worker_failure_is_memory,
+    isolated_worker_memory_detail,
+    resolve_worker_memory_enforcement,
+)
+from haute.deploy._batch_scoring import (
+    BatchScoreCleanupError,
+    BatchScoreError,
+    accept_batch_outcome,
+    deploy_batch_timeout_seconds,
+    prepare_batch_scoring,
+    score_batch_worker,
+)
 from haute.deploy._scorer import admit_deploy_execution, score_graph, score_graph_lazy
+from haute.routes._isolated_worker_async import run_isolated_worker_async
 
 # ── Load manifest at startup ────────────────────────────────────────
 
@@ -293,6 +313,38 @@ _artifact_paths = {{
     for name, path in _manifest["artifacts"].items()
 }}
 _output_fields = _manifest.get("output_fields")
+_execution_policy = _manifest.get("execution_policy") or {{}}
+
+
+def _require_fail_closed_batch_enforcement(policy):
+    """Refuse to start when a cap-dependent policy has no enforced cap.
+
+    A ``warned`` / ``full-width-conservative`` policy is a promise the bundle
+    could only make because the batch worker runs under a hard memory cap. In
+    ``best_effort`` mode a host that cannot install the cap silently starts a
+    child with no native backend, where the planner rejects the unavailable
+    estimate on every batch request. Failing at startup names the real problem
+    once instead of turning every batch into an unexplained 422.
+    """
+    if policy.get("status") != "warned":
+        return
+    enforcement = resolve_worker_memory_enforcement()
+    if enforcement == "required":
+        return
+    raise RuntimeError(
+        "This deployment's batch execution policy is "
+        f"{{policy.get('status')!r}} / {{policy.get('strategy')!r}} "
+        f"({{policy.get('reason_code')!r}}) at node "
+        f"{{policy.get('blocking_node_id')!r}} (operator "
+        f"{{policy.get('blocking_operator')!r}}), which is only valid while the "
+        "batch worker runs under an enforced hard memory cap. This host is "
+        f"configured as HAUTE_WORKER_MEMORY_ENFORCEMENT={{enforcement}}. Set "
+        "HAUTE_WORKER_MEMORY_ENFORCEMENT=required (on a host that supports "
+        "native memory caps) before serving this image."
+    )
+
+
+_require_fail_closed_batch_enforcement(_execution_policy)
 _QUOTE_REQUEST_BODY_LIMIT_BYTES = deploy_quote_request_body_limit_bytes()
 _QUOTE_RESPONSE_ROW_LIMIT = {DEFAULT_QUOTE_RESPONSE_ROW_LIMIT}
 _DEPLOY_STREAM_CHUNK_SIZE = 50_000
@@ -317,7 +369,11 @@ def health() -> dict:
         "nodes_deployed": _manifest.get("nodes_deployed", 0),
         "input_schema": _manifest.get("input_schema", {{}}),
         "output_schema": _manifest.get("output_schema", {{}}),
+        # Describes single-row live scoring, which runs in this process.
         "memory_enforcement": "admission_rss_best_effort",
+        # Multi-row batches run in a spawn worker with a hard RSS cap.
+        "batch_memory_enforcement": resolve_worker_memory_enforcement(),
+        "execution_policy": _manifest.get("execution_policy"),
     }}
 
 
@@ -381,6 +437,192 @@ def _quote_ndjson_chunks(spool):
         spool.close()
 
 
+def _batch_response_content(result):
+    row_count = result.row_count
+    returned_rows = min(row_count, _QUOTE_RESPONSE_ROW_LIMIT)
+    frame = pl.scan_parquet(result.result_path).head(returned_rows).collect()
+    return {{
+        "rows": render_output_document(frame),
+        "row_count": row_count,
+        "returned_rows": returned_rows,
+        "truncated": row_count > _QUOTE_RESPONSE_ROW_LIMIT,
+        "limit": _QUOTE_RESPONSE_ROW_LIMIT,
+        "execution_metrics": result.execution_metrics,
+    }}
+
+
+def _materialize_batch_ndjson(plan, result):
+    spool = tempfile.SpooledTemporaryFile(
+        max_size=_DEPLOY_STREAM_SPOOL_MAX_SIZE,
+        mode="w+b",
+    )
+    try:
+        for batch in bounded_collect_batches(
+            pl.scan_parquet(result.result_path),
+            chunk_size=_DEPLOY_STREAM_CHUNK_SIZE,
+            maintain_order=True,
+            execution_context=plan.execution_context,
+            stage_name="deploy_batch_stream",
+            node_id=_output_node_id,
+        ):
+            if batch.height == 0:
+                continue
+            text = batch.write_ndjson()
+            if text and not text.endswith("\\n"):
+                text += "\\n"
+            spool.write(text.encode("utf-8"))
+        spool.seek(0)
+        return spool
+    except BaseException:
+        spool.close()
+        raise
+
+
+def _batch_error_response(exc):
+    if exc.kind in {{"contract", "bounded"}}:
+        if exc.payload is not None:
+            return JSONResponse(status_code=422, content=exc.payload)
+        return JSONResponse(
+            status_code=422,
+            content={{
+                "error_code": "bounded_streaming_unsupported",
+                "error": "Bounded streaming unsupported",
+                "detail": exc.detail,
+            }},
+        )
+    if exc.kind == "memory":
+        return JSONResponse(status_code=507, content=exc.payload)
+    if exc.kind == "cancelled":
+        return JSONResponse(
+            status_code=499,
+            content={{
+                "error_code": "execution_cancelled",
+                "operation": "deploy_quote",
+                "job_id": None,
+                "reason": exc.detail,
+            }},
+        )
+    logger.exception("deploy_quote_batch_failed")
+    return JSONResponse(
+        status_code=500,
+        content={{"error_code": "deploy_internal_error", "error": exc.detail}},
+    )
+
+
+async def _quote_batch(request: Request, rows: list):
+    """Score a multi-row request inside one hard-capped spawn worker."""
+    plan = None
+    response = None
+    # Only an UNHANDLED failure counts as a primary error. A handled branch has
+    # already produced its response, so a cleanup failure there is the only
+    # unreported problem left and must win.
+    primary_error = None
+    try:
+        plan = await run_in_threadpool(
+            prepare_batch_scoring,
+            rows,
+            graph=_pruned_graph,
+            input_node_ids=_input_node_ids,
+            output_node_id=_output_node_id,
+            artifact_paths=_artifact_paths,
+            output_fields=_output_fields,
+        )
+        outcome = await run_isolated_worker_async(
+            score_batch_worker,
+            plan.request,
+            plan.budget,
+            config=plan.worker_config,
+        )
+        result = accept_batch_outcome(plan, outcome)
+        if _wants_ndjson(request):
+            # The spool is fully materialised here, so removing the parquet in
+            # the finally below cannot truncate the streamed body.
+            spool = await run_in_threadpool(_materialize_batch_ndjson, plan, result)
+            response = StreamingResponse(
+                _quote_ndjson_chunks(spool),
+                media_type="application/x-ndjson",
+            )
+        else:
+            response = JSONResponse(
+                content=await run_in_threadpool(_batch_response_content, result)
+            )
+    except ExecutionAdmissionError as exc:
+        response = JSONResponse(status_code=507, content=exc.to_payload())
+    except BatchScoreError as exc:
+        response = _batch_error_response(exc)
+    except (
+        IsolatedWorkerMemoryLimitExceededError,
+        IsolatedWorkerMemoryLimitUnsupportedError,
+    ) as exc:
+        response = JSONResponse(
+            status_code=507,
+            content=isolated_worker_memory_detail(
+                exc,
+                operation="deploy_quote",
+                memory_limit_bytes=plan.budget.memory_limit_bytes,
+            ),
+        )
+    except IsolatedWorkerTimeoutError:
+        logger.exception("deploy_quote_batch_timed_out")
+        response = JSONResponse(
+            status_code=504,
+            content={{
+                "error_code": "deploy_batch_timeout",
+                "operation": "deploy_quote",
+                "timeout_seconds": deploy_batch_timeout_seconds(),
+            }},
+        )
+    except (IsolatedWorkerCrashedError, IsolatedWorkerRemoteError) as exc:
+        if isolated_worker_failure_is_memory(exc):
+            response = JSONResponse(
+                status_code=507,
+                content=isolated_worker_memory_detail(
+                    exc,
+                    operation="deploy_quote",
+                    memory_limit_bytes=plan.budget.memory_limit_bytes,
+                ),
+            )
+        else:
+            logger.exception("deploy_quote_batch_failed")
+            response = JSONResponse(
+                status_code=500,
+                content={{"error_code": "deploy_internal_error", "error": str(exc)}},
+            )
+    except IsolatedWorkerError as exc:
+        logger.exception("deploy_quote_batch_failed")
+        response = JSONResponse(
+            status_code=500,
+            content={{"error_code": "deploy_internal_error", "error": str(exc)}},
+        )
+    except Exception as exc:
+        # Same contract as the live path: an unexpected parent-side failure is
+        # logged and reported as the internal-error envelope, never a bare 500.
+        logger.exception("deploy_quote_batch_failed")
+        response = JSONResponse(
+            status_code=500,
+            content={{"error_code": "deploy_internal_error", "error": str(exc)}},
+        )
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        if plan is not None:
+            try:
+                plan.cleanup(primary_error=primary_error)
+            except BatchScoreCleanupError as cleanup_error:
+                # The request rows and the scored parquet are still on disk;
+                # that is a data-retention defect even after a good score.
+                logger.exception("deploy_quote_batch_cleanup_failed")
+                response = JSONResponse(
+                    status_code=500,
+                    content={{
+                        "error_code": "deploy_internal_error",
+                        "error": str(cleanup_error),
+                    }},
+                )
+    return response
+
+
 @app.post("/quote")
 async def quote(request: Request) -> JSONResponse:
     """Score one or more quotes.
@@ -411,6 +653,11 @@ async def quote(request: Request) -> JSONResponse:
             status_code=400,
             content={{"error": "Expected a JSON object or array of objects."}},
         )
+
+    # Multi-row batches are the only request shape that can materialise, so
+    # they run in a hard-capped worker instead of this service process.
+    if len(rows) > 1:
+        return await _quote_batch(request, rows)
 
     try:
         row_count = len(rows)

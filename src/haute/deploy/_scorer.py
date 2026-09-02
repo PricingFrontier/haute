@@ -160,11 +160,22 @@ def deploy_execution_profile(row_count: int) -> ExecutionProfile:
     return ExecutionProfile.DEPLOY_BATCH if row_count > 1 else ExecutionProfile.DEPLOY_LIVE
 
 
-def admit_deploy_execution(*, operation: str, row_count: int) -> ExecutionContext:
-    """Create an admitted deploy execution context from request metadata."""
+def admit_deploy_execution(
+    *,
+    operation: str,
+    row_count: int,
+    profile: ExecutionProfile | None = None,
+) -> ExecutionContext:
+    """Create an admitted deploy execution context from request metadata.
+
+    ``profile`` overrides the row-count-derived profile for a caller that runs
+    one fixed execution path whatever the payload size: the batch worker always
+    admits ``DEPLOY_BATCH``, including for the bundle's one-row schema dry-run,
+    so the served envelope and the batch ``modelScore`` contract apply there.
+    """
     return create_admitted_execution_context(
         operation=operation,
-        profile=deploy_execution_profile(row_count),
+        profile=profile if profile is not None else deploy_execution_profile(row_count),
     )
 
 

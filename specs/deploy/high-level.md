@@ -126,6 +126,11 @@ golden validation, and served response therefore describe one output contract.
 **Packaging and shipping.** Two backends are implemented:
 - **Databricks**: logs the pipeline as an `mlflow.pyfunc.PythonModel` (models-from-code),
   registers it in Unity Catalog, and creates/updates a Databricks Model Serving endpoint.
+  Multi-row scoring stays in the serving process there — there is no worker and no hard
+  memory cap — so this target gets no conservative execution policy: a group-by whose
+  materialisation cannot be estimated fails the bundle with a correction naming the node
+  and pointing at a container target, rather than shipping a promise the runtime cannot
+  keep.
 - **Container**: generates a FastAPI app (`POST /quote`, `GET /health`) and a Dockerfile
   pinned to dependency versions actually installed in the build environment, builds the
   image, and pushes it to a registry if one is configured. `/quote` accepts a single JSON
@@ -136,10 +141,28 @@ golden validation, and served response therefore describe one output contract.
   the event loop remains responsive during scoring and a scoring failure produces the
   same logged HTTP 500 contract as ordinary JSON instead of a misleading 200 with a
   truncated body.
+  A single-row quote scores in the service process; a multi-row batch — the only request
+  shape whose memory grows with the payload — is scored in one hard-capped spawn worker
+  per request, transported to the parent as a parquet file and rendered into the same
+  JSON or NDJSON response. Because that worker runs under a real memory cap, a group-by
+  whose materialisation cannot be estimated runs conservatively there instead of being
+  rejected; the bundle records what the served batch will do — including which runtime it
+  was planned for — and ships it in the manifest. The build's own one-row schema check
+  runs uncapped and would reject such a graph, so the bundle proves the served batch path
+  can produce the schema by running that dry-run in the same hard-capped worker the
+  service uses, and reads the schema from what the worker wrote. If that worker cannot
+  run or cannot finish, the deploy fails at build time rather than at every request. The
+  promise is also enforced at the far end: an image whose policy depends on that cap
+  refuses to start unless the host is configured to enforce worker memory caps, so a
+  container can never serve batches under weaker guarantees than its manifest
+  advertises.
   Generated images select the fixed application admission policy
   `HAUTE_EXECUTION_MEMORY_POLICY=strict_server`; `/health` reports
-  `memory_enforcement="admission_rss_best_effort"`. These are application-level
-  admission and sampled-RSS guarantees, not a substitute for a platform hard limit.
+  `memory_enforcement="admission_rss_best_effort"` for in-process live scoring, plus
+  `batch_memory_enforcement` (whether the batch worker's hard cap is `required` or
+  `best_effort` on this host) and the bundle's `execution_policy` record. The live figure
+  is an application-level admission and sampled-RSS guarantee, not a substitute for a
+  platform hard limit; the batch worker's cap is a real one.
 
 Three further container-platform targets (Azure Container Apps, AWS ECS, GCP Cloud Run)
 share the container build step (and push only when `container.registry` is configured),

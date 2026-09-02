@@ -68,6 +68,8 @@ from haute._worker_isolation import (
     IsolatedWorkerRemoteError,
     IsolatedWorkerStoppedError,
     IsolatedWorkerTimeoutError,
+    isolated_worker_failure_is_memory,
+    isolated_worker_memory_detail,
     resolve_worker_memory_enforcement,
     run_isolated_worker,
     worker_config_for_memory_policy,
@@ -1770,27 +1772,11 @@ def _isolated_output_memory_detail(
     *,
     memory_limit_bytes: int | None,
 ) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "error_code": "memory_limit",
-        "operation": "pipeline_write_output",
-        "reason": "worker_memory_limit",
-    }
-    if memory_limit_bytes is not None:
-        payload["memory_limit_bytes"] = memory_limit_bytes
-    if isinstance(exc, IsolatedWorkerMemoryLimitExceededError):
-        payload.update(
-            rss_bytes=exc.rss_bytes,
-            rss_limit_bytes=exc.rss_limit_bytes,
-            reason="worker_rss_limit_exceeded",
-        )
-    elif isinstance(exc, IsolatedWorkerMemoryLimitUnsupportedError) or (
-        isinstance(exc, IsolatedWorkerRemoteError)
-        and exc.remote_type == "NativeMemoryLimitUnsupportedError"
-    ):
-        payload["reason"] = "native_memory_cap_unavailable"
-    elif isinstance(exc, IsolatedWorkerCrashedError):
-        payload["reason"] = "worker_may_have_exceeded_memory_limit"
-    return payload
+    return isolated_worker_memory_detail(
+        exc,
+        operation="pipeline_write_output",
+        memory_limit_bytes=memory_limit_bytes,
+    )
 
 
 @router.post("/pipeline/write-output", response_model=WriteOutputResponse)
@@ -1889,7 +1875,7 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
             ),
         ) from None
     except IsolatedWorkerCrashedError as e:
-        if e.terminal_reason == "memory_limited":
+        if isolated_worker_failure_is_memory(e):
             raise HTTPException(
                 status_code=507,
                 detail=_isolated_output_memory_detail(
@@ -1900,12 +1886,7 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
         logger.error("sink_worker_crashed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
     except IsolatedWorkerRemoteError as e:
-        if e.remote_type in {
-            "MemoryError",
-            "ExecutionAdmissionError",
-            "ExecutionMemoryLimitExceededError",
-            "NativeMemoryLimitUnsupportedError",
-        }:
+        if isolated_worker_failure_is_memory(e):
             raise HTTPException(
                 status_code=507,
                 detail=_isolated_output_memory_detail(

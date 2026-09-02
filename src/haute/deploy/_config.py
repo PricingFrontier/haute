@@ -494,6 +494,7 @@ class ResolvedDeploy:
     artifacts: dict[str, Path]
     input_schema: dict[str, str]
     output_schema: dict[str, str]
+    execution_policy: dict[str, Any] = field(default_factory=dict)
     removed_node_ids: list[str] = field(default_factory=list)
     snapshot_provenance: dict[str, dict[str, Any]] = field(default_factory=dict)
     _resources: ExitStack = field(default_factory=ExitStack, repr=False, compare=False)
@@ -537,7 +538,12 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
     from haute._project import resolve_pipeline_file
     from haute.deploy._bundler import collect_artifacts
-    from haute.deploy._schema import infer_input_schema, infer_output_schema
+    from haute.deploy._schema import (
+        DeployBatchRuntime,
+        infer_deploy_execution_policy,
+        infer_input_schema,
+        infer_output_schema,
+    )
     from haute.parser import parse_pipeline_file
 
     # Re-run base-image pinning validation here.  ``__post_init__`` ran at
@@ -654,6 +660,21 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         # reflects the served model identity.
         artifact_paths = {name: str(path) for name, path in artifacts.items()}
         input_schema = infer_input_schema(pruned_graph, deploy_inputs[0])
+        # Plan the served batch strategy first: it needs only the one-row
+        # sample, and a target that scores batches in process must refuse an
+        # unprovable group-by before the schema dry-run tries to run one.
+        # Container targets score batches in a hard-capped worker; the
+        # Databricks pyfunc target scores them in the serving process.
+        batch_runtime: DeployBatchRuntime = (
+            "hard_capped_worker" if config.target in _CONTAINER_BASED_TARGETS else "in_process"
+        )
+        execution_policy = infer_deploy_execution_policy(
+            pruned_graph,
+            output_node_id,
+            deploy_inputs,
+            artifact_paths=artifact_paths,
+            batch_runtime=batch_runtime,
+        )
         output_schema = infer_output_schema(
             pruned_graph,
             output_node_id,
@@ -703,6 +724,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         artifacts=artifacts,
         input_schema=input_schema,
         output_schema=output_schema,
+        execution_policy=execution_policy,
         removed_node_ids=removed_ids,
         snapshot_provenance=snapshot_provenance,
         _resources=resources,

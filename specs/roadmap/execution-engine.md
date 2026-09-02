@@ -38,23 +38,23 @@ allowlists. Global operations are never executed independently in each chunk.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | EXEC-P05 | Decision | P2 | Build snapshots for eager-only or schema-unknown inputs automatically inside a warned hard-capped worker. |
-| EXEC-P06 | Planned | P2 | Run training preparation and multi-row deploy scoring inside hard-capped workers so the warned policy reaches them. |
 | EXEC-P07 | Planned | P2 | Admit sort, unique, join, and window materialisation with peak-memory evidence instead of unproven streaming. |
+| EXEC-P08 | Planned | P3 | Make the schema-only execution declaration enforceable for graphs that end in an OUTPUT document. |
 
 ## Planned improvements
 
-`EXEC-P06` is the next startable package. The operation registry, the
+`EXEC-P07` is the next startable package. The operation registry, the
 profile-independent projection planner, the operation-effect proof, the
 warned, hard-capped conservative execution policy, the receiver-aware chunk
-classifier, and the version-pinned compatibility corpus that it builds on are
-current behaviour specified in the execution-engine and optimiser
-specifications: an unavailable estimate runs once under the full reserved
-envelope on the worker-backed surfaces (Data Output writes, preview and trace,
-Explore, JSON cache builds) and remains a typed rejection elsewhere, and a
-chunk-ineligible auto-range suffix falls back to the full-lazy path with a
-recorded warning. `EXEC-P06` extends the conservative policy to the
-thread-backed modelling and deploy surfaces; optimiser surfaces wait for
-`ROAD-WORKER-04`.
+classifier, the version-pinned compatibility corpus, and the hard-capped
+training-preparation and multi-row deploy workers that it builds on are
+current behaviour specified in the execution-engine, modelling, deploy, and
+optimiser specifications: an unavailable estimate runs once under the full
+reserved envelope on the worker-backed surfaces (Data Output writes, preview
+and trace, Explore, JSON cache builds, training preparation, multi-row deploy
+scoring) and remains a typed rejection elsewhere, and a chunk-ineligible
+auto-range suffix falls back to the full-lazy path with a recorded warning.
+Optimiser surfaces wait for `ROAD-WORKER-04`.
 `EXEC-P05` requires an explicit architecture decision and is not startable
 until the specification amendment it names is approved. Each package extends a
 closed, tested optimisation model while retaining a general conservative
@@ -120,48 +120,6 @@ implementation.
 `tests/test_io.py`; `tests/test_source_cache.py`;
 `tests/test_input_cache_route.py`; `tests/test_worker_isolation.py`.
 
-### EXEC-P06 — Run training preparation and multi-row deploy in hard-capped workers
-
-**Why:** Training preparation runs in a server thread, and deploy scoring runs
-in-process inside the generated service. Both rely on RSS-sampled admission,
-which the execution-engine specification treats as supervision rather than a
-kernel cap, so the warned conservative fallback cannot exist there and unknown
-shapes remain typed rejections on the workflows where users most often author
-custom Polars. The training fit already runs in a protocol worker; the
-preparation that executes the pipeline does not.
-
-**Plan:** Run training preparation inside a hard-capped worker with the same
-admitted budget envelope, native cap, timeout, cancellation, and
-result-transport rules the Data Output writer uses, and hand its result to the
-training worker through a file-backed artifact rather than an in-memory frame.
-Route multi-row deploy requests, which already select the batch profile,
-through an isolated or warm hard-capped worker inside the generated service.
-Keep single-row live scoring in-process for latency, and validate the graph's
-execution policy at bundle build time so an unanalysed shape is reported once
-when the bundle is built rather than on every request. Optimiser workflows
-remain thread-backed until ROAD-WORKER-04's activation trigger is met and keep
-the typed rejection with the conservative policy's warning content.
-
-**Acceptance:** Training preparation and multi-row deploy prove the same
-memory-exhaustion, timeout, cancellation, worker-death, and publication-failure
-outcomes as the Data Output writer, release admission exactly once, and leave
-no partial artifact. The conservative-execution cross-surface suite then passes on those
-surfaces without changes to its expectations. Bundle validation reports the
-warned policy exactly once, and live scoring adds no per-request process
-spawn. Preparation-to-training hand-off has value/schema parity with the
-in-thread path.
-
-**Dependencies:** The current conservative-execution policy, the
-worker-isolation and result-transport contracts, and the training and deploy
-publication contracts. Optimiser
-isolation stays with ROAD-WORKER-04.
-
-**Evidence:** `src/haute/routes/_training_lifecycle.py`;
-`src/haute/routes/_training_preparation.py`; `src/haute/deploy/_scorer.py`;
-`src/haute/deploy/_container.py`; `src/haute/_worker_isolation.py`;
-`tests/test_modelling_routes.py`; `tests/test_deploy_internals.py`;
-`tests/test_worker_isolation.py`.
-
 ### EXEC-P07 — Admit global operations beyond group-by with memory evidence
 
 **Why:** The operation registry records `sort`, `unique`, `join`, `join_asof`,
@@ -202,3 +160,40 @@ performance lane.
 `src/haute/_ram_estimate.py`;
 `tests/performance/test_execution_engine_certification.py`;
 `tests/test_polars_compatibility_corpus.py`.
+
+### EXEC-P08 — Honour the schema-only declaration for OUTPUT documents
+
+**Why:** `execute_lazy_graph(schema_only=True)` and
+`plan_prepared_execution_strategy(schema_only=True)` declare that the caller
+resolves lazy schemas and never collects a frame, and the planner skips the
+group-by admission gate on that declaration. An OUTPUT node's apply step
+(`_node_apply.py` calling `_output_assembler.assemble_output_from_mapping`)
+materialises its document while the graph is being built, regardless of the
+declaration, so a schema-only caller whose lineage includes an OUTPUT node (the
+assistant's schema read, or a bundle-time schema inference) collects in the
+calling process with the gate relaxed. EXEC-P06 found this while proving the
+deploy dry-run and side-stepped it by running that dry-run inside a
+hard-capped worker instead.
+
+**Plan:** Give the OUTPUT assembler a schema-only build that derives the
+document schema from the assembled lazy plan (nesting, list wrapping, and
+null-filling are plan-level operations) without collecting, and route OUTPUT
+nodes through it when `schema_only` is declared; where a shape cannot be
+resolved lazily, reject the schema-only request with a typed error instead of
+collecting. Either way a schema-only execution must never reach
+`execution_collect`, and a tripwire test pins that.
+
+**Acceptance:** A schema-only execution over a graph ending in an OUTPUT node
+reports the same output schema the collected document has, with a tripwire
+proving no physical collection; the assistant schema read and chunk planning
+pass unchanged; the deploy bundle may then replace its capped dry-run for the
+conservative case with schema-only inference once that equivalence is proven
+for every OUTPUT shape.
+
+**Dependencies:** The OUTPUT assembler contract, the execution facade's
+`schema_only` declaration, and the assistant schema-read path.
+
+**Evidence:** `src/haute/_output_assembler.py`; `src/haute/_node_apply.py`;
+`src/haute/_execute_lazy.py`; `src/haute/assistant/_application.py`;
+`src/haute/chunking.py`; `tests/test_output_assembler.py`;
+`tests/test_assistant_application.py`; `tests/test_chunk_plan.py`.

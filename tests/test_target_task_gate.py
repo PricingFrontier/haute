@@ -655,12 +655,11 @@ class TestPreDispatchServiceGate:
         assert not tmp_parquet.exists()
 
     def test_preparation_thread_gates_before_launching_the_fit_worker(self, tmp_path: Path) -> None:
-        """The route wiring: gate runs after sink, before _launch_background."""
+        """The route wiring: the gate runs in the preparation worker, before launch."""
+        from haute.routes import _training_lifecycle
         from haute.routes._job_store import JobStore
         from haute.schemas import TrainRequest
 
-        tmp_parquet = tmp_path / "train_input.parquet"
-        pl.DataFrame({"x1": [0.1, 0.2, 0.3], "sev": [123.45, 6.7, 8.9]}).write_parquet(tmp_parquet)
         graph = {
             "nodes": [
                 {
@@ -707,20 +706,34 @@ class TestPreDispatchServiceGate:
         store = JobStore()
         service = TrainService(store)
         body = TrainRequest.model_validate({"graph": graph, "node_id": "train"})
-        context = ExecutionContext(
-            operation="training_pipeline",
-            profile=ExecutionProfile.TRAINING_PREP,
-        )
         launched: list[str] = []
+        prepared_paths: list[str] = []
+
+        def fake_execute_lazy(*_args, **_kwargs):
+            # A continuous target under a classification task: the frame the
+            # real gate must reject once it has been sunk.
+            return (
+                {"train": pl.DataFrame({"x1": [0.1, 0.2, 0.3], "sev": [123.45, 6.7, 8.9]}).lazy()},
+                ["train"],
+                {},
+                {},
+            )
+
+        def inline_worker(function, *args, config=None, **kwargs):
+            # Run the real preparation child in-process: the sink and the
+            # target/task gate both execute exactly as they do in the spawn.
+            prepared_paths.append(args[0].parquet_path)
+            return function(*args, **kwargs)
+
         with (
             patch.object(service, "_compile_preamble", return_value=None),
             patch.object(service, "_estimate_ram", return_value=(None, None, 3, 2)),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch(
-                "haute.routes._training_lifecycle.create_admitted_execution_context",
-                return_value=context,
+                "haute.routes._training_preparation.execute_lazy_graph",
+                side_effect=fake_execute_lazy,
             ),
-            patch.object(service, "_execute_and_sink", return_value=str(tmp_parquet)),
+            patch.object(_training_lifecycle, "run_isolated_worker", inline_worker),
             patch.object(
                 service, "_launch_background", side_effect=lambda *a, **k: launched.append("yes")
             ),
@@ -733,7 +746,7 @@ class TestPreDispatchServiceGate:
         assert "'sev'" in job["message"]
         assert "classification" in job["message"]
         assert launched == []
-        assert not tmp_parquet.exists()
+        assert prepared_paths and not Path(prepared_paths[0]).exists()
 
 
 class TestWorkerBoundaryUserMessage:
