@@ -852,6 +852,7 @@ def _execute_lazy(
     source_by_node: Mapping[str, str] | None = None,
     dataframe_cache_request: execution_facade.DataFrameExecutionCacheRequest | None = None,
     schema_only: bool = False,
+    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
 ) -> tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]:
     """Execute a graph lazily and return per-node LazyFrames.
 
@@ -899,6 +900,8 @@ def _execute_lazy(
             never collects a frame or invokes a sink.  Strategy planning then
             skips the group-by materialisation-admission gate, which bounds
             peak memory during materialisation only.
+        runtime_source_frames_by_node: Request-local DataFrames injected at
+            source nodes, used for group-by materialisation estimation.
 
     Returns:
         (lazy_outputs, order, parents_of, id_to_name)
@@ -1106,6 +1109,7 @@ def _execute_lazy(
                 source=source,
             ),
             execution_context=execution_context,
+            runtime_source_frames_by_node=runtime_source_frames_by_node,
         )
     else:
         public_strategy_result = execution_facade.plan_prepared_execution_strategy(

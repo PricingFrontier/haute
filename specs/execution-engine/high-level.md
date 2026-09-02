@@ -156,13 +156,17 @@ running heavy work in a child process the parent can kill on timeout or memory l
   status, profile, boundedness, reason code, and available/unavailable/truncated
   detail state. Diagnostics are JSON-safe, deterministically capped, and never carry
   plans, frames, source values, or other user data.
-- **Group-by is never smuggled through chunking or streaming.** Only
-  `PREVIEW_EAGER`, `EXPLORE_ANALYSIS` (the explicit Explore dataframe-cache
-  materialisation), and `DEPLOY_LIVE` may use an admitted materialisation boundary,
-  and only when a present positive admission plus an available estimate fits both
-  memory limit and headroom. Every other batch/bounded profile rejects before
-  execution; missing admission, unavailable estimate, and excess headroom have
-  distinct typed reason codes.
+- **Group-by is an admitted global boundary in every materialising workflow.** No
+  execution profile rejects a graph merely because its relevant lineage contains a
+  group-by. Preview, lazy sinks, training, optimiser setup and auto-range, Explore,
+  assistant value profiling, live and batch deploy, and chunk-orchestrated work all use
+  the same boundary contract: a present positive admission plus an available estimate
+  that fits both memory limit and headroom. Runtime-injected deploy inputs contribute
+  request-local row-count, schema, and width metadata to that estimate instead of
+  depending on a stale or absent source path. A chunk runner never evaluates the global
+  aggregation independently per chunk; the group-by is executed once under admission
+  before a proven row-local suffix is chunked. Missing admission, unavailable estimates,
+  and excess headroom remain distinct typed failures.
 - **A proven API-input demand is applied before payload loading.** For a target
   lineage, the executor derives the JSON `apiInput` ports that actually feed the
   prepared graph and, where projection analysis proves a concrete demand, the

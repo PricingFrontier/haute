@@ -139,6 +139,7 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
+    "execution-engine",
     "explore-eda",
     "optimiser",
 )
@@ -211,10 +212,11 @@ def test_execution_strategy_guide_is_in_public_navigation_and_states_key_contrac
         "Schema all-except",
         "Streaming boundary",
         "Materialisation boundary",
-        "Haute never generically chunks a group-by.",
-        "`preview_eager`",
-        "`explore_analysis` cache-materialisation",
-        "`deploy_live`",
+        "Haute supports group-by operations in every workflow.",
+        "Haute never computes a global group-by independently in each generic chunk.",
+        "Data Output writes",
+        "assistant value profiling",
+        "both live and batch",
         "unavailable or `null`",
     ):
         assert claim in guide

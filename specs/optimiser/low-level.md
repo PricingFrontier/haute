@@ -528,10 +528,13 @@ returned as a generic `status: "error"` payload.
   overlapping on the same graph/node; synchronous estimate does not use that coordinator.
 - **`_ESTIMATE_JOB_TYPE` is assigned by `/estimate`, not by frontier auto-range.**
   `haute.routes.optimiser._optimiser_input_metrics` (backing `POST /api/optimiser/estimate`)
-  creates a short-lived job tagged `job_type = _ESTIMATE_JOB_TYPE` and
-  unconditionally removes it in a `finally: _remove_estimate_job(job_id)` block. This tag is what
-  lets `_NON_BLOCKING_RUNNING_JOB_TYPES` exempt an
-  in-flight `/estimate` call from `_check_no_concurrent_jobs`'s store-wide scan.
+  creates a short-lived job tagged `job_type = _ESTIMATE_JOB_TYPE`, owns an admitted
+  `OPTIMISER_SETUP` context for the complete pipeline-and-aggregation scan, releases that
+  admission, and unconditionally removes the job in a
+  `finally: _remove_estimate_job(job_id)` block. An admission or sampled-memory failure is a
+  structured HTTP 507 response with optimiser-estimate-specific user wording, never a generic
+  HTTP 500. The job tag is what lets `_NON_BLOCKING_RUNNING_JOB_TYPES` exempt an in-flight
+  `/estimate` call from `_check_no_concurrent_jobs`'s store-wide scan.
 - **std of a single-quote scenario-value distribution is hardcoded to `0.0`.**
   `_compute_scenario_value_stats` special-cases `n == 1` rather than calling Polars' sample
   standard deviation (`ddof=1`), which is undefined (`null`) for a single observation and would

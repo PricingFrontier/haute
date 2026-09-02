@@ -28,7 +28,7 @@ from haute.chunking import (
     iter_chunked_frames,
     run_chunked_reduce,
 )
-from haute.errors import ChunkPlanUnsupportedError, GroupByExecutionUnsupportedError
+from haute.errors import ChunkPlanUnsupportedError
 from haute.executor import _build_node_fn
 from tests.conftest import make_edge, make_graph, make_output_config
 
@@ -730,7 +730,7 @@ def test_chunk_plan_rejects_global_polars_transform(tmp_path: Path) -> None:
         }
     )
 
-    with pytest.raises(GroupByExecutionUnsupportedError) as exc_info:
+    with pytest.raises(ChunkPlanUnsupportedError, match="row-local"):
         chunk_plan(
             ChunkPlanRequest(
                 graph=graph,
@@ -739,7 +739,64 @@ def test_chunk_plan_rejects_global_polars_transform(tmp_path: Path) -> None:
                 required_columns_by_node={"out": {"quote_id", "premium"}},
             )
         )
-    assert exc_info.value.reason_code == "profile_requires_bounded_execution"
+
+
+def test_chunk_runner_accepts_group_by_materialised_before_chunk_suffix(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "grouped-quotes.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": ["q1", "q1", "q2", "q2", "q3"],
+            "premium": [100.0, 25.0, 80.0, 20.0, 50.0],
+        }
+    ).write_parquet(source_path)
+    graph = make_graph(
+        {
+            "nodes": [
+                _node("source", "dataInput", {"path": str(source_path)}),
+                _node(
+                    "global",
+                    "polars",
+                    {
+                        "code": "df = source.group_by('quote_id').agg(pl.col('premium').sum())",
+                        "contract": {
+                            "inputs": ["quote_id", "premium"],
+                            "outputs": ["premium"],
+                        },
+                    },
+                ),
+                _node("out", "output", make_output_config(["quote_id", "premium"])),
+            ],
+            "edges": [
+                make_edge("source", "global").model_dump(),
+                make_edge("global", "out").model_dump(),
+            ],
+        }
+    )
+    plan = chunk_plan(
+        ChunkPlanRequest(
+            graph=graph,
+            target_node_id="out",
+            chunk_start_node_id="global",
+            chunk_size=2,
+            required_columns_by_node={"out": {"quote_id", "premium"}},
+        )
+    )
+    grouped = pl.scan_parquet(source_path).group_by("quote_id").agg(pl.col("premium").sum())
+
+    actual = collect_chunked(
+        ChunkRunnerRequest(
+            graph=graph,
+            plan=plan,
+            build_node_fn=_build_node_fn,
+            start_frame=grouped,
+        ),
+        allow_unbounded=True,
+    ).sort("quote_id")
+
+    expected = pl.DataFrame({"quote_id": ["q1", "q2", "q3"], "premium": [125.0, 100.0, 50.0]})
+    plt.assert_frame_equal(actual, expected)
 
 
 def test_chunk_local_polars_guard_accepts_row_local_and_rejects_global() -> None:

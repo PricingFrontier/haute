@@ -857,19 +857,18 @@ fallback after a process failure.
   topological order and, when truncated, retains the earliest representative of
   every boundary kind present before filling the remaining capacity. A mixed plan
   therefore cannot truncate away its only unprojected-boundary evidence.
-- **Group-by profile matrix is closed:**
+- **Group-by admission is profile-independent:**
 
   | Profile | Version-1 result |
   | --- | --- |
-  | `PREVIEW_EAGER`, `EXPLORE_ANALYSIS`, `DEPLOY_LIVE` | `materialisation-boundary` only when admission and estimate fit |
-  | `LAZY_SINK`, `TRAINING_PREP`, `OPTIMISER_SETUP`, `AUTO_RANGE`, `DEPLOY_BATCH`, `CHUNKED_MAP_REDUCE` | reject with `profile_requires_bounded_execution` |
+  | Every `ExecutionProfile` | `materialisation-boundary` only when admission and estimate fit |
 
-  `EXPLORE_ANALYSIS` is eligible because the profile denotes the explicit, full-frame
-  dataframe-cache materialisation performed by an Explore job; it is not a generic
-  streaming exemption. The lazy executor runs the graph-aware request planner for a
-  materialising group-by so the estimate is derived from the same prepared target lineage
-  before any node executes. Eligible profiles require a context with admission, positive
-  memory/headroom, and `MaterialisationEstimate(state=available)` satisfying
+  The group-by remains a materialisation boundary inside the caller's admitted budget;
+  a streaming sink or chunked consumer is not treated as proof that the aggregation
+  itself streams. The lazy executor runs the graph-aware request planner so the estimate
+  is derived from the same prepared target lineage before any node executes. Every
+  materialising profile requires a context with
+  admission, positive memory/headroom, and `MaterialisationEstimate(state=available)` satisfying
   `estimated_peak_bytes <= min(memory_limit_bytes, headroom_bytes)` (equality is
   admitted). Missing/non-positive admission yields
   `execution_admission_unavailable`; unavailable estimate yields
@@ -880,12 +879,31 @@ fallback after a process failure.
   rejection's remediation. The estimator already knows which node it could not measure
   and why; discarding that left an analyst with "provide readable metadata" and no way
   to tell an unreadable file from an unsummarisable source shape.
-- **Schema-only planning is orthogonal to the group-by matrix.**
+- **Runtime sources participate in group-by admission.** When an execution surface
+  replaces graph inputs with in-memory frames, as deploy scoring does, the planner uses
+  those exact frames as request-local source metadata for row cardinality, schema, and
+  expanded variable-width sizing. Replaced inputs are not estimated from their persisted
+  path configuration. Static inputs in the same graph continue to use their ordinary
+  source metadata.
+- **Chunking starts after global aggregation.** Pure chunk planning performs schema-only
+  strategy analysis and may place a group-by in the pre-chunk prefix. The prefix is
+  executed exactly once by the normal graph-aware admitted executor; only its resulting
+  frame may become a chunk-runner `start_frame`. A group-by inside the chunk-local suffix
+  remains a `ChunkPlanUnsupportedError`, because aggregating each chunk independently is
+  not equivalent to a global group-by. This is a physical-plan constraint, not an
+  execution-profile rejection.
+- **Context ownership follows materialisation lifetime.** Top-level helpers that own the
+  complete materialising operation, including the compatibility `write_data_output`
+  entry point, optimiser estimate route, and assistant column profiler, create and release
+  an admitted context when the caller did not provide one. Helpers that return uncollected
+  lazy frames continue to require a caller-owned context whose admission outlives
+  collection.
+- **Schema-only planning is orthogonal to group-by admission.**
   `execute_lazy_graph(..., schema_only=True)` and
   `plan_prepared_execution_strategy(..., schema_only=True)` declare that the caller
   reads `collect_schema()` and never collects a frame or invokes a sink. The gate
   above bounds peak memory *during materialisation*; a schema-only plan materialises
-  nothing, so the whole gate — profile eligibility, admission, and estimate — is not
+  nothing, so the whole gate — admission and estimate — is not
   evaluated, no materialisation boundary is inserted, and the ordinary derived
   strategy stands. The declaration relaxes nothing else: contract resolution,
   projection, and every other planning rule are unchanged, and the flag is honoured
@@ -961,7 +979,7 @@ fallback after a process failure.
   `target_chunk_bytes`.
 - `GroupByExecutionUnsupportedError` (`haute.errors`, extends
   `BoundedMemoryUnsupportedError`) — a group-by cannot meet the active execution
-  profile/admission contract. Its public payload names the node, operator, profile,
+  admission/memory contract. Its public payload names the node, operator, profile,
   stable reason/remediation, and any available estimate/headroom.
 - `LiveSwitchScenarioError` (`haute.errors`, extends `ExecutionError`) — a configured
   live-switch scenario does not map to an available input. It carries a stable public

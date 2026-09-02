@@ -2339,6 +2339,54 @@ class TestJsonApiInputPortMetadata:
         assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
         assert estimate.unavailable_reason == "first:metadata_missing"
 
+    def test_runtime_source_frame_replaces_unreadable_configured_metadata(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        source = _make_source_node(
+            node_id="src",
+            label="src",
+            node_type="apiInput",
+            config={"path": ""},
+        )
+        aggregate = _make_transform_node(
+            node_id="agg",
+            config={
+                "code": (
+                    "df = src.group_by('segment').agg(pl.col('premium').sum().alias('premium'))"
+                )
+            },
+        )
+        graph = PipelineGraph(
+            nodes=[source, aggregate],
+            edges=[
+                GraphEdge(
+                    id="e1",
+                    source="src",
+                    target="agg",
+                    sourceHandle="src",
+                )
+            ],
+        )
+        runtime_frame = pl.DataFrame({"segment": ["a", "a", "b"], "premium": [1.0, 2.0, 4.0]})
+
+        monkeypatch.setattr(
+            "haute._ram_estimate._detailed_source_metadata_for_node",
+            lambda _node: pytest.fail("configured source metadata must not be read"),
+        )
+
+        [(_, estimate)] = list(
+            estimate_materialisation_boundaries(
+                graph,
+                ["agg"],
+                runtime_source_frames_by_node={"src": runtime_frame},
+            )
+        )
+
+        assert estimate.state is MaterialisationEstimateState.AVAILABLE
+        assert estimate.estimated_peak_bytes is not None
+        assert estimate.estimated_peak_bytes > 0
+
     def test_planning_and_loading_share_one_unchanged_source_content_proof(
         self,
         json_api_input,

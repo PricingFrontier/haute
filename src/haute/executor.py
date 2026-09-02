@@ -1883,6 +1883,25 @@ def prepare_data_output(
     staging path but remain invisible. Database/lakehouse writers retain their
     native transactional commit and return a transactional manifest.
     """
+    if execution_context is None:
+        admitted_context = create_admitted_execution_context(
+            operation="pipeline_write_output",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+        try:
+            return prepare_data_output(
+                graph,
+                output_node_id,
+                source,
+                execution_context=admitted_context,
+                streaming_chunk_size=streaming_chunk_size,
+                project_root=project_root,
+                overwrite=overwrite,
+                staging_path=staging_path,
+            )
+        finally:
+            admitted_context.release_admission(preserve_primary_error=True)
+
     output_node = graph.node_map.get(output_node_id)
     if output_node is None:
         raise ValueError(f"Data Output node '{output_node_id}' not found")
@@ -1904,12 +1923,6 @@ def prepare_data_output(
         raise DataOutputDestinationExistsError(path)
 
     selected_columns = config.get("selected_columns")
-
-    if execution_context is None:
-        execution_context = ExecutionContext(
-            operation="pipeline_write_output",
-            profile=ExecutionProfile.LAZY_SINK,
-        )
 
     required_columns_by_node: dict[str, frozenset[str]] | None = None  # pragma: no mutate
     if selected_columns:
@@ -2244,6 +2257,24 @@ def write_data_output(
     overwrite: bool = False,
 ) -> WriteOutputResponse:
     """Compatibility entry point using the same prepare/parent-commit contract."""
+    if execution_context is None:
+        admitted_context = create_admitted_execution_context(
+            operation="pipeline_write_output",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+        try:
+            return write_data_output(
+                graph,
+                output_node_id,
+                source,
+                execution_context=admitted_context,
+                streaming_chunk_size=streaming_chunk_size,
+                project_root=project_root,
+                overwrite=overwrite,
+            )
+        finally:
+            admitted_context.release_admission(preserve_primary_error=True)
+
     prepared: PreparedDataOutput | None = None  # pragma: no mutate
     primary_error: BaseException | None = None  # pragma: no mutate
     try:

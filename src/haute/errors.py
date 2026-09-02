@@ -187,7 +187,7 @@ class ChunkMemoryRiskError(BoundedMemoryUnsupportedError):
 
 
 class GroupByExecutionUnsupportedError(BoundedMemoryUnsupportedError):
-    """Raised before a group-by that cannot honour the active profile."""
+    """Raised before a group-by that cannot honour its admission contract."""
 
     error_code = "group_by_execution_unsupported"
     public_fields = (

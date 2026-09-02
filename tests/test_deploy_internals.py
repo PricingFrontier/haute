@@ -1081,6 +1081,107 @@ class TestScoreGraphApiInputInjection:
         assert "x" in result.columns
         assert "y" in result.columns
 
+    @pytest.mark.parametrize(
+        ("input_df", "expected"),
+        [
+            (
+                pl.DataFrame(
+                    {
+                        "segment": pl.Series([], dtype=pl.String),
+                        "premium": pl.Series([], dtype=pl.Float64),
+                    }
+                ),
+                [],
+            ),
+            (
+                pl.DataFrame({"segment": ["a"], "premium": [1.0]}),
+                [{"segment": "a", "premium": 1.0}],
+            ),
+            (
+                pl.DataFrame({"segment": ["a", "a", "b"], "premium": [1.0, 2.0, 4.0]}),
+                [
+                    {"segment": "a", "premium": 3.0},
+                    {"segment": "b", "premium": 4.0},
+                ],
+            ),
+        ],
+        ids=["deploy-live-empty", "deploy-live", "deploy-batch"],
+    )
+    def test_group_by_admission_uses_injected_deploy_frame_metadata(
+        self,
+        input_df: pl.DataFrame,
+        expected: list[dict[str, object]],
+    ) -> None:
+        from haute.deploy._scorer import score_graph
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {
+                                "path": "",
+                                "tables": [
+                                    {
+                                        "path": "$[:]",
+                                        "label": "src",
+                                        "emit": True,
+                                        "columns": [
+                                            {
+                                                "name": "segment",
+                                                "path": "$[:].segment",
+                                                "type": "str",
+                                                "selected": True,
+                                            },
+                                            {
+                                                "name": "premium",
+                                                "path": "$[:].premium",
+                                                "type": "float",
+                                                "selected": True,
+                                            },
+                                        ],
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                    {
+                        "id": "agg",
+                        "data": {
+                            "label": "agg",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = src.group_by('segment').agg("
+                                    "pl.col('premium').sum().alias('premium'))"
+                                )
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "agg",
+                        "sourceHandle": "src",
+                    }
+                ],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=input_df,
+            input_node_ids=["src"],
+            output_node_id="agg",
+        )
+
+        assert result.sort("segment").to_dicts() == expected
+
     def test_api_input_frame_label_is_the_deploy_parameter_name(self):
         """Deploy user code binds the edge's frame name, not its source-node label."""
         from haute.deploy._scorer import score_graph

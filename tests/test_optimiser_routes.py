@@ -19,6 +19,7 @@ import pytest
 from fastapi import HTTPException
 
 from haute._config_builder import _build_node_config
+from haute._execution_context import ExecutionProfile
 from haute._sandbox import set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import NodeType
@@ -1496,6 +1497,37 @@ class TestEstimateRoute:
 
         assert resp.status_code == 422
         assert "bounded streaming mode" in resp.json()["detail"]
+
+    def test_estimate_maps_admission_failure_to_memory_limit_response(
+        self,
+        client,
+        scored_data,
+    ) -> None:
+        from haute._execution_admission import ExecutionAdmissionError
+
+        graph = _make_optimiser_graph(scored_data)
+        error = ExecutionAdmissionError(
+            "optimiser_estimate",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            memory_limit_bytes=1024,
+            rss_at_admission_bytes=512,
+            reason="in_flight_memory_budget_exceeded",
+            in_flight_reserved_bytes=2048,
+            in_flight_limit_bytes=1024,
+        )
+
+        with patch("haute.routes.optimiser._optimiser_input_metrics", side_effect=error):
+            resp = client.post(
+                "/api/optimiser/estimate",
+                json={"graph": graph, "node_id": "opt"},
+            )
+
+        assert resp.status_code == 507
+        detail = resp.json()["detail"]
+        assert detail["error_code"] == "memory_limit"
+        assert detail["profile"] == ExecutionProfile.OPTIMISER_SETUP.value
+        assert detail["reason"] == "in_flight_memory_budget_exceeded"
+        assert detail["message"].startswith("Optimiser estimate was not started")
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_estimate_allows_contract_free_fan_in_boundary(self, client, tmp_path):
@@ -7555,6 +7587,10 @@ class TestExecutePipelineArgs:
 
         assert metrics["expanded_row_count"] == 250
         assert execute.call_args.kwargs["target_node_id"] == "source"
+        execution_context = execute.call_args.kwargs["execution_context"]
+        assert execution_context.profile is ExecutionProfile.OPTIMISER_SETUP
+        assert execution_context.admission is not None
+        assert execution_context._admission_released is True
         assert execute.call_args.kwargs["required_columns_by_node"] == {
             "source": frozenset(
                 {

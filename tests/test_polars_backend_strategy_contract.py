@@ -12,7 +12,7 @@ from haute._execution_context import ExecutionAdmission, ExecutionContext, Execu
 from haute._execution_schemas import MAX_JSON_SAFE_INTEGER
 from haute._ram_estimate import MaterialisationEstimate
 from haute.chunking import ChunkPlanRequest, chunk_plan
-from haute.errors import BoundedMemoryUnsupportedError, GroupByExecutionUnsupportedError
+from haute.errors import ChunkPlanUnsupportedError, GroupByExecutionUnsupportedError
 from haute.execution import (
     BoundedDiagnosticCollection,
     DiagnosticDetailState,
@@ -812,43 +812,8 @@ def _context(
     return ExecutionContext(operation="test", profile=profile, admission=admission)
 
 
-@pytest.mark.parametrize(
-    "profile",
-    [
-        ExecutionProfile.LAZY_SINK,
-        ExecutionProfile.TRAINING_PREP,
-        ExecutionProfile.OPTIMISER_SETUP,
-        ExecutionProfile.AUTO_RANGE,
-        ExecutionProfile.DEPLOY_BATCH,
-        ExecutionProfile.CHUNKED_MAP_REDUCE,
-    ],
-)
-def test_group_by_bounded_profiles_reject_before_considering_admission(
-    profile: ExecutionProfile,
-) -> None:
-    with pytest.raises(GroupByExecutionUnsupportedError) as error:
-        plan_execution_strategy(
-            ProjectionRequest(
-                graph=_group_by_graph(),
-                target_node_id="out",
-                profile=profile,
-            ),
-            execution_context=_context(profile),
-            materialisation_estimate=MaterialisationEstimate.available(0),
-        )
-
-    exc = error.value
-    assert isinstance(exc, BoundedMemoryUnsupportedError)
-    assert exc.reason_code == "profile_requires_bounded_execution"
-    assert exc.node_id == "agg"
-    assert exc.operator == "group_by"
-    assert exc.profile == profile.value
-    assert exc.estimated_peak_bytes is None
-    assert exc.headroom_bytes is None
-
-
-def test_group_by_never_enters_the_generic_chunk_runner() -> None:
-    with pytest.raises(GroupByExecutionUnsupportedError) as error:
+def test_group_by_in_chunk_suffix_is_rejected_as_a_physical_plan_constraint() -> None:
+    with pytest.raises(ChunkPlanUnsupportedError, match="row-local"):
         chunk_plan(
             ChunkPlanRequest(
                 graph=_group_by_graph(),
@@ -857,7 +822,20 @@ def test_group_by_never_enters_the_generic_chunk_runner() -> None:
             )
         )
 
-    assert error.value.reason_code == "profile_requires_bounded_execution"
+
+def test_group_by_is_allowed_in_a_pre_chunk_materialisation_prefix() -> None:
+    plan = chunk_plan(
+        ChunkPlanRequest(
+            graph=_group_by_graph(),
+            target_node_id="out",
+            chunk_start_node_id="agg",
+            chunk_size=10,
+        )
+    )
+
+    assert plan.pre_chunk_node_ids == ("source",)
+    assert plan.chunk_node_ids == ("agg", "out")
+    assert plan.chunk_start_node_id == "agg"
 
 
 def test_automatic_group_by_estimate_targets_the_boundary_node(
@@ -868,10 +846,16 @@ def test_automatic_group_by_estimate_targets_the_boundary_node(
     estimated_nodes: list[str] = []
 
     def estimate(
-        _graph, node_ids: Iterable[str], *, source: str, edge_demands
+        _graph,
+        node_ids: Iterable[str],
+        *,
+        source: str,
+        edge_demands,
+        runtime_source_frames_by_node=None,
     ) -> Iterable[tuple[str, MaterialisationEstimate]]:
         assert source == "live"
         assert edge_demands
+        assert runtime_source_frames_by_node is None
         requested = list(node_ids)
         estimated_nodes.extend(requested)
         return [(node_id, MaterialisationEstimate.available(0)) for node_id in requested]
@@ -893,11 +877,7 @@ def test_automatic_group_by_estimate_targets_the_boundary_node(
 
 @pytest.mark.parametrize(
     "profile",
-    [
-        ExecutionProfile.PREVIEW_EAGER,
-        ExecutionProfile.EXPLORE_ANALYSIS,
-        ExecutionProfile.DEPLOY_LIVE,
-    ],
+    list(ExecutionProfile),
 )
 @pytest.mark.parametrize(
     ("context", "estimate", "reason"),
@@ -947,11 +927,7 @@ def test_group_by_eligible_profiles_use_stable_rejection_precedence(
 @pytest.mark.parametrize("estimated", [0, 99, 100])
 @pytest.mark.parametrize(
     "profile",
-    [
-        ExecutionProfile.PREVIEW_EAGER,
-        ExecutionProfile.EXPLORE_ANALYSIS,
-        ExecutionProfile.DEPLOY_LIVE,
-    ],
+    list(ExecutionProfile),
 )
 def test_group_by_admits_only_an_estimated_materialisation_boundary(
     profile: ExecutionProfile,

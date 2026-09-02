@@ -39,13 +39,18 @@ boundary is unexpectedly costly.
 
 ### Group-by operations
 
-Haute never generically chunks a group-by. A group-by is admitted only for the
-`preview_eager`, explicit `explore_analysis` cache-materialisation, or `deploy_live`
-profile when an available estimate fits the admitted headroom. Otherwise Haute
-returns a typed rejection; it does not approximate a partial aggregation or silently
-send it through a generic chunk runner. For large grouped work, reduce the input
-first, change the operation, or run it in an environment where the admitted estimate
-fits.
+Haute supports group-by operations in every workflow. A group-by is always treated as
+a global materialisation boundary and runs only when an available estimate fits the
+workflow's admitted memory headroom. This applies to previews, Data Output writes,
+training, optimiser work, Explore, assistant value profiling, and both live and batch
+deployment. Deploy estimates injected request data directly rather than requiring the
+original development-time source to remain readable.
+
+Haute never computes a global group-by independently in each generic chunk. When a
+workflow uses chunking, it executes the aggregation once under the same admission
+contract and chunks only a proven row-local suffix. If the estimate is unavailable or
+too large, Haute returns a typed memory/admission diagnostic rather than producing a
+partial or approximate aggregate.
 
 ## Reading diagnostics
 

@@ -36,7 +36,12 @@ from haute.errors import (
     ContractMismatchError,
 )
 from haute.execution import plan_prepared_execution_strategy
-from haute.projection import ProjectionEdgeKey, _children_of, prepare_graph
+from haute.projection import (
+    ProjectionEdgeKey,
+    _children_of,
+    group_by_operators_by_node,
+    prepare_graph,
+)
 
 __all__ = [
     "BoundedChunkReducer",
@@ -636,7 +641,11 @@ def _plan_chunk_sizes(
         return chunk_size, max(1, chunk_size // expansion), None, None
 
     assert request.target_chunk_bytes is not None
-    target_row_bytes = _estimate_target_row_bytes(request, projection)
+    target_row_bytes = _estimate_target_row_bytes(
+        request,
+        projection,
+        has_group_by=bool(group_by_operators_by_node(prepared.order, prepared.node_map)),
+    )
     source_columns = projection.needed_by_node.get(chunk_start_node_id)
     source_row_bytes = (
         None
@@ -670,7 +679,12 @@ def _plan_chunk_sizes(
     return chunk_size, source_chunk_size, source_row_bytes, target_row_bytes
 
 
-def _estimate_target_row_bytes(request: ChunkPlanRequest, projection: Any) -> int:
+def _estimate_target_row_bytes(
+    request: ChunkPlanRequest,
+    projection: Any,
+    *,
+    has_group_by: bool,
+) -> int:
     """Cost one target row from the TARGET node's projected OUTPUT schema.
 
     Sizing the byte budget off the *source* schema silently undercounts any
@@ -713,7 +727,9 @@ def _estimate_target_row_bytes(request: ChunkPlanRequest, projection: Any) -> in
             variable_columns.append(column)
         else:
             widths[column] = fixed_width
-    if variable_columns:
+    if variable_columns and has_group_by:
+        widths.update({column: _DEFAULT_PROJECTED_COLUMN_BYTES for column in variable_columns})
+    elif variable_columns:
         widths.update(
             _sample_variable_column_widths(
                 target_lf,
@@ -737,6 +753,7 @@ def _target_output_lazyframe(request: ChunkPlanRequest) -> pl.LazyFrame:
             target_node_id=request.target_node_id,
             source=request.source,
             required_columns_by_node=request.required_columns_by_node,
+            schema_only=True,
         )
     except Exception as exc:
         # ``execute_lazy_graph`` is the full production engine, so a failure here
@@ -884,15 +901,17 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
         request.target_node_id,
         source=request.source,
     )
-    # Strategy policy is authoritative and runs before capability-specific
-    # chunk planning.  In particular, every group-by receives the stable
-    # profile rejection and can never be mistaken for generic reducer support.
+    # Strategy planning remains authoritative for graph/projection validation,
+    # while schema-only mode leaves physical chunk eligibility to the suffix
+    # checks below. A group-by is valid at an explicitly materialised chunk
+    # boundary, but never as a row-local operation inside the chunk suffix.
     projection = plan_prepared_execution_strategy(
         prepared.order,
         _children_of(prepared.order, prepared.parents_of),
         prepared.node_map,
         profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
         required_columns_by_node=request.required_columns_by_node,
+        schema_only=True,
     )
     source_node_ids: list[str] = []
     for node_id in prepared.order:

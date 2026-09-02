@@ -657,6 +657,11 @@ def _score_graph_lazy(
             _validate_deploy_model_score_source(node, remap)
     input_set = set(input_node_ids)
     input_lf = input_df.lazy()
+    runtime_source_frames_by_node = {
+        node.id: input_df
+        for node in graph.nodes
+        if node.id in input_set and node.data.nodeType in {NodeType.API_INPUT, NodeType.DATA_INPUT}
+    }
     model_score_temp_paths: list[str] = []
     retained_lazy_frames: list[pl.LazyFrame] = []
 
@@ -1048,6 +1053,7 @@ def _score_graph_lazy(
                 execution_context=execution_context,
                 source_by_node=source_by_node,
                 dataframe_cache_request=dataframe_cache_request,
+                runtime_source_frames_by_node=runtime_source_frames_by_node,
             )
 
         output_lf = lazy_outputs.get(output_node_id)

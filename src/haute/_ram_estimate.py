@@ -278,18 +278,37 @@ class _EstimateGraphIndex:
     resolving_cardinality: set[tuple[str, str | None]]
 
     @classmethod
-    def build(cls, graph: PipelineGraph, source: str) -> _EstimateGraphIndex:
+    def build(
+        cls,
+        graph: PipelineGraph,
+        source: str,
+        *,
+        runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    ) -> _EstimateGraphIndex:
+        """Build an index, optionally overriding source metadata for this request."""
         from haute._execute_lazy import _prune_live_switch_edges
 
         node_map = {node.id: node for node in graph.nodes}
         pruned_edges = tuple(_prune_live_switch_edges(graph.edges, node_map, source))
+        runtime_metadata_by_node: dict[str, _DetailedSourceMetadata | None] = {}
+        if runtime_source_frames_by_node is not None:
+            for node_id, frame in runtime_source_frames_by_node.items():
+                if not isinstance(frame, pl.DataFrame):
+                    raise TypeError(
+                        "runtime_source_frames_by_node values must be polars DataFrames "
+                        f"(node_id={node_id!r})"
+                    )
+                runtime_metadata_by_node[node_id] = _detailed_dataframe_metadata(
+                    frame,
+                    node_id,
+                )
         return cls(
             graph=graph,
             source=source,
             node_map=node_map,
             pruned_edges=pruned_edges,
             parents=build_parents_of(list(pruned_edges), set(node_map)),
-            metadata_by_node={},
+            metadata_by_node=runtime_metadata_by_node,
             columns_by_target={},
             resolving_targets=set(),
             port_metadata={},
@@ -406,6 +425,35 @@ def _detailed_parquet_metadata(path: str) -> _DetailedSourceMetadata:
             columns,
             row_count=int(meta["row_count"]),
         ),
+    )
+
+
+def _detailed_dataframe_metadata(
+    frame: pl.DataFrame,
+    node_id: str,
+) -> _DetailedSourceMetadata:
+    """Return conservative source metadata for an injected runtime frame."""
+
+    row_count = frame.height
+    columns = {str(name): str(dtype) for name, dtype in frame.schema.items()}
+    column_sizes = {
+        column: math.ceil(frame.get_column(column).estimated_size()) for column in columns
+    }
+    return _source_scoped_metadata(
+        _DetailedSourceMetadata(
+            row_count=row_count,
+            column_count=frame.width,
+            columns=columns,
+            column_width_keys={column: column for column in columns},
+            column_uncompressed_size_bytes=column_sizes,
+            uncompressed_size_bytes=sum(column_sizes.values()),
+            column_expanded_width_bytes=MappingProxyType(
+                {column: size / row_count for column, size in column_sizes.items()}
+                if row_count > 0
+                else {}
+            ),
+        ),
+        node_id,
     )
 
 
@@ -1665,15 +1713,22 @@ def estimate_materialisation_boundaries(
     *,
     source: str = "live",
     edge_demands: Mapping[ProjectionEdgeKey, frozenset[str] | None] | None = None,
+    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
 ) -> Iterator[tuple[str, MaterialisationEstimate]]:
     """Yield boundary estimates through one request-local metadata index.
 
     Results stay lazy so a caller that cannot proceed after an unavailable
     boundary does not probe unrelated later sources. Iterating more than one
     result still shares all graph, schema, and source-metadata memoisation.
+    ``runtime_source_frames_by_node`` supplies request-local source metadata
+    for injected DataFrames, without reading the replaced configured path.
     """
 
-    estimate_index = _EstimateGraphIndex.build(graph, source)
+    estimate_index = _EstimateGraphIndex.build(
+        graph,
+        source,
+        runtime_source_frames_by_node=runtime_source_frames_by_node,
+    )
     for target_node_id in target_node_ids:
         yield (
             target_node_id,

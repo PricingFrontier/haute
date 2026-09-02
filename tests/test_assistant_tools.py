@@ -299,6 +299,72 @@ def _profiles_by_name(result: dict[str, object]) -> dict[str, dict[str, object]]
 
 
 class TestColumnProfiles:
+    def test_group_by_output_is_profiled_under_an_admitted_preview(
+        self,
+        project_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        _widen_sandbox_root: None,
+    ) -> None:
+        config_dir = project_root / "config" / "data_input"
+        config_dir.mkdir(parents=True)
+        (config_dir / "quotes.json").write_text(
+            json.dumps(
+                {
+                    "inputType": "file",
+                    "format": "parquet",
+                    "mode": "scan",
+                    "path": str(project_root / "data" / "quotes.parquet"),
+                    "arguments": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        source = """\
+import polars as pl
+
+import haute
+from haute.graph_utils import resolve_data_input_from_config
+
+pipeline = haute.Pipeline("main", description="group-by fixture")
+
+
+@pipeline.data_input(config="config/data_input/quotes.json")
+def quotes() -> pl.LazyFrame:
+    return resolve_data_input_from_config(
+        "config/data_input/quotes.json",
+        base_dir=".",
+    )
+
+
+@pipeline.polars
+def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
+    return quotes.group_by("vehicle_year").agg(pl.len().alias("quote_count"))
+"""
+        (project_root / "main.py").write_text(source, encoding="utf-8")
+        import haute.assistant._tools as tools_module
+        from haute.assistant._config import EgressPolicy
+
+        monkeypatch.setattr(
+            tools_module,
+            "resolve_egress_policy",
+            lambda _root: EgressPolicy(
+                trust="organization",
+                max_sensitivity="restricted",
+                allow_project_knowledge=True,
+                allow_executable_source=True,
+                allow_row_samples=True,
+            ),
+        )
+
+        result = tools_module.get_column_profiles("main.py", "by_year")
+
+        assert "error" not in result, result
+        by_name = {column["name"]: column for column in result["columns"]}
+        assert by_name["vehicle_year"]["min"] == 2019
+        assert by_name["vehicle_year"]["max"] == 2021
+        assert by_name["quote_count"]["min"] == 1
+        assert by_name["quote_count"]["max"] == 1
+
     def test_small_cardinality_categories_are_reported_with_counts(self, profile_project: Path):
         """The encoding is the fact a schema cannot carry. Guessing `"Y"` here
         yields code that runs, validates, and counts nothing."""

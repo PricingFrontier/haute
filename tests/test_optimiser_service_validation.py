@@ -391,8 +391,8 @@ def _group_by_contract_error() -> GroupByExecutionUnsupportedError:
         node_id="opt",
         operator="groupBy",
         profile="optimiser_setup",
-        reason_code="profile_requires_bounded_execution",
-        remediation="use an admitted eager profile",
+        reason_code="materialisation_exceeds_headroom",
+        remediation="increase memory headroom or narrow the input",
         estimated_peak_bytes=1_024,
         headroom_bytes=512,
     )

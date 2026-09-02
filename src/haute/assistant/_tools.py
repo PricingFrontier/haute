@@ -29,6 +29,8 @@ from haute._column_summary import (
 )
 from haute._credential_security import is_credential_name
 from haute._event_bus import default_bus
+from haute._execution_admission import create_admitted_execution_context
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import edge_input_name
 from haute._logging import get_logger
 from haute._source_cache import SourceCacheError
@@ -240,6 +242,7 @@ def _resolve_frame_outputs(
     *,
     target: str,
     preserve: set[str] | frozenset[str],
+    execution_context: ExecutionContext,
 ) -> Mapping[str, object]:
     """Prepare frames a caller intends to collect.
 
@@ -254,6 +257,7 @@ def _resolve_frame_outputs(
         target=target,
         preserve=frozenset(preserve),
         schema_only=False,
+        execution_context=execution_context,
     )
 
 
@@ -264,6 +268,7 @@ def _resolve_schema_outputs(
     target: str,
     preserve: frozenset[str],
     schema_only: bool = True,
+    execution_context: ExecutionContext | None = None,
 ) -> Mapping[str, object]:
     """Run the production preparation for schema resolution only.
 
@@ -287,6 +292,7 @@ def _resolve_schema_outputs(
         source=graph.active_source,
         enforce_contracts=True,
         schema_only=schema_only,
+        execution_context=execution_context,
     )
     return lazy_outputs
 
@@ -582,10 +588,19 @@ def _column_profile(frame: pl.DataFrame, name: str, dtype: pl.DataType) -> dict[
     return profile
 
 
-def _profile_frame(frame: pl.LazyFrame) -> dict[str, object]:
+def _profile_frame(
+    frame: pl.LazyFrame,
+    *,
+    execution_context: ExecutionContext | None = None,
+) -> dict[str, object]:
     """Collect one bounded prefix and summarise every column of it."""
 
-    collected = frame.head(_MAX_PROFILE_ROWS).collect()
+    from haute._polars_utils import streaming_collect
+
+    collected = streaming_collect(
+        frame.head(_MAX_PROFILE_ROWS),
+        execution_context=execution_context,
+    )
     schema = collected.collect_schema()
     return {
         "rows_scanned": collected.height,
@@ -625,9 +640,20 @@ def get_column_profiles(
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error("profile_unavailable", _error_message(exc, operation="get_column_profiles"))
 
+    execution_context: ExecutionContext | None = None
     try:
+        execution_context = create_admitted_execution_context(
+            operation="assistant_column_profiles",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
         if input_name is None:
-            lazy_outputs = _resolve_frame_outputs(flat, graph, target=node, preserve={node})
+            lazy_outputs = _resolve_frame_outputs(
+                flat,
+                graph,
+                target=node,
+                preserve={node},
+                execution_context=execution_context,
+            )
             output = lazy_outputs[node]
             if isinstance(output, dict):
                 return _error(
@@ -646,7 +672,11 @@ def get_column_profiles(
                     inputs=[item.name for item in inputs],
                 )
             lazy_outputs = _resolve_frame_outputs(
-                flat, graph, target=match.source, preserve={match.source}
+                flat,
+                graph,
+                target=match.source,
+                preserve={match.source},
+                execution_context=execution_context,
             )
             source_output = lazy_outputs[match.source]
             if isinstance(source_output, dict):
@@ -661,7 +691,7 @@ def get_column_profiles(
         return {
             "node": node,
             "input": input_name,
-            **_profile_frame(frame),
+            **_profile_frame(frame, execution_context=execution_context),
             "max_levels": _MAX_PROFILE_LEVELS,
             "project_revision": project_revision,
         }
@@ -670,6 +700,9 @@ def get_column_profiles(
             "profile_unavailable",
             _execution_error_message(exc, operation="get_column_profiles"),
         )
+    finally:
+        if execution_context is not None:
+            execution_context.release_admission(preserve_primary_error=True)
 
 
 def list_node_types() -> dict[str, object]:

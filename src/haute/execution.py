@@ -17,6 +17,8 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+import polars as pl
+
 from haute._api_input_schema import is_json_api_input_path
 from haute._cache import (
     CACHE_CONFIG_FIELD_CLASSIFICATIONS,
@@ -147,14 +149,6 @@ _DEFAULT_DATAFRAME_EXECUTION_CACHE: DataFrameExecutionCache | None = None
 _DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK = threading.Lock()
 _AUTO_MATERIALISATION_ESTIMATE = object()
 _DATAFRAME_ROW_HASH_ENCODING = "polars-u64-le:v1"
-_GROUP_BY_MATERIALISATION_PROFILES = frozenset(
-    {
-        ExecutionProfile.PREVIEW_EAGER,
-        ExecutionProfile.EXPLORE_ANALYSIS,
-        ExecutionProfile.DEPLOY_LIVE,
-    }
-)
-
 _SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
     NodeType.API_INPUT: "path",
     NodeType.DATA_INPUT: "path",
@@ -247,6 +241,7 @@ def plan_execution_strategy(
     materialisation_estimate: MaterialisationEstimate | None | object = (
         _AUTO_MATERIALISATION_ESTIMATE
     ),
+    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
 ) -> ExecutionStrategyResult:
     """Return the sole route-facing V1 execution-planning result."""
     prepared = prepare_graph(
@@ -277,13 +272,14 @@ def plan_execution_strategy(
     )
     group_by_operators = group_by_operators_by_node(prepared.order, prepared.node_map)
     resolved_estimate: MaterialisationEstimate | None
-    if group_by_operators and request.profile in _GROUP_BY_MATERIALISATION_PROFILES:
+    if group_by_operators:
         if materialisation_estimate is _AUTO_MATERIALISATION_ESTIMATE:
             resolved_estimate = _estimate_group_by_boundaries(
                 request.graph,
                 group_by_operators,
                 source=request.source,
                 projection_plan=projection_plan,
+                runtime_source_frames_by_node=runtime_source_frames_by_node,
             )
         elif materialisation_estimate is None:
             resolved_estimate = MaterialisationEstimate.unavailable(
@@ -318,6 +314,7 @@ def _estimate_group_by_boundaries(
     *,
     source: str,
     projection_plan: ProjectionPlan | None = None,
+    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
 ) -> MaterialisationEstimate:
     """Return the conservative peak across every declared group-by boundary."""
     peak_bytes = 0
@@ -328,6 +325,7 @@ def _estimate_group_by_boundaries(
         node_ids,
         source=source,
         edge_demands=(projection_plan.edge_demands if projection_plan is not None else None),
+        runtime_source_frames_by_node=runtime_source_frames_by_node,
     )
     for node_id, estimate in estimates:
         if estimate.state is MaterialisationEstimateState.UNAVAILABLE:
@@ -427,10 +425,6 @@ def _group_by_rejection(
     estimate_detail: str | None = None,
 ) -> GroupByExecutionUnsupportedError:
     remediation = {
-        "profile_requires_bounded_execution": (
-            "Remove the group-by, pre-aggregate the source, or run it through an "
-            "admitted preview, Explore-cache, or deploy-live materialisation boundary."
-        ),
         "execution_admission_unavailable": (
             "Create an admitted execution context with positive memory-limit and "
             "headroom values before running this group-by."
@@ -450,7 +444,7 @@ def _group_by_rejection(
         # no way to tell an unreadable file from an unsummarisable source shape.
         remediation = f"{remediation} Estimator reported: {estimate_detail}."
     return GroupByExecutionUnsupportedError(
-        "Group-by execution is unsupported for the selected execution strategy.",
+        "Group-by materialisation could not be admitted for this execution.",
         node_id=node_id,
         operator=operator,
         profile=profile.value,
@@ -487,16 +481,6 @@ def _finalise_execution_strategy(
 
     if group_by_operators and not schema_only:
         node_id, operator = next(iter(group_by_operators.items()))
-        if profile not in _GROUP_BY_MATERIALISATION_PROFILES:
-            raise _group_by_rejection(
-                node_id=node_id,
-                operator=operator,
-                profile=profile,
-                reason_code="profile_requires_bounded_execution",
-                estimated_peak_bytes=None,
-                headroom_bytes=None,
-            )
-
         admission = execution_context.admission if execution_context is not None else None
         if (
             admission is None
@@ -1150,12 +1134,15 @@ def execute_lazy_graph(
     source_by_node: Mapping[str, str] | None = None,
     dataframe_cache_request: DataFrameExecutionCacheRequest | None = None,
     schema_only: bool = False,
+    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
 ) -> LazyExecutionResult:
     """Execute a graph lazily through the shared production engine.
 
     Set ``schema_only`` when the caller resolves schemas through
     ``collect_schema()`` and never collects a frame or invokes a sink; see
     ``plan_prepared_execution_strategy`` for what that declaration relaxes.
+    Supply ``runtime_source_frames_by_node`` when source nodes are injected
+    DataFrames and group-by admission must estimate those request-local inputs.
     """
     from haute._execute_lazy import _execute_lazy
 
@@ -1173,6 +1160,7 @@ def execute_lazy_graph(
         source_by_node=source_by_node,
         dataframe_cache_request=dataframe_cache_request,
         schema_only=schema_only,
+        runtime_source_frames_by_node=runtime_source_frames_by_node,
     )
 
 

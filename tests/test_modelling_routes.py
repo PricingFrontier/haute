@@ -1281,6 +1281,42 @@ class TestEstimateEndpoint:
             "max_selection_validation_rows": 12,
         }
 
+    def test_estimate_evaluation_preview_accepts_upstream_group_by(
+        self,
+        client,
+        training_data,
+    ):
+        graph = _make_modelling_graph(training_data)
+        graph["nodes"].insert(
+            1,
+            {
+                "id": "grouped_features",
+                "data": {
+                    "label": "grouped_features",
+                    "nodeType": "polars",
+                    "config": {
+                        "code": (
+                            "df = source.group_by('x1').agg("
+                            "pl.col('x2').mean().alias('x2'), "
+                            "pl.col('y').mean().alias('y'))"
+                        )
+                    },
+                },
+            },
+        )
+        graph["edges"] = [
+            make_edge("source", "grouped_features").model_dump(),
+            make_edge("grouped_features", "train").model_dump(),
+        ]
+
+        resp = client.post(
+            "/api/modelling/estimate",
+            json={"graph": graph, "node_id": "train"},
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["evaluation_preview"] is not None
+
     def test_estimate_preview_includes_group_counts(
         self,
         client,

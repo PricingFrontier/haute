@@ -14,7 +14,12 @@ from typing import Any, Literal, Protocol, cast
 
 from fastapi import APIRouter, HTTPException
 
-from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._execution_admission import ExecutionAdmissionError, create_admitted_execution_context
+from haute._execution_context import (
+    ExecutionContext,
+    ExecutionMemoryLimitExceededError,
+    ExecutionProfile,
+)
 from haute._file_ops import atomic_write_text
 from haute._logging import get_logger
 from haute._polars_utils import (
@@ -37,6 +42,7 @@ from haute.routes._contract_errors import (
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
 from haute.routes._job_lifecycle import JobLifecycle, TerminalReason, require_job_status
 from haute.routes._job_store import JobSnapshot, RunningJobFields, get_job_store
+from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._optimiser_limits import (
     FrontierComputeBudgetExceededError,
     enforce_frontier_compute_budget,
@@ -309,10 +315,11 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
     # ``TemporaryDirectory`` cleans up the checkpoint dir even if the
     # process is interrupted between phases — ``mkdtemp`` + manual rmtree
     # leaks on signal/crash, which adds up over long-running sessions.
+    execution_context: ExecutionContext | None = None
     try:
         with tempfile.TemporaryDirectory(prefix="haute_opt_estimate_") as raw_dir:
             checkpoint_dir = Path(raw_dir)
-            execution_context = ExecutionContext(
+            execution_context = create_admitted_execution_context(
                 operation="optimiser_estimate",
                 profile=ExecutionProfile.OPTIMISER_SETUP,
                 job_id=job_id,
@@ -381,6 +388,8 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
                 "expanded_row_count": row["expanded_row_count"],
             }
     finally:
+        if execution_context is not None:
+            execution_context.release_admission(preserve_primary_error=True)
         _remove_estimate_job(job_id)
 
 
@@ -1330,6 +1339,13 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
 
     try:
         metrics = _optimiser_input_metrics(body)
+    except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+        memory_detail = exc.to_payload()
+        memory_detail["message"] = memory_limit_user_message(
+            exc,
+            operation_noun="Optimiser estimate",
+        )
+        raise HTTPException(status_code=507, detail=memory_detail) from None
     except PUBLIC_CONTRACT_ERROR_TYPES as exc:
         raise contract_error_http_exception(exc) from None
     except BoundedMemoryUnsupportedError as exc:
