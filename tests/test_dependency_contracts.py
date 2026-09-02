@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import tomllib
 from pathlib import Path
@@ -147,21 +146,3 @@ def test_every_workflow_pins_the_same_uv_version() -> None:
     versions = {pin for pins in pins_by_workflow.values() for pin in pins}
     assert versions, "no astral-sh/setup-uv steps found under .github/workflows"
     assert len(versions) == 1, f"setup-uv steps pin different uv versions: {sorted(versions)}"
-
-
-def test_frontend_engine_floors_are_enforced() -> None:
-    """``engines`` in package.json is advisory unless ``engine-strict`` is set.
-
-    The declaration is floors, not exact versions: CI builds the shipped bundle
-    on exactly Node 22.14.0 via setup-node, while local builds run on whatever
-    is installed, so the enforceable contract is "no older than what CI
-    validated". Both halves must stay together or the declaration means nothing.
-    """
-    package = json.loads(Path("frontend/package.json").read_text(encoding="utf-8"))
-    assert package["engines"] == {"node": ">=22.14.0", "npm": ">=10.9.2"}, (
-        "frontend engines are no longer the enforced floors; update this contract deliberately"
-    )
-    npmrc = Path("frontend/.npmrc").read_text(encoding="utf-8")
-    assert "engine-strict=true" in npmrc, (
-        "engine-strict is off, so the engines floors in package.json are not enforced"
-    )

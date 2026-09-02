@@ -2458,9 +2458,11 @@ def _allowlist_entry(module: str, name: str) -> object:
         try:
             distribution(distribution_name)
         except PackageNotFoundError:
+            # The parametrised test id names the entry; the distribution is absent
+            # from this environment, so the entry is unverified rather than passed.
             pytest.skip(
-                f"{distribution_name} is not installed, so the allowlist entry "
-                f"{module}.{name} is unverified in this environment"
+                "allowlisted distribution is not installed in this environment, "
+                "so the entry is unverified rather than passed"
             )
     return getattr(import_module(module), name)
 

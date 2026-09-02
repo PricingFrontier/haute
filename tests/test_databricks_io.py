@@ -361,7 +361,10 @@ def test_real_databricks_cursor_exposes_rownumber() -> None:
     except ModuleNotFoundError as exc:
         if exc.name not in {"databricks", "databricks.sql", "databricks.sql.client"}:
             raise
-        pytest.skip(f"databricks-sql-connector is not installed ({exc.name}); contract unverified")
+        pytest.skip(
+            "databricks-sql-connector is not installed; the Cursor.rownumber contract "
+            "is unverified in this environment"
+        )
 
     assert hasattr(Cursor, "rownumber"), (
         "databricks.sql.client.Cursor no longer exposes rownumber: the fetch-retry "
