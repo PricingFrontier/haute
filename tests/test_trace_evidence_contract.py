@@ -275,7 +275,7 @@ def test_ambiguous_source_frame_is_unresolved_instead_of_guessing() -> None:
         node_map=node_map,
         diagnostics=diagnostics,
         unresolved=unresolved,
-        source_frames_of={("source", "target"): ["first", "second"]},
+        edge_metadata={("source", "target"): [("first", None), ("second", None)]},
         traced_column="premium",
         work=work,
     )

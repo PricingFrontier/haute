@@ -464,14 +464,55 @@ describe("OptimiserApplyEditor", () => {
         edgeId: "e2",
       },
     ]
-    props.config = { artifact_path: "ratebook.json", ratebook_input: "age-banding-node" }
+    props.config = { artifact_path: "ratebook.json", ratebook_input: "age_veh_banding" }
     render(<OptimiserApplyEditor {...props} />)
 
     const select = await screen.findByLabelText("Ratebook Input")
-    expect(select).toHaveValue("age-banding-node")
-    fireEvent.change(select, { target: { value: "optimiser-input-node" } })
-    expect(props.onUpdate).toHaveBeenCalledWith("ratebook_input", "optimiser-input-node")
+    expect(select).toHaveValue("age_veh_banding")
+    fireEvent.change(select, { target: { value: "optimiser_input" } })
+    expect(props.onUpdate).toHaveBeenCalledWith("ratebook_input", "optimiser_input")
   })
+
+  it("requires an explicit ratebook input even when only one input is connected", async () => {
+    const props = defaultProps()
+    props.inputSources = [
+      {
+        sourceNodeId: "banding-node",
+        name: "banded_quotes",
+        sourceLabel: "Banding",
+        edgeId: "e1",
+      },
+    ]
+    props.config = { artifact_path: "ratebook.json" }
+    mockFetchResponse({ version: "v1", created_at: "2026-03-01", mode: "ratebook" })
+    render(<OptimiserApplyEditor {...props} />)
+
+    const select = await screen.findByLabelText("Ratebook Input")
+    expect(select).toHaveValue("")
+    expect(screen.getByRole("option", { name: "Select input..." })).toBeInTheDocument()
+    expect(screen.queryByRole("option", { name: "First connected input" })).not.toBeInTheDocument()
+  })
+
+  it("persists the exact ratebook input name and never exposes a stale raw value", async () => {
+    const props = defaultProps()
+    props.inputSources = [
+      { sourceNodeId: "api", name: "quote_info", sourceLabel: "Quote API", edgeId: "quotes" },
+      { sourceNodeId: "api", name: "driver_info", sourceLabel: "Quote API", edgeId: "drivers" },
+    ]
+    props.config = { artifact_path: "ratebook.json", ratebook_input: "quote_info" }
+    mockFetchResponse({ version: "v1", created_at: "2026-03-01", mode: "ratebook" })
+    render(<OptimiserApplyEditor {...props} />)
+
+    const select = await screen.findByLabelText("Ratebook Input") as HTMLSelectElement
+    expect(select).toHaveValue("quote_info")
+    expect(Array.from(select.options).map((option) => [option.value, option.text])).toEqual(
+      expect.arrayContaining([["quote_info", "quote_info"], ["driver_info", "driver_info"]]),
+    )
+    expect(screen.queryByRole("option", { name: /Missing input/ })).not.toBeInTheDocument()
+    fireEvent.change(select, { target: { value: "driver_info" } })
+    expect(props.onUpdate).toHaveBeenCalledWith("ratebook_input", "driver_info")
+  })
+
 
   it("hides ratebook input selector for online file artifacts", async () => {
     const meta = {
@@ -580,7 +621,7 @@ describe("OptimiserApplyEditor", () => {
 
     const select = await screen.findByLabelText("Ratebook Input")
     expect(select).toHaveValue("deleted-banding-node")
-    expect(screen.getByRole("option", { name: "Missing input (deleted-banding-node)" })).toBeInTheDocument()
+    expect(screen.getByRole("option", { name: "Missing input" })).toBeInTheDocument()
     fireEvent.change(select, { target: { value: "" } })
     expect(props.onUpdate).toHaveBeenCalledWith("ratebook_input", "")
   })
@@ -608,7 +649,7 @@ describe("OptimiserApplyEditor", () => {
     render(<OptimiserApplyEditor {...props} />)
 
     await screen.findByText("Loaded Artifact")
-    expect(screen.queryByRole("option", { name: "Missing input (deleted-banding-node)" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("option", { name: "Missing input" })).not.toBeInTheDocument()
     expect(screen.queryByLabelText("Ratebook Input")).not.toBeInTheDocument()
   })
 

@@ -348,7 +348,7 @@ def test_optimiser_apply_run_matches_executor_batch(tmp_path, _widen_sandbox_roo
         {
             "sourceType": "file",
             "artifact_path": artifact_path,
-            "ratebook_input": "rb",
+            "ratebook_input": "ratebook_src",
             "version_column": "__optimiser_version__",
         },
     )

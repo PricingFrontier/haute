@@ -568,7 +568,7 @@ describe("NodePanel", () => {
           label: "Edge Join",
           description: "",
           nodeType: "edgeJoin",
-          config: { baseInput: "quotes", joinInput: "lookup", how: "left", on: ["policy_id"] },
+          config: { how: "left", on: ["policy_id"] },
         },
       }),
       onSwapEdgeJoinInputs,
@@ -577,7 +577,7 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("EdgeJoinEditor")).toBeInTheDocument()
     expect(edgeJoinEditorProps.at(-1)).toMatchObject({
       nodeId: "edge_join_1",
-      config: { baseInput: "quotes", joinInput: "lookup", how: "left", on: ["policy_id"] },
+      config: { how: "left", on: ["policy_id"] },
     })
     const onSwapInputs = edgeJoinEditorProps.at(-1)?.onSwapInputs as (() => void) | undefined
     expect(onSwapInputs).toBeTypeOf("function")
@@ -595,7 +595,7 @@ describe("NodePanel", () => {
           label: "Edge Join",
           description: "",
           nodeType: "edgeJoin",
-          config: { baseInput: "quotes", joinInput: "lookup", how: "left", on: ["policy_id"] },
+          config: { how: "left", on: ["policy_id"] },
           _columns: [{ name: "policy_id", dtype: "String" }],
           _availableColumns: [{ name: "policy_id", dtype: "String" }],
         },
@@ -1715,7 +1715,7 @@ describe("NodePanel", () => {
       expect(screen.getByText("quotes")).toBeInTheDocument()
       expect(screen.getByText("drivers")).toBeInTheDocument()
       const removeButtons = screen.getAllByRole("button", {
-        name: /remove connection from Quote API/i,
+        name: /remove connection from (quotes|drivers)/i,
       })
       expect(removeButtons).toHaveLength(2)
       fireEvent.click(removeButtons[0])
@@ -2210,6 +2210,40 @@ describe("NodePanel", () => {
   // ─── Instance panel: input mapping ──────────────────────────────
 
   describe("InstancePanel input mapping", () => {
+    it("maps instance inputs by exact edge names rather than source labels", () => {
+      const original = makeNode({
+        id: "original",
+        data: { label: "Original", description: "", nodeType: "polars", config: {} },
+      })
+      const api = makeNode({
+        id: "api",
+        data: {
+          label: "Quote API", description: "", nodeType: "apiInput",
+          config: { tables: [eligibleApiInputTable("quote_info"), eligibleApiInputTable("driver_info")] },
+        },
+      })
+      const instance = makeNode({
+        id: "instance",
+        data: { label: "Instance", description: "", nodeType: "polars", config: { instanceOf: "original" } },
+      })
+
+      renderPanel({
+        node: instance,
+        allNodes: [original, api, instance],
+        edges: [
+          { id: "original-quotes", source: "api", sourceHandle: "quote_info", target: "original" },
+          { id: "instance-drivers", source: "api", sourceHandle: "driver_info", target: "instance" },
+        ],
+      })
+
+      expect(screen.getByText("quote_info")).toBeInTheDocument()
+      const select = screen.getByRole("combobox") as HTMLSelectElement
+      expect(Array.from(select.options).map((option) => [option.value, option.text])).toContainEqual(
+        ["driver_info", "driver_info"],
+      )
+      expect(select.innerHTML).not.toContain("Quote API")
+    })
+
     it("renders mapping dropdowns when instance has edges", () => {
       const origNode = makeNode({
         id: "orig_1",

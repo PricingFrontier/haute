@@ -207,7 +207,7 @@ function applyConfigMapping(
   changes: MappingChanges,
   scope: RenameGraphScope,
   node: Node,
-  field: "input_scenario_map" | "inputMapping",
+  field: "input_scenario_map" | "inputMapping" | "data_input" | "banding_source" | "ratebook_input",
   pairs: readonly RenamePair[],
   keys: boolean,
 ): NodeUpdatePlanFailure | null {
@@ -223,10 +223,16 @@ function applyConfigMapping(
     }
     if (mapped.value === config[field]) return null
     scopeChanges.set(node.id, { ...config, [field]: mapped.value })
-  } else {
+  } else if (field === "inputMapping") {
     const mappedValue = remapRecordValues(config[field], pairs)
     if (mappedValue === config[field]) return null
     scopeChanges.set(node.id, { ...config, [field]: mappedValue })
+  } else {
+    const current = config[field]
+    if (typeof current !== "string") return null
+    const replacement = new Map(pairs.map(({ from, to }) => [from, to])).get(current)
+    if (replacement === undefined) return null
+    scopeChanges.set(node.id, { ...config, [field]: replacement })
   }
   changes.set(scope, scopeChanges)
   return null
@@ -259,6 +265,10 @@ function collectMappingChanges(
         false,
       )
       if (failure) return failure
+      for (const field of ["data_input", "banding_source", "ratebook_input"] as const) {
+        const scalarFailure = applyConfigMapping(changes, affected.scope, affected.target, field, affected.pairs, false)
+        if (scalarFailure) return scalarFailure
+      }
     }
   }
 

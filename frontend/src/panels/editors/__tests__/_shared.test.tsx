@@ -82,6 +82,18 @@ describe("OnUpdateConfig", () => {
 })
 
 describe("InputSourcesBar", () => {
+  it("uses the executable input name in resolved source and removal titles", () => {
+    render(
+      <InputSourcesBar
+        inputSources={[{ sourceNodeId: "api", name: "quote_info", sourceLabel: "Quote API", edgeId: "quotes" }]}
+        onDeleteInput={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId("input-source-quotes")).toHaveAttribute("title", "from quote_info")
+    expect(screen.getByTitle("Remove connection from quote_info")).toBeInTheDocument()
+  })
+
   afterEach(cleanup)
 
   it("renders duplicate-parent frame labels with source tooltips and removes each edge independently", () => {
@@ -118,15 +130,15 @@ describe("InputSourcesBar", () => {
       ).not.toBeInTheDocument()
       expect(quotes.closest("[title]")).toHaveAttribute(
         "title",
-        expect.stringMatching(/Quote API/),
+        "from quotes",
       )
       expect(drivers.closest("[title]")).toHaveAttribute(
         "title",
-        expect.stringMatching(/Quote API/),
+        "from drivers",
       )
 
       const removeButtons = screen.getAllByRole("button", {
-        name: /remove connection from Quote API/i,
+        name: /remove connection from (quotes|drivers)/i,
       })
       expect(removeButtons).toHaveLength(2)
       fireEvent.click(removeButtons[0])

@@ -150,8 +150,6 @@ def _scenario_graph(
                 "training_input",
                 NodeType.EDGE_JOIN,
                 {
-                    "baseInput": "base",
-                    "joinInput": "lookup",
                     "how": "left",
                     "on": ["region_key"],
                     "suffix": "_lookup",

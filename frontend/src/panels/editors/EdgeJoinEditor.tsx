@@ -2,6 +2,7 @@ import { AlertTriangle, ArrowUpDown, Plus, Trash2 } from "lucide-react"
 import { useEffect, useRef, type CSSProperties } from "react"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { CommittedTextField, EditorLabel } from "../../components/form"
+import { edgeInputName } from "../../utils/apiInputPorts"
 import { withAlpha } from "../../utils/color"
 import {
   analyzeEdgeJoinNode,
@@ -57,7 +58,7 @@ export default function EdgeJoinEditor({
   onDeleteInput?: (edgeId: string) => void
   onSwapInputs?: () => void
 }) {
-  const { allNodes, edges } = useGraph()
+  const { allNodes, edges, submodels } = useGraph()
   const nodeMap = new Map(allNodes.map((node) => [node.id, node]))
   const analysis = analyzeEdgeJoinNode({
     nodeId,
@@ -156,17 +157,17 @@ export default function EdgeJoinEditor({
         <div
           role="alert"
           className="rounded-lg px-3 py-2 space-y-1.5"
-          style={{ background: "var(--warning-soft)", border: "1px solid var(--warning-border)" }}
+          style={{ background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
         >
           <div className="flex items-center gap-1.5">
-            <AlertTriangle size={12} style={{ color: "var(--warning-strong)" }} />
-            <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--warning-strong)" }}>
+            <AlertTriangle size={12} style={{ color: "var(--danger)" }} />
+            <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--danger)" }}>
               Edge join config needs attention
             </span>
           </div>
           <ul className="space-y-0.5">
             {diagnostics.map((message) => (
-              <li key={message} className="text-[11px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+              <li key={message} className="text-[11px] leading-relaxed" style={{ color: "var(--danger-text)" }}>
                 {message}
               </li>
             ))}
@@ -199,6 +200,7 @@ export default function EdgeJoinEditor({
             label="Dominant Input"
             roleEdge={baseRoleEdge}
             nodeMap={nodeMap}
+            submodels={submodels}
             onDeleteInput={onDeleteInput}
             focusVars={focusVars}
           />
@@ -206,6 +208,7 @@ export default function EdgeJoinEditor({
             label="Joining Input"
             roleEdge={joinRoleEdge}
             nodeMap={nodeMap}
+            submodels={submodels}
             onDeleteInput={onDeleteInput}
             focusVars={focusVars}
           />
@@ -271,6 +274,7 @@ export default function EdgeJoinEditor({
                       columns={commonColumns}
                       onChange={(value) => updateSameKey(index, value)}
                       focusVars={focusVars}
+                      invalid={key === ""}
                     />
                     {sameRows.length > 1 && (
                       <IconButton label={`Remove same-name key ${index + 1}`} onClick={() => removeSameKey(index)} />
@@ -290,6 +294,7 @@ export default function EdgeJoinEditor({
                       columns={baseColumns}
                       onChange={(value) => updatePairedKey(index, "left", value)}
                       focusVars={focusVars}
+                      invalid={row.left === ""}
                     />
                     <KeyInput
                       id={`edge-join-right-key-${index}`}
@@ -298,6 +303,7 @@ export default function EdgeJoinEditor({
                       columns={joinColumns}
                       onChange={(value) => updatePairedKey(index, "right", value)}
                       focusVars={focusVars}
+                      invalid={row.right === ""}
                     />
                     {pairedRows.length > 1 && (
                       <IconButton label={`Remove key pair ${index + 1}`} onClick={() => removePairedKey(index)} />
@@ -389,17 +395,24 @@ function RoleDisplay({
   label,
   roleEdge,
   nodeMap,
+  submodels,
   onDeleteInput,
   focusVars,
 }: {
   label: string
   roleEdge?: SimpleEdge
   nodeMap: Map<string, SimpleNode>
+  submodels?: Record<string, unknown>
   onDeleteInput?: (edgeId: string) => void
   focusVars: CSSProperties
 }) {
-  const sourceLabel = roleEdge ? nodeLabel(roleEdge.source, nodeMap) : "Not connected"
-  const sourceTitle = roleEdge ? `${sourceLabel} (${roleEdge.source})` : sourceLabel
+  const sourceNode = roleEdge ? nodeMap.get(roleEdge.source) : undefined
+  if (roleEdge && !sourceNode) {
+    throw new Error(`Cannot display edge-join input ${roleEdge.id}: source node ${roleEdge.source} is missing`)
+  }
+  const inputName = roleEdge && sourceNode
+    ? edgeInputName(roleEdge, sourceNode, submodels)
+    : "Not connected"
 
   return (
     <div>
@@ -407,7 +420,7 @@ function RoleDisplay({
       <div className="flex gap-2">
         <div
           aria-label={label}
-          title={sourceTitle}
+          title={inputName}
           className="min-w-0 flex-1 px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
           style={{ ...SELECT_STYLE, ...focusVars }}
         >
@@ -415,7 +428,7 @@ function RoleDisplay({
             className="block truncate"
             style={{ color: roleEdge ? "var(--text-primary)" : "var(--text-muted)" }}
           >
-            {sourceLabel}
+            {inputName}
           </span>
         </div>
         {onDeleteInput && roleEdge && (
@@ -442,6 +455,7 @@ function KeyInput({
   columns,
   onChange,
   focusVars,
+  invalid,
 }: {
   id: string
   label: string
@@ -449,9 +463,19 @@ function KeyInput({
   columns: ColumnInfo[]
   onChange: (value: string) => void
   focusVars: CSSProperties
+  invalid: boolean
 }) {
   const hasColumns = columns.length > 0
-  const hasMissingValue = Boolean(value) && !columns.some((column) => column.name === value)
+  const hasMissingValue = hasColumns && Boolean(value) && !columns.some((column) => column.name === value)
+  const isInvalid = invalid || hasMissingValue
+  const fieldStyle = {
+    ...focusVars,
+    ...(isInvalid ? {
+      border: "1px solid var(--danger)",
+      ["--focus-ring-border" as string]: "var(--danger)",
+      ["--focus-ring-shadow" as string]: "var(--danger-soft-strong)",
+    } : {}),
+  }
   return (
     <div className="min-w-0 flex-1">
       <EditorLabel htmlFor={id} className="block mb-1">{label}</EditorLabel>
@@ -459,10 +483,11 @@ function KeyInput({
         <select
           id={id}
           aria-label={label}
+          aria-invalid={isInvalid || undefined}
           value={value}
           onChange={(event) => onChange(event.target.value)}
           className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
-          style={{ ...SELECT_STYLE, ...focusVars }}
+          style={{ ...SELECT_STYLE, ...fieldStyle }}
         >
           <option value="">Select column</option>
           {hasMissingValue && <option value={value}>Missing column ({value})</option>}
@@ -474,11 +499,12 @@ function KeyInput({
         <CommittedTextField
           id={id}
           aria-label={label}
+          aria-invalid={isInvalid || undefined}
           type="text"
           value={value}
           onCommit={onChange}
           className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
-          style={{ ...INPUT_STYLE, ...focusVars }}
+          style={{ ...INPUT_STYLE, ...fieldStyle }}
         />
       )}
     </div>
@@ -531,10 +557,6 @@ function coalesceValueToConfig(value: string): boolean | null {
   if (value === "true") return true
   if (value === "false") return false
   return null
-}
-
-function nodeLabel(nodeId: string, nodeMap: Map<string, SimpleNode>): string {
-  return nodeMap.get(nodeId)?.data.label ?? nodeId
 }
 
 function buildPairedRows(leftKeys: string[], rightKeys: string[]): { left: string; right: string }[] {

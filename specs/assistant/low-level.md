@@ -165,9 +165,9 @@ orphaned halves).
     schema says so rather than leaving the model to guess a port name.
     Every edge into an `edgeJoin` is stricter than the generic operation shape:
     `target_handle` is mandatory, exactly one incoming edge must use `"base"` and exactly
-    one must use `"join"`, and those sources must equal the node's `baseInput` and
-    `joinInput` respectively. Handle-less joins are invalid; there is no edge-order
-    inference or compatibility path.
+    one must use `"join"`. These edge handles are the only role representation.
+    Handle-less joins and the removed `baseInput`/`joinInput` config form are invalid;
+    there is no edge-order inference or compatibility path.
 - **`ProjectSnapshot` / `ProjectRevision`** (`_ops.py`): immutable saved graph
   plus a canonical manifest of source/config/knowledge/artifact/capability
   digests. The revision is the SHA-256 of canonical JSON for that manifest.

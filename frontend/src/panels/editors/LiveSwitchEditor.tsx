@@ -76,7 +76,7 @@ export default function LiveSwitchEditor({
                   aria-label={src.frameUnresolved ? "Unresolved frame" : undefined}
                   title={src.frameUnresolved
                     ? unresolvedFrameTitle(src.sourceLabel)
-                    : `from ${src.sourceLabel}`}
+                    : `from ${src.name}`}
                   style={{ color: src.frameUnresolved ? 'var(--warning)' : 'var(--text-primary)', whiteSpace: "pre" }}
                 >
                   {src.frameUnresolved && (

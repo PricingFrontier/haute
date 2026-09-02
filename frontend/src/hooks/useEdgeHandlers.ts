@@ -28,7 +28,7 @@ import {
 } from "../utils/edgeJoinGraph"
 import { appEdge, appNode, selectOnlyNode } from "../utils/flowElements"
 import { attachEditorEdgeIdentities } from "../utils/editorIdentities"
-import { edgeJoinCanonicalTargetHandle, edgeJoinRoleConfigKey } from "../utils/edgeJoinRoles"
+import { edgeJoinCanonicalTargetHandle } from "../utils/edgeJoinRoles"
 import { normalizeDefaultTargetHandle } from "../utils/flowHandles"
 import type { ConnectionValidationResult } from "../utils/connectionValidation"
 import useToastStore from "../stores/useToastStore"
@@ -238,8 +238,7 @@ export default function useEdgeHandlers({
       const targetNode = currentNodes.find((node) => node.id === params.target)
       if (targetNode && nodeData(targetNode).nodeType === NODE_TYPES.EDGE_JOIN) {
         const roleTargetHandle = edgeJoinCanonicalTargetHandle(targetHandle)
-        const roleConfigKey = edgeJoinRoleConfigKey(roleTargetHandle)
-        if (!roleConfigKey) {
+        if (!roleTargetHandle) {
           addToast("error", "Edge join connections must target the base or join handle")
           return
         }
@@ -252,19 +251,6 @@ export default function useEdgeHandlers({
           addToast("error", "Edge join nodes accept exactly two inputs")
           return
         }
-        const nextNodes = currentNodes.map((node) => {
-          if (node.id !== params.target) return node
-          return {
-            ...node,
-            data: {
-              ...node.data,
-              config: {
-                ...(nodeData(node).config ?? {}),
-                [roleConfigKey]: params.source,
-              },
-            },
-          }
-        })
         const nextEdge = identifiedEdge(appEdge({
           source: params.source,
           target: params.target,
@@ -274,7 +260,6 @@ export default function useEdgeHandlers({
         if (!nextEdge) return
         const nextEdges = [...currentEdges, nextEdge]
         pushSnapshot()
-        setNodesRaw(nextNodes)
         setEdgesRaw(nextEdges)
         return
       }
@@ -292,7 +277,7 @@ export default function useEdgeHandlers({
       if (!nextEdge) return
       setEdges((eds) => [...eds, nextEdge])
     },
-    [addToast, commitBoundaryConnection, graphRef, pushSnapshot, setEdges, setEdgesRaw, setNodesRaw],
+    [addToast, commitBoundaryConnection, graphRef, pushSnapshot, setEdges, setEdgesRaw],
   )
 
   const onConnect: OnConnect = useCallback(() => {

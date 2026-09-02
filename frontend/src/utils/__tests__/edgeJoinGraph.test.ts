@@ -119,8 +119,6 @@ describe("insertEdgeJoinNode", () => {
       label: "Edge Join 1",
       nodeType: NODE_TYPES.EDGE_JOIN,
       config: {
-        baseInput: "a",
-        joinInput: "c",
         how: "left",
         suffix: "_right",
       },
@@ -381,14 +379,14 @@ describe("insertEdgeJoinNode", () => {
     })).toThrow(/already uses it/)
   })
 
-  it("updates a downstream edgeJoin baseInput when splitting its base edge", () => {
+  it("preserves downstream edgeJoin config when splitting its base edge", () => {
     const join1: Node = {
       ...node("edgeJoin_1"),
       type: NODE_TYPES.EDGE_JOIN,
       data: {
         label: "Edge Join 1",
         nodeType: NODE_TYPES.EDGE_JOIN,
-        config: { baseInput: "a", joinInput: "c", how: "left", on: ["id"] },
+        config: { how: "left", on: ["id"] },
       },
     }
     const result = insertEdgeJoinNode({
@@ -407,10 +405,7 @@ describe("insertEdgeJoinNode", () => {
     if (!result.ok) return
 
     const updatedJoin1 = result.nodes.find((n) => n.id === "edgeJoin_1")
-    expect(updatedJoin1?.data.config).toMatchObject({
-      baseInput: "edgeJoin_2",
-      joinInput: "c",
-    })
+    expect(updatedJoin1?.data.config).toEqual({ how: "left", on: ["id"] })
     expect(result.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({
         source: "edgeJoin_2",
@@ -420,14 +415,14 @@ describe("insertEdgeJoinNode", () => {
     ]))
   })
 
-  it("updates a downstream edgeJoin joinInput when splitting its join edge", () => {
+  it("preserves downstream edgeJoin config when splitting its join edge", () => {
     const join1: Node = {
       ...node("edgeJoin_1"),
       type: NODE_TYPES.EDGE_JOIN,
       data: {
         label: "Edge Join 1",
         nodeType: NODE_TYPES.EDGE_JOIN,
-        config: { baseInput: "a", joinInput: "c", how: "left", on: ["id"] },
+        config: { how: "left", on: ["id"] },
       },
     }
     const result = insertEdgeJoinNode({
@@ -446,10 +441,7 @@ describe("insertEdgeJoinNode", () => {
     if (!result.ok) return
 
     const updatedJoin1 = result.nodes.find((n) => n.id === "edgeJoin_1")
-    expect(updatedJoin1?.data.config).toMatchObject({
-      baseInput: "a",
-      joinInput: "edgeJoin_2",
-    })
+    expect(updatedJoin1?.data.config).toEqual({ how: "left", on: ["id"] })
     expect(result.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({
         source: "edgeJoin_2",
@@ -553,6 +545,24 @@ describe("insertEdgeJoinNode", () => {
 })
 
 describe("insertEdgeJoinNodeFromSources", () => {
+  it("stores edge-join roles solely on the incoming target handles", () => {
+    const result = insertEdgeJoinNodeFromSources({
+      nodes: [node("base"), node("lookup")],
+      edges: [],
+      base: { source: "base", sourceHandle: "base_frame" },
+      join: { source: "lookup", sourceHandle: "lookup_frame" },
+      position: { x: 0, y: 0 },
+      idFactory: () => "edgeJoin_1",
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const config = result.nodes.find((candidate) => candidate.id === result.newNodeId)?.data.config as Record<string, unknown>
+    expect(config).not.toHaveProperty("baseInput")
+    expect(config).not.toHaveProperty("joinInput")
+    expect(result.edges.map((edge) => edge.targetHandle)).toEqual(["base", "join"])
+  })
+
   it("creates an unconnected edgeJoin from two source outputs", () => {
     const nodes = [node("base"), node("lookup")]
     const edges = [edge("existing", "unrelated", "base")]
@@ -579,8 +589,6 @@ describe("insertEdgeJoinNodeFromSources", () => {
         label: "Edge Join 1",
         nodeType: NODE_TYPES.EDGE_JOIN,
         config: {
-          baseInput: "base",
-          joinInput: "lookup",
           how: "left",
           suffix: "_right",
         },
@@ -632,7 +640,7 @@ describe("insertEdgeJoinNodeFromSources", () => {
 })
 
 describe("swapEdgeJoinInputs", () => {
-  it("swaps the role target handles and input config from incoming edge roles", () => {
+  it("swaps only the role target handles", () => {
     const joinNode: Node = {
       ...node("edgeJoin_1"),
       type: NODE_TYPES.EDGE_JOIN,
@@ -640,8 +648,6 @@ describe("swapEdgeJoinInputs", () => {
         label: "Edge Join 1",
         nodeType: NODE_TYPES.EDGE_JOIN,
         config: {
-          baseInput: "quotes",
-          joinInput: "lookup",
           how: "inner",
           on: ["policy_id"],
           suffix: "_lookup",
@@ -671,8 +677,6 @@ describe("swapEdgeJoinInputs", () => {
     if (!result.ok) return
 
     expect(result.nodes.find((n) => n.id === "edgeJoin_1")?.data.config).toEqual({
-      baseInput: "lookup",
-      joinInput: "quotes",
       how: "inner",
       on: ["policy_id"],
       suffix: "_lookup",
@@ -694,10 +698,7 @@ describe("swapEdgeJoinInputs", () => {
       }),
       edge("output-edge", "edgeJoin_1", "sink"),
     ])
-    expect(joinNode.data.config).toMatchObject({
-      baseInput: "quotes",
-      joinInput: "lookup",
-    })
+    expect(joinNode.data.config).toEqual({ how: "inner", on: ["policy_id"], suffix: "_lookup" })
     expect(edges[0].targetHandle).toBe("base")
     expect(edges[1].targetHandle).toBe("join")
   })
@@ -710,8 +711,6 @@ describe("swapEdgeJoinInputs", () => {
         label: "Edge Join 1",
         nodeType: NODE_TYPES.EDGE_JOIN,
         config: {
-          baseInput: "quotes",
-          joinInput: "lookup",
           how: "left",
         },
       },

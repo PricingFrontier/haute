@@ -2,13 +2,7 @@ import type { Edge, Node, XYPosition } from "@xyflow/react"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { NODE_TYPES } from "./nodeTypes"
 import { appEdge, appNode, selectOnlyNode } from "./flowElements"
-import {
-  EDGE_JOIN_BASE_CONFIG_KEY,
-  EDGE_JOIN_BASE_HANDLE,
-  EDGE_JOIN_JOIN_CONFIG_KEY,
-  EDGE_JOIN_JOIN_HANDLE,
-  edgeJoinRoleConfigKey,
-} from "./edgeJoinRoles"
+import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "./edgeJoinRoles"
 import { edgeInputName, UNRESOLVED_INPUT_NAME } from "./apiInputPorts"
 
 export type EdgeJoinFailureReason =
@@ -71,6 +65,25 @@ type SourceEndpoint = {
   sourceHandle?: string | null
 }
 
+function endpointsShareExecutableInput(
+  nodes: Node[],
+  left: SourceEndpoint,
+  right: SourceEndpoint,
+): boolean {
+  if (!left.source || left.source !== right.source) return false
+  const sourceNode = nodes.find((node) => node.id === left.source)
+  if (!sourceNode) return true
+  const nodeType = sourceNode.data.nodeType
+  if (
+    nodeType === NODE_TYPES.API_INPUT
+    || nodeType === NODE_TYPES.SUBMODEL
+    || nodeType === NODE_TYPES.SUBMODEL_PORT
+  ) {
+    return (left.sourceHandle ?? null) === (right.sourceHandle ?? null)
+  }
+  return true
+}
+
 type InsertEdgeJoinNodeFromSourcesParams = {
   nodes: Node[]
   edges: Edge[]
@@ -106,15 +119,17 @@ export function validateEdgeJoinInsertionCandidate(
   if (!nodeIds.has(targetEdge.source) || !nodeIds.has(targetEdge.target)) {
     return { ok: false, reason: "target-edge-node-not-found" }
   }
-  if (source === targetEdge.source) return { ok: false, reason: "self-join" }
+  if (endpointsShareExecutableInput(
+    nodes,
+    { source, sourceHandle: connection.sourceHandle },
+    { source: targetEdge.source, sourceHandle: targetEdge.sourceHandle },
+  )) return { ok: false, reason: "self-join" }
 
   let candidateNodeId = "__edge_join_insertion_candidate__"
   while (nodeIds.has(candidateNodeId)) candidateNodeId += "_"
   const candidateNode = buildEdgeJoinNode({
     id: candidateNodeId,
     position: { x: 0, y: 0 },
-    baseInput: targetEdge.source,
-    joinInput: source,
   })
   const nextEdges = [
     ...edges.filter((edge) => edge.id !== targetEdgeId),
@@ -162,8 +177,6 @@ export function insertEdgeJoinNode({
   const newNode = buildEdgeJoinNode({
     id: newNodeId,
     position,
-    baseInput: targetEdge.source,
-    joinInput: source,
   })
 
   const replacementEdges = edgeJoinReplacementEdges(targetEdge, newNodeId, { ...connection, source })
@@ -222,7 +235,9 @@ export function insertEdgeJoinNodeFromSources({
   idFactory,
 }: InsertEdgeJoinNodeFromSourcesParams): EdgeJoinInsertResult {
   if (!base.source || !join.source) return { ok: false, reason: "source-node-not-found" }
-  if (base.source === join.source) return { ok: false, reason: "self-join" }
+  if (endpointsShareExecutableInput(nodes, base, join)) {
+    return { ok: false, reason: "self-join" }
+  }
 
   const nodeIds = new Set(nodes.map((node) => node.id))
   if (!nodeIds.has(base.source) || !nodeIds.has(join.source)) {
@@ -233,8 +248,6 @@ export function insertEdgeJoinNodeFromSources({
   const newNode = buildEdgeJoinNode({
     id: newNodeId,
     position,
-    baseInput: base.source,
-    joinInput: join.source,
   })
 
   const nextEdges = [
@@ -324,24 +337,9 @@ export function swapEdgeJoinInputs({
 
   const baseEdge = baseEdges[0]
   const joinEdge = joinEdges[0]
-  const config = { ...(edgeJoinNode.data.config as Record<string, unknown> | undefined) }
-
   return {
     ok: true,
-    nodes: nodes.map((node) => {
-      if (node.id !== edgeJoinNodeId) return node
-      return {
-        ...node,
-        data: {
-          ...node.data,
-          config: {
-            ...config,
-            [EDGE_JOIN_BASE_CONFIG_KEY]: joinEdge.source,
-            [EDGE_JOIN_JOIN_CONFIG_KEY]: baseEdge.source,
-          },
-        },
-      }
-    }),
+    nodes,
     edges: edges.map((edge) => {
       if (edge === baseEdge) return { ...edge, targetHandle: EDGE_JOIN_JOIN_HANDLE }
       if (edge === joinEdge) return { ...edge, targetHandle: EDGE_JOIN_BASE_HANDLE }
@@ -350,25 +348,15 @@ export function swapEdgeJoinInputs({
   }
 }
 
-function buildEdgeJoinNode({
-  id,
-  position,
-  baseInput,
-  joinInput,
-}: {
+function buildEdgeJoinNode({ id, position }: {
   id: string
   position: XYPosition
-  baseInput: string
-  joinInput: string
 }): Node {
   return appNode({
     id,
     type: NODE_TYPES.EDGE_JOIN,
     position,
-    config: {
-      [EDGE_JOIN_BASE_CONFIG_KEY]: baseInput,
-      [EDGE_JOIN_JOIN_CONFIG_KEY]: joinInput,
-    },
+    config: {},
   })
 }
 
@@ -377,8 +365,7 @@ function rewriteDownstreamSplitTargetNodeStructure(
   targetEdge: Edge,
   newNodeId: string,
 ): Node {
-  const roleRewritten = rewriteDownstreamEdgeJoinNode(node, targetEdge, newNodeId)
-  return rewriteDownstreamInputsByParentContract(roleRewritten, targetEdge, newNodeId)
+  return rewriteDownstreamInputsByParentContract(node, targetEdge, newNodeId)
 }
 
 function assertDownstreamInputMappingCanBeRewritten(
@@ -463,31 +450,6 @@ function rewriteDownstreamInputMapping(
       config: {
         ...config,
         inputMapping: nextInputMapping,
-      },
-    },
-  }
-}
-
-function rewriteDownstreamEdgeJoinNode(
-  node: Node,
-  targetEdge: Edge,
-  newNodeId: string,
-): Node {
-  if (node.id !== targetEdge.target || node.data.nodeType !== NODE_TYPES.EDGE_JOIN) {
-    return { ...node, selected: false }
-  }
-  const config = { ...(node.data.config as Record<string, unknown> | undefined) }
-  const roleKey = edgeJoinRoleConfigKey(targetEdge.targetHandle)
-  if (!roleKey) return { ...node, selected: false }
-
-  return {
-    ...node,
-    selected: false,
-    data: {
-      ...node.data,
-      config: {
-        ...config,
-        [roleKey]: newNodeId,
       },
     },
   }

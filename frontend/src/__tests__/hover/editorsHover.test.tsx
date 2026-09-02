@@ -524,7 +524,7 @@ function makeBandingNode(outputColumn: string, assignments: string[]): SimpleNod
 describe("_shared.tsx hover integration", () => {
   it("InputSourcesBar renders the delete-X button for a wired input", () => {
     renderInputSourcesBarWithDelete()
-    const btn = screen.getByTitle("Remove connection from Source · df")
+    const btn = screen.getByTitle("Remove connection from df")
     expect(btn).toBeTruthy()
     // The button owns the icon — smoke check it mounted.
     expect(btn.querySelector("svg")).toBeTruthy()
@@ -540,7 +540,7 @@ describe("_shared.tsx hover integration", () => {
     // `btn.style.color` stays at its SSR/render-time initial value
     // across both enter and leave.
     renderInputSourcesBarWithDelete()
-    const btn = screen.getByTitle("Remove connection from Source · df")
+    const btn = screen.getByTitle("Remove connection from df")
 
     // Snapshot the initial inline style.color (whatever the
     // render chose — we don't care what it is, only that it
@@ -570,7 +570,7 @@ describe("_shared.tsx hover integration", () => {
         onDeleteInput={onDelete}
       />,
     )
-    const btn = screen.getByTitle("Remove connection from Source · df")
+    const btn = screen.getByTitle("Remove connection from df")
     fireEvent.click(btn)
     expect(onDelete).toHaveBeenCalledWith("e1")
   })

@@ -208,8 +208,6 @@ class TransformConfig(TypedDict, total=False):
 class EdgeJoinConfig(TypedDict, total=False):
     """Config for edgeJoin nodes."""
 
-    baseInput: str
-    joinInput: str
     how: str
     on: str | list[str]
     leftOn: str | list[str]
@@ -221,8 +219,6 @@ class EdgeJoinConfig(TypedDict, total=False):
 
 
 EDGE_JOIN_CONFIG_KEYS: tuple[str, ...] = (
-    "baseInput",
-    "joinInput",
     "how",
     "on",
     "leftOn",
@@ -620,11 +616,7 @@ class OptimiserConfig(TypedDict, total=False):
     cd_tolerance: float
     structure_mode: str  # "explicit" | "auto"
 
-    # Two-input support for ratebook
-    scored_input: str
-    factors_input: str
-
-    # Runtime node-ID references (set by the frontend / optimiser service)
+    # Executable incoming-edge frame name selected for optimisation.
     data_input: str
     banding_source: str
 
@@ -640,7 +632,7 @@ class OptimiserApplyConfig(TypedDict, total=False):
     version_column: str  # column name for version tracking (default "__optimiser_version__")
     optimised_value_column: str  # optional output column for the selected optimiser value
     optimiser_mode: str  # resolved optimiser artifact mode, when known
-    ratebook_input: str  # upstream node id used when applying ratebook artifacts
+    ratebook_input: str  # executable incoming-edge frame name for ratebook artifacts
     # MLflow source fields
     sourceType: str  # "file" | "run" | "registered"
     registered_model: str  # registered model name (when sourceType="registered")
@@ -795,8 +787,6 @@ OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
     "max_cd_iterations",
     "cd_tolerance",
     "structure_mode",
-    "scored_input",
-    "factors_input",
     "data_input",
     "banding_source",
     "mlflow_experiment",

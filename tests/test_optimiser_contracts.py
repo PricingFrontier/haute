@@ -13,6 +13,8 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
+from haute.codegen import graph_to_code
+from haute.errors import ConfigError
 from haute.executor import _build_node_fn
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import OptimiserSolveService
@@ -143,6 +145,291 @@ def test_scenario_expander_streaming_output_is_quote_contiguous_for_optimiser(
         "q3",
     ]
     _assert_quote_scenario_blocks(expanded, expected_steps=4)
+
+
+def test_optimiser_data_input_uses_exact_connected_frame_name() -> None:
+    node = make_node(
+        {
+            "id": "optimiser",
+            "data": {
+                "label": "optimiser",
+                "nodeType": "optimiser",
+                "config": {"data_input": "selected_frame"},
+            },
+        }
+    )
+    _, fn, _ = _build_node_fn(
+        node,
+        source_names=["other_frame", "selected_frame"],
+        # Distinct frame identities may originate from one API node.
+        source_ids=["api_request", "api_request"],
+    )
+
+    other = pl.DataFrame({"chosen": [False]}).lazy()
+    selected = pl.DataFrame({"chosen": [True]}).lazy()
+
+    assert fn(other, selected).collect()["chosen"].to_list() == [True]
+
+
+def test_optimiser_data_input_rejects_non_exact_connected_name() -> None:
+    node = make_node(
+        {
+            "id": "optimiser",
+            "data": {
+                "label": "optimiser",
+                "nodeType": "optimiser",
+                "config": {"data_input": "api_request"},
+            },
+        }
+    )
+    with pytest.raises(ConfigError, match="api_request"):
+        _build_node_fn(
+            node,
+            source_names=["quotes_frame", "drivers_frame"],
+            source_ids=["api_request", "api_request"],
+        )
+
+
+def test_optimiser_data_input_rejects_falsey_non_string_selector() -> None:
+    node = make_node(
+        {
+            "id": "optimiser",
+            "data": {
+                "label": "optimiser",
+                "nodeType": "optimiser",
+                "config": {"data_input": 0},
+            },
+        }
+    )
+
+    with pytest.raises(ConfigError, match="incoming-edge frame name"):
+        _build_node_fn(node, source_names=["quotes_frame"])
+
+
+@pytest.mark.parametrize("removed_key", ["scored_input", "factors_input"])
+def test_optimiser_runtime_rejects_removed_input_selector_fields(removed_key: str) -> None:
+    node = make_node(
+        {
+            "id": "optimiser",
+            "data": {
+                "label": "optimiser",
+                "nodeType": "optimiser",
+                "config": {removed_key: "legacy-node-id"},
+            },
+        }
+    )
+
+    with pytest.raises(ConfigError, match=removed_key):
+        _build_node_fn(node, source_names=["quotes_frame"])
+
+
+def test_optimiser_requires_exact_data_input_when_multiple_frames_are_connected() -> None:
+    node = make_node(
+        {
+            "id": "optimiser",
+            "data": {
+                "label": "optimiser",
+                "nodeType": "optimiser",
+                "config": {},
+            },
+        }
+    )
+
+    with pytest.raises(ConfigError, match="data_input is required when multiple"):
+        _build_node_fn(node, source_names=["quotes_frame", "drivers_frame"])
+
+
+def test_optimiser_codegen_returns_the_exact_selected_api_frame() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "api_request",
+                    "data": {
+                        "label": "Request",
+                        "nodeType": "apiInput",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "optimiser",
+                    "data": {
+                        "label": "Optimiser",
+                        "nodeType": "optimiser",
+                        "config": {"data_input": "quote_info"},
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "drivers",
+                    "source": "api_request",
+                    "sourceHandle": "driver_info",
+                    "target": "optimiser",
+                },
+                {
+                    "id": "quotes",
+                    "source": "api_request",
+                    "sourceHandle": "quote_info",
+                    "target": "optimiser",
+                },
+            ],
+        }
+    )
+
+    code = graph_to_code(graph, pipeline_name="optimiser_identity")
+
+    assert "def Optimiser(driver_info: pl.LazyFrame, quote_info: pl.LazyFrame)" in code
+    assert "    return quote_info" in code
+
+
+def test_optimiser_codegen_rejects_node_id_selector_for_multi_frame_api_input() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "api_request",
+                    "data": {
+                        "label": "Request",
+                        "nodeType": "apiInput",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "optimiser",
+                    "data": {
+                        "label": "Optimiser",
+                        "nodeType": "optimiser",
+                        "config": {"data_input": "api_request"},
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "drivers",
+                    "source": "api_request",
+                    "sourceHandle": "driver_info",
+                    "target": "optimiser",
+                },
+                {
+                    "id": "quotes",
+                    "source": "api_request",
+                    "sourceHandle": "quote_info",
+                    "target": "optimiser",
+                },
+            ],
+        }
+    )
+
+    with pytest.raises(ConfigError, match="api_request"):
+        graph_to_code(graph, pipeline_name="optimiser_identity")
+
+
+def test_optimiser_codegen_rejects_whitespace_only_selector_instead_of_inferring() -> None:
+    """A whitespace-only selector is a stale value, never an absent one."""
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "Source",
+                        "nodeType": "polars",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "optimiser",
+                    "data": {
+                        "label": "Optimiser",
+                        "nodeType": "optimiser",
+                        "config": {"data_input": " "},
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "source-to-optimiser",
+                    "source": "source",
+                    "target": "optimiser",
+                },
+            ],
+        }
+    )
+
+    with pytest.raises(ConfigError, match="not an exact connected input name"):
+        graph_to_code(graph, pipeline_name="optimiser_identity")
+
+
+def test_optimiser_codegen_rejects_falsey_non_string_selector() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "Source",
+                        "nodeType": "polars",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "optimiser",
+                    "data": {
+                        "label": "Optimiser",
+                        "nodeType": "optimiser",
+                        "config": {"data_input": 0},
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "source-to-optimiser",
+                    "source": "source",
+                    "target": "optimiser",
+                },
+            ],
+        }
+    )
+
+    with pytest.raises(ConfigError, match="incoming-edge frame name"):
+        graph_to_code(graph, pipeline_name="optimiser_identity")
+
+
+@pytest.mark.parametrize("removed_key", ["scored_input", "factors_input"])
+def test_optimiser_codegen_rejects_removed_input_selector_fields(removed_key: str) -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "Source",
+                        "nodeType": "polars",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "optimiser",
+                    "data": {
+                        "label": "Optimiser",
+                        "nodeType": "optimiser",
+                        "config": {removed_key: "legacy-node-id"},
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "source-to-optimiser",
+                    "source": "source",
+                    "target": "optimiser",
+                },
+            ],
+        }
+    )
+
+    with pytest.raises(ConfigError, match=removed_key):
+        graph_to_code(graph, pipeline_name="optimiser_identity")
 
 
 def _make_expander_optimiser_graph(data_path: str) -> dict:
@@ -415,6 +702,23 @@ def test_ratebook_factor_extraction_uses_execution_context_profile(
 
     monkeypatch.setattr(optimiser_service, "streaming_collect", fail_if_streaming_collect_reached)
 
+    config = {
+        "mode": "ratebook",
+        "banding_source": "banding",
+        "factor_columns": [["region"]],
+    }
+    graph = make_graph(
+        {
+            "nodes": [
+                {"id": "banding", "data": {"label": "banding", "nodeType": "banding"}},
+                {
+                    "id": "optimiser",
+                    "data": {"label": "optimiser", "nodeType": "optimiser", "config": config},
+                },
+            ],
+            "edges": [{"id": "factor-edge", "source": "banding", "target": "optimiser"}],
+        }
+    )
     factors_handle = optimiser_service.OptimiserSolveService._extract_factors(
         {
             "banding": pl.LazyFrame(
@@ -424,11 +728,9 @@ def test_ratebook_factor_extraction_uses_execution_context_profile(
                 }
             )
         },
-        {
-            "mode": "ratebook",
-            "banding_source": "banding",
-            "factor_columns": [["region"]],
-        },
+        graph,
+        "optimiser",
+        config,
         "ratebook",
         execution_context=context,
     )
@@ -464,6 +766,23 @@ def test_ratebook_factor_source_sinks_without_final_collect_under_low_memory_lim
 
     monkeypatch.setattr(optimiser_service, "streaming_collect", fail_if_collect_reached)
 
+    config = {
+        "mode": "ratebook",
+        "banding_source": "banding",
+        "factor_columns": [["region"]],
+    }
+    graph = make_graph(
+        {
+            "nodes": [
+                {"id": "banding", "data": {"label": "banding", "nodeType": "banding"}},
+                {
+                    "id": "optimiser",
+                    "data": {"label": "optimiser", "nodeType": "optimiser", "config": config},
+                },
+            ],
+            "edges": [{"id": "factor-edge", "source": "banding", "target": "optimiser"}],
+        }
+    )
     factors_handle = optimiser_service.OptimiserSolveService._extract_factors(
         {
             "banding": pl.LazyFrame(
@@ -473,11 +792,9 @@ def test_ratebook_factor_source_sinks_without_final_collect_under_low_memory_lim
                 }
             )
         },
-        {
-            "mode": "ratebook",
-            "banding_source": "banding",
-            "factor_columns": [["region"]],
-        },
+        graph,
+        "optimiser",
+        config,
         "ratebook",
         execution_context=context,
     )

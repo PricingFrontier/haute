@@ -414,7 +414,7 @@ export function InputSourcesBar({
               data-testid={`input-source-${src.edgeId}`}
               data-unresolved={src.frameUnresolved ? "true" : undefined}
               aria-label={src.frameUnresolved ? "Unresolved frame" : undefined}
-              title={src.frameUnresolved ? unresolvedTitle : `from ${src.sourceLabel}`}
+              title={src.frameUnresolved ? unresolvedTitle : `from ${src.name}`}
               className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
               style={{
                 background: src.frameUnresolved ? 'var(--warning-soft-subtle)' : 'var(--accent-soft)',
@@ -435,7 +435,7 @@ export function InputSourcesBar({
                 <button
                   onClick={() => onDeleteInput(src.edgeId)}
                   className="icon-danger-btn p-0 rounded"
-                  title={`Remove connection from ${src.sourceLabel}`}
+                  title={`Remove connection from ${src.name}`}
                 >
                   <X size={10} />
                 </button>

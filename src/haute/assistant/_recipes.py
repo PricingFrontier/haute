@@ -976,8 +976,6 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
                 "name": join_name,
                 "ref": "recipe_showcase_join",
                 "config": {
-                    "baseInput": base_name,
-                    "joinInput": reference_name,
                     "how": "left",
                     "leftOn": [join_key],
                     "rightOn": [join_key],
@@ -1089,8 +1087,6 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
                 "name": values["name"],
                 "ref": ref,
                 "config": {
-                    "baseInput": values["base_source"],
-                    "joinInput": values["reference_source"],
                     "how": values["how"],
                     "leftOn": values["left_on"],
                     "rightOn": values["right_on"],

@@ -5,11 +5,13 @@ You've run the Optimiser and saved the results. Now you want to apply those resu
 !!! info "When to use"
     Use this to apply saved optimisation results to fresh data  - typically in your production pipeline. The Optimiser itself is run during development; Optimiser Apply loads the saved results at deployment time.
 
-This node accepts a single input.
+An online artifact applies to the node's single input. A ratebook artifact may have several
+connected inputs and applies to the one named by `ratebook_input`.
 
 | Config | Description |
 |---|---|
 | `sourceType` | **Required.** `"file"`, `"registered"`, or `"run"` |
+| `ratebook_input` | The exact input name of the connected edge a ratebook artifact is applied to. **Required** for ratebook artifacts, even with one connected input. Ignored for online artifacts. |
 | `artifact_path` | Path to the saved optimiser artifact. Required when sourceType is `"file"`. |
 | `registered_model` | Model registry name. Required when sourceType is `"registered"`. |
 | `version` | Version or `"latest"`. Required when sourceType is `"registered"`. |

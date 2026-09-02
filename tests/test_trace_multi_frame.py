@@ -93,8 +93,6 @@ def test_edge_join_with_multi_frame_base_correlates_join_parent() -> None:
             data=SimpleNamespace(
                 nodeType=NodeType.EDGE_JOIN,
                 config={
-                    "baseInput": "base",
-                    "joinInput": "join",
                     "how": "left",
                     "on": ["policy_id"],
                     "suffix": "_right",
@@ -125,7 +123,10 @@ def test_edge_join_with_multi_frame_base_correlates_join_parent() -> None:
         target_node_id="edge",
         row_index=0,
         node_map=node_map,
-        source_frames_of={("base", "edge"): ["policies"]},
+        edge_metadata={
+            ("base", "edge"): [("policies", "base")],
+            ("join", "edge"): [(None, "join")],
+        },
         traced_column="rate",
     )
 
@@ -135,6 +136,43 @@ def test_edge_join_with_multi_frame_base_correlates_join_parent() -> None:
         "territory": "joined",
         "rate": 1.2,
     }
+
+
+def test_edge_join_same_multi_frame_source_uses_physical_port_roles() -> None:
+    """A single API source may feed both Edge Join ports through distinct frames."""
+    node_map = {
+        "api": SimpleNamespace(
+            id="api",
+            data=SimpleNamespace(nodeType=NodeType.API_INPUT, config={}),
+        ),
+        "edge": SimpleNamespace(
+            id="edge",
+            data=SimpleNamespace(
+                nodeType=NodeType.EDGE_JOIN,
+                config={"how": "inner", "on": ["policy_id"], "suffix": "_right"},
+            ),
+        ),
+    }
+    rows = _correlate_rows_posthoc(
+        {
+            "api": {
+                "policies": pl.DataFrame({"policy_id": ["P1"], "premium": [100]}),
+                "rates": pl.DataFrame({"policy_id": ["P1"], "premium": [999], "rate": [1.2]}),
+            },
+            "edge": pl.DataFrame(
+                {"policy_id": ["P1"], "premium": [100], "premium_right": [999], "rate": [1.2]}
+            ),
+        },
+        order=["api", "edge"],
+        parents_of={"edge": ["api"]},
+        target_node_id="edge",
+        row_index=0,
+        node_map=node_map,
+        edge_metadata={("api", "edge"): [("policies", "base"), ("rates", "join")]},
+        traced_column="rate",
+    )
+
+    assert rows["api"] == {"policy_id": "P1", "premium": 999, "rate": 1.2}
 
 
 def test_trace_through_multi_frame_source_succeeds(project: Path) -> None:

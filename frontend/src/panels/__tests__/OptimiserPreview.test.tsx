@@ -337,11 +337,18 @@ describe("OptimiserPreview", () => {
               label: "My Optimiser",
               description: "",
               nodeType: "optimiser",
-              config: { banding_source: "banding_1" },
+              config: { banding_source: "Age_Vehicle_Banding" },
             },
           },
         ],
-        edges: [{ id: "e1", source: "banding_1", target: "opt_1" }],
+        edges: [
+          {
+            id: "e1",
+            source: "banding_1",
+            target: "opt_1",
+            data: { _inputName: "Age_Vehicle_Banding" },
+          },
+        ],
         data: makeData({
           result: makeSolveResult({
             mode: "ratebook",

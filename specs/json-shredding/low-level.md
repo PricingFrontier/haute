@@ -102,10 +102,11 @@ Submodel graph expansion and boundary rewiring are owned by
 
 - `JoinKey = str | list[str]`.
 - `EDGE_JOIN_DECORATOR_TO_CONFIG` / `EDGE_JOIN_CONFIG_TO_DECORATOR` — snake_case
-  Python-decorator-kwarg ↔ camelCase graph-config-key maps (`base_input` ↔
-  `baseInput`, etc.), used by codegen round-tripping.
+  Python-decorator-kwarg ↔ camelCase graph-config-key maps for join options such as
+  `left_on` ↔ `leftOn`; role arguments are deliberately absent.
 - `_ALLOWED_HOW = {"inner", "left", "right", "full", "semi", "anti", "cross"}`.
-- `_ROLE_HANDLE_TO_CONFIG_KEY = {"base": "baseInput", "join": "joinInput"}`.
+- `resolve_edge_join_role_indices(target_handles)` validates exactly one `base` and one `join`
+  incoming target handle and returns their positions. It does not inspect source node ids.
 
 ## Control flow
 

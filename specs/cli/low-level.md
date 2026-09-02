@@ -11,7 +11,7 @@
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig`, `handle_run`, parses + executes a pipeline and prints per-node results. |
 | `src/haute/cli/_lint.py` | `haute lint` — `LintConfig`, `handle_lint`, structural validation without execution. |
 | `src/haute/cli/_train.py` | `haute train` — `TrainConfig`, `handle_train`, loads a training script as a module, runs its `job`, prints a live progress bar. |
-| `src/haute/cli/_serve.py` | `haute serve` — `ServeConfig`, `handle_serve`, host-safety checks, dev/prod mode dispatch, uvicorn launch. |
+| `src/haute/cli/_serve.py` | `haute serve` — `ServeConfig`, `handle_serve`, host-safety checks, working-directory/editable-checkout frontend selection, dev/prod mode dispatch, Vite and uvicorn launch/cleanup. |
 | `src/haute/cli/_deploy.py` | `haute deploy` — `DeployCliConfig`, `handle_deploy`, CI-gate check, resolve → validate-and-score-once → render quote results → deploy pipeline. |
 | `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, sends test quotes to a live endpoint (Databricks or HTTP). |
 | `src/haute/cli/_status.py` | `haute status` — `StatusConfig`, `handle_status`, MLflow Model Registry lookup. |
@@ -111,7 +111,12 @@ value before any startup side effect), `_configure_trusted_hosts` (clears any st
 `TRUSTED_HOSTS_ENV` remote-bind policy), `_abort_if_port_in_use`
 (pre-flight socket bind/close probe — `SO_EXCLUSIVEADDRUSE` on Windows to avoid a false-negative from
 `SO_REUSEADDR`), then `_detect_dev_frontend_dir` to choose dev vs. prod mode. Dev mode also
-pre-flights the fixed Vite listener at `127.0.0.1:5173`.
+pre-flights the fixed Vite listener at `127.0.0.1:5173`. Frontend detection first considers the
+nearest `frontend/package.json` in the working directory's ancestor chain. If that candidate has
+no installed `node_modules`, or no such candidate exists, it considers the `frontend/` beside the
+imported package when that package is an editable source checkout. A viable working-directory
+candidate wins; a wheel install or source checkout without installed dependencies selects prod
+mode rather than serving source through an unrelated generated bundle.
   - **Dev mode** (`_run_dev_mode`): spawns `npm run dev` as a subprocess (`_start_vite_subprocess`,
     with `SIGINT`/`SIGTERM` handlers wired to terminate the child). It creates the backend's
     process-local session token but removes `VITE_HAUTE_SESSION_TOKEN` from the child environment,

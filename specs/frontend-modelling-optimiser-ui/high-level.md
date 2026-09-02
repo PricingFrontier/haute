@@ -44,10 +44,23 @@ results are supplied by API and result-store layers.
   reason, and remediation when the guarded payload supplies them. Other,
   missing, or unsupported planner detail never becomes an invented success or
   pre-emptive submit gate; the primary request/status error remains visible.
-- Optimiser input selection stays scoped to connected upstream nodes and can
-  explicitly select a `dataInput`. Its columns come from the guarded
+- Optimiser input selection stays scoped to connected incoming edges and can
+  explicitly select a `data_input`. Each option's displayed and persisted value is the edge's
+  exact executable input name, so separate frames from one API Input remain separate choices and
+  source node ids never leak into the user contract. `banding_source` and Optimiser Apply's
+  `ratebook_input` use the same identity rule. Its columns come from the guarded
   post-provider/post-Polars schema or preview contract; the panel does not
   inspect provider config or trigger a snapshot build merely to discover them.
+  Selector matching is byte-for-byte; the UI does not trim or otherwise normalise
+  a stale persisted value into a valid input name. A present non-string selector is
+  malformed, remains visibly invalid, and blocks solve; it is not treated as an absent
+  selector eligible for single-input inference.
+  Ratebook factor-level ordering resolves the configured `banding_source` through
+  that exact incoming edge name too; it neither interprets the value as a node id
+  nor infers a sole Banding parent when the selector is absent or stale.
+  Optimiser Apply always shows an explicit input selector for a loaded ratebook
+  artifact, including with one connected input; its empty option is an incomplete
+  configuration, never a first-edge default.
   Snapshot/capability failures remain visible in estimate, solve, and
   auto-range states.
 - An explicit Banding source that is no longer directly connected and

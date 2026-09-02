@@ -87,6 +87,35 @@ function rawLabel(table: Record<string, unknown>): string | null {
   return typeof raw === "string" ? raw : null
 }
 
+export type ApiInputFrameColumn = { name: string; dtype: string }
+
+/**
+ * The selected columns of one runtime-eligible apiInput frame, addressed by an
+ * edge's `sourceHandle` (the frame label). This is the single frontend
+ * derivation of a frame's column set and mirrors the backend runtime: only
+ * `emit: true` tables with at least one selected column are frames, and only
+ * `selected: true` columns are emitted. A null or unknown handle yields no
+ * columns — an unresolved edge must never impersonate a frame.
+ */
+export function apiInputFrameColumns(
+  config: ConfigLike,
+  sourceHandle: string | null | undefined,
+): ApiInputFrameColumn[] {
+  if (typeof sourceHandle !== "string") return []
+  const table = emitTables(config).find((t) => rawLabel(t) === sourceHandle)
+  const columns = table ? (table as { columns?: unknown }).columns : undefined
+  if (!Array.isArray(columns)) return []
+  return columns.flatMap((candidate): ApiInputFrameColumn[] => {
+    if (!candidate || typeof candidate !== "object") return []
+    const column = candidate as { name?: unknown; selected?: unknown; dtype?: unknown; type?: unknown }
+    if (column.selected !== true || typeof column.name !== "string") return []
+    const dtype = typeof column.dtype === "string"
+      ? column.dtype
+      : typeof column.type === "string" ? column.type : ""
+    return [{ name: column.name, dtype }]
+  })
+}
+
 const ASCII_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 function isValidFrameLabel(

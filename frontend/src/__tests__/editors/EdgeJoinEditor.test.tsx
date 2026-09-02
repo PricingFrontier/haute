@@ -12,6 +12,7 @@ const baseNode: SimpleNode = {
     label: "Quotes",
     description: "",
     nodeType: "dataInput",
+    _defaultInputName: "Quotes",
     _columns: [
       { name: "policy_id", dtype: "String" },
       { name: "state", dtype: "String" },
@@ -26,6 +27,7 @@ const joinNode: SimpleNode = {
     label: "Area Lookup",
     description: "",
     nodeType: "dataInput",
+    _defaultInputName: "Area_Lookup",
     _columns: [
       { name: "policy_id", dtype: "String" },
       { name: "lookup_policy_id", dtype: "String" },
@@ -132,8 +134,6 @@ describe("EdgeJoinEditor", () => {
 
   it("does not render a duplicate edge-join title inside the config body", () => {
     renderEditor({
-      baseInput: "quotes",
-      joinInput: "lookup",
       how: "left",
       on: ["policy_id"],
     })
@@ -143,8 +143,6 @@ describe("EdgeJoinEditor", () => {
 
   it("renders fixed canvas-derived input roles, join type, same-name keys, and suffix from config", () => {
     renderEditor({
-      baseInput: "quotes",
-      joinInput: "lookup",
       how: "left",
       on: ["policy_id"],
       suffix: "_lookup",
@@ -154,8 +152,8 @@ describe("EdgeJoinEditor", () => {
     expect(screen.queryByRole("combobox", { name: "Join Input" })).not.toBeInTheDocument()
     expect(screen.getByText("Dominant Input")).toBeInTheDocument()
     expect(screen.getByText("Joining Input")).toBeInTheDocument()
-    expect(screen.getAllByText("Quotes").length).toBeGreaterThan(0)
-    expect(screen.getAllByText("Area Lookup").length).toBeGreaterThan(0)
+    expect(screen.getByLabelText("Dominant Input")).toHaveTextContent("Quotes")
+    expect(screen.getByLabelText("Joining Input")).toHaveTextContent("Area_Lookup")
     expect(screen.getByRole("button", { name: "Swap inputs" })).toBeEnabled()
     expect(screen.getByLabelText("Join Type")).toHaveValue("left")
     expect(screen.getByRole("radio", { name: "Same-name keys" })).toHaveAttribute("aria-checked", "true")
@@ -163,11 +161,41 @@ describe("EdgeJoinEditor", () => {
     expect(screen.getByLabelText("Suffix")).toHaveValue("_lookup")
   })
 
+  it("shows an API Input frame name instead of its internal source-node identity", () => {
+    const apiInputNode: SimpleNode = {
+      id: "Quote_Input_1",
+      data: {
+        label: "Quote_Input_1",
+        description: "",
+        nodeType: "apiInput",
+        _sourceHandleInputNames: { quote_info: "quote_info" },
+        _columns: [{ name: "quote_id", dtype: "String" }],
+      },
+    }
+    const apiInputEdge: SimpleEdge = {
+      id: "e_quote_info_join",
+      source: "Quote_Input_1",
+      target: "edge_join_1",
+      sourceHandle: "quote_info",
+      targetHandle: "base",
+    }
+
+    renderEditor({
+      how: "cross",
+    }, vi.fn(), {
+      allNodes: [apiInputNode, joinNode, edgeJoinNode],
+      edges: [apiInputEdge, edges[1]],
+    })
+
+    const dominantInput = screen.getByLabelText("Dominant Input")
+    expect(dominantInput).toHaveTextContent("quote_info")
+    expect(dominantInput).not.toHaveTextContent("Quote_Input_1")
+    expect(dominantInput).toHaveAttribute("title", "quote_info")
+  })
+
   it("uses the swap action instead of editable role dropdowns", () => {
     const onSwapInputs = vi.fn()
     const { onUpdate } = renderEditor({
-      baseInput: "quotes",
-      joinInput: "lookup",
       how: "left",
       on: ["policy_id"],
       suffix: "_lookup",
@@ -182,8 +210,6 @@ describe("EdgeJoinEditor", () => {
 
   it("disables swapping until both canvas role inputs are connected", () => {
     renderEditor({
-      baseInput: "quotes",
-      joinInput: "lookup",
       how: "left",
       on: ["policy_id"],
     }, vi.fn(), { edges: [edges[0]] })
@@ -194,8 +220,6 @@ describe("EdgeJoinEditor", () => {
 
   it("disables swapping when a role has ambiguous canvas connections", () => {
     renderEditor({
-      baseInput: "quotes",
-      joinInput: "lookup",
       how: "left",
       on: ["policy_id"],
     }, vi.fn(), {
@@ -212,8 +236,6 @@ describe("EdgeJoinEditor", () => {
   it("retains delete actions for fixed role inputs", () => {
     const onDeleteInput = vi.fn()
     renderEditor({
-      baseInput: "quotes",
-      joinInput: "lookup",
       how: "left",
       on: ["policy_id"],
     }, vi.fn(), { onDeleteInput })
@@ -224,8 +246,6 @@ describe("EdgeJoinEditor", () => {
 
   it("updates join type, same-name keys, and suffix", () => {
     const { onUpdate } = renderEditor({
-      baseInput: "quotes",
-      joinInput: "lookup",
       how: "left",
       on: ["policy_id"],
       suffix: "_lookup",
@@ -245,8 +265,6 @@ describe("EdgeJoinEditor", () => {
 
   it("offers exactly the seven backend-supported join modes", () => {
     renderEditor({
-      baseInput: "quotes",
-      joinInput: "lookup",
       how: "left",
       on: ["policy_id"],
     })
@@ -260,8 +278,6 @@ describe("EdgeJoinEditor", () => {
 
   it("clears every key representation when changing to a cross join", () => {
     const { onUpdate } = renderEditor({
-      baseInput: "quotes",
-      joinInput: "lookup",
       how: "left",
       leftOn: ["policy_id"],
       rightOn: ["lookup_policy_id"],
@@ -279,8 +295,6 @@ describe("EdgeJoinEditor", () => {
 
   it("switches between same-name and paired key modes without leaving conflicting config", () => {
     const { onUpdate } = renderEditor({
-      baseInput: "quotes",
-      joinInput: "lookup",
       how: "left",
       on: ["policy_id"],
     })
@@ -296,8 +310,6 @@ describe("EdgeJoinEditor", () => {
 
   it("updates paired key rows and can add another pair", () => {
     const { onUpdate } = renderEditor({
-      baseInput: "quotes",
-      joinInput: "lookup",
       how: "left",
       leftOn: ["policy_id"],
       rightOn: ["lookup_policy_id"],
@@ -322,8 +334,6 @@ describe("EdgeJoinEditor", () => {
 
   it("shows a clear diagnostic when same-name and paired keys are both configured", () => {
     renderEditor({
-      baseInput: "quotes",
-      joinInput: "lookup",
       how: "left",
       on: ["policy_id"],
       leftOn: ["state"],
@@ -335,7 +345,68 @@ describe("EdgeJoinEditor", () => {
     )
   })
 
-  it("shows a clear diagnostic when configured roles do not match connected handles", () => {
+  it("renders blocking diagnostics and the required empty key control as errors", () => {
+    const noCommonBase: SimpleNode = {
+      ...baseNode,
+      data: { ...baseNode.data, _columns: [{ name: "base_only", dtype: "String" }] },
+    }
+    const noCommonJoin: SimpleNode = {
+      ...joinNode,
+      data: { ...joinNode.data, _columns: [{ name: "join_only", dtype: "String" }] },
+    }
+    renderEditor({ how: "left" }, vi.fn(), {
+      allNodes: [noCommonBase, noCommonJoin, edgeJoinNode],
+    })
+
+    const alert = screen.getByRole("alert")
+    expect(alert).toHaveTextContent("Non-cross joins need join keys")
+    expect(alert).toHaveStyle({ background: "var(--danger-soft)" })
+    expect(alert.getAttribute("style")).toContain("border: 1px solid var(--danger-border)")
+    expect(screen.getByText("Edge join config needs attention")).toHaveStyle({
+      color: "var(--danger)",
+    })
+
+    const keyControl = screen.getByLabelText("Same-name key 1")
+    expect(keyControl).toHaveAttribute("aria-invalid", "true")
+    expect(keyControl.getAttribute("style")).toContain("border: 1px solid var(--danger)")
+  })
+
+  it("marks only the incomplete side of a paired key row as invalid", () => {
+    renderEditor({
+      how: "left",
+      leftOn: ["policy_id"],
+      rightOn: [""],
+    })
+
+    expect(screen.getByLabelText("Base key 1")).not.toHaveAttribute("aria-invalid")
+    const joinKey = screen.getByLabelText("Join key 1")
+    expect(joinKey).toHaveAttribute("aria-invalid", "true")
+    expect(joinKey.getAttribute("style")).toContain("border: 1px solid var(--danger)")
+  })
+
+  it("does not reject a non-empty freeform key while column schemas are unavailable", () => {
+    const unknownBase: SimpleNode = {
+      ...baseNode,
+      data: { ...baseNode.data, _columns: [] },
+    }
+    const unknownJoin: SimpleNode = {
+      ...joinNode,
+      data: { ...joinNode.data, _columns: [] },
+    }
+    renderEditor({ how: "left", on: ["policy_id"] }, vi.fn(), {
+      allNodes: [unknownBase, unknownJoin, edgeJoinNode],
+    })
+
+    expect(screen.getByLabelText("Same-name key 1")).not.toHaveAttribute("aria-invalid")
+  })
+
+  it("marks a configured key as invalid when known columns do not contain it", () => {
+    renderEditor({ how: "left", on: ["removed_column"] })
+
+    expect(screen.getByLabelText("Same-name key 1")).toHaveAttribute("aria-invalid", "true")
+  })
+
+  it("shows a clear diagnostic for legacy role config", () => {
     renderEditor({
       baseInput: "missing_node",
       joinInput: "lookup",
@@ -344,7 +415,7 @@ describe("EdgeJoinEditor", () => {
     })
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Base Input is set to missing_node, but the connected base handle is Quotes.",
+      "Edge Join input roles are stored on incoming edge handles; remove legacy baseInput/joinInput config.",
     )
     expect(screen.queryByRole("combobox", { name: "Base Input" })).not.toBeInTheDocument()
     expect(screen.getAllByText("Quotes").length).toBeGreaterThan(0)
@@ -352,8 +423,6 @@ describe("EdgeJoinEditor", () => {
 
   it("updates advanced Polars join options", () => {
     const { onUpdate } = renderEditor({
-      baseInput: "quotes",
-      joinInput: "lookup",
       how: "left",
       on: ["policy_id"],
     })

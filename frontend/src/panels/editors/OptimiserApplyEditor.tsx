@@ -82,13 +82,13 @@ export default function OptimiserApplyEditor({
     return ""
   }, [sourceType, loadedMeta, selectedRun, selectedRegisteredVersion])
   const isRatebookOptimiser = resolvedOptimiserMode === "ratebook"
-  const showRatebookInput = isRatebookOptimiser && (inputSources.length > 1 || Boolean(ratebookInput))
+  const showRatebookInput = isRatebookOptimiser
   const ratebookInputSources = useMemo(
     () => (showRatebookInput ? inputSources : []),
     [showRatebookInput, inputSources],
   )
   const hasStaleRatebookInput = Boolean(ratebookInput)
-    && !ratebookInputSources.some((source) => source.sourceNodeId === ratebookInput)
+    && !ratebookInputSources.some((source) => source.name === ratebookInput)
 
   // ``optimiser_mode`` is denormalised into config so codegen can wire up the
   // ratebook input without re-reading the artifact (codegen has no MLflow
@@ -146,12 +146,12 @@ export default function OptimiserApplyEditor({
             value={ratebookInput}
             onChange={(e) => onUpdate("ratebook_input", e.target.value)}
           >
-            <option value="">First connected input</option>
+            <option value="">Select input...</option>
             {hasStaleRatebookInput && (
-              <option value={ratebookInput}>Missing input ({ratebookInput})</option>
+              <option value={ratebookInput}>Missing input</option>
             )}
             {ratebookInputSources.map((source) => (
-              <option key={source.edgeId} value={source.sourceNodeId}>
+              <option key={source.edgeId} value={source.name}>
                 {source.name}
               </option>
             ))}

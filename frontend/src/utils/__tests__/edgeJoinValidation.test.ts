@@ -24,8 +24,14 @@ function node(id: string, extra: Partial<Node> = {}): Node {
   }
 }
 
-function edge(id: string, source: string, target = "join", targetHandle: string | null = null): Edge {
-  return { id, source, target, targetHandle }
+function edge(
+  id: string,
+  source: string,
+  target = "join",
+  targetHandle: string | null = null,
+  sourceHandle: string | null = null,
+): Edge {
+  return { id, source, target, targetHandle, sourceHandle }
 }
 
 function edgeJoin(config: Record<string, unknown>): Node {
@@ -44,11 +50,55 @@ const connectedEdges = [
 ]
 
 describe("edgeJoinValidation", () => {
+  it("accepts two distinct frames from one api-input node when their roles are handle-defined", () => {
+    const apiInput = node("api", {
+      data: {
+        label: "Quote API",
+        nodeType: "apiInput",
+        config: {
+          tables: [
+            {
+              label: "quotes",
+              emit: true,
+              columns: [{ name: "policy_id", type: "String", selected: true }],
+            },
+            {
+              label: "drivers",
+              emit: true,
+              columns: [{ name: "driver_policy_id", type: "String", selected: true }],
+            },
+          ],
+        },
+        _columns: [],
+      },
+    })
+    const join = edgeJoin({
+      how: "left",
+      leftOn: ["policy_id"],
+      rightOn: ["driver_policy_id"],
+    })
+    const analysis = analyzeEdgeJoinNode({
+      nodeId: "join",
+      config: join.data.config as Record<string, unknown>,
+      nodes: [apiInput, join],
+      edges: [
+        edge("quotes", "api", "join", "base", "quotes"),
+        edge("drivers", "api", "join", "join", "drivers"),
+      ],
+    })
+
+    expect(analysis.diagnostics).toEqual([])
+    expect(analysis.baseRoleInput).toBe("api")
+    expect(analysis.joinRoleInput).toBe("api")
+    expect(analysis.baseColumns.map((column) => column.name)).toEqual(["policy_id"])
+    expect(analysis.joinColumns.map((column) => column.name)).toEqual(["driver_policy_id"])
+  })
+
   it("accepts a connected non-cross edgeJoin with same-name keys", () => {
     const nodes = [
       node("base"),
       node("lookup"),
-      edgeJoin({ baseInput: "base", joinInput: "lookup", how: "left", on: ["policy_id"] }),
+      edgeJoin({ how: "left", on: ["policy_id"] }),
     ]
 
     const analysis = analyzeEdgeJoinNode({
@@ -65,7 +115,7 @@ describe("edgeJoinValidation", () => {
     const nodes = [
       node("base"),
       node("lookup"),
-      edgeJoin({ baseInput: "base", joinInput: "lookup", how: "left" }),
+      edgeJoin({ how: "left" }),
     ]
 
     const issue = findFirstInvalidEdgeJoin(nodes, connectedEdges)
@@ -80,7 +130,7 @@ describe("edgeJoinValidation", () => {
     const nodes = [
       node("base"),
       node("lookup"),
-      edgeJoin({ baseInput: "base", joinInput: "lookup", how: "cross", on: ["policy_id"] }),
+      edgeJoin({ how: "cross", on: ["policy_id"] }),
     ]
 
     const issue = findFirstInvalidEdgeJoin(nodes, connectedEdges)
@@ -93,8 +143,6 @@ describe("edgeJoinValidation", () => {
       node("base"),
       node("lookup"),
       edgeJoin({
-        baseInput: "base",
-        joinInput: "lookup",
         how: "left",
         leftOn: ["policy_id", "state"],
         rightOn: ["policy_id"],
@@ -108,7 +156,7 @@ describe("edgeJoinValidation", () => {
     )
   })
 
-  it("flags configured roles that drift from connected role handles", () => {
+  it("rejects legacy role config instead of treating it as role authority", () => {
     const nodes = [
       node("base"),
       node("lookup"),
@@ -118,7 +166,7 @@ describe("edgeJoinValidation", () => {
     const issue = findFirstInvalidEdgeJoin(nodes, connectedEdges)
 
     expect(issue?.analysis.diagnostics).toContain(
-      "Base Input is set to lookup, but the connected base handle is base.",
+      "Edge Join input roles are stored on incoming edge handles; remove legacy baseInput/joinInput config.",
     )
   })
 })

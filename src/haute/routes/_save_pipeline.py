@@ -35,7 +35,15 @@ from haute._submodel_paths import (
     SubmodelPathOutsideProjectError,
     resolve_submodel_reference,
 )
-from haute.graph_utils import GraphEdge, GraphNode, NodeType, PipelineGraph, _sanitize_func_name
+from haute.errors import ConfigError
+from haute.graph_utils import (
+    GraphEdge,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+    _sanitize_func_name,
+    flatten_graph,
+)
 from haute.routes._helpers import (
     invalidate_pipeline_index,
     load_sidecar,
@@ -402,7 +410,9 @@ class SavePipelineService:
         """
 
         self._validate_singletons(graph)
-        self._validate_edge_join_configs(graph)
+        flattened = flatten_graph(graph)
+        self._validate_edge_join_configs(flattened)
+        self._validate_optimiser_input_selectors(flattened)
         self._validate_strict_node_configs(graph)
         self._validate_unique_sanitized_names(graph)
         self._validate_no_load_errors(graph)
@@ -568,7 +578,7 @@ class SavePipelineService:
         return True
 
     @staticmethod
-    def _validate_edge_join_configs(graph: PipelineGraph) -> None:
+    def _validate_edge_join_configs(flattened: PipelineGraph) -> None:
         """Reject graph-aware Edge Join config before codegen or writes.
 
         The canonical join validators need both the node config and its
@@ -580,9 +590,7 @@ class SavePipelineService:
             build_edge_join_kwargs,
             resolve_edge_join_role_indices,
         )
-        from haute.graph_utils import flatten_graph
 
-        flattened = flatten_graph(graph)
         incoming_by_target: dict[str, list[GraphEdge]] = defaultdict(list)
         for edge in flattened.edges:
             incoming_by_target[edge.target].append(edge)
@@ -592,11 +600,31 @@ class SavePipelineService:
                 continue
             incoming = incoming_by_target[node.id]
             resolve_edge_join_role_indices(
-                node.data.config,
-                [edge.source for edge in incoming],
                 [edge.targetHandle for edge in incoming],
             )
             build_edge_join_kwargs(node.data.config)
+
+    @staticmethod
+    def _validate_optimiser_input_selectors(flattened: PipelineGraph) -> None:
+        """Validate optimiser selectors against flattened physical edge names."""
+        from haute._config_validation import validate_optimiser_input_selectors
+        from haute._graph_utils import incoming_edge_bindings
+
+        try:
+            for node in flattened.nodes:
+                if node.data.nodeType not in {NodeType.OPTIMISER, NodeType.OPTIMISER_APPLY}:
+                    continue
+                source_names = [
+                    input_name for _edge, input_name in incoming_edge_bindings(flattened, node.id)
+                ]
+                validate_optimiser_input_selectors(
+                    node.data.nodeType,
+                    node.data.config,
+                    source_names,
+                    node_label=node.data.label,
+                )
+        except (ConfigError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
 
     @staticmethod
     def _validate_singletons(graph: PipelineGraph) -> None:

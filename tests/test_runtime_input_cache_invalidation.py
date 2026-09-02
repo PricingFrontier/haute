@@ -345,6 +345,7 @@ class TestPreviewRuntimeFileInvalidation:
                                 "config": {
                                     "sourceType": "file",
                                     "artifact_path": str(artifact),
+                                    "ratebook_input": "scored",
                                 },
                             },
                         }

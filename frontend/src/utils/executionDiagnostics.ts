@@ -1,4 +1,10 @@
-import type { ExecutionMemoryPressureEvent, ExecutionMetrics, ExecutionStrategyDiagnostic, JobStatus } from "../api/types"
+import type {
+  ExecutionMemoryPressureEvent,
+  ExecutionMetrics,
+  ExecutionStrategyBoundary,
+  ExecutionStrategyDiagnostic,
+  JobStatus,
+} from "../api/types"
 import { formatBytes } from "./formatBytes"
 
 export type ExecutionDiagnostic = {
@@ -52,6 +58,36 @@ function highestPressureEvent(metrics: ExecutionMetrics): ExecutionMemoryPressur
     if (!highest || pressureRank(event) > pressureRank(highest)) highest = event
   }
   return highest
+}
+
+export type ExecutionProjectionWarning = {
+  boundary: ExecutionStrategyBoundary | null
+  nodeId: string | null
+  operator: string | null
+}
+
+/**
+ * Return the planner condition that the preview presents as "Column
+ * projection was limited". An admitted materialisation boundary by itself is
+ * informational; it becomes a warning only when the plan also contains an
+ * unprojected streaming boundary.
+ */
+export function executionProjectionWarning(
+  metrics: ExecutionMetrics | null | undefined,
+): ExecutionProjectionWarning | null {
+  const strategy = metrics?.execution_strategy
+  if (!strategy || strategy.status !== "boundary") return null
+
+  const boundary = strategy.boundaries.items.find(
+    (item) => item.boundary_kind === "unprojected-streaming-boundary",
+  ) ?? null
+  if (strategy.strategy === "materialisation-boundary" && !boundary) return null
+
+  return {
+    boundary,
+    nodeId: boundary?.node_id ?? strategy.blocking_node_id ?? null,
+    operator: boundary?.operator ?? strategy.blocking_operator ?? null,
+  }
 }
 
 function strategyLabel(status: ExecutionStrategyDiagnostic["status"]): string {
@@ -198,6 +234,45 @@ export function shouldShowMemoryPressureDiagnostic(
     return false
   }
   return highestPressureEvent(metrics) !== null
+}
+
+/**
+ * Node ids that should display warning-complete for this execution. The
+ * requested node owns the overall run outcome; any node explicitly implicated
+ * by the diagnostic is included as well.
+ */
+export function executionWarningNodeIds(
+  metrics: ExecutionMetrics | null | undefined,
+  requestedNodeId: string,
+): string[] {
+  if (!metrics) return []
+  const nodeIds = new Set<string>()
+  const projectionWarning = executionProjectionWarning(metrics)
+
+  if (projectionWarning) {
+    nodeIds.add(requestedNodeId)
+    for (const boundary of metrics.execution_strategy?.boundaries.items ?? []) {
+      if (
+        boundary.boundary_kind === "unprojected-streaming-boundary"
+        && boundary.node_id
+      ) {
+        nodeIds.add(boundary.node_id)
+      }
+    }
+    if (projectionWarning.nodeId) {
+      nodeIds.add(projectionWarning.nodeId)
+    }
+  }
+
+  if (shouldShowMemoryPressureDiagnostic(metrics)) {
+    nodeIds.add(requestedNodeId)
+    const pressureNodeIds = metrics.memory_pressure_events
+      .map((event) => event.node_id)
+      .filter((nodeId): nodeId is string => Boolean(nodeId))
+    for (const nodeId of pressureNodeIds) nodeIds.add(nodeId)
+  }
+
+  return [...nodeIds]
 }
 
 export function buildExecutionDiagnostic(

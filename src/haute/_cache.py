@@ -718,10 +718,8 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
         NodeType.POLARS: _classify_config_fields(user_code=("code",)),
         NodeType.EDGE_JOIN: _classify_config_fields(
             node_config=(
-                "baseInput",
                 "coalesce",
                 "how",
-                "joinInput",
                 "leftOn",
                 "maintainOrder",
                 "on",
@@ -841,8 +839,6 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
             source_selection=(
                 "banding_source",
                 "data_input",
-                "factors_input",
-                "scored_input",
             ),
         ),
         NodeType.SCENARIO_EXPANDER: _classify_config_fields(

@@ -18,6 +18,7 @@ from haute._execution_context import ExecutionProfile
 from haute._output_assembler import OutputMappingSchemaError
 from haute.errors import (
     BoundedMemoryUnsupportedError,
+    ConfigError,
     LiveSwitchScenarioError,
     SchemaMismatchError,
 )
@@ -1046,7 +1047,7 @@ class TestBuildOptimiser:
                     "config": {
                         "mode": "online",
                         "objective": "profit",
-                        "data_input": "data_1",
+                        "data_input": "Scored_Data",
                     },
                 },
             }
@@ -1087,26 +1088,24 @@ class TestBuildOptimiser:
         result = fn(df).collect()
         assert result["x"].to_list() == [1, 2]
 
-    def test_data_input_fallback_when_id_not_in_node_map(self) -> None:
-        """If data_input references a missing node, fall back to dfs[0]."""
+    def test_stale_data_input_name_fails_loudly_instead_of_falling_back(self) -> None:
+        """A data_input naming no connected input must raise, never pick dfs[0]."""
         opt_node = _n(
             {
                 "id": "opt_1",
                 "data": {
                     "label": "Optimiser",
                     "nodeType": "optimiser",
-                    "config": {"data_input": "nonexistent_node"},
+                    "config": {"data_input": "nonexistent_input"},
                 },
             }
         )
-        _, fn, _ = _build_node_fn(
-            opt_node,
-            source_names=["upstream"],
-            node_map={"opt_1": opt_node},
-        )
-        df = pl.DataFrame({"x": [42]}).lazy()
-        result = fn(df).collect()
-        assert result["x"].to_list() == [42]
+        with pytest.raises(ConfigError, match="not an exact connected input name"):
+            _build_node_fn(
+                opt_node,
+                source_names=["upstream"],
+                node_map={"opt_1": opt_node},
+            )
 
     def test_data_input_raises_on_index_mismatch(self) -> None:
         """If data_input resolves to an index beyond the actual inputs,
@@ -1123,7 +1122,7 @@ class TestBuildOptimiser:
                 "data": {
                     "label": "Optimiser",
                     "nodeType": "optimiser",
-                    "config": {"data_input": "data_1"},
+                    "config": {"data_input": "Scored_Data"},
                 },
             }
         )

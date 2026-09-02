@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from hashlib import blake2b
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from haute._types import GraphEdge, GraphNode
+    from haute._types import GraphEdge, GraphNode, PipelineGraph
 
 
 def build_parents_of(
@@ -144,19 +144,98 @@ def _sanitize_identifier_characters(label: str) -> str:
 def edge_input_name(edge: GraphEdge, source_node: GraphNode) -> str:
     """Return the one input name contributed by an incoming edge.
 
-    API-input edges use their persisted frame handle verbatim. Every other
+    API-input edges use their persisted frame handle verbatim. Submodel
+    outputs use the instance alias plus public output port. Every ordinary
     edge uses the sanitised source-node label; source handles on ordinary
     nodes identify an output port and are not input names.
     """
-    if str(source_node.data.nodeType) == "apiInput" and edge.sourceHandle is None:
+    node_type = str(source_node.data.nodeType)
+    if node_type == "apiInput" and edge.sourceHandle is None:
         # Name the malformed edge: executable_input_name has no edge context,
         # and this identity is how callers locate the offending edge.
         raise ValueError(f"apiInput edge {edge.id!r} has no sourceHandle/frame label")
+    submodel_alias: str | None = None
+    if node_type == "submodel":
+        raw_alias = source_node.data.config.get("alias")
+        if isinstance(raw_alias, str) and raw_alias:
+            submodel_alias = raw_alias
     return executable_input_name(
         node_type=source_node.data.nodeType,
         label=source_node.data.label,
         source_handle=edge.sourceHandle,
+        submodel_alias=submodel_alias,
     )
+
+
+def incoming_edge_bindings(
+    graph: PipelineGraph,
+    node_id: str,
+) -> list[tuple[GraphEdge, str]]:
+    """Return each incoming physical edge with its executable input name.
+
+    The edge, rather than its source node, is the identity boundary: two API
+    frames can arrive from the same source node and remain distinct inputs.
+    Missing endpoints and malformed frame handles fail at the shared
+    :func:`edge_input_name` derivation instead of being translated to node ids.
+    """
+    node_map = graph.node_map
+    bindings: list[tuple[GraphEdge, str]] = []
+    for edge in graph.edges:
+        if edge.target != node_id:
+            continue
+        source_node = node_map.get(edge.source)
+        if source_node is None:
+            raise ValueError(
+                f"Incoming edge {edge.id!r} references missing source node {edge.source!r}."
+            )
+        bindings.append((edge, edge_input_name(edge, source_node)))
+    return bindings
+
+
+def incoming_edge_for_name(
+    graph: PipelineGraph,
+    node_id: str,
+    input_name: str,
+) -> GraphEdge:
+    """Resolve one exact executable input name to its physical incoming edge."""
+    bindings = incoming_edge_bindings(graph, node_id)
+    matches = [edge for edge, name in bindings if name == input_name]
+    if len(matches) != 1:
+        available = [name for _edge, name in bindings]
+        if not matches:
+            raise ValueError(
+                f"Input {input_name!r} is not connected to node {node_id!r}; "
+                f"available inputs: {available!r}."
+            )
+        raise ValueError(
+            f"Input {input_name!r} is ambiguous for node {node_id!r}; "
+            f"matching edge ids: {[edge.id for edge in matches]!r}."
+        )
+    return matches[0]
+
+
+def select_edge_source_output(source_output: Any, edge: GraphEdge) -> Any:
+    """Select the frame delivered by one physical edge from a source output."""
+    if not isinstance(source_output, dict):
+        return source_output
+    if not source_output:
+        raise RuntimeError(
+            f"Source node {edge.source!r} emitted no frames. Check the node's "
+            "configuration: at least one emit-true table with selected columns "
+            "is required for a multi-frame apiInput."
+        )
+    source_handle = edge.sourceHandle
+    if source_handle is None:
+        raise ValueError(
+            f"Edge from multi-frame node {edge.source!r} has no sourceHandle. "
+            f"Expected one of: {sorted(source_output)}."
+        )
+    if source_handle not in source_output:
+        raise KeyError(
+            f"Edge from {edge.source!r} references frame {source_handle!r}, "
+            f"but the source emits: {sorted(source_output)}."
+        )
+    return source_output[source_handle]
 
 
 def canonical_downstream_identity(alias: str, port_id: str) -> str:

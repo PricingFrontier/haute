@@ -210,7 +210,6 @@ def test_online_trace_prefers_artifact_configured_quote_id_column(tmp_path):
         },
         input_frames=[scored],
         source_names=["scored"],
-        source_ids=["scored"],
     )
 
     assert detail["status"] == "ok"
@@ -365,6 +364,90 @@ def test_ratebook_execute_trace_explains_configured_input_factor_ladder(tmp_path
     assert ladder[1]["running_product_after"] == pytest.approx(0.98 * 1.10)
 
 
+def test_ratebook_trace_uses_exact_multi_frame_api_input_name(tmp_path):
+    """Trace enrichment must select the same physical API frame as runtime apply."""
+    artifact_path = _write_json(tmp_path / "ratebook.json", _ratebook_artifact())
+    scored = pl.DataFrame(
+        {
+            "quote_id": ["q1"],
+            "region": ["London"],
+            "age_band": ["old"],
+            "base_price": [100.0],
+        }
+    )
+    banded = pl.DataFrame(
+        {
+            "quote_id": ["q1"],
+            "region": ["Manchester"],
+            "age_band": ["young"],
+            "base_price": [100.0],
+        }
+    )
+    applied = banded.with_columns(
+        pl.lit(0.98 * 1.10).alias("selected_factor"),
+    )
+    graph = _g(
+        {
+            "nodes": [
+                {
+                    "id": "request",
+                    "data": {
+                        "label": "request_bundle",
+                        "nodeType": NodeType.API_INPUT.value,
+                        "config": {},
+                    },
+                },
+                _optimiser_apply_node(
+                    {
+                        "sourceType": "file",
+                        "artifact_path": artifact_path,
+                        "optimiser_mode": "ratebook",
+                        "ratebook_input": "banded",
+                        "optimised_value_column": "selected_factor",
+                    }
+                ),
+            ],
+            "edges": [
+                {
+                    "id": "e_scored",
+                    "source": "request",
+                    "target": "apply",
+                    "sourceHandle": "scored",
+                },
+                {
+                    "id": "e_banded",
+                    "source": "request",
+                    "target": "apply",
+                    "sourceHandle": "banded",
+                },
+            ],
+        }
+    )
+
+    result = execute_trace(
+        graph,
+        row_index=0,
+        target_node_id="apply",
+        column="selected_factor",
+        preview={
+            "eager_outputs": {
+                "request": {"scored": scored, "banded": banded},
+                "apply": applied,
+            }
+        },
+    )
+
+    detail = _step_by_id(result, "apply").node_detail
+    assert detail is not None
+    assert detail["status"] == "ok", detail.get("error")
+    assert detail["mode"] == "ratebook"
+    assert detail["output"]["value"] == pytest.approx(0.98 * 1.10)
+    assert [step["input_value"] for step in detail["factor_ladder"]] == [
+        "Manchester",
+        "young",
+    ]
+
+
 _SEP = "\x1f"  # price-contour's interaction (unit) separator
 
 
@@ -416,6 +499,7 @@ def test_ratebook_execute_trace_explains_composite_factor_ladder(tmp_path):
                     {
                         "sourceType": "file",
                         "artifact_path": artifact_path,
+                        "ratebook_input": "banded",
                     }
                 ),
             ],
@@ -470,6 +554,7 @@ def test_ratebook_execute_trace_flags_unseen_level_as_neutral(tmp_path):
                     {
                         "sourceType": "file",
                         "artifact_path": artifact_path,
+                        "ratebook_input": "banded",
                     }
                 ),
             ],
@@ -529,6 +614,7 @@ def test_ratebook_execute_trace_float_keyed_levels_agree_with_engine(tmp_path):
                     {
                         "sourceType": "file",
                         "artifact_path": artifact_path,
+                        "ratebook_input": "banded",
                     }
                 ),
             ],
@@ -577,7 +663,6 @@ def test_ratebook_enrichment_missing_component_column_errors_clearly(tmp_path):
         output_row={"quote_id": "q1", "channel": "online", "region": "London"},
         input_frames=[banded],
         source_names=["banded"],
-        source_ids=["banded"],
     )
 
     assert detail["status"] == "error"
@@ -599,7 +684,6 @@ def test_online_enrichment_surfaces_reconciliation_error(tmp_path):
         output_row={"quote_id": "missing", "optimal_scenario_value": 1.1},
         input_frames=[_scored_online_df()],
         source_names=["scored"],
-        source_ids=["scored"],
     )
 
     assert detail["detail_type"] == "optimiser_apply"
@@ -625,7 +709,6 @@ def test_online_enrichment_surfaces_missing_output_column(tmp_path):
         output_row={"quote_id": "q1"},
         input_frames=[_scored_online_df()],
         source_names=["scored"],
-        source_ids=["scored"],
     )
 
     assert detail["status"] == "error"
@@ -649,7 +732,6 @@ def test_online_apply_rejects_explicit_empty_optimised_value_column(tmp_path):
         output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
         input_frames=[_scored_online_df()],
         source_names=["scored"],
-        source_ids=["scored"],
     )
 
     assert detail["status"] == "error"
@@ -679,7 +761,6 @@ def test_online_enrichment_rejects_explicit_empty_quote_id_artifact(tmp_path):
         output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
         input_frames=[_scored_online_df()],
         source_names=["scored"],
-        source_ids=["scored"],
     )
 
     assert detail["status"] == "error"
@@ -718,7 +799,6 @@ def test_ratebook_enrichment_surfaces_factor_reconciliation_mismatch(tmp_path):
         },
         input_frames=[banded],
         source_names=["banded"],
-        source_ids=["banded"],
     )
 
     assert detail["status"] == "error"
@@ -754,7 +834,6 @@ def test_ratebook_enrichment_fails_when_no_factor_tables_can_be_reconciled(tmp_p
         output_row={"quote_id": "q1", "region": "Manchester", "age_band": "young"},
         input_frames=[banded],
         source_names=["banded"],
-        source_ids=["banded"],
     )
 
     assert detail["status"] == "error"
@@ -805,7 +884,6 @@ def test_ratebook_input_match_falls_back_to_python_on_polars_type_mismatch(
         },
         input_frames=[banded],
         source_names=["banded"],
-        source_ids=["banded"],
     )
 
     # A blocker for the user would be a ``ComputeError`` here; a graceful
@@ -862,7 +940,6 @@ def test_ratebook_match_entry_uses_last_duplicate_to_match_runtime(tmp_path):
         },
         input_frames=[banded],
         source_names=["banded"],
-        source_ids=["banded"],
     )
 
     assert detail["status"] == "ok"
@@ -906,7 +983,6 @@ def test_optimiser_apply_emits_friendly_error_when_price_contour_missing(tmp_pat
         output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
         input_frames=[_scored_online_df()],
         source_names=["scored"],
-        source_ids=["scored"],
     )
 
     assert detail["status"] == "error"
@@ -943,7 +1019,6 @@ def test_optimiser_apply_rejects_explicit_empty_mode(tmp_path):
         output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
         input_frames=[_scored_online_df()],
         source_names=["scored"],
-        source_ids=["scored"],
     )
 
     assert detail["status"] == "error"
@@ -982,7 +1057,6 @@ def test_ratebook_apply_rejects_explicit_empty_optimised_value_column(tmp_path):
         },
         input_frames=[banded],
         source_names=["banded"],
-        source_ids=["banded"],
     )
 
     assert detail["status"] == "error"
@@ -1019,7 +1093,6 @@ def test_optimiser_apply_import_error_without_name_still_renders_safely(tmp_path
         output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
         input_frames=[_scored_online_df()],
         source_names=["scored"],
-        source_ids=["scored"],
     )
 
     assert detail["status"] == "error"

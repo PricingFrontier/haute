@@ -23,11 +23,11 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from functools import lru_cache
-from typing import Any
+from typing import Any, NamedTuple
 
 import polars as pl
 
-from haute._edge_join import build_edge_join_kwargs
+from haute._edge_join import build_edge_join_kwargs, resolve_edge_join_role_indices
 from haute._json_safe import (
     MAX_SAFE_INTEGER,
     non_finite_float_token,
@@ -36,6 +36,7 @@ from haute._json_safe import row_to_json_safe as _jsonify_row
 from haute._logging import get_logger
 from haute._python_syntax import StructuredSyntaxError, method_call_sites
 from haute._types import GraphNode, NodeType
+from haute.errors import ConfigError
 
 logger = get_logger(component="trace_correlation")
 
@@ -897,13 +898,58 @@ def _child_transform_may_reorder(child_node: GraphNode | None) -> bool:
 
 
 def _allows_relaxed_parent_match(
-    parent_id: str,
     child_node: GraphNode | None,
+    target_role: str | None,
 ) -> bool:
     """Edge-join right parents must not relax a miss into false lineage."""
     if child_node is None or child_node.data.nodeType != NodeType.EDGE_JOIN:
         return True
-    return parent_id != child_node.data.config.get("joinInput")
+    return target_role != "join"
+
+
+class EdgeJoinRoleEdge(NamedTuple):
+    """One physical incoming edge of an Edge Join, identified by its endpoint."""
+
+    source_id: str
+    source_handle: str | None
+    target_handle: str | None
+
+
+class EdgeJoinRoleEdges(NamedTuple):
+    """The one BASE and one JOIN physical edge of an Edge Join."""
+
+    base: EdgeJoinRoleEdge
+    join: EdgeJoinRoleEdge
+
+
+def edge_join_role_edges(
+    child_node: GraphNode,
+    edge_metadata: Mapping[tuple[str, str], Sequence[tuple[str | None, str | None]]] | None,
+) -> EdgeJoinRoleEdges:
+    """Return the one physical BASE and JOIN edge for an Edge Join.
+
+    Roles are properties of physical incoming edges, never persisted node
+    configuration.  Keeping the source handle here is essential when the
+    same multi-frame source feeds both ports.  The role rule itself is
+    :func:`haute._edge_join.resolve_edge_join_role_indices`; a violation is
+    re-raised as ``ValueError`` so correlation callers keep one error type.
+    """
+    physical = [
+        EdgeJoinRoleEdge(source_id, source_handle, target_handle)
+        for (source_id, target_id), edges in (edge_metadata or {}).items()
+        if target_id == child_node.id
+        for source_handle, target_handle in edges
+    ]
+    try:
+        base_index, join_index = resolve_edge_join_role_indices(
+            [edge.target_handle for edge in physical]
+        )
+    except ConfigError as exc:
+        raise ValueError(
+            f"edge-join node {child_node.id!r} requires exactly one physical 'base' "
+            f"edge and one physical 'join' edge; found {physical!r}"
+        ) from exc
+    return EdgeJoinRoleEdges(base=physical[base_index], join=physical[join_index])
 
 
 def _edge_join_key_pairs(join_kwargs: dict[str, Any]) -> list[tuple[str, str]]:
@@ -987,27 +1033,21 @@ def _edge_join_base_columns(
     *,
     child_node: GraphNode,
     base_id: str,
+    base_handle: str | None,
     eager_outputs: Mapping[str, Any],
-    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None,
 ) -> set[str]:
     """Resolve the columns emitted by an edge-join's base input."""
     base_output = eager_outputs.get(base_id)
     if isinstance(base_output, pl.DataFrame):
         return set(base_output.columns)
     if isinstance(base_output, dict):
-        handles = tuple((source_frames_of or {}).get((base_id, child_node.id), ()))
-        selected_frames = [
-            base_output[handle]
-            for handle in handles
-            if isinstance(handle, str) and isinstance(base_output.get(handle), pl.DataFrame)
-        ]
-        if selected_frames:
-            return {column for frame in selected_frames for column in frame.columns}
-        named_handles = [handle for handle in handles if handle is not None]
+        selected_frame = base_output.get(base_handle) if isinstance(base_handle, str) else None
+        if isinstance(selected_frame, pl.DataFrame):
+            return set(selected_frame.columns)
         raise ValueError(
             f"edge-join node {child_node.id!r} cannot correlate join parent because "
             f"multi-frame base parent {base_id!r} has no usable sourceHandle; "
-            f"configured handles={named_handles!r}, available frames={sorted(base_output)!r}"
+            f"base edge sourceHandle={base_handle!r}, available frames={sorted(base_output)!r}"
         )
     raise ValueError(
         f"edge-join node {child_node.id!r} has no materialized DataFrame output "
@@ -1021,7 +1061,8 @@ def _build_parent_match_row(
     parent_cols: set[str],
     child_node: GraphNode | None,
     eager_outputs: Mapping[str, Any],
-    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None = None,
+    edge_metadata: Mapping[tuple[str, str], Sequence[tuple[str | None, str | None]]] | None = None,
+    target_role: str | None = None,
 ) -> dict[str, Any]:
     """Project *child_row* onto *parent_id*'s columns for value matching.
 
@@ -1035,19 +1076,15 @@ def _build_parent_match_row(
     """
     if child_node is not None and child_node.data.nodeType == NodeType.EDGE_JOIN:
         config = child_node.data.config
-        base_id = config.get("baseInput")
-        join_id = config.get("joinInput")
-        if parent_id == join_id:
-            if not isinstance(base_id, str):
-                raise ValueError(
-                    f"edge-join node {child_node.id!r} has invalid baseInput "
-                    f"{base_id!r}; cannot correlate the join parent"
-                )
+        base_id, base_handle, _base_target_handle = edge_join_role_edges(
+            child_node, edge_metadata
+        ).base
+        if target_role == "join":
             base_columns = _edge_join_base_columns(
                 child_node=child_node,
                 base_id=base_id,
+                base_handle=base_handle,
                 eager_outputs=eager_outputs,
-                source_frames_of=source_frames_of,
             )
             return _edge_join_right_match_row(
                 child_row,
@@ -1055,11 +1092,10 @@ def _build_parent_match_row(
                 base_columns,
                 config,
             )
-        if parent_id != base_id:
+        if target_role != "base":
             raise ValueError(
-                f"node '{parent_id}' is wired as a parent of edge-join "
-                f"'{child_node.id}' but matches neither baseInput ({base_id!r}) "
-                f"nor joinInput ({join_id!r})"
+                f"node {parent_id!r} is wired as a parent of edge-join "
+                f"{child_node.id!r} but its edge role is {target_role!r}"
             )
     return {c: v for c, v in child_row.items() if c in parent_cols}
 
@@ -1074,7 +1110,8 @@ def _match_parent_row(
     child_id: str,
     node_map: Mapping[str, GraphNode],
     eager_outputs: Mapping[str, Any],
-    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None,
+    edge_metadata: Mapping[tuple[str, str], Sequence[tuple[str | None, str | None]]] | None,
+    target_role: str | None = None,
     diagnostics: list[dict[str, Any]] | None,
     work: CorrelationWork | None = None,
 ) -> tuple[dict[str, Any] | None, int, int]:
@@ -1097,7 +1134,8 @@ def _match_parent_row(
         parent_cols,
         child_node,
         eager_outputs,
-        source_frames_of,
+        edge_metadata,
+        target_role,
     )
 
     # Fast path: same row count → likely 1:1 (with_columns, rename, select).
@@ -1148,10 +1186,27 @@ def _match_parent_row(
         diagnostics=diagnostics,
         node_id=parent_id,
         child_node_id=child_id,
-        allow_relaxed=_allows_relaxed_parent_match(parent_id, child_node),
+        allow_relaxed=_allows_relaxed_parent_match(child_node, target_role),
         work=work,
     )
     return row_dict, idx, len(match_row)
+
+
+class _FrameCandidate(NamedTuple):
+    """A non-empty frame of a multi-frame parent reachable through one edge."""
+
+    handle: str
+    target_role: str | None
+    frame: pl.DataFrame
+
+
+class _FrameMatch(NamedTuple):
+    """A candidate frame that confidently identified a parent row."""
+
+    candidate: _FrameCandidate
+    row: dict[str, Any]
+    row_index: int
+    width: int
 
 
 def _resolve_multi_frame_parent(
@@ -1159,20 +1214,21 @@ def _resolve_multi_frame_parent(
     *,
     parent_id: str,
     child_id: str,
-    handles: Sequence[str | None] | None,
+    edges: Sequence[tuple[str | None, str | None]] | None,
     traced_column: str | None,
     child_row: dict[str, Any],
     child_row_idx: int,
     child_len: int,
     node_map: Mapping[str, GraphNode],
     eager_outputs: Mapping[str, Any],
-    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None,
+    edge_metadata: Mapping[tuple[str, str], Sequence[tuple[str | None, str | None]]] | None,
     diagnostics: list[dict[str, Any]] | None,
     work: CorrelationWork | None = None,
 ) -> tuple[dict[str, Any] | None, int]:
     """Correlate a multi-frame parent (``dict[label, DataFrame]``) row.
 
-    *handles* carries ONE entry per edge between parent and child (a
+    *edges* carries ONE ``(sourceHandle, targetHandle)`` pair per physical
+    edge between parent and child (a
     multi-frame source can feed the same child through several edges,
     each consuming a distinct frame), so resolution is per-edge: every
     candidate frame is matched against the resolved child row, and only
@@ -1182,15 +1238,14 @@ def _resolve_multi_frame_parent(
     set). A surviving tie remains unresolved and is recorded as a
     diagnostic rather than guessing between frames.
     """
-    seen: set[str] = set()
-    candidates: list[tuple[str, pl.DataFrame]] = []
-    for handle in handles or ():
-        if handle is None or handle in seen:
+    source_handles = {handle for handle, _target_role in edges or () if handle is not None}
+    candidates: list[_FrameCandidate] = []
+    for handle, target_role in edges or ():
+        if handle is None:
             continue
-        seen.add(handle)
         frame = frames.get(handle)
         if frame is not None and len(frame) > 0:
-            candidates.append((handle, frame))
+            candidates.append(_FrameCandidate(handle, target_role, frame))
 
     if not candidates:
         if diagnostics is not None:
@@ -1210,7 +1265,7 @@ def _resolve_multi_frame_parent(
                     "ignored_columns": [],
                     "matched_row_count": 0,
                     "matched_row_indices": [],
-                    "source_handles": sorted(seen),
+                    "source_handles": sorted(source_handles),
                     "frames": sorted(frames.keys()),
                 }
             )
@@ -1218,7 +1273,7 @@ def _resolve_multi_frame_parent(
 
     if len(candidates) == 1:
         row_dict, idx, _ = _match_parent_row(
-            candidates[0][1],
+            candidates[0].frame,
             parent_id=parent_id,
             child_row=child_row,
             child_row_idx=child_row_idx,
@@ -1226,7 +1281,8 @@ def _resolve_multi_frame_parent(
             child_id=child_id,
             node_map=node_map,
             eager_outputs=eager_outputs,
-            source_frames_of=source_frames_of,
+            edge_metadata=edge_metadata,
+            target_role=candidates[0].target_role,
             diagnostics=diagnostics,
             work=work,
         )
@@ -1235,10 +1291,10 @@ def _resolve_multi_frame_parent(
     # Several edges consume distinct frames of this parent — match each
     # candidate frame independently (suppressing per-candidate ambiguity
     # noise) and keep the frames that confidently identify a row.
-    matches: list[tuple[str, pl.DataFrame, dict[str, Any], int, int]] = []
-    for handle, frame in candidates:
+    matches: list[_FrameMatch] = []
+    for candidate in candidates:
         row_dict, idx, width = _match_parent_row(
-            frame,
+            candidate.frame,
             parent_id=parent_id,
             child_row=child_row,
             child_row_idx=child_row_idx,
@@ -1246,12 +1302,13 @@ def _resolve_multi_frame_parent(
             child_id=child_id,
             node_map=node_map,
             eager_outputs=eager_outputs,
-            source_frames_of=source_frames_of,
+            edge_metadata=edge_metadata,
+            target_role=candidate.target_role,
             diagnostics=None,
             work=work,
         )
         if row_dict is not None:
-            matches.append((handle, frame, row_dict, idx, width))
+            matches.append(_FrameMatch(candidate, row_dict, idx, width))
 
     if not matches:
         if diagnostics is not None:
@@ -1271,7 +1328,7 @@ def _resolve_multi_frame_parent(
                     "ignored_columns": [],
                     "matched_row_count": 0,
                     "matched_row_indices": [],
-                    "source_handles": [handle for handle, _ in candidates],
+                    "source_handles": [candidate.handle for candidate in candidates],
                     "frames": sorted(frames.keys()),
                 }
             )
@@ -1279,12 +1336,12 @@ def _resolve_multi_frame_parent(
 
     picked = matches
     if traced_column is not None:
-        with_column = [m for m in picked if traced_column in m[1].columns]
+        with_column = [m for m in picked if traced_column in m.candidate.frame.columns]
         if with_column:
             picked = with_column
     if len(picked) > 1:
-        best_width = max(m[4] for m in picked)
-        picked = [m for m in picked if m[4] == best_width]
+        best_width = max(m.width for m in picked)
+        picked = [m for m in picked if m.width == best_width]
     if len(picked) > 1:
         if work is not None:
             work.ambiguity_count += 1
@@ -1297,7 +1354,7 @@ def _resolve_multi_frame_parent(
                     "message": (
                         f"Row correlation for multi-frame node {parent_id!r} for child "
                         f"{child_id!r} matched several frames "
-                        f"({[m[0] for m in picked]}); no frame was selected."
+                        f"({[m.candidate.handle for m in picked]}); no frame was selected."
                     ),
                     "node_id": parent_id,
                     "child_node_id": child_id,
@@ -1306,12 +1363,11 @@ def _resolve_multi_frame_parent(
                     "ignored_columns": [],
                     "matched_row_count": len(picked),
                     "matched_row_indices": [],
-                    "candidates": [m[0] for m in picked],
+                    "candidates": [m.candidate.handle for m in picked],
                 }
             )
         return None, -1
-    _, _, row_dict, idx, _ = picked[0]
-    return row_dict, idx
+    return picked[0].row, picked[0].row_index
 
 
 def _ensure_unresolved_diagnostic(
@@ -1364,7 +1420,7 @@ def _correlate_rows_posthoc(
     node_map: Mapping[str, GraphNode],
     diagnostics: list[dict[str, Any]] | None = None,
     unresolved: dict[str, tuple[str, int]] | None = None,
-    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None = None,
+    edge_metadata: Mapping[tuple[str, str], Sequence[tuple[str | None, str | None]]] | None = None,
     traced_column: str | None = None,
     work: CorrelationWork | None = None,
 ) -> dict[str, dict[str, Any] | None]:
@@ -1377,8 +1433,9 @@ def _correlate_rows_posthoc(
     edge-join children can route suffixed/colliding columns to the
     correct parent (see :func:`_build_parent_match_row`).
 
-    *source_frames_of* maps a (source, target) node pair to the
-    ``sourceHandle`` of EVERY edge between them, in edge order — the
+    *edge_metadata* maps a (source, target) node pair to the
+    ``(sourceHandle, targetHandle)`` of EVERY physical edge between them,
+    in edge order — the
     per-edge frame selection ``_pick_source_frame`` makes at execution
     time for multi-frame sources.  *traced_column* (the column the user
     is tracing, if any) disambiguates when several frames of one source
@@ -1454,14 +1511,14 @@ def _correlate_rows_posthoc(
                 parent_df,
                 parent_id=nid,
                 child_id=resolved_child_id,
-                handles=(source_frames_of or {}).get((nid, resolved_child_id)),
+                edges=(edge_metadata or {}).get((nid, resolved_child_id)),
                 traced_column=traced_column,
                 child_row=child_row,
                 child_row_idx=child_row_idx,
                 child_len=child_len,
                 node_map=node_map,
                 eager_outputs=eager_outputs,
-                source_frames_of=source_frames_of,
+                edge_metadata=edge_metadata,
                 diagnostics=diagnostics,
                 work=work,
             )
@@ -1492,6 +1549,8 @@ def _correlate_rows_posthoc(
         # a *different* parent (via a join) from confusing the value
         # matcher.  (Both steps live in _match_parent_row.)
         diagnostic_start = len(diagnostics) if diagnostics is not None else 0
+        edge_roles = (edge_metadata or {}).get((nid, resolved_child_id), ())
+        target_role = edge_roles[0][1] if len(edge_roles) == 1 else None
         row_dict, idx, _ = _match_parent_row(
             parent_df,
             parent_id=nid,
@@ -1501,7 +1560,8 @@ def _correlate_rows_posthoc(
             child_id=resolved_child_id,
             node_map=node_map,
             eager_outputs=eager_outputs,
-            source_frames_of=source_frames_of,
+            edge_metadata=edge_metadata,
+            target_role=target_role,
             diagnostics=diagnostics,
             work=work,
         )

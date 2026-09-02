@@ -44,6 +44,7 @@ import type { Node, Edge } from "@xyflow/react"
 import useTracing from "../useTracing"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { makeNode, makeEdge } from "../../test-utils/factories"
+import type { NodeStatus } from "../../types/node"
 
 vi.mock("@xyflow/react", async () => {
   const actual = await vi.importActual("@xyflow/react")
@@ -75,7 +76,7 @@ function makeParams(overrides: Partial<TracingParams> = {}): TracingParams {
     submodels: {},
     submodelsRef: { current: {} },
     preambleRef: { current: "" },
-    nodeStatuses: {} as Record<string, "ok" | "error" | "running">,
+    nodeStatuses: {} as Record<string, NodeStatus>,
     hoveredNodeId: null,
     ...overrides,
   }
@@ -297,7 +298,7 @@ describe("nodesWithStatus memoization (#96)", () => {
     // Build 200 nodes: n_0 .. n_199, no edges.
     const nodes: Node[] = Array.from({ length: 200 }, (_, i) => makeNode(`n_${i}`))
     const edges: Edge[] = []
-    const initialStatuses: Record<string, "ok" | "error" | "running"> = {}
+    const initialStatuses: Record<string, NodeStatus> = {}
     for (const n of nodes) initialStatuses[n.id] = "ok"
 
     const params: TracingParams = makeParams({

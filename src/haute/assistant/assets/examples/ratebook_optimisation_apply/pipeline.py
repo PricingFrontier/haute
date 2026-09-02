@@ -44,7 +44,6 @@ def applied(factors: pl.LazyFrame) -> pl.LazyFrame:
         config="config/apply.json",
         base_dir=Path(__file__).parent,
         source_names=["factors"],
-        source_ids=["factors"],
     )
 
 

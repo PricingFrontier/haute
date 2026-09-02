@@ -558,27 +558,11 @@ def test_public_input_port_can_fan_out_to_ordered_targets() -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    ("node_type", "field"),
-    [
-        (NodeType.POLARS, "instanceOf"),
-        (NodeType.OPTIMISER, "data_input"),
-        (NodeType.OPTIMISER, "banding_source"),
-        (NodeType.OPTIMISER, "scored_input"),
-        (NodeType.OPTIMISER, "factors_input"),
-        (NodeType.OPTIMISER_APPLY, "ratebook_input"),
-        (NodeType.EDGE_JOIN, "baseInput"),
-        (NodeType.EDGE_JOIN, "joinInput"),
-    ],
-)
-def test_schema_declared_node_references_are_qualified(
-    node_type: NodeType,
-    field: str,
-) -> None:
+def test_schema_declared_instance_reference_is_qualified() -> None:
     child = PipelineGraph(
         nodes=[
             _node("referenced"),
-            _node("consumer", node_type, config={field: "referenced"}),
+            _node("consumer", config={"instanceOf": "referenced"}),
         ],
         edges=[],
     )
@@ -592,10 +576,119 @@ def test_schema_declared_node_references_are_qualified(
     result = flatten_graph(graph)
 
     consumer = result.node_map[qualified_runtime_node_id("instance_a", "consumer")]
-    assert consumer.data.config[field] == qualified_runtime_node_id(
+    assert consumer.data.config["instanceOf"] == qualified_runtime_node_id(
         "instance_a",
         "referenced",
     )
+
+
+@pytest.mark.parametrize(
+    ("node_type", "field"),
+    [
+        (NodeType.OPTIMISER, "data_input"),
+        (NodeType.OPTIMISER, "banding_source"),
+        (NodeType.OPTIMISER_APPLY, "ratebook_input"),
+    ],
+)
+def test_exact_input_selectors_are_not_rewritten_as_node_ids(
+    node_type: NodeType,
+    field: str,
+) -> None:
+    child = PipelineGraph(
+        nodes=[
+            _node("referenced"),
+            _node("consumer", node_type, config={field: "referenced"}),
+        ],
+        edges=[GraphEdge(id="selected", source="referenced", target="consumer")],
+    )
+    definition = _definition(graph=child, input_ports=[], output_ports=[])
+    graph = PipelineGraph(
+        nodes=[_instance("instance_a", "scoring")],
+        edges=[],
+        submodels={"definition_scoring": definition},
+    )
+
+    result = flatten_graph(graph)
+
+    consumer = result.node_map[qualified_runtime_node_id("instance_a", "consumer")]
+    assert consumer.data.config[field] == "referenced"
+
+
+def test_flatten_rewrites_public_input_selector_to_exact_external_frame_name() -> None:
+    child = PipelineGraph(
+        nodes=[_node("consumer", NodeType.OPTIMISER, config={"data_input": "quotes"})],
+        edges=[],
+    )
+    definition = _definition(
+        graph=child,
+        input_ports=[
+            SubmodelInputPort(
+                port_id="quotes",
+                label="Quotes",
+                targets=[SubmodelEndpoint(node_id="consumer")],
+            )
+        ],
+        output_ports=[],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _node("request", NodeType.API_INPUT, label="Quote Input"),
+            _instance("instance_a", "scoring"),
+        ],
+        edges=[
+            GraphEdge(
+                id="input",
+                source="request",
+                target="instance_a",
+                sourceHandle="quote_info",
+                targetHandle="in__quotes",
+            )
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    result = flatten_graph(graph)
+
+    consumer = result.node_map[qualified_runtime_node_id("instance_a", "consumer")]
+    assert consumer.data.config["data_input"] == "quote_info"
+
+
+def test_flatten_rewrites_public_output_selector_to_exact_internal_source_name() -> None:
+    child = PipelineGraph(nodes=[_node("output", label="Internal Output")], edges=[])
+    definition = _definition(
+        graph=child,
+        input_ports=[],
+        output_ports=[
+            SubmodelOutputPort(
+                port_id="results",
+                label="Results",
+                source=SubmodelEndpoint(node_id="output"),
+            )
+        ],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _instance("instance_a", "score"),
+            _node(
+                "consumer",
+                NodeType.OPTIMISER_APPLY,
+                config={"ratebook_input": "score__results"},
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                id="output",
+                source="instance_a",
+                target="consumer",
+                sourceHandle="out__results",
+            )
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    result = flatten_graph(graph)
+
+    assert result.node_map["consumer"].data.config["ratebook_input"] == "Internal_Output"
 
 
 def test_stale_schema_declared_node_reference_fails_loudly() -> None:

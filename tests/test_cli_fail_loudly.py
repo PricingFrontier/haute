@@ -471,6 +471,7 @@ class TestServePortConflictDetection:
                 "haute.cli._serve._find_frontend_dir",
                 side_effect=FileNotFoundError("no frontend/ anywhere"),
             ),
+            patch("haute.cli._serve._source_checkout_root", return_value=None),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run") as mock_uvicorn_run,
         ):
@@ -522,6 +523,7 @@ class TestServePortConflictDetection:
                 "haute.cli._serve._find_frontend_dir",
                 side_effect=FileNotFoundError("no frontend/ anywhere"),
             ),
+            patch("haute.cli._serve._source_checkout_root", return_value=None),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run") as mock_uvicorn_run,
         ):

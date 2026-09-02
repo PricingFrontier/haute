@@ -12,6 +12,8 @@ You've generated candidate prices with the Scenario Expander. Now you want to fi
 | Config | Description |
 |---|---|
 | `mode` | **Required.** `"online"` or `"ratebook"` |
+| `data_input` | The exact input name of the connected edge carrying the scored, scenario-expanded data. **Required** when more than one input is connected; a sole connected input is used as-is. |
+| `banding_source` | The exact input name of the connected [Banding](banding.md) edge that supplies rating-factor levels. **Required** in `"ratebook"` mode. |
 | `quote_id` | **Required.** Column identifying each quote |
 | `scenario_index` | **Required.** Column with the scenario step index (created by [Scenario Expander](scenario-expander.md)) |
 | `scenario_value` | **Required.** Column with the scenario value (created by [Scenario Expander](scenario-expander.md)) |

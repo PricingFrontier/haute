@@ -82,11 +82,13 @@ function findEdge(graph: NormalizedGraph, source: string, target: string): Graph
 }
 
 function findEdgeJoin(graph: NormalizedGraph, joinSource: string): GraphNode {
-  const node = graph.nodes.find(
-    (candidate) =>
-      candidate.data.nodeType === "edgeJoin" && candidate.data.config?.joinInput === joinSource,
+  const joinEdge = graph.edges.find(
+    (edge) => edge.source === joinSource && edge.targetHandle === "join",
   )
-  if (!node) throw new Error(`Missing Edge Join whose joinInput is ${joinSource}`)
+  const node = graph.nodes.find(
+    (candidate) => candidate.data.nodeType === "edgeJoin" && candidate.id === joinEdge?.target,
+  )
+  if (!node) throw new Error(`Missing Edge Join with incoming join edge from ${joinSource}`)
   return node
 }
 
@@ -294,7 +296,7 @@ async function saveAndCapture(page: Page): Promise<{ request: Request; graph: No
 
 function expectJoinTopology(graph: NormalizedGraph, join: GraphNode, base: string, source: string, downstream: string): void {
   const config = join.data.config
-  expect(config, `${join.id} has edge join config`).toMatchObject({ baseInput: base, joinInput: source, how: "left", on: ["id"] })
+  expect(config, `${join.id} has edge join config`).toMatchObject({ how: "left", on: ["id"] })
   const incoming = graph.edges.filter((edge) => edge.target === join.id)
   expect(incoming, `${join.id} has exactly its base and join role inputs`).toHaveLength(2)
   expect(incoming.find((edge) => edge.source === base && edge.targetHandle === "base"), "base role edge").toBeDefined()

@@ -29,24 +29,30 @@ import { useGraph } from "./useGraph"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import OptimiserConstraintSettings, { type FrontierRangeConfig } from "./optimiser/OptimiserConstraintSettings"
 import OptimiserSolveStatus from "./optimiser/OptimiserSolveStatus"
+import { edgeInputName } from "../utils/apiInputPorts"
 
 // ─── Banding factor extraction ───
 
-type BandingNodeInfo = { id: string; label: string }
-type InputNodeInfo = { id: string; label: string; nodeType: string }
+/** One connected incoming edge, identified by its exact executable input name. */
+type BandingNodeInfo = { name: string; label: string; nodeType: string; sourceNodeId: string }
+type InputNodeInfo = BandingNodeInfo
 
 /** List all nodes that are direct inputs to a given node. */
 function findInputNodes(
   nodeId: string,
   allNodes: SimpleNode[],
   edges: SimpleEdge[],
+  submodels?: Record<string, unknown>,
 ): InputNodeInfo[] {
-  const sourceIds = edges.filter(e => e.target === nodeId).map(e => e.source)
   const nodeMap = new Map(allNodes.map(n => [n.id, n]))
-  return sourceIds
-    .map(id => nodeMap.get(id))
-    .filter((n): n is SimpleNode => !!n)
-    .map(n => ({ id: n.id, label: n.data.label || n.id, nodeType: n.data.nodeType }))
+  return edges.filter((edge) => edge.target === nodeId)
+    .map((edge) => {
+      const source = nodeMap.get(edge.source)
+      if (!source) return null
+      const name = edgeInputName(edge, source, submodels)
+      return { name, label: name, nodeType: source.data.nodeType, sourceNodeId: source.id }
+    })
+    .filter((item): item is InputNodeInfo => item !== null)
 }
 
 /** List banding nodes among the inputs to a given node. */
@@ -54,10 +60,10 @@ function findInputBandingNodes(
   nodeId: string,
   allNodes: SimpleNode[],
   edges: SimpleEdge[],
+  submodels?: Record<string, unknown>,
 ): BandingNodeInfo[] {
-  return findInputNodes(nodeId, allNodes, edges)
+  return findInputNodes(nodeId, allNodes, edges, submodels)
     .filter(n => n.nodeType === NODE_TYPES.BANDING)
-    .map(({ id, label }) => ({ id, label }))
 }
 
 type OptimiserConfigProps = {
@@ -94,12 +100,6 @@ function solveFailureStatus(error: unknown, message: string): SolveProgress | un
 
 function singleFactorColumnsFromLevels(levels: Record<string, string[]>): string[][] {
   return Object.keys(levels).sort().map(name => [name])
-}
-
-function columnsForNode(nodes: SimpleNode[], nodeId: string): { name: string; dtype: string }[] {
-  const node = nodes.find(n => n.id === nodeId)
-  const columns = (node?.data as Record<string, unknown> | undefined)?._columns
-  return Array.isArray(columns) ? columns as { name: string; dtype: string }[] : []
 }
 
 export default function OptimiserConfig({
@@ -153,24 +153,29 @@ export default function OptimiserConfig({
 
   // Input nodes connected to this optimiser
   const inputNodes = useMemo(
-    () => nodeId ? findInputNodes(nodeId, allNodes, edges) : [],
-    [nodeId, allNodes, edges],
+    () => nodeId ? findInputNodes(nodeId, allNodes, edges, submodels) : [],
+    [nodeId, allNodes, edges, submodels],
   )
 
   // Data input selection — which connected input provides objectives & constraints
-  const dataInput = configField(config, "data_input", "")
-  // Prefer the configured data-input node's cached columns so multi-input
-  // optimisers do not mix factor-table fields into objective/constraint menus.
-  // Fall back to the panel's upstream column union until that node has schema.
-  const selectedDataInputColumns = useMemo(
-    () => dataInput ? columnsForNode(allNodes, dataInput) : [],
-    [allNodes, dataInput],
-  )
-  const fallbackDataInputColumns = selectedDataInputColumns.length > 0
-    ? selectedDataInputColumns
-    : upstreamColumns
+  const rawDataInput = config.data_input
+  const malformedDataInput = rawDataInput !== undefined
+    && rawDataInput !== null
+    && typeof rawDataInput !== "string"
+  const dataInput = typeof rawDataInput === "string" ? rawDataInput : ""
+  const selectedDataInput = inputNodes.find(input => input.name === dataInput)
+  const missingExplicitDataInput = malformedDataInput || (!!dataInput && !selectedDataInput)
+  const hasResolvableDataInput = !malformedDataInput
+    && (!!selectedDataInput || (!dataInput && inputNodes.length === 1))
+  // Preview the optimiser itself so execution follows its exact selected edge.
+  // The upstream column union is safe only when there is exactly one resolvable
+  // input; a multi-input union would mix data and factor-table fields.
+  const fallbackDataInputColumns = hasResolvableDataInput && inputNodes.length === 1
+    ? upstreamColumns
+    : []
   const hasDataInputColumns = fallbackDataInputColumns.length > 0
-  const fetchedDataInputColumns = useDataInputColumns(dataInput, allNodes, edges, submodels, undefined, {
+  const previewTargetId = hasResolvableDataInput ? nodeId : ""
+  const fetchedDataInputColumns = useDataInputColumns(previewTargetId, allNodes, edges, submodels, undefined, {
     enabled: !hasDataInputColumns && !deferColumnFetch,
     fallbackColumns: fallbackDataInputColumns,
   })
@@ -274,17 +279,26 @@ export default function OptimiserConfig({
 
   // Banding node selection — only from connected inputs
   const bandingNodes = useMemo(
-    () => nodeId ? findInputBandingNodes(nodeId, allNodes, edges) : [],
-    [nodeId, allNodes, edges],
+    () => nodeId ? findInputBandingNodes(nodeId, allNodes, edges, submodels) : [],
+    [nodeId, allNodes, edges, submodels],
   )
-  const bandingSource = configField(config, "banding_source", "").trim()
-  const selectedBandingNode = bandingNodes.find(node => node.id === bandingSource)
-  const missingExplicitBandingSource = !!bandingSource && !selectedBandingNode
-  const effectiveBandingSource = selectedBandingNode?.id || (!bandingSource && bandingNodes.length === 1 ? bandingNodes[0].id : "")
+  const rawBandingSource = config.banding_source
+  const malformedBandingSource = rawBandingSource !== undefined
+    && rawBandingSource !== null
+    && typeof rawBandingSource !== "string"
+  const bandingSource = typeof rawBandingSource === "string" ? rawBandingSource : ""
+  const selectedBandingNode = bandingNodes.find(node => node.name === bandingSource)
+  const missingExplicitBandingSource = malformedBandingSource
+    || (!!bandingSource && !selectedBandingNode)
+  const effectiveBandingNode = selectedBandingNode
+    ?? (!malformedBandingSource && !bandingSource && bandingNodes.length === 1
+      ? bandingNodes[0]
+      : undefined)
+  const effectiveBandingSource = effectiveBandingNode?.name ?? ""
 
   const bandingClassification = useMemo(
-    () => classifyBandingNode(allNodes.find(node => node.id === effectiveBandingSource), { includeDefault: true }),
-    [allNodes, effectiveBandingSource],
+    () => classifyBandingNode(allNodes.find(node => node.id === effectiveBandingNode?.sourceNodeId), { includeDefault: true }),
+    [allNodes, effectiveBandingNode?.sourceNodeId],
   )
   const bandingLevels = bandingClassification.levels
   const bandingFactorNames = useMemo(() => Object.keys(bandingLevels).sort(), [bandingLevels])
@@ -342,19 +356,21 @@ export default function OptimiserConfig({
   ])
 
   // When banding source changes, auto-select all its factors
-  const handleBandingSourceChange = useCallback((bandingNodeId: string) => {
+  const handleBandingSourceChange = useCallback((inputName: string) => {
+    const sourceNodeId = bandingNodes.find(node => node.name === inputName)?.sourceNodeId
     const levels = classifyBandingNode(
-      allNodes.find(node => node.id === bandingNodeId),
+      allNodes.find(node => node.id === sourceNodeId),
       { includeDefault: true },
     ).levels
     onUpdate({
-      banding_source: bandingNodeId,
+      banding_source: inputName,
       factor_columns: singleFactorColumnsFromLevels(levels),
     })
-  }, [allNodes, onUpdate])
+  }, [allNodes, bandingNodes, onUpdate])
 
-  const canSolve = !!objective &&
-    (mode !== "ratebook" || factorColumns.length > 0)
+  const canSolve = !!objective && hasResolvableDataInput && (
+    mode !== "ratebook" || (!!selectedBandingNode && factorColumns.length > 0)
+  )
 
   return (
     <div className="px-4 py-3 space-y-4">
@@ -391,13 +407,34 @@ export default function OptimiserConfig({
               style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
             >
               <option value="">Select input...</option>
+              {missingExplicitDataInput && dataInput && <option value={dataInput}>Missing input</option>}
               {inputNodes.map(n => (
-                <option key={n.id} value={n.id}>{n.label}</option>
+                <option key={n.name} value={n.name}>{n.label}</option>
               ))}
             </select>
           ) : (
             <div className="mt-0.5 text-[11px] py-2 text-center" style={{ color: "var(--text-muted)" }}>
               No inputs connected.
+            </div>
+          )}
+          {!missingExplicitDataInput && !dataInput && inputNodes.length > 1 && (
+            <div className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+              Select the Objectives &amp; Constraints input to enable solving.
+            </div>
+          )}
+          {missingExplicitDataInput && (
+            <div
+              role="alert"
+              className="mt-1 px-2.5 py-1.5 rounded text-[11px]"
+              style={{
+                color: "var(--warning-strong)",
+                background: "var(--warning-soft)",
+                border: "1px solid var(--warning-border)",
+              }}
+            >
+              {malformedDataInput
+                ? "The configured Objectives & Constraints input must be an input name."
+                : "The configured Objectives & Constraints input is not connected."}
             </div>
           )}
         </div>
@@ -431,13 +468,17 @@ export default function OptimiserConfig({
             {bandingNodes.length > 0 ? (
               <select
                 aria-label="Rating Factor Source"
-                value={effectiveBandingSource}
+                value={bandingSource}
                 onChange={(e) => handleBandingSourceChange(e.target.value)}
                 className="w-full mt-1 px-2.5 py-1.5 rounded-lg text-xs"
                 style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
               >
+                <option value="">Select input...</option>
+                {missingExplicitBandingSource && bandingSource && (
+                  <option value={bandingSource}>Missing input</option>
+                )}
                 {bandingNodes.map(bn => (
-                  <option key={bn.id} value={bn.id}>{bn.label}</option>
+                  <option key={bn.name} value={bn.name}>{bn.label}</option>
                 ))}
               </select>
             ) : (
@@ -447,6 +488,11 @@ export default function OptimiserConfig({
             )}
           </div>
 
+          {!missingExplicitBandingSource && !bandingSource && bandingNodes.length > 1 && (
+            <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+              Select a Rating Factor Source to enable solving.
+            </div>
+          )}
           {(missingExplicitBandingSource || bandingClassification.zeroLevelOutputs.length > 0) && (
             <div
               role="alert"
@@ -458,7 +504,9 @@ export default function OptimiserConfig({
             >
               {[
                 missingExplicitBandingSource
-                  ? `Selected Banding source ${bandingSource} is no longer directly connected.`
+                  ? malformedBandingSource
+                    ? "The configured Rating Factor Source must be an input name."
+                    : `Selected Banding source ${bandingSource} is no longer directly connected.`
                   : null,
                 bandingClassification.zeroLevelOutputs.length > 0
                   ? `Banding outputs ${bandingClassification.zeroLevelOutputs.join(", ")} have no valid levels. Add labelled rules before selecting them.`

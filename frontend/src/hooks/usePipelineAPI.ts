@@ -24,7 +24,7 @@ import useUIStore from "../stores/useUIStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
 import { effectiveNodeType, nodeData } from "../types/node"
-import type { PipelineEdge } from "../types/node"
+import type { NodeStatus, PipelineEdge } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import {
   adaptPipelineEditorDocument,
@@ -38,6 +38,7 @@ import {
   type DrilledOccurrenceIdentity,
 } from "../utils/submodelRuntimeTarget"
 import { ensureInputSnapshots } from "./ensureInputSnapshots"
+import { executionWarningNodeIds } from "../utils/executionDiagnostics"
 export { columnFingerprint } from "../utils/columnFingerprint"
 
 interface PipelineAPIParams {
@@ -66,7 +67,7 @@ export interface PipelineAPIReturn {
   previewData: PreviewData | null
   setPreviewData: React.Dispatch<React.SetStateAction<PreviewData | null>>
   previewBusy: boolean
-  nodeStatuses: Record<string, "ok" | "error" | "running">
+  nodeStatuses: Record<string, NodeStatus>
   fetchPreview: (node: Node, options?: FetchPreviewOptions) => void
   cancelPreview: () => void
   /** Refresh: lazily preview upstream nodes missing _columns, then preview the target node. */
@@ -273,6 +274,30 @@ function applyPreviewResultColumnsToNodes(nodes: Node[], nodeId: string, result:
   return applyPreviewColumnsToNodes(mapped, nodeId, result.columns as ColumnDef[], result, source)
 }
 
+function canvasNodeStatuses(result: NodeResult, requestedNodeId: string): Record<string, NodeStatus> {
+  const statuses: Record<string, NodeStatus> = { ...(result.node_statuses ?? {}) }
+  const promoteWarning = (nodeId: string) => {
+    if (statuses[nodeId] === "ok") statuses[nodeId] = "warning"
+  }
+
+  for (const [nodeId, warnings] of Object.entries(result.node_schema_warnings ?? {})) {
+    if (warnings.length > 0) promoteWarning(nodeId)
+  }
+  if ((result.schema_warnings?.length ?? 0) > 0) {
+    promoteWarning(requestedNodeId)
+  }
+
+  const executionWarningIds = executionWarningNodeIds(
+    result.execution_metrics,
+    requestedNodeId,
+  )
+  for (const nodeId of executionWarningIds) {
+    promoteWarning(nodeId)
+  }
+
+  return statuses
+}
+
 /**
  * Drop column stashes whose capture source no longer matches the active
  * source. The stash is a cache keyed (implicitly) by node id; the active
@@ -338,7 +363,7 @@ export default function usePipelineAPI({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [previewData, setPreviewData] = useState<PreviewData | null>(null)
   const [previewBusy, setPreviewBusy] = useState(false)
-  const [nodeStatuses, setNodeStatuses] = useState<Record<string, "ok" | "error" | "running">>({})
+  const [nodeStatuses, setNodeStatuses] = useState<Record<string, NodeStatus>>({})
   const previewAbort = useRef<AbortController | null>(null)
   const previewDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
   const previewRequestSeq = useRef(0)
@@ -756,7 +781,7 @@ export default function usePipelineAPI({
         // Cache the result for next time
         storePreview(node.id, preview, structuralVersion, snapshotSource, snapshotRowLimit)
         if (result.node_statuses) {
-          setNodeStatuses(result.node_statuses)
+          setNodeStatuses(canvasNodeStatuses(result, node.id))
         }
         if (result.columns) {
           const oldColumns = nodeData(node)._columns

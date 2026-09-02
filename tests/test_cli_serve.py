@@ -52,6 +52,7 @@ class TestServe:
                 "haute.cli._serve._find_frontend_dir",
                 side_effect=FileNotFoundError("no frontend/ anywhere"),
             ),
+            patch("haute.cli._serve._source_checkout_root", return_value=None),
             patch("haute.server.STATIC_DIR", tmp_path / "nonexistent"),
         ):
             result = runner.invoke(cli, ["serve", "--no-browser"])
@@ -80,6 +81,7 @@ class TestServe:
                 "haute.cli._serve._find_frontend_dir",
                 side_effect=FileNotFoundError("no frontend/ anywhere"),
             ),
+            patch("haute.cli._serve._source_checkout_root", return_value=None),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run") as mock_run,
         ):
@@ -152,6 +154,26 @@ class TestServe:
             frontend.mkdir()
             (frontend / "package.json").write_text("{}")
             assert serve_mod._source_checkout_root() == tmp_path
+
+    def test_dev_frontend_falls_back_to_editable_source_checkout(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Serving another project with editable Haute must use Haute's source UI."""
+        source_root = tmp_path / "haute-source"
+        frontend = source_root / "frontend"
+        frontend.mkdir(parents=True)
+        (frontend / "package.json").write_text("{}")
+        (frontend / "node_modules").mkdir()
+
+        with (
+            patch(
+                "haute.cli._serve._find_frontend_dir",
+                side_effect=FileNotFoundError("no frontend/ near the user project"),
+            ),
+            patch("haute.cli._serve._source_checkout_root", return_value=source_root),
+        ):
+            assert serve_mod._detect_dev_frontend_dir() == frontend
 
     def test_ipv6_loopback_uses_ipv6_probe_socket(self) -> None:
         """The port probe must match IPv6 hosts such as ``::1``."""
@@ -341,6 +363,7 @@ class TestServe:
                 "haute.cli._serve._find_frontend_dir",
                 side_effect=FileNotFoundError("no frontend/ anywhere"),
             ),
+            patch("haute.cli._serve._source_checkout_root", return_value=None),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run") as mock_run,
         ):
@@ -370,6 +393,7 @@ class TestServe:
                 "haute.cli._serve._find_frontend_dir",
                 side_effect=FileNotFoundError("no frontend/ anywhere"),
             ),
+            patch("haute.cli._serve._source_checkout_root", return_value=None),
             patch("haute.cli._serve._port_is_available", return_value=True),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run") as mock_run,
@@ -464,6 +488,7 @@ class TestServe:
                 "haute.cli._serve._find_frontend_dir",
                 side_effect=FileNotFoundError("no frontend/ anywhere"),
             ),
+            patch("haute.cli._serve._source_checkout_root", return_value=None),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run") as mock_run,
             patch("threading.Timer", return_value=mock_timer) as timer_cls,
@@ -496,6 +521,7 @@ class TestServe:
                 "haute.cli._serve._find_frontend_dir",
                 side_effect=FileNotFoundError("no frontend/ anywhere"),
             ),
+            patch("haute.cli._serve._source_checkout_root", return_value=None),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run"),
             patch("threading.Timer", return_value=mock_timer) as timer_cls,

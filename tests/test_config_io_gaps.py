@@ -3,7 +3,7 @@
 Targets the specific uncovered lines in src/haute/_config_io.py:
 
 - ``_load_json_object`` rejecting non-object JSON (line 95)
-- ``_remap_config_ids_for_saved_graph`` unresolved-ratebook warning path (141/146)
+- ``collect_node_configs`` preserving executable ratebook input names
 - ``config_path_for_node`` base_dir escape guard (line 186)
 - ``config_load_errors`` swallowing a ValueError from path building (349/350)
 """
@@ -17,11 +17,13 @@ import pytest
 from haute import _config_io
 from haute._config_io import (
     _load_json_object,
-    _remap_config_ids_for_saved_graph,
+    collect_node_configs,
     config_load_errors,
     config_path_for_node,
+    load_node_config,
 )
 from haute._types import NodeType
+from haute.errors import ConfigError
 from tests.conftest import make_graph
 
 # ---------------------------------------------------------------------------
@@ -46,53 +48,68 @@ class TestLoadJsonObjectNonDict:
 
 
 # ---------------------------------------------------------------------------
-# _remap_config_ids_for_saved_graph — OPTIMISER_APPLY id translation
+# collect_node_configs — OPTIMISER_APPLY frame-name preservation
 # ---------------------------------------------------------------------------
 
 
-class TestRemapConfigIds:
-    def test_non_apply_node_returned_unchanged(self):
-        config = {"ratebook_input": "graph_id"}
-        result = _remap_config_ids_for_saved_graph(NodeType.BANDING, config, {})
-        assert result is config
-
-    def test_apply_with_resolvable_ratebook_is_remapped(self):
-        config = {"ratebook_input": "graph_id"}
-        result = _remap_config_ids_for_saved_graph(
-            NodeType.OPTIMISER_APPLY,
-            config,
-            {"graph_id": "saved_id"},
+class TestCollectNodeConfigs:
+    def test_apply_ratebook_frame_name_is_preserved_verbatim(self):
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "apply-node",
+                        "data": {
+                            "label": "apply_optimisation",
+                            "nodeType": "optimiserApply",
+                            "config": {"ratebook_input": "banded_quotes"},
+                        },
+                    },
+                ],
+                "edges": [],
+            }
         )
-        assert result["ratebook_input"] == "saved_id"
-        # original config left untouched
-        assert config["ratebook_input"] == "graph_id"
 
-    def test_apply_without_ratebook_input_returned_unchanged(self):
-        config = {"other": "value"}
-        result = _remap_config_ids_for_saved_graph(NodeType.OPTIMISER_APPLY, config, {})
-        assert result is config
+        sidecar = next(iter(collect_node_configs(graph).values()))
 
-    def test_apply_with_empty_ratebook_input_returned_unchanged(self):
-        config = {"ratebook_input": ""}
-        result = _remap_config_ids_for_saved_graph(NodeType.OPTIMISER_APPLY, config, {})
-        assert result is config
+        assert json.loads(sidecar)["ratebook_input"] == "banded_quotes"
 
-    def test_apply_with_non_string_ratebook_input_returned_unchanged(self):
-        config = {"ratebook_input": 123}
-        result = _remap_config_ids_for_saved_graph(NodeType.OPTIMISER_APPLY, config, {})
-        assert result is config
-
-    def test_apply_with_unresolved_ratebook_warns_and_keeps_config(self):
-        config = {"ratebook_input": "missing_upstream"}
-        # No mapping entry for the configured upstream id -> warning path.
-        result = _remap_config_ids_for_saved_graph(
-            NodeType.OPTIMISER_APPLY,
-            config,
-            {"other_id": "saved_other"},
-            node_label="apply_node",
+    @pytest.mark.parametrize("removed_key", ["scored_input", "factors_input"])
+    def test_removed_optimiser_input_fields_are_rejected_not_dropped(
+        self,
+        removed_key: str,
+    ) -> None:
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "optimiser",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {removed_key: "legacy-node-id"},
+                        },
+                    },
+                ],
+                "edges": [],
+            }
         )
-        assert result is config
-        assert result["ratebook_input"] == "missing_upstream"
+
+        with pytest.raises(ConfigError, match=removed_key):
+            collect_node_configs(graph)
+
+
+@pytest.mark.parametrize("removed_key", ["scored_input", "factors_input"])
+def test_removed_optimiser_input_fields_are_rejected_when_loading_sidecar(
+    tmp_path,
+    removed_key: str,
+) -> None:
+    path = tmp_path / "config" / "optimisation" / "optimiser.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({removed_key: "legacy-node-id"}), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=removed_key):
+        load_node_config(path)
 
 
 # ---------------------------------------------------------------------------

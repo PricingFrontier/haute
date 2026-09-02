@@ -254,7 +254,6 @@ def test_ratebook_solve_save_and_versioned_apply(
             "ratebook_input": "factors",
         },
         source_names=["factors"],
-        source_ids=["factors"],
     ).collect()
     assert applied.height == 6
     assert applied["selected_factor"].null_count() == 0

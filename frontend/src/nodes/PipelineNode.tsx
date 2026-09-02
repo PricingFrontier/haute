@@ -14,6 +14,7 @@ import FramePortRows from "./FramePortRows"
 
 const statusColors: Record<string, string> = {
   ok: "var(--success)",
+  warning: "var(--warning-strong)",
   error: "var(--danger)",
   running: STATUS_COLORS.running,
 }
@@ -234,6 +235,12 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   const traceValue = nodeData._traceValue
   const traceMotionDisabled = !!nodeData._traceMotionDisabled
   const hasWarnings = (nodeData._schemaWarnings?.length ?? 0) > 0
+  const visualStatus = nodeData._status === "ok" && hasWarnings
+    ? "warning"
+    : nodeData._status
+  const showStandaloneWarning = hasWarnings && (
+    nodeData._status === undefined || nodeData._status === "running"
+  )
   const loadAvailability = nodeData._loadAvailability ?? "ready"
   const loadUnavailable = loadAvailability === "unavailable"
   const loadBlocked = loadAvailability === "blocked"
@@ -259,7 +266,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
 
   // Accessible label: "{Type} node: {label}" + status
   const typeName = NODE_TYPE_META[nodeType as NodeTypeValue]?.name || typeLabel
-  const statusText = nodeData._status ? `, status: ${nodeData._status}` : ""
+  const statusText = visualStatus ? `, status: ${visualStatus}` : ""
   const loadStatusText = loadAvailability === "ready" ? "" : `, load status: ${loadAvailability}`
   const ariaLabel = `${typeName} node: ${nodeData.label}${loadStatusText}${statusText}${isInstance ? ", instance" : ""}${traceActive ? ", trace active" : ""}`
 
@@ -289,16 +296,16 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
             border: markerBorder,
           }}
         />
-        {nodeData._status && (
+        {visualStatus && (
           <span
-            className={`pointer-events-none absolute right-[6px] bottom-[8px] size-1.5 rounded-full ${nodeData._status === "running" ? "animate-pulse-dot" : ""}`}
-            style={{ backgroundColor: statusColors[nodeData._status] }}
+            className={`pointer-events-none absolute right-[6px] bottom-[8px] size-1.5 rounded-full ${visualStatus === "running" ? "animate-pulse-dot" : ""}`}
+            style={{ backgroundColor: statusColors[visualStatus] }}
             role="status"
-            aria-label={`Node ${nodeData._status}`}
+            aria-label={`Node ${visualStatus}`}
             data-testid="edge-join-status-indicator"
           />
         )}
-        {hasWarnings && nodeData._status !== "error" && (
+        {showStandaloneWarning && (
           <span
             className="pointer-events-none absolute right-[6px] top-[8px] size-1.5 rounded-full"
             style={{ backgroundColor: "var(--warning-strong)" }}
@@ -427,15 +434,15 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
             {loadAvailability}
           </span>
         )}
-        {nodeData._status && (
+        {visualStatus && (
           <span
-            className={`${isDeployInput || loadAvailability !== "ready" ? "" : "ml-auto "} w-[7px] h-[7px] rounded-full shrink-0 ${nodeData._status === "running" ? "animate-pulse-dot" : ""}`}
-            style={{ backgroundColor: statusColors[nodeData._status] }}
+            className={`${isDeployInput || loadAvailability !== "ready" ? "" : "ml-auto "} w-[7px] h-[7px] rounded-full shrink-0 ${visualStatus === "running" ? "animate-pulse-dot" : ""}`}
+            style={{ backgroundColor: statusColors[visualStatus] }}
             role="status"
-            aria-label={`Node ${nodeData._status}`}
+            aria-label={`Node ${visualStatus}`}
           />
         )}
-        {hasWarnings && nodeData._status !== "error" && (
+        {showStandaloneWarning && (
           <span
             className={`${!nodeData._status && !isDeployInput ? "ml-auto " : ""}w-[7px] h-[7px] rounded-full shrink-0`}
             style={{ backgroundColor: "var(--warning-strong)" }}

@@ -37,12 +37,13 @@ export interface ColumnInfo {
  * Per-node execution status shared across the API contract and node data.
  *
  * The backend emits `"ok"` / `"error"` for completed node results (see
- * `NodeResult.status` in `src/haute/executor.py`). `"running"` is a
- * client-only transient the editor sets while a trace/preview is in flight.
+ * `NodeResult.status` in `src/haute/executor.py`). `"warning"` is a
+ * client-only completed state projected from successful results carrying a
+ * user-visible warning, and `"running"` is the client-only in-flight state.
  * Keeping these separate lets the runtime guard fail loud on backend drift.
  */
 export type BackendNodeStatus = "ok" | "error"
-export type NodeStatus = BackendNodeStatus | "running"
+export type NodeStatus = BackendNodeStatus | "warning" | "running"
 export type LoadAvailability = "ready" | "unavailable" | "blocked"
 
 /**

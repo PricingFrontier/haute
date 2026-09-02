@@ -519,6 +519,17 @@ class TestExtractFactorsChunkSize:
         ):
             OptimiserSolveService._extract_factors(
                 self._build_lazy_outputs(),
+                PipelineGraph(
+                    nodes=[
+                        GraphNode(
+                            id="banding",
+                            data=NodeData(label="banding", nodeType="dataInput"),
+                        ),
+                        GraphNode(id="opt", data=NodeData(label="opt", nodeType="optimiser")),
+                    ],
+                    edges=[GraphEdge(id="e_banding_opt", source="banding", target="opt")],
+                ),
+                "opt",
                 self._config(),
                 "ratebook",
                 streaming_chunk_size=streaming_chunk_size,

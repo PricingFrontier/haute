@@ -346,8 +346,6 @@ def test_public_projection_plan_routes_fan_in_demands_by_parent():
 def _edge_join_graph(*, keys: dict[str, object], base_outputs, join_outputs):
     """Build a base/join edge-join graph with concrete-contract parents."""
     join_config: dict[str, object] = {
-        "baseInput": "base",
-        "joinInput": "join",
         "how": "left",
         "contract": "opaque",
         **keys,
@@ -389,8 +387,8 @@ def _edge_join_graph(*, keys: dict[str, object], base_outputs, join_outputs):
                 },
             ],
             "edges": [
-                make_edge("base", "joined").model_dump(),
-                make_edge("join", "joined").model_dump(),
+                make_edge("base", "joined", target_handle="base").model_dump(),
+                make_edge("join", "joined", target_handle="join").model_dump(),
                 make_edge("joined", "out").model_dump(),
             ],
         }
@@ -587,8 +585,6 @@ def test_edge_join_projection_keeps_full_width_when_a_parent_is_opaque():
                                 "label": "joined",
                                 "nodeType": "edgeJoin",
                                 "config": {
-                                    "baseInput": "base",
-                                    "joinInput": "join",
                                     "how": "left",
                                     "on": ["quote_id"],
                                     "contract": "opaque",
@@ -605,8 +601,8 @@ def test_edge_join_projection_keeps_full_width_when_a_parent_is_opaque():
                         },
                     ],
                     "edges": [
-                        make_edge("base", "joined").model_dump(),
-                        make_edge("join", "joined").model_dump(),
+                        make_edge("base", "joined", target_handle="base").model_dump(),
+                        make_edge("join", "joined", target_handle="join").model_dump(),
                         make_edge("joined", "out").model_dump(),
                     ],
                 }
@@ -624,6 +620,153 @@ def test_edge_join_projection_keeps_full_width_when_a_parent_is_opaque():
     assert projection.needed_by_node["join"] is None
     assert "base" in projection.opaque_boundaries
     assert "join" in projection.opaque_boundaries
+
+
+def test_edge_join_projection_keeps_parallel_frames_from_one_source_distinct():
+    """Two API frames on separate role edges must not collapse to one parent demand."""
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "request",
+                    "data": {
+                        "label": "Quote_Input_1",
+                        "nodeType": "apiInput",
+                        "config": {
+                            "contract": "opaque",
+                            "tables": [
+                                {"label": "quote_info", "path": "$[:]", "emit": True},
+                                {"label": "competitor", "path": "$.competitor[:]", "emit": True},
+                            ],
+                        },
+                    },
+                },
+                {
+                    "id": "joined",
+                    "data": {
+                        "label": "joined",
+                        "nodeType": "edgeJoin",
+                        "config": {
+                            "how": "left",
+                            "on": ["quote_id"],
+                            "contract": "opaque",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e_quote_base",
+                    "source": "request",
+                    "sourceHandle": "quote_info",
+                    "target": "joined",
+                    "targetHandle": "base",
+                },
+                {
+                    "id": "e_competitor_join",
+                    "source": "request",
+                    "sourceHandle": "competitor",
+                    "target": "joined",
+                    "targetHandle": "join",
+                },
+            ],
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="joined",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"joined": {"quote_id", "competitor_premium"}},
+        )
+    )
+
+    # Node-level contracts cannot safely narrow two distinct frames from one
+    # parent. Both physical role edges therefore remain full-width, but retain
+    # their own identities and edge-join provenance.
+    for edge in graph.edges:
+        assert projection.demand_for_edge(edge) is None
+        reason = projection.reason_for_edge(edge)
+        assert reason is not None
+        assert reason.rule == "edge_join_fan_in"
+    assert projection.needed_by_node["request"] is None
+
+
+def test_ratebook_optimiser_projection_keeps_parallel_source_frames_distinct():
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "request",
+                    "data": {
+                        "label": "Quote_Input_1",
+                        "nodeType": "apiInput",
+                        "config": {
+                            "contract": "opaque",
+                            "tables": [
+                                {"label": "quote_info", "path": "$[:].quotes", "emit": True},
+                                {"label": "rating_factors", "path": "$[:].factors", "emit": True},
+                            ],
+                        },
+                    },
+                },
+                {
+                    "id": "optimiser",
+                    "data": {
+                        "label": "Optimiser",
+                        "nodeType": "optimiser",
+                        "config": {
+                            "mode": "ratebook",
+                            "objective": "expected_income",
+                            "constraints": {"volume": {"min": 0.9}},
+                            "factor_columns": [["territory"]],
+                            "data_input": "quote_info",
+                            "banding_source": "rating_factors",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e_quotes",
+                    "source": "request",
+                    "sourceHandle": "quote_info",
+                    "target": "optimiser",
+                },
+                {
+                    "id": "e_factors",
+                    "source": "request",
+                    "sourceHandle": "rating_factors",
+                    "target": "optimiser",
+                },
+            ],
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="optimiser",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            required_columns_by_node={
+                "optimiser": {
+                    "quote_id",
+                    "scenario_index",
+                    "scenario_value",
+                    "expected_income",
+                    "volume",
+                }
+            },
+        )
+    )
+
+    for edge in graph.edges:
+        assert projection.demand_for_edge(edge) is None
+        reason = projection.reason_for_edge(edge)
+        assert reason is not None
+        assert reason.rule == "optimiser_parent_demand"
+    assert projection.needed_by_node["request"] is None
 
 
 def test_projection_explain_reports_node_and_edge_reasons():

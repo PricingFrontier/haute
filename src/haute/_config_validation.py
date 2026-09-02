@@ -7,7 +7,8 @@ can choose whether to warn, fail, or report them in tests.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal, overload
 
 from haute._logging import get_logger
 from haute._types import (
@@ -31,6 +32,7 @@ from haute._types import (
     SubmodelConfig,
     TransformConfig,
 )
+from haute.errors import ConfigError
 
 logger = get_logger(component="config_validation")
 
@@ -99,6 +101,189 @@ VALID_KEYS: dict[NodeType, frozenset[str]] = {
 }
 
 
+_REMOVED_CONFIG_KEYS: dict[NodeType, frozenset[str]] = {
+    NodeType.EDGE_JOIN: frozenset({"baseInput", "joinInput"}),
+    NodeType.OPTIMISER: frozenset({"scored_input", "factors_input"}),
+}
+
+
+def reject_removed_config_keys(
+    node_type: NodeType | str,
+    config: dict[str, Any],
+) -> None:
+    """Reject retired input-identity fields instead of silently migrating them."""
+    nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
+    removed = sorted(_REMOVED_CONFIG_KEYS.get(nt, frozenset()).intersection(config))
+    if not removed:
+        return
+
+    if nt == NodeType.EDGE_JOIN:
+        guidance = "use incoming target ports 'base' and 'join'"
+    else:
+        guidance = "use data_input and banding_source with exact connected input names"
+    raise ConfigError(
+        f"{nt.value} config contains removed input identity fields; {guidance}.",
+        removed_config_keys=removed,
+    )
+
+
+@overload
+def resolve_exact_input_index(
+    selector: Any,
+    source_names: Sequence[str],
+    *,
+    required: Literal[True],
+    node_label: str,
+    field_name: str,
+) -> int: ...
+
+
+@overload
+def resolve_exact_input_index(
+    selector: Any,
+    source_names: Sequence[str],
+    *,
+    required: Literal[False],
+    node_label: str,
+    field_name: str,
+) -> int | None: ...
+
+
+@overload
+def resolve_exact_input_index(
+    selector: Any,
+    source_names: Sequence[str],
+    *,
+    required: bool,
+    node_label: str,
+    field_name: str,
+) -> int | None: ...
+
+
+def resolve_exact_input_index(
+    selector: Any,
+    source_names: Sequence[str],
+    *,
+    required: bool,
+    node_label: str,
+    field_name: str,
+) -> int | None:
+    """Resolve an exact incoming-edge input selector to its position.
+
+    A selector identifies a *physical* incoming edge by its executable input
+    name.  Only ``None`` and the empty string mean no selection; matching is
+    byte-for-byte, so a whitespace-decorated value is a stale selector, never
+    an absent one, and every present value must identify exactly one edge.
+    This is the single implementation shared by the executor, code
+    generation, tracing, and save validation.
+    """
+    context = f"{node_label!r} {field_name}"
+    if selector is None or selector == "":
+        if required:
+            raise ConfigError(f"Node {context} is required to name one exact incoming edge.")
+        return None
+    if not isinstance(selector, str):
+        raise ConfigError(f"Node {context} must be an incoming-edge frame name string.")
+
+    matches = [index for index, name in enumerate(source_names) if name == selector]
+    if not matches:
+        raise ConfigError(
+            f"Node {context} {selector!r} is not an exact connected input name: "
+            f"{list(source_names)!r}."
+        )
+    if len(matches) > 1:
+        raise ConfigError(
+            f"Node {context} {selector!r} is ambiguous across connected input names: "
+            f"{list(source_names)!r}."
+        )
+    return matches[0]
+
+
+def validate_exact_input_selector(
+    selector: Any,
+    source_names: Sequence[str],
+    *,
+    required: bool,
+    node_label: str,
+    field_name: str,
+) -> str | None:
+    """Return the validated selector name; see :func:`resolve_exact_input_index`."""
+    index = resolve_exact_input_index(
+        selector,
+        source_names,
+        required=required,
+        node_label=node_label,
+        field_name=field_name,
+    )
+    return None if index is None else source_names[index]
+
+
+def resolve_optimiser_data_input(
+    config: Mapping[str, Any],
+    source_names: Sequence[str],
+    *,
+    node_label: str,
+) -> str | None:
+    """Return the optimiser's selected ``data_input`` name when configured.
+
+    A multi-input optimiser must name its data edge; a single-input optimiser
+    may leave the selector empty and pass that input through.
+    """
+    data_input = validate_exact_input_selector(
+        config.get("data_input"),
+        source_names,
+        required=False,
+        node_label=node_label,
+        field_name="data_input",
+    )
+    if data_input is None and len(source_names) > 1:
+        raise ConfigError(
+            f"Node {node_label!r} data_input is required when multiple "
+            "incoming edges are connected."
+        )
+    return data_input
+
+
+def validate_optimiser_input_selectors(
+    node_type: NodeType | str,
+    config: Mapping[str, Any],
+    source_names: Sequence[str],
+    *,
+    node_label: str,
+) -> str | None:
+    """Validate exact-edge selectors shared by save and code generation.
+
+    Returns the optimiser's selected data input when configured. Optimiser
+    Apply has no codegen-time return selection, so its successful result is
+    always ``None``.
+    """
+    nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
+    if nt is NodeType.OPTIMISER:
+        data_input = resolve_optimiser_data_input(config, source_names, node_label=node_label)
+        validate_exact_input_selector(
+            config.get("banding_source"),
+            source_names,
+            required=config.get("mode") == "ratebook",
+            node_label=node_label,
+            field_name="banding_source",
+        )
+        return data_input
+
+    if nt is NodeType.OPTIMISER_APPLY:
+        optimiser_mode = config.get("optimiser_mode")
+        if optimiser_mode != "online":
+            validate_exact_input_selector(
+                config.get("ratebook_input"),
+                source_names,
+                required=optimiser_mode == "ratebook",
+                node_label=node_label,
+                field_name="ratebook_input",
+            )
+        return None
+
+    raise ValueError(f"Unsupported optimiser selector node type: {nt.value!r}.")
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -145,6 +330,7 @@ def validate_node_config(node_type: NodeType | str, config: dict[str, Any]) -> d
     configured branches must not be silently persisted and ignored.
     """
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
+    reject_removed_config_keys(nt, config)
     if nt == NodeType.DATA_INPUT:
         from haute._polars_io_registry import validate_data_input_config
 

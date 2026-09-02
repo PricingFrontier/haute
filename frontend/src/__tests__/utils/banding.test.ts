@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
-import { classifyBandingFactors, extractBandingLevelOrderForNode, extractBandingLevelsForNode, extractBandingLevels } from "../../utils/banding"
+import { bandingLevelOrderForOptimiser, classifyBandingFactors, extractBandingLevelOrderForNode, extractBandingLevelsForNode, extractBandingLevels } from "../../utils/banding"
 import { buildCartesianEntries } from "../../panels/editors/rating/ratingTableUtils"
-import type { SimpleNode } from "../../panels/editors/_shared"
+import type { SimpleEdge, SimpleNode } from "../../panels/editors/_shared"
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -271,6 +271,58 @@ describe("extractBandingLevelOrderForNode", () => {
       vehicle_age_band: ["1-3", "4-5", "10-11", "missing"],
       channel_band: ["direct_web", "broker"],
     })
+  })
+})
+
+describe("bandingLevelOrderForOptimiser", () => {
+  const factors = [
+    {
+      banding: "categorical",
+      column: "channel",
+      outputColumn: "channel_band",
+      rules: [{ value: "direct", assignment: "Direct" }],
+      default: "missing",
+    },
+  ]
+  const edge: SimpleEdge = {
+    id: "e-banding-opt",
+    source: "banding-node-id",
+    target: "opt",
+    data: { _inputName: "Age_Vehicle_Banding" },
+  }
+
+  it("resolves the configured exact incoming-edge name rather than the source node id", () => {
+    const optimiser = makeOtherNode("opt", "optimiser")
+    const nodes: SimpleNode[] = [
+      makeBandingNode("banding-node-id", factors),
+      {
+        ...optimiser,
+        data: {
+          ...optimiser.data,
+          config: { banding_source: "Age_Vehicle_Banding" },
+        },
+      },
+    ]
+
+    expect(bandingLevelOrderForOptimiser("opt", nodes, [edge])).toEqual({
+      channel_band: ["Direct", "missing"],
+    })
+  })
+
+  it("does not accept a legacy source node id or infer the sole Banding input", () => {
+    const optimiser = makeOtherNode("opt", "optimiser")
+    const nodes: SimpleNode[] = [
+      makeBandingNode("banding-node-id", factors),
+      {
+        ...optimiser,
+        data: {
+          ...optimiser.data,
+          config: { banding_source: "banding-node-id" },
+        },
+      },
+    ]
+
+    expect(bandingLevelOrderForOptimiser("opt", nodes, [edge])).toEqual({})
   })
 })
 

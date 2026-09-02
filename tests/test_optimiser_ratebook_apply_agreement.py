@@ -384,7 +384,11 @@ class TestRealSolverEndToEnd:
             data=NodeData(
                 label="apply",
                 nodeType=NodeType.OPTIMISER_APPLY,
-                config={"sourceType": "file", "artifact_path": str(artifact_path)},
+                config={
+                    "sourceType": "file",
+                    "artifact_path": str(artifact_path),
+                    "ratebook_input": "base",
+                },
             ),
         )
         _, fn, _ = _build_node_fn(node, source_names=["base"])
@@ -443,7 +447,11 @@ class TestRealSolverEndToEnd:
             data=NodeData(
                 label="apply",
                 nodeType=NodeType.OPTIMISER_APPLY,
-                config={"sourceType": "file", "artifact_path": str(artifact_path)},
+                config={
+                    "sourceType": "file",
+                    "artifact_path": str(artifact_path),
+                    "ratebook_input": "base",
+                },
             ),
         )
         _, fn, _ = _build_node_fn(node, source_names=["base"])

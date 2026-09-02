@@ -354,10 +354,10 @@ must resolve the original pipeline-owned sidecars.
   [frontend-node-editors](../frontend-node-editors/high-level.md)
   for chip derivation and [codegen](../codegen/high-level.md) for the backend
   rule.
-- The same public-output identity governs a downstream `edgeJoin`'s
-  `baseInput`/`joinInput` roles. Resolve `out__<portId>` before role validation
-  or ordering, so two public outputs of one occurrence remain distinct even
-  though their stored parent edges share the same occurrence `source`.
+- A downstream `edgeJoin`'s base/join role is governed solely by each boundary edge's target
+  handle. Resolve `out__<portId>` for the edge's executable input identity before duplicate-name
+  validation, so two public outputs of one occurrence remain distinct even though their parent
+  edges share the same occurrence `source`.
 
 ## Failure model
 

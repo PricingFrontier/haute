@@ -728,8 +728,6 @@ def test_strategy_diagnostic_reports_edge_join_keys_as_join_key_provenance() -> 
                         "label": "joined",
                         "nodeType": "edgeJoin",
                         "config": {
-                            "baseInput": "base",
-                            "joinInput": "lookup",
                             "how": "left",
                             "leftOn": ["base_key"],
                             "rightOn": ["lookup_key"],
@@ -739,8 +737,8 @@ def test_strategy_diagnostic_reports_edge_join_keys_as_join_key_provenance() -> 
                 },
             ],
             "edges": [
-                make_edge("base", "joined").model_dump(),
-                make_edge("lookup", "joined").model_dump(),
+                make_edge("base", "joined", target_handle="base").model_dump(),
+                make_edge("lookup", "joined", target_handle="join").model_dump(),
             ],
         }
     )

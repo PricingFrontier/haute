@@ -749,7 +749,7 @@ describe("PipelineNode", () => {
     expect(screen.getByLabelText("Node has schema warnings")).toBeInTheDocument()
   })
 
-  it("keeps edge-join status dots inside the marker ellipse", () => {
+  it("uses one yellow completion dot for an edge join with schema warnings", () => {
     renderNode({
       label: "Edge Join",
       nodeType: NODE_TYPES.EDGE_JOIN,
@@ -757,9 +757,12 @@ describe("PipelineNode", () => {
       _schemaWarnings: [{ column: "policy_id", status: "missing" }],
     })
 
-    expect(screen.getByTestId("edge-join-status-indicator")).toHaveClass("right-[6px]", "bottom-[8px]")
-    expect(screen.getByTestId("edge-join-status-indicator")).not.toHaveClass("-right-0.5")
-    expect(screen.getByTestId("edge-join-warning-indicator")).toHaveClass("right-[6px]", "top-[8px]")
+    const status = screen.getByTestId("edge-join-status-indicator")
+    expect(status).toHaveClass("right-[6px]", "bottom-[8px]")
+    expect(status).not.toHaveClass("-right-0.5")
+    expect(status).toHaveStyle({ backgroundColor: "var(--warning-strong)" })
+    expect(status).toHaveAccessibleName("Node warning")
+    expect(screen.queryByTestId("edge-join-warning-indicator")).not.toBeInTheDocument()
   })
 
   it("edgeJoin marker hides warning indicator when status is error", () => {
@@ -821,6 +824,31 @@ describe("PipelineNode", () => {
       return style.includes("var(--success)") || style.includes("rgb(34, 197, 94)")
     })
     expect(greenDot).toBeTruthy()
+  })
+
+  it("shows a yellow completion dot for an execution warning", () => {
+    renderNode({
+      label: "Execution Warning",
+      nodeType: NODE_TYPES.POLARS,
+      _status: "warning",
+    })
+
+    const dot = screen.getByLabelText("Node warning")
+    expect(dot).toHaveStyle({ backgroundColor: "var(--warning-strong)" })
+  })
+
+  it("turns a successful node's completion dot yellow when schema warnings exist", () => {
+    renderNode({
+      label: "Warned Success",
+      nodeType: NODE_TYPES.POLARS,
+      _status: "ok",
+      _schemaWarnings: [{ column: "age", status: "missing" }],
+    })
+
+    const dot = screen.getByLabelText("Node warning")
+    expect(dot).toHaveStyle({ backgroundColor: "var(--warning-strong)" })
+    expect(screen.queryByLabelText("Node ok")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Node has schema warnings")).not.toBeInTheDocument()
   })
 
   it("shows a status indicator for error status", () => {

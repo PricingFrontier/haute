@@ -32,6 +32,7 @@ from typing import Any
 
 from haute._code_extraction import INCOMPLETE_TRANSFORM_BODY, POLARS_OUTPUT_DECLARATION
 from haute._config_io import config_path_for_node
+from haute._config_validation import validate_optimiser_input_selectors
 from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
 from haute._explore_charts import validate_explore_charts
 from haute._explore_overview import validate_explore_overview
@@ -305,7 +306,7 @@ def {func_name}({params}) -> pl.LazyFrame:
     base = _HAUTE_CONFIG_BASE
     return apply_optimiser_apply_from_config(
         {args}, config={config_path_repr}, base_dir=base,
-        source_names={source_names_repr}, source_ids={source_ids_repr},
+        source_names={source_names_repr},
     )
 '''
 
@@ -678,13 +679,21 @@ def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> str:
 @_register_codegen(NodeType.OPTIMISER)
 def _gen_optimiser(node: GraphNode, source_names: list[str]) -> str:
     # Genuine passthrough in the executor (solving happens via the optimiser
-    # solve route) — the first-frame body is runtime-equivalent.
+    # solve route), but a multi-input optimiser must pass through its exact
+    # configured data edge rather than whichever edge happens to sort first.
     func_name, description, config = _common_node_fields(node)
+    data_input = validate_optimiser_input_selectors(
+        node.data.nodeType,
+        config,
+        source_names,
+        node_label=func_name,
+    )
+    selected_input = data_input if data_input is not None else _first_source(source_names)
     return _OPTIMISER.format(
         func_name=func_name,
         description=description,
         params=_build_params(source_names),
-        first=_first_source(source_names),
+        first=selected_input,
         dec_kwargs=_passthrough_decorator_kwargs(config, OPTIMISER_CONFIG_KEYS),
     )
 
@@ -717,13 +726,16 @@ def _gen_modelling(node: GraphNode, source_names: list[str]) -> str:
 @_register_codegen(NodeType.OPTIMISER_APPLY)
 def _gen_optimiser_apply(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
+    validate_optimiser_input_selectors(
+        node.data.nodeType,
+        config,
+        source_names,
+        node_label=func_name,
+    )
     dec_kwargs = _passthrough_decorator_kwargs(config, OPTIMISER_APPLY_CONFIG_KEYS)
     param_names = source_names or ["df"]
-    # Frames are passed positionally; source_names/source_ids let the shared
-    # helper resolve the configured ratebook_input.  In the sidecar,
-    # ratebook_input is remapped to the source function name (see
-    # _config_io._remap_config_ids_for_saved_graph), so the parameter-name
-    # list doubles as the id list — selection is positional either way.
+    # Frames are passed positionally; exact executable source names let the
+    # shared helper resolve the configured ratebook_input.
     args = ", ".join(param_names)
     names_repr = repr(list(source_names))
     return _OPTIMISER_APPLY.format(
@@ -736,7 +748,6 @@ def _gen_optimiser_apply(node: GraphNode, source_names: list[str]) -> str:
             config_path_for_node(NodeType.OPTIMISER_APPLY, func_name).as_posix()
         ),
         source_names_repr=names_repr,
-        source_ids_repr=names_repr,
     )
 
 
@@ -966,28 +977,8 @@ def _gen_edge_join(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     base_name, join_name = source_names
     params = _build_params(source_names)
-    missing_roles = [key for key in ("baseInput", "joinInput") if not config.get(key)]
-    if missing_roles:
-        # Unreachable via graph_to_code — `_role_order_node_sources` resolves
-        # roles before dispatch — but guards direct callers against silently
-        # emitting a decorator with no role kwargs to rewrite.
-        raise ConfigError(
-            "edgeJoin codegen requires baseInput and joinInput in config.",
-            node_id=node.id,
-            node_label=node.data.label,
-            missing=missing_roles,
-        )
-    # Role kwargs must name the functions this pass emits, not the raw config
-    # node ids: live canvas ids do not survive a parse
-    # round-trip, where node ids become sanitized function names, so verbatim
-    # ids would make the saved file unloadable.  `_role_order_node_sources`
-    # has already resolved baseInput/joinInput against the connected node ids
-    # — failing loudly when a role references a missing or unconnected node —
-    # and ordered sources base-first, so source_names[0]/[1] ARE the base and
-    # join nodes' emitted function names.
-    role_names = {"base_input": base_name, "join_input": join_name}
     decorator_args = ", ".join(
-        _format_kwarg_source(key, role_names.get(key, value))
+        _format_kwarg_source(key, value)
         for key, value in edge_join_config_to_decorator_kwargs(config)
     )
     # Keep codegen-time validation without duplicating join semantics in the body.

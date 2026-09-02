@@ -57,9 +57,11 @@ Out of scope, owned elsewhere:
   object with a callable `run(progress=...)` method (normally a `TrainingJob`), streaming a
   live progress bar and printing the returned result's model path, feature counts, and metrics.
 - `haute serve [--host] [--port] [--no-browser]` starts the Haute UI: dev mode (Vite + FastAPI with
-  autoreload) when a `frontend/` checkout with `node_modules` is discoverable, otherwise production
-  mode serving a pre-built static bundle. Binds to `localhost` by default so the browser session
-  works with a bare `haute serve`.
+  autoreload) when `node_modules` is installed for either the nearest working-directory frontend
+  or the frontend beside the imported editable Haute source checkout. The working-directory
+  frontend has priority. Wheel installs and source checkouts without frontend dependencies use
+  production mode with the pre-built static bundle. It binds to `localhost` by default so the
+  browser session works with a bare `haute serve`.
 - `haute deploy [pipeline_file] [--model-name] [--dry-run] [--endpoint-suffix]` validates a pipeline,
   scores its test quotes, and deploys it to the configured target. Non-dry-run deploys are blocked
   outside a recognised CI environment.

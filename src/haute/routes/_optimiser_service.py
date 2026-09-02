@@ -52,7 +52,13 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
-from haute._graph_utils import _sanitize_func_name, upstream_node_ids
+from haute._graph_utils import (
+    _sanitize_func_name,
+    incoming_edge_bindings,
+    incoming_edge_for_name,
+    select_edge_source_output,
+    upstream_node_ids,
+)
 from haute._logging import get_logger
 from haute._polars_utils import (
     DEFAULT_STREAMING_CHUNK_SIZE,
@@ -68,6 +74,7 @@ from haute._rating import (
     rating_dtype_from_descriptor,
 )
 from haute._types import (
+    GraphEdge,
     GraphNode,
     OnlineSolveResultLike,
     PipelineGraph,
@@ -695,14 +702,25 @@ def _optimiser_side_input_ids(graph: PipelineGraph, node_id: str) -> frozenset[s
     node = _find_optimiser_node(graph, node_id)
     config = node.data.config
     preserved: set[str] = set()
-    data_input = config.get("data_input")
-    if isinstance(data_input, str) and data_input:
-        preserved.add(data_input)
+    data_edge = _resolve_optimiser_input_edge(
+        graph,
+        node_id,
+        config,
+        field="data_input",
+        infer_single=True,
+    )
+    if data_edge is not None:
+        preserved.add(data_edge.source)
     if config.get("mode", "online") != "ratebook":
         return frozenset(preserved)
-    banding_source = config.get("banding_source")
-    if isinstance(banding_source, str) and banding_source:
-        preserved.add(banding_source)
+    banding_edge = _resolve_optimiser_input_edge(
+        graph,
+        node_id,
+        config,
+        field="banding_source",
+    )
+    if banding_edge is not None:
+        preserved.add(banding_edge.source)
     return frozenset(preserved)
 
 
@@ -731,8 +749,15 @@ def _optimiser_dataframe_cache_node_ids(
 
     target_lineage = set(upstream_node_ids(execution_target_node_id, graph.parents_of))
     target_lineage.add(execution_target_node_id)
+    # The per-node dataframe cache materialises one LazyFrame per node id, so a
+    # multi-frame apiInput (dict-of-frames output) can never be a cache
+    # candidate — the executor fails loud on caching a frame bundle.
     return tuple(
-        node.id for node in graph.nodes if node.id in candidates and node.id in target_lineage
+        node.id
+        for node in graph.nodes
+        if node.id in candidates
+        and node.id in target_lineage
+        and node.data.nodeType is not NodeType.API_INPUT
     )
 
 
@@ -859,7 +884,11 @@ def _auto_range_required_columns_by_node(
             str(config["objective"]),
         ),
     )
-    if isinstance(data_input_id, str) and data_input_id:
+    if (
+        isinstance(data_input_id, str)
+        and data_input_id
+        and not _data_source_feeds_optimiser_through_parallel_edges(graph, node_id, data_input_id)
+    ):
         return {data_input_id: required}
     return {node_id: required}
 
@@ -873,13 +902,72 @@ def _optimiser_solve_required_columns_by_node(
 
     The optimiser node may also receive side inputs, for example ratebook
     banding factors.  Seed the proven data-input parent only, so side-input
-    branches are not asked for solver columns they do not own.
+    branches are not asked for solver columns they do not own.  When the data
+    source also feeds the optimiser through a second physical edge (two frames
+    of one multi-frame source), a node-keyed seed cannot describe one edge, so
+    seed the optimiser itself and let the optimiser parent-demand rule keep
+    those edges full-width.
     """
     required = _optimiser_input_required_columns(config)
     data_input_id = _resolve_optimiser_data_input_id(graph, node_id, config)
     if isinstance(data_input_id, str) and data_input_id:
+        if _data_source_feeds_optimiser_through_parallel_edges(graph, node_id, data_input_id):
+            return {node_id: required}
         return {data_input_id: required}
     return {}
+
+
+def _resolve_optimiser_input_edge(
+    graph: PipelineGraph,
+    node_id: str,
+    config: Mapping[str, Any],
+    *,
+    field: str,
+    infer_single: bool = False,
+) -> GraphEdge | None:
+    """Resolve an optimiser selector as one exact incoming-edge name."""
+    configured_name = config.get(field)
+    if isinstance(configured_name, str) and configured_name:
+        try:
+            return incoming_edge_for_name(graph, node_id, configured_name)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Configured optimiser {field} {configured_name!r} is invalid: {exc}",
+            ) from exc
+    if configured_name not in (None, ""):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Configured optimiser {field} must be an exact input name.",
+        )
+    bindings = incoming_edge_bindings(graph, node_id)
+    if infer_single and len(bindings) == 1:
+        return bindings[0][0]
+    if infer_single and len(bindings) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Optimiser {field} must name one exact connected input when the node "
+                f"has multiple inputs: {[name for _edge, name in bindings]!r}."
+            ),
+        )
+    return None
+
+
+def _data_source_feeds_optimiser_through_parallel_edges(
+    graph: PipelineGraph,
+    node_id: str,
+    data_input_id: str,
+) -> bool:
+    """Return whether the data source reaches the optimiser via >1 physical edge.
+
+    Node-keyed projection seeds and per-node caches cannot express one frame of
+    a multi-frame source; callers must fall back to optimiser-level handling.
+    """
+    parallel_edges = sum(
+        1 for edge in graph.edges if edge.target == node_id and edge.source == data_input_id
+    )
+    return parallel_edges > 1
 
 
 def _resolve_optimiser_data_input_id(
@@ -887,22 +975,15 @@ def _resolve_optimiser_data_input_id(
     node_id: str,
     config: dict[str, Any],
 ) -> str | None:
-    """Return the optimiser dataframe input when it can be proven."""
-    data_input_id = config.get("data_input")
-    direct_parents = list(graph.parents_of.get(node_id, []))
-    if isinstance(data_input_id, str) and data_input_id:
-        if data_input_id not in set(direct_parents):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Configured optimiser data_input {data_input_id!r} is not connected "
-                    f"to optimiser node {node_id!r}."
-                ),
-            )
-        return data_input_id
-    if len(direct_parents) == 1:
-        return direct_parents[0]
-    return None
+    """Return the source node for the optimiser's exact selected data edge."""
+    edge = _resolve_optimiser_input_edge(
+        graph,
+        node_id,
+        config,
+        field="data_input",
+        infer_single=True,
+    )
+    return edge.source if edge is not None else None
 
 
 def _resolve_online_auto_range_data_input_id(
@@ -1919,14 +2000,20 @@ def _find_node_by_id(graph: PipelineGraph, node_id: str) -> GraphNode | None:
 
 def _ratebook_factor_level_order(
     graph: PipelineGraph,
+    node_id: str,
     config: dict[str, Any],
 ) -> dict[str, list[str]]:
     """Extract factor-level display order from the configured banding source."""
-    banding_source_id = config.get("banding_source")
-    if not isinstance(banding_source_id, str) or not banding_source_id:
+    banding_edge = _resolve_optimiser_input_edge(
+        graph,
+        node_id,
+        config,
+        field="banding_source",
+    )
+    if banding_edge is None:
         return {}
 
-    banding_node = _find_node_by_id(graph, banding_source_id)
+    banding_node = _find_node_by_id(graph, banding_edge.source)
     if banding_node is None or banding_node.data.nodeType != NodeType.BANDING:
         return {}
 
@@ -2314,6 +2401,7 @@ def _serialise_ratebook_factor_tables(
 
 def _compute_ratebook_factor_level_order(
     graph: PipelineGraph,
+    node_id: str,
     config: dict[str, Any],
     mode: str,
 ) -> dict[str, list[str]]:
@@ -2325,7 +2413,7 @@ def _compute_ratebook_factor_level_order(
     """
     if mode != "ratebook":
         return {}
-    return _ratebook_factor_level_order(graph, config)
+    return _ratebook_factor_level_order(graph, node_id, config)
 
 
 def _finalize_solve_result(
@@ -2789,7 +2877,12 @@ class OptimiserSolveService:
         config = dict(node.data.config)
 
         mode = self._validate_config(config)
-        factor_level_order = _compute_ratebook_factor_level_order(body.graph, config, mode)
+        factor_level_order = _compute_ratebook_factor_level_order(
+            body.graph,
+            body.node_id,
+            config,
+            mode,
+        )
         required_columns_by_node = _optimiser_solve_required_columns_by_node(
             body.graph,
             body.node_id,
@@ -2943,6 +3036,7 @@ class OptimiserSolveService:
                 self._raise_if_solve_stopped(job_id, execution_context=execution_context)
                 source_lf = self._resolve_data_input_frame(
                     lazy_outputs,
+                    body.graph,
                     config,
                     body.node_id,
                     job_id,
@@ -2958,6 +3052,8 @@ class OptimiserSolveService:
                 self._raise_if_solve_stopped(job_id, execution_context=execution_context)
                 ratebook_factors_handle = self._extract_factors(
                     lazy_outputs,
+                    body.graph,
+                    body.node_id,
                     config,
                     mode,
                     execution_context=execution_context,
@@ -3655,6 +3751,7 @@ class OptimiserSolveService:
                 self._raise_if_frontier_auto_range_stopped(job_id)
                 source_lf = self._resolve_data_input_frame(
                     lazy_outputs,
+                    body.graph,
                     config,
                     body.node_id,
                     job_id,
@@ -4356,28 +4453,34 @@ class OptimiserSolveService:
                                     node_id
                                 ]
                             cache_required_columns_by_node = cache_required_columns
-                dataframe_cache_request = build_dataframe_execution_cache_request(
-                    body.graph,
-                    node_ids=cache_node_ids,
-                    namespace="optimiser_setup",
-                    source=scenario,
-                    profile=(
-                        execution_context.profile
-                        if execution_context is not None
-                        else ExecutionProfile.LAZY_SINK
-                    ),
-                    input_fingerprint=dataframe_graph_input_fingerprint(
+                # Every candidate can be filtered away (e.g. the only setup
+                # input is a multi-frame apiInput, which the per-node cache
+                # cannot materialise) — run uncached rather than build a
+                # request the cache layer rejects as empty.
+                dataframe_cache_request = None
+                if cache_node_ids:
+                    dataframe_cache_request = build_dataframe_execution_cache_request(
                         body.graph,
-                        target_node_id=execution_target_node_id,
+                        node_ids=cache_node_ids,
+                        namespace="optimiser_setup",
                         source=scenario,
-                    ),
-                    target_node_id=execution_target_node_id,
-                    preserve_node_ids=preserved_node_ids,
-                    required_columns_by_node=cache_required_columns_by_node,
-                    enforce_contracts=True,
-                    preamble_ns_supplied=preamble_ns is not None,
-                    streaming_chunk_size=chunk_size,
-                )
+                        profile=(
+                            execution_context.profile
+                            if execution_context is not None
+                            else ExecutionProfile.LAZY_SINK
+                        ),
+                        input_fingerprint=dataframe_graph_input_fingerprint(
+                            body.graph,
+                            target_node_id=execution_target_node_id,
+                            source=scenario,
+                        ),
+                        target_node_id=execution_target_node_id,
+                        preserve_node_ids=preserved_node_ids,
+                        required_columns_by_node=cache_required_columns_by_node,
+                        enforce_contracts=True,
+                        preamble_ns_supplied=preamble_ns is not None,
+                        streaming_chunk_size=chunk_size,
+                    )
                 lazy_outputs, *_ = execute_lazy_graph(
                     body.graph,
                     _build_node_fn,
@@ -4473,6 +4576,7 @@ class OptimiserSolveService:
     def _resolve_data_input_frame(
         self,
         lazy_outputs: dict[str, Any],
+        graph: PipelineGraph,
         config: dict[str, Any],
         node_id: str,
         job_id: str,
@@ -4480,13 +4584,20 @@ class OptimiserSolveService:
         execution_context: ExecutionContext | None = None,
     ) -> Any:
         """Pick the correct lazy source from pipeline outputs."""
-        data_input_id = config.get("data_input")
-        if isinstance(data_input_id, str) and data_input_id:
-            if data_input_id in lazy_outputs:
-                source_lf = lazy_outputs[data_input_id]
-            else:
+        data_edge = _resolve_optimiser_input_edge(
+            graph,
+            node_id,
+            config,
+            field="data_input",
+            infer_single=True,
+        )
+        source_lf = None
+        if data_edge is not None:
+            source_output = lazy_outputs.get(data_edge.source)
+            if source_output is None:
+                configured_name = config.get("data_input")
                 error_msg = (
-                    f"Configured optimiser data_input {data_input_id!r} did not produce data. "
+                    f"Configured optimiser data_input {configured_name!r} did not produce data. "
                     "Make sure it is connected to the optimiser node and produces a dataframe."
                 )
                 self._record_http_setup_failure(
@@ -4496,9 +4607,17 @@ class OptimiserSolveService:
                     execution_context=execution_context,
                 )
                 raise HTTPException(status_code=400, detail=error_msg)
-        else:
-            source_lf = lazy_outputs.get(node_id)
-
+            try:
+                source_lf = select_edge_source_output(source_output, data_edge)
+            except (KeyError, RuntimeError, ValueError) as exc:
+                error_msg = f"Configured optimiser data_input could not resolve its frame: {exc}"
+                self._record_http_setup_failure(
+                    job_id,
+                    status_code=400,
+                    detail=error_msg,
+                    execution_context=execution_context,
+                )
+                raise HTTPException(status_code=400, detail=error_msg) from exc
         if source_lf is None:
             error_msg = (
                 "No data arrived at the optimiser node. "
@@ -4752,6 +4871,8 @@ class OptimiserSolveService:
     @staticmethod
     def _extract_factors(
         lazy_outputs: dict[str, Any],
+        graph: PipelineGraph,
+        optimiser_node_id: str,
         config: dict[str, Any],
         mode: str,
         *,
@@ -4761,16 +4882,22 @@ class OptimiserSolveService:
         """Extract ratebook factors DataFrame (None for online mode)."""
         import polars as pl
 
-        banding_source_id = config.get("banding_source")
-        node_id = banding_source_id if isinstance(banding_source_id, str) else None
+        if mode != "ratebook":
+            return None
+        banding_source = config.get("banding_source")
+        banding_edge = _resolve_optimiser_input_edge(
+            graph,
+            optimiser_node_id,
+            config,
+            field="banding_source",
+        )
+        node_id = banding_edge.source if banding_edge is not None else None
         with _execution_stage(
             execution_context,
             "optimiser_extract_factors",
             node_id=node_id,
         ):
-            if mode != "ratebook":
-                return None
-            if not isinstance(banding_source_id, str) or not banding_source_id:
+            if banding_edge is None:
                 raise HTTPException(
                     status_code=400,
                     detail=(
@@ -4778,16 +4905,25 @@ class OptimiserSolveService:
                         "Select a banding node in the Rating Factor Source dropdown."
                     ),
                 )
-            if banding_source_id not in lazy_outputs:
+            if banding_edge.source not in lazy_outputs:
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"Configured ratebook banding_source {banding_source_id!r} did not "
+                        f"Configured ratebook banding_source {banding_source!r} did not "
                         "produce data. Make sure it is connected to the optimiser node."
                     ),
                 )
 
-            source = lazy_outputs[banding_source_id]
+            try:
+                source = select_edge_source_output(
+                    lazy_outputs[banding_edge.source],
+                    banding_edge,
+                )
+            except (KeyError, RuntimeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Configured ratebook banding_source could not resolve its frame: {exc}",
+                ) from exc
             factors_lf = source.lazy() if isinstance(source, pl.DataFrame) else source
             schema = factors_lf.collect_schema()
             available_cols = set(schema.names())
