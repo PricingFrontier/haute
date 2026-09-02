@@ -65,8 +65,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 25.0.0 is the control arm, not a second question.
-        pyarrow: ["24.0.0", "25.0.0"]
+        # 25.0.0 is the control arm. 25.0.1 was published 10 Aug 2026; a patch
+        # release is evidence of intent, not of outcome, so it is tested.
+        pyarrow: ["25.0.1", "25.0.0"]
     steps:
       - uses: actions/checkout@v4
 
