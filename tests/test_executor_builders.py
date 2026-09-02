@@ -1137,6 +1137,18 @@ class TestBuildOptimiser:
         with pytest.raises(ValueError, match="expected input at index 1"):
             fn(single_df)
 
+    def test_data_input_named_frames_require_every_declared_input(self) -> None:
+        """Named execution must not silently omit a connected input frame."""
+        _, fn, _ = _build(
+            "optimiser",
+            {"data_input": "scored"},
+            source_names=["banding", "scored"],
+        )
+        scored = pl.DataFrame({"quote_id": ["q1"]}).lazy()
+
+        with pytest.raises(ValueError, match="every declared connected input name"):
+            fn(scored=scored)
+
 
 # ---------------------------------------------------------------------------
 # _build_live_switch

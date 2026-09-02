@@ -870,6 +870,14 @@ def test_edge_join_builder_rejects_duplicate_target_handle_roles() -> None:
         )
 
 
+@pytest.mark.parametrize("target_handles", [None, ["base"], ["base", "join", "join"]])
+def test_edge_join_roles_require_exactly_two_target_handles(
+    target_handles: list[str] | None,
+) -> None:
+    with pytest.raises(ConfigError, match="exactly two incoming target handles"):
+        resolve_edge_join_role_indices(target_handles)
+
+
 def test_edge_join_codegen_rejects_duplicate_target_handle_roles() -> None:
     graph = PipelineGraph(
         nodes=[

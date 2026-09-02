@@ -1733,6 +1733,7 @@ def test_row_cardinality_resolution_proves_closed_node_semantics(
         (NodeType.RATING_STEP, {}, 2, "invalid_input_cardinality"),
         (NodeType.OPTIMISER, {"data_input": "absent"}, 1, "invalid_optimiser_input"),
         (NodeType.OPTIMISER, {"data_input": 0}, 1, "invalid_optimiser_input"),
+        (NodeType.OPTIMISER, {}, 2, "invalid_optimiser_input"),
         (
             NodeType.OPTIMISER_APPLY,
             {"optimiser_mode": "ratebook"},

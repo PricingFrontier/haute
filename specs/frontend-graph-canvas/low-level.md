@@ -1346,7 +1346,7 @@ again through the editor and save paths.
   Playwright geometry evidence for the frame-row body: for one, two,
   three, and eight emitted frames, each frame row's bounding-box vertical
   centre coincides with its output handle's centre within ≤3 CSS px —
-  asserted plain, with status and warning dots present, with a
+  asserted plain, with a warning-complete dot present, with a
   trace-active value pill, and with a ≥40-character truncating label in
   the row set; edges carry
   the correct labelled `sourceHandle` after render, save/reload, and an

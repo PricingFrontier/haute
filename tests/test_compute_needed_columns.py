@@ -1019,6 +1019,36 @@ class TestEdgeCases:
                 required_columns_by_node={"online_optimiser": {"quote_id", "expected_income"}},
             )
 
+    def test_multi_parent_optimiser_rejects_disconnected_data_input(self):
+        """A configured data input must name exactly one connected input."""
+        nodes = [
+            _source("left"),
+            _source("right"),
+            _node(
+                "online_optimiser",
+                NodeType.OPTIMISER,
+                mode="online",
+                data_input="missing",
+                quote_id="quote_id",
+                objective="expected_income",
+            ),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["left", "right", "online_optimiser"]
+        parents_of = {"left": [], "right": [], "online_optimiser": ["left", "right"]}
+        children_of = _build_children_of(order, parents_of)
+
+        with pytest.raises(
+            ContractMismatchError,
+            match="not one exact connected input name",
+        ):
+            compute_prepared_plan(
+                order,
+                children_of,
+                node_map,
+                required_columns_by_node={"online_optimiser": {"quote_id", "expected_income"}},
+            )
+
     def test_multi_parent_ratebook_optimiser_rejects_disconnected_banding_source(self):
         """Ratebook factor projection must name a connected factor parent."""
         nodes = [

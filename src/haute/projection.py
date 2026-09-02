@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Generic, NamedTuple, TypeVar
+from typing import Any, Generic, NamedTuple, TypeVar, cast
 
 from haute._cache import canonical_json
 from haute._column_lineage import ColumnLineageAnalysis, analyze_polars_lineage
@@ -3120,13 +3120,14 @@ def compute_prepared_plan(
                     parent_produced,
                     strict_projection=strict_projection,
                 )
-                if edge_join_demands is not None:
-                    store_parent_result(
-                        incoming,
-                        edge_join_demands,
-                        message="edge-join fan-in ownership rule",
-                    )
-                    continue
+                # This block already establishes the helper's Edge Join and
+                # multi-edge preconditions, so its optional case is unreachable.
+                store_parent_result(
+                    incoming,
+                    cast(ParentDemandResult, edge_join_demands),
+                    message="edge-join fan-in ownership rule",
+                )
+                continue
             if node.data.nodeType == NodeType.OPTIMISER:
                 optimiser_demands = parent_demands_for_node(
                     node,
@@ -3135,13 +3136,14 @@ def compute_prepared_plan(
                     my_needed,
                     seeded_required,
                 )
-                if optimiser_demands is not None:
-                    store_parent_result(
-                        incoming,
-                        optimiser_demands,
-                        message="optimiser exact-input ownership rule",
-                    )
-                    continue
+                # The node type and non-empty parent set likewise make the
+                # generic helper's optional case unreachable here.
+                store_parent_result(
+                    incoming,
+                    cast(ParentDemandResult, optimiser_demands),
+                    message="optimiser exact-input ownership rule",
+                )
+                continue
             # Every remaining rule addresses parents by node id.  Parallel
             # incoming edges from one source (typically different API ports)
             # cannot be routed by those contracts without conflating their
