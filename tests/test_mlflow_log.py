@@ -1163,3 +1163,42 @@ class TestLogModelCard:
         assert args[0][1] == "model_card"
         # Temp file should be cleaned up
         assert not Path(args[0][0]).exists()
+
+
+# ---------------------------------------------------------------------------
+# Keyword names haute hardcodes when calling MLflow
+# ---------------------------------------------------------------------------
+
+# ``(module, callable, keywords)`` haute passes literally in _mlflow_log.py.
+# The catboost call is mock-only in the test suite and the pyfunc call has one
+# real-MLflow test (test_mlflow_signature.py), so this is where the installed
+# MLflow is asked whether it still accepts each name. In MLflow 3 both
+# ``log_model`` calls document ``artifact_path`` as deprecated in favour of
+# ``name``. Do NOT migrate it in passing: the ``name`` form stores the model as
+# a logged-model entity rather than under the run's artifacts, and
+# ``_find_model_artifact`` in _mlflow_io.py walks run artifacts to find it.
+# Moving is a deliberate change of where the model lives, with its own tests.
+_MLFLOW_LITERAL_KEYWORDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("mlflow", "start_run", ("run_name",)),
+    ("mlflow.catboost", "log_model", ("cb_model", "artifact_path", "signature")),
+    ("mlflow.pyfunc", "log_model", ("artifact_path", "loader_module", "signature")),
+)
+
+
+def test_keywords_haute_passes_to_mlflow_are_still_accepted() -> None:
+    import inspect
+    from importlib import import_module
+
+    import mlflow
+
+    problems: list[str] = []
+    for module, name, keywords in _MLFLOW_LITERAL_KEYWORDS:
+        parameters = inspect.signature(getattr(import_module(module), name)).parameters
+        missing = sorted(set(keywords) - set(parameters))
+        if missing:
+            problems.append(f"{module}.{name}: {missing}")
+    assert not problems, (
+        f"The installed mlflow {mlflow.__version__} no longer accepts keyword argument(s) "
+        f"haute passes literally: {problems}. Those call sites in _mlflow_log.py will raise "
+        "TypeError; fix them and keep _MLFLOW_LITERAL_KEYWORDS in step."
+    )

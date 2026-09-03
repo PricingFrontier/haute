@@ -16,6 +16,7 @@ from haute.modelling._evaluation import (
     EvaluationFitResult,
     EvaluationPlan,
     EvaluationResultsArtifact,
+    _stratified_parts,
     aggregate_evaluation_results,
     canonical_json_bytes,
     file_sha256,
@@ -192,6 +193,28 @@ def test_random_regression_validation_membership_is_seeded_and_reproducible() ->
         != different_seed.validation_fits[0].validation_positions
     )
     assert first.validation_fits[0].validation_positions != tuple(range(80, 100))
+
+
+# Golden vector: the stratified 3-fold assignment of positions 0..11 with two
+# alternating classes at seed 42. It pins the ``np.random.default_rng(seed)``
+# shuffle stream that every evaluation-plan fold, sample and group bucket in
+# _evaluation.py rests on. NumPy freezes ``RandomState`` but may change
+# ``Generator`` streams in a feature release; the reproducibility test above
+# compares two draws in one process and passes under any stream. Generated on
+# numpy 2.4.2 and verified identical on the 2.0.2 floor. If this moves, every
+# saved evaluation plan stops matching a regenerated one: decide and record the
+# NumPy bump deliberately, do not regenerate the literal.
+_GOLDEN_STRATIFIED_3_FOLDS_SEED_42 = [[6, 8, 5, 3], [4, 2, 9, 7], [10, 0, 1, 11]]
+
+
+def test_stratified_fold_assignment_golden_vector_pins_numpy_generator_stream() -> None:
+    folds = _stratified_parts(list(range(12)), ["a", "b"] * 6, 3, 42)
+
+    assert folds == _GOLDEN_STRATIFIED_3_FOLDS_SEED_42, (
+        "NumPy Generator stream changed: stratified fold assignment no longer matches "
+        "the golden vector, so regenerated evaluation plans differ from saved ones. "
+        "Decide and record the NumPy bump deliberately; do not just regenerate."
+    )
 
 
 def test_random_classification_is_stratified_or_rejected_with_counts() -> None:

@@ -667,3 +667,56 @@ def test_retained_staging_bytes_count_against_publication_quota(tmp_path: Path) 
         )
 
     assert staging.exists()
+
+
+# ---------------------------------------------------------------------------
+# Polars dtype spellings are a persisted format
+# ---------------------------------------------------------------------------
+
+# ``str(dtype)`` is what a source-cache generation stores in its metadata
+# (compared verbatim on read; a mismatch reports the generation as corrupt)
+# and what ``haute._polars_dtypes.dtype_to_spec`` falls back to for scalar
+# dtypes (read back through ``getattr(pl, key)``). Polars documents neither
+# repr as stable. Generated on polars 1.39.3. If an entry moves, every
+# existing source-cache generation reports as corrupt on the new polars and a
+# node config carrying the old spelling may fail to parse: that is a
+# migration decision to take, not a table to regenerate. The zoned Datetime
+# is the entry most likely to move.
+_POLARS_DTYPE_SPELLINGS: tuple[tuple[pl.DataType | type[pl.DataType], str], ...] = (
+    (pl.Int8, "Int8"),
+    (pl.Int16, "Int16"),
+    (pl.Int32, "Int32"),
+    (pl.Int64, "Int64"),
+    (pl.UInt8, "UInt8"),
+    (pl.UInt16, "UInt16"),
+    (pl.UInt32, "UInt32"),
+    (pl.UInt64, "UInt64"),
+    (pl.Float32, "Float32"),
+    (pl.Float64, "Float64"),
+    (pl.Boolean, "Boolean"),
+    (pl.String, "String"),
+    (pl.Date, "Date"),
+    (pl.Time, "Time"),
+    (pl.Datetime("us"), "Datetime(time_unit='us', time_zone=None)"),
+    (pl.Datetime("ms", "Europe/London"), "Datetime(time_unit='ms', time_zone='Europe/London')"),
+    (pl.Duration("us"), "Duration(time_unit='us')"),
+    (pl.Decimal(10, 2), "Decimal(precision=10, scale=2)"),
+    (pl.List(pl.Int64), "List(Int64)"),
+    (pl.Struct({"a": pl.Int64, "b": pl.String}), "Struct({'a': Int64, 'b': String})"),
+    (pl.Categorical, "Categorical"),
+    (pl.Enum(["x", "y"]), "Enum(categories=['x', 'y'])"),
+)
+
+
+def test_polars_dtype_spellings_match_the_persisted_golden_table() -> None:
+    moved = [
+        f"{expected!r} -> {str(dtype)!r}"
+        for dtype, expected in _POLARS_DTYPE_SPELLINGS
+        if str(dtype) != expected
+    ]
+    assert not moved, (
+        f"polars {pl.__version__} changed str() of a dtype: {moved}. Every existing "
+        "source-cache generation will now report as corrupt and a node config carrying "
+        "the old spelling may fail to parse. Decide the migration deliberately; do not "
+        "regenerate this table."
+    )

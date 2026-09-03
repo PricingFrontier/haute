@@ -920,12 +920,61 @@ class TestGenerateDockerfile:
     def test_includes_catboost_for_cbm(self) -> None:
         resolved = _make_resolved(artifacts={"freq.cbm": Path("models/freq.cbm")})
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
-        assert "catboost" in df
 
-    def test_includes_sklearn_for_pkl(self) -> None:
+        deps = _dockerfile_pip_install_deps(df)
+
+        assert f"catboost=={version('catboost')}" in deps
+        assert "catboost" not in deps
+
+    def test_pins_sklearn_for_pkl_to_the_deploying_environment(self) -> None:
+        """The container unpickles the model, so the model runtime is pinned
+        exactly like the core runtime -- a bare ``scikit-learn`` would let pip
+        install whatever is latest at image-build time and load the pickle
+        under a different version than wrote it."""
         resolved = _make_resolved(artifacts={"model.pkl": Path("models/model.pkl")})
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
-        assert "scikit-learn" in df
+
+        deps = _dockerfile_pip_install_deps(df)
+
+        assert f"scikit-learn=={version('scikit-learn')}" in deps
+        assert "scikit-learn" not in deps
+
+    def test_extra_deps_follow_core_deps_in_sorted_order(self) -> None:
+        resolved = _make_resolved(
+            artifacts={"sev.pkl": Path("sev.pkl"), "freq.cbm": Path("freq.cbm")}
+        )
+        df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
+
+        deps = _dockerfile_pip_install_deps(df)
+
+        assert deps[-2:] == [
+            f"catboost=={version('catboost')}",
+            f"scikit-learn=={version('scikit-learn')}",
+        ]
+
+    def test_lgb_artifact_without_lightgbm_installed_fails_loudly(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A model runtime that is absent from the deploying environment cannot
+        be pinned, so deploy fails naming the artifact and the package rather
+        than letting the image install an arbitrary version."""
+        from haute.deploy import _container
+
+        def fake_version(package: str) -> str:
+            if package == "lightgbm":
+                raise PackageNotFoundError(package)
+            return "1.2.3"
+
+        monkeypatch.setattr(_container, "metadata_version", fake_version)
+        resolved = _make_resolved(artifacts={"model.lgb": Path("models/model.lgb")})
+
+        with pytest.raises(DeployError) as excinfo:
+            _generate_dockerfile("python:3.11-slim", 8080, resolved)
+
+        message = str(excinfo.value)
+        assert "'lightgbm'" in message
+        assert "model.lgb" in message
 
 
 # ---------------------------------------------------------------------------
@@ -1308,6 +1357,39 @@ class TestBuildAndPushImage:
         assert (result.build_dir / "Dockerfile").exists()
         assert (result.build_dir / "app.py").exists()
         assert (result.build_dir / "deploy_manifest.json").exists()
+
+    @patch("haute.deploy._container._generate_dockerfile", return_value="FROM python:3.11-slim\n")
+    @patch("haute.deploy._container._generate_app_source", return_value="# app\n")
+    @patch("haute.deploy._container._docker_push")
+    @patch("haute.deploy._container._docker_build")
+    @patch("haute.deploy._container._check_docker_available")
+    @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
+    @patch("haute.deploy._container._next_version", return_value=1)
+    def test_manifest_records_the_pinned_container_dependencies(
+        self,
+        mock_version: MagicMock,
+        mock_sha: MagicMock,
+        mock_check: MagicMock,
+        mock_build: MagicMock,
+        mock_push: MagicMock,
+        mock_app: MagicMock,
+        mock_df: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """A reader of the container can see exactly what it was built against."""
+        resolved = self._make_resolved_with_artifacts(tmp_path)
+
+        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
+            result = build_and_push_image(resolved)
+
+        manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+        assert manifest["container_dependencies"] == [
+            f"haute=={version('haute')}",
+            f"polars=={version('polars')}",
+            f"fastapi=={version('fastapi')}",
+            f"uvicorn[standard]=={version('uvicorn')}",
+            f"catboost=={version('catboost')}",
+        ]
 
     @patch("haute.deploy._container._generate_dockerfile", return_value="FROM python:3.11-slim\n")
     @patch("haute.deploy._container._generate_app_source", return_value="# app\n")

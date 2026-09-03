@@ -350,7 +350,7 @@ describe("DataPreview", () => {
         })}
               />,
     )
-    expect(screen.getByText(/Showing 2 of 10,000 rows/)).toBeInTheDocument()
+    expect(screen.getByText(`Showing 2 of ${(10000).toLocaleString()} rows`)).toBeInTheDocument()
   })
 
   it("shows the API preview cap when truncated even if row counts match", () => {

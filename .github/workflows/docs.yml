@@ -24,7 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # uv is pinned exactly, like the rest of the development tooling; this
+      # value is repeated in every workflow and must move together (grep
+      # `setup-uv` across .github/workflows/).
       - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.22"
 
       - run: uv sync --group dev --locked
 
