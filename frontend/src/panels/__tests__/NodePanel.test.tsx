@@ -1050,8 +1050,28 @@ describe("NodePanel", () => {
     expect(fetchExplorePivotMembers).toHaveBeenCalledWith({
       graph: {
         nodes: [
-          { id: "source_1", type: "dataInput", data: sourceNode.data, position: { x: 0, y: 0 } },
-          { id: "explore_1", type: "explore", data: exploreNode.data, position: { x: 0, y: 0 } },
+          {
+            id: "source_1",
+            type: "dataInput",
+            data: {
+              label: "Claims Source",
+              description: "",
+              nodeType: "dataInput",
+              config: {},
+            },
+            position: { x: 0, y: 0 },
+          },
+          {
+            id: "explore_1",
+            type: "explore",
+            data: {
+              label: "Explore Claims",
+              description: "",
+              nodeType: "explore",
+              config: { code: "df = df.filter(pl.col('premium') > 0)" },
+            },
+            position: { x: 0, y: 0 },
+          },
         ],
         edges: [sourceEdge],
         submodels: undefined,

@@ -883,6 +883,7 @@ function FlowEditor() {
     parentGraphRef,
     submodelsRef,
     setNodesAndEdgesAndSubmodels,
+    reservedApiInputFrameLabels,
   })
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
     if (!editingReadOnly) {

@@ -11,6 +11,7 @@ import {
 } from "../api/client"
 import type { ApiTimeoutError, RetryPolicy } from "../api/client"
 import { resolveGraphFromRefs } from "../utils/buildGraph"
+import { toCanonicalGraphPayload } from "../utils/graphSnapshot"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { NodeResult, PreviewNodeResponse } from "../api/types"
 import useToastStore from "../stores/useToastStore"
@@ -1177,12 +1178,17 @@ export default function usePipelineAPI({
       preamble: savePreamble,
       submodels: saveSubmodels,
     })
+    const requestGraph = toCanonicalGraphPayload(savedSnapshot)
     const saveRequestId = ++saveRequestSeq.current
     try {
       const data = await savePipeline({
         name: pipelineNameRef.current,
         description: descriptionRef.current,
-        graph: { nodes: savedSnapshot.nodes, edges: savedSnapshot.edges, submodels: savedSnapshot.submodels },
+        graph: {
+          nodes: requestGraph.nodes,
+          edges: requestGraph.edges,
+          submodels: requestGraph.submodels,
+        },
         preamble: savePreamble,
         source_file: sourceFileRef.current,
         sources: sc,

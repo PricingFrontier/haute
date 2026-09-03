@@ -319,6 +319,7 @@ export interface SubmodelCreateResponse {
 export interface SubmodelGraphResponse {
   status: string
   submodel_name: string
+  /** Canonical transport graph; it does not contain editor identity metadata. */
   graph: PipelineGraph
   submodel_file: string
   definition_id: string

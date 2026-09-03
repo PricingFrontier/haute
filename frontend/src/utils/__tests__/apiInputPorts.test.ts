@@ -792,8 +792,8 @@ describe("applyApiInputConfigChange", () => {
     const reloaded = labels.map((label, i) =>
       edgeFrom("api_1", label, `e_reloaded_${i}`),
     )
-    // buildGraph forwards edges verbatim to the backend payload — the
-    // frontend never rewrites handles on save.
+    // buildGraph preserves canonical handle values while cloning the live
+    // graph at the outbound request boundary.
     const nodes: SimpleNode[] = [
       {
         id: "api_1",
@@ -801,7 +801,9 @@ describe("applyApiInputConfigChange", () => {
         data: { label: "quotes", description: "", nodeType: "apiInput", config },
       },
     ]
-    expect(buildGraph(nodes, reloaded).edges).toBe(reloaded)
+    const requestEdges = buildGraph(nodes, reloaded).edges
+    expect(requestEdges).toStrictEqual(reloaded)
+    expect(requestEdges).not.toBe(reloaded)
 
     // And reconciliation against the same config keeps every reloaded
     // edge byte-identical: save → reload is a fixed point.

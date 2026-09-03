@@ -15,7 +15,11 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import type { Node } from "@xyflow/react"
 import type { PipelineEdge } from "../../types/node"
-import { serializeSnapshot, EMPTY_SNAPSHOT } from "../graphSnapshot"
+import {
+  serializeSnapshot,
+  toCanonicalGraphPayload,
+  EMPTY_SNAPSHOT,
+} from "../graphSnapshot"
 import useGraphStore from "../../stores/useGraphStore"
 
 // ---------------------------------------------------------------------------
@@ -179,6 +183,81 @@ describe("persisted-fingerprint serialized format", () => {
         submodels: reorderedSubmodels,
       }),
     ).toBe(EXPECTED_FINGERPRINT)
+  })
+})
+
+describe("canonical graph request projection", () => {
+  it("recursively strips editor metadata without mutating the live graph", () => {
+    const rootNode = {
+      ...NODE,
+      data: {
+        ...NODE.data,
+        config: { expression: "pl.col('price')", _semanticOption: true },
+        _functionName: "server_price",
+        _defaultInputName: "server_price",
+        _sourceHandleInputNames: {},
+      },
+    } as Node
+    const rootEdge = {
+      ...EDGE,
+      data: { _inputName: "server_price", routing: { mode: "explicit" } },
+    } as PipelineEdge
+    const childNode = {
+      id: "child",
+      type: "polars",
+      position: { x: 1, y: 2 },
+      selected: true,
+      data: {
+        label: "Child",
+        nodeType: "polars",
+        config: {},
+        _functionName: "server_child",
+        _defaultInputName: "server_child",
+        _sourceHandleInputNames: {},
+      },
+    } as Node
+    const childEdge = {
+      id: "child-edge",
+      source: "child",
+      target: "sink",
+      selected: true,
+      data: { _inputName: "server_child" },
+    } as PipelineEdge
+    const input = {
+      nodes: [rootNode],
+      edges: [rootEdge],
+      preamble: PREAMBLE,
+      submodels: {
+        pricing: {
+          definitionId: "pricing",
+          file: "modules/pricing.py",
+          graph: { nodes: [childNode], edges: [childEdge] },
+          inputPorts: [],
+          outputPorts: [],
+          _inputPortInputNames: { policy: "server_policy" },
+        },
+      },
+    }
+
+    const projected = toCanonicalGraphPayload(input)
+
+    expect(projected.nodes[0]).not.toHaveProperty("selected")
+    expect(projected.nodes[0].data).toEqual({
+      label: "price",
+      alpha: 1,
+      config: { expression: "pl.col('price')", _semanticOption: true },
+    })
+    expect(projected.edges[0]).not.toHaveProperty("selected")
+    expect(projected.edges[0].data).toEqual({ routing: { mode: "explicit" } })
+    const definition = projected.submodels?.pricing as Record<string, unknown>
+    expect(definition).not.toHaveProperty("_inputPortInputNames")
+    const graph = definition.graph as { nodes: Node[]; edges: PipelineEdge[] }
+    expect(graph.nodes[0]).not.toHaveProperty("selected")
+    expect(graph.nodes[0].data).not.toHaveProperty("_functionName")
+    expect(graph.edges[0]).not.toHaveProperty("selected")
+    expect(graph.edges[0]).not.toHaveProperty("data")
+    expect(input.nodes[0].data._functionName).toBe("server_price")
+    expect(input.submodels.pricing).toHaveProperty("_inputPortInputNames")
   })
 })
 

@@ -961,6 +961,11 @@ export function createSubmodel(
   return post<unknown>("/api/submodel/create", payload, options).then(parseSubmodelCreateResponse)
 }
 
+/**
+ * Loads the backend's canonical transport graph. The returned graph is not
+ * editor-ready: callers must resolve its root and nested definition identities
+ * before publishing it into live editor state.
+ */
 export function loadSubmodel(
   definitionId: string,
   parentSourceFile: string,

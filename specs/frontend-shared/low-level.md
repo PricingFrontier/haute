@@ -146,9 +146,12 @@
   "error"|"info"|"warning", text}`. `id` is a monotonically increasing
   string counter, not a UUID.
 - **`GraphPayload`** (`api/types.ts`): `{nodes, edges, submodels?,
-  preamble?}` — the minimal shape every pipeline-mutating endpoint accepts;
-  distinct from the richer `PipelineGraph` (adds pipeline metadata) that
-  `loadPipeline`/`getCommitPipeline` return.
+  preamble?}` — the minimal canonical shape every pipeline-mutating endpoint
+  accepts. Before transport, the browser recursively removes React Flow UI
+  fields and all underscore-prefixed editor metadata from root and embedded
+  graphs without mutating the live graph. It is distinct from the richer
+  `PipelineGraph` (adds pipeline metadata) that `loadPipeline`/
+  `getCommitPipeline` return.
 
 ## Control flow
 
@@ -624,6 +627,15 @@ ordinary-versus-multi-output default-identity nullability before attaching node 
 immutably. Missing, reordered, malformed, semantically mismatched, or rejected identities throw
 before callers commit graph or history state. No frontend
 production module derives Python executable names or config references.
+
+Raw canonical graphs entering an editable surface are resolved recursively and
+atomically: the root is one identity scope, and each embedded submodel definition
+is a separate scope. A definition scope adds a synthetic Input boundary whose
+handles are its declared input-port ids; the returned exact handle map becomes
+the definition's transient `_inputPortInputNames`, while child-node and child-edge
+identities are attached normally. No partially resolved root or registry is
+published. Conversely, every canonical graph request uses the shared recursive
+projection that removes these editor-only fields before schema validation.
 
 `frontend/src/stores/useDocumentStatusStore.ts` performs one atomic status transition and clones
 all externally supplied arrays/objects. Its `capabilities` value is the shared UI admission fence;

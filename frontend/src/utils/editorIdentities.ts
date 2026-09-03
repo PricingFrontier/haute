@@ -224,3 +224,104 @@ export async function resolveEditorGraphIdentities({
     edges: attachEditorEdgeIdentities(edges, resolvedNodes),
   }
 }
+
+function syntheticSubmodelPortNode(definition: SubmodelDefinition): Node {
+  const childIds = new Set(definition.graph.nodes.map((node) => node.id))
+  const baseId = "__submodel_input_ports__"
+  let id = baseId
+  let suffix = 1
+  while (childIds.has(id)) {
+    id = `${baseId}_${suffix}`
+    suffix += 1
+  }
+  return {
+    id,
+    type: NODE_TYPES.SUBMODEL_PORT,
+    position: { x: 0, y: 0 },
+    data: {
+      label: "Submodel inputs",
+      nodeType: NODE_TYPES.SUBMODEL_PORT,
+      portDirection: "input",
+      ports: definition.inputPorts.map((port) => ({ id: port.portId })),
+    },
+  }
+}
+
+function inputPortInputNames(node: Node, definition: SubmodelDefinition): Record<string, string> {
+  const mapping = node.data._sourceHandleInputNames
+  if (typeof mapping !== "object" || mapping === null || Array.isArray(mapping)) {
+    throw new Error(
+      `Cannot resolve canonical submodel ${definition.definitionId}: boundary input identity map is malformed`,
+    )
+  }
+  const record = mapping as Record<string, unknown>
+  const expected = new Set(definition.inputPorts.map((port) => port.portId))
+  const keys = Object.keys(record)
+  if (
+    keys.length !== expected.size
+    || keys.some((key) => !expected.has(key))
+    || [...expected].some((portId) => typeof record[portId] !== "string" || record[portId].length === 0)
+  ) {
+    throw new Error(
+      `Cannot resolve canonical submodel ${definition.definitionId}: boundary input identity map has incomplete coverage`,
+    )
+  }
+  return structuredClone(record) as Record<string, string>
+}
+
+/**
+ * Resolves server-owned identities for a root graph and every canonical submodel definition.
+ * Each definition is resolved in its own identity scope with a transient input-boundary node.
+ */
+export async function resolveCanonicalGraphIdentities({
+  nodes,
+  edges,
+  submodels,
+  reservedApiInputFrameLabels,
+  resolve = resolveEditorNodeIdentities,
+}: {
+  nodes: readonly Node[]
+  edges: readonly Edge[]
+  submodels: SubmodelRegistry
+  reservedApiInputFrameLabels: ReadonlySet<string>
+  resolve?: IdentityResolver
+}): Promise<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, SubmodelDefinition> }> {
+  const definitions = Object.entries(submodels).map(([definitionId, definition]) => {
+    if (!isSubmodelDefinition(definition, definitionId)) {
+      throw new Error(`Cannot resolve canonical submodel ${definitionId}: definition is malformed`)
+    }
+    return [definitionId, definition] as const
+  })
+
+  const root = await resolveEditorGraphIdentities({
+    nodes,
+    edges,
+    submodels,
+    reservedApiInputFrameLabels,
+    resolve,
+  })
+  const resolvedSubmodels: Record<string, SubmodelDefinition> = {}
+  for (const [definitionId, definition] of definitions) {
+    const boundary = syntheticSubmodelPortNode(definition)
+    const graph = await resolveEditorGraphIdentities({
+      nodes: [...definition.graph.nodes, boundary],
+      edges: definition.graph.edges,
+      submodels,
+      reservedApiInputFrameLabels,
+      resolve,
+    })
+    const resolvedBoundary = graph.nodes.at(-1)
+    if (!resolvedBoundary) {
+      throw new Error(`Cannot resolve canonical submodel ${definitionId}: boundary node is missing`)
+    }
+    resolvedSubmodels[definitionId] = {
+      ...definition,
+      graph: {
+        nodes: graph.nodes.slice(0, -1),
+        edges: graph.edges,
+      },
+      _inputPortInputNames: inputPortInputNames(resolvedBoundary, definition),
+    }
+  }
+  return { ...root, submodels: resolvedSubmodels }
+}

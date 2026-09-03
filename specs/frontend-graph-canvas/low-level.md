@@ -28,18 +28,18 @@
 | `frontend/src/nodes/UnavailablePipelineNode.tsx` | Dedicated inaccessible node card for unknown decorators and recovery elements that cannot use a canonical node renderer. |
 | `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins builds (lazy-sink first, one admitted-eager retry on `snapshot_build_unsupported`), polls jobs to a terminal state with abort support, and notifies at most once when a build starts. |
 | `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, document-fingerprint resync, applying accepted `pipeline_document_update` frames through one atomic clean-snapshot transition with the authoritative status fence (including preserved-block/revision refs and graph-scoped dirty blocking), treating `parse_error` as a document system failure, and session expiry. |
-| `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — definition/occurrence-aware view-stack state machine, local embedded-definition drill/project/layout, revision-preconditioned transform requests, and one atomic dirty history entry per create/dissolve. |
+| `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — definition/occurrence-aware view-stack state machine, local embedded-definition drill/project, recursive authoritative identity resolution for canonical transform responses, layout, revision-preconditioned transform requests, and one atomic dirty history entry per create/dissolve. |
 | `frontend/src/utils/submodelViewGraph.ts` | Pure projection from one definition plus one occurrence's parent bindings into collision-safe composite Input/Output nodes and definition-port boundary edges. |
 | `frontend/src/utils/submodelDeletionPolicy.ts` | `withNativeDeletePolicy` applies the owner-aware React Flow deletion gate while preserving unchanged node identity. |
 | `frontend/src/utils/submodelRuntimeTarget.ts` | `encodeRuntimeIdPart`, `qualifiedRuntimeNodeId`, `resolveDrilledOccurrenceIdentity`, and `runtimeNodeIdForVisibleNode` validate drilled occurrence identity and derive backend runtime targets. |
-| `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | Pure definition-aware boundary transform. It validates canonical identity, edits structured endpoints and opaque public-port ids, preserves boundary positions, preflights interface changes against every bound occurrence, and returns one coherent child/definition/parent result. |
+| `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | Pure definition-aware boundary transform. It validates canonical identity, edits structured endpoints and opaque public-port ids, preserves boundary positions and authoritative projected identities, reattaches rebuilt edge identities, preflights interface changes against every bound occurrence, and returns one coherent child/definition/parent result. |
 | `frontend/src/utils/submodelBoundaryEditing.ts` | Canonical boundary-edit orchestration that validates occurrence identity and delegates structured definition transforms to `canonicalSubmodelBoundaryEditing.ts`. |
 | `frontend/src/hooks/useSubmodelBoundaryEditing.ts` | Adapts canonical pure boundary transforms to React Flow connection/deletion events, the history-aware atomic graph setter, `parentGraphRef`, error toasts, and undo/redo reconciliation while a drilled view is active. |
 | `frontend/src/hooks/useGraphCanvasState.ts` | React Flow adapter over `useGraphStore`: converts `NodeChange[]`/`EdgeChange[]` into raw graph updates, takes one snapshot at a drag's first structural position change, and avoids history churn for per-frame movement and selection-only changes. |
 | `frontend/src/hooks/usePanelGraphContext.ts` | Produces the typed, render-stable `PanelGraphContextSnapshot` (`allNodes`, `edges`, `nodeById`, `getNode`) only when the graph store's panel-context version changes, isolating editor consumers from React Flow UI-only updates. |
 | `frontend/src/hooks/useKeyboardShortcuts.ts` | App-level canvas keyboard bindings for save, undo/redo, copy/paste, delete, search, Submodel creation, and panel dismissal; honours editable controls so keystrokes do not leak from a text field into graph mutation. Ctrl+G delegates to the same `requestSubmodelCreation` policy as the toolbar. |
 | `frontend/src/utils/submodelCreation.ts` | `requestSubmodelCreation` — the single policy and refusal-message owner shared by Ctrl+G and the toolbar Submodel action: editable context, main canvas, and at least two selected nodes. |
-| `frontend/src/utils/buildGraph.ts` | `buildGraph` (backend payload shape), `graphForRequestIdentity` (semantic graph projection consumed by Data Output), and `resolveGraphFromRefs` (parent-graph-takes-priority resolution used by preview/save/submodel calls). |
+| `frontend/src/utils/buildGraph.ts` | `buildGraph` (canonical backend payload shape, recursively stripped of editor-only metadata), `graphForRequestIdentity` (semantic graph projection consumed by Data Output), and `resolveGraphFromRefs` (parent-graph-takes-priority resolution used by preview/save/submodel calls). |
 | `frontend/src/utils/graphDiff.ts` | `diffPipelineNodes` — pure added/removed/changed/moved node diff between two graph versions, backing the comparison view. |
 | `frontend/src/utils/graphHelpers.ts` | `computeNextNodeId`, `normalizeEdges`, and `filterIncomingEdges`; validates endpoint/handle existence for layout while preserving the full normalised edge list for graph state and save. |
 | `frontend/src/utils/graphPerformance.ts` | `shouldUseLiteGraphEffects`/`GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT` (1000). |
@@ -58,7 +58,7 @@
 | `frontend/src/utils/edgeJoinInsertionFeedback.ts` | Pure render-only Edge Join candidate decoration that preserves edge-array identity when inactive. |
 | `frontend/src/utils/edgeJoinValidation.ts` | Save-time edge-join graph validation and readable warnings. |
 | `frontend/src/utils/nodeTypeRegistry.ts` | React Flow node-type registry built from canonical metadata, shared by editable and read-only canvases. |
-| `frontend/src/utils/graphSnapshot.ts` | Four-field graph snapshot serialization/cloning and persisted canonicalisation: Save/dirty serialization strips transient identities; live history clones retain only the server-owned identity subset while omitting React Flow presentation and volatile preview/trace metadata. |
+| `frontend/src/utils/graphSnapshot.ts` | Four-field graph snapshot serialization/cloning and canonical request projection: every graph sent to a canonical backend schema recursively strips editor-only identities and React Flow presentation without mutating live state; dirty serialization uses the same projection, while live history clones retain only the server-owned identity subset. |
 | `frontend/src/utils/shallowNodeHash.ts` | Stable shallow data hashing used by structural and panel-context fingerprint calculations. |
 | `frontend/src/components/ComparisonInspector.tsx` | Read-only comparison-view config panel: renders the real node editor `inert` for the available side(s), with a Historical/Current switcher. |
 | `frontend/src/components/ComparisonView.tsx` | The historical-vs-current comparison canvas pair: fetches the historical pipeline, diffs it, and renders two non-interactive `ReactFlow` instances (`ReadonlyCanvas`) with diff-ring highlighting, a draggable split, and orientation toggle. |
@@ -133,8 +133,9 @@ Selection-based submodel creation obtains `nodes`, `edges`, and `submodels`
 from one synchronous `useGraphStore.getState()` read when the dialog is
 submitted. Request construction never uses the effect-mirrored `graphRef` or
 `submodelsRef`, so a just-loaded graph cannot submit an obsolete hidden node.
-Create and dissolve serialise that complete persisted snapshot with
-`serializeSnapshot` and capture the source file, pipeline name, source
+Create and dissolve project that complete live snapshot through the shared
+canonical graph-payload adapter for their request, use `serializeSnapshot` for
+the stale-response identity, and capture the source file, pipeline name, source
 revision, preserved blocks, and a monotonically increasing transform request
 serial. Their responses commit only when that complete request context is
 still current and the store serialises identically. This catches position-only
@@ -565,10 +566,13 @@ newer overlapping transform.
 18. **Save (`usePipelineAPI.handleSave`).** Refuses to run while drilled
     into a submodel. Runs `validateConfigRefs` (warns, does not block) and
     `findFirstInvalidEdgeJoin` (blocks with an error toast if invalid).
-    Snapshots the exact graph/preamble/submodels that will be sent
-    (`captureGraphSnapshot`, `structuredClone`); snapshot cloning strips only
-    React Flow UI fields and therefore retains `PipelineEdge.sourcePort`/
-    `targetPort`. The request also sends `preservedBlocksRef.current` unchanged.
+    Captures an exact live graph/preamble/submodel snapshot for the successful
+    saved baseline, then projects a separate immutable canonical request graph.
+    That request recursively strips React Flow presentation and every
+    underscore-prefixed node/edge/definition field, including submodel
+    `_inputPortInputNames`, while retaining canonical `PipelineEdge.sourcePort`/
+    `targetPort`; the live snapshot keeps its authoritative identities. The
+    request also sends `preservedBlocksRef.current` unchanged.
     It then stamps the attempt with
     `++saveRequestSeq.current`. On a successful `savePipeline()` response,
     calls `markSaved(savedSnapshot)` only if this request's id is still the
@@ -620,16 +624,21 @@ newer overlapping transform.
     loop, covering local backend restarts without putting a secret in a URL.
 20. **Submodel drill-in and boundary editing.**
     `useSubmodelNavigation.handleDrillIntoSubmodel` resolves a canonical
-    occurrence by node id, loads by `definitionId`, verifies the returned
-    definition identity, overlays the authoritative child graph onto the typed
-    interface, and asks `buildSubmodelViewGraph` for one collision-safe Input
-    and Output card keyed by the immutable instance id. Each declared input port
+    occurrence by node id and its embedded typed definition, then asks
+    `buildSubmodelViewGraph` for one collision-safe Input and Output card keyed
+    by the immutable instance id. The complete projected graph is passed through
+    `resolveEditorGraphIdentities` before layout or publication, so embedded
+    children returned by an unsaved Create transform and both synthetic boundary
+    nodes receive the same server-owned node/edge identities as a loaded root
+    graph; renderers never have to synthesize missing executable identities.
+    Each declared input port
     becomes one labelled Input row and one edge per ordered target; each output
     port becomes one source-to-Output edge. Parent bindings are validated against
     `in__<portId>`/`out__<portId>` before projection. The child graph, synthetic
-    edges, and ELK positions are all computed before any view stack, graph,
-    source-file ref, or selection mutation, so load/projection/layout failure is
-    atomic. A shared-definition toast names the number of affected occurrences.
+    edges, authoritative identities, and ELK positions are all computed before
+    any view stack, graph, source-file ref, or selection mutation, so
+    projection/identity-resolution/layout failure is atomic. A shared-definition
+    toast names the number of affected occurrences.
 
     `useSubmodelBoundaryEditing` intercepts boundary connects/deletes before the
     generic edge handler and dispatches canonical state to
@@ -641,7 +650,14 @@ newer overlapping transform.
     atomic edit with a visible error if any changed public port is bound,
     reporting every affected occurrence and port. A successful result commits
     the view, definition registry, and parent refs through one history-aware
-    setter; missing/malformed identity or topology fails loudly. The projection
+    setter. Reconciliation carries forward only server-owned boundary-node
+    identity fields whose handle keys remain valid and derives every rebuilt
+    edge's `_inputName` from those identities before commit; it never publishes
+    a fresh identity-less boundary projection. Missing/malformed identity or
+    topology fails loudly. If an output-interface edit changes an occurrence's
+    source-handle set, the hook resolves the complete parent graph against the
+    candidate definition registry before the atomic commit; a stale or failed
+    resolution leaves both views unchanged. The projection
     retains the two empty boundary cards and refuses to reconcile a graph that
     no longer contains both cards.
 21. **Submodel create/dissolve.** Both handlers refuse to run while a drilled
@@ -651,15 +667,22 @@ newer overlapping transform.
     Both requests send `base_revision=sourceRevisionRef.current` and
     `preserved_blocks=preservedBlocksRef.current`. Create changes no local state
     until the response succeeds. Dissolve resolves the selected node as a typed
-    occurrence and sends only `instance_id`. Each successful response replaces
-    nodes, edges, definitions, and preamble through one history-aware store
+    occurrence and sends only `instance_id`. Each request uses the same
+    recursive canonical-payload projection as Save, so live node/edge identities
+    and definition `_inputPortInputNames` never cross a strict backend graph
+    schema. Each successful raw canonical response resolves identities for the
+    root graph and every embedded definition before replacing nodes, edges,
+    definitions, and preamble through one history-aware store
     action, updates the in-memory preserved-block ref, creates one undo entry,
     and leaves the persisted revision unchanged. The resulting dirty graph is
     written only by explicit Save. Other occurrences of the same definition
     remain collapsed and keep the registry entry; dissolving the final
     occurrence removes the definition only from the submitted graph, while
-    Save later decides whether its managed child files are safe to delete. A
-    `409` leaves graph and refs untouched and surfaces the backend reload
+    Save later decides whether its managed child files are safe to delete.
+    Definition resolution records exact `_inputPortInputNames` coverage by
+    resolving a synthetic Input boundary over the definition's declared input
+    ports. Any root or nested resolution failure leaves graph and refs untouched.
+    A `409` leaves graph and refs untouched and surfaces the backend reload
     instruction.
 22. **Breadcrumb navigate (`handleBreadcrumbNavigate`).** Reconciles the
     active drilled projection, then restores the synchronized parent graph
@@ -1147,7 +1170,8 @@ again through the editor and save paths.
     unmount abort, AbortError suppression, nullable-metadata tolerance,
     load-failure toast); save (success toast, dirty-during-in-flight-save
     survives, stale-response never overwrites a newer saved baseline,
-    blocked while drilled into a submodel, error toast including
+    canonical Save request projection without loss of live root/nested
+    identities; blocked while drilled into a submodel; error toast including
     `ApiError` detail); sources loading; preview fetch/status/schema
     propagation into nodes via the raw setter; requested-preview-column
     capping for wide cached schemas; client-side preview timeout surfaced
@@ -1215,22 +1239,28 @@ again through the editor and save paths.
   - `frontend/src/hooks/__tests__/useSubmodelNavigation.test.ts` covers
     transform-only create/dissolve as dirty single-undo edits with unchanged
     persisted revision; local canonical drill (including an unsaved new
-    definition); shared-definition messaging; projection/layout failure;
+    definition); projected child/boundary identity resolution and its atomic
+    failure path; recursive root/definition identity hydration after canonical
+    create/dissolve responses; canonical request stripping; shared-definition
+    messaging; projection/layout failure;
     breadcrumb restore; and graph/ref error no-ops.
   - `frontend/src/hooks/__tests__/useSubmodelNavigation.gaps.test.ts`,
     `frontend/src/utils/__tests__/submodelViewGraph.test.ts`, and
     `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts` — canonical
     structured-port projection; per-occurrence collision-safe boundary ids;
     shared-interface compatibility preflight and atomic rejection; public-port
-    creation/removal; definition-only reconciliation; boundary-position
-    preservation; and invalid identity/topology rejection.
+    creation/removal; definition-only reconciliation; boundary-position and
+    server-identity preservation; rebuilt edge identity attachment; and invalid
+    identity/topology rejection.
   - `frontend/src/hooks/__tests__/useTracing.test.ts` — flat external node ids
     represented by a composite boundary resolve to that Input/Output card for
     active/dim trace projection.
 - **Utils — `frontend/src/utils/__tests__/`:**
-  - `frontend/src/utils/__tests__/buildGraph.test.ts` — payload serialisation (zeroed position,
-    `type`/`data.nodeType` fallback precedence, submodels/preamble
-    pass-through and their `undefined` default); `resolveGraphFromRefs`
+  - `frontend/src/utils/__tests__/buildGraph.test.ts` — canonical payload
+    serialisation (zeroed position, `type`/`data.nodeType` fallback precedence,
+    recursive root/nested editor-metadata stripping without input mutation,
+    submodels/preamble preservation and their `undefined` default);
+    `resolveGraphFromRefs`
     (parent-graph priority, fallback to `graphRef`, `preambleRef` always
     wins regardless of which graph is active).
   - `frontend/src/utils/__tests__/graphDiff.test.ts` — added/removed/changed classification; moved-only
@@ -1368,7 +1398,9 @@ again through the editor and save paths.
   feedback and real gesture insertion; same-name-key configuration and
   joined preview rows/columns; save/reload preservation of the compact node,
   role handles, config, and split topology; a second insertion on the same
-  branch; exact preservation of a named API-input `sourceHandle`; and a
+  branch; exact preservation of a named API-input `sourceHandle`; immediate
+  drill into an unsaved whole-graph submodel with that API Input and its
+  authoritative frame handle rendered; and a
   downstream trace retaining both Edge Join ancestors, leaving them undimmed,
   and highlighting their connecting path while reserving node-active styling
   for column-relevant steps. All

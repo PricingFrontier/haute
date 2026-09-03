@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react"
+import { useCallback, useEffect, useRef } from "react"
 import {
   applyEdgeChanges,
   applyNodeChanges,
@@ -8,7 +8,13 @@ import {
   type Node,
   type NodeChange,
 } from "@xyflow/react"
-import type { PipelineEdge, SubmodelBoundaryEdgeData, SubmodelPortData } from "../types/node"
+import {
+  isSubmodelDefinition,
+  isSubmodelInstanceConfig,
+  type PipelineEdge,
+  type SubmodelBoundaryEdgeData,
+  type SubmodelPortData,
+} from "../types/node"
 import {
   applySubmodelBoundaryConnection,
   reconcileSubmodelBoundaryState,
@@ -17,6 +23,7 @@ import {
   type SubmodelBoundaryEditState,
 } from "../utils/submodelBoundaryEditing"
 import useToastStore from "../stores/useToastStore"
+import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 
 type GraphRef = React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
 type ParentGraphRef = React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> } | null>
@@ -33,6 +40,8 @@ export interface UseSubmodelBoundaryEditingParams {
   parentGraphRef: ParentGraphRef
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesAndEdgesAndSubmodels: Setter
+  reservedApiInputFrameLabels: ReadonlySet<string>
+  resolveGraphIdentities?: typeof resolveEditorGraphIdentities
 }
 
 export type SharedNodeDeletionResult = "not-applicable" | "committed" | "blocked"
@@ -43,6 +52,27 @@ const hasBoundaryCard = (nodes: Node[], direction: "input" | "output") =>
 const isBoundaryEdge = (edge: Edge) => {
   const data = edge.data as SubmodelBoundaryEdgeData | undefined
   return data?.submodelBoundary?.direction === "input" || data?.submodelBoundary?.direction === "output"
+}
+
+function parentOccurrenceHandlesAreResolved(result: SubmodelBoundaryEditResult): boolean {
+  const definition = result.submodels[result.definitionId]
+  if (!isSubmodelDefinition(definition, result.definitionId)) return false
+  const expectedHandles = definition.outputPorts.map((port) => `out__${port.portId}`)
+  return result.parentNodes.every((node) => {
+    if (node.data.nodeType !== "submodel") return true
+    const config = node.data.config
+    if (!isSubmodelInstanceConfig(config) || config.definitionId !== result.definitionId) {
+      return true
+    }
+    const mapping = node.data._sourceHandleInputNames
+    return typeof mapping === "object"
+      && mapping !== null
+      && !Array.isArray(mapping)
+      && expectedHandles.every((handle) => {
+        const value = (mapping as Record<string, unknown>)[handle]
+        return typeof value === "string" && value.length > 0
+      })
+  })
 }
 
 export default function useSubmodelBoundaryEditing({
@@ -56,8 +86,11 @@ export default function useSubmodelBoundaryEditing({
   parentGraphRef,
   submodelsRef,
   setNodesAndEdgesAndSubmodels,
+  reservedApiInputFrameLabels,
+  resolveGraphIdentities = resolveEditorGraphIdentities,
 }: UseSubmodelBoundaryEditingParams) {
   const addToast = useToastStore((store) => store.addToast)
+  const identityRequestSerialRef = useRef(0)
   const reportBoundaryError = useCallback((error: unknown) => {
     addToast(
       "error",
@@ -105,6 +138,50 @@ export default function useSubmodelBoundaryEditing({
     submodelsRef.current = result.submodels
     setNodesAndEdgesAndSubmodels(result.viewNodes, result.viewEdges, result.submodels)
   }, [graphRef, parentGraphRef, submodelsRef, setNodesAndEdgesAndSubmodels])
+  const commitWithParentIdentities = useCallback((result: SubmodelBoundaryEditResult) => {
+    const serial = ++identityRequestSerialRef.current
+    if (parentOccurrenceHandlesAreResolved(result)) {
+      commit(result)
+      return
+    }
+    const expectedView = graphRef.current
+    const expectedParent = parentGraphRef.current
+    const expectedSubmodels = submodelsRef.current
+    void resolveGraphIdentities({
+      nodes: result.parentNodes,
+      edges: result.parentEdges,
+      submodels: result.submodels,
+      reservedApiInputFrameLabels,
+    }).then((resolved) => {
+      if (
+        identityRequestSerialRef.current !== serial
+        || graphRef.current !== expectedView
+        || parentGraphRef.current !== expectedParent
+        || submodelsRef.current !== expectedSubmodels
+      ) {
+        reportBoundaryError(
+          new Error("the workspace changed while parent identities were resolving"),
+        )
+        return
+      }
+      commit({
+        ...result,
+        parentNodes: resolved.nodes,
+        parentEdges: resolved.edges,
+      })
+    }).catch(reportBoundaryError)
+  }, [
+    commit,
+    graphRef,
+    parentGraphRef,
+    reportBoundaryError,
+    reservedApiInputFrameLabels,
+    resolveGraphIdentities,
+    submodelsRef,
+  ])
+  useEffect(() => () => {
+    identityRequestSerialRef.current += 1
+  }, [])
   const reconcileActiveSubmodel = useCallback(() => {
     try {
       const current = state()
@@ -134,13 +211,13 @@ export default function useSubmodelBoundaryEditing({
       const target = nodes.find((node) => node.id === connection.target)
       if (!isBoundaryNode(source) && !isBoundaryNode(target)) return false
       const result = applySubmodelBoundaryConnection(current, connection)
-      if (result) commit(result)
+      if (result) commitWithParentIdentities(result)
       return true
     } catch (error: unknown) {
       reportBoundaryError(error)
       return true
     }
-  }, [state, nodes, commit, reportBoundaryError])
+  }, [state, nodes, commitWithParentIdentities, reportBoundaryError])
 
   const deleteBoundaryEdge = useCallback((id: string): boolean => {
     try {
@@ -149,13 +226,13 @@ export default function useSubmodelBoundaryEditing({
       const edge = edges.find((candidate) => candidate.id === id)
       if (!edge || !isBoundaryEdge(edge)) return false
       const result = removeSubmodelBoundaryEdges(current, [id])
-      if (result) commit(result)
+      if (result) commitWithParentIdentities(result)
       return true
     } catch (error: unknown) {
       reportBoundaryError(error)
       return true
     }
-  }, [state, edges, commit, reportBoundaryError])
+  }, [state, edges, commitWithParentIdentities, reportBoundaryError])
 
   const onBoundaryEdgesChange = useCallback((changes: EdgeChange[]): boolean => {
     const removedBoundaryIds = changes
@@ -178,13 +255,13 @@ export default function useSubmodelBoundaryEditing({
         ...removed,
         viewEdges: viewEdges as PipelineEdge[],
       })
-      if (reconciled) commit(reconciled)
+      if (reconciled) commitWithParentIdentities(reconciled)
       return true
     } catch (error: unknown) {
       reportBoundaryError(error)
       return true
     }
-  }, [state, edges, commit, reportBoundaryError])
+  }, [state, edges, commitWithParentIdentities, reportBoundaryError])
 
   const commitSharedNodeDeletion = useCallback((
     nodeIds: ReadonlySet<string>,
@@ -208,13 +285,13 @@ export default function useSubmodelBoundaryEditing({
           && !selectedEdgeIds.has(edge.id)),
       })
       if (!reconciled) throw new Error("The shared submodel boundary could not be reconciled")
-      commit(reconciled)
+      commitWithParentIdentities(reconciled)
       return "committed"
     } catch (error: unknown) {
       reportBoundaryError(error)
       return "blocked"
     }
-  }, [state, commit, reportBoundaryError])
+  }, [state, commitWithParentIdentities, reportBoundaryError])
 
   return {
     commitBoundaryConnection,

@@ -3,9 +3,12 @@ import type { Node, Edge } from "@xyflow/react"
 import type { ViewLevel } from "../components/BreadcrumbBar"
 import { getLayoutedElements } from "../utils/layout"
 import { normalizeEdges } from "../utils/graphHelpers"
-import { serializeSnapshot } from "../utils/graphSnapshot"
+import { serializeSnapshot, toCanonicalGraphPayload } from "../utils/graphSnapshot"
 import { buildSubmodelViewGraph } from "../utils/submodelViewGraph"
-import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
+import {
+  resolveCanonicalGraphIdentities,
+  resolveEditorGraphIdentities,
+} from "../utils/editorIdentities"
 import { createSubmodel, dissolveSubmodel } from "../api/client"
 import useToastStore from "../stores/useToastStore"
 import useGraphStore from "../stores/useGraphStore"
@@ -37,6 +40,7 @@ interface SubmodelNavParams {
   fitView: (options?: { padding?: number }) => void
   reservedApiInputFrameLabels: ReadonlySet<string>
   resolveGraphIdentities?: typeof resolveEditorGraphIdentities
+  resolveCanonicalIdentities?: typeof resolveCanonicalGraphIdentities
 }
 
 export interface SubmodelNavReturn {
@@ -119,6 +123,7 @@ export default function useSubmodelNavigation({
   setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData,
   preambleRef, sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef,
   fitView, reservedApiInputFrameLabels, resolveGraphIdentities = resolveEditorGraphIdentities,
+  resolveCanonicalIdentities = resolveCanonicalGraphIdentities,
 }: SubmodelNavParams): SubmodelNavReturn {
   const addToast = useToastStore((s) => s.addToast)
   const [viewStack, setViewStack] = useState<ViewLevel[]>([{ type: "pipeline", name: "main", file: "" }])
@@ -128,9 +133,14 @@ export default function useSubmodelNavigation({
 
   const beginTransformRequest = useCallback((): TransformRequestContext => {
     const { nodes, edges, submodels, preamble } = useGraphStore.getState()
+    const canonical = toCanonicalGraphPayload({ nodes, edges, submodels })
     return {
       serial: ++transformRequestSerialRef.current,
-      graph: { nodes, edges, submodels },
+      graph: {
+        nodes: canonical.nodes,
+        edges: canonical.edges,
+        submodels: canonical.submodels ?? {},
+      },
       preamble,
       snapshot: serializeSnapshot({ nodes, edges, preamble, submodels }),
       sourceFile: sourceFileRef.current,
@@ -191,7 +201,7 @@ export default function useSubmodelNavigation({
         const nextSubmodels = newGraph.submodels ?? {}
         const nextPreamble = newGraph.preamble ?? request.preamble
         const nextPreservedBlocks = newGraph.preserved_blocks ?? request.preservedBlocks
-        const resolved = await resolveGraphIdentities({
+        const resolved = await resolveCanonicalIdentities({
           nodes: nextNodes,
           edges: nextEdges,
           submodels: nextSubmodels,
@@ -202,13 +212,13 @@ export default function useSubmodelNavigation({
           return
         }
         graphRef.current = { nodes: resolved.nodes, edges: resolved.edges }
-        submodelsRef.current = nextSubmodels
+        submodelsRef.current = resolved.submodels
         preambleRef.current = nextPreamble
         preservedBlocksRef.current = nextPreservedBlocks
         useGraphStore.getState().setNodesAndEdgesAndSubmodels(
           resolved.nodes,
           resolved.edges,
-          nextSubmodels,
+          resolved.submodels,
           nextPreamble,
         )
         addToast("success", `Submodel "${name}" created — save to apply`)
@@ -217,7 +227,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Create submodel failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveGraphIdentities])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities])
 
   const handleDrillIntoSubmodel = useCallback(async (nodeId: string) => {
     transformRequestSerialRef.current += 1
@@ -243,9 +253,15 @@ export default function useSubmodelNavigation({
         parentNodes,
         parentEdges,
       })
-      const layouted = await getLayoutedElements(projected.nodes, projected.edges)
+      const resolved = await resolveGraphIdentities({
+        nodes: projected.nodes,
+        edges: projected.edges,
+        submodels: submodelsRef.current,
+        reservedApiInputFrameLabels,
+      })
+      const layouted = await getLayoutedElements(resolved.nodes, resolved.edges)
 
-      // Commit navigation only after loading, projection, and layout all succeed.
+      // Commit navigation only after projection, identity resolution, and layout all succeed.
       setActiveSubmodelIdentity({
         instanceId: occurrence.instanceId,
         definitionId: occurrence.definitionId,
@@ -281,7 +297,7 @@ export default function useSubmodelNavigation({
       setCurrentSourceFile?.(submodelSourceFile)
       setLastSelectedId?.(null)
       setNodesRaw(layouted)
-      setEdgesRaw(projected.edges)
+      setEdgesRaw(resolved.edges)
       setSelectedNode(null)
       setPreviewData(null)
       const count = instanceCount(parentNodes, occurrence.definitionId)
@@ -294,7 +310,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Drill-down failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, setNodesRaw, setEdgesRaw, setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData, sourceFileRef, fitView, addToast])
+  }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, setNodesRaw, setEdgesRaw, setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData, sourceFileRef, fitView, addToast, reservedApiInputFrameLabels, resolveGraphIdentities])
 
   const handleBreadcrumbNavigate = useCallback((depth: number) => {
     const prev = viewStackRef.current
@@ -371,7 +387,7 @@ export default function useSubmodelNavigation({
         const nextEdges = normalizeEdges(flat.edges ?? [])
         const nextSubmodels = flat.submodels ?? {}
         const nextPreamble = flat.preamble ?? request.preamble
-        const resolved = await resolveGraphIdentities({
+        const resolved = await resolveCanonicalIdentities({
           nodes: nextNodes,
           edges: nextEdges,
           submodels: nextSubmodels,
@@ -384,11 +400,11 @@ export default function useSubmodelNavigation({
         graphRef.current = { nodes: resolved.nodes, edges: resolved.edges }
         preambleRef.current = nextPreamble
         preservedBlocksRef.current = flat.preserved_blocks ?? request.preservedBlocks
-        submodelsRef.current = nextSubmodels
+        submodelsRef.current = resolved.submodels
         useGraphStore.getState().setNodesAndEdgesAndSubmodels(
           resolved.nodes,
           resolved.edges,
-          nextSubmodels,
+          resolved.submodels,
           nextPreamble,
         )
         addToast("success", `Submodel "${displayName}" dissolved — save to apply`)
@@ -397,7 +413,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Dissolve failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveGraphIdentities])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities])
 
   return {
     viewStack,

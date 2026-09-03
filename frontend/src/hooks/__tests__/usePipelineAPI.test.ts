@@ -758,6 +758,74 @@ describe("usePipelineAPI", () => {
     }))
   })
 
+  it("strips editor identities recursively from Save without changing live state", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({
+      nodes: [],
+      edges: [],
+      preserved_blocks: [],
+      source_revision: "revision-load",
+    }))
+    mockSave.mockResolvedValue({
+      file: "pricing.py",
+      pipeline_name: "pricing",
+      source_revision: "revision-save",
+    })
+    const root = makeNode("root", "polars", {
+      data: {
+        _functionName: "root_function",
+        _defaultInputName: "root_input",
+        _sourceHandleInputNames: {},
+      },
+      selected: true,
+    })
+    const child = makeNode("child", "polars", {
+      data: {
+        _functionName: "child_function",
+        _defaultInputName: "child_input",
+        _sourceHandleInputNames: {},
+      },
+      selected: true,
+    })
+    const definition = {
+      definitionId: "definition_pricing",
+      file: "modules/pricing.py",
+      graph: { nodes: [child], edges: [] },
+      inputPorts: [],
+      outputPorts: [],
+      _inputPortInputNames: {},
+    }
+    const params = makeParams({
+      submodelsRef: { current: { definition_pricing: definition } },
+    })
+    params.graphRef.current = { nodes: [root], edges: [] }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = { nodes: [root], edges: [] }
+    params.submodelsRef.current = { definition_pricing: definition }
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [root],
+      edges: [],
+      preamble: "",
+      submodels: params.submodelsRef.current,
+    })
+
+    await act(async () => {
+      await result.current.handleSave()
+    })
+
+    const graph = mockSave.mock.calls[0]![0].graph
+    expect(graph.nodes[0]).not.toHaveProperty("selected")
+    expect(graph.nodes[0]?.data).not.toHaveProperty("_functionName")
+    const sentDefinition = graph.submodels?.definition_pricing as typeof definition
+    expect(sentDefinition).not.toHaveProperty("_inputPortInputNames")
+    expect(sentDefinition.graph.nodes[0]).not.toHaveProperty("selected")
+    expect(sentDefinition.graph.nodes[0]?.data).not.toHaveProperty("_functionName")
+    expect(root.data._functionName).toBe("root_function")
+    expect(definition._inputPortInputNames).toEqual({})
+    expect(useGraphStore.getState().nodes[0]?.data._functionName).toBe("root_function")
+  })
+
   it("keeps later edits dirty when they happen while a save is in flight", async () => {
     mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     let resolveSave!: (value: { file: string; pipeline_name: string; source_revision: string }) => void

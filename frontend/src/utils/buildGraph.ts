@@ -1,5 +1,7 @@
 import type { Node, Edge } from "@xyflow/react"
 import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
+import type { PipelineEdge } from "../types/node"
+import { toCanonicalGraphPayload } from "./graphSnapshot"
 
 /** Build the graph payload expected by backend API calls. */
 export function buildGraph(
@@ -8,17 +10,17 @@ export function buildGraph(
   submodels?: Record<string, unknown>,
   preamble?: string,
 ) {
-  return {
+  return toCanonicalGraphPayload({
     nodes: allNodes.map((n) => ({
       id: n.id,
       type: n.type || n.data.nodeType,
       data: n.data,
       position: { x: 0, y: 0 },
     })),
-    edges,
+    edges: edges as PipelineEdge[],
     submodels,
     preamble,
-  }
+  })
 }
 
 const VOLATILE_NODE_DATA_KEYS = new Set([
@@ -97,7 +99,11 @@ export function resolveGraphFromRefs(
   submodelsRef: React.MutableRefObject<Record<string, unknown>>,
   preambleRef: React.MutableRefObject<string>,
 ) {
-  return parentGraphRef.current
+  const graph = parentGraphRef.current
     ? { nodes: parentGraphRef.current.nodes, edges: parentGraphRef.current.edges, submodels: parentGraphRef.current.submodels, preamble: preambleRef.current }
     : { nodes: graphRef.current.nodes, edges: graphRef.current.edges, submodels: submodelsRef.current, preamble: preambleRef.current }
+  return toCanonicalGraphPayload({
+    ...graph,
+    edges: graph.edges as PipelineEdge[],
+  })
 }
