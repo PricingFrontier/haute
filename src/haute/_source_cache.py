@@ -21,6 +21,7 @@ from haute._cache import CacheConsumer, canonical_json, checked_cache_inputs
 from haute._credential_security import is_credential_name, validate_credential_free_uri
 from haute._env import float_env, int_env
 from haute._file_ops import atomic_write_text
+from haute._logging import get_logger
 from haute._polars_utils import bounded_sink
 
 if TYPE_CHECKING:
@@ -29,9 +30,14 @@ if TYPE_CHECKING:
 BuildClass = Literal["bounded", "admitted_eager", "unsupported"]
 CacheState = Literal["missing", "building", "ready", "corrupt", "failed"]
 CacheFreshness = Literal["fresh", "stale", "unknown"]
-ReconcileOutcome = Literal["published", "discarded_generation", "discarded_staging", "absent"]
+ReconcileOutcome = Literal[
+    "published", "discarded_generation", "discarded_staging", "unremovable", "absent"
+]
 _VerifiedGeneration = tuple[str, str, int, int, str]
 _DEFAULT_STAGING_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+_DEFAULT_RETIRE_GRACE_SECONDS = 30 * 60
+
+logger = get_logger(component="source_cache")
 
 
 class SourceCacheError(RuntimeError):
@@ -313,6 +319,7 @@ class SourceCacheStore:
         *,
         max_bytes: int | None = None,
         max_generations: int | None = None,
+        retire_grace_seconds: float | None = None,
     ) -> None:
         self.root = Path(root).resolve()
         self.inputs_root = self.root / ".haute_cache" / "inputs"
@@ -331,6 +338,16 @@ class SourceCacheStore:
         ):
             raise ValueError("source-cache max_generations must be a positive integer")
         self.max_generations = max_generations
+        if retire_grace_seconds is None:
+            retire_grace_seconds = float_env(
+                "HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS",
+                _DEFAULT_RETIRE_GRACE_SECONDS,
+            )
+        if not isinstance(retire_grace_seconds, (int, float)) or retire_grace_seconds < 0:
+            raise ValueError("source-cache retire_grace_seconds must be zero or positive")
+        # Leases are process-local, so a superseded generation another process
+        # is still scanning must survive long enough for that read to finish.
+        self.retire_grace_seconds = float(retire_grace_seconds)
         self.staging_max_age_seconds = float_env(
             "HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS",
             _DEFAULT_STAGING_MAX_AGE_SECONDS,
@@ -669,12 +686,27 @@ class SourceCacheStore:
                 with self._lock:
                     if not context.defer_retirement:
                         self._retire_unleased(identity)
-                    self._admit_publication_within_quota(
-                        identity,
-                        new_size_bytes=metadata.size_bytes,
-                        staging_path=staging,
-                        retained_generation_ids=context.retained_generation_ids,
-                    )
+                    try:
+                        self._admit_publication_within_quota(
+                            identity,
+                            new_size_bytes=metadata.size_bytes,
+                            staging_path=staging,
+                            retained_generation_ids=context.retained_generation_ids,
+                        )
+                    except SourceCacheQuotaExceededError:
+                        # Quota pressure outranks the reader grace: reclaim the
+                        # graced generations once and admit again, or fail.
+                        self._retire_unleased(identity, force=True)
+                        logger.warning(
+                            "source_cache_grace_reclaimed_under_quota_pressure",
+                            identity_digest=identity.digest,
+                        )
+                        self._admit_publication_within_quota(
+                            identity,
+                            new_size_bytes=metadata.size_bytes,
+                            staging_path=staging,
+                            retained_generation_ids=context.retained_generation_ids,
+                        )
                     final_dir = generations_dir / generation_id
                     staging.replace(final_dir)
                     published_stat = (final_dir / "data.parquet").stat()
@@ -748,7 +780,21 @@ class SourceCacheStore:
         with self._identity_lock(identity):
             self._retire_unleased(identity)
 
-    def _retire_unleased(self, identity: SourceCacheIdentity) -> None:
+    def _retire_grace_elapsed(self, identity: SourceCacheIdentity) -> bool:
+        """Whether the current generation has been published long enough.
+
+        Measured from the current pointer's mtime: a reader in another process
+        opened its generation before that write, so the grace bounds how long
+        such a scan may still be running. Without a pointer there is no current
+        generation to protect a reader against, and retirement proceeds.
+        """
+        try:
+            published_at = self._pointer_path(identity).stat().st_mtime
+        except OSError:
+            return True
+        return time.time() - published_at >= self.retire_grace_seconds
+
+    def _retire_unleased(self, identity: SourceCacheIdentity, *, force: bool = False) -> None:
         generations_dir = self.identity_path(identity) / "generations"
         if not generations_dir.exists():
             return
@@ -756,12 +802,13 @@ class SourceCacheStore:
             current = self._read_pointer(identity)
         except FileNotFoundError:
             current = None
+        grace_elapsed = force or self._retire_grace_elapsed(identity)
         for candidate in generations_dir.iterdir():
             if not candidate.is_dir() or candidate.name == current:
                 continue
             with self._lock:
                 leased = self._leases.get((identity.digest, candidate.name), 0)
-            if not leased:
+            if not leased and grace_elapsed:
                 self._forget_verified(identity.digest, candidate.name)
                 shutil.rmtree(candidate)
 
@@ -773,6 +820,15 @@ class SourceCacheStore:
                 if key[:2] == (identity_digest, generation_id)
             }
             self._verified_generations.difference_update(stale)
+
+    def _unremovable(self, path: Path, identity: SourceCacheIdentity) -> ReconcileOutcome:
+        """Report a reconcile removal that silently left its directory behind."""
+        logger.warning(
+            "source_cache_reconcile_removal_failed",
+            path=str(path),
+            identity_digest=identity.digest,
+        )
+        return "unremovable"
 
     def reconcile_unpublished(
         self,
@@ -803,11 +859,15 @@ class SourceCacheStore:
                 if not leased:
                     self._forget_verified(identity.digest, generation_id)
                     shutil.rmtree(generation_dir, ignore_errors=True)
+                    if generation_dir.exists():
+                        return self._unremovable(generation_dir, identity)
                     removed_generation = True
             removed_staging = False
             staging = identity_dir / f".staging-{staging_token}"
             if staging.is_dir() and not staging.is_symlink():
                 shutil.rmtree(staging, ignore_errors=True)
+                if staging.exists():
+                    return self._unremovable(staging, identity)
                 removed_staging = True
             if removed_generation:
                 return "discarded_generation"
@@ -818,7 +878,7 @@ class SourceCacheStore:
     def clear(self, identity: SourceCacheIdentity) -> None:
         with self._identity_lock(identity):
             self._pointer_path(identity).unlink(missing_ok=True)
-            self._retire_unleased(identity)
+            self._retire_unleased(identity, force=True)
 
     def status(
         self, identity: SourceCacheIdentity, *, source_signature: str | None = None

@@ -50,7 +50,16 @@ relationship is recorded in `specs/ownership.toml`.
 - `SourceCacheGeneration` names immutable `data.parquet` and `meta.json` paths.
 - `SourceCacheStore` coordinates same-root handles in-process, publishes generations, tracks
   local leases and verified-generation memos, applies quotas, reclaims provably stale
-  staging, and exposes `build`, `lease`, `clear`, and `status`.
+  staging, and exposes `build`, `lease`, `clear`, and `status`. Leases are process-local. A
+  superseded generation is retired only after `HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS`
+  (default 1800) have elapsed since the current generation was published, so a reader in
+  another process finishes its scan; an explicit clear and quota pressure reclaim
+  immediately, the latter logged
+  (`source_cache_grace_reclaimed_under_quota_pressure`). A reconcile removal that leaves
+  its directory behind is logged (`source_cache_reconcile_removal_failed`) and reported as
+  `unremovable`.
+- `source_signature` memoises by path, size, and mtime, so an unchanged file is hashed once
+  per process.
 - `DatabaseSnapshotBuilder` validates a read query and yields Arrow record batches with one
   stable schema from an existing SQLite database.
 
@@ -116,19 +125,22 @@ an in-place or non-atomic fallback.
    where `budget = isolated_execution_budget(execution_context)`, with
    `require_memory_limit=True` whatever `HAUTE_WORKER_MEMORY_ENFORCEMENT` says, and the
    child creates `create_isolated_execution_context(budget)` and runs the same
-   `build_input_snapshot()`. A host that cannot install the native cap refuses with
-   `cap_unavailable` before any provider access. `allow_admitted_eager=True` is the
-   hard-capped-worker-only opt-in for the admitted-eager build class — the explicit
+   `build_input_snapshot()`. A host that cannot install the native cap reuses a
+   ready-but-stale generation with warning code `cap_unavailable_stale_reused`, and refuses
+   with `cap_unavailable` before any provider access only when no generation exists.
+   `allow_admitted_eager=True` is the hard-capped-worker-only opt-in for the admitted-eager build class — the explicit
    admitted-eager build sets it inside the child, and the in-thread explicit path keeps
    refusing that class outside `PREVIEW_EAGER`.
 5. A per-process single-flight keyed by identity digest makes a concurrent execution wait
-   for the in-flight build and re-read status instead of building again. The wait is
+   for the in-flight build and re-read status instead of building again; a waiter inherits
+   the owner's typed preparation failure instead of rebuilding. The wait is
    polled, not indefinite: each poll checkpoints the waiter's own execution context
    (`input_snapshot_preparation_wait`), so cancellation raises `cancelled`, and the build
    deadline bounds it as `timed_out`. The spawned build itself is cancellable — the worker
    config's `stop_reason` reports `cancelled` while the execution's cancellation token is
    cancelled, terminating the child.
-6. The structured warning `input_snapshot_auto_build` is logged before the build; the
+6. The structured warning `input_snapshot_auto_build` is logged once a build actually
+   starts — never before a `cap_unavailable` refusal or a stale reuse; the
    record is appended to the context (`ExecutionContext.record_input_preparation`) and
    surfaces as `metrics_payload()["input_preparation"]`.
 7. A spawned build never retires superseded generations: the child's lease counts are

@@ -58,7 +58,13 @@ Source snapshot identities use the same canonical checked-input discipline. Thei
 lease, and publication behaviour is specified by the IO layer. A published
 current generation is durable until the user refreshes or clears that Data
 Input, or until an execution's automatic preparation refreshes a stale one
-(warned and recorded, never silently). Quota pressure rejects the incoming build with an actionable error; it
+(warned and recorded, never silently); an absent source never retires it, and a host that
+cannot install the cap reuses a ready-but-stale generation with warning code
+`cap_unavailable_stale_reused` — only a missing generation is refused typed
+(`cap_unavailable`). A superseded generation is itself retired only after
+`HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS` (default 1800) have elapsed since the current
+generation was published, because leases are process-local; an explicit clear and quota
+pressure reclaim immediately, the latter logged. Quota pressure rejects the incoming build with an actionable error; it
 never silently evicts another input's current snapshot. Users must clear an
 unused snapshot or raise the configured quota before retrying.
 

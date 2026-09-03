@@ -836,3 +836,61 @@ def test_unsupported_database_scheme_is_rejected_before_job_creation(
 
     assert response.status_code == 400
     assert response.json()["detail"].startswith("snapshot_build_unsupported:")
+
+
+def test_a_base_exception_after_the_child_published_is_never_swallowed(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interrupt during the worker wait propagates, published child or not."""
+    from haute._execution_admission import IsolatedExecutionBudget
+    from haute._execution_context import ExecutionProfile
+    from haute._input_providers import build_input_snapshot, source_cache_identity
+    from haute.routes import input_cache
+
+    (tmp_path / "input.csv").write_text("id,value\n1,a\n2,b\n", encoding="utf-8")
+    config = _file_config()
+    identity = source_cache_identity(config, base_dir=tmp_path)
+    store = input_cache._cache_store()
+    budget = IsolatedExecutionBudget(
+        operation="input_snapshot_build",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_limit_bytes=64 * 1024 * 1024,
+        config_key="test-config-key",
+        budget_policy="test",
+    )
+    monkeypatch.setattr(input_cache, "isolated_execution_budget", lambda _ctx: budget)
+    published: list[str] = []
+
+    def publish_then_interrupt(function: Any, request: Any, _budget: Any, **kwargs: Any) -> Any:
+        generation = build_input_snapshot(
+            request.config,
+            store=store,
+            base_dir=tmp_path,
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            generation_id=request.generation_id,
+            staging_token=request.staging_token,
+            allow_admitted_eager=True,
+            defer_retirement=True,
+        )
+        published.append(generation.generation_id)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(input_cache, "run_isolated_worker", publish_then_interrupt)
+
+    class _Token:
+        cancelled = False
+        terminal_reason = None
+
+    with pytest.raises(KeyboardInterrupt):
+        input_cache._supervise_admitted_eager_build(
+            config=config,
+            identity=identity,
+            refresh=False,
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            execution_context=object(),  # type: ignore[arg-type]
+            token=_Token(),
+        )
+
+    assert store.open_generation(identity).generation_id == published[0]

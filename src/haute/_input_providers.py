@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import weakref
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -124,6 +125,29 @@ def source_cache_identity(
     return SourceCacheIdentity(provider=provider, descriptor=descriptor)
 
 
+_SIGNATURE_MEMO_MAX_ENTRIES = 256
+_SIGNATURE_MEMO_LOCK = threading.Lock()
+# Whole-file hashing is the dominant cost of a freshness check, and one
+# execution asks for the same signature at least twice. Keyed by the identity
+# a change to the file necessarily invalidates: path, size, and mtime.
+_SIGNATURE_MEMO: OrderedDict[tuple[str, int, int], str] = OrderedDict()
+
+
+def _memoised_file_signature(path: Path) -> str:
+    stat = path.stat()
+    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    with _SIGNATURE_MEMO_LOCK:
+        memoised = _SIGNATURE_MEMO.get(key)
+    if memoised is not None:
+        return memoised
+    signature = f"xxh64:{content_hash(path)}:{stat.st_size}"
+    with _SIGNATURE_MEMO_LOCK:
+        _SIGNATURE_MEMO[key] = signature
+        while len(_SIGNATURE_MEMO) > _SIGNATURE_MEMO_MAX_ENTRIES:
+            _SIGNATURE_MEMO.popitem(last=False)
+    return signature
+
+
 def source_signature(
     config: Mapping[str, Any],
     *,
@@ -140,8 +164,7 @@ def source_signature(
     path = Path(str(anchored["path"]))
     if not path.is_file():
         return "missing"
-    stat = path.stat()
-    return f"xxh64:{content_hash(path)}:{stat.st_size}"
+    return _memoised_file_signature(path)
 
 
 @dataclass(slots=True)

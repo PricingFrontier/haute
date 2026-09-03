@@ -65,12 +65,17 @@ Automatic preparation is that same build, scheduled by execution. Before an exec
 plans its strategy it checks every snapshot-backed Data Input in the executed lineage
 against the store with the current source signature: a current, fresh generation (or one
 whose freshness is unknown because either side carries no signature) is reused; a missing
-generation is built; a stale one is refreshed. The build runs under a hard cap or not at
+generation is built; a stale one is refreshed. An absent local source with a published
+generation is reused with warning code `source_unavailable` and never refreshed; without a
+generation the preparation is refused as `build_failed` before any worker starts. The build
+runs under a hard cap or not at
 all: in the current process when that process already runs inside an isolated worker
 under a native cap, otherwise in a spawned hard-capped worker admitted from the
 execution's own budget. That cap is native and mandatory for preparation whatever the
-process-memory enforcement policy says: a host that cannot install it refuses the
-preparation typed (`cap_unavailable`) instead of building under RSS sampling alone. A
+process-memory enforcement policy says, and is never replaced by RSS sampling: a host that
+cannot install the cap reuses a ready-but-stale generation with warning code
+`cap_unavailable_stale_reused`; only a missing generation is refused typed
+(`cap_unavailable`). A
 schema-only execution, or one without an admitted execution context, never builds;
 resolution then reports the typed `input_snapshot_missing` rejection as before. Before a
 build the engine
@@ -96,7 +101,9 @@ bounded profiles (CSV) is built with a declaration when one is configured and ot
 by whole-file schema inference before the streaming sink; sample-only inference never
 decides a snapshot schema, so a late row cannot be mis-typed. When a format has a scanner
 but eager `read` mode was configured, the build scans instead — with a recorded warning —
-whenever every configured argument is one the scanner accepts, and runs the eager reader
+whenever every configured argument is one the scanner accepts and, where the scanner
+narrows an argument's value domain (CSV `encoding`), its configured value, and runs the
+eager reader
 inside the hard-capped worker only when an argument is reader-only. Every supported
 format therefore runs in a bounded profile once a build envelope can be reserved; a source
 is refused only when its build cannot be isolated or admitted, or its parsing semantics
@@ -109,6 +116,10 @@ Snapshot readers acquire an explicit generation lease. Within an execution reque
 lease lasts until execution cleanup. Outside an execution request the returned scan owns a
 lease token that is retained by every derived LazyFrame and released only after the scan
 plan is no longer reachable. Refresh and clear never delete a locally leased generation.
+Leases are process-local. A superseded generation is retired only after
+`HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS` (default 1800) have elapsed since the current
+generation was published, so a reader in another process finishes its scan; an explicit
+clear and quota pressure reclaim immediately, the latter logged.
 
 Store startup never deletes a generation. It may reclaim a staging directory only when the
 newest filesystem activity beneath that directory is older than the configured stale-build

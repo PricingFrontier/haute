@@ -592,6 +592,17 @@ class TestSnapshotBuildReads:
 
         assert snapshot_input_plan(fmt, config) == ("read", "admitted_eager", None)
 
+    def test_a_scanner_narrowed_argument_value_keeps_the_eager_read(self) -> None:
+        from haute._polars_io_registry import snapshot_input_plan
+
+        fmt = FORMATS_BY_NAME["csv"]
+        # ``scan_csv`` accepts the name ``encoding`` but only decodes UTF-8.
+        latin = {"format": "csv", "mode": "read", "arguments": {"encoding": "latin-1"}}
+        assert snapshot_input_plan(fmt, latin) == ("read", "admitted_eager", None)
+
+        utf8 = {"format": "csv", "mode": "read", "arguments": {"encoding": "utf8"}}
+        assert snapshot_input_plan(fmt, utf8) == ("scan", "bounded", "eager_read_mode_scanned")
+
     def test_input_snapshot_build_class_reports_the_effective_class(
         self,
         tmp_path: Path,

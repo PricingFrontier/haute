@@ -85,8 +85,17 @@ _REMEDIATION_BY_REASON: Mapping[str, str] = {
     ),
 }
 
+
+@dataclass(slots=True)
+class _SingleFlightEntry:
+    """The in-flight slot for one identity, carrying the owner's outcome."""
+
+    event: threading.Event = dataclasses.field(default_factory=threading.Event)
+    error: BaseException | None = None
+
+
 _SINGLE_FLIGHT_LOCK = threading.Lock()
-_SINGLE_FLIGHT: dict[str, threading.Event] = {}
+_SINGLE_FLIGHT: dict[str, _SingleFlightEntry] = {}
 
 
 def _build_timeout_seconds() -> float:
@@ -234,21 +243,24 @@ def _snapshot_backed_data_inputs(
     return found
 
 
-def _acquire_single_flight(digest: str) -> threading.Event | None:
-    """Own the in-flight slot for *digest*, or return the event to wait on."""
+def _acquire_single_flight(digest: str) -> _SingleFlightEntry | None:
+    """Own the in-flight slot for *digest*, or return the entry to wait on."""
     with _SINGLE_FLIGHT_LOCK:
         waiting = _SINGLE_FLIGHT.get(digest)
         if waiting is not None:
             return waiting
-        _SINGLE_FLIGHT[digest] = threading.Event()
+        _SINGLE_FLIGHT[digest] = _SingleFlightEntry()
         return None
 
 
-def _release_single_flight(digest: str) -> None:
+def _release_single_flight(digest: str, error: BaseException | None = None) -> None:
     with _SINGLE_FLIGHT_LOCK:
-        event = _SINGLE_FLIGHT.pop(digest, None)
-    if event is not None:
-        event.set()
+        entry = _SINGLE_FLIGHT.pop(digest, None)
+    if entry is not None:
+        # Record before waking: a waiter reads the owner's failure rather than
+        # repeating a build that has already been refused.
+        entry.error = error
+        entry.event.set()
 
 
 def _reused_record(
@@ -358,6 +370,34 @@ def _prepare_one(
                 "source-cache generation is corrupt; clear and rebuild this Data Input snapshot"
             )
         generation = status.generation
+        if signature == "missing":
+            # An absent local source cannot refresh anything. A published
+            # generation stays authoritative; without one there is nothing to
+            # run from, and this is refused before any slot or worker is taken.
+            if status.state == "ready" and generation is not None:
+                logger.warning(
+                    "input_snapshot_source_unavailable",
+                    node_id=node_id,
+                    identity_digest=digest,
+                    generation_id=generation.generation_id,
+                )
+                return _reused_record(
+                    node_id=node_id,
+                    digest=digest,
+                    build_class=build_class,
+                    generation=generation,
+                    elapsed_seconds=time.monotonic() - started_at,
+                    warning_code="source_unavailable",
+                )
+            raise _failure(
+                node_id=node_id,
+                digest=digest,
+                build_class=build_class,
+                reason_code="build_failed",
+                message=(
+                    "This Data Input's source is unavailable and no published snapshot exists."
+                ),
+            )
         if (
             status.state == "ready"
             and status.freshness in ("fresh", "unknown")
@@ -380,14 +420,28 @@ def _prepare_one(
         # is polled so this execution's own cancellation and time budget still
         # apply while another execution owns the build.
         _wait_for_single_flight(
-            waiting,
+            waiting.event,
             execution_context=execution_context,
             node_id=node_id,
             digest=digest,
             build_class=build_class,
             deadline=deadline,
         )
+        owner_error = waiting.error
+        if isinstance(owner_error, InputPreparationError):
+            # The owner's refusal is this execution's refusal too: rebuilding
+            # would repeat exactly the failure that has just been recorded.
+            raise _failure(
+                node_id=node_id,
+                digest=digest,
+                build_class=build_class,
+                reason_code=owner_error.reason_code,
+                message=(
+                    f"Another execution's snapshot build of this Data Input failed: {owner_error}"
+                ),
+            ) from owner_error
 
+    build_error: BaseException | None = None
     try:
         return _run_build(
             node_id=node_id,
@@ -403,9 +457,14 @@ def _prepare_one(
             warning_code=warning_code,
             refresh=refresh,
             started_at=started_at,
+            deadline=deadline,
+            current_generation=generation,
         )
+    except BaseException as exc:
+        build_error = exc
+        raise
     finally:
-        _release_single_flight(digest)
+        _release_single_flight(digest, build_error)
 
 
 def _failure(
@@ -514,6 +573,8 @@ def _run_build(
     warning_code: str | None,
     refresh: bool,
     started_at: float,
+    deadline: float,
+    current_generation: SourceCacheGeneration | None,
 ) -> InputPreparationRecord:
     from haute._input_providers import build_input_snapshot
 
@@ -526,6 +587,39 @@ def _run_build(
         execution_context.memory_limit_bytes if budget is None else budget.memory_limit_bytes
     )
 
+    # Spawned build: the cap is mandatory whatever the process-memory
+    # enforcement policy says. A host that cannot install one still has a
+    # ready-but-stale generation to fall back to; only a missing generation is
+    # refused typed, before any provider access.
+    if not in_process and not process_memory_caps_supported():
+        if refresh and current_generation is not None:
+            logger.warning(
+                "input_snapshot_cap_unavailable_stale_reused",
+                node_id=node_id,
+                identity_digest=digest,
+                generation_id=current_generation.generation_id,
+            )
+            return _reused_record(
+                node_id=node_id,
+                digest=digest,
+                build_class=build_class,
+                generation=current_generation,
+                elapsed_seconds=time.monotonic() - started_at,
+                warning_code="cap_unavailable_stale_reused",
+            )
+        raise _failure(
+            node_id=node_id,
+            digest=digest,
+            build_class=build_class,
+            reason_code="cap_unavailable",
+            message=(
+                "This host cannot install the native memory cap an automatic "
+                "snapshot build requires."
+            ),
+        )
+
+    # Announced only once a build actually starts: a refusal or a reuse above
+    # never reports an automatic build that did not happen.
     logger.warning(
         "input_snapshot_auto_build",
         node_id=node_id,
@@ -536,7 +630,6 @@ def _run_build(
         memory_limit_bytes=memory_limit_bytes,
     )
 
-    deadline = _build_deadline()
     if in_process:
         token = execution_context.cancellation_token
         try:
@@ -577,20 +670,6 @@ def _run_build(
             warning_code=warning_code,
         )
 
-    # Spawned build: the cap is mandatory whatever the process-memory
-    # enforcement policy says, so a host that cannot install one is refused
-    # typed before any provider access.
-    if not process_memory_caps_supported():
-        raise _failure(
-            node_id=node_id,
-            digest=digest,
-            build_class=build_class,
-            reason_code="cap_unavailable",
-            message=(
-                "This host cannot install the native memory cap an automatic "
-                "snapshot build requires."
-            ),
-        )
     if budget is None:
         raise RuntimeError("a spawned snapshot build requires an admitted budget")
     generation_id = str(uuid.uuid4())
@@ -603,7 +682,9 @@ def _run_build(
     worker_config = dataclasses.replace(
         worker_config_for_memory_policy(
             memory_limit_bytes=budget.memory_limit_bytes,
-            timeout_seconds=_build_timeout_seconds(),
+            # One deadline covers the whole preparation, including any time
+            # already spent waiting on another execution's build.
+            timeout_seconds=max(1.0, deadline - time.monotonic()),
             stop_reason=stop_reason,
             process_name="haute-input-prep",
         ),
@@ -632,6 +713,10 @@ def _run_build(
     except BaseException as exc:
         reason_code = _classify_worker_failure(exc)
         settled = store.reconcile_unpublished(identity, generation_id, staging_token)
+        # Reconcile first so nothing is left behind, but never convert a base
+        # exception (an interrupt, a system exit) into this build's success.
+        if not isinstance(exc, Exception):
+            raise
         if settled == "published":
             generation = store.open_generation(identity)
             # The child deferred retirement; retire here, where this process's
@@ -665,8 +750,6 @@ def _run_build(
                 elapsed_seconds=time.monotonic() - started_at,
                 warning_code=warning_code,
             )
-        if not isinstance(exc, Exception):
-            raise
         raise _failure(
             node_id=node_id,
             digest=digest,

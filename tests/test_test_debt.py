@@ -327,6 +327,11 @@ _EXPECTED_DEBT_IDS = {
     "c424c3f1d2cfe91a",
     "cc655b332f19c3a3",
     "fc936795d5ac2cdf",
+    # Automatic input preparation through a real hard-capped spawn worker: the
+    # cap is mandatory, so the test can only run where the host can install a
+    # native memory cap (Linux cgroup/rlimit, Windows Job Object); macOS skips.
+    # See tests/test_input_preparation.py.
+    "989b2ba60fe375be",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

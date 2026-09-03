@@ -513,7 +513,9 @@ def test_generation_quota_rejects_another_current_snapshot(tmp_path: Path) -> No
 
 
 def test_generation_quota_reclaims_an_unleased_superseded_generation(tmp_path: Path) -> None:
-    store = SourceCacheStore(tmp_path, max_bytes=1_000_000, max_generations=1)
+    store = SourceCacheStore(
+        tmp_path, max_bytes=1_000_000, max_generations=1, retire_grace_seconds=0
+    )
     identity = _identity(path="refreshable.parquet")
     first = store.build(
         identity,
@@ -825,3 +827,138 @@ def test_polars_dtype_spellings_match_the_persisted_golden_table() -> None:
         "the old spelling may fail to parse. Decide the migration deliberately; do not "
         "regenerate this table."
     )
+
+
+# ---------------------------------------------------------------------------
+# Superseded generations are retired only after a reader grace period
+# ---------------------------------------------------------------------------
+
+
+def test_a_superseded_generation_survives_its_retirement_grace(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path, retire_grace_seconds=1800)
+    identity = _identity(path="graced.parquet")
+    first = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+
+    second = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+        context=_context(),
+        refresh=True,
+    )
+
+    assert second.generation_id != first.generation_id
+    # A reader in another process may still be scanning it: leases are
+    # process-local, so only the grace protects that scan.
+    assert first.data_path.parent.is_dir()
+    assert pl.scan_parquet(first.data_path).collect()["id"].to_list() == [1]
+
+
+def test_a_zero_grace_retires_a_superseded_generation_immediately(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path, retire_grace_seconds=0)
+    identity = _identity(path="ungraced.parquet")
+    first = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+
+    store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+        context=_context(),
+        refresh=True,
+    )
+
+    assert not first.data_path.parent.exists()
+
+
+def test_clear_reclaims_a_graced_generation(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path, retire_grace_seconds=1800)
+    identity = _identity(path="cleared.parquet")
+    first = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+    store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+        context=_context(),
+        refresh=True,
+    )
+    assert first.data_path.parent.is_dir()
+
+    store.clear(identity)
+
+    assert not any((store.identity_path(identity) / "generations").glob("*"))
+
+
+def test_quota_pressure_reclaims_a_graced_generation_and_publishes(tmp_path: Path) -> None:
+    store = SourceCacheStore(
+        tmp_path, max_bytes=1_000_000, max_generations=1, retire_grace_seconds=1800
+    )
+    identity = _identity(path="pressured.parquet")
+    first = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+    second = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+        context=_context(),
+        refresh=True,
+    )
+    # The graced first generation puts this identity over its generation quota.
+    assert first.data_path.parent.is_dir()
+
+    third = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [3]}).lazy()),
+        context=_context(),
+        refresh=True,
+    )
+
+    assert third.generation_id not in (first.generation_id, second.generation_id)
+    # Quota pressure reclaimed the graced generation and the build published.
+    assert not first.data_path.parent.exists()
+    assert store.open_generation(identity).lazy_frame.collect()["id"].to_list() == [3]
+
+
+def test_reconcile_keeps_a_generation_this_process_leases(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="leased-reconcile.parquet")
+    generation = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+
+    with store.lease(identity) as leased:
+        # The pointer has moved on, but this process still reads the generation.
+        store._pointer_path(identity).unlink()
+        outcome = store.reconcile_unpublished(identity, leased.generation_id, "0123abcd")
+        assert outcome == "absent"
+        assert generation.data_path.exists()
+
+
+def test_reconcile_reports_a_removal_that_left_its_directory_behind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="unremovable.parquet")
+    identity_dir = store.identity_path(identity)
+    generation_id = str(uuid.uuid4())
+    (identity_dir / "generations" / generation_id).mkdir(parents=True)
+
+    monkeypatch.setattr(
+        "haute._source_cache.shutil.rmtree",
+        lambda path, ignore_errors=False: None,
+    )
+
+    assert store.reconcile_unpublished(identity, generation_id, "0123abcd") == "unremovable"

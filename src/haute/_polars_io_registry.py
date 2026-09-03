@@ -775,6 +775,26 @@ def _invoke_polars_input(
     )
 
 
+# A scanner can accept an argument *name* the reader accepts while admitting
+# fewer values for it: ``scan_csv`` decodes only UTF-8, ``read_csv`` any codec.
+# Preferring the scanner on names alone planned a scan that then failed raw.
+_SCANNER_VALUE_DOMAINS: Mapping[str, Mapping[str, frozenset[str]]] = {
+    "csv": {"encoding": frozenset({"utf8", "utf8-lossy"})},
+}
+
+
+def _scanner_accepts_values(fmt: IoFormat, config: Mapping[str, Any]) -> bool:
+    """Whether every configured value sits inside the scanner's value domain."""
+    domains = _SCANNER_VALUE_DOMAINS.get(fmt.name, {})
+    if not domains:
+        return True
+    return all(
+        str(value) in domains[name]
+        for name, value in (config.get("arguments") or {}).items()
+        if name in domains
+    )
+
+
 def snapshot_input_plan(
     fmt: IoFormat,
     config: Mapping[str, Any],
@@ -782,8 +802,9 @@ def snapshot_input_plan(
     """Effective mode, build class, and warning code for one snapshot build.
 
     A configured eager ``read`` is built through the scanner whenever the
-    format has one and every configured argument is scanner-accepted; only a
-    genuinely reader-only argument keeps the eager read (and its
+    format has one and every configured argument is scanner-accepted by name
+    and by value; only a genuinely reader-only argument keeps the eager read
+    (and its
     ``admitted_eager`` class, which the hard-capped worker then contains).
     """
     base = _snapshot_build(fmt)
@@ -793,7 +814,9 @@ def snapshot_input_plan(
     if mode == "read" and fmt.scanner is not None:
         owner, scanner_name = input_callable_key(fmt, "scan")
         configured = set(config.get("arguments") or {})
-        if configured <= allowed_arguments(fmt, owner, scanner_name):
+        if configured <= allowed_arguments(fmt, owner, scanner_name) and _scanner_accepts_values(
+            fmt, config
+        ):
             return "scan", "bounded", "eager_read_mode_scanned"
         return "read", "admitted_eager", None
     return mode, base, None

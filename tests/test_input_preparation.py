@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -35,6 +36,7 @@ from haute._worker_isolation import (
     IsolatedWorkerCrashedError,
     IsolatedWorkerRemoteError,
     IsolatedWorkerStoppedError,
+    process_memory_caps_supported,
 )
 from haute.errors import InputPreparationError
 from tests.conftest import make_edge, make_graph, make_output_config
@@ -88,10 +90,20 @@ def _prepare(
     )
 
 
-def _project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SourceCacheStore:
+def _project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    retire_grace_seconds: float | None = None,
+) -> SourceCacheStore:
     monkeypatch.chdir(tmp_path)
     set_project_root(tmp_path)
-    return SourceCacheStore(tmp_path)
+    store = SourceCacheStore(tmp_path)
+    if retire_grace_seconds is not None:
+        # The sandbox fixture wraps the store constructor, so the retirement
+        # grace these tests need is stated on the instance instead.
+        store.retire_grace_seconds = retire_grace_seconds
+    return store
 
 
 def _csv_config(path: Path, **extra: object) -> dict[str, object]:
@@ -452,7 +464,7 @@ def test_a_spawned_build_never_retires_a_generation_the_parent_still_leases(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    store = _project(tmp_path, monkeypatch)
+    store = _project(tmp_path, monkeypatch, retire_grace_seconds=0)
     path = tmp_path / "rows.csv"
     pl.DataFrame({"id": [1, 2]}).write_csv(path)
     config = _csv_config(path)
@@ -494,7 +506,7 @@ def test_the_parent_retires_the_superseded_generation_after_a_spawned_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    store = _project(tmp_path, monkeypatch)
+    store = _project(tmp_path, monkeypatch, retire_grace_seconds=0)
     path = tmp_path / "rows.csv"
     pl.DataFrame({"id": [1, 2]}).write_csv(path)
     config = _csv_config(path)
@@ -561,7 +573,7 @@ def test_a_spawned_refresh_publishes_at_the_quota_without_a_parent_lease(
 ) -> None:
     """Without a parent lease the same refresh publishes and the parent retires."""
     monkeypatch.setenv("HAUTE_INPUT_CACHE_MAX_GENERATIONS", "1")
-    store = _project(tmp_path, monkeypatch)
+    store = _project(tmp_path, monkeypatch, retire_grace_seconds=0)
     path = tmp_path / "rows.csv"
     pl.DataFrame({"id": [1, 2]}).write_csv(path)
     config = _csv_config(path)
@@ -1388,3 +1400,366 @@ def test_a_trace_over_a_stale_generation_shows_the_refreshed_rows(
     assert steps["input"].output_values["id"] == 10
     identity = store_identity(config, tmp_path)
     assert store.open_generation(identity).generation_id != first.generation_id
+
+
+# ------------------------------------------- (A1) an absent source never breaks a snapshot
+
+
+def test_an_absent_source_reuses_the_published_generation_with_a_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "rows.csv"
+    frame = pl.DataFrame({"id": [1, 2, 3]})
+    frame.write_csv(path)
+    config = _csv_config(path)
+    published = build_input_snapshot(config, store=store, base_dir=tmp_path)
+    path.unlink()
+
+    def refuse_spawn(*args: object, **kwargs: object) -> None:
+        raise AssertionError("an absent source must never start a build")
+
+    context = _context()
+    try:
+        with native_memory_backend_scope("rlimit"):
+            record = _prepare(
+                config, store=store, base_dir=tmp_path, context=context, spawn=refuse_spawn
+            )[0]
+    finally:
+        context.release_admission()
+
+    assert record.action == "reused"
+    assert record.warning_code == "source_unavailable"
+    assert record.generation_id == published.generation_id
+    prepared = resolve_data_input(config, store=store, base_dir=tmp_path).collect()
+    plt.assert_frame_equal(prepared, frame)
+
+
+def test_an_absent_source_without_a_generation_is_refused_before_any_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _project(tmp_path, monkeypatch)
+    config = _csv_config(tmp_path / "never-written.csv")
+    spawned: list[object] = []
+
+    def refuse_spawn(*args: object, **kwargs: object) -> None:
+        spawned.append(args)
+        raise AssertionError("preparation must refuse before spawning")
+
+    context = _context()
+    try:
+        with pytest.raises(InputPreparationError) as excinfo:
+            _prepare(config, store=store, base_dir=tmp_path, context=context, spawn=refuse_spawn)
+    finally:
+        context.release_admission()
+
+    assert excinfo.value.reason_code == "build_failed"
+    assert "source is unavailable" in str(excinfo.value)
+    assert spawned == []
+
+
+# --------------------------------- (A2) scanner preference respects value domains
+
+
+def test_a_latin_1_csv_round_trips_through_an_admitted_eager_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "latin.csv"
+    path.write_bytes("name\nCaf\u00e9\n".encode("latin-1"))
+    config = _csv_config(path, mode="read", arguments={"encoding": "latin-1"})
+
+    build_input_snapshot(config, store=store, base_dir=tmp_path, allow_admitted_eager=True)
+
+    prepared = resolve_data_input(config, store=store, base_dir=tmp_path).collect()
+    assert prepared["name"].to_list() == ["Caf\u00e9"]
+
+
+# ------------------------------- (A3) a host without a cap reuses a stale generation
+
+
+def _without_native_caps(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "haute._input_preparation.process_memory_caps_supported",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "haute._input_preparation.current_native_memory_backend",
+        lambda: None,
+    )
+
+
+def _record_preparation_logs(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
+    emitted: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        "haute._input_preparation.logger",
+        type(
+            "_Recorder",
+            (),
+            {"warning": staticmethod(lambda event, **fields: emitted.append((event, fields)))},
+        )(),
+    )
+    return emitted
+
+
+def test_a_host_without_a_native_cap_reuses_a_stale_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "rows.csv"
+    pl.DataFrame({"id": [1, 2]}).write_csv(path)
+    config = _csv_config(path)
+    first = build_input_snapshot(config, store=store, base_dir=tmp_path)
+    pl.DataFrame({"id": [1, 2, 3]}).write_csv(path)
+    _without_native_caps(monkeypatch)
+
+    def refuse_spawn(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a host without a cap must never spawn")
+
+    emitted = _record_preparation_logs(monkeypatch)
+    context = _context()
+    try:
+        record = _prepare(
+            config, store=store, base_dir=tmp_path, context=context, spawn=refuse_spawn
+        )[0]
+    finally:
+        context.release_admission()
+
+    assert record.action == "reused"
+    assert record.warning_code == "cap_unavailable_stale_reused"
+    assert record.generation_id == first.generation_id
+    events = [event for event, _fields in emitted]
+    assert "input_snapshot_cap_unavailable_stale_reused" in events
+    # (A8) no build started, so no automatic-build warning was announced.
+    assert "input_snapshot_auto_build" not in events
+
+
+def test_a_host_without_a_native_cap_still_refuses_a_missing_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "rows.csv"
+    pl.DataFrame({"id": [1, 2]}).write_csv(path)
+    config = _csv_config(path)
+    _without_native_caps(monkeypatch)
+    emitted = _record_preparation_logs(monkeypatch)
+
+    def refuse_spawn(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a host without a cap must never spawn")
+
+    context = _context()
+    try:
+        with pytest.raises(InputPreparationError) as excinfo:
+            _prepare(config, store=store, base_dir=tmp_path, context=context, spawn=refuse_spawn)
+    finally:
+        context.release_admission()
+
+    assert excinfo.value.reason_code == "cap_unavailable"
+    assert "input_snapshot_auto_build" not in [event for event, _fields in emitted]
+
+
+# ------------------------------------------- (A5) the whole-file signature is memoised
+
+
+def test_the_source_signature_hashes_an_unchanged_file_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._input_providers as providers
+
+    path = tmp_path / "rows.csv"
+    path.write_text("id\n1\n", encoding="utf-8")
+    config = _csv_config(path)
+    calls: list[Path] = []
+    original = providers.content_hash
+
+    def counting_hash(target: Any) -> str:
+        calls.append(Path(target))
+        return original(target)
+
+    monkeypatch.setattr(providers, "content_hash", counting_hash)
+
+    first = providers.source_signature(config, base_dir=tmp_path)
+    assert providers.source_signature(config, base_dir=tmp_path) == first
+    assert len(calls) == 1
+
+    path.write_text("id\n1\n2\n", encoding="utf-8")
+    changed_size = providers.source_signature(config, base_dir=tmp_path)
+    assert changed_size != first
+    assert len(calls) == 2
+
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+    assert providers.source_signature(config, base_dir=tmp_path) == changed_size
+    assert len(calls) == 3
+
+
+# ----------------------------- (A7) a base exception is never converted into success
+
+
+def test_a_base_exception_during_a_spawned_build_is_never_swallowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "rows.csv"
+    pl.DataFrame({"id": [1, 2]}).write_csv(path)
+    config = _csv_config(path)
+
+    spawn = _FakeSpawn(store, tmp_path, stop_after="published", failure=KeyboardInterrupt())
+    context = _context()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            _prepare(config, store=store, base_dir=tmp_path, context=context, spawn=spawn)
+    finally:
+        context.release_admission()
+
+    identity = store_identity(config, tmp_path)
+    pointer = json.loads(
+        (store.identity_path(identity) / "current.json").read_text(encoding="utf-8")
+    )
+    assert spawn.request is not None
+    assert pointer["generation_id"] == spawn.request.generation_id
+
+
+# --------------------------------------------- (A9) one deadline per preparation
+
+
+class _ScriptedClock:
+    """Monotonic clock reporting time already spent once preparation is under way."""
+
+    def __init__(self, start: float, spent: float, settle_after: int) -> None:
+        self._start = start
+        self._spent = spent
+        self._settle_after = settle_after
+        self.calls = 0
+
+    def monotonic(self) -> float:
+        self.calls += 1
+        if self.calls <= self._settle_after:
+            return self._start
+        return self._start + self._spent
+
+
+def test_the_spawned_worker_inherits_the_preparation_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "rows.csv"
+    pl.DataFrame({"id": [1, 2]}).write_csv(path)
+    config = _csv_config(path)
+    monkeypatch.setenv("HAUTE_INPUT_PREPARATION_TIMEOUT_SECONDS", "30")
+    # ``started_at`` and the deadline are read first; every later reading
+    # reports the five seconds this preparation has already spent.
+    clock = _ScriptedClock(1_000.0, 5.0, settle_after=2)
+    monkeypatch.setattr("haute._input_preparation.time", clock)
+
+    spawn = _FakeSpawn(store, tmp_path, stop_after="nothing", failure=RuntimeError("stop"))
+    context = _context()
+    try:
+        with pytest.raises(InputPreparationError):
+            _prepare(config, store=store, base_dir=tmp_path, context=context, spawn=spawn)
+    finally:
+        context.release_admission()
+
+    assert spawn.config is not None
+    assert spawn.config.timeout_seconds == 25.0
+
+
+# ------------------------------- (A11) a waiter inherits the owner's typed failure
+
+
+def test_a_single_flight_waiter_inherits_the_owners_typed_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._input_preparation as preparation_module
+
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "rows.csv"
+    pl.DataFrame({"id": [1, 2]}).write_csv(path)
+    config = _csv_config(path)
+
+    spawns: list[object] = []
+    waiter_waiting = threading.Event()
+    original_wait = preparation_module._wait_for_single_flight
+
+    def announce_wait(*args: Any, **kwargs: Any) -> None:
+        waiter_waiting.set()
+        original_wait(*args, **kwargs)
+
+    monkeypatch.setattr(preparation_module, "_wait_for_single_flight", announce_wait)
+
+    owner_building = threading.Event()
+
+    def owner_spawn(*args: object, **kwargs: object) -> None:
+        spawns.append(args)
+        owner_building.set()
+        assert waiter_waiting.wait(timeout=10)
+        raise _remote_error("SourceCacheQuotaExceededError")
+
+    owner_failure: list[BaseException] = []
+
+    # Both executions share one admitted context: the admission budget admits a
+    # single in-flight execution, and only the single-flight slot is under test.
+    context = _context()
+
+    def run_owner() -> None:
+        try:
+            _prepare(config, store=store, base_dir=tmp_path, context=context, spawn=owner_spawn)
+        except BaseException as exc:  # noqa: BLE001 - recorded for the assertion below
+            owner_failure.append(exc)
+
+    owner = threading.Thread(target=run_owner)
+    owner.start()
+    try:
+        # The other thread owns the slot before this execution asks for it.
+        assert owner_building.wait(timeout=10)
+        with pytest.raises(InputPreparationError) as excinfo:
+            _prepare(config, store=store, base_dir=tmp_path, context=context, spawn=owner_spawn)
+    finally:
+        owner.join(timeout=10)
+        context.release_admission()
+
+    assert isinstance(owner_failure[0], InputPreparationError)
+    assert owner_failure[0].reason_code == "quota_exceeded"
+    assert excinfo.value.reason_code == "quota_exceeded"
+    assert "Another execution's snapshot build" in str(excinfo.value)
+    assert len(spawns) == 1
+
+
+# ------------------------------------- (A12) a real hard-capped spawn prepares
+
+
+@pytest.mark.skipif(
+    not process_memory_caps_supported(),
+    reason="this host cannot install the native memory cap a spawned build requires",
+)
+def test_automatic_preparation_runs_a_real_hard_capped_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "rows.csv"
+    pl.DataFrame({"id": [1, 2, 3]}).write_csv(path)
+    config = _csv_config(path)
+
+    context = _context()
+    try:
+        budget = isolated_execution_budget(context)
+        record = _prepare(config, store=store, base_dir=tmp_path, context=context)[0]
+    finally:
+        context.release_admission()
+
+    assert record.execution == "worker"
+    assert record.memory_limit_bytes == budget.memory_limit_bytes
+    identity = store_identity(config, tmp_path)
+    assert store.open_generation(identity).generation_id == record.generation_id
+    prepared = resolve_data_input(config, store=store, base_dir=tmp_path).collect()
+    assert prepared["id"].to_list() == [1, 2, 3]

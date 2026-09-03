@@ -79,10 +79,13 @@ def contract_error_payload(exc: BaseException) -> dict[str, Any]:
 def contract_error_http_exception(exc: BaseException) -> HTTPException:
     """Map a public contract error to its synchronous-route response."""
 
-    return HTTPException(
-        status_code=CONTRACT_ERROR_HTTP_STATUS,
-        detail=contract_error_payload(exc),
+    payload = contract_error_payload(exc)
+    status_code = (
+        MEMORY_LIMITED_HTTP_STATUS
+        if _is_memory_limited_contract_error(exc)
+        else CONTRACT_ERROR_HTTP_STATUS
     )
+    return HTTPException(status_code=status_code, detail=payload)
 
 
 def contract_error_job_fields(exc: BaseException) -> dict[str, Any]:

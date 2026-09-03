@@ -508,6 +508,9 @@ class TestSnapshotGenerationLease:
                 ]
             }
         )
+        # This test proves the lease, not the reader grace: every store handle,
+        # including the bundle's own, retires at once on release.
+        monkeypatch.setattr(SourceCacheStore, "_retire_grace_elapsed", lambda self, identity: True)
         store = SourceCacheStore(project_dir)
         first = build_input_snapshot(
             input_config,

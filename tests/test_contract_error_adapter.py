@@ -243,8 +243,8 @@ def test_input_preparation_error_is_a_public_contract_error() -> None:
 
 def test_a_memory_limited_preparation_records_the_memory_limited_terminal_state() -> None:
     exc = _input_preparation_error("memory_limited")
-    # A synchronous route still answers 422 with the contract payload.
-    assert contract_error_http_exception(exc).status_code == 422
+    # A synchronous route answers 507, matching the background job's status.
+    assert contract_error_http_exception(exc).status_code == 507
     assert contract_error_terminal_reason(exc) == "memory_limited"
     fields = contract_error_job_fields(exc)
     assert fields["error_code"] == "memory_limit"

@@ -418,14 +418,16 @@ def _supervise_admitted_eager_build(
         )
     except BaseException as exc:
         settled = store.reconcile_unpublished(identity, generation_id, staging_token)
+        # Reconcile first so nothing is left behind, but never convert a base
+        # exception (an interrupt, a system exit) into this build's success.
+        if not isinstance(exc, Exception):
+            raise
         if settled == "published":
             published = store.open_generation(identity)
             # The child deferred retirement; retire here, where this process's
             # own lease counts are visible.
             store.retire_unleased(identity)
             return published
-        if not isinstance(exc, Exception):
-            raise
         raise _admitted_eager_failure(exc, budget=budget, token=token) from exc
     if not isinstance(outcome, InputPreparationOutcome):
         raise RuntimeError("input snapshot build worker returned an unexpected outcome")
