@@ -59,7 +59,9 @@ relationship is recorded in `specs/ownership.toml`.
   its directory behind is logged (`source_cache_reconcile_removal_failed`) and reported as
   `unremovable`.
 - `source_signature` memoises by path, size, and mtime, so an unchanged file is hashed once
-  per process.
+  per process; a file modified within the last two seconds is hashed every time, because a
+  filesystem stamps mtimes at its own granularity and a same-size rewrite inside that window
+  would otherwise keep a stale signature (git's racy-index rule).
 - `DatabaseSnapshotBuilder` validates a read query and yields Arrow record batches with one
   stable schema from an existing SQLite database.
 

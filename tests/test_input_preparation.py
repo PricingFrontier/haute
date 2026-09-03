@@ -1584,19 +1584,35 @@ def test_the_source_signature_hashes_an_unchanged_file_once(
 
     monkeypatch.setattr(providers, "content_hash", counting_hash)
 
+    def settle(target: Path) -> None:
+        # A file written moments ago is hashed on every call, because a
+        # same-size rewrite inside the filesystem's timestamp granularity would
+        # keep its (size, mtime) key; ageing the mtime past the settle window
+        # is what lets the memo serve it.
+        stat = target.stat()
+        aged = stat.st_mtime_ns - 10 * 1_000_000_000
+        os.utime(target, ns=(stat.st_atime_ns, aged))
+
+    young = providers.source_signature(config, base_dir=tmp_path)
+    assert providers.source_signature(config, base_dir=tmp_path) == young
+    assert len(calls) == 2
+
+    settle(path)
     first = providers.source_signature(config, base_dir=tmp_path)
+    assert first == young
     assert providers.source_signature(config, base_dir=tmp_path) == first
-    assert len(calls) == 1
+    assert len(calls) == 3
 
     path.write_text("id\n1\n2\n", encoding="utf-8")
+    settle(path)
     changed_size = providers.source_signature(config, base_dir=tmp_path)
     assert changed_size != first
-    assert len(calls) == 2
+    assert len(calls) == 4
 
     stat = path.stat()
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
     assert providers.source_signature(config, base_dir=tmp_path) == changed_size
-    assert len(calls) == 3
+    assert len(calls) == 5
 
 
 # ----------------------------- (A7) a base exception is never converted into success

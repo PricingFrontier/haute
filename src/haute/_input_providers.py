@@ -8,6 +8,7 @@ layout/publication stays in :mod:`haute._source_cache`.
 from __future__ import annotations
 
 import threading
+import time
 import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
@@ -126,25 +127,33 @@ def source_cache_identity(
 
 
 _SIGNATURE_MEMO_MAX_ENTRIES = 256
+# A file written within this many seconds of the check is hashed every time:
+# a filesystem stamps mtimes at its own granularity (a kernel tick on ext4),
+# so a same-size rewrite inside that window keeps the (size, mtime) key while
+# the content changed. Git applies the same rule to racy index entries.
+_SIGNATURE_MEMO_SETTLE_SECONDS = 2.0
 _SIGNATURE_MEMO_LOCK = threading.Lock()
 # Whole-file hashing is the dominant cost of a freshness check, and one
 # execution asks for the same signature at least twice. Keyed by the identity
-# a change to the file necessarily invalidates: path, size, and mtime.
+# a change to a settled file necessarily invalidates: path, size, and mtime.
 _SIGNATURE_MEMO: OrderedDict[tuple[str, int, int], str] = OrderedDict()
 
 
 def _memoised_file_signature(path: Path) -> str:
     stat = path.stat()
     key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
-    with _SIGNATURE_MEMO_LOCK:
-        memoised = _SIGNATURE_MEMO.get(key)
-    if memoised is not None:
-        return memoised
+    settled = time.time() - stat.st_mtime >= _SIGNATURE_MEMO_SETTLE_SECONDS
+    if settled:
+        with _SIGNATURE_MEMO_LOCK:
+            memoised = _SIGNATURE_MEMO.get(key)
+        if memoised is not None:
+            return memoised
     signature = f"xxh64:{content_hash(path)}:{stat.st_size}"
-    with _SIGNATURE_MEMO_LOCK:
-        _SIGNATURE_MEMO[key] = signature
-        while len(_SIGNATURE_MEMO) > _SIGNATURE_MEMO_MAX_ENTRIES:
-            _SIGNATURE_MEMO.popitem(last=False)
+    if settled:
+        with _SIGNATURE_MEMO_LOCK:
+            _SIGNATURE_MEMO[key] = signature
+            while len(_SIGNATURE_MEMO) > _SIGNATURE_MEMO_MAX_ENTRIES:
+                _SIGNATURE_MEMO.popitem(last=False)
     return signature
 
 
