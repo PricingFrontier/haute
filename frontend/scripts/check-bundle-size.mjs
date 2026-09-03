@@ -76,7 +76,12 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // ~8.2 KiB of deliberate eager core. The Explore validator and editor surfaces
 // remain lazy. The merged initial bundle is 276.7 KiB; 279 KiB retains ~2.3 KiB
 // headroom while continuing to catch accidental eager imports.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 279
+// Structural staleness fingerprints and deferred shared-node deletion cleanup
+// for the boundary-editing hook add ~2.3 KiB of deliberate eager core: the
+// hook runs on the mounted canvas, so the fingerprint and the settle callbacks
+// cannot be lazy. The merged initial bundle is 279.0 KiB; 281 KiB retains ~2 KiB
+// headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 281
 
 // Chunks that should only be fetched after a user opens a code/editor-heavy
 // surface. If one appears as a startup modulepreload, the app has likely
