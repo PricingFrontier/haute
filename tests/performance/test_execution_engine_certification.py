@@ -20,12 +20,13 @@ import pytest
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._json_flatten import _json_cache_dir
 from haute._json_shred._cache import build_per_port_cache, load_v2_api_source
+from haute._native_memory_limit import native_memory_backend_scope
 from haute._polars_operations import OperationPolicy, OperationReceiver, operation
 from haute._polars_utils import execution_collect
 from haute._ram_estimate import estimate_materialisation_boundaries
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import GroupByExecutionUnsupportedError
-from haute.execution import plan_prepared_execution_strategy
+from haute.execution import MANY_TO_MANY_JOIN_DETAIL, plan_prepared_execution_strategy
 from haute.executor import _preview_cache, execute_graph
 from scripts.memory_smoke import run_smoke
 
@@ -84,6 +85,10 @@ _FULL_WIDTH_OUTPUT_FRACTION = 0.5
 # run: repeating the test inside one interpreter reuses a warm page cache for the
 # fixture and flatters every ratio, so an in-process repeat is not a measurement.
 _PAIRED_SAMPLES = 3
+# ``interpolate`` is a narrow-frame case whose ratio sits at about 1.24 against a
+# 1.30 ceiling, close enough that three pairs let batch drift decide the result.
+# More pairs cost time only on that one operation.
+_PAIRED_SAMPLES_BY_OPERATION = {"interpolate": 5}
 # A streaming policy is the safety-critical direction: an operator wrongly
 # recorded as streaming is one the planner will never admit. Every streaming
 # operator is bound by the full passthrough control, because a streaming
@@ -116,6 +121,14 @@ _WITNESS_VARIANTS = {
 # The cross join is a boundary whose memory nobody has measured, so it is
 # certified through the planner's unavailable-estimate contract instead.
 _CROSS_JOIN_CODE = "df = fact.join(dim, how='cross')"
+# ``join`` is sized from the largest operand it holds, so the case that has to
+# be shown is a join whose output outgrows every operand. ``multi`` holds three
+# rows per key, so this plan emits three times the fact rows against an
+# input-sized estimate. It is a variant of ``join``, not a registry name, so it
+# certifies ``estimate_bounds_observation`` only -- no does-not-stream witness.
+_JOIN_FANOUT_PROBE = "join_fanout"
+_JOIN_FANOUT_CODE = "df = fact.join(multi, on='key', how='inner')"
+_JOIN_FANOUT_ROW_FACTOR = 3
 # ``explode``'s row expansion is unbounded, so its estimate is unavailable by
 # construction and it is certified through the typed rejection instead.
 _UNAVAILABLE_ESTIMATE_OPERATIONS = frozenset({"explode"})
@@ -1505,9 +1518,23 @@ def _write_operation_fixtures(root: Path) -> dict[str, Any]:
     dim_path = root / "operation-dim.parquet"
     fact.write_parquet(fact_path, row_group_size=_OPERATION_ROW_GROUP_SIZE)
     dim.write_parquet(dim_path, row_group_size=_OPERATION_ROW_GROUP_SIZE)
+    # Three rows per dim key, so an inner join on ``key`` emits three times the
+    # fact rows: the fan-out case whose output exceeds its largest operand.
+    multi_index = pl.int_range(0, dim_rows * _JOIN_FANOUT_ROW_FACTOR, eager=True)
+    multi = pl.DataFrame(
+        {
+            "key": multi_index // _JOIN_FANOUT_ROW_FACTOR,
+            "m1": (multi_index % 19).cast(pl.Float64),
+            "m2": "multi-" + (multi_index % 997).cast(pl.Utf8),
+        }
+    )
+    multi_path = root / "operation-multi.parquet"
+    multi.write_parquet(multi_path, row_group_size=_OPERATION_ROW_GROUP_SIZE)
     return {
         "fact_path": fact_path,
         "dim_path": dim_path,
+        "multi_path": multi_path,
+        "multi_rows": multi.height,
         "fact_rows": fact.height,
         "fact_columns": fact.width,
         "fact_estimated_size_bytes": fact.estimated_size(),
@@ -1545,6 +1572,8 @@ def _run_operation_memory_probe(
             str(fixtures["fact_path"]),
             "--dim",
             str(fixtures["dim_path"]),
+            "--multi",
+            str(fixtures["multi_path"]),
             "--output",
             str(result_path),
             *(["--keep-sink"] if keep_sink else []),
@@ -1628,8 +1657,13 @@ def _boundary_graph(
     *,
     code: str | None = None,
     two_input: bool | None = None,
+    second_input: str = "dim",
 ):
-    """Build the two- or three-node graph the planner admits for an operation."""
+    """Build the two- or three-node graph the planner admits for an operation.
+
+    ``second_input`` names the graph's second port and selects its fixture, so a
+    variant can join against a different frame than ``dim``.
+    """
     from tests.conftest import make_edge, make_graph, make_ready_file_input_config
 
     if two_input is None:
@@ -1650,21 +1684,25 @@ def _boundary_graph(
     if two_input:
         nodes.append(
             {
-                "id": "dim",
+                "id": second_input,
                 "data": {
-                    "label": "dim",
+                    "label": second_input,
                     "nodeType": "dataInput",
-                    "config": make_ready_file_input_config(fixtures["dim_path"]),
+                    "config": make_ready_file_input_config(fixtures[f"{second_input}_path"]),
                 },
             }
         )
-        edges.append(make_edge("dim", "op").model_dump())
+        edges.append(make_edge(second_input, "op").model_dump())
         # A fan-in Polars node needs a declared per-parent contract before the
         # analyser will attribute either frame root, exactly as production does.
         config["contract"] = {
             "inputs": ["key", "ts", "v1"],
             "outputs": [],
-            "inputs_by_parent": {"fact": ["key", "ts", "v1"], "dim": ["key", "ts"]},
+            "inputs_by_parent": {
+                "fact": ["key", "ts", "v1"],
+                # ``multi`` has no time axis; only ``dim`` carries ``ts``.
+                second_input: ["key", "ts"] if second_input == "dim" else ["key"],
+            },
         }
     nodes.append(
         {
@@ -1681,6 +1719,7 @@ def _plan_boundary(
     *,
     code: str | None = None,
     two_input: bool | None = None,
+    second_input: str = "dim",
 ):
     """Plan the operation as the executor would, under an ample admission."""
     from haute.execution import ProjectionRequest, plan_execution_strategy
@@ -1702,7 +1741,13 @@ def _plan_boundary(
     try:
         return plan_execution_strategy(
             ProjectionRequest(
-                graph=_boundary_graph(operation_name, fixtures, code=code, two_input=two_input),
+                graph=_boundary_graph(
+                    operation_name,
+                    fixtures,
+                    code=code,
+                    two_input=two_input,
+                    second_input=second_input,
+                ),
                 target_node_id="op",
                 profile=profile,
             ),
@@ -1756,13 +1801,14 @@ def _paired_measurement(
     average cost over a discrete allocation pattern like this one. Medians are
     still recorded for information.
     """
+    samples = _PAIRED_SAMPLES_BY_OPERATION.get(operation_name, _PAIRED_SAMPLES)
     runs = [_run_operation_memory_probe(tmp_path, fixtures, operation_name, keep_sink=keep_sink)]
     if control_name is None:
         control_name = choose_control(runs[0])
     control_runs: list[dict[str, Any]] = []
-    for index in range(_PAIRED_SAMPLES):
+    for index in range(samples):
         control_runs.append(_run_operation_memory_probe(tmp_path, fixtures, control_name))
-        if index < _PAIRED_SAMPLES - 1:
+        if index < samples - 1:
             runs.append(
                 _run_operation_memory_probe(tmp_path, fixtures, operation_name, keep_sink=keep_sink)
             )
@@ -1774,7 +1820,7 @@ def _paired_measurement(
     return {
         "operation": operation_name,
         "control": control_name,
-        "samples": _PAIRED_SAMPLES,
+        "samples": samples,
         "operation_samples": operation_samples,
         "control_samples": control_samples,
         "operation_mean_bytes": operation_mean,
@@ -1994,6 +2040,106 @@ def test_global_operation_memory_policies_match_the_registry(
 
         measurements.append(record)
 
+    # ``join`` is sized from the largest operand it holds only when a declared
+    # uniqueness contract bounds its output by that operand. This variant has no
+    # contract and emits three times the fact rows, which is exactly the case the
+    # input-sized figure does not bound -- so it is certified through the
+    # planner's policy for an unbounded join rather than against a number.
+    fanout_paired = _paired_measurement(
+        tmp_path,
+        fixtures,
+        _JOIN_FANOUT_PROBE,
+        control_name=_FULL_WIDTH_FLOOR,
+    )
+    fanout_measured = fanout_paired["last_run"]
+    fanout_incremental = fanout_paired["operation_mean_bytes"]
+
+    def _plan_fanout():
+        return _plan_boundary(
+            "join",
+            fixtures,
+            code=_JOIN_FANOUT_CODE,
+            two_input=True,
+            second_input="multi",
+        )
+
+    with native_memory_backend_scope("rlimit"):
+        capped_fanout = _plan_fanout()
+    capped_status = capped_fanout.status.value
+    capped_strategy = capped_fanout.diagnostic.strategy.value
+    capped_assumptions = list(capped_fanout.diagnostic.assumptions)
+    uncapped_reason: str | None = None
+    uncapped_remediation = ""
+    try:
+        _plan_fanout()
+    except GroupByExecutionUnsupportedError as error:
+        uncapped_reason = error.reason_code
+        uncapped_remediation = error.remediation
+    expected_fanout_rows = fixtures["fact_rows"] * _JOIN_FANOUT_ROW_FACTOR
+    declared_join_estimate = next(
+        (
+            record["estimated_peak_bytes"]
+            for record in measurements
+            if record["operation"] == "join"
+        ),
+        None,
+    )
+    join_fanout = {
+        "operation": _JOIN_FANOUT_PROBE,
+        "certifies": "join_cardinality_many_to_many policy",
+        "code": _JOIN_FANOUT_CODE,
+        "control": fanout_paired["control"],
+        "rows_out": fanout_measured["rows_out"],
+        "expected_rows_out": expected_fanout_rows,
+        "row_factor": _JOIN_FANOUT_ROW_FACTOR,
+        "incremental_peak_rss_bytes": fanout_incremental,
+        "declared_join_estimated_peak_bytes": declared_join_estimate,
+        "exceeds_declared_join_estimate": bool(
+            isinstance(declared_join_estimate, int) and fanout_incremental > declared_join_estimate
+        ),
+        "capped_status": capped_status,
+        "capped_strategy": capped_strategy,
+        "capped_proof_gap": [item for item in capped_assumptions if item.startswith("proof_gap=")],
+        "uncapped_reason_code": uncapped_reason,
+        "paired": {
+            key: fanout_paired[key]
+            for key in (
+                "samples",
+                "operation_samples",
+                "control_samples",
+                "operation_mean_bytes",
+                "control_mean_bytes",
+                "operation_median_bytes",
+                "control_median_bytes",
+            )
+        },
+        "ratio": fanout_paired["ratio"],
+    }
+    if fanout_measured["rows_out"] != expected_fanout_rows:
+        failures.append(
+            f"join_fanout must emit {expected_fanout_rows} rows "
+            f"({_JOIN_FANOUT_ROW_FACTOR}x the fact rows), got {fanout_measured['rows_out']}"
+        )
+    if not (
+        capped_status == "warned"
+        and capped_strategy == "full-width-conservative"
+        and f"proof_gap=op:{MANY_TO_MANY_JOIN_DETAIL}" in capped_assumptions
+    ):
+        failures.append(
+            "an undeclared join under a hard cap must plan warned/full-width-conservative "
+            f"with proof_gap=op:{MANY_TO_MANY_JOIN_DETAIL}, got "
+            f"{capped_status}/{capped_strategy} {join_fanout['capped_proof_gap']}"
+        )
+    if not (
+        uncapped_reason == "materialisation_estimate_unavailable"
+        and MANY_TO_MANY_JOIN_DETAIL in uncapped_remediation
+    ):
+        failures.append(
+            "an undeclared join without a hard cap must reject as "
+            f"materialisation_estimate_unavailable naming {MANY_TO_MANY_JOIN_DETAIL}, got "
+            f"{uncapped_reason!r}: {uncapped_remediation!r}"
+        )
+
     # A cross join is an admitted boundary whose memory nobody has measured, so
     # it is certified through the planner rather than a probe: no estimate.
     cross_join_reason = None
@@ -2027,12 +2173,15 @@ def test_global_operation_memory_policies_match_the_registry(
                     "fact_gap_null_count": fixtures["fact_gap_null_count"],
                     "dim_rows": fixtures["dim_rows"],
                     "dim_estimated_size_bytes": fixtures["dim_estimated_size_bytes"],
+                    "multi_rows": fixtures["multi_rows"],
                     "row_group_size": _OPERATION_ROW_GROUP_SIZE,
                 },
                 "measurements": measurements,
+                "join_fanout": join_fanout,
                 "cross_join": cross_join,
                 "rss_contract": {
                     "paired_samples": _PAIRED_SAMPLES,
+                    "paired_samples_by_operation": dict(_PAIRED_SAMPLES_BY_OPERATION),
                     "full_width_output_fraction": _FULL_WIDTH_OUTPUT_FRACTION,
                     "max_streaming_floor_ratio": _MAX_STREAMING_FLOOR_RATIO,
                     "min_witness_floor_ratio": _MIN_WITNESS_FLOOR_RATIO,
@@ -2046,7 +2195,8 @@ def test_global_operation_memory_policies_match_the_registry(
                     "chunk_count": 0,
                     "output_bytes": 0,
                     "temp_disk_peak_bytes": fixtures["fact_path"].stat().st_size
-                    + fixtures["dim_path"].stat().st_size,
+                    + fixtures["dim_path"].stat().st_size
+                    + fixtures["multi_path"].stat().st_size,
                 },
                 "admission": {"state": "isolated_process_control", "detail": None},
                 "payload_bytes": 0,

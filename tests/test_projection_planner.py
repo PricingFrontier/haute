@@ -3438,6 +3438,34 @@ def test_boundary_helpers_skip_missing_sources_and_expose_first_operator_wrapper
     }
 
 
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("df = pl.LazyFrame.group_by(src, 'segment').agg(pl.len())", "group_by"),
+        ("df = pl.DataFrame.sort(src, 'premium')", "sort"),
+        ("g = src.group_by\ndf = g('segment').agg(pl.len())", "group_by"),
+        ("s = src.sort\ndf = s('premium')", "sort"),
+        ("df = src.with_columns(pl.col('premium').cast(pl.Int64))", None),
+    ],
+)
+def test_bound_methods_and_frame_class_calls_are_materialising_boundaries(
+    code: str, expected: str | None
+) -> None:
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import materialising_operators_by_input_names
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={"code": code}),
+    )
+
+    operators = dict(materialising_operators_by_input_names(["op"], {"op": node}, {"op": ["src"]}))
+
+    assert operators == ({} if expected is None else {"op": expected})
+
+
 def test_opaque_contract_polars_fan_in_is_unprojected() -> None:
     from haute._types import GraphNode, NodeData, NodeType
     from haute.projection import opaque_contract_demands_for_node

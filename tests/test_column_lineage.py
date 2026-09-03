@@ -2090,3 +2090,105 @@ def test_join_operands_are_counted_per_input_name(
 
     assert result.supported, result.reason
     assert dict(result.operand_reference_counts) == expected
+
+
+# ---------------------------------------------------------------------------
+# cast / shift: schema-preserving, row-preserving lineage transfers.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("code", "demand", "expected_demand"),
+    [
+        # A dict mapping demands the columns it names: Polars raises
+        # ColumnNotFound if a mapped column is projected away.
+        (
+            "df = rows.cast({'a': pl.Float64}).select(['b'])",
+            None,
+            {"a", "b"},
+        ),
+        # A whole-frame cast demands nothing beyond the downstream demand.
+        ("df = rows.cast(pl.Float64).select(['b'])", None, {"b"}),
+        ("df = rows.shift(1).select(['b'])", None, {"b"}),
+    ],
+)
+def test_cast_and_shift_transfer_lineage_and_survive_projection(
+    code: str, demand: list[str] | None, expected_demand: set[str]
+) -> None:
+    schema = frozenset({"a", "b", "unused"})
+    result = analyze_polars_lineage(code, {"rows": schema}, demand)
+
+    assert result.supported, result
+    assert result.demands_by_input == {"rows": frozenset(expected_demand)}
+
+    frame = pl.DataFrame({"a": [1, 2], "b": [3, 4], "unused": [5, 6]})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+    ).collect()
+    assert_frame_equal(projected, full)
+
+
+@pytest.mark.parametrize(
+    ("code", "reason", "operation"),
+    [
+        ("df = rows.cast(dtype)", "dynamic_cast", "cast"),
+        ("df = rows.cast({key: pl.Float64})", "dynamic_cast", "cast"),
+        ("df = rows.cast({'a': dtype})", "dynamic_cast", "cast"),
+        ("df = rows.cast()", "dynamic_cast", "cast"),
+        ("df = rows.cast(pl.Float64, strict=flag)", "dynamic_cast", "cast"),
+        ("df = rows.shift(n)", "dynamic_shift", "shift"),
+        ("df = rows.shift()", "dynamic_shift", "shift"),
+        ("df = rows.shift(1, fill_value=other)", "dynamic_shift", "shift"),
+    ],
+)
+def test_dynamic_cast_and_shift_arguments_fail_closed(
+    code: str, reason: str, operation: str
+) -> None:
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "b"})})
+
+    assert not result.supported
+    assert result.reason == reason
+    assert result.unsupported_operation == operation
+
+
+def test_a_root_demand_consumed_by_drops_still_carries_the_rows() -> None:
+    """Every demanded root column is dropped before the row index, so a carrier is added.
+
+    Falsified by the projected-versus-full property test: the projected run
+    reached a zero-column frame and produced no rows.
+    """
+    code = (
+        "df = rows\n"
+        "df = df.drop_nulls(['a'])\n"
+        "df = df.drop('a')\n"
+        "df = df.drop('b')\n"
+        "df = df.drop('c')\n"
+        "df = df.drop('d')\n"
+        "df = df.with_row_index('index_0')"
+    )
+    frame = pl.DataFrame(
+        {
+            "a": [1, None, 3],
+            "b": [1, 2, 3],
+            "c": [1, 2, 3],
+            "d": [1, 2, 3],
+            "s": ["x", "y", "z"],
+            "t": [1.0, 2.0, 3.0],
+        }
+    )
+    result = analyze_polars_lineage(code, {"rows": frozenset(frame.columns)})
+    assert result.supported, result
+    assert "s" in result.demands_by_input["rows"]
+
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code,
+        ["rows"],
+        (frame.select(sorted(result.demands_by_input["rows"])).lazy(),),
+    ).collect()
+    assert full.height == 2
+    assert projected.height == full.height
+    assert projected.get_column("index_0").to_list() == full.get_column("index_0").to_list()

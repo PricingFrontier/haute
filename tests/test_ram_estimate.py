@@ -3020,6 +3020,9 @@ def test_literal_unpivot_cardinality_is_bounded_by_the_on_column_count() -> None
         ("unique", 350),
         ("reverse", 250),
         ("over", 250),
+        ("join_asof", 250),
+        ("top_k", 100),
+        ("bottom_k", 100),
     ],
 )
 def test_boundary_estimate_applies_and_records_the_operator_memory_factor(
@@ -3093,18 +3096,19 @@ def _join_graph(left_path: Path, right_path: Path, join_code: str) -> PipelineGr
     )
 
 
-def test_join_boundary_is_sized_from_its_ports_not_its_output_product(tmp_path: Path) -> None:
-    """EXEC-P07: a join holds both ports and streams its output.
+def test_declared_join_boundary_is_sized_from_its_ports_not_its_output(tmp_path: Path) -> None:
+    """A declared ``m:1`` join cannot emit more rows than its left operand.
 
-    An undeclared many-to-many join's *output* bound is the row product, but the
-    join itself never materialises that frame, so charging it the product would
-    reject every contract-free join. Its own estimate is the wider port.
+    The contract is what makes input sizing sound: the join holds both ports and
+    streams an output the contract already bounds by one of them.
     """
     left_path = tmp_path / "left.parquet"
     right_path = tmp_path / "right.parquet"
     _write_shape_source(left_path)
     _write_shape_source(right_path)
-    graph = _join_graph(left_path, right_path, "df = left.join(right, on='segment')")
+    graph = _join_graph(
+        left_path, right_path, "df = left.join(right, on='segment', how='left', validate='m:1')"
+    )
 
     estimate = _boundary_estimate(graph, "joined")
 
@@ -3119,36 +3123,70 @@ def test_join_boundary_is_sized_from_its_ports_not_its_output_product(tmp_path: 
     )
     assert scaled.state is MaterialisationEstimateState.AVAILABLE, scaled.unavailable_reason
     assert scaled.estimated_peak_bytes is not None
-    # The port bound is one source's rows, not rows x rows.
+    assert scaled.depends_on_many_to_many_join is False
+    # The port bound is one source's rows, and the declared contract keeps the
+    # output there too.
     assert f"boundary_input_rows_upper_bound={_PROVABLE_SHAPE_ROWS}" in scaled.assumptions
-    output_bound = next(
-        item for item in scaled.assumptions if item.startswith("boundary_output_rows_upper_bound=")
-    )
-    assert output_bound == (
-        f"boundary_output_rows_upper_bound={_PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS}"
-    )
-    # The operator factor still applies on top of the port-sized base. The
-    # unoperated estimate above is the same widths against the *product* bound,
-    # so dividing it by one port's rows recovers the port-sized base exactly.
-    assert "materialisation_factor_basis_points=150" in scaled.assumptions
-    port_sized_base = estimate.estimated_peak_bytes // _PROVABLE_SHAPE_ROWS
-    assert scaled.estimated_peak_bytes == (port_sized_base * 150 + 99) // 100
-    assert scaled.estimated_peak_bytes < estimate.estimated_peak_bytes
+    assert f"boundary_output_rows_upper_bound={_PROVABLE_SHAPE_ROWS}" in scaled.assumptions
+    # Same rows and same widths as the unoperated estimate, so only the operator
+    # factor separates them.
+    assert "materialisation_factor_basis_points=200" in scaled.assumptions
+    assert scaled.estimated_peak_bytes == (estimate.estimated_peak_bytes * 200 + 99) // 100
 
 
-def test_group_by_after_an_undeclared_join_still_sees_the_row_product(tmp_path: Path) -> None:
-    """The output bound propagates unchanged: the frame that materialises pays."""
+def test_undeclared_join_boundary_is_sized_from_the_row_product(tmp_path: Path) -> None:
+    """Without a contract the row product is the only bound the join has.
+
+    The certification lane measured a three-times fan-out join above the
+    input-sized figure, so input sizing is reserved for declared joins.
+    """
     left_path = tmp_path / "left.parquet"
     right_path = tmp_path / "right.parquet"
     _write_shape_source(left_path)
     _write_shape_source(right_path)
     graph = _join_graph(left_path, right_path, "df = left.join(right, on='segment')")
 
-    [(_, join_estimate)] = list(
+    [(_, scaled)] = list(
         estimate_materialisation_boundaries(
             graph, ["joined"], boundary_operators={"joined": ("join",)}
         )
     )
+
+    assert scaled.state is MaterialisationEstimateState.AVAILABLE, scaled.unavailable_reason
+    assert scaled.depends_on_many_to_many_join is True
+    product = _PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS
+    assert f"boundary_input_rows_upper_bound={product}" in scaled.assumptions
+    assert f"boundary_output_rows_upper_bound={product}" in scaled.assumptions
+
+
+def test_an_explicit_many_to_many_contract_is_also_unbounded(tmp_path: Path) -> None:
+    """``validate='m:m'`` declares the absence of a bound, not a bound."""
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(
+        left_path, right_path, "df = left.join(right, on='segment', validate='m:m')"
+    )
+
+    [(_, scaled)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+
+    assert scaled.state is MaterialisationEstimateState.AVAILABLE, scaled.unavailable_reason
+    assert scaled.depends_on_many_to_many_join is True
+
+
+def test_group_by_after_an_undeclared_join_still_sees_the_row_product(tmp_path: Path) -> None:
+    """The unbounded-join flag is inherited by whatever materialises downstream."""
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(left_path, right_path, "df = left.join(right, on='segment')")
+
     [(_, downstream)] = list(
         estimate_materialisation_boundaries(
             graph, ["agg"], boundary_operators={"agg": ("group_by",)}
@@ -3156,11 +3194,7 @@ def test_group_by_after_an_undeclared_join_still_sees_the_row_product(tmp_path: 
     )
 
     assert downstream.state is MaterialisationEstimateState.AVAILABLE
-    assert join_estimate.estimated_peak_bytes is not None
-    assert downstream.estimated_peak_bytes is not None
-    # The join streams its output; the group_by that materialises it pays the
-    # full many-to-many product.
-    assert downstream.estimated_peak_bytes > join_estimate.estimated_peak_bytes
+    assert downstream.depends_on_many_to_many_join is True
     assert (
         f"cardinality_peak_upper_bound={_PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS}"
         in downstream.assumptions
@@ -3314,9 +3348,11 @@ def test_chained_join_is_sized_from_the_previous_join_not_the_original_ports(
 
     assert chained.state is MaterialisationEstimateState.AVAILABLE, chained.unavailable_reason
     assert linear.state is MaterialisationEstimateState.AVAILABLE, linear.unavailable_reason
-    # The undeclared chain's second join consumes the first join's product.
+    # The undeclared chain's second join consumes the first join's product and
+    # is itself bounded only by its own product on top of that.
     assert (
-        f"boundary_input_rows_upper_bound={_PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS}"
+        "boundary_input_rows_upper_bound="
+        f"{_PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS}"
         in chained.assumptions
     )
     # A declared m:1 chain never expands, so it stays at one port's rows.
@@ -3396,8 +3432,8 @@ def test_self_join_charges_the_shared_port_width_twice(tmp_path: Path) -> None:
     assert joined.estimated_peak_bytes is not None
     assert sorted_once.estimated_peak_bytes is not None
     # Same rows and same source columns: only the doubled port width and the
-    # two operators' factors (150 for join, 300 for sort) differ.
-    single_port_width_at_join_factor = (sorted_once.estimated_peak_bytes * 150 + 299) // 300
+    # two operators' factors (200 for join, 300 for sort) differ.
+    single_port_width_at_join_factor = (sorted_once.estimated_peak_bytes * 200 + 299) // 300
     assert joined.estimated_peak_bytes == 2 * single_port_width_at_join_factor
 
 
@@ -3559,3 +3595,58 @@ def test_a_duplicate_valued_input_mapping_fails_loudly_instead_of_estimating(
     # The analyst sees the executor's diagnosis, not an estimator-specific one.
     assert str(estimator_error.value) == str(runtime_error.value)
     assert "one distinct current edge input name" in str(estimator_error.value)
+
+
+@pytest.mark.parametrize(
+    ("validate", "expected"),
+    [(None, True), ("m:m", True), ("m:1", False)],
+)
+def test_edge_join_contract_decides_the_many_to_many_flag(
+    tmp_path: Path, validate: str | None, expected: bool
+) -> None:
+    """An Edge Join without a bounding contract carries the row product downstream."""
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    pl.DataFrame({"segment": ["a", "b"], "rate": [1.0, 2.0]}).write_parquet(right_path)
+    left = _make_source_node(
+        node_id="left",
+        label="left",
+        node_type="dataInput",
+        config=_ready_file_input_config(left_path),
+    )
+    right = _make_source_node(
+        node_id="right",
+        label="right",
+        node_type="dataInput",
+        config=_ready_file_input_config(right_path),
+    )
+    config: dict[str, object] = {"how": "inner", "on": ["segment"]}
+    if validate is not None:
+        config["validate"] = validate
+    joined = _make_edge_join_node(node_id="joined", label="joined", config=config)
+    joined.data.nodeType = NodeType.EDGE_JOIN
+    aggregated = _make_transform_node(
+        node_id="agg",
+        label="agg",
+        config={
+            "code": "df = df.group_by('segment').agg(pl.col('premium').sum().alias('premium'))"
+        },
+    )
+    graph = PipelineGraph(
+        nodes=[left, right, joined, aggregated],
+        edges=[
+            GraphEdge(id="e1", source="left", target="joined", targetHandle="base"),
+            GraphEdge(id="e2", source="right", target="joined", targetHandle="join"),
+            GraphEdge(id="e3", source="joined", target="agg"),
+        ],
+    )
+
+    [(_, downstream)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["agg"], boundary_operators={"agg": ("group_by",)}
+        )
+    )
+
+    assert downstream.state is MaterialisationEstimateState.AVAILABLE, downstream.unavailable_reason
+    assert downstream.depends_on_many_to_many_join is expected

@@ -341,7 +341,7 @@ jobs:
       - run: uv sync --group dev --locked
 
       - name: Python perf lane
-        run: uv run python scripts/run_perf_suite.py --output-dir .cache/perf
+        run: uv run python scripts/run_perf_suite.py --output-dir .cache/perf --max-test-seconds 180
 
       - uses: actions/upload-artifact@v4
         if: always()

@@ -14,7 +14,7 @@ full-width boundary rather than guessing.
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import lru_cache
@@ -111,6 +111,15 @@ class RowCardinalityAnalysis:
 
     EXEC-P07 measured inner/left/asof joins; a cross join's peak was never
     probed, so it must not inherit their admission.
+    """
+
+    depends_on_many_to_many_join: bool = False
+    """Whether the program contains a join with no bounding uniqueness contract.
+
+    A join declared ``1:1``, ``1:m`` or ``m:1`` cannot emit more rows than one
+    of its operands, so the operand it holds bounds it. Without a declared
+    contract — or with ``m:m`` — the only bound is the row product, which the
+    certification lane measured to be a real over-run of the input-sized figure.
     """
 
     operand_reference_counts: Mapping[str, int] = field(default_factory=lambda: _NO_OPERANDS)
@@ -246,6 +255,7 @@ _ROW_EXPANDING_EXPRESSION_METHODS = unbounded_expansion_expression_methods()
 _LINEAGE_FRAME_METHODS = frozenset(
     {
         "agg",
+        "cast",
         "drop",
         "drop_nulls",
         "explode",
@@ -259,6 +269,7 @@ _LINEAGE_FRAME_METHODS = frozenset(
         "rename",
         "select",
         "select_seq",
+        "shift",
         "slice",
         "sort",
         "tail",
@@ -270,6 +281,9 @@ _LINEAGE_FRAME_METHODS = frozenset(
 )
 _ROW_BOUND_SAFE_POLARS_CALLS = frozenset(
     {
+        # Column selectors name columns; they never change the row count.
+        "all",
+        "exclude",
         "arg_sort_by",
         "arg_where",
         "business_day_count",
@@ -1116,6 +1130,86 @@ def _is_literal_none(node: ast.AST) -> bool:
     return isinstance(node, ast.Constant) and node.value is None
 
 
+def _is_polars_dtype(node: ast.AST) -> bool:
+    """Return whether ``node`` is a ``pl.<Name>`` dtype or a literal dtype call.
+
+    ``pl.Int64`` and ``pl.Datetime('us')`` name a dtype; anything else (a name
+    the analyser cannot see, a computed dtype) is not admitted.
+    """
+    if isinstance(node, ast.Call):
+        if not all(isinstance(argument, ast.Constant) for argument in node.args):
+            return False
+        if not all(isinstance(keyword.value, ast.Constant) for keyword in node.keywords):
+            return False
+        node = node.func
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "pl"
+    )
+
+
+def _parse_cast(call: ast.Call) -> LineageOperation | _ParseFailure:
+    """``df.cast(...)`` keeps every column name and every row.
+
+    A dict mapping demands the columns it names -- Polars raises
+    ``ColumnNotFound`` for a mapped column that is not there -- while a
+    whole-frame cast demands nothing beyond what the downstream code asks for.
+    """
+    failure = _ParseFailure("dynamic_cast", "cast")
+    if len(call.args) != 1:
+        return failure
+    for keyword in call.keywords:
+        if keyword.arg != "strict" or _literal_bool(keyword.value) is None:
+            return failure
+    argument = call.args[0]
+    referenced: frozenset[str] = frozenset()
+    if isinstance(argument, ast.Dict):
+        mapped: set[str] = set()
+        for key, value in zip(argument.keys, argument.values, strict=True):
+            if key is None:
+                return failure
+            name = _literal_string(key)
+            if name is None or not _is_polars_dtype(value):
+                return failure
+            mapped.add(name)
+        if not mapped:
+            return failure
+        referenced = frozenset(mapped)
+    elif not _is_polars_dtype(argument):
+        return failure
+    return LineageOperation(
+        kind=LineageOperationKind.READ_COLUMNS,
+        method="cast",
+        referenced_columns=referenced,
+    )
+
+
+def _parse_shift(call: ast.Call) -> LineageOperation | _ParseFailure:
+    """``df.shift(n)`` moves values along the frame without changing its shape."""
+    failure = _ParseFailure("dynamic_shift", "shift")
+    if len(call.args) > 1:
+        return failure
+    periods: ast.AST | None = call.args[0] if call.args else None
+    for keyword in call.keywords:
+        if keyword.arg == "n" and periods is None:
+            periods = keyword.value
+        elif keyword.arg == "fill_value":
+            if not isinstance(keyword.value, ast.Constant):
+                return failure
+        else:
+            return failure
+    if periods is None:
+        return failure
+    if not (
+        isinstance(periods, ast.Constant)
+        and isinstance(periods.value, int)
+        and not isinstance(periods.value, bool)
+    ):
+        return failure
+    return LineageOperation(kind=LineageOperationKind.ROW_ONLY, method="shift")
+
+
 def _parse_drop(call: ast.Call) -> LineageOperation | _ParseFailure:
     dropped: set[str] = set()
     strict = True
@@ -1305,7 +1399,23 @@ def _parse_call_sequence(
                 return [], _ParseFailure("row_expansion_unbounded", method)
             outputs = _normalise_expression_outputs(call, allow_plain_strings=True)
             if outputs is None:
-                return [], _ParseFailure("dynamic_select", method)
+                # Row counts do not need the output names: a selection whose
+                # expressions are all readable and row-bounded emits at most
+                # the current height (one row over an empty frame for a
+                # scalar), so a selector such as ``pl.all()`` is still proven.
+                # Column lineage needs every name and stays stricter, and an
+                # unreadable expression (a call the analyser cannot see
+                # through) is rejected on both paths.
+                readable = cardinality_only and all(
+                    _referenced_columns(expression) is not None
+                    for expression in [
+                        *call.args,
+                        *(keyword.value for keyword in call.keywords),
+                    ]
+                )
+                if not readable:
+                    return [], _ParseFailure("dynamic_select", method)
+                outputs = ()
             operations.append(
                 LineageOperation(
                     kind=LineageOperationKind.SELECT,
@@ -1398,6 +1508,16 @@ def _parse_call_sequence(
                     referenced_columns=frozenset(collected),
                 )
             )
+        elif method == "cast":
+            parsed_cast = _parse_cast(call)
+            if isinstance(parsed_cast, _ParseFailure):
+                return [], parsed_cast
+            operations.append(parsed_cast)
+        elif method == "shift":
+            parsed_shift = _parse_shift(call)
+            if isinstance(parsed_shift, _ParseFailure):
+                return [], parsed_shift
+            operations.append(parsed_shift)
         elif method in _ROW_ONLY_METHODS:
             operations.append(LineageOperation(kind=LineageOperationKind.ROW_ONLY, method=method))
         elif cardinality_only and method in _CARDINALITY_ROW_ONLY_METHODS:
@@ -1625,6 +1745,51 @@ def _join_output_schema(
             return None
         output.add(emitted)
     return frozenset(output)
+
+
+def _ensure_root_carrier(
+    program: LinearFrameProgram,
+    evaluated: Sequence[_EvaluatedOperation],
+    input_schemas: Mapping[str, frozenset[str] | None],
+    root_schema: frozenset[str],
+    root_demand: set[str],
+) -> bool:
+    """Widen the root demand until the projected frame is never empty.
+
+    The program is re-evaluated over the projected root schema (the demand) and
+    compared step by step with the full evaluation. At the first step where the
+    full frame still has columns but the projected frame has none, the first
+    root column present in the full frame at that step, in sorted order, joins
+    the demand; a root column that has already left the frame cannot carry
+    rows there. Demanding an extra column never changes a result, so the loop
+    only ever widens. Returns ``False`` when the projected program cannot be
+    evaluated at all, which the caller reports as unsupported.
+    """
+    candidates = sorted(root_schema - root_demand)
+    if not root_demand and candidates:
+        root_demand.add(candidates.pop(0))
+    while True:
+        projected = _evaluate_program(
+            program,
+            {**input_schemas, program.root_input: frozenset(root_demand)},
+        )
+        if isinstance(projected, _ParseFailure):
+            return False
+        empty_step = next(
+            (
+                index
+                for index, (full, narrow) in enumerate(zip(evaluated, projected[0], strict=True))
+                if full.after_schema and narrow.after_schema is not None and not narrow.after_schema
+            ),
+            None,
+        )
+        if empty_step is None or not candidates:
+            return True
+        full_after = evaluated[empty_step].after_schema or frozenset()
+        present = [column for column in candidates if column in full_after]
+        carrier = present[0] if present else candidates[0]
+        candidates.remove(carrier)
+        root_demand.add(carrier)
 
 
 def _evaluate_program(
@@ -1888,18 +2053,23 @@ def analyze_polars_lineage(
             return _unsupported("unsupported_operation", operation.method)
 
     demands_by_input[program.root_input].update(demand)
-    # The root input's rows form the output, so it must always carry at least
-    # one column: a zero-column scan is an empty frame, and a demand that names
-    # only generated columns (a row index, a bare row count) would otherwise
-    # drop every row in silence. The carrier is the input's first column in
-    # sorted order, so the projection stays deterministic and one column wide.
-    # Other inputs keep an exact empty demand (an unused port has no rows to
-    # carry; a joined port always demands its keys).
+    # The root input's rows form the output, so the projected frame must carry
+    # at least one column wherever the full frame does: a zero-column frame is
+    # an empty frame, so a demand that names only generated columns (a row
+    # index, a bare row count), or only columns the program later drops, would
+    # otherwise lose every row in silence. Other inputs keep an exact empty
+    # demand (an unused port has no rows to carry; a joined port always demands
+    # its keys).
     root_demand = demands_by_input[program.root_input]
-    if not root_demand:
-        root_schema = normalised_inputs.get(program.root_input)
-        if root_schema:
-            root_demand.add(min(root_schema))
+    root_schema = normalised_inputs.get(program.root_input)
+    if root_schema and not _ensure_root_carrier(
+        program,
+        evaluated,
+        normalised_inputs,
+        root_schema,
+        root_demand,
+    ):
+        return _unsupported("carrier_unresolvable", program.operations[-1].method)
     return ColumnLineageAnalysis(
         supported=True,
         exact_output_columns=exact_output,
@@ -1943,6 +2113,7 @@ def analyze_polars_cardinality(
     peak = current
     operand_peak = current
     has_cross_join = False
+    depends_on_many_to_many_join = False
     # The root input is the initial left operand of the whole program.
     operand_references: dict[str, int] = {program.root_input: 1}
     evidence: list[str] = [
@@ -1957,6 +2128,11 @@ def analyze_polars_cardinality(
             assert operation.how is not None
             if operation.how == "cross":
                 has_cross_join = True
+            # An absent ``validate=`` normalises to ``m:m`` at parse time.
+            if operation.validate == "m:m":
+                # Nothing bounds this join by an operand, so only the row
+                # product bounds it.
+                depends_on_many_to_many_join = True
             operand_references[operation.right_input] = (
                 operand_references.get(operation.right_input, 0) + 1
             )
@@ -2007,6 +2183,7 @@ def analyze_polars_cardinality(
         unsupported_operation=None,
         operand_peak_rows=operand_peak,
         has_cross_join=has_cross_join,
+        depends_on_many_to_many_join=depends_on_many_to_many_join,
         operand_reference_counts=MappingProxyType(dict(operand_references)),
     )
 

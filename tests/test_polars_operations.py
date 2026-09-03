@@ -16,7 +16,6 @@ from haute._polars_operations import (
     OperationPolicy,
     OperationReceiver,
     PolarsOperation,
-    chunk_admitted_names,
     lineage_supported_frame_methods,
     materialisation_factor_basis_points,
     materialising_expression_methods,
@@ -24,7 +23,6 @@ from haute._polars_operations import (
     measured_operation_names,
     operation,
     registered_names,
-    unbounded_expansion_expression_methods,
     validate_operations,
 )
 from haute.chunking import (
@@ -138,13 +136,109 @@ def test_validation_rejects_duplicate_keys() -> None:
 # -------------------------------------------------------------- consistency
 
 
-def test_chunking_derived_sets_equal_registry_admissions() -> None:
-    assert _ROW_LOCAL_DF_METHOD_NAMES == chunk_admitted_names(OperationReceiver.FRAME)
-    assert _ROW_LOCAL_EXPR_METHOD_NAMES == chunk_admitted_names(OperationReceiver.EXPR)
-    assert _ROW_LOCAL_POLARS_FUNCTIONS == chunk_admitted_names(OperationReceiver.POLARS_FUNCTION)
+def test_chunking_derived_sets_are_pinned_to_literal_admissions() -> None:
+    """Pinned literally: a registry change must update this test consciously."""
+    assert _ROW_LOCAL_DF_METHOD_NAMES == frozenset(
+        {
+            "cast",
+            "drop",
+            "drop_nulls",
+            "fill_nan",
+            "fill_null",
+            "filter",
+            "rename",
+            "select",
+            "with_columns",
+            "with_columns_seq",
+        }
+    )
+    assert _ROW_LOCAL_EXPR_METHOD_NAMES == frozenset(
+        {
+            "abs",
+            "alias",
+            "cast",
+            "ceil",
+            "clip",
+            "exp",
+            "fill_nan",
+            "fill_null",
+            "floor",
+            "is_between",
+            "is_finite",
+            "is_in",
+            "is_infinite",
+            "is_nan",
+            "is_not_nan",
+            "is_not_null",
+            "is_null",
+            "log",
+            "not_",
+            "otherwise",
+            "replace",
+            "round",
+            "sqrt",
+            "then",
+        }
+    )
+    assert _ROW_LOCAL_POLARS_FUNCTIONS == frozenset(
+        {
+            "all_horizontal",
+            "any_horizontal",
+            "coalesce",
+            "col",
+            "concat_str",
+            "lit",
+            "max_horizontal",
+            "mean_horizontal",
+            "sum_horizontal",
+            "when",
+        }
+    )
     assert dict(_ROW_LOCAL_NAMESPACE_METHOD_NAMES) == {
-        namespace: chunk_admitted_names(OperationReceiver.NAMESPACE, namespace)
-        for namespace in ("str", "dt")
+        "str": frozenset(
+            {
+                "contains",
+                "ends_with",
+                "extract",
+                "len_chars",
+                "pad_end",
+                "pad_start",
+                "replace",
+                "replace_all",
+                "slice",
+                "split",
+                "starts_with",
+                "strip_chars",
+                "strip_prefix",
+                "strip_suffix",
+                "strptime",
+                "to_date",
+                "to_datetime",
+                "to_lowercase",
+                "to_time",
+                "to_uppercase",
+                "zfill",
+            }
+        ),
+        "dt": frozenset(
+            {
+                "date",
+                "day",
+                "epoch",
+                "hour",
+                "minute",
+                "month",
+                "offset_by",
+                "ordinal_day",
+                "quarter",
+                "second",
+                "strftime",
+                "to_string",
+                "truncate",
+                "weekday",
+                "year",
+            }
+        ),
     }
 
 
@@ -185,8 +279,25 @@ def test_no_reduction_or_arg_polars_function_is_classified_row_local() -> None:
             assert entry.operation_class is not OperationClass.ROW_LOCAL, entry.name
 
 
-def test_lineage_unbounded_expansion_set_comes_from_the_registry() -> None:
-    assert _ROW_EXPANDING_EXPRESSION_METHODS == unbounded_expansion_expression_methods()
+def test_lineage_unbounded_expansion_set_is_pinned_to_literal_names() -> None:
+    """Pinned literally: a registry change must update this test consciously."""
+    assert _ROW_EXPANDING_EXPRESSION_METHODS == frozenset(
+        {
+            "append",
+            "deserialize",
+            "explode",
+            "extend_constant",
+            "flatten",
+            "from_json",
+            "gather",
+            "hist",
+            "map_batches",
+            "pipe",
+            "register_plugin",
+            "sample",
+            "search_sorted",
+        }
+    )
 
 
 def test_materialisation_boundary_frame_methods_are_the_measured_global_operations() -> None:
@@ -242,7 +353,7 @@ def test_boundary_operator_memory_factors_are_pinned_to_the_evidence() -> None:
     } == {
         "sort": 300,
         "unique": 350,
-        "join": 150,
+        "join": 200,
         "join_asof": 250,
         "over": 250,
         "top_k": 100,
@@ -285,7 +396,11 @@ def test_streaming_frame_methods_record_evidence_or_its_absence() -> None:
         assert entry.policy is OperationPolicy.STREAMING or entry.policy is (
             OperationPolicy.ROW_LOCAL
         ), name
-        assert "streams:" in entry.note or "no evidence, streaming kept" in entry.note, entry.name
+        assert (
+            "streams:" in entry.note
+            or "no evidence, streaming kept" in entry.note
+            or "measured as unpivot" in entry.note
+        ), entry.name
 
 
 def test_unregistered_operator_carries_no_memory_surcharge() -> None:
@@ -374,6 +489,7 @@ def test_every_measured_operation_is_named_by_the_evidence_accessor() -> None:
         "filter",
         "group_by",
         "groupby",
+        "melt",
     }
     assert measured_operation_names(OperationReceiver.EXPR) == {"over"}
 
@@ -386,7 +502,7 @@ def test_every_materialisation_boundary_carries_measured_evidence() -> None:
 
 
 def test_unmeasured_operations_declare_no_evidence() -> None:
-    for name in ("join_where", "pivot", "upsample", "gather", "sample", "melt"):
+    for name in ("join_where", "pivot", "upsample", "gather", "sample"):
         entry = operation(OperationReceiver.FRAME, name)
         assert entry is not None, name
         assert entry.memory_evidence == "none", name

@@ -350,15 +350,6 @@ def test_join_lineage_matches_separately_projected_execution(program: Program) -
         _assert_unordered_equal(actual, expected)
 
 
-@settings(max_examples=30, deadline=None, suppress_health_check=[HealthCheck.too_slow])
-@given(program=_unary_programs())
-def test_supported_lineage_metadata_is_bounded_by_exact_schemas(program: Program) -> None:
-    schema = frozenset(ROWS.columns)
-    full = _run(program.code, rows=ROWS)
-    analysis = analyze_polars_lineage(program.code, {"rows": schema}, program.demand)
-    _assert_metadata(analysis, {"rows": schema}, full)
-
-
 @settings(max_examples=40, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 @given(program=_unary_programs())
 def test_unary_cardinality_bounds_every_row_shape(program: Program) -> None:

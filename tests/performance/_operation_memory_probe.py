@@ -28,8 +28,10 @@ from scripts.memory_smoke import StdlibMemorySampler
 #: two-column floor for the narrow-width witness.
 CONTROLS = ("scan", "scan_head", "scan_narrow", "scan_gaps")
 
-#: Measured to witness an operator's materialisation, not certified themselves.
-WITNESS_PROBES = ("over_narrow", "join_asof_big_right")
+#: Measured as a variant of a registered operation -- to witness an operator's
+#: materialisation, or to size a fan-out join -- and never certified as a
+#: registry name themselves.
+WITNESS_PROBES = ("over_narrow", "join_asof_big_right", "join_fanout")
 
 #: ``v1_gaps`` is a straight line of slope ``GAP_SLOPE`` in ``key`` with runs of
 #: ``GAP_RUN`` nulls punched out every ``GAP_PERIOD`` rows, after a null-free
@@ -56,6 +58,7 @@ OPERATIONS = (
     "sort",
     "unique",
     "join",
+    "join_fanout",
     "join_asof",
     "explode",
     "over",
@@ -92,10 +95,11 @@ GAP_PERIOD = 12_500
 GAP_MARGIN = 1_000
 
 
-def build_plan(operation: str, fact_path: Path, dim_path: Path) -> pl.LazyFrame:
+def build_plan(operation: str, fact_path: Path, dim_path: Path, multi_path: Path) -> pl.LazyFrame:
     """Return the lazy plan exercising ``operation`` over the fixture frames."""
     fact = pl.scan_parquet(fact_path)
     dim = pl.scan_parquet(dim_path)
+    multi = pl.scan_parquet(multi_path)
     if operation == "scan":
         return fact
     if operation == "scan_head":
@@ -127,7 +131,13 @@ def build_plan(operation: str, fact_path: Path, dim_path: Path) -> pl.LazyFrame:
     if operation == "unique":
         return fact.unique(subset=["key"])
     if operation == "join":
-        return fact.join(dim, on="key", how="inner")
+        # The same declared uniqueness contract the planner is handed, so the
+        # measurement and the estimate describe one plan and not two.
+        return fact.join(dim, on="key", how="inner", validate="m:1")
+    if operation == "join_fanout":
+        # Three dim rows per key: the output is three times the largest operand,
+        # which is the case an input-sized estimate has to bound.
+        return fact.join(multi, on="key", how="inner")
     if operation == "join_asof":
         # No leading sort: a chained boundary would take the maximum operator
         # factor and this case would certify ``sort`` instead of ``join_asof``.
@@ -159,6 +169,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--operation", choices=OPERATIONS, required=True)
     parser.add_argument("--fact", type=Path, required=True)
     parser.add_argument("--dim", type=Path, required=True)
+    parser.add_argument("--multi", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--keep-sink",
@@ -176,7 +187,7 @@ def main() -> int:
     gc.collect()
     rss_before = sampler.process_rss_bytes(os.getpid())
 
-    plan = build_plan(args.operation, args.fact, args.dim)
+    plan = build_plan(args.operation, args.fact, args.dim, args.multi)
     explain_streaming = plan.explain(engine="streaming")
     sink_path = args.output.with_suffix(".sink.parquet")
     started = time.perf_counter()

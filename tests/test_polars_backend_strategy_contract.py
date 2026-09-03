@@ -76,9 +76,25 @@ def test_prepared_planner_ignores_a_missing_parent_when_deriving_input_names() -
 
 
 def test_join_headroom_rejection_mentions_the_validate_contract() -> None:
-    from haute.execution import _materialisation_rejection
+    """An unbounded join is reported as unproven, and says how to bound it."""
+    from haute.execution import MANY_TO_MANY_JOIN_DETAIL, _materialisation_rejection
 
     rejection = _materialisation_rejection(
+        node_id="join-node",
+        operator="join",
+        profile=ExecutionProfile.LAZY_SINK,
+        reason_code="materialisation_estimate_unavailable",
+        estimated_peak_bytes=None,
+        headroom_bytes=10,
+        estimate_detail=f"join-node:{MANY_TO_MANY_JOIN_DETAIL}",
+    )
+    assert rejection.remediation.endswith(
+        "The join has no declared validate= contract, so only the many-to-many row "
+        "product bounds it; declare validate='m:1', '1:m', or '1:1' where a key side "
+        "is unique to get a real estimate."
+    )
+    # A rejection with a bounded estimate has no contract to declare.
+    bounded = _materialisation_rejection(
         node_id="join-node",
         operator="join",
         profile=ExecutionProfile.LAZY_SINK,
@@ -86,7 +102,7 @@ def test_join_headroom_rejection_mentions_the_validate_contract() -> None:
         estimated_peak_bytes=20,
         headroom_bytes=10,
     )
-    assert "validate=" in rejection.remediation
+    assert "validate=" not in bounded.remediation
 
 
 def test_snapshot_source_signature_fails_closed_on_invalid_config(monkeypatch) -> None:
@@ -1183,6 +1199,8 @@ _NON_FRAME_RECEIVER_CODES = [
     # A walrus in the augmented right-hand side rebinds ``n`` to a non-frame
     # before the store, and the stored sum is a non-frame too.
     ("n = 0\nn += (n := 1)\nstats = n.group_by('segment')\ndf = df.filter(pl.col('premium') > 0)"),
+    # A dtype attribute argument is not a frame receiver: no boundary.
+    "df = df.with_columns(pl.col('premium').cast(pl.Int64))",
 ]
 
 
@@ -1300,6 +1318,13 @@ _FRAME_RECEIVER_CODES = [
     f"t = (df,)\nt += (t := ())\ndf = t[0].group_by('segment').{_AGG}",
     # An attribute assignment marks the object's name as a may-frame.
     (f"def cache():\n    return 0\ncache.frame = df\ndf = cache.frame.group_by('segment').{_AGG}"),
+    # An unbound frame-class method called through ``pl`` takes the frame as
+    # its first argument, so it is a boundary.
+    f"df = pl.LazyFrame.group_by(df, 'segment').{_AGG}",
+    "df = pl.DataFrame.sort(df, 'premium')",
+    # A materialising method taken as a value is recorded where it is bound.
+    f"g = df.group_by\ndf = g('segment').{_AGG}",
+    "s = df.sort\ndf = s('premium')",
 ]
 
 
@@ -2197,6 +2222,66 @@ def test_cross_join_is_conservative_under_a_cap_and_rejected_without_one(
 
     assert error.value.reason_code == "materialisation_estimate_unavailable"
     assert "cross_join_unmeasured" in error.value.remediation
+
+
+_MANY_TO_MANY_JOIN_REMEDIATION = (
+    "The join has no declared validate= contract, so only the many-to-many row "
+    "product bounds it; declare validate='m:1', '1:m', or '1:1' where a key side "
+    "is unique to get a real estimate."
+)
+
+
+def _plan_shape_with_headroom(profile: ExecutionProfile, graph, headroom_bytes: int):
+    return plan_execution_strategy(
+        ProjectionRequest(graph=graph, target_node_id="out", profile=profile),
+        execution_context=_context(
+            profile,
+            memory_limit_bytes=headroom_bytes,
+            headroom_bytes=headroom_bytes,
+        ),
+    )
+
+
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+def test_an_undeclared_join_over_headroom_is_conservative_or_rejected(
+    tmp_path: Path,
+    profile: ExecutionProfile,
+) -> None:
+    """The row product is the absence of an estimate, not an over-run of one."""
+    left_path, right_path = _write_two_join_sources(tmp_path)
+    graph = _two_source_graph(left_path, right_path, "df = left.join(right, on='segment')")
+
+    with native_memory_backend_scope("rlimit"):
+        capped = _plan_shape_with_headroom(profile, graph, 1024)
+
+    assert capped.strategy is ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+    assert capped.status is ExecutionStrategyStatus.WARNED
+    assert capped.diagnostic.blocking_operator == "join"
+    assert "proof_gap=op:join_cardinality_many_to_many" in capped.diagnostic.assumptions
+    assert capped.diagnostic.remediation.endswith(_MANY_TO_MANY_JOIN_REMEDIATION)
+
+    with pytest.raises(GroupByExecutionUnsupportedError) as error:
+        _plan_shape_with_headroom(profile, graph, 1024)
+
+    assert error.value.reason_code == "materialisation_estimate_unavailable"
+    assert "op:join_cardinality_many_to_many" in error.value.remediation
+    assert error.value.remediation.endswith(_MANY_TO_MANY_JOIN_REMEDIATION)
+
+
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+def test_an_undeclared_join_within_headroom_is_still_admitted(
+    tmp_path: Path,
+    profile: ExecutionProfile,
+) -> None:
+    """The product is an over-estimate in the safe direction, so it admits."""
+    left_path, right_path = _write_two_join_sources(tmp_path)
+    graph = _two_source_graph(left_path, right_path, "df = left.join(right, on='segment')")
+
+    result = _plan_shape(profile, graph)
+
+    assert result.strategy is ExecutionStrategy.MATERIALISATION_BOUNDARY
+    assert result.diagnostic.reason_code == "materialisation_admitted"
+    assert result.diagnostic.blocking_operator == "join"
 
 
 @pytest.mark.parametrize("profile", list(ExecutionProfile))

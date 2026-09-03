@@ -224,9 +224,14 @@ running heavy work in a child process the parent can kill on timeout or memory l
   or is simply unmeasured, so no policy in the table is an assumption whose
   provenance cannot be checked. An operation outside the registry is opaque
   everywhere: lineage keeps a visible boundary, cardinality is unavailable, chunk
-  planning rejects it, and execution follows the conservative policy. Comments,
-  literals, aliases, and non-Polars methods cannot create a classification because
-  every consumer inspects receiver-aware AST calls only. Admitting a new
+  planning rejects it, and execution follows the conservative policy. A frame
+  method taken as a value, an unbound frame-class method called through `pl`, and
+  any `pl` attribute that is not a registered expression helper are treated as
+  frame receivers, so binding a method to a name or calling
+  `pl.LazyFrame.group_by(frame, ...)` cannot hide a boundary within the node's
+  own code. Calls into functions the analyser cannot see (a `utility` module
+  import) are not boundaries; the process RSS watchdog remains the defence for
+  those. Admitting a new
   optimisation for a registered operation still requires its proof; a policy
   change for a streaming operation requires recorded memory evidence.
 - **Global operation policies are memory evidence, not intuition.** Every
@@ -262,16 +267,23 @@ running heavy work in a child process the parent can kill on timeout or memory l
   multiplies the row-count-and-width estimate by the operator's measured memory
   factor before comparing it with headroom, and the same runtime calibration that
   tightens group-by admission keeps correcting those factors upward from observed
-  peaks. A join boundary is sized from what it holds rather than what it emits:
-  the largest frame any operation in the node consumes — so a chained join is
-  sized from the previous join's product, not from the original sources —
-  against the ports' widths summed once per logical reference, so a self-join or
-  a lookup table joined twice is resident twice and charged twice, all under the
-  usual overhead multiplier and the largest factor among the node's chained
-  boundary operators. The joined row count is recorded separately and carried to
-  the next boundary downstream — so an undeclared many-to-many join is refused
-  where its product actually has to be materialised, with the remediation to
-  declare the join's validation, rather than at the join itself. `explode` is the one
+  peaks. A join with a declared `1:1`, `1:m`, or `m:1` contract is sized from the
+  largest operand it holds rather than from what it emits, because that contract
+  bounds its output by an operand — so a chained declared join is sized from the
+  previous join's result, not from the original sources — against the ports'
+  widths summed once per logical reference, so a self-join or a lookup table
+  joined twice is resident twice and charged twice, all under the usual overhead
+  multiplier and the largest factor among the node's chained boundary operators.
+  A many-to-many join — no `validate=`, or `m:m` — has no such bound, so it
+  carries the row product instead; when that product does not fit the headroom
+  the planner reports the estimate unavailable
+  (`join_cardinality_many_to_many`) rather than an over-run, so a capped surface
+  runs `full-width-conservative` with status `warned` and an uncapped one is
+  refused, both with the remediation to declare `validate='m:1'`, `'1:m'`, or
+  `'1:1'` where a key side is unique. The certification lane measured a
+  three-times fan-out join above the input-sized figure, which is why input
+  sizing is reserved for declared joins. The joined row count is recorded
+  separately and carried to the next boundary downstream. `explode` is the one
   admitted boundary whose expansion is unbounded, so
   its cardinality — and therefore its estimate — is unavailable: under an active
   native worker cap it runs `full-width-conservative` with status `warned` under
@@ -507,7 +519,17 @@ running heavy work in a child process the parent can kill on timeout or memory l
   `m:1` validation contracts tighten that bound according to which key side is
   unique. Cross, outer, semi, and anti joins each use their own safe formula. The
   materialisation estimate uses the greatest row bound reached before or within the
-  boundary, rather than the largest ancestor source. Dynamic joins, `explode`,
+  boundary, rather than the largest ancestor source. A join or join_asof boundary
+  with a declared `1:1`, `1:m`, or `m:1` contract is the exception: that contract
+  bounds its output by an operand, so it is sized from the largest operand it
+  holds and its output bound is charged at the next boundary downstream. A
+  many-to-many join keeps the row product as its row term, and a product that
+  does not fit the headroom is reported as the estimate being unavailable
+  (`join_cardinality_many_to_many`), not as an over-run. The certification lane
+  measured a fan-out join whose output is three times its largest input above the
+  input-sized figure, which is why input sizing is reserved for declared joins,
+  and certifies the fan-out case through that policy rather than against a
+  number. Dynamic joins, `explode`,
   `unpivot` without a literal column list, an opaque row-changing transform, or a
   source without a row count make the estimate unavailable with the blocking node
   and reason. Haute never substitutes an arbitrary join or expansion multiplier, so

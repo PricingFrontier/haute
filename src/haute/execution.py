@@ -14,6 +14,7 @@ import shutil
 import tempfile
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -325,6 +326,7 @@ def _estimate_materialising_boundaries(
     peak_bytes = 0
     assumptions: list[str] = []
     basis = MaterialisationEstimateBasis.PROJECTED_COLUMNS
+    depends_on_many_to_many_join = False
     estimates = estimate_materialisation_boundaries(
         graph,
         boundary_operators,
@@ -341,11 +343,15 @@ def _estimate_materialising_boundaries(
         peak_bytes = max(peak_bytes, estimate.estimated_peak_bytes)
         if estimate.basis is not MaterialisationEstimateBasis.PROJECTED_COLUMNS:
             basis = MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK
+        depends_on_many_to_many_join = (
+            depends_on_many_to_many_join or estimate.depends_on_many_to_many_join
+        )
         assumptions.extend(f"{node_id}: {item}" for item in estimate.assumptions)
     return MaterialisationEstimate.available(
         peak_bytes,
         assumptions=assumptions,
         basis=basis,
+        depends_on_many_to_many_join=depends_on_many_to_many_join,
     )
 
 
@@ -445,7 +451,22 @@ def _children_of(
     return children
 
 
-_JOIN_OPERATORS = frozenset({"join", "join_asof"})
+MANY_TO_MANY_JOIN_DETAIL = "join_cardinality_many_to_many"
+"""Estimator detail for a join whose only row bound is the many-to-many product."""
+
+_MANY_TO_MANY_JOIN_REMEDIATION = (
+    "The join has no declared validate= contract, so only the many-to-many row "
+    "product bounds it; declare validate='m:1', '1:m', or '1:1' where a key side "
+    "is unique to get a real estimate."
+)
+
+
+def _with_many_to_many_join_remediation(remediation: str, detail: str | None) -> str:
+    """Append the validate= contract advice when the gap is an unbounded join."""
+
+    if detail is None or not detail.endswith(MANY_TO_MANY_JOIN_DETAIL):
+        return remediation
+    return f"{remediation} {_MANY_TO_MANY_JOIN_REMEDIATION}"
 
 
 def _materialisation_rejection(
@@ -472,14 +493,6 @@ def _materialisation_rejection(
             f"the source before this '{operator}'."
         ),
     }[reason_code]
-    if reason_code == "materialisation_exceeds_headroom" and operator in _JOIN_OPERATORS:
-        # Only a join's estimate can blow up on an undeclared key contract, so
-        # only a join gets told to declare one.
-        remediation = (
-            f"{remediation} A join without a declared validate= uniqueness contract is "
-            "estimated at the many-to-many row product; declare validate= to estimate "
-            "the real bound."
-        )
     if estimate_detail:
         # The estimator already knows which node it could not measure and why.
         # Discarding that left the analyst with "provide readable metadata" and
@@ -491,6 +504,7 @@ def _materialisation_rejection(
             f"{remediation} This surface runs without a hard worker memory cap, "
             "so Haute cannot run the plan conservatively here."
         )
+    remediation = _with_many_to_many_join_remediation(remediation, estimate_detail)
     return GroupByExecutionUnsupportedError(
         f"Materialisation of '{operator}' could not be admitted for this execution.",
         node_id=node_id,
@@ -500,6 +514,72 @@ def _materialisation_rejection(
         remediation=remediation,
         estimated_peak_bytes=estimated_peak_bytes,
         headroom_bytes=headroom_bytes,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _UnprovenMaterialisation:
+    """The plan and diagnostic fields for a boundary with no usable estimate."""
+
+    projection_plan: ProjectionPlan
+    strategy: ExecutionStrategy
+    reason_code: str
+    assumptions: tuple[str, ...]
+    remediation: str
+
+
+def _plan_unproven_materialisation(
+    projection_plan: ProjectionPlan,
+    *,
+    node_id: str,
+    operator: str,
+    profile: ExecutionProfile,
+    materialising_operators: Mapping[str, str],
+    detail: str,
+    headroom_bytes: int,
+) -> _UnprovenMaterialisation:
+    """Run conservatively under a hard cap, or reject when there is no cap.
+
+    Both the estimator reporting no estimate and the planner refusing a
+    many-to-many join's row product land here: neither has a number that bounds
+    the boundary, and the only difference is what the analyst is told to fix.
+    """
+    backend = current_native_memory_backend()
+    if backend is None:
+        raise _materialisation_rejection(
+            node_id=node_id,
+            operator=operator,
+            profile=profile,
+            reason_code="materialisation_estimate_unavailable",
+            estimated_peak_bytes=None,
+            headroom_bytes=headroom_bytes,
+            estimate_detail=detail,
+        )
+    # A hard worker cap bounds the process, so the run continues under
+    # its full reserved envelope instead of being rejected outright.
+    remediation = (
+        "The run continued under its full reserved memory envelope of "
+        f"{headroom_bytes} bytes because the materialisation estimate was "
+        f"unavailable ({detail}). Provide readable source metadata or rewrite "
+        f"'{operator}' at '{node_id}' so Haute can prove the estimate; the run "
+        "may use more memory and time than an estimated boundary."
+    )
+    return _UnprovenMaterialisation(
+        projection_plan=with_materialisation_boundaries(
+            projection_plan,
+            materialising_operators,
+        ),
+        strategy=ExecutionStrategy.FULL_WIDTH_CONSERVATIVE,
+        reason_code="materialisation_estimate_unavailable_conservative",
+        assumptions=(
+            f"proof_gap={detail}",
+            f"reserved_envelope_bytes={headroom_bytes}",
+            f"hard_cap_backend={backend}",
+            "disabled_optimisations=estimate_based_admission",
+        ),
+        # The envelope narrative is capped, then the contract advice is appended
+        # so it is never the half that gets cut.
+        remediation=_with_many_to_many_join_remediation(remediation[:512], detail),
     )
 
 
@@ -553,43 +633,27 @@ def _finalise_execution_strategy(
             materialisation_estimate is None
             or materialisation_estimate.state is MaterialisationEstimateState.UNAVAILABLE
         ):
-            detail = (
-                materialisation_estimate.unavailable_reason
-                if materialisation_estimate is not None
-                else "no materialisation estimate was requested"
-            )
-            backend = current_native_memory_backend()
-            if backend is None:
-                raise _materialisation_rejection(
-                    node_id=node_id,
-                    operator=operator,
-                    profile=profile,
-                    reason_code="materialisation_estimate_unavailable",
-                    estimated_peak_bytes=None,
-                    headroom_bytes=headroom_bytes,
-                    estimate_detail=detail,
-                )
-            # A hard worker cap bounds the process, so the run continues under
-            # its full reserved envelope instead of being rejected outright.
-            projection_plan = with_materialisation_boundaries(
+            detail: str
+            if materialisation_estimate is None:
+                detail = "no materialisation estimate was requested"
+            else:
+                # ``MaterialisationEstimate.unavailable`` rejects an empty reason.
+                assert materialisation_estimate.unavailable_reason is not None
+                detail = materialisation_estimate.unavailable_reason
+            unproven = _plan_unproven_materialisation(
                 projection_plan,
-                materialising_operators,
+                node_id=node_id,
+                operator=operator,
+                profile=profile,
+                materialising_operators=materialising_operators,
+                detail=detail,
+                headroom_bytes=headroom_bytes,
             )
-            strategy = ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
-            reason_code = "materialisation_estimate_unavailable_conservative"
-            assumptions = (
-                f"proof_gap={detail}",
-                f"reserved_envelope_bytes={headroom_bytes}",
-                f"hard_cap_backend={backend}",
-                "disabled_optimisations=estimate_based_admission",
-            )
-            remediation = (
-                "The run continued under its full reserved memory envelope of "
-                f"{headroom_bytes} bytes because the materialisation estimate was "
-                f"unavailable ({detail}). Provide readable source metadata or rewrite "
-                f"'{operator}' at '{node_id}' so Haute can prove the estimate; the run "
-                "may use more memory and time than an estimated boundary."
-            )[:512]
+            projection_plan = unproven.projection_plan
+            strategy = unproven.strategy
+            reason_code = unproven.reason_code
+            assumptions = unproven.assumptions
+            remediation = unproven.remediation
         else:
             raw_estimated_peak_bytes = materialisation_estimate.estimated_peak_bytes
             assert raw_estimated_peak_bytes is not None
@@ -597,7 +661,34 @@ def _finalise_execution_strategy(
             estimated_peak_bytes = calibrated.calibrated_bytes
             estimate_calibration_factor_basis_points = calibrated.factor_basis_points
             estimate_admission_basis = materialisation_estimate.basis.value
-            if estimated_peak_bytes > headroom_bytes:
+            if (
+                estimated_peak_bytes > headroom_bytes
+                and materialisation_estimate.depends_on_many_to_many_join
+            ):
+                # The row product is not an estimate of anything the join will
+                # actually hold; it is the absence of one. Rejecting on it would
+                # report a measured over-run that was never measured, so the
+                # boundary is treated as unproven instead.
+                unproven = _plan_unproven_materialisation(
+                    projection_plan,
+                    node_id=node_id,
+                    operator=operator,
+                    profile=profile,
+                    materialising_operators=materialising_operators,
+                    detail=f"{node_id}:{MANY_TO_MANY_JOIN_DETAIL}",
+                    headroom_bytes=headroom_bytes,
+                )
+                projection_plan = unproven.projection_plan
+                strategy = unproven.strategy
+                reason_code = unproven.reason_code
+                assumptions = unproven.assumptions
+                remediation = unproven.remediation
+                # The product was never an estimate, so none is reported.
+                raw_estimated_peak_bytes = None
+                estimated_peak_bytes = None
+                estimate_calibration_factor_basis_points = None
+                estimate_admission_basis = None
+            elif estimated_peak_bytes > headroom_bytes:
                 raise _materialisation_rejection(
                     node_id=node_id,
                     operator=operator,
@@ -606,26 +697,27 @@ def _finalise_execution_strategy(
                     estimated_peak_bytes=estimated_peak_bytes,
                     headroom_bytes=headroom_bytes,
                 )
-            projection_plan = with_materialisation_boundaries(
-                projection_plan,
-                materialising_operators,
-            )
-            strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
-            reason_code = "materialisation_admitted"
-            remediation = (
-                f"Keep the admitted '{operator}' boundary at '{node_id}' within "
-                "its reported memory headroom."
-            )
-            assumptions = (
-                *materialisation_estimate.assumptions,
-                f"raw_estimated_peak_bytes={raw_estimated_peak_bytes}",
-                f"calibrated_estimated_peak_bytes={estimated_peak_bytes}",
-                (
-                    "estimate_calibration_factor_basis_points="
-                    f"{estimate_calibration_factor_basis_points}"
-                ),
-                f"estimate_admission_basis={estimate_admission_basis}",
-            )
+            else:
+                projection_plan = with_materialisation_boundaries(
+                    projection_plan,
+                    materialising_operators,
+                )
+                strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
+                reason_code = "materialisation_admitted"
+                remediation = (
+                    f"Keep the admitted '{operator}' boundary at '{node_id}' within "
+                    "its reported memory headroom."
+                )
+                assumptions = (
+                    *materialisation_estimate.assumptions,
+                    f"raw_estimated_peak_bytes={raw_estimated_peak_bytes}",
+                    f"calibrated_estimated_peak_bytes={estimated_peak_bytes}",
+                    (
+                        "estimate_calibration_factor_basis_points="
+                        f"{estimate_calibration_factor_basis_points}"
+                    ),
+                    f"estimate_admission_basis={estimate_admission_basis}",
+                )
 
     return build_execution_strategy_result(
         projection_plan,

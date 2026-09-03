@@ -36,7 +36,7 @@ from typing import Any, NamedTuple, cast
 import polars as pl
 
 from haute._api_input_schema import ApiInputSchemaError, is_json_api_input_path
-from haute._cardinality import join_cardinality_upper_bound
+from haute._cardinality import join_cardinality_upper_bound, normalise_join_validation
 from haute._column_lineage import RowCardinalityAnalysis, analyze_polars_cardinality
 from haute._edge_join import (
     build_edge_join_kwargs,
@@ -97,6 +97,8 @@ class MaterialisationEstimate:
     assumptions: tuple[str, ...] = ()
     unavailable_reason: str | None = None
     basis: MaterialisationEstimateBasis = MaterialisationEstimateBasis.PROVIDED
+    depends_on_many_to_many_join: bool = False
+    """Whether the only bound on this boundary's rows is a join's row product."""
 
     def __post_init__(self) -> None:
         if not isinstance(self.basis, MaterialisationEstimateBasis):
@@ -122,12 +124,14 @@ class MaterialisationEstimate:
         *,
         assumptions: Iterable[str] = (),
         basis: MaterialisationEstimateBasis = MaterialisationEstimateBasis.PROVIDED,
+        depends_on_many_to_many_join: bool = False,
     ) -> MaterialisationEstimate:
         return cls(
             state=MaterialisationEstimateState.AVAILABLE,
             estimated_peak_bytes=estimated_peak_bytes,
             assumptions=tuple(str(item) for item in assumptions),
             basis=basis,
+            depends_on_many_to_many_join=depends_on_many_to_many_join,
         )
 
     @classmethod
@@ -221,6 +225,14 @@ class _ResolvedRowCardinality:
     has_cross_join: bool = False
     """Whether this node's own program contains an unmeasured cross join."""
 
+    depends_on_many_to_many_join: bool = False
+    """Whether this node or anything upstream joins without a bounding contract.
+
+    Unlike the cross-join flag this one is inherited: a group-by downstream of
+    an undeclared join materialises that join's row product, so the planner has
+    to know the product is the only bound there too.
+    """
+
     operand_reference_counts: Mapping[str, int] = field(default_factory=lambda: _NO_OPERANDS)
     """How many logical join operands each of this node's input names supplies."""
 
@@ -237,6 +249,7 @@ class _ResolvedRowCardinality:
         *,
         operand_peak_rows: int | None = None,
         has_cross_join: bool = False,
+        depends_on_many_to_many_join: bool = False,
         operand_reference_counts: Mapping[str, int] = _NO_OPERANDS,
     ) -> _ResolvedRowCardinality:
         if (
@@ -256,6 +269,7 @@ class _ResolvedRowCardinality:
             # emits, so its own peak is the operand it consumes.
             operand_peak_rows=peak_rows if operand_peak_rows is None else operand_peak_rows,
             has_cross_join=has_cross_join,
+            depends_on_many_to_many_join=depends_on_many_to_many_join,
             operand_reference_counts=operand_reference_counts,
         )
 
@@ -766,6 +780,12 @@ def _feeding_ports(
     return tuple(sorted(ports))
 
 
+def _inherited_many_to_many(parents: Iterable[_ResolvedRowCardinality]) -> bool:
+    """Whether any already-proven input depends on an unbounded join."""
+
+    return any(parent.depends_on_many_to_many_join for parent in parents)
+
+
 def _cardinality_from_analysis(
     node_id: str,
     analysis: RowCardinalityAnalysis,
@@ -794,6 +814,11 @@ def _cardinality_from_analysis(
         # already folded into this node's input bounds.
         operand_peak_rows=analysis.operand_peak_rows,
         has_cross_join=analysis.has_cross_join,
+        # This one *is* inherited: the row product an upstream join can emit is
+        # exactly what this node materialises.
+        depends_on_many_to_many_join=(
+            analysis.depends_on_many_to_many_join or _inherited_many_to_many(parents)
+        ),
         operand_reference_counts=analysis.operand_reference_counts,
     )
 
@@ -924,6 +949,7 @@ def _passthrough_cardinality(
             f"node={node_id}:{evidence}",
             f"node={node_id}:cardinality_output_upper_bound={selected.output_rows}",
         ),
+        depends_on_many_to_many_join=_inherited_many_to_many(parents),
     )
 
 
@@ -1024,12 +1050,16 @@ def _resolve_row_cardinality_from_index(
             left = parents[left_index]
             right = parents[right_index]
             assert left.output_rows is not None and right.output_rows is not None
+            validate = cast(str | None, kwargs.get("validate"))
             bound = join_cardinality_upper_bound(
                 left.output_rows,
                 right.output_rows,
                 how=str(kwargs["how"]),
-                validate=cast(str | None, kwargs.get("validate")),
+                validate=validate,
             )
+            # An Edge Join without a bounding contract carries the row product
+            # exactly as an undeclared Polars join does.
+            many_to_many = normalise_join_validation(validate) == "m:m"
         except (ConfigError, TypeError, ValueError):
             return _ResolvedRowCardinality.unavailable(target_node_id, "invalid_join_config")
         return _ResolvedRowCardinality.proven(
@@ -1039,6 +1069,7 @@ def _resolve_row_cardinality_from_index(
                 *(item for result in parents for item in result.evidence),
                 *(f"node={target_node_id}:{item}" for item in bound.evidence),
             ),
+            depends_on_many_to_many_join=many_to_many or _inherited_many_to_many(parents),
         )
 
     if node_type is NodeType.POLARS:
@@ -1083,6 +1114,7 @@ def _resolve_row_cardinality_from_index(
                 f"node={target_node_id}:scenario_steps={steps}",
                 f"node={target_node_id}:cardinality_output_upper_bound={expanded_rows}",
             ),
+            depends_on_many_to_many_join=parent.depends_on_many_to_many_join,
         )
         code = node.data.config.get("code")
         if isinstance(code, str) and code.strip():
@@ -1179,6 +1211,7 @@ def _resolve_row_cardinality_from_index(
                 f"node={target_node_id}:one_connected_input_selected",
                 f"node={target_node_id}:cardinality_output_upper_bound={output_rows}",
             ),
+            depends_on_many_to_many_join=_inherited_many_to_many(parents),
         )
 
     if node_type is NodeType.EXTERNAL_FILE:
@@ -1993,7 +2026,12 @@ def _estimate_materialisation_boundary_from_index(
         # so the row bound is the largest operand, not their sum -- and the
         # node's own program supplies it, so a chained join is sized from the
         # previous join's result rather than from the original ports.
-        port_rows = cardinality.operand_peak_rows
+        # ...but only when a declared uniqueness contract bounds the output by an
+        # operand. The certification lane measured an undeclared three-times
+        # fan-out join at 1.57x the input-sized figure, so a many-to-many join's
+        # row term is its product; the planner below refuses to admit that
+        # number as a real estimate when it does not fit the headroom.
+        port_rows = max(cardinality.operand_peak_rows, cardinality.output_rows)
         total_rows = port_rows
         # One edge can supply more than one resident operand: ``df.join(df, ...)``
         # holds the same frame as both ports, and a lookup joined twice in a
@@ -2045,6 +2083,7 @@ def _estimate_materialisation_boundary_from_index(
                 if exact_zero_width_proof
                 else MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK
             ),
+            depends_on_many_to_many_join=cardinality.depends_on_many_to_many_join,
         )
 
     if not incoming_edges:
@@ -2152,4 +2191,5 @@ def _estimate_materialisation_boundary_from_index(
         + projection_assumptions
         + operator_assumptions,
         basis=basis,
+        depends_on_many_to_many_join=cardinality.depends_on_many_to_many_join,
     )

@@ -23,8 +23,9 @@ property             operators proved here
 ordering             sort, reverse, top_k, bottom_k (exact in-order frame equality)
 schema               every operator (identical column names and dtypes)
 row multiplicity     unique, join (duplicate left keys), join_asof, explode, over
-multi-input columns  join inner, join left, join_asof (both ports' columns and
-                     suffixed collisions retained with identical values)
+multi-input columns  join inner, join left (both ports' columns and suffixed
+                     collisions retained with identical values); join_asof
+                     (both ports' columns, no colliding name exercised)
 ===================  ===========================================================
 
 The fixtures are deliberately tiny: these are correctness tests, not memory
@@ -182,11 +183,13 @@ def _execute(graph, context: ExecutionContext, checkpoint_dir: Path) -> pl.DataF
 
 
 def _assert_boundary_was_checkpointed(checkpoint_dir: Path) -> None:
-    """The boundary node's materialised frame really was written to disk.
+    """The boundary node's frame really was written to disk.
 
     Every graph here gives the boundary node two parents, which is one of the
-    executor's structural checkpoint triggers, so a boundary that silently
-    stayed lazy would leave no file behind and fail here.
+    executor's structural checkpoint triggers, so what this proves is that the
+    two-parent trigger fired and the node was materialised to a checkpoint --
+    not, on its own, that the operator was planned as a boundary. That claim is
+    ``_assert_boundary_was_planned``'s.
     """
     written = sorted(path.name for path in checkpoint_dir.glob("*.parquet"))
     assert "op.parquet" in written, written

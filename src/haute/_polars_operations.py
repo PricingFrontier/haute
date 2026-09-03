@@ -263,6 +263,7 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _P_ROW_LOCAL,
         "proof: df_cast (Categorical/Enum targets rejected by the shape validator)",
         chunk_admitted=True,
+        lineage_supported=True,
     ),
     _op(
         _FRAME,
@@ -287,7 +288,8 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "filter",
         _ROW_LOCAL,
         _P_ROW_LOCAL,
-        "proof: df_filter. streams: 2.2x fact vs 2.2x floor at 4M rows, Polars 1.39.3",
+        "proof: df_filter. streams: certified by the fresh-process lane against the scan "
+        "control, at the streaming floor",
         chunk_admitted=True,
         lineage_supported=True,
         memory_evidence="measured",
@@ -399,8 +401,9 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _ORDER_DEPENDENT,
         _P_BOUNDARY,
         "global ordering; lineage keeps the schema and demands the sort keys. "
-        "materialises: 5.1x fact vs 2.2x floor at 4M rows, Polars 1.39.3; the certified "
-        "observed/(width x 3.0) ratio needs 300 basis points of margin",
+        "materialises: certified by the fresh-process lane against the scan control and "
+        "witnessed above the scan_head floor; the certified observed/(width x 3.0) ratio "
+        "needs 300 basis points of margin",
         lineage_supported=True,
         materialisation_factor_basis_points=300,
         memory_evidence="measured",
@@ -411,8 +414,9 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _ORDER_DEPENDENT,
         _P_BOUNDARY,
         "duplicates can straddle a chunk boundary; lineage keeps the schema. "
-        "materialises: 6.6-8.4x fact vs 2.2x floor at 4M rows, Polars 1.39.3; the certified "
-        "observed/(width x 3.0) ratio needs 350 basis points of margin",
+        "materialises: certified by the fresh-process lane against the scan control and "
+        "witnessed above the scan_head floor; the certified observed/(width x 3.0) ratio "
+        "needs 350 basis points of margin",
         lineage_supported=True,
         materialisation_factor_basis_points=350,
         memory_evidence="measured",
@@ -422,8 +426,9 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "reverse",
         _ORDER_DEPENDENT,
         _P_BOUNDARY,
-        "global row order. materialises: 2.9x fact vs 2.2x floor at 4M rows, Polars 1.39.3; "
-        "the certified observed/(width x 3.0) ratio needs 250 basis points of margin",
+        "global row order. materialises: certified by the fresh-process lane against the "
+        "scan control; the certified observed/(width x 3.0) ratio needs 250 basis points "
+        "of margin",
         materialisation_factor_basis_points=250,
         memory_evidence="measured",
     ),
@@ -432,7 +437,9 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "shift",
         _ORDER_DEPENDENT,
         _P_STREAMING,
-        "reads neighbouring rows. streams: 2.4x fact vs 2.2x floor at 4M rows, Polars 1.39.3",
+        "reads neighbouring rows. streams: certified by the fresh-process lane against the "
+        "scan control, at the streaming floor",
+        lineage_supported=True,
         memory_evidence="measured",
     ),
     _op(
@@ -454,8 +461,8 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "top_k",
         _ORDER_DEPENDENT,
         _P_BOUNDARY,
-        "global ranking. materialises: 1.44x fact vs 0.4x tiny-output floor at 4M rows, "
-        "Polars 1.39.3",
+        "global ranking. materialises: certified by the fresh-process lane against the "
+        "scan_head tiny-output control",
         memory_evidence="measured",
     ),
     _op(
@@ -463,8 +470,8 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "bottom_k",
         _ORDER_DEPENDENT,
         _P_BOUNDARY,
-        "global ranking. materialises: 1.45x fact vs 0.4x tiny-output floor at 4M rows, "
-        "Polars 1.39.3",
+        "global ranking. materialises: certified by the fresh-process lane against the "
+        "scan_head tiny-output control",
         memory_evidence="measured",
     ),
     # Row-expanding frame methods.
@@ -475,7 +482,8 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _P_BOUNDARY,
         "list lengths are data-dependent, so the expansion factor is unbounded and the "
         "estimate is therefore unavailable (row_expansion_unbounded); the factor is never "
-        "applied. materialises: 4.8x fact vs 2.2x floor at 4M rows, Polars 1.39.3",
+        "applied. materialises: certified by the fresh-process lane against the scan "
+        "control and witnessed above the scan_head floor",
         expansion="unbounded",
         lineage_supported=True,
         memory_evidence="measured",
@@ -486,7 +494,8 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _ROW_EXPANDING,
         _P_STREAMING,
         "expansion factor is the literal ``on`` column count, hence bounded. "
-        "streams: 1.9x fact vs 2.2x floor at 12M output rows, Polars 1.39.3",
+        "streams: certified by the fresh-process lane against the scan control, at the "
+        "streaming floor despite the row expansion",
         expansion="bounded",
         lineage_supported=True,
         memory_evidence="measured",
@@ -496,8 +505,9 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "melt",
         _ROW_EXPANDING,
         _P_STREAMING,
-        "deprecated unpivot spelling; no lineage transfer; no evidence, streaming kept",
+        "alias of unpivot; measured as unpivot by the certification lane",
         expansion="unbounded",
+        memory_evidence="measured",
     ),
     # Fan-in / stateful frame methods.
     _op(
@@ -514,8 +524,8 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "groupby",
         _FAN_IN,
         _P_BOUNDARY,
-        "legacy group_by spelling; same materialisation boundary; measured as group_by: "
-        "0.7x fact vs 2.2x floor at 4M rows, Polars 1.39.3",
+        "legacy group_by spelling; same materialisation boundary; measured as group_by by "
+        "the fresh-process lane against the scan control",
         lineage_supported=True,
         memory_evidence="measured",
     ),
@@ -533,11 +543,12 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _FAN_IN,
         _P_BOUNDARY,
         "two-input fan-in; lineage routes demand per side and bounds cardinality by "
-        "validation. materialises: 3.2-3.4x fact vs 2.2x floor at 4M rows, Polars 1.39.3; "
-        "the estimator already sums both ports' widths, and the certified "
-        "observed/(width x 3.0) ratio still needs 150 basis points of margin",
+        "validation. materialises: certified by the fresh-process lane against the scan "
+        "control and witnessed above the scan_head floor; the estimator already sums both "
+        "ports' widths, and the certified observed/(width x 3.0) ratio needs 200 basis "
+        "points of margin for a declared join",
         lineage_supported=True,
-        materialisation_factor_basis_points=150,
+        materialisation_factor_basis_points=200,
         memory_evidence="measured",
     ),
     _op(
@@ -545,9 +556,11 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "join_asof",
         _FAN_IN,
         _P_BOUNDARY,
-        "ordered fan-in with no lineage transfer. materialises: 5.5x fact vs 2.2x floor at "
-        "4M rows, Polars 1.39.3 (the plan includes a sort by the asof key); the certified "
-        "observed/(width x 3.0) ratio needs 250 basis points of margin",
+        "ordered fan-in with no lineage transfer. materialises: certified by the "
+        "fresh-process lane against the scan control (the plan includes a sort by the asof "
+        "key) and witnessed by the port-swapped join_asof_big_right variant above the "
+        "scan_head floor; the certified observed/(width x 3.0) ratio needs 250 basis "
+        "points of margin",
         materialisation_factor_basis_points=250,
         memory_evidence="measured",
     ),
@@ -556,8 +569,8 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "group_by_dynamic",
         _FAN_IN,
         _P_STREAMING,
-        "temporal windows span chunk edges. streams: 0.4x fact vs 2.2x floor at 4M rows, "
-        "Polars 1.39.3",
+        "temporal windows span chunk edges. streams: certified by the fresh-process lane "
+        "against the scan control, below the streaming floor",
         memory_evidence="measured",
     ),
     _op(
@@ -565,7 +578,8 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "rolling",
         _FAN_IN,
         _P_STREAMING,
-        "windows span chunk edges. streams: 0.7x fact vs 2.2x floor at 4M rows, Polars 1.39.3",
+        "windows span chunk edges. streams: certified by the fresh-process lane against "
+        "the scan control, below the streaming floor",
         memory_evidence="measured",
     ),
     _op(
@@ -580,7 +594,8 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "merge_sorted",
         _FAN_IN,
         _P_STREAMING,
-        "two-input ordered merge. streams: 1.2x fact vs 2.2x floor at 4M rows, Polars 1.39.3",
+        "two-input ordered merge. streams: certified by the fresh-process lane against the "
+        "scan control, below the streaming floor",
         memory_evidence="measured",
     ),
     _op(
@@ -683,9 +698,10 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "over",
         _FAN_IN,
         _P_BOUNDARY,
-        "window partitions span the whole frame. materialises: 3.1x fact vs 2.2x floor at "
-        "4M rows, Polars 1.39.3; the certified observed/(width x 3.0) ratio needs 250 "
-        "basis points of margin",
+        "window partitions span the whole frame. materialises: certified by the "
+        "fresh-process lane against the scan control and witnessed by the over_narrow "
+        "variant above the scan_narrow floor; the certified observed/(width x 3.0) ratio "
+        "needs 250 basis points of margin",
         materialisation_factor_basis_points=250,
         memory_evidence="measured",
     ),

@@ -1518,7 +1518,7 @@ def _materialising_calls_in_source_order(
     non_frames: set[str] = {"pl"}
     found: list[_MaterialisingCall] = []
 
-    def record(node: ast.Call, attr: str) -> None:
+    def record(node: ast.AST, attr: str) -> None:
         found.append(
             (
                 len(found),
@@ -1593,7 +1593,23 @@ def _materialising_calls_in_source_order(
             apply_facts(bound, definite=definite)
             return fact
         if isinstance(node, ast.Attribute):
-            return evaluate(node.value, definite=definite)
+            fact = evaluate(node.value, definite=definite)
+            # A materialising method taken as a value (``g = df.group_by``) is
+            # recorded where it is bound: the later ``g(...)`` call has a plain
+            # name for its callee and cannot be classified by receiver.
+            if (node.attr in materialising and fact != "non_frame") or (
+                node.attr in materialising_expressions and fact != "frame"
+            ):
+                record(node, node.attr)
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id == "pl"
+                and node.attr not in _POLARS_EXPRESSION_FUNCTIONS
+            ):
+                # ``pl.LazyFrame`` / ``pl.DataFrame`` are frame classes whose
+                # unbound methods take a frame as their first argument.
+                return "unknown"
+            return fact
         if isinstance(node, ast.Subscript):
             fact = evaluate(node.value, definite=definite)
             evaluate(node.slice, definite=definite)

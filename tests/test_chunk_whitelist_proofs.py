@@ -33,7 +33,7 @@ from pathlib import Path
 import polars as pl
 import polars.testing as plt
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
 from haute._execute_lazy import _execute_lazy
@@ -151,13 +151,18 @@ def _outcome(run) -> tuple[pl.DataFrame | None, BaseException | None]:
         return None, exc
 
 
-def _assert_chunked_matches_full(graph, *, chunk_size: int) -> None:
+def _assert_chunked_matches_full(graph, *, chunk_size: int, raising_expected: bool = False) -> None:
     """Assert the chunked and full paths agree, RAISED EXCEPTIONS INCLUDED.
 
     A construct is only chunk-local if chunked execution neither succeeds where
     full execution raises nor raises where full execution succeeds, so the two
     outcomes are compared as (frame, exception class) pairs rather than by
     frame equality alone.
+
+    A matching raise is not a value proof, so unless the case declares raising
+    an expected outcome the draw is rejected with ``assume(False)``: Hypothesis
+    then filters it, and its filter health check fails loudly for a construct
+    that raises on most inputs instead of letting the proof pass vacuously.
     """
     chunked, chunked_error = _outcome(lambda: _run_chunked(graph, chunk_size=chunk_size))
     full, full_error = _outcome(lambda: _run_full(graph))
@@ -165,6 +170,8 @@ def _assert_chunked_matches_full(graph, *, chunk_size: int) -> None:
         assert type(chunked_error) is type(full_error), (
             f"chunked raised {chunked_error!r} but full raised {full_error!r}"
         )
+        if not raising_expected:
+            assume(False)
         return
     assert chunked is not None and full is not None
     if full.height == 0:
@@ -482,6 +489,9 @@ class WhitelistProofCase:
     code: str
     output_fields: tuple[str, ...]
     proves: frozenset[tuple[str, ...]] = field(default_factory=frozenset)
+    # True only where raising is part of the admitted contract (strict temporal
+    # parsing); every other case must prove equality on values, not on a raise.
+    raising_expected: bool = False
 
 
 def _proves(*entries: tuple[str, ...]) -> frozenset[tuple[str, ...]]:
@@ -494,11 +504,14 @@ _BASE_FIELDS = ("i", "f", "s", "d")
 _WITH_R = (*_BASE_FIELDS, "r")
 
 
-def _expr_case(code_fragment: str, *proves: tuple[str, ...]) -> WhitelistProofCase:
+def _expr_case(
+    code_fragment: str, *proves: tuple[str, ...], raising_expected: bool = False
+) -> WhitelistProofCase:
     return WhitelistProofCase(
         code=f"df = source.with_columns({code_fragment})",
         output_fields=_WITH_R,
         proves=_proves(*proves),
+        raising_expected=raising_expected,
     )
 
 
@@ -637,7 +650,11 @@ WHITELIST_PROOF_CASES: dict[str, WhitelistProofCase] = {
     # because they diverge differently: lenient nulls unparseable values while
     # strict raises, and chunked==full must hold for the raise too.
     **{
-        f"str_{name}_{shape}": _expr_case(f"r={fragment}", ("expr.str", name, shape))
+        f"str_{name}_{shape}": _expr_case(
+            f"r={fragment}",
+            ("expr.str", name, shape),
+            raising_expected=shape.endswith("_strict"),
+        )
         for name, shape, fragment in [
             (
                 "to_date",
@@ -810,7 +827,9 @@ def test_whitelisted_construct_chunked_equals_full(
     frame.write_parquet(source)
     graph = _xform_graph(source, case.code, output_fields=list(case.output_fields))
 
-    _assert_chunked_matches_full(graph, chunk_size=chunk_size)
+    _assert_chunked_matches_full(
+        graph, chunk_size=chunk_size, raising_expected=case.raising_expected
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1046,4 +1065,4 @@ def test_explicit_temporal_format_chunked_equals_full_across_format_boundary(
     assert is_chunk_local_polars_code(code, frame_names=("source",))
     graph = _mixed_format_graph(tmp_path, fragment)
 
-    _assert_chunked_matches_full(graph, chunk_size=_MIXED_FORMAT_CHUNK_SIZE)
+    _assert_chunked_matches_full(graph, chunk_size=_MIXED_FORMAT_CHUNK_SIZE, raising_expected=True)

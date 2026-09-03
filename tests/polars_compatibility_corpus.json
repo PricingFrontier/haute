@@ -106,7 +106,7 @@
       }
     },
     {
-      "cardinality": "unsupported_operation",
+      "cardinality": "cardinality_proven",
       "chunk": {
         "eligible": true,
         "reason": "eligible"
@@ -115,18 +115,20 @@
       "code": "df = df.cast({'extra': pl.Float64})",
       "expansion": "none",
       "id": "frame_cast",
-      "lineage": "unsupported_operation",
+      "lineage": "lineage_proven",
       "namespace": null,
       "operation": "cast",
       "policy": "row_local",
       "receiver": "frame",
       "strategy": {
-        "rejected": "materialisation_estimate_unavailable"
+        "reason_code": "materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
       },
       "strategy_under_cap": {
-        "reason_code": "materialisation_estimate_unavailable_conservative",
-        "status": "warned",
-        "strategy": "full-width-conservative"
+        "reason_code": "materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
       }
     },
     {
@@ -343,7 +345,7 @@
       }
     },
     {
-      "cardinality": "unsupported_operation",
+      "cardinality": "cardinality_proven",
       "chunk": {
         "blocking_operator": "shift",
         "eligible": false,
@@ -353,18 +355,20 @@
       "code": "df = df.shift(1)",
       "expansion": "none",
       "id": "frame_shift",
-      "lineage": "unsupported_operation",
+      "lineage": "lineage_proven",
       "namespace": null,
       "operation": "shift",
       "policy": "streaming",
       "receiver": "frame",
       "strategy": {
-        "rejected": "materialisation_estimate_unavailable"
+        "reason_code": "materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
       },
       "strategy_under_cap": {
-        "reason_code": "materialisation_estimate_unavailable_conservative",
-        "status": "warned",
-        "strategy": "full-width-conservative"
+        "reason_code": "materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
       }
     },
     {
@@ -632,12 +636,12 @@
     {
       "cardinality": "cardinality_proven",
       "chunk": {
-        "blocking_operator": "sum",
+        "blocking_operator": "over",
         "eligible": false,
         "reason": "unsupported_expression_method"
       },
       "class": "fan_in_stateful",
-      "code": "df = df.with_columns(pl.col('premium').sum().over('segment').alias('segment_total'))",
+      "code": "df = df.with_columns(pl.col('premium').over('segment').alias('premium_over'))",
       "expansion": "none",
       "id": "expr_over",
       "lineage": "lineage_proven",
@@ -659,12 +663,12 @@
     {
       "cardinality": "cardinality_proven",
       "chunk": {
-        "blocking_operator": "sort",
+        "blocking_operator": "join_asof",
         "eligible": false,
         "reason": "unsupported_frame_method"
       },
       "class": "fan_in_stateful",
-      "code": "df = df.sort('t').join_asof(df.sort('t'), on='t')",
+      "code": "df = df.join_asof(df, on='t')",
       "expansion": "none",
       "id": "frame_join_asof_self",
       "lineage": "unsupported_operation",
@@ -684,12 +688,12 @@
     {
       "cardinality": "unsupported_operation",
       "chunk": {
-        "blocking_operator": "sort",
+        "blocking_operator": "merge_sorted",
         "eligible": false,
         "reason": "unsupported_frame_method"
       },
       "class": "fan_in_stateful",
-      "code": "df = df.sort('t').merge_sorted(df.sort('t'), key='t')",
+      "code": "df = df.merge_sorted(df, key='t')",
       "expansion": "none",
       "id": "frame_merge_sorted_self",
       "lineage": "unsupported_operation",
@@ -1225,7 +1229,7 @@
       }
     },
     {
-      "cardinality": "row_expansion_unbounded",
+      "cardinality": "dynamic_select",
       "chunk": {
         "blocking_operator": "pl.all",
         "eligible": false,
