@@ -105,6 +105,7 @@ from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
     contract_error_job_fields,
+    contract_error_terminal_reason,
 )
 from haute.routes._helpers import find_typed_node
 from haute.routes._job_lifecycle import (
@@ -3279,16 +3280,17 @@ class OptimiserSolveService:
                 )
             except PUBLIC_CONTRACT_ERROR_TYPES as exc:
                 elapsed_seconds = time.monotonic() - start_time
+                contract_reason = contract_error_terminal_reason(exc)
                 contract_fields = contract_error_job_fields(exc)
                 contract_fields["elapsed_seconds"] = elapsed_seconds
                 if execution_context is not None:
                     contract_fields["execution_metrics"] = execution_context.metrics_payload(
-                        status="contract_error",
-                        terminal_reason="contract_error",
+                        status=contract_reason,
+                        terminal_reason=contract_reason,
                     )
                 self._lifecycle.transition(
                     job_id,
-                    to="contract_error",
+                    to=contract_reason,
                     message=str(exc),
                     fields=contract_fields,
                     elapsed_seconds=elapsed_seconds,
@@ -3974,13 +3976,14 @@ class OptimiserSolveService:
             raise
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
             elapsed_seconds = self._job_elapsed(job_id)
+            contract_reason = contract_error_terminal_reason(exc)
             fields = contract_error_job_fields(exc)
             fields["elapsed_seconds"] = elapsed_seconds
             fields["execution_metrics"] = execution_context.metrics_payload(
-                status="contract_error",
-                terminal_reason="contract_error",
+                status=contract_reason,
+                terminal_reason=contract_reason,
             )
-            self._lifecycle.transition(job_id, to="contract_error", fields=fields)
+            self._lifecycle.transition(job_id, to=contract_reason, fields=fields)
             raise contract_error_http_exception(exc) from None
         except BoundedMemoryUnsupportedError as exc:
             detail = f"Frontier auto range cannot run in bounded streaming mode: {exc}"
@@ -4275,13 +4278,14 @@ class OptimiserSolveService:
             raise
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
             elapsed_seconds = self._job_elapsed(job_id)
+            contract_reason = contract_error_terminal_reason(exc)
             fields = contract_error_job_fields(exc)
             fields["elapsed_seconds"] = elapsed_seconds
             fields["execution_metrics"] = execution_context.metrics_payload(
-                status="contract_error",
-                terminal_reason="contract_error",
+                status=contract_reason,
+                terminal_reason=contract_reason,
             )
-            self._lifecycle.transition(job_id, to="contract_error", fields=fields)
+            self._lifecycle.transition(job_id, to=contract_reason, fields=fields)
             raise contract_error_http_exception(exc) from None
         except BoundedMemoryUnsupportedError as exc:
             detail = f"Frontier auto range cannot run in bounded streaming mode: {exc}"
@@ -4618,7 +4622,7 @@ class OptimiserSolveService:
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
             self._record_setup_failure(
                 job_id,
-                to="contract_error",
+                to=contract_error_terminal_reason(exc),
                 message=str(exc),
                 fields=contract_error_job_fields(exc),
                 execution_context=execution_context,
@@ -5157,7 +5161,7 @@ class OptimiserSolveService:
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
             self._record_setup_failure(
                 job_id,
-                to="contract_error",
+                to=contract_error_terminal_reason(exc),
                 message=str(exc),
                 fields=contract_error_job_fields(exc),
                 execution_context=execution_context,
@@ -5333,7 +5337,7 @@ class OptimiserSolveService:
             except PUBLIC_CONTRACT_ERROR_TYPES as exc:
                 self._lifecycle.transition(
                     job_id,
-                    to="contract_error",
+                    to=contract_error_terminal_reason(exc),
                     message=str(exc),
                     fields=contract_error_job_fields(exc),
                     elapsed_seconds=time.monotonic() - start_time,

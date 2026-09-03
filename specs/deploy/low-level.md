@@ -342,7 +342,11 @@ directory before re-raising.
    scorer opts into the same dataframe execution cache the dev executor uses, fingerprinted
    on the live input `DataFrame`, the input node ids, and the resolved artefact-path
    identities so a cache hit requires byte-identical served artefacts.
-5. `execute_lazy_graph()` runs the pruned graph to `output_node_id`; if `output_fields`
+5. `execute_lazy_graph()` runs the pruned graph to `output_node_id` with
+   `prepare_inputs=False`: a deployed scorer serves a request against artefacts that were
+   resolved and validated at deploy time, so it never builds or refreshes a source snapshot
+   on the serving path — a missing generation is a deploy-time packaging failure to be
+   raised, not a per-request build. If `output_fields`
    was requested, the output lazy frame is retained (kept alive against GC) and narrowed
    with `.select(output_fields)`.
 6. Returns a `DeployScorePlan`; `score_graph()` additionally collects it via

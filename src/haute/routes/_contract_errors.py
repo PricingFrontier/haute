@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException
 
@@ -13,6 +13,7 @@ from haute.errors import (
     ContractResolutionError,
     GroupByExecutionUnsupportedError,
     HauteError,
+    InputPreparationError,
     LiveSwitchScenarioError,
     PreambleError,
     RatingExtremaUndefinedError,
@@ -23,7 +24,13 @@ from haute.errors import (
 )
 
 CONTRACT_ERROR_HTTP_STATUS = 422
-CONTRACT_ERROR_TERMINAL_REASON = "contract_error"
+CONTRACT_ERROR_TERMINAL_REASON: Literal["contract_error"] = "contract_error"
+# Automatic input preparation is the one public contract error that can report
+# memory exhaustion. A background job records the same terminal state and the
+# same ``memory_limit`` code the in-thread memory-limited paths already use.
+MEMORY_LIMITED_TERMINAL_REASON: Literal["memory_limited"] = "memory_limited"
+MEMORY_LIMITED_HTTP_STATUS = 507
+MEMORY_LIMITED_ERROR_CODE = "memory_limit"
 
 # ``except`` accepts a tuple stored in a variable.  Exporting one canonical
 # tuple prevents synchronous and background adapters from drifting apart.
@@ -39,7 +46,23 @@ PUBLIC_CONTRACT_ERROR_TYPES: tuple[type[HauteError], ...] = (
     RatingFactorDtypeContractError,
     LiveSwitchScenarioError,
     OutputNestingKeyError,
+    InputPreparationError,
 )
+
+
+def _is_memory_limited_contract_error(exc: BaseException) -> bool:
+    """Whether a public contract error reports memory exhaustion."""
+    return isinstance(exc, InputPreparationError) and exc.reason_code == "memory_limited"
+
+
+def contract_error_terminal_reason(
+    exc: BaseException,
+) -> Literal["contract_error", "memory_limited"]:
+    """Terminal background-job reason for a public contract error."""
+    contract_error_payload(exc)
+    if _is_memory_limited_contract_error(exc):
+        return MEMORY_LIMITED_TERMINAL_REASON
+    return CONTRACT_ERROR_TERMINAL_REASON
 
 
 def contract_error_payload(exc: BaseException) -> dict[str, Any]:
@@ -66,6 +89,13 @@ def contract_error_job_fields(exc: BaseException) -> dict[str, Any]:
     """Map a public contract error to stable background-job fields."""
 
     payload = contract_error_payload(exc)
+    if _is_memory_limited_contract_error(exc):
+        return {
+            "error": str(exc),
+            "error_detail": payload,
+            "error_code": MEMORY_LIMITED_ERROR_CODE,
+            "http_status_code": MEMORY_LIMITED_HTTP_STATUS,
+        }
     return {
         "error": str(exc),
         "error_detail": payload,

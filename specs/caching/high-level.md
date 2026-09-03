@@ -57,7 +57,8 @@ blocking shred is not cooperatively cancellable.
 Source snapshot identities use the same canonical checked-input discipline. Their storage,
 lease, and publication behaviour is specified by the IO layer. A published
 current generation is durable until the user refreshes or clears that Data
-Input. Quota pressure rejects the incoming build with an actionable error; it
+Input, or until an execution's automatic preparation refreshes a stale one
+(warned and recorded, never silently). Quota pressure rejects the incoming build with an actionable error; it
 never silently evicts another input's current snapshot. Users must clear an
 unused snapshot or raise the configured quota before retrying.
 
@@ -67,13 +68,17 @@ corrupt, failed, or already-building snapshot starts or joins the existing
 visible job, waits for completion, and only then sends the preview. The
 orchestrator tries the lazy-sink build profile first and retries once with the
 admitted eager profile only when the server reports
-`snapshot_build_unsupported`. A ready snapshot is always used as published:
-stale freshness is visible to the user but never triggers a silent refresh.
+`snapshot_build_unsupported`. A ready but stale snapshot is refreshed by the execution's
+automatic preparation before it runs — warned before and recorded in the terminal
+diagnostics, never silently — so Studio no longer prompts for it; the explicit refresh
+action remains available.
 File-backed Parquet inputs do not participate because they scan their Parquet
-source directly and expose no cache action. Snapshot execution itself
-remains offline and never contacts the provider; non-Studio callers receive
-the IO layer's explicit `input_snapshot_missing:` error when they have not
-built a required snapshot.
+source directly and expose no cache action. Snapshot execution contacts the
+provider only through automatic preparation under an admitted execution
+context; schema-only or unadmitted callers receive the IO layer's explicit
+`input_snapshot_missing:` error when a required snapshot is missing. Execution
+caches key a snapshot-backed input by its generation pointer and its current
+source signature, so a rewritten source misses every cache.
 
 ## Design rationale
 

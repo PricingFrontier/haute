@@ -47,6 +47,7 @@ from haute._cache import (
 from haute._env import int_env
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._output_assembler import render_output_document
@@ -54,6 +55,7 @@ from haute._path_resolution import (
     RuntimePathOutsideProjectError,
     _infer_project_root,
     _normalise_path_text,
+    runtime_project_root_scope,
 )
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
@@ -916,6 +918,23 @@ def _result_order_for_target(
     return [nid for nid in order if nid in needed]
 
 
+def _preview_preparation_order(
+    graph: PipelineGraph,
+    target_node_id: str | None,
+    source: str,
+) -> list[str]:
+    """Node ids of the preview's executed lineage, for input preparation.
+
+    The lineage is walked over the same live-switch-pruned edges the execution
+    itself uses, so an inactive branch's inputs are never prepared.
+    """
+    if target_node_id is None or target_node_id not in graph.node_map:
+        return [node.id for node in graph.nodes]
+    all_ids = {node.id for node in graph.nodes}
+    edges = _prune_live_switch_edges(graph.edges, graph.node_map, source)
+    return sorted(ancestors(target_node_id, edges, all_ids))
+
+
 def execute_graph(
     graph: PipelineGraph,
     target_node_id: str | None = None,  # pragma: no mutate
@@ -1037,6 +1056,17 @@ def execute_graph(
         if target_node_id is not None and preview_initial_column_limit is not None
         else None
     )
+    # Preparation runs before the runtime identity is computed, so a refreshed
+    # generation's pointer is the one this preview entry is keyed by.
+    with runtime_project_root_scope(graph.source_file):
+        prepare_input_snapshots(
+            _preview_preparation_order(graph, target_node_id, source),
+            graph.node_map,
+            profile=execution_context.profile,
+            execution_context=execution_context,
+            base_dir=preparation_base_dir(graph),
+            schema_only=False,
+        )
     fp = execution_facade.preview_lineage_cache_key(
         graph,
         target_node_id=target_node_id,

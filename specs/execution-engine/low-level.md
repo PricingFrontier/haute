@@ -298,8 +298,9 @@ without unrelated graph state changing the key. There is no separate preview-pro
 cache suffix.
 
 The resulting key addresses `_preview_cache` (an `LRUCache`, one entry per unique
-lineage request). Runtime identity is computed before strategy planning so a full hit
-does not repeat graph projection or source/footer estimation. Every retained entry
+lineage request). Runtime identity is computed after automatic input preparation and
+before strategy planning so a full hit does not repeat graph projection or source/footer
+estimation while a refreshed generation is keyed by its new pointer. Every retained entry
 therefore carries the immutable `ExecutionStrategyResult` that produced it; a full hit
 installs that result on the new `ExecutionContext`, preserving the same visible bounded
 diagnostic and provenance without re-planning. The current context still reports its
@@ -351,6 +352,21 @@ indexes. Ancestor/live-switch filtering is explicit in `prepare_graph`; the stri
 topological sorter receives only the resulting relevant edges. Code that intentionally
 sorts a node subset with a broader edge set must call `topo_sort_ids_filtered` and
 inspect its dropped-edge evidence.
+
+**Automatic input preparation.** Between `_prepare_execution()` and strategy planning, the
+lazy engine calls `haute._input_preparation.prepare_input_snapshots()` over the pruned
+order (and `executor.execute_graph` calls it before its request planning), so a missing or
+stale snapshot generation is built or refreshed — under the current native cap in-process,
+or in a spawned hard-capped worker admitted from the execution's budget — before the RAM
+estimator reads generation metadata, and before the preview path computes its runtime
+identity, so a refreshed generation's pointer is the one keyed. `schema_only` executions
+and executions without an admitted context skip it. The IO-layer specification owns the
+lifecycle, the cap gate, the single-flight, and the `InputPreparationError` reason codes;
+the engine owns the call order, the `input_snapshot_auto_build` warning, and the
+`input_preparation` list in `ExecutionContext.metrics_payload()`, typed by
+`InputPreparationRecordPayload` on `haute._execution_schemas.ExecutionMetricsPayload` and
+regenerated into the frontend contracts. `_runtime_input_paths` signs a snapshot-backed
+input by its generation pointer and its current source signature.
 
 Both engines construct one `NodeBoundaryRunner` from that result and their common
 function table. Opening a boundary resolves its effective column contract
@@ -1539,6 +1555,15 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   schema (names and dtypes), row multiplicity (heights and multiset equality after a
   deterministic sort), and multi-input column retention (both join ports' columns, suffixes
   included).
+- **`tests/test_input_preparation.py`** — automatic preparation through the engine: a
+  missing generation is built and a stale one refreshed before strategy planning (the
+  estimator then reads the generation), a fresh one is reused without a build, schema-only
+  executions never build (store build poisoned), the in-process path is taken under a
+  declared native cap and the worker path otherwise (a fake spawn receiving the budget), a
+  missing admitted context skips preparation (the node reports `input_snapshot_missing`),
+  a warmed preview cache and a warmed dataframe cache both return the new rows after the
+  source is rewritten, and the terminal payload's `input_preparation` records carry digests
+  and counts only and validate through `ExecutionMetricsPayload`.
 - **`test_worker_isolation.py`** — the shared `isolated_worker_failure_is_memory` predicate over every worker outcome; picklable-result round-trip, remote-exception
   reporting, live draining of a large result before child join (the pipe-feeder
   deadlock regression), crash-without-killing-parent, cleanup-on-failure, timeout,

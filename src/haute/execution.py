@@ -909,15 +909,38 @@ def _runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
     return tuple(fields)
 
 
+def _snapshot_source_signature(
+    graph: PipelineGraph,
+    config: Mapping[str, object],
+) -> str | None:
+    """Current source signature of a snapshot-backed input (``None`` when none)."""
+    from haute._builders import _configured_pipeline_dir
+    from haute._input_providers import source_signature
+
+    try:
+        return source_signature(
+            config,
+            base_dir=_cache_pipeline_dir(graph) or _configured_pipeline_dir(),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def _runtime_input_fingerprint_entry(
     graph: PipelineGraph,
     node: GraphNode,
 ) -> Mapping[str, object]:
     config = node.data.config
-    files = {
+    files: dict[str, object] = {
         path_field: _runtime_file_fingerprint(node, path_field, path)
         for path_field, path in _runtime_file_signature_paths(graph, node).items()
     }
+    if "snapshot_pointer" in files:
+        # A snapshot-backed input is signed by its generation pointer *and* the
+        # current source signature, so a rewritten source misses every cache
+        # and reaches automatic preparation instead of serving a stale
+        # generation from a warm entry.
+        files["source_signature"] = _snapshot_source_signature(graph, config)
     return checked_cache_identity_record(
         CacheIdentityRecord.RUNTIME_INPUT_ENTRY,
         {
@@ -1206,6 +1229,7 @@ def execute_lazy_graph(
     dataframe_cache_request: DataFrameExecutionCacheRequest | None = None,
     schema_only: bool = False,
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    prepare_inputs: bool = True,
 ) -> LazyExecutionResult:
     """Execute a graph lazily through the shared production engine.
 
@@ -1232,6 +1256,7 @@ def execute_lazy_graph(
         dataframe_cache_request=dataframe_cache_request,
         schema_only=schema_only,
         runtime_source_frames_by_node=runtime_source_frames_by_node,
+        prepare_inputs=prepare_inputs,
     )
 
 

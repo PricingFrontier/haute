@@ -48,6 +48,7 @@ from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
     contract_error_job_fields,
+    contract_error_terminal_reason,
 )
 from haute.routes._helpers import find_typed_node
 from haute.routes._memory_messages import memory_limit_user_message
@@ -859,7 +860,7 @@ def prepare_training_data(
         http_exc = contract_error_http_exception(exc)
         return _finalise_preparation_failure(
             TrainingPreparationFailure(
-                terminal_reason="contract_error",
+                terminal_reason=contract_error_terminal_reason(exc),
                 message=str(exc),
                 http_status_code=http_exc.status_code,
                 http_detail=http_exc.detail,

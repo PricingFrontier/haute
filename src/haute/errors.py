@@ -389,6 +389,57 @@ class TraceCorrelationUnsupportedError(ExecutionError):
         )
 
 
+INPUT_PREPARATION_REASON_CODES: tuple[str, ...] = (
+    "cap_unavailable",
+    "build_failed",
+    "memory_limited",
+    "cancelled",
+    "timed_out",
+    "quota_exceeded",
+)
+
+
+class InputPreparationError(ExecutionError):
+    """Raised when automatic snapshot preparation cannot publish a generation.
+
+    Carries digests and codes only: never a configured locator or a secret.
+    """
+
+    error_code = "input_preparation_failed"
+    public_fields = (
+        "node_id",
+        "identity_digest",
+        "build_class",
+        "reason_code",
+        "remediation",
+    )
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        node_id: str,
+        identity_digest: str,
+        build_class: str,
+        reason_code: str,
+        remediation: str,
+    ) -> None:
+        if reason_code not in INPUT_PREPARATION_REASON_CODES:
+            raise ValueError(f"unknown input preparation reason code: {reason_code!r}")
+        self.node_id = node_id
+        self.identity_digest = identity_digest
+        self.build_class = build_class
+        self.reason_code = reason_code
+        self.remediation = remediation
+        super().__init__(
+            message,
+            node_id=node_id,
+            identity_digest=identity_digest,
+            build_class=build_class,
+            reason_code=reason_code,
+        )
+
+
 class ContractMismatchError(HauteError):
     """Raised when a declared column contract does not match observed columns.
 

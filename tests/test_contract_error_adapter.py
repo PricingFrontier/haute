@@ -9,6 +9,7 @@ from haute.errors import (
     ContractMismatchError,
     ContractResolutionError,
     GroupByExecutionUnsupportedError,
+    InputPreparationError,
     LiveSwitchScenarioError,
     PreambleError,
     RatingExtremaUndefinedError,
@@ -23,6 +24,7 @@ from haute.routes._contract_errors import (
     contract_error_http_exception,
     contract_error_job_fields,
     contract_error_payload,
+    contract_error_terminal_reason,
 )
 
 
@@ -208,6 +210,51 @@ def test_shared_contract_error_adapter_preserves_sync_and_background_payloads(
         "error_code": expected["error_code"],
         "http_status_code": 422,
     }
+
+
+def _input_preparation_error(reason_code: str) -> InputPreparationError:
+    return InputPreparationError(
+        "Preparing this Data Input's snapshot failed.",
+        node_id="input",
+        identity_digest="a" * 64,
+        build_class="bounded",
+        reason_code=reason_code,
+        remediation="Build the snapshot and try again.",
+    )
+
+
+def test_input_preparation_error_is_a_public_contract_error() -> None:
+    exc = _input_preparation_error("build_failed")
+    assert isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES)
+    payload = contract_error_payload(exc)
+    assert payload == {
+        "error_code": "input_preparation_failed",
+        "message": "Preparing this Data Input's snapshot failed.",
+        "node_id": "input",
+        "identity_digest": "a" * 64,
+        "build_class": "bounded",
+        "reason_code": "build_failed",
+        "remediation": "Build the snapshot and try again.",
+    }
+    assert contract_error_http_exception(exc).status_code == 422
+    assert contract_error_terminal_reason(exc) == CONTRACT_ERROR_TERMINAL_REASON
+    assert contract_error_job_fields(exc)["http_status_code"] == 422
+
+
+def test_a_memory_limited_preparation_records_the_memory_limited_terminal_state() -> None:
+    exc = _input_preparation_error("memory_limited")
+    # A synchronous route still answers 422 with the contract payload.
+    assert contract_error_http_exception(exc).status_code == 422
+    assert contract_error_terminal_reason(exc) == "memory_limited"
+    fields = contract_error_job_fields(exc)
+    assert fields["error_code"] == "memory_limit"
+    assert fields["http_status_code"] == 507
+    assert fields["error_detail"] == contract_error_payload(exc)
+
+
+def test_input_preparation_error_rejects_an_unknown_reason_code() -> None:
+    with pytest.raises(ValueError, match="unknown input preparation reason code"):
+        _input_preparation_error("nope")
 
 
 def test_shared_contract_error_adapter_rejects_unversioned_errors() -> None:

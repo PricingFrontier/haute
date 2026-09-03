@@ -528,3 +528,101 @@ class TestWritePolarsOutput:
         assert resolve_output_mode(FORMATS_BY_NAME["avro"], {}) == "write"
         assert resolve_input_mode(FORMATS_BY_NAME["parquet"], {}) == "scan"
         assert resolve_input_mode(FORMATS_BY_NAME["json"], {}) == "read"
+
+
+class TestSnapshotBuildReads:
+    """Build-only complete inspection and the scanner preference."""
+
+    def test_a_csv_without_a_declared_schema_scans_with_whole_file_inference(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute._polars_io_registry import read_polars_input_for_snapshot
+
+        path = tmp_path / "rows.csv"
+        path.write_text("id\n1\n2\n", encoding="utf-8")
+        captured: dict[str, object] = {}
+        real_scan = pl.scan_csv
+
+        def recording_scan(*args: object, **kwargs: object) -> pl.LazyFrame:
+            captured.update(kwargs)
+            return real_scan(*args, **kwargs)
+
+        monkeypatch.setattr(pl, "scan_csv", recording_scan)
+        config = {"inputType": "file", "format": "csv", "path": str(path)}
+
+        frame, warning_code = read_polars_input_for_snapshot(config)
+
+        assert captured["infer_schema_length"] is None
+        assert warning_code is None
+        assert frame.collect().height == 2
+
+    def test_a_direct_bounded_read_still_refuses_an_undeclared_csv_schema(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute.errors import BoundedMemoryUnsupportedError
+
+        path = tmp_path / "rows.csv"
+        path.write_text("id\n1\n", encoding="utf-8")
+        config = {"inputType": "file", "format": "csv", "path": str(path)}
+
+        with pytest.raises(BoundedMemoryUnsupportedError, match="declared 'schema'"):
+            read_polars_input(config, profile=ExecutionProfile.LAZY_SINK)
+
+    def test_a_configured_eager_read_is_scanned_when_every_argument_is_accepted(self) -> None:
+        from haute._polars_io_registry import snapshot_input_plan
+
+        fmt = FORMATS_BY_NAME["csv"]
+        config = {"format": "csv", "mode": "read", "arguments": {"separator": ";"}}
+
+        assert snapshot_input_plan(fmt, config) == ("scan", "bounded", "eager_read_mode_scanned")
+
+    def test_a_reader_only_argument_keeps_the_admitted_eager_class(self) -> None:
+        from haute._polars_io_registry import snapshot_input_plan
+
+        fmt = FORMATS_BY_NAME["csv"]
+        reader_only = sorted(
+            allowed_arguments(fmt, "polars", "read_csv")
+            - allowed_arguments(fmt, "polars", "scan_csv")
+        )
+        assert reader_only, "the installed polars read_csv must own at least one argument"
+        config = {"format": "csv", "mode": "read", "arguments": {reader_only[0]: 1}}
+
+        assert snapshot_input_plan(fmt, config) == ("read", "admitted_eager", None)
+
+    def test_input_snapshot_build_class_reports_the_effective_class(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute._input_providers import input_snapshot_build_class
+
+        path = tmp_path / "rows.csv"
+        path.write_text("id\n1\n", encoding="utf-8")
+        scanned = {
+            "inputType": "file",
+            "format": "csv",
+            "mode": "read",
+            "path": str(path),
+            "arguments": {"separator": ","},
+        }
+        assert (
+            input_snapshot_build_class(
+                scanned, base_dir=tmp_path, profile=ExecutionProfile.LAZY_SINK
+            )
+            == "bounded"
+        )
+
+        json_path = tmp_path / "rows.json"
+        json_path.write_text('[{"id": 1}]', encoding="utf-8")
+        eager = {"inputType": "file", "format": "json", "mode": "read", "path": str(json_path)}
+        assert (
+            input_snapshot_build_class(
+                eager,
+                base_dir=tmp_path,
+                profile=ExecutionProfile.LAZY_SINK,
+                allow_admitted_eager=True,
+            )
+            == "admitted_eager"
+        )

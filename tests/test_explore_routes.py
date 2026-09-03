@@ -1602,6 +1602,68 @@ def test_explore_worker_maps_failures_to_typed_terminal_statuses(
         assert "forced unexpected Explore failure" not in str(final)
 
 
+def test_explore_memory_limited_input_preparation_ends_memory_limited(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A memory-limited preparation is the job's memory_limited terminal state.
+
+    The failure is raised where the real child raises it — inside automatic
+    input preparation — and travels back through the child's own closed
+    outcome envelope, so this pins that the envelope carries the terminal
+    reason instead of the parent flattening it to ``contract_error``.
+    """
+    from haute import _execute_lazy as execute_lazy_module
+    from haute.errors import InputPreparationError
+    from haute.routes import _explore_service as service_module
+    from haute.routes.explore import _explore_service
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+    failure = InputPreparationError(
+        "Preparing this Data Input's snapshot failed.",
+        node_id="prep",
+        identity_digest="b" * 64,
+        build_class="admitted_eager",
+        reason_code="memory_limited",
+        remediation="Build this Data Input's snapshot and try again.",
+    )
+
+    def fail_preparation(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(execute_lazy_module, "prepare_input_snapshots", fail_preparation)
+
+    def run_child_in_process(function, *args, **_kwargs):
+        # Run the real child entrypoint so it catches the preparation failure
+        # and returns its own outcome envelope, exactly as the spawned child does.
+        return function(*args)
+
+    monkeypatch.setattr(service_module, "run_isolated_worker", run_child_in_process)
+
+    started = client.post("/api/explore/run", json=body)
+
+    assert started.status_code == 200
+    final = _poll_explore(client, started.json()["job_id"])
+    assert final["status"] == "memory_limited"
+    assert final["terminal_reason"] == "memory_limited"
+    stored = _explore_service._store.require_job(started.json()["job_id"])
+    assert stored["error"] == str(failure)
+    assert stored["error_code"] == "memory_limit"
+    assert stored["http_status_code"] == 507
+    assert stored["error_detail"] == {
+        "error_code": "input_preparation_failed",
+        "message": "Preparing this Data Input's snapshot failed.",
+        "node_id": "prep",
+        "identity_digest": "b" * 64,
+        "build_class": "admitted_eager",
+        "reason_code": "memory_limited",
+        "remediation": "Build this Data Input's snapshot and try again.",
+    }
+
+
 def test_explore_remote_worker_failure_is_sanitized(
     client: TestClient,
     tmp_path: Path,

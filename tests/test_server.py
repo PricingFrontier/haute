@@ -275,6 +275,48 @@ class TestPreviewNode:
         assert node_id in data["node_statuses"]
         assert data["node_statuses"][node_id] == "ok"
 
+    def test_preview_reports_a_failed_input_preparation_as_a_contract_error(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+    ) -> None:
+        """Automatic preparation's failure is a public 422 contract error."""
+        from unittest.mock import patch
+
+        from haute.errors import InputPreparationError
+        from haute.parser import parse_pipeline_file
+
+        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
+        failure = InputPreparationError(
+            "Preparing this Data Input's snapshot failed.",
+            node_id=graph.nodes[0].id,
+            identity_digest="a" * 64,
+            build_class="bounded",
+            reason_code="build_failed",
+            remediation="Build this Data Input's snapshot and try again.",
+        )
+
+        with patch("haute.executor.prepare_input_snapshots", side_effect=failure):
+            resp = client.post(
+                "/api/pipeline/preview",
+                json={
+                    "graph": graph.model_dump(),
+                    "node_id": graph.nodes[0].id,
+                    "row_limit": 10,
+                },
+            )
+
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == {
+            "error_code": "input_preparation_failed",
+            "message": "Preparing this Data Input's snapshot failed.",
+            "node_id": graph.nodes[0].id,
+            "identity_digest": "a" * 64,
+            "build_class": "bounded",
+            "reason_code": "build_failed",
+            "remediation": "Build this Data Input's snapshot and try again.",
+        }
+
     def test_preview_rejects_unassigned_submodel_input_draft(
         self,
         client: TestClient,

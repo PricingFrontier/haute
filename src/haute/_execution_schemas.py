@@ -415,6 +415,22 @@ class ExecutionMemoryLimitErrorPayload(BaseModel):
     reason: str = ""
 
 
+class InputPreparationRecordPayload(BaseModel):
+    """One Data Input's automatic preparation record: digests and counts only."""
+
+    node_id: str
+    identity_digest: str
+    action: Literal["reused", "built", "refreshed"]
+    build_class: str
+    execution: Literal["in_process", "worker"]
+    memory_limit_bytes: int | None = None
+    elapsed_seconds: float = 0.0
+    row_count: int | None = None
+    size_bytes: int | None = None
+    generation_id: str | None = None
+    warning_code: str | None = None
+
+
 class ExecutionMetricsPayload(BaseModel):
     schema_version: int = 1
     operation: str = ""
@@ -475,6 +491,7 @@ class ExecutionMetricsPayload(BaseModel):
     observed_peak_rss_bytes: int | None = Field(default=None, ge=0)
     observed_peak_rss_growth_bytes: int | None = Field(default=None, ge=0)
     cancellation_latency_ms: float | None = Field(default=None, ge=0)
+    input_preparation: list[InputPreparationRecordPayload] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_calibration_evidence(self) -> ExecutionMetricsPayload:

@@ -5503,3 +5503,46 @@ def test_in_flight_refusal_names_sorted_unique_holders_up_to_the_cap(
         f"optimiser_setup:setup_{index:02d}" for index in range(8)
     )
     assert error.to_payload()["in_flight_operations"] == list(error.in_flight_operations)
+
+
+def test_input_preparation_records_reach_the_metrics_payload() -> None:
+    from haute._execution_schemas import ExecutionMetricsPayload
+    from haute._input_preparation import InputPreparationRecord
+
+    context = ExecutionContext(operation="metrics", profile=ExecutionProfile.LAZY_SINK)
+    assert context.metrics_payload()["input_preparation"] == []
+
+    context.record_input_preparation(
+        InputPreparationRecord(
+            node_id="input",
+            identity_digest="b" * 64,
+            action="refreshed",
+            build_class="bounded",
+            execution="worker",
+            memory_limit_bytes=1024,
+            elapsed_seconds=0.5,
+            row_count=3,
+            size_bytes=64,
+            generation_id="8f0d4a2c-1c3b-4f5a-9c2d-0e1f2a3b4c5d",
+            warning_code="eager_read_mode_scanned",
+        )
+    )
+    payload = context.metrics_payload()
+
+    assert payload["input_preparation"] == [
+        {
+            "node_id": "input",
+            "identity_digest": "b" * 64,
+            "action": "refreshed",
+            "build_class": "bounded",
+            "execution": "worker",
+            "memory_limit_bytes": 1024,
+            "elapsed_seconds": 0.5,
+            "row_count": 3,
+            "size_bytes": 64,
+            "generation_id": "8f0d4a2c-1c3b-4f5a-9c2d-0e1f2a3b4c5d",
+            "warning_code": "eager_read_mode_scanned",
+        }
+    ]
+    validated = ExecutionMetricsPayload.model_validate(payload)
+    assert validated.input_preparation[0].action == "refreshed"

@@ -1065,6 +1065,10 @@ def _score_graph_lazy(
                 source_by_node=source_by_node,
                 dataframe_cache_request=dataframe_cache_request,
                 runtime_source_frames_by_node=runtime_source_frames_by_node,
+                # Deploy scoring reads its Data Inputs through the bundled
+                # artifact intercept above; the canonical configs it carries
+                # must never trigger an automatic provider build here.
+                prepare_inputs=False,
             )
 
         output_lf = lazy_outputs.get(output_node_id)

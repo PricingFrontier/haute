@@ -851,6 +851,81 @@ class TestSolveRoute:
         assert "bad setup" in job["message"]
         launch_background.assert_not_called()
 
+    def test_setup_memory_limited_preparation_ends_memory_limited(self, scored_data, tmp_path):
+        """A memory-limited preparation failure is not flattened to contract_error."""
+        from haute.errors import InputPreparationError
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running"})
+        failure = InputPreparationError(
+            "Preparing this Data Input's snapshot failed.",
+            node_id="source",
+            identity_digest="b" * 64,
+            build_class="admitted_eager",
+            reason_code="memory_limited",
+            remediation="Give the execution more memory headroom and try again.",
+        )
+
+        with (
+            patch(
+                "haute.routes._optimiser_service.execute_lazy_graph",
+                side_effect=failure,
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._execute_pipeline(body, job_id, tmp_path)
+
+        assert exc_info.value.status_code == 422
+        job = store.require_job(job_id)
+        assert job["status"] == "memory_limited"
+        assert job["terminal_reason"] == "memory_limited"
+        assert job["error"] == str(failure)
+        assert job["error_code"] == "memory_limit"
+        assert job["http_status_code"] == 507
+        assert job["error_detail"]["reason_code"] == "memory_limited"
+
+    def test_setup_build_failed_preparation_ends_contract_error(self, scored_data, tmp_path):
+        """A non-memory preparation failure still ends the job contract_error."""
+        from haute.errors import InputPreparationError
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running"})
+        failure = InputPreparationError(
+            "Preparing this Data Input's snapshot failed.",
+            node_id="source",
+            identity_digest="c" * 64,
+            build_class="admitted_eager",
+            reason_code="build_failed",
+            remediation="Build this Data Input's snapshot and try again.",
+        )
+
+        with (
+            patch(
+                "haute.routes._optimiser_service.execute_lazy_graph",
+                side_effect=failure,
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._execute_pipeline(body, job_id, tmp_path)
+
+        assert exc_info.value.status_code == 422
+        job = store.require_job(job_id)
+        assert job["status"] == "contract_error"
+        assert job["terminal_reason"] == "contract_error"
+        assert job["http_status_code"] == 422
+
     def test_solve_marks_job_error_when_factor_extraction_fails(
         self,
         client,

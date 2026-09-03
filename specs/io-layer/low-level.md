@@ -7,6 +7,7 @@
 | `src/haute/_io.py` | API-input flat-file adapters, source/schema validation, direct CSV/JSON/NDJSON/Parquet reads, and external-object loading. |
 | `src/haute/_polars_io_registry.py` | Canonical Data Input/Output format registry, strict config and argument validation, capability publication, and Polars invocation. |
 | `src/haute/_input_providers.py` | Provider dispatch, source identity/signature construction, explicit snapshot build, and leased snapshot resolution. |
+| `src/haute/_input_preparation.py` | Automatic snapshot preparation planned before execution: freshness check, cap gate, in-process or worker build, per-process single-flight, preparation records, and staging-token cleanup. |
 | `src/haute/_database_io.py` | Credential-free database locator/query validation and bounded read-only SQLite snapshot batches. |
 | `src/haute/_credential_security.py` | Shared URI credential detection and provider-diagnostic redaction. |
 | `src/haute/_source_cache.py` | Primary owner of source-cache identities, generations, metadata, publication, leases, quota, status, and cleanup. |
@@ -31,7 +32,19 @@ relationship is recorded in `specs/ownership.toml`.
 - `SourceCacheIdentity` is a versioned provider plus canonical descriptor. Construction
   rejects secret-bearing keys and credential-bearing URIs before canonical JSON and SHA-256.
 - `SourceCacheBuildContext` carries the execution profile, build class, cancellation,
-  deadline, progress, and optional `ExecutionContext`.
+  deadline, progress, optional `ExecutionContext`, and an optional parent-chosen pair: a
+  `generation_id` (a canonical UUID) that names the generation the build publishes and a
+  short `staging_token` (eight hex characters, keeping the staging path within Windows'
+  traditional limit beneath long temporary roots) that names the staging directory
+  (`.staging-<staging_token>`), so a parent supervising the build in a worker can reconcile
+  exactly that generation and that staging directory after the worker dies; unset, the
+  store chooses both itself. The two are set together or not at all.
+- `InputPreparationRecord` is the per-input diagnostic record of automatic preparation
+  (node id, identity digest, action `reused`/`built`/`refreshed`, build class, execution
+  `in_process`/`worker`, reserved memory limit, elapsed seconds, row count, size bytes,
+  generation id, optional warning code). `InputPreparationRequest` and
+  `InputPreparationOutcome` are the picklable request/outcome pair of the worker entry
+  point.
 - `SourceCacheMetadata` records identity, generation, optional freshness signature, artifact
   SHA-256/size, rows, columns, schema, creation time, profile, and build class.
 - `SourceCacheGeneration` names immutable `data.parquet` and `meta.json` paths.
@@ -80,12 +93,84 @@ an in-place or non-atomic fallback.
    and attaches lease release to execution cleanup or an explicit callable scan-plan token.
 7. `resolve_data_input_from_config()` is the generated-code sidecar entry point.
 
+### Automatic preparation
+
+1. `prepare_input_snapshots()` runs once per execution, after `_prepare_execution()` has
+   pruned the graph to the target lineage and before strategy planning and before runtime
+   identity (cache key) computation, so the RAM estimator reads the published generation
+   and a refreshed generation's pointer is the one keyed. `executor.execute_graph` calls it
+   before its request planning; the lazy engine's later call finds the generation fresh
+   and records `reused`.
+2. For each snapshot-backed Data Input in order: validate the config, derive the identity
+   and source signature, and read `SourceCacheStore.status(identity,
+   source_signature=...)`. `ready`/`fresh` and `ready`/`unknown` reuse; `missing` builds;
+   `ready`/`stale` refreshes; `corrupt` raises `SourceCacheCorruptError`.
+3. `schema_only=True` records nothing and never builds; the node builder's
+   `input_snapshot_missing` rejection remains the outcome for a missing generation.
+4. The cap gate: preparation runs only under an admitted `ExecutionContext` (its
+   `admission` is present); without one it does nothing and resolution keeps its
+   `input_snapshot_missing` rejection. With `current_native_memory_backend()` set the
+   build runs in-process through `build_input_snapshot()` with the context's cancellation,
+   deadline, and stages; otherwise the build is spawned through `run_isolated_worker` with
+   `worker_config_for_memory_policy(memory_limit_bytes=budget.memory_limit_bytes, ...)`
+   where `budget = isolated_execution_budget(execution_context)`, with
+   `require_memory_limit=True` whatever `HAUTE_WORKER_MEMORY_ENFORCEMENT` says, and the
+   child creates `create_isolated_execution_context(budget)` and runs the same
+   `build_input_snapshot()`. A host that cannot install the native cap refuses with
+   `cap_unavailable` before any provider access. `allow_admitted_eager=True` is the
+   hard-capped-worker-only opt-in for the admitted-eager build class — the explicit
+   admitted-eager build sets it inside the child, and the in-thread explicit path keeps
+   refusing that class outside `PREVIEW_EAGER`.
+5. A per-process single-flight keyed by identity digest makes a concurrent execution wait
+   for the in-flight build and re-read status instead of building again. The wait is
+   polled, not indefinite: each poll checkpoints the waiter's own execution context
+   (`input_snapshot_preparation_wait`), so cancellation raises `cancelled`, and the build
+   deadline bounds it as `timed_out`. The spawned build itself is cancellable — the worker
+   config's `stop_reason` reports `cancelled` while the execution's cancellation token is
+   cancelled, terminating the child.
+6. The structured warning `input_snapshot_auto_build` is logged before the build; the
+   record is appended to the context (`ExecutionContext.record_input_preparation`) and
+   surfaces as `metrics_payload()["input_preparation"]`.
+7. A spawned build never retires superseded generations: the child's lease counts are
+   process-local, so a generation the parent still leases would look unreferenced there.
+   The child's build context sets `defer_retirement=True`, which skips both retirement
+   passes in `SourceCacheStore.build`, and the supervising parent calls
+   `SourceCacheStore.retire_unleased(identity)` — with its own lease counts — after a
+   successful spawned build and after a reconciliation that reported `published`.
+   Because the child's lease table is empty, the supervising parent also passes the
+   generation ids it leases at spawn time (`SourceCacheStore.leased_generation_ids`,
+   carried on the request as `retained_generation_ids` and set on the child's build
+   context), and the child's quota projection treats them as retained rather than
+   reclaimable. A lease the parent acquires after that snapshot is the accepted
+   cross-process window: the generation is kept until its release, and the release
+   path retires it.
+8. Worker failure classification maps the child's own exception type name carried by
+   `IsolatedWorkerRemoteError.remote_type` first: `SourceCacheQuotaExceededError` (or the
+   direct instance) is `quota_exceeded`, and `NativeMemoryLimitUnsupportedError` /
+   `NativeMemoryLimitCleanupError` are `cap_unavailable`. It then uses
+   `isolated_worker_failure_is_memory` and the worker's terminal reason to choose
+   `memory_limited`, `cancelled`, `timed_out`, or `build_failed`. Each reason code carries
+   its own remediation text. After any spawned-build
+   failure or abnormal termination the parent calls
+   `SourceCacheStore.reconcile_unpublished(identity, generation_id, staging_token)`, which
+   under the identity lock returns `published` when the current pointer already names that
+   generation (the outcome is then recorded as `built`/`refreshed`, not a failure), removes
+   an unreferenced `generations/<generation_id>` directory (never current, never leased)
+   and the `.staging-<staging_token>` directory when present, and otherwise reports
+   `absent`. After a reconciliation that did not report `published`, the parent re-reads
+   `status(identity, source_signature=...)`: a `ready`/`fresh` (or `ready`/`unknown`)
+   generation published meanwhile by another process is recorded as `reused` and the
+   execution proceeds; only a still-missing or still-stale generation raises the
+   classified `InputPreparationError`.
+
 ### Snapshot publication
 
 1. The per-identity process lock serialises same-process builders.
 2. A non-refresh build returns the current validated generation when present.
-3. The builder writes to `.staging-<nonce>/data.parquet`; Arrow iterables are checked at
-   every batch and written against one schema.
+3. The builder writes to `.staging-<nonce>/data.parquet` (`.staging-<staging_token>`, and
+   the parent-chosen `generation_id` as the published generation, when the build context
+   carries the parent-chosen pair); Arrow iterables are checked at every batch and written
+   against one schema.
 4. Publication computes artifact integrity evidence, reads footer/schema/row counts, writes
    canonical `meta.json`, and validates the staged generation.
 5. Quota admission rejects the incoming publication when projected byte/count limits would
@@ -135,16 +220,20 @@ cleanup.
 Before publication, quota accounting totals every published Parquet plus every
 retained staging byte except the staging tree being admitted, then adds the
 new artifact and generation count. The old current generation for the same
-identity is subtracted only if locally unleased because successful pointer
-replacement makes it reclaimable. No current generation for another identity
+identity is subtracted only if locally unleased and not named in the build
+context's `retained_generation_ids`, because successful pointer replacement
+makes it reclaimable; a retained id is a lease held by the supervising parent of
+a spawned build, which the child cannot see. No current generation for another identity
 is an eviction candidate. If the projection still exceeds byte or count limits,
 admission raises an actionable quota error and leaves every pointer/generation
 unchanged.
 
-Snapshot-mode execution never contacts the configured provider. If no current
-snapshot exists, resolution raises `PolarsIoConfigError` with the stable
-`input_snapshot_missing:` prefix and an instruction to build the snapshot (or
-run a Studio preview, which ensures it before execution).
+Snapshot-mode execution contacts the configured provider only through automatic
+preparation, which is the explicit build path scheduled before planning under a hard cap.
+Resolution itself never builds: if no current snapshot exists when a node is resolved (a
+schema-only execution, or a caller outside an admitted execution context), it raises
+`PolarsIoConfigError` with the stable `input_snapshot_missing:` prefix and an instruction
+to build the snapshot or run the pipeline under an admitted execution, which prepares it.
 
 Direct mode is not a general compatibility path. It is valid only for a file-backed
 Parquet scan, which already has the lazy, schema-bearing execution shape that a snapshot
@@ -214,7 +303,23 @@ is no eager dataframe or collect-then-write fallback.
   than once per lease.
 - Partitioned Parquet sinks validate the final layout and preserve the previous published
   target if publication fails.
-- Bounded profiles require declared CSV dtypes and reject eager-only plain JSON.
+- Direct bounded reads still require declared CSV dtypes and refuse eager-only formats and
+  eager `read` mode where a scanner exists; those rules no longer bound what a pipeline can
+  run, because snapshot builds inspect a CSV completely (`infer_schema_length=None`, a
+  literal keyword held by `tests/test_polars_io_interface_contracts.py`'s
+  `_LITERAL_KEYWORDS`), prefer the scanner over a configured eager read whenever every
+  configured argument is scanner-accepted (recording `eager_read_mode_scanned`), and run a
+  genuinely reader-only format inside the hard-capped worker.
+- Automatic preparation is single-flight per identity within a process; across processes
+  concurrent builds of one identity both publish valid generations and the last pointer
+  replacement wins.
+- A spawned build has three kill windows: before the rename only staging exists; between
+  the rename and the pointer replacement an unreferenced generation exists; after the
+  pointer replacement the build has succeeded. `reconcile_unpublished` distinguishes them
+  by the parent-chosen generation id and staging token and never touches any other
+  generation or staging. A successor published by another process between the kill and
+  the reconciliation is detected by the status re-read and reused, so a successful
+  preparation is never reported as a failure.
 - An argument is config-expressible only when both the committed interface schema and the
   installed Polars declare it. `haute._polars_io_schema.supported_argument_names()` is that
   intersection and `haute._polars_io_registry.allowed_arguments()` subtracts the excluded
@@ -259,6 +364,15 @@ builder output. `SourceCacheQuotaExceededError` rejects a publication without re
 current pointer. `SourceCacheCorruptError` is reserved for proven structural/integrity
 failure. `OSError` subclasses from transient filesystem access are not relabelled corrupt.
 
+`InputPreparationError` (`error_code="input_preparation_failed"`) wraps automatic
+preparation outcomes with a stable `reason_code` (`cap_unavailable`, `build_failed`,
+`memory_limited`, `cancelled`, `timed_out`, `quota_exceeded`), the node id, identity
+digest, build class, and a remediation; it never carries a locator or a secret. It is a
+member of `PUBLIC_CONTRACT_ERROR_TYPES` in `haute.routes._contract_errors`: synchronous
+routes answer HTTP 422 with its payload, and background jobs record the `memory_limited`
+terminal state when `reason_code == "memory_limited"` and the contract-error fields
+otherwise.
+
 Provider route handlers log exception type plus a credential-scrubbed message, while public
 job responses use stable non-sensitive messages and error codes. Unexpected sidecar
 overwrite is an HTTP 409; registered data sinks keep their documented overwrite semantics.
@@ -276,18 +390,23 @@ overwrite is an HTTP 409; registered data sinks keep their documented overwrite 
    staged artifact is self-validated before the pointer changes. Any failure
    removes staging and any unpublished generation; the prior current pointer
    remains authoritative.
-3. Opening/lease acquisition reads and validates the pointer first, then the
+3. Automatic preparation checks status before the cap gate, the cap gate before any
+   provider access, and single-flight before spawning; a spawned build's failure is
+   classified from the worker outcome, the parent reconciles its generation id
+   (published, unreferenced generation, or staging), and the previous pointer remains
+   authoritative unless the build had already published.
+4. Opening/lease acquisition reads and validates the pointer first, then the
    generation id/metadata identity and counts, byte size/digest, Parquet footer,
    Arrow names, and Polars schema. Proven structural/integrity failures become
    `SourceCacheCorruptError`; a missing pointer remains “not built,” and
    transient `OSError` is propagated rather than mislabeled corruption. No
    provider fallback is attempted for a requested snapshot; the only direct
    execution path is canonical file-backed Parquet.
-4. SQLite validates safe locator, existing regular file, and read-only query
+5. SQLite validates safe locator, existing regular file, and read-only query
    before connection. It begins the read transaction and completes one
    all-column storage-class query before the data cursor emits any batch, so an
    incompatible column mixture cannot leave a partial artifact.
-5. Data Output validates the destination/config and, when overwrite is false,
+6. Data Output validates the destination/config and, when overwrite is false,
    refuses an existing target before sink work. Bounded/partitioned publication
    stages and validates its result before replacement, preserving the previous
    target on compute, validation, or publish failure.
@@ -333,4 +452,69 @@ failure sections above are the maintained answers.
 - `tests/test_discovery.py` and `tests/test_path_case_audit.py` cover pipeline discovery,
   deduplication, unreadable files, retained resolver seams, and cross-platform path spelling.
 - `tests/test_input_cache_route.py` covers HTTP build/status/cancel/clear lifecycle and
-  conflict/admission behaviour.
+  conflict/admission behaviour, and that an admitted-eager explicit build runs through the
+  worker entry point with its `memory_limited`, `cancelled`, `timed_out`, quota, and
+  `completed` outcomes mapped onto the job lifecycle (a fake spawn receives the budget, the
+  generation id, and the staging token; a memory-limited outcome reconciles both through
+  `reconcile_unpublished(identity, generation_id, staging_token)`, removing
+  `.staging-<staging_token>`).
+- `tests/test_input_preparation.py` covers automatic preparation: (1) parity — for CSV with
+  a declared schema, CSV without one, NDJSON, plain JSON, and inline records the prepared
+  generation's schema and rows equal a direct whole-file eager read; (2) mixed late types —
+  a CSV whose first 2,000 rows hold integers and whose later rows hold text is prepared as
+  a `String` column with every row retained, where sample-limited inference would have
+  mis-typed it; (3) malformed records — a CSV with the header `id,amount`, the rows
+  `1,10` and `2,20`, and a third row `3,30,extra` carrying one field more than the header,
+  read with the parser's default arguments (no `truncate_ragged_lines`), fails the build
+  with `InputPreparationError(reason_code="build_failed")` wrapping Polars' compute error,
+  nothing is published, and a previously current generation stays current and
+  leased-readable; (4) source mutation —
+  after a build, rewriting the source changes the signature and the next execution records
+  `refreshed` and reads the new rows, an untouched source records `reused` with the store's
+  build never entered, and `clear` followed by an execution records `built`; (5) concurrent
+  preparation — two executions of one graph started on two threads against one store
+  perform exactly one build and both read the same generation id; (6) cancellation — a
+  cancellation token set during the build yields `reason_code="cancelled"`, no
+  publication, and no staging directory; (7) timeout — a build deadline in the past yields
+  `timed_out` with the same guarantees; (8) memory-limited worker — a fake spawn reporting
+  a memory-limited terminal reason yields `memory_limited`, the `.staging-<staging_token>`
+  directory is removed through the three-argument reconciliation, and the previous
+  generation stays current; (9) schema-only
+  executions never build (the store's `build` is poisoned) and the node still reports
+  `input_snapshot_missing`; (10) placement — under `native_memory_backend_scope` the build
+  runs in-process with the context's stages recorded, and without it the fake spawn
+  receives `isolated_execution_budget(context)` and a config from
+  `worker_config_for_memory_policy` whose `require_memory_limit` is `True` even under
+  `HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort`; (11) a call without an admitted execution
+  context does nothing and the node still reports `input_snapshot_missing`; (12) diagnostics
+  — `metrics_payload()["input_preparation"]` lists one record per snapshot-backed input
+  with action, build class, execution, reserved limit, elapsed seconds, rows, bytes, and
+  generation id, validates through `ExecutionMetricsPayload`, and contains no configured
+  locator; (13) the `input_snapshot_auto_build` warning is logged once per build with the
+  identity digest and build class; (14) kill windows — a fake spawn that performs the
+  store's steps and dies after the rename but before the pointer replacement leaves the
+  parent reconciling an unreferenced generation (removed, previous pointer intact,
+  `build_failed`), one that dies after the pointer replacement is reconciled as
+  `published` and recorded `built`, and one whose generation was superseded before
+  reconciliation by a fresh generation another process published (simulated by publishing
+  through a second store handle) is recorded `reused` with the successor's generation id
+  and no failure; (15) a host without a native cap under
+  `HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort` yields `cap_unavailable` before any
+  provider access; (16) cache invalidation — a warmed preview (`execute_graph` preview
+  cache) and a warmed dataframe cache both return the new rows and record `refreshed`
+  after the source file is rewritten, because the runtime identity includes the source
+  signature.
+- `tests/test_polars_io_registry.py` additionally covers the build-only complete-inspection
+  read (a CSV without a declared schema scans with `infer_schema_length=None` and a direct
+  bounded read still refuses it), the scanner preference for a configured eager `read` when
+  every argument is scanner-accepted (build class `bounded`, warning
+  `eager_read_mode_scanned`) versus a reader-only argument (build class stays
+  `admitted_eager`), and `input_snapshot_build_class` reporting the effective class.
+- `tests/test_source_cache.py` additionally covers a build context with the parent-chosen
+  pair staging under `.staging-<staging_token>` and publishing `generation_id`, beneath a
+  temporary root long enough that a full-UUID staging name would exceed Windows'
+  traditional path limit; a context carrying only one of the pair being rejected; and
+  `reconcile_unpublished` returning `published` for a current generation (nothing removed),
+  removing an unreferenced renamed generation without touching the current one or another
+  build's staging, removing the token's staging directory, and reporting `absent`
+  otherwise.

@@ -667,3 +667,108 @@ def test_retained_staging_bytes_count_against_publication_quota(tmp_path: Path) 
         )
 
     assert staging.exists()
+
+
+def test_a_parent_chosen_pair_names_the_staging_directory_and_the_generation(
+    tmp_path: Path,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="pair.parquet")
+    generation_id = str(uuid.uuid4())
+    context = SourceCacheBuildContext(
+        profile=ExecutionProfile.LAZY_SINK,
+        build_class="bounded",
+        generation_id=generation_id,
+        staging_token="0123abcd",
+    )
+    observed: list[str] = []
+
+    @dataclass
+    class _StagingObserver:
+        build_class: str = "bounded"
+
+        def build(self, ctx: SourceCacheBuildContext) -> pl.LazyFrame:
+            observed.extend(path.name for path in store.identity_path(identity).glob(".staging-*"))
+            return pl.DataFrame({"id": [1]}).lazy()
+
+    generation = store.build(identity, _StagingObserver(), context=context)
+
+    # Eight hex characters, not a full UUID: the staging path stays inside
+    # Windows' traditional limit beneath long temporary roots.
+    assert observed == [".staging-0123abcd"]
+    assert generation.generation_id == generation_id
+    assert generation.data_path.parent.name == generation_id
+    assert not list(store.identity_path(identity).glob(".staging-*"))
+
+
+@pytest.mark.parametrize(
+    ("generation_id", "staging_token"),
+    [(str(uuid.uuid4()), None), (None, "0123abcd")],
+)
+def test_a_build_context_carrying_only_one_of_the_pair_is_rejected(
+    generation_id: str | None,
+    staging_token: str | None,
+) -> None:
+    with pytest.raises(ValueError, match="set together or not at all"):
+        SourceCacheBuildContext(
+            profile=ExecutionProfile.LAZY_SINK,
+            build_class="bounded",
+            generation_id=generation_id,
+            staging_token=staging_token,
+        )
+
+
+def test_reconcile_reports_published_for_the_current_generation(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="published.parquet")
+    generation = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+
+    assert store.reconcile_unpublished(identity, generation.generation_id, "0123abcd") == (
+        "published"
+    )
+    assert store.open_generation(identity).generation_id == generation.generation_id
+
+
+def test_reconcile_removes_only_the_named_generation_and_staging(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="orphan.parquet")
+    current = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+    identity_dir = store.identity_path(identity)
+    orphan_id = str(uuid.uuid4())
+    orphan = identity_dir / "generations" / orphan_id
+    orphan.mkdir(parents=True)
+    mine = identity_dir / ".staging-0123abcd"
+    mine.mkdir()
+    theirs = identity_dir / ".staging-89abcdef"
+    theirs.mkdir()
+
+    assert store.reconcile_unpublished(identity, orphan_id, "0123abcd") == "discarded_generation"
+
+    assert not orphan.exists()
+    assert not mine.exists()
+    assert theirs.exists()
+    assert store.open_generation(identity).generation_id == current.generation_id
+
+
+def test_reconcile_discards_a_lone_staging_directory_and_otherwise_reports_absent(
+    tmp_path: Path,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="staging-only.parquet")
+    identity_dir = store.identity_path(identity)
+    identity_dir.mkdir(parents=True, exist_ok=True)
+    staging = identity_dir / ".staging-0123abcd"
+    staging.mkdir()
+    generation_id = str(uuid.uuid4())
+
+    assert store.reconcile_unpublished(identity, generation_id, "0123abcd") == "discarded_staging"
+    assert not staging.exists()
+    assert store.reconcile_unpublished(identity, generation_id, "0123abcd") == "absent"

@@ -7,10 +7,13 @@ validated Polars operations. It also owns provider-neutral, immutable input snap
 sources that are not already Parquet. A file-backed Parquet Data Input is the canonical
 direct-read case and is scanned from its configured source.
 
-The component keeps source acquisition separate from pipeline execution. Explicit
+The component keeps source acquisition a distinct, contained operation. Explicit
 snapshot builds acquire non-Parquet provider data and publish a verified Parquet
-generation; pipeline execution reads that generation. File-backed Parquet skips the
-redundant build and is scanned directly.
+generation; pipeline execution reads that generation. A bounded execution that finds
+that generation missing or stale may schedule the same build before it starts — only
+through the explicit build path, inside a hard memory cap, warned and reported — and
+then reads the published generation. File-backed Parquet skips the redundant build and
+is scanned directly.
 
 ## Scope
 
@@ -57,6 +60,50 @@ A snapshot build writes a unique staging directory, validates the Parquet artifa
 metadata, admits it against byte/count quotas, atomically publishes an immutable generation,
 and then replaces the current pointer. Cancellation, timeout, connector failure, schema
 failure, or quota rejection leaves the previous current generation readable.
+
+Automatic preparation is that same build, scheduled by execution. Before an execution
+plans its strategy it checks every snapshot-backed Data Input in the executed lineage
+against the store with the current source signature: a current, fresh generation (or one
+whose freshness is unknown because either side carries no signature) is reused; a missing
+generation is built; a stale one is refreshed. The build runs under a hard cap or not at
+all: in the current process when that process already runs inside an isolated worker
+under a native cap, otherwise in a spawned hard-capped worker admitted from the
+execution's own budget. That cap is native and mandatory for preparation whatever the
+process-memory enforcement policy says: a host that cannot install it refuses the
+preparation typed (`cap_unavailable`) instead of building under RSS sampling alone. A
+schema-only execution, or one without an admitted execution context, never builds;
+resolution then reports the typed `input_snapshot_missing` rejection as before. Before a
+build the engine
+emits a structured warning naming the input, its identity digest, the build class, and the
+reserved limit; afterwards every execution's terminal diagnostics list each input's
+preparation record — reused, built, or refreshed, where it ran, its reserved limit,
+elapsed time, rows, bytes, and generation — using digests and counts, never locators or
+secrets. Within one process, concurrent executions needing the same identity share one
+build. A build that fails for any reason publishes nothing and leaves the previous
+generation readable. A spawned build carries a parent-chosen generation identifier and a
+short parent-chosen staging token, so after the worker dies the parent reconciles exactly
+those: a pointer already naming the generation means the build succeeded and is recorded
+as such, an unreferenced renamed generation under that identifier or the staging directory
+under that token is removed, nothing else is touched, and a fresh generation published
+meanwhile by another process is reused rather than reported as a failure. Execution,
+preview, and dataframe caches key a snapshot-backed input by its
+generation pointer and its current source signature, so a mutated source misses every
+cache and reaches preparation, and a refreshed generation changes the pointer and
+therefore every later key.
+
+A snapshot build inspects its source completely. A format that needs a declared schema in
+bounded profiles (CSV) is built with a declaration when one is configured and otherwise
+by whole-file schema inference before the streaming sink; sample-only inference never
+decides a snapshot schema, so a late row cannot be mis-typed. When a format has a scanner
+but eager `read` mode was configured, the build scans instead — with a recorded warning —
+whenever every configured argument is one the scanner accepts, and runs the eager reader
+inside the hard-capped worker only when an argument is reader-only. Every supported
+format therefore runs in a bounded profile once a build envelope can be reserved; a source
+is refused only when its build cannot be isolated or admitted, or its parsing semantics
+are invalid.
+
+Explicit builds of the admitted-eager class run in the same hard-capped worker rather than
+on a server thread; bounded explicit builds keep their streaming thread path.
 
 Snapshot readers acquire an explicit generation lease. Within an execution request the
 lease lasts until execution cleanup. Outside an execution request the returned scan owns a
@@ -116,6 +163,14 @@ Configuration and credential-safety errors are loud `ValueError` subclasses befo
 Unsupported bounded-memory operations fail rather than falling back to eager collection.
 Connector, cancellation, deadline, quota, and schema failures abort staging and preserve the
 previous pointer.
+
+Automatic preparation surfaces its outcome as `InputPreparationError` with a stable reason
+code (`cap_unavailable`, `build_failed`, `memory_limited`, `cancelled`, `timed_out`,
+`quota_exceeded`) and the node's identity digest; a host that cannot install the required
+native cap is refused typed rather than built without one. It is a public contract error:
+synchronous routes answer HTTP 422 with its payload, and background jobs record the
+`memory_limited` terminal state for `memory_limited` and the contract-error fields
+otherwise. A corrupt generation is never rebuilt automatically.
 
 When `overwrite=false`, an existing data-output destination raises
 `DataOutputDestinationExistsError`; the server maps that explicit refusal to HTTP 409 rather

@@ -16,7 +16,6 @@ currently startable package.
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
-| [Execution engine](execution-engine.md) | Polars operation analysis, admission, chunking, bounded source preparation | `EXEC-P05` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
 

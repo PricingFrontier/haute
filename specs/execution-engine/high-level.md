@@ -121,11 +121,16 @@ running heavy work in a child process the parent can kill on timeout or memory l
   fallback for bounded profiles.
 - **`dataInput` and `dataOutput` are the sole tabular I/O node types.** A file-backed
   Parquet Data Input is scanned directly. Every other data input executes from a
-  validated leased snapshot generation; graph execution never builds or refreshes a
-  snapshot. Optional input code runs exactly once through `_exec_user_code` after
-  provider resolution. Direct source signatures or snapshot generation pointers,
-  together with source identity, mode, and code, participate in fingerprints without
-  resolved secrets.
+  validated leased snapshot generation. Graph execution may schedule a missing or stale
+  generation's build before it plans, but only through the IO layer's explicit build path
+  inside a hard memory cap (in the current isolated worker, or a spawned one admitted from
+  the execution's budget), warned before and recorded in the terminal diagnostics; a
+  schema-only execution, or one without an admitted context, never builds and meets the
+  typed `input_snapshot_missing` rejection instead. Optional input code runs exactly once through `_exec_user_code` after
+  provider resolution. Direct source signatures — or, for a snapshot-backed input, the
+  generation pointer together with the current source signature — along with source
+  identity, mode, and code, participate in fingerprints without resolved secrets, so a
+  mutated source misses every cache and reaches preparation.
 - **Output publication is explicit and contained.** `dataOutput` is preview
   pass-through; only `write_data_output` persists it. Local files stage to a unique
   contained same-filesystem sibling, validate completion, and replace atomically.

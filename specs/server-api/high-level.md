@@ -251,7 +251,14 @@ public-error adapter is a closed set mapped to synchronous HTTP 422 and backgrou
 `ChunkMemoryRiskError`, `GroupByExecutionUnsupportedError`,
 `TraceCorrelationUnsupportedError`, `RatingExtremaUndefinedError`,
 `RatingFactorMissingError`, `RatingFactorDtypeContractError`,
-`LiveSwitchScenarioError`, and `OutputNestingKeyError`. Every payload preserves the
+`LiveSwitchScenarioError`, `OutputNestingKeyError`, and `InputPreparationError`. The one
+exception to the uniform mapping is `InputPreparationError` with reason code
+`memory_limited`: automatic input preparation is the single public contract error that can
+report memory exhaustion, so it maps to background-job `memory_limited` with error code
+`memory_limit` and HTTP status 507. A worker that raises a public contract error returns it
+in its closed outcome envelope together with that terminal reason, so the supervising parent
+records `memory_limited` rather than flattening it to `contract_error`. Every payload
+preserves the
 exception's stable code and named safe fields; malformed or unsupported diagnostic versions
 become diagnostic-unavailable rather than a fabricated success.
 

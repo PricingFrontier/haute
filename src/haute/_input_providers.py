@@ -25,12 +25,13 @@ from haute._execution_context import (
 from haute._hashing import content_hash, content_hash_bytes
 from haute._polars_io_registry import (
     PolarsIoConfigError,
-    _snapshot_build,
     anchor_config_source_path,
     data_input_is_direct,
     format_for_config,
     read_polars_input,
+    read_polars_input_for_snapshot,
     resolve_input_mode,
+    snapshot_input_plan,
     validate_data_input_config,
 )
 from haute._source_cache import (
@@ -148,10 +149,12 @@ class _PolarsSnapshotBuilder:
     config: dict[str, Any]
     profile: ExecutionProfile
     build_class: BuildClass
+    warning_code: str | None = None
 
     def build(self, context: SourceCacheBuildContext) -> pl.LazyFrame:
         context.checkpoint()
-        return read_polars_input(self.config, profile=self.profile)
+        frame, _warning_code = read_polars_input_for_snapshot(self.config)
+        return frame
 
 
 def _snapshot_builder(
@@ -159,12 +162,19 @@ def _snapshot_builder(
     *,
     base_dir: str | Path | None,
     profile: ExecutionProfile,
+    allow_admitted_eager: bool = False,
 ) -> tuple[object, BuildClass]:
     provider = config["inputType"]
     if provider in {"file", "lakehouse"}:
         anchored = _resolved_config_path(config, base_dir)
-        build_class = _snapshot_build(format_for_config(anchored))
-        if build_class == "admitted_eager" and profile != ExecutionProfile.PREVIEW_EAGER:
+        _mode, build_class, warning_code = snapshot_input_plan(
+            format_for_config(anchored), anchored
+        )
+        if (
+            build_class == "admitted_eager"
+            and not allow_admitted_eager
+            and profile != ExecutionProfile.PREVIEW_EAGER
+        ):
             raise PolarsIoConfigError(
                 f"Format {anchored['format']!r} has an admitted-eager snapshot build; "
                 "it cannot run in a bounded execution profile."
@@ -173,7 +183,7 @@ def _snapshot_builder(
             raise PolarsIoConfigError(
                 f"Format {anchored['format']!r} does not support snapshot builds."
             )
-        return _PolarsSnapshotBuilder(anchored, profile, build_class), build_class
+        return _PolarsSnapshotBuilder(anchored, profile, build_class, warning_code), build_class
     if provider == "database":
         from haute._database_io import DatabaseSnapshotBuilder
 
@@ -192,13 +202,32 @@ def input_snapshot_build_class(
     *,
     base_dir: str | Path | None = None,
     profile: ExecutionProfile = ExecutionProfile.LAZY_SINK,
+    allow_admitted_eager: bool = False,
 ) -> BuildClass:
-    """Return the declared build class without contacting the provider."""
+    """Return the effective build class without contacting the provider."""
     validated = validate_data_input_config(config)
     if data_input_is_direct(validated):
         raise PolarsIoConfigError("Direct Parquet Data Input does not support snapshot builds.")
-    _, build_class = _snapshot_builder(validated, base_dir=base_dir, profile=profile)
+    _, build_class = _snapshot_builder(
+        validated,
+        base_dir=base_dir,
+        profile=profile,
+        allow_admitted_eager=allow_admitted_eager,
+    )
     return build_class
+
+
+def input_snapshot_warning_code(
+    config: Mapping[str, Any],
+    *,
+    base_dir: str | Path | None = None,
+) -> str | None:
+    """Return the build plan's warning code without contacting the provider."""
+    validated = validate_data_input_config(config)
+    if validated["inputType"] not in {"file", "lakehouse"}:
+        return None
+    anchored = _resolved_config_path(validated, base_dir)
+    return snapshot_input_plan(format_for_config(anchored), anchored)[2]
 
 
 def build_input_snapshot(
@@ -212,13 +241,28 @@ def build_input_snapshot(
     deadline: float | None = None,
     progress: Callable[[int], None] | None = None,
     execution_context: ExecutionContext | None = None,
+    generation_id: str | None = None,
+    staging_token: str | None = None,
+    allow_admitted_eager: bool = False,
+    defer_retirement: bool = False,
+    retained_generation_ids: frozenset[str] = frozenset(),
 ) -> SourceCacheGeneration:
-    """Explicitly build or refresh one shared input snapshot."""
+    """Explicitly build or refresh one shared input snapshot.
+
+    ``allow_admitted_eager`` is set by automatic preparation, whose build always
+    runs inside a hard memory cap: containment comes from that cap rather than
+    from the caller's execution profile.
+    """
     validated = validate_data_input_config(config)
     if data_input_is_direct(validated):
         raise PolarsIoConfigError("Direct Parquet Data Input does not support snapshot builds.")
     identity = source_cache_identity(validated, base_dir=base_dir)
-    builder, build_class = _snapshot_builder(validated, base_dir=base_dir, profile=profile)
+    builder, build_class = _snapshot_builder(
+        validated,
+        base_dir=base_dir,
+        profile=profile,
+        allow_admitted_eager=allow_admitted_eager,
+    )
     context = SourceCacheBuildContext(
         profile=profile,
         build_class=build_class,
@@ -226,6 +270,10 @@ def build_input_snapshot(
         deadline=deadline,
         progress=progress,
         execution_context=execution_context,
+        generation_id=generation_id,
+        staging_token=staging_token,
+        defer_retirement=defer_retirement,
+        retained_generation_ids=retained_generation_ids,
     )
     return store.build(
         identity,

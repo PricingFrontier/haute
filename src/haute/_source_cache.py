@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 BuildClass = Literal["bounded", "admitted_eager", "unsupported"]
 CacheState = Literal["missing", "building", "ready", "corrupt", "failed"]
 CacheFreshness = Literal["fresh", "stale", "unknown"]
+ReconcileOutcome = Literal["published", "discarded_generation", "discarded_staging", "absent"]
 _VerifiedGeneration = tuple[str, str, int, int, str]
 _DEFAULT_STAGING_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
@@ -129,10 +130,37 @@ class SourceCacheBuildContext:
     progress: Callable[[int], None] | None = None
     execution_context: ExecutionContext | None = None
     progress_units: int = 0
+    # Parent-chosen pair. A supervising parent names the generation the build
+    # publishes and the staging directory it writes, so after the worker dies
+    # it can reconcile exactly those two and never another build's.
+    generation_id: str | None = None
+    staging_token: str | None = None
+    # A spawned build never retires superseded generations: its lease counts are
+    # child-local, so a generation the parent process still leases would look
+    # unreferenced. The supervising parent retires with its own lease counts.
+    defer_retirement: bool = False
+    # Generations the supervising parent still leases. Meaningful with
+    # ``defer_retirement``: the child's lease table is empty, so without these
+    # ids its quota projection would count the parent-leased current generation
+    # as reclaimable and publish beyond the hard limit.
+    retained_generation_ids: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.build_class not in ("bounded", "admitted_eager", "unsupported"):
             raise ValueError("build_class must be bounded, admitted_eager, or unsupported")
+        if (self.generation_id is None) != (self.staging_token is None):
+            raise ValueError(
+                "source-cache generation_id and staging_token must be set together or not at all"
+            )
+        if self.generation_id is not None:
+            _validate_generation_id(self.generation_id)
+        if self.staging_token is not None:
+            _validate_staging_token(self.staging_token)
+        if not isinstance(self.retained_generation_ids, (frozenset, set)):
+            raise ValueError("retained_generation_ids must be a set of generation ids")
+        for retained in self.retained_generation_ids:
+            _validate_generation_id(retained)
+        self.retained_generation_ids = frozenset(self.retained_generation_ids)
 
     def checkpoint(self) -> None:
         cancelled = self.cancellation
@@ -250,6 +278,26 @@ def _validate_generation_id(value: object) -> str:
     if str(parsed) != value:
         raise ValueError("invalid source-cache generation id")
     return value
+
+
+def _validate_staging_token(value: object) -> str:
+    """Accept exactly eight lower-case hex characters.
+
+    The staging directory is a sibling of the generations tree and
+    ``atomic_write_text`` appends its own unique suffix beneath it, so the
+    token is kept short deliberately: a full UUID name can exceed Windows'
+    traditional path limit under a long temporary root.
+    """
+    if not isinstance(value, str) or len(value) != 8:
+        raise ValueError("invalid source-cache staging token")
+    if any(character not in "0123456789abcdef" for character in value):
+        raise ValueError("invalid source-cache staging token")
+    return value
+
+
+def new_staging_token() -> str:
+    """Return a fresh parent-chosen staging token."""
+    return uuid.uuid4().hex[:8]
 
 
 class SourceCacheStore:
@@ -519,6 +567,7 @@ class SourceCacheStore:
         *,
         new_size_bytes: int,
         staging_path: Path,
+        retained_generation_ids: frozenset[str] = frozenset(),
     ) -> None:
         current_size = self._generation_bytes() + self._staging_bytes(exclude=staging_path)
         current_count = self._generation_count()
@@ -529,7 +578,10 @@ class SourceCacheStore:
             current_path = (
                 self.identity_path(identity) / "generations" / current_id / "data.parquet"
             )
-            if self._leases.get((identity.digest, current_id), 0) == 0:
+            if (
+                self._leases.get((identity.digest, current_id), 0) == 0
+                and current_id not in retained_generation_ids
+            ):
                 reclaimable = current_path.stat().st_size
                 reclaimable_count = 1
         except (FileNotFoundError, SourceCacheCorruptError):
@@ -573,8 +625,9 @@ class SourceCacheStore:
             # Keep the staging sibling deliberately short: ``atomic_write_text``
             # appends its own unique suffix, and Windows' traditional path limit can
             # otherwise be exceeded beneath pytest's long temporary roots.
-            staging = identity_dir / f".staging-{uuid.uuid4().hex[:8]}"
-            generation_id = str(uuid.uuid4())
+            staging_token = context.staging_token or uuid.uuid4().hex[:8]
+            staging = identity_dir / f".staging-{staging_token}"
+            generation_id = context.generation_id or str(uuid.uuid4())
             final_dir: Path | None = None
             published = False
             try:
@@ -614,11 +667,13 @@ class SourceCacheStore:
                 context.checkpoint()
                 # Self-validate the staged directory using the same strict validator after rename.
                 with self._lock:
-                    self._retire_unleased(identity)
+                    if not context.defer_retirement:
+                        self._retire_unleased(identity)
                     self._admit_publication_within_quota(
                         identity,
                         new_size_bytes=metadata.size_bytes,
                         staging_path=staging,
+                        retained_generation_ids=context.retained_generation_ids,
                     )
                     final_dir = generations_dir / generation_id
                     staging.replace(final_dir)
@@ -641,7 +696,8 @@ class SourceCacheStore:
                         ),
                     )
                     published = True
-                self._retire_unleased(identity)
+                if not context.defer_retirement:
+                    self._retire_unleased(identity)
                 return generation
             except BaseException:
                 shutil.rmtree(staging, ignore_errors=True)
@@ -666,6 +722,31 @@ class SourceCacheStore:
                     if self._leases[key] == 0:
                         del self._leases[key]
                 self._retire_unleased(identity)
+
+    def leased_generation_ids(self, identity: SourceCacheIdentity) -> frozenset[str]:
+        """Return the generations of *identity* this process currently leases.
+
+        A supervising parent hands these to a spawned build, whose own lease
+        table is empty, so the child's quota projection treats them as retained
+        instead of reclaimable.
+        """
+        with self._identity_lock(identity):
+            with self._lock:
+                return frozenset(
+                    generation_id
+                    for (digest, generation_id), count in self._leases.items()
+                    if digest == identity.digest and count > 0
+                )
+
+    def retire_unleased(self, identity: SourceCacheIdentity) -> None:
+        """Delete every generation of *identity* that is neither current nor leased.
+
+        The supervising parent of a spawned build calls this after publication:
+        the child deferred retirement because only this process knows which
+        generations its own executions still lease.
+        """
+        with self._identity_lock(identity):
+            self._retire_unleased(identity)
 
     def _retire_unleased(self, identity: SourceCacheIdentity) -> None:
         generations_dir = self.identity_path(identity) / "generations"
@@ -692,6 +773,47 @@ class SourceCacheStore:
                 if key[:2] == (identity_digest, generation_id)
             }
             self._verified_generations.difference_update(stale)
+
+    def reconcile_unpublished(
+        self,
+        identity: SourceCacheIdentity,
+        generation_id: str,
+        staging_token: str,
+    ) -> ReconcileOutcome:
+        """Settle exactly one supervised build's generation and staging.
+
+        Called by the parent after a spawned build failed or died. It never
+        touches the current generation, a leased generation, or another
+        build's staging directory.
+        """
+        _validate_generation_id(generation_id)
+        _validate_staging_token(staging_token)
+        identity_dir = self.identity_path(identity)
+        with self._identity_lock(identity):
+            try:
+                if self._read_pointer(identity) == generation_id:
+                    return "published"
+            except (FileNotFoundError, SourceCacheCorruptError):
+                pass
+            removed_generation = False
+            generation_dir = identity_dir / "generations" / generation_id
+            if generation_dir.is_dir():
+                with self._lock:
+                    leased = self._leases.get((identity.digest, generation_id), 0)
+                if not leased:
+                    self._forget_verified(identity.digest, generation_id)
+                    shutil.rmtree(generation_dir, ignore_errors=True)
+                    removed_generation = True
+            removed_staging = False
+            staging = identity_dir / f".staging-{staging_token}"
+            if staging.is_dir() and not staging.is_symlink():
+                shutil.rmtree(staging, ignore_errors=True)
+                removed_staging = True
+            if removed_generation:
+                return "discarded_generation"
+            if removed_staging:
+                return "discarded_staging"
+            return "absent"
 
     def clear(self, identity: SourceCacheIdentity) -> None:
         with self._identity_lock(identity):

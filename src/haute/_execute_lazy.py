@@ -41,6 +41,7 @@ from haute._graph_utils import (
     select_edge_source_output,
     upstream_node_ids,
 )
+from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
 from haute._path_resolution import runtime_project_root_scoped
 from haute._polars_utils import (
@@ -862,6 +863,7 @@ def _execute_lazy(
     dataframe_cache_request: execution_facade.DataFrameExecutionCacheRequest | None = None,
     schema_only: bool = False,
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    prepare_inputs: bool = True,
 ) -> tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]:
     """Execute a graph lazily and return per-node LazyFrames.
 
@@ -941,6 +943,18 @@ def _execute_lazy(
     parents_of = graph_plan.parents_of
     id_to_name = graph_plan.id_to_name
     relevant_edges = graph_plan.relevant_edges
+    # Automatic input preparation runs between graph preparation and strategy
+    # planning, so the RAM estimator reads a published generation.
+    prepare_input_snapshots(
+        order,
+        node_map,
+        profile=execution_context.profile if execution_context is not None else None,
+        execution_context=execution_context,
+        base_dir=preparation_base_dir(graph),
+        # Deploy scoring reads bundled artifacts through its own build_node_fn
+        # intercept, so its canonical configs must never be prepared here.
+        schema_only=schema_only or not prepare_inputs,
+    )
     normalised_required_columns = prepared_execution.normalised_required_columns
     planning_required_columns: dict[
         str,

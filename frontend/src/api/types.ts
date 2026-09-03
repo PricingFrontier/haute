@@ -180,6 +180,20 @@ export interface ExecutionCacheProof {
   }
 }
 
+export interface InputPreparationRecord {
+  node_id: string
+  identity_digest: string
+  action: "reused" | "built" | "refreshed"
+  build_class: string
+  execution: "in_process" | "worker"
+  memory_limit_bytes: number | null
+  elapsed_seconds: number
+  row_count: number | null
+  size_bytes: number | null
+  generation_id: string | null
+  warning_code: string | null
+}
+
 export interface ExecutionMetrics {
   schema_version: number
   operation: string
@@ -228,6 +242,7 @@ export interface ExecutionMetrics {
   execution_strategy: ExecutionStrategyDiagnostic | null
   stages: ExecutionStageMetrics[]
   memory_pressure_events: ExecutionMemoryPressureEvent[]
+  input_preparation: InputPreparationRecord[]
 }
 
 export interface NodeResult {
