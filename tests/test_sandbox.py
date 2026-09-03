@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import pickle
 import sys
 import tomllib
@@ -220,6 +221,55 @@ class TestSafeUnpickle:
         assert safe_unpickle(str(f)) == {"a": 1}
 
         assert list(warnings.filters) == before
+
+    @staticmethod
+    def _import_refusing_sklearn(missing_name: str):
+        """A ``__import__`` that reports scikit-learn absent under *missing_name*.
+
+        A genuinely absent package surfaces as ``ModuleNotFoundError`` whose
+        ``.name`` is the top-level package (``sklearn``); a failure deeper in the
+        tree carries the deeper name. Both shapes are what the loader
+        discriminates on, so both are simulated at the import boundary rather
+        than by editing ``sys.modules``, which cannot produce the top-level name
+        once the package is already imported.
+        """
+        real_import = builtins.__import__
+
+        def fake_import(name: str, *args: object, **kwargs: object) -> object:
+            if name == "sklearn" or name.startswith("sklearn."):
+                raise ModuleNotFoundError(f"No module named {name!r}", name=missing_name)
+            return real_import(name, *args, **kwargs)
+
+        return fake_import
+
+    def test_absent_scikit_learn_means_no_promotion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Without scikit-learn there is no version marker to check; loads proceed."""
+        set_project_root(tmp_path)
+        f = tmp_path / "plain.pkl"
+        f.write_bytes(pickle.dumps({"a": 1}))
+        monkeypatch.setattr(builtins, "__import__", self._import_refusing_sklearn("sklearn"))
+
+        assert safe_unpickle(str(f)) == {"a": 1}
+
+    def test_broken_scikit_learn_install_is_not_treated_as_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Only a missing ``sklearn`` package counts as absent.
+
+        A ``ModuleNotFoundError`` naming a module deeper in the tree is a broken
+        install, and it surfaces instead of silently disabling the guard.
+        """
+        set_project_root(tmp_path)
+        f = tmp_path / "plain.pkl"
+        f.write_bytes(pickle.dumps({"a": 1}))
+        monkeypatch.setattr(
+            builtins, "__import__", self._import_refusing_sklearn("sklearn.exceptions")
+        )
+
+        with pytest.raises(ModuleNotFoundError, match="sklearn"):
+            safe_unpickle(str(f))
 
 
 class TestSafeJoblibLoad:
