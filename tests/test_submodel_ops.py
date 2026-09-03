@@ -8,7 +8,11 @@ import pytest
 
 from haute.codegen import graph_to_code_multi
 from haute.graph_utils import NodeType
-from haute.routes._submodel_ops import SubmodelGraphResult, create_submodel_graph
+from haute.routes._submodel_ops import (
+    SubmodelGraphResult,
+    SubmodelValidationError,
+    create_submodel_graph,
+)
 from tests.conftest import make_graph
 
 
@@ -744,3 +748,58 @@ class TestCreateSubmodelGraph:
             node for node in result.graph.nodes if node.data.nodeType == NodeType.SUBMODEL
         )
         assert placeholder.position == {"x": 60.0, "y": 120.0}
+
+
+class TestDuplicatePublicLabels:
+    """Creation rejects public ports that collide on their executable name."""
+
+    @staticmethod
+    def _two_source_graph(label_a: str, label_b: str):
+        return make_graph(
+            {
+                "pipeline_name": "test",
+                "nodes": [
+                    {
+                        "id": "a",
+                        "data": {
+                            "label": label_a,
+                            "nodeType": "dataInput",
+                            "config": {"path": "a.parquet"},
+                        },
+                    },
+                    {
+                        "id": "b",
+                        "data": {
+                            "label": label_b,
+                            "nodeType": "dataInput",
+                            "config": {"path": "b.parquet"},
+                        },
+                    },
+                    {"id": "t1", "data": {"label": "t1", "nodeType": "polars", "config": {}}},
+                    {"id": "t2", "data": {"label": "t2", "nodeType": "polars", "config": {}}},
+                ],
+                "edges": [
+                    {"id": "e1", "source": "a", "target": "t1"},
+                    {"id": "e2", "source": "b", "target": "t2"},
+                ],
+            }
+        )
+
+    def test_duplicate_input_label_rejected(self):
+        """Two boundary inputs sanitising to one name fail creation."""
+        graph = self._two_source_graph("My src", "My-src")
+        with pytest.raises(SubmodelValidationError) as excinfo:
+            create_submodel_graph(graph, ["t1", "t2"], "grp")
+        assert excinfo.value.code == "duplicate_public_label"
+        assert excinfo.value.status_code == 400
+        assert "My_src" in excinfo.value.detail
+
+    def test_distinct_input_labels_succeed(self):
+        """Distinct executable names still create the submodel."""
+        graph = self._two_source_graph("My src", "Other src")
+        result = create_submodel_graph(graph, ["t1", "t2"], "grp")
+        definition = result.graph.submodels["grp"]
+        assert sorted(port.label for port in definition.input_ports) == [
+            "My src",
+            "Other src",
+        ]

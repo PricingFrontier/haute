@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node, Edge, NodeChange } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
@@ -36,6 +36,8 @@ interface KeyboardShortcutsParams {
   commitSharedNodeDeletion?: (
     nodeIds: ReadonlySet<string>,
     selectedEdgeIds?: ReadonlySet<string>,
+    nodeChanges?: NodeChange[],
+    onSettled?: (committed: boolean) => void,
   ) => SharedNodeDeletionResult
 }
 
@@ -279,8 +281,31 @@ export default function useKeyboardShortcuts({
           if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return
         }
         if (selectedNodeIds.size > 0) {
-          const sharedDeletion = commitSharedNodeDeletion?.(selectedNodeIds, selectedEdgeIds)
+          // Selection, preview and cached-result cleanup only runs once the
+          // nodes have actually left the graph; a shared-boundary deletion may
+          // still be resolving parent identities and can yet fail.
+          const cleanupAfterRemoval = () => {
+            setSelectedNode(null)
+            setLastSelectedId?.(null)
+            setPreviewData(null)
+            // Clean up store state for deleted nodes
+            for (const nid of selectedNodeIds) {
+              useNodeResultsStore.getState().clearNode(nid)
+            }
+          }
+          let cleanedUp = false
+          const sharedDeletion = commitSharedNodeDeletion?.(
+            selectedNodeIds,
+            selectedEdgeIds,
+            undefined,
+            (committed) => {
+              if (!committed) return
+              cleanedUp = true
+              cleanupAfterRemoval()
+            },
+          )
           if (sharedDeletion === "blocked") return
+          if (sharedDeletion === "pending") return
           // Nodes + their edges removed in ONE undo step. setNodes-then-setEdges
           // would push two snapshots, so one delete would take two undos to
           // reverse (the undo-atomicity bug class).
@@ -290,13 +315,7 @@ export default function useKeyboardShortcuts({
               currentEdges.filter((ed) => !selectedNodeIds.has(ed.source) && !selectedNodeIds.has(ed.target)),
             )
           }
-          setSelectedNode(null)
-          setLastSelectedId?.(null)
-          setPreviewData(null)
-          // Clean up store state for deleted nodes
-          for (const nid of selectedNodeIds) {
-            useNodeResultsStore.getState().clearNode(nid)
-          }
+          if (!cleanedUp) cleanupAfterRemoval()
         } else {
           // Pure-edge delete: only edges selected, no nodes — a single setEdges
           // is already one snapshot.

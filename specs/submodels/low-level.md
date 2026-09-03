@@ -212,6 +212,13 @@ document and returns the new revision.
    `input_scenario_map` keys, instance `inputMapping` values, and every OUTPUT
    `outputMapping[].source_port`. A malformed referenced mapping fails with
    contextual `ParseError`; it is never retained as a stale logical name.
+   A rename that collides on a target's input names or on an OUTPUT mapping
+   fails with `ParseError`; malformed mapping shapes are validated on renamed
+   nodes. Two distinct old input names for one target mapping to one new name
+   is a collision, as is a rewritten `outputMapping` in which two active
+   entries become identical in `(source_port, source_column, output_path)` or
+   two entries share `output_path` and `source_port` with different
+   `source_column`.
 5. Remove only selected occurrence nodes and their incident boundary edges.
    Deduplicate exact six-field edge identities, assert that no selected
    occurrence endpoint remains, and merge definition support code once. A
@@ -243,7 +250,13 @@ document and returns the new revision.
    no generated rename.
 5. Validate that every generated public label resolves to the same executable
    name as its pre-group edge. Reject malformed, ambiguous, or colliding names
-   atomically rather than rewriting configs to opaque port ids.
+   atomically rather than rewriting configs to opaque port ids. Collision is
+   checked per direction, on the sanitised label: two input ports (or two
+   output ports) whose `_sanitize_func_name(label)` is the same raise
+   `SubmodelValidationError(code="duplicate_public_label", status_code=400)`
+   naming the colliding labels and the shared executable name, before the
+   definition is built. Codegen still rejects a duplicate derived input name at
+   save; the creation gate stops that graph from being created at all.
 6. Compute the selected bounding-box centre as the occurrence position and
    subtract it from every selected child position before storing the definition
    graph. Internal positions are therefore occurrence-local.

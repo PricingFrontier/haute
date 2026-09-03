@@ -258,8 +258,10 @@ describe("useSubmodelBoundaryEditing", () => {
       })
     })
     await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledOnce())
+    // A structural change — a node leaving the view — is what voids a pending
+    // gesture; a re-rendered but structurally identical graph does not.
     const externallyChanged = {
-      nodes: [...fixture.graphRef.current.nodes],
+      nodes: fixture.graphRef.current.nodes.filter((node) => node.id !== "child_b"),
       edges: [...fixture.graphRef.current.edges],
     }
     fixture.graphRef.current = externallyChanged
@@ -532,6 +534,146 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(committedNodes.find((node) => node.id === "child_b")?.position).toEqual({
       x: 42,
       y: 24,
+    })
+  })
+  describe("asynchronous shared-node deletion", () => {
+    function makeUnresolvedFixture() {
+      const fixture = makeFixture({ outputPorts: ["child_b"] })
+      const placeholder = fixture.parentNodes.find((node) => node.id === PLACEHOLDER_ID)!
+      placeholder.data._sourceHandleInputNames = {}
+      return fixture
+    }
+
+    function deferredResolver() {
+      const resolutions: Array<{
+        resolve: (value: { nodes: Node[]; edges: Edge[] }) => void
+        reject: (reason?: unknown) => void
+      }> = []
+      const resolveGraphIdentities = vi.fn((_: GraphIdentityRequest) =>
+        new Promise<{ nodes: Node[]; edges: Edge[] }>((resolve, reject) => {
+          resolutions.push({ resolve, reject })
+        }))
+      return { resolutions, resolveGraphIdentities }
+    }
+
+    it("reports a pending commit and settles true once identities land", async () => {
+      const fixture = makeUnresolvedFixture()
+      const { resolutions, resolveGraphIdentities } = deferredResolver()
+      const { result } = renderHook(() => useSubmodelBoundaryEditing({
+        ...hookParams(fixture), resolveGraphIdentities,
+      }))
+      const settled: boolean[] = []
+
+      act(() => {
+        expect(result.current.commitSharedNodeDeletion(
+          new Set(["child_a"]), new Set(), undefined, (committed) => settled.push(committed),
+        )).toBe("pending")
+      })
+      expect(settled).toEqual([])
+      expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+
+      const request = resolveGraphIdentities.mock.calls[0]![0]
+      await act(async () => resolutions[0]!.resolve({
+        nodes: [...request.nodes], edges: [...request.edges],
+      }))
+
+      expect(settled).toEqual([true])
+      expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+    })
+
+    it("settles false without committing when the identity request rejects", async () => {
+      const fixture = makeUnresolvedFixture()
+      const { resolutions, resolveGraphIdentities } = deferredResolver()
+      const { result } = renderHook(() => useSubmodelBoundaryEditing({
+        ...hookParams(fixture), resolveGraphIdentities,
+      }))
+      const settled: boolean[] = []
+
+      act(() => {
+        expect(result.current.commitSharedNodeDeletion(
+          new Set(["child_a"]), new Set(), undefined, (committed) => settled.push(committed),
+        )).toBe("pending")
+      })
+      await act(async () => resolutions[0]!.reject(new Error("identity service unavailable")))
+
+      expect(settled).toEqual([false])
+      expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+      expect(useToastStore.getState().toasts.map((toast) => toast.type)).toEqual(["error"])
+    })
+
+    it("settles true synchronously when no identity request is needed", () => {
+      const fixture = makeFixture()
+      const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
+      const settled: boolean[] = []
+
+      expect(result.current.commitSharedNodeDeletion(
+        new Set(["child_a"]), new Set(), undefined, (committed) => settled.push(committed),
+      )).toBe("committed")
+      expect(settled).toEqual([true])
+      expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+    })
+
+    it("survives selection and position changes made while identities resolve", async () => {
+      const fixture = makeUnresolvedFixture()
+      const { resolutions, resolveGraphIdentities } = deferredResolver()
+      const { result } = renderHook(() => useSubmodelBoundaryEditing({
+        ...hookParams(fixture), resolveGraphIdentities,
+      }))
+      const settled: boolean[] = []
+
+      act(() => {
+        expect(result.current.commitSharedNodeDeletion(
+          new Set(["child_a"]), new Set(), undefined, (committed) => settled.push(committed),
+        )).toBe("pending")
+      })
+
+      fixture.graphRef.current = {
+        nodes: fixture.graphRef.current.nodes.map((node) => node.id === "child_b"
+          ? { ...node, selected: true, position: { x: 111, y: 222 } }
+          : node),
+        edges: fixture.graphRef.current.edges,
+      }
+      const request = resolveGraphIdentities.mock.calls[0]![0]
+      await act(async () => resolutions[0]!.resolve({
+        nodes: [...request.nodes], edges: [...request.edges],
+      }))
+
+      expect(settled).toEqual([true])
+      expect(useToastStore.getState().toasts).toEqual([])
+      const committedNodes = fixture.setNodesAndEdgesAndSubmodels.mock.calls[0][0] as Node[]
+      const moved = committedNodes.find((node) => node.id === "child_b")!
+      expect(moved.position).toEqual({ x: 111, y: 222 })
+      expect(moved.selected).toBe(true)
+    })
+
+    it("voids the gesture when a node is removed while identities resolve", async () => {
+      const fixture = makeUnresolvedFixture()
+      const { resolutions, resolveGraphIdentities } = deferredResolver()
+      const { result } = renderHook(() => useSubmodelBoundaryEditing({
+        ...hookParams(fixture), resolveGraphIdentities,
+      }))
+      const settled: boolean[] = []
+
+      act(() => {
+        expect(result.current.commitSharedNodeDeletion(
+          new Set(["child_a"]), new Set(), undefined, (committed) => settled.push(committed),
+        )).toBe("pending")
+      })
+
+      fixture.graphRef.current = {
+        nodes: fixture.graphRef.current.nodes.filter((node) => node.id !== "child_b"),
+        edges: fixture.graphRef.current.edges,
+      }
+      const request = resolveGraphIdentities.mock.calls[0]![0]
+      await act(async () => resolutions[0]!.resolve({
+        nodes: [...request.nodes], edges: [...request.edges],
+      }))
+
+      expect(settled).toEqual([false])
+      expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+      expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual([
+        "Shared submodel edit blocked: the workspace changed while parent identities were resolving",
+      ])
     })
   })
 })

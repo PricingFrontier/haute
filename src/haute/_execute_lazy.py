@@ -713,6 +713,7 @@ def _runtime_join_demands(
         set[str] | frozenset[str] | None,
     ],
     node_map: Mapping[str, GraphNode],
+    submodels: Mapping[str, Any] | None = None,
 ) -> dict[projection_planner.ProjectionEdgeKey, set[str]]:
     """Resolve a safe join projection from lazy parent schemas."""
     if projection is None or len(incoming_edges) < 2:
@@ -757,7 +758,11 @@ def _runtime_join_demands(
         schemas: dict[str, frozenset[str]] = {}
         for edge in incoming_edges:
             try:
-                name = edge_input_name(edge, node_map[edge.source])
+                name = edge_input_name(
+                    edge,
+                    node_map[edge.source],
+                    submodels=submodels,
+                )
             except (KeyError, ValueError):
                 return {}
             if name in by_name:
@@ -1244,6 +1249,7 @@ def _execute_lazy(
                 execution_context.profile if execution_context is not None else None
             ),
             schema_only=schema_only,
+            submodels=graph.submodels,
         )
 
     boundary_runner = NodeBoundaryRunner(
@@ -1372,6 +1378,7 @@ def _execute_lazy(
             needed_cols.get(child_id),
             edge_demands,
             node_map,
+            graph.submodels,
         )
 
     def _build_lazy_node(boundary: NodeBoundary) -> tuple[_Frame, bool, GraphNode]:
@@ -1768,6 +1775,7 @@ def _build_funcs(
     reuse_loaded_model_by_node: Mapping[str, bool] | None = None,
     execution_profile: ExecutionProfile | None = None,
     schema_only: bool = False,
+    submodels: Mapping[str, Any] | None = None,
 ) -> dict[str, tuple[Callable, bool]]:
     """Build per-node executable functions from the graph.
 
@@ -1799,7 +1807,7 @@ def _build_funcs(
         for edge in connected_edges:
             source_node = node_map[edge.source]
             try:
-                src_names.append(edge_input_name(edge, source_node))
+                src_names.append(edge_input_name(edge, source_node, submodels=submodels))
             except ValueError:
                 # Preview reports null-handle routing errors on the consumer.
                 if not (
@@ -2076,6 +2084,7 @@ def _execute_eager_core(
         required_output_columns_by_node=builder_needed_cols,
         required_output_columns_by_port_by_node=api_port_columns_by_node,
         execution_profile=execution_context.profile if execution_context is not None else None,
+        submodels=graph.submodels,
     )
     boundary_runner = NodeBoundaryRunner(
         prepared=prepared_execution,
@@ -2252,6 +2261,7 @@ def _execute_eager_core(
                     needed_cols.get(nid),
                     projection_plan.edge_demands if projection_plan is not None else {},
                     node_map,
+                    graph.submodels,
                 )
                 if runtime_edge_demands:
                     projected_inputs: list[pl.LazyFrame] = []

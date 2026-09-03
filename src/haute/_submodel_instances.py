@@ -289,6 +289,33 @@ def _output_port(
     )
 
 
+def _reject_output_mapping_collisions(
+    node_id: str,
+    output_mapping: list[dict[str, Any]],
+) -> None:
+    """Reject renamed OUTPUT mappings that duplicate or contradict each other."""
+    seen: set[tuple[Any, Any, Any]] = set()
+    by_destination: dict[tuple[Any, Any], Any] = {}
+    for entry in output_mapping:
+        if not entry.get("enabled", True):
+            continue
+        source_port = entry.get("source_port")
+        source_column = entry.get("source_column")
+        output_path = entry.get("output_path")
+        identity = (source_port, source_column, output_path)
+        destination = (output_path, source_port)
+        if identity in seen or (
+            destination in by_destination and by_destination[destination] != source_column
+        ):
+            raise ParseError(
+                "Submodel boundary outputMapping rename collides.",
+                node_id=node_id,
+                output_path=output_path,
+            )
+        seen.add(identity)
+        by_destination[destination] = source_column
+
+
 def rewrite_boundary_input_names(
     nodes: list[GraphNode],
     rename_map_by_node: dict[str, dict[str, str]],
@@ -339,6 +366,7 @@ def rewrite_boundary_input_names(
                 rewritten_entry["source_port"] = replacement
                 output_mapping.append(rewritten_entry)
             if output_mapping != raw_output_mapping:
+                _reject_output_mapping_collisions(node.id, output_mapping)
                 config["outputMapping"] = output_mapping
                 changed = True
 
@@ -789,6 +817,15 @@ def expand_submodel_instances(
                 input_name=old_name,
                 expanded_input_names=sorted({previous, new_name}),
             )
+        for other_old, other_new in target_map.items():
+            if other_old != old_name and other_new == new_name:
+                raise ParseError(
+                    "Submodel boundary input names collide after expansion.",
+                    edge_id=edge_id,
+                    target_id=target_id,
+                    input_names=sorted({other_old, old_name}),
+                    expanded_input_name=new_name,
+                )
         target_map[old_name] = new_name
 
     expanded_parent_edges: list[GraphEdge] = []

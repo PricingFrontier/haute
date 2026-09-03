@@ -24,6 +24,7 @@ import {
 } from "../utils/submodelBoundaryEditing"
 import useToastStore from "../stores/useToastStore"
 import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
+import { structuralFingerprint } from "../utils/structuralFingerprint"
 
 type GraphRef = React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
 type ParentGraphRef = React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> } | null>
@@ -44,7 +45,7 @@ export interface UseSubmodelBoundaryEditingParams {
   resolveGraphIdentities?: typeof resolveEditorGraphIdentities
 }
 
-export type SharedNodeDeletionResult = "not-applicable" | "committed" | "blocked"
+export type SharedNodeDeletionResult = "not-applicable" | "committed" | "pending" | "blocked"
 
 const isBoundaryNode = (node: Node | undefined) => node?.type === "submodelPort"
 const hasBoundaryCard = (nodes: Node[], direction: "input" | "output") =>
@@ -52,6 +53,33 @@ const hasBoundaryCard = (nodes: Node[], direction: "input" | "output") =>
 const isBoundaryEdge = (edge: Edge) => {
   const data = edge.data as SubmodelBoundaryEdgeData | undefined
   return data?.submodelBoundary?.direction === "input" || data?.submodelBoundary?.direction === "output"
+}
+
+/**
+ * Carry the live canvas presentation onto a candidate's view nodes.
+ *
+ * A pending candidate is kept across selection and position changes made while
+ * parent identities resolve; committing it must not revert those, so the
+ * presentation-only fields are taken from the current view by node id.
+ */
+function mergeViewPresentation<T extends { viewNodes: Node[] }>(result: T, currentNodes: Node[]): T {
+  const byId = new Map(currentNodes.map((node) => [node.id, node]))
+  return {
+    ...result,
+    viewNodes: result.viewNodes.map((node) => {
+      const live = byId.get(node.id)
+      if (!live) return node
+      return {
+        ...node,
+        position: live.position,
+        selected: live.selected,
+        dragging: live.dragging,
+        measured: live.measured,
+        width: live.width,
+        height: live.height,
+      }
+    }),
+  }
 }
 
 function parentOccurrenceHandlesAreResolved(result: SubmodelBoundaryEditResult): boolean {
@@ -107,9 +135,9 @@ export default function useSubmodelBoundaryEditing({
   }, [activeSubmodelName, activeSubmodelInstanceId, activeSubmodelDefinitionId])
   const pendingBoundaryCandidateRef = useRef<{
     result: SubmodelBoundaryEditResult
-    expectedView: GraphRef["current"]
-    expectedParent: ParentGraphRef["current"]
-    expectedSubmodels: Record<string, unknown>
+    expectedViewFingerprint: string
+    expectedParentFingerprint: string
+    expectedSubmodelsFingerprint: string
     submodelName: string
     instanceId: string
     definitionId: string
@@ -139,14 +167,15 @@ export default function useSubmodelBoundaryEditing({
     const pending = pendingBoundaryCandidateRef.current
     if (
       pending
-      && pending.expectedView === graphRef.current
-      && pending.expectedParent === parentGraphRef.current
-      && pending.expectedSubmodels === submodelsRef.current
+      && pending.expectedViewFingerprint === structuralFingerprint(graphRef.current)
+      && pending.expectedParentFingerprint === structuralFingerprint(parentGraphRef.current)
+      && pending.expectedSubmodelsFingerprint
+        === structuralFingerprint({ submodels: submodelsRef.current })
       && pending.submodelName === activeSubmodelName
       && pending.instanceId === activeSubmodelInstanceId
       && pending.definitionId === activeSubmodelDefinitionId
     ) {
-      return pending.result
+      return mergeViewPresentation(pending.result, nodes)
     }
     return {
       submodelName: activeSubmodelName,
@@ -175,21 +204,25 @@ export default function useSubmodelBoundaryEditing({
     submodelsRef.current = result.submodels
     setNodesAndEdgesAndSubmodels(result.viewNodes, result.viewEdges, result.submodels)
   }, [graphRef, parentGraphRef, submodelsRef, setNodesAndEdgesAndSubmodels])
-  const commitWithParentIdentities = useCallback((result: SubmodelBoundaryEditResult) => {
+  const commitWithParentIdentities = useCallback((
+    result: SubmodelBoundaryEditResult,
+    onSettled?: (committed: boolean) => void,
+  ): boolean => {
     const serial = ++identityRequestSerialRef.current
     if (parentOccurrenceHandlesAreResolved(result)) {
       pendingBoundaryCandidateRef.current = null
       commit(result)
-      return
+      onSettled?.(true)
+      return true
     }
-    const expectedView = graphRef.current
-    const expectedParent = parentGraphRef.current
-    const expectedSubmodels = submodelsRef.current
+    const expectedViewFingerprint = structuralFingerprint(graphRef.current)
+    const expectedParentFingerprint = structuralFingerprint(parentGraphRef.current)
+    const expectedSubmodelsFingerprint = structuralFingerprint({ submodels: submodelsRef.current })
     const candidate = {
       result,
-      expectedView,
-      expectedParent,
-      expectedSubmodels,
+      expectedViewFingerprint,
+      expectedParentFingerprint,
+      expectedSubmodelsFingerprint,
       submodelName: result.submodelName,
       instanceId: result.instanceId,
       definitionId: result.definitionId,
@@ -204,12 +237,14 @@ export default function useSubmodelBoundaryEditing({
       if (
         identityRequestSerialRef.current !== serial
       ) {
+        onSettled?.(false)
         return
       }
       if (
-        graphRef.current !== expectedView
-        || parentGraphRef.current !== expectedParent
-        || submodelsRef.current !== expectedSubmodels
+        structuralFingerprint(graphRef.current) !== expectedViewFingerprint
+        || structuralFingerprint(parentGraphRef.current) !== expectedParentFingerprint
+        || structuralFingerprint({ submodels: submodelsRef.current })
+          !== expectedSubmodelsFingerprint
         || activeBoundaryIdentityRef.current.submodelName !== candidate.submodelName
         || activeBoundaryIdentityRef.current.instanceId !== candidate.instanceId
         || activeBoundaryIdentityRef.current.definitionId !== candidate.definitionId
@@ -220,23 +255,31 @@ export default function useSubmodelBoundaryEditing({
         reportBoundaryError(
           new Error("the workspace changed while parent identities were resolving"),
         )
+        onSettled?.(false)
         return
       }
       if (pendingBoundaryCandidateRef.current === candidate) {
         pendingBoundaryCandidateRef.current = null
       }
+      const merged = mergeViewPresentation(result, graphRef.current.nodes)
       commit({
-        ...result,
+        ...merged,
         parentNodes: resolved.nodes,
         parentEdges: resolved.edges,
       })
+      onSettled?.(true)
     }).catch((error: unknown) => {
-      if (identityRequestSerialRef.current !== serial) return
+      if (identityRequestSerialRef.current !== serial) {
+        onSettled?.(false)
+        return
+      }
       if (pendingBoundaryCandidateRef.current === candidate) {
         pendingBoundaryCandidateRef.current = null
       }
       reportBoundaryError(error)
+      onSettled?.(false)
     })
+    return false
   }, [
     commit,
     graphRef,
@@ -335,6 +378,7 @@ export default function useSubmodelBoundaryEditing({
     nodeIds: ReadonlySet<string>,
     selectedEdgeIds: ReadonlySet<string> = new Set(),
     nodeChanges?: NodeChange[],
+    onSettled?: (committed: boolean) => void,
   ): SharedNodeDeletionResult => {
     if (nodeIds.size === 0) return "not-applicable"
     try {
@@ -353,8 +397,7 @@ export default function useSubmodelBoundaryEditing({
           && !selectedEdgeIds.has(edge.id)),
       })
       if (!reconciled) throw new Error("The shared submodel boundary could not be reconciled")
-      commitWithParentIdentities(reconciled)
-      return "committed"
+      return commitWithParentIdentities(reconciled, onSettled) ? "committed" : "pending"
     } catch (error: unknown) {
       reportBoundaryError(error)
       return "blocked"

@@ -191,7 +191,11 @@ must resolve the original pipeline-owned sidecars.
   Each public label preserves the executable name that crossed that boundary
   before grouping, so schema-owned selectors and Polars input mappings remain
   unchanged; a duplicate executable label rejects creation rather than being
-  disambiguated with a generated alias or port id. The
+  disambiguated with a generated alias or port id. That gate is applied
+  separately to the input ports and to the output ports, on the sanitised
+  label, so two boundary frames that would share one executable name fail
+  creation with `duplicate_public_label`; codegen still rejects a duplicate
+  derived input name at save. The
   parent registry gains one typed definition keyed by its exact definition id
   and containing the file, structured ports, and internal graph. The
   occurrence is placed at the selected bounding-box centre; child positions

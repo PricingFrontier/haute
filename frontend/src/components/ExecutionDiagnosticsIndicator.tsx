@@ -70,6 +70,9 @@ export default function ExecutionDiagnosticsIndicator({ metrics }: ExecutionDiag
     : strategy && pressure
       ? {
           ...strategy,
+          // The memory-pressure finding is the terminal one: it names the
+          // indicator even when a warned strategy is also rendered.
+          title: "Preview memory pressure",
           explanation: `${strategy.explanation} ${pressure.message}`,
           remediation: [strategy.remediation, ...pressure.details].filter(Boolean).join("; "),
         }

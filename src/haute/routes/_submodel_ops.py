@@ -61,6 +61,27 @@ def _public_frame_label(
         ) from exc
 
 
+def _reject_duplicate_public_labels(
+    direction: str,
+    labels: list[str],
+) -> None:
+    """Reject public ports whose labels sanitise to the same executable name."""
+    by_name: dict[str, list[str]] = {}
+    for label in labels:
+        by_name.setdefault(_sanitize_func_name(label), []).append(label)
+    for name, colliding in by_name.items():
+        if len(colliding) > 1:
+            joined = ", ".join(repr(label) for label in colliding)
+            raise SubmodelValidationError(
+                code="duplicate_public_label",
+                status_code=400,
+                detail=(
+                    f"Cannot create submodel: {direction} labels {joined} "
+                    f"both resolve to the executable name {name!r}."
+                ),
+            )
+
+
 def _build_public_interface(
     cross_edges: list[GraphEdge],
     child_node_ids: set[str],
@@ -315,6 +336,8 @@ def create_submodel_graph(
         graph.node_map,
         graph.submodels,
     )
+    _reject_duplicate_public_labels("input", [port.label for port in input_ports])
+    _reject_duplicate_public_labels("output", [port.label for port in output_ports])
     sm_graph = PipelineGraph(
         nodes=local_child_nodes,
         edges=internal_edges,

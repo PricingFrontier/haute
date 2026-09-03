@@ -1541,3 +1541,130 @@ def test_canonical_input_port_rejects_more_than_one_parent_binding() -> None:
 
     assert exc_info.value.context["instance_id"] == "instance_a"
     assert exc_info.value.context["port_id"] == "policy"
+
+
+def test_rewrite_boundary_input_names_rejects_duplicate_output_mapping_entries() -> None:
+    """Two entries renamed into the same identity fail loudly."""
+    node = _node(
+        "response",
+        NodeType.OUTPUT,
+        config={
+            "outputMapping": [
+                {
+                    "source_port": "Published_results",
+                    "source_column": "premium",
+                    "output_path": "$.premium",
+                    "enabled": True,
+                },
+                {
+                    "source_port": "Alternate_results",
+                    "source_column": "premium",
+                    "output_path": "$.premium",
+                    "enabled": True,
+                },
+            ]
+        },
+    )
+
+    with pytest.raises(ParseError) as exc_info:
+        rewrite_boundary_input_names(
+            [node],
+            {
+                "response": {
+                    "Published_results": "Internal_Output",
+                    "Alternate_results": "Internal_Output",
+                }
+            },
+        )
+
+    assert "outputMapping rename collides" in str(exc_info.value)
+    assert exc_info.value.context["node_id"] == "response"
+    assert exc_info.value.context["output_path"] == "$.premium"
+
+
+def test_rewrite_boundary_input_names_rejects_contradicting_output_mapping_entries() -> None:
+    """One destination fed by one port from two columns fails loudly."""
+    node = _node(
+        "response",
+        NodeType.OUTPUT,
+        config={
+            "outputMapping": [
+                {
+                    "source_port": "Published_results",
+                    "source_column": "premium",
+                    "output_path": "$.premium",
+                    "enabled": True,
+                },
+                {
+                    "source_port": "Alternate_results",
+                    "source_column": "loading",
+                    "output_path": "$.premium",
+                    "enabled": True,
+                },
+            ]
+        },
+    )
+
+    with pytest.raises(ParseError) as exc_info:
+        rewrite_boundary_input_names(
+            [node],
+            {
+                "response": {
+                    "Published_results": "Internal_Output",
+                    "Alternate_results": "Internal_Output",
+                }
+            },
+        )
+
+    assert "outputMapping rename collides" in str(exc_info.value)
+    assert exc_info.value.context["output_path"] == "$.premium"
+
+
+def test_flatten_rejects_boundary_input_names_colliding_after_expansion() -> None:
+    """Two public output ports collapsing onto one internal frame fail loudly."""
+    child = PipelineGraph(nodes=[_node("output", label="Internal Output")], edges=[])
+    definition = _definition(
+        graph=child,
+        input_ports=[],
+        output_ports=[
+            SubmodelOutputPort(
+                port_id="results",
+                label="Published results",
+                source=SubmodelEndpoint(node_id="output"),
+            ),
+            SubmodelOutputPort(
+                port_id="alternate",
+                label="Alternate results",
+                source=SubmodelEndpoint(node_id="output"),
+            ),
+        ],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _instance("instance_a", "score"),
+            _node("consumer", NodeType.POLARS),
+        ],
+        edges=[
+            GraphEdge(
+                id="first",
+                source="instance_a",
+                target="consumer",
+                sourceHandle="out__results",
+                targetHandle="in_1",
+            ),
+            GraphEdge(
+                id="second",
+                source="instance_a",
+                target="consumer",
+                sourceHandle="out__alternate",
+                targetHandle="in_2",
+            ),
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    with pytest.raises(ParseError) as exc_info:
+        flatten_graph(graph)
+
+    assert "input names collide after expansion" in str(exc_info.value)
+    assert exc_info.value.context["expanded_input_name"] == "Internal_Output"

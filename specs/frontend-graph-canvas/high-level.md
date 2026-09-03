@@ -94,7 +94,12 @@ An output-interface edit is published only with an exact authoritative handle
 identity map on every parent occurrence. While that identity is resolving,
 later boundary gestures extend the same pending candidate and supersede only
 the obsolete request; they are not recomputed from the last committed graph or
-reported as failed workspace changes.
+reported as failed workspace changes. Staleness is judged structurally — node
+and edge identities and every definition's public interface — not by object
+identity, so selecting or moving a node while identities resolve extends the
+pending candidate and those positions and selections are merged into the
+committed view rather than reverted. Only a structural change voids the
+candidate, with the error toast.
 
 - **Node rendering.** All non-submodel pipeline node types render through one
   component, `PipelineNode`, dispatched via a shared `nodeTypes` registry

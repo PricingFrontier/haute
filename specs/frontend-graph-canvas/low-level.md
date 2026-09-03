@@ -59,6 +59,7 @@
 | `frontend/src/utils/edgeJoinValidation.ts` | Save-time edge-join graph validation and readable warnings. |
 | `frontend/src/utils/nodeTypeRegistry.ts` | React Flow node-type registry built from canonical metadata, shared by editable and read-only canvases. |
 | `frontend/src/utils/graphSnapshot.ts` | Four-field graph snapshot serialization/cloning and canonical request projection: every graph sent to a canonical backend schema recursively strips editor-only identities and React Flow presentation without mutating live state; dirty serialization uses the same projection, while live history clones retain only the server-owned identity subset. |
+| `frontend/src/utils/structuralFingerprint.ts` | Pure structural fingerprint of a graph (node ids and kinds, edge endpoints, and every submodel definition's public port ids and labels) that the boundary-editing hook compares to decide whether the workspace changed while parent identities were resolving; positions, selection, dragging, and dimensions are excluded on purpose. |
 | `frontend/src/utils/shallowNodeHash.ts` | Stable shallow data hashing used by structural and panel-context fingerprint calculations. |
 | `frontend/src/components/ComparisonInspector.tsx` | Read-only comparison-view config panel: renders the real node editor `inert` for the available side(s), with a Historical/Current switcher. |
 | `frontend/src/components/ComparisonView.tsx` | The historical-vs-current comparison canvas pair: fetches the historical pipeline, diffs it, and renders two non-interactive `ReactFlow` instances (`ReadonlyCanvas`) with diff-ring highlighting, a draggable split, and orientation toggle. |
@@ -664,7 +665,20 @@ newer overlapping transform.
     resolution for the accumulated edit, so the latest request includes every
     accepted gesture. Superseded responses and superseded failures are ignored; an
     externally stale or current failed resolution clears the pending candidate,
-    reports the error, and leaves both published views unchanged. The projection
+    reports the error, and leaves both published views unchanged. External
+    staleness is a structural fingerprint comparison
+    (`utils/structuralFingerprint.ts`: sorted node ids with `type` and
+    `data.nodeType`, sorted edge ids with their four endpoint fields, and each
+    definition's id with its sorted `(portId, label)` input and output ports),
+    captured when the request is issued and compared in the response guard
+    alongside the serial and drilled-identity guards. Positions, selection,
+    dragging, dimensions, and all other node data are excluded, so a click or a
+    drag during resolution extends the candidate; committing it merges the
+    current view nodes' `position`, `selected`, `dragging`, `measured`, `width`,
+    and `height` by id so the move is not reverted. A shared-node deletion whose
+    commit went asynchronous reports `"pending"` and settles its caller through
+    an `onSettled(committed)` callback, so selection, preview, cached-result and
+    dialog cleanup only runs once the commit actually lands. The projection
     retains the two empty boundary cards and refuses to reconcile a graph that
     no longer contains both cards.
 21. **Submodel create/dissolve.** Both handlers refuse to run while a drilled

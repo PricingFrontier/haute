@@ -336,7 +336,7 @@ describe("DataPreview", () => {
     expect(screen.queryByText(/Boundaries:/)).not.toBeInTheDocument()
   })
 
-  it("appends the memory-pressure message once to a warned execution strategy", () => {
+  it("reports memory pressure over a warned execution strategy, appending its message once", () => {
     const base = makeExecutionMetricsFixture({
       execution_strategy: {
         schema_version: 1,
@@ -359,7 +359,10 @@ describe("DataPreview", () => {
 
     const warning = screen.getByLabelText("Preview execution warning details")
     fireEvent.click(warning)
-    expect(screen.getByText("Execution ran without a memory estimate")).toBeInTheDocument()
+    // The terminal memory-pressure finding names the indicator; the warned
+    // strategy stays in the details rather than taking the title.
+    expect(screen.getByText("Preview memory pressure")).toBeInTheDocument()
+    expect(screen.queryByText("Execution ran without a memory estimate")).not.toBeInTheDocument()
     expect(screen.getAllByText(/Memory pressure reached 75% of the preview budget\./)).toHaveLength(1)
   })
 
