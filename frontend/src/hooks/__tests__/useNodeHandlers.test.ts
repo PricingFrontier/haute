@@ -88,6 +88,63 @@ describe("useNodeHandlers", () => {
     expect(params.setPreviewData).not.toHaveBeenCalled()
   })
 
+  it("defers cleanup of a pending shared deletion until the identity commit lands", () => {
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    let settle: ((committed: boolean) => void) | undefined
+    const commitSharedNodeDeletion = vi.fn(
+      (
+        _ids: ReadonlySet<string>,
+        _edges?: ReadonlySet<string>,
+        _changes?: unknown,
+        onSettled?: (committed: boolean) => void,
+      ) => {
+        settle = onSettled
+        return "pending" as const
+      },
+    )
+    const { result } = renderHook(() => useNodeHandlers({
+      ...params,
+      commitSharedNodeDeletion,
+    }))
+    act(() => result.current.handleDeleteNode("n1"))
+    // Nothing is cleaned up while parent identities are still resolving.
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(params.setPreviewData).not.toHaveBeenCalled()
+
+    act(() => settle?.(true))
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).toHaveBeenCalledOnce()
+    expect(params.setPreviewData).toHaveBeenCalledOnce()
+  })
+
+  it("keeps a pending shared deletion's state when the identity commit fails", () => {
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    let settle: ((committed: boolean) => void) | undefined
+    const commitSharedNodeDeletion = vi.fn(
+      (
+        _ids: ReadonlySet<string>,
+        _edges?: ReadonlySet<string>,
+        _changes?: unknown,
+        onSettled?: (committed: boolean) => void,
+      ) => {
+        settle = onSettled
+        return "pending" as const
+      },
+    )
+    const { result } = renderHook(() => useNodeHandlers({
+      ...params,
+      commitSharedNodeDeletion,
+    }))
+    act(() => result.current.handleDeleteNode("n1"))
+    act(() => settle?.(false))
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(params.setPreviewData).not.toHaveBeenCalled()
+  })
+
   it("refuses raw deletion of a submodel definition owner", () => {
     const params = makeParams()
     const owner = makeNode("submodel_10", "submodel", {
