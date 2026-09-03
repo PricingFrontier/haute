@@ -65,11 +65,13 @@ function parentOccurrenceHandlesAreResolved(result: SubmodelBoundaryEditResult):
       return true
     }
     const mapping = node.data._sourceHandleInputNames
-    return typeof mapping === "object"
-      && mapping !== null
-      && !Array.isArray(mapping)
+    if (typeof mapping !== "object" || mapping === null || Array.isArray(mapping)) return false
+    const record = mapping as Record<string, unknown>
+    const keys = Object.keys(record)
+    return keys.length === expectedHandles.length
+      && keys.every((handle) => expectedHandles.includes(handle))
       && expectedHandles.every((handle) => {
-        const value = (mapping as Record<string, unknown>)[handle]
+        const value = record[handle]
         return typeof value === "string" && value.length > 0
       })
   })
@@ -91,6 +93,27 @@ export default function useSubmodelBoundaryEditing({
 }: UseSubmodelBoundaryEditingParams) {
   const addToast = useToastStore((store) => store.addToast)
   const identityRequestSerialRef = useRef(0)
+  const activeBoundaryIdentityRef = useRef({
+    submodelName: activeSubmodelName,
+    instanceId: activeSubmodelInstanceId,
+    definitionId: activeSubmodelDefinitionId,
+  })
+  useEffect(() => {
+    activeBoundaryIdentityRef.current = {
+      submodelName: activeSubmodelName,
+      instanceId: activeSubmodelInstanceId,
+      definitionId: activeSubmodelDefinitionId,
+    }
+  }, [activeSubmodelName, activeSubmodelInstanceId, activeSubmodelDefinitionId])
+  const pendingBoundaryCandidateRef = useRef<{
+    result: SubmodelBoundaryEditResult
+    expectedView: GraphRef["current"]
+    expectedParent: ParentGraphRef["current"]
+    expectedSubmodels: Record<string, unknown>
+    submodelName: string
+    instanceId: string
+    definitionId: string
+  } | null>(null)
   const reportBoundaryError = useCallback((error: unknown) => {
     addToast(
       "error",
@@ -113,6 +136,18 @@ export default function useSubmodelBoundaryEditing({
     ) {
       throw new Error("The active submodel view requires canonical instance identity")
     }
+    const pending = pendingBoundaryCandidateRef.current
+    if (
+      pending
+      && pending.expectedView === graphRef.current
+      && pending.expectedParent === parentGraphRef.current
+      && pending.expectedSubmodels === submodelsRef.current
+      && pending.submodelName === activeSubmodelName
+      && pending.instanceId === activeSubmodelInstanceId
+      && pending.definitionId === activeSubmodelDefinitionId
+    ) {
+      return pending.result
+    }
     return {
       submodelName: activeSubmodelName,
       instanceId: activeSubmodelInstanceId,
@@ -131,6 +166,8 @@ export default function useSubmodelBoundaryEditing({
     edges,
     submodels,
     parentGraphRef,
+    graphRef,
+    submodelsRef,
   ])
   const commit = useCallback((result: SubmodelBoundaryEditResult) => {
     graphRef.current = { nodes: result.viewNodes, edges: result.viewEdges }
@@ -141,12 +178,23 @@ export default function useSubmodelBoundaryEditing({
   const commitWithParentIdentities = useCallback((result: SubmodelBoundaryEditResult) => {
     const serial = ++identityRequestSerialRef.current
     if (parentOccurrenceHandlesAreResolved(result)) {
+      pendingBoundaryCandidateRef.current = null
       commit(result)
       return
     }
     const expectedView = graphRef.current
     const expectedParent = parentGraphRef.current
     const expectedSubmodels = submodelsRef.current
+    const candidate = {
+      result,
+      expectedView,
+      expectedParent,
+      expectedSubmodels,
+      submodelName: result.submodelName,
+      instanceId: result.instanceId,
+      definitionId: result.definitionId,
+    }
+    pendingBoundaryCandidateRef.current = candidate
     void resolveGraphIdentities({
       nodes: result.parentNodes,
       edges: result.parentEdges,
@@ -155,21 +203,40 @@ export default function useSubmodelBoundaryEditing({
     }).then((resolved) => {
       if (
         identityRequestSerialRef.current !== serial
-        || graphRef.current !== expectedView
+      ) {
+        return
+      }
+      if (
+        graphRef.current !== expectedView
         || parentGraphRef.current !== expectedParent
         || submodelsRef.current !== expectedSubmodels
+        || activeBoundaryIdentityRef.current.submodelName !== candidate.submodelName
+        || activeBoundaryIdentityRef.current.instanceId !== candidate.instanceId
+        || activeBoundaryIdentityRef.current.definitionId !== candidate.definitionId
       ) {
+        if (pendingBoundaryCandidateRef.current === candidate) {
+          pendingBoundaryCandidateRef.current = null
+        }
         reportBoundaryError(
           new Error("the workspace changed while parent identities were resolving"),
         )
         return
+      }
+      if (pendingBoundaryCandidateRef.current === candidate) {
+        pendingBoundaryCandidateRef.current = null
       }
       commit({
         ...result,
         parentNodes: resolved.nodes,
         parentEdges: resolved.edges,
       })
-    }).catch(reportBoundaryError)
+    }).catch((error: unknown) => {
+      if (identityRequestSerialRef.current !== serial) return
+      if (pendingBoundaryCandidateRef.current === candidate) {
+        pendingBoundaryCandidateRef.current = null
+      }
+      reportBoundaryError(error)
+    })
   }, [
     commit,
     graphRef,
@@ -181,6 +248,7 @@ export default function useSubmodelBoundaryEditing({
   ])
   useEffect(() => () => {
     identityRequestSerialRef.current += 1
+    pendingBoundaryCandidateRef.current = null
   }, [])
   const reconcileActiveSubmodel = useCallback(() => {
     try {

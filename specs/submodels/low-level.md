@@ -207,6 +207,11 @@ document and returns the new revision.
    binding to the selected input port's ordered targets and each outgoing
    binding from the selected output port's one source, preserving authored
    endpoint handles and all hidden-port components in deterministic edge ids.
+   Rewrite every schema-owned incoming-frame reference from the public boundary
+   name to the expanded physical name: exact selector fields,
+   `input_scenario_map` keys, instance `inputMapping` values, and every OUTPUT
+   `outputMapping[].source_port`. A malformed referenced mapping fails with
+   contextual `ParseError`; it is never retained as a stale logical name.
 5. Remove only selected occurrence nodes and their incident boundary edges.
    Deduplicate exact six-field edge identities, assert that no selected
    occurrence endpoint remains, and merge definition support code once. A
@@ -421,8 +426,9 @@ Tests live in `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
   outputs feeding distinct edge-join roles through `out__<portId>` handles.
 - `tests/test_submodel_instances.py` — canonical definition and occurrence
   validation, parse/codegen round trips, public-port expansion, targeted
-  flattening, shared-definition retention, and explicit rejection of missing
-  identity or malformed topology.
+  flattening, shared-definition retention, OUTPUT source-port migration across
+  a public boundary, and explicit rejection of missing identity or malformed
+  topology.
 - `tests/test_flattening_dedup.py` — parity between parser-driven flattening
   and the shared `flatten_graph` implementation, including single-node,
   multi-node, chained, nested, and hierarchical-then-flat cases.

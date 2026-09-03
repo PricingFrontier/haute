@@ -175,7 +175,12 @@ describe("editor identity resolution", () => {
     const child = node("__submodel_input_ports__", "Child", "polars")
     const definition: SubmodelDefinition = {
       definitionId: "pricing", file: "modules/pricing.py",
-      graph: { nodes: [child], edges: [{ id: "child-edge", source: child.id, target: "sink" }] },
+      graph: {
+        nodes: [child], edges: [{ id: "child-edge", source: child.id, target: "sink" }],
+        pipeline_name: "Pricing child", pipeline_description: null,
+        preamble: "from haute import submodel", source_file: "modules/pricing.py",
+        preserved_blocks: ["# keep this"],
+      },
       inputPorts: [{ portId: "policy", label: "Policy", targets: [{ nodeId: child.id, handleId: null }] }],
       outputPorts: [],
     }
@@ -211,7 +216,20 @@ describe("editor identity resolution", () => {
     expect(result.submodels.pricing.graph.edges[0].data?._inputName).toBe("in___submodel_input_ports__")
     expect(result.submodels.pricing._inputPortInputNames).toEqual({ policy: "policy_input" })
     expect(result.submodels.pricing.graph.nodes).toHaveLength(1)
+    expect(result.submodels.pricing.graph).toMatchObject({
+      pipeline_name: "Pricing child", pipeline_description: null,
+      preamble: "from haute import submodel", source_file: "modules/pricing.py",
+      preserved_blocks: ["# keep this"],
+    })
+    expect(result.submodels.pricing.graph).not.toHaveProperty("warning")
+    expect(result.submodels.pricing.graph).not.toBe(definition.graph)
     expect(definition.graph.nodes[0].data).not.toHaveProperty("_functionName")
+    expect(definition.graph).toEqual({
+      nodes: [child], edges: [{ id: "child-edge", source: child.id, target: "sink" }],
+      pipeline_name: "Pricing child", pipeline_description: null,
+      preamble: "from haute import submodel", source_file: "modules/pricing.py",
+      preserved_blocks: ["# keep this"],
+    })
     expect(definition).not.toHaveProperty("_inputPortInputNames")
   })
 

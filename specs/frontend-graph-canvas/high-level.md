@@ -85,9 +85,16 @@ bound public port hard-blocks the transaction and lists all affected
 instance/port pairs. Interface-preserving internal edits save once and become
 visible from all occurrences. Per-instance internal overrides are not offered.
 
-Reload, WebSocket replacement, undo/redo, breadcrumbs, comparison views, and
-dirty-state tracking preserve immutable definition/instance/port identities as
-well as occurrence-specific positions and bindings.
+Reload, WebSocket replacement, create/dissolve response hydration, undo/redo,
+breadcrumbs, comparison views, and dirty-state tracking preserve immutable
+definition/instance/port identities, the complete definition graph metadata,
+and occurrence-specific positions and bindings.
+
+An output-interface edit is published only with an exact authoritative handle
+identity map on every parent occurrence. While that identity is resolving,
+later boundary gestures extend the same pending candidate and supersede only
+the obsolete request; they are not recomputed from the last committed graph or
+reported as failed workspace changes.
 
 - **Node rendering.** All non-submodel pipeline node types render through one
   component, `PipelineNode`, dispatched via a shared `nodeTypes` registry

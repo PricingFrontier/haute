@@ -34,7 +34,7 @@
 | `frontend/src/utils/submodelRuntimeTarget.ts` | `encodeRuntimeIdPart`, `qualifiedRuntimeNodeId`, `resolveDrilledOccurrenceIdentity`, and `runtimeNodeIdForVisibleNode` validate drilled occurrence identity and derive backend runtime targets. |
 | `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | Pure definition-aware boundary transform. It validates canonical identity, edits structured endpoints and opaque public-port ids, preserves boundary positions and authoritative projected identities, reattaches rebuilt edge identities, preflights interface changes against every bound occurrence, and returns one coherent child/definition/parent result. |
 | `frontend/src/utils/submodelBoundaryEditing.ts` | Canonical boundary-edit orchestration that validates occurrence identity and delegates structured definition transforms to `canonicalSubmodelBoundaryEditing.ts`. |
-| `frontend/src/hooks/useSubmodelBoundaryEditing.ts` | Adapts canonical pure boundary transforms to React Flow connection/deletion events, the history-aware atomic graph setter, `parentGraphRef`, error toasts, and undo/redo reconciliation while a drilled view is active. |
+| `frontend/src/hooks/useSubmodelBoundaryEditing.ts` | Adapts canonical pure boundary transforms to React Flow connection/deletion events, accumulates identity-dependent gestures in one pending candidate, validates exact parent-handle identity coverage, and coordinates the history-aware atomic graph setter, `parentGraphRef`, error toasts, and undo/redo reconciliation while a drilled view is active. |
 | `frontend/src/hooks/useGraphCanvasState.ts` | React Flow adapter over `useGraphStore`: converts `NodeChange[]`/`EdgeChange[]` into raw graph updates, takes one snapshot at a drag's first structural position change, and avoids history churn for per-frame movement and selection-only changes. |
 | `frontend/src/hooks/usePanelGraphContext.ts` | Produces the typed, render-stable `PanelGraphContextSnapshot` (`allNodes`, `edges`, `nodeById`, `getNode`) only when the graph store's panel-context version changes, isolating editor consumers from React Flow UI-only updates. |
 | `frontend/src/hooks/useKeyboardShortcuts.ts` | App-level canvas keyboard bindings for save, undo/redo, copy/paste, delete, search, Submodel creation, and panel dismissal; honours editable controls so keystrokes do not leak from a text field into graph mutation. Ctrl+G delegates to the same `requestSubmodelCreation` policy as the toolbar. |
@@ -655,10 +655,16 @@ newer overlapping transform.
     identity fields whose handle keys remain valid and derives every rebuilt
     edge's `_inputName` from those identities before commit; it never publishes
     a fresh identity-less boundary projection. Missing/malformed identity or
-    topology fails loudly. If an output-interface edit changes an occurrence's
-    source-handle set, the hook resolves the complete parent graph against the
-    candidate definition registry before the atomic commit; a stale or failed
-    resolution leaves both views unchanged. The projection
+    topology fails loudly. Every parent occurrence's source-handle identity map
+    must have exactly the candidate definition's keys as well as non-empty
+    values; stale extra keys force resolution just like missing keys. If an
+    output-interface edit changes that exact set, the hook resolves the complete
+    parent graph against the candidate definition registry before the atomic
+    commit. Further boundary gestures extend the in-flight candidate and launch
+    resolution for the accumulated edit, so the latest request includes every
+    accepted gesture. Superseded responses and superseded failures are ignored; an
+    externally stale or current failed resolution clears the pending candidate,
+    reports the error, and leaves both published views unchanged. The projection
     retains the two empty boundary cards and refuses to reconcile a graph that
     no longer contains both cards.
 21. **Submodel create/dissolve.** Both handlers refuse to run while a drilled
@@ -673,8 +679,11 @@ newer overlapping transform.
     and definition `_inputPortInputNames` never cross a strict backend graph
     schema. Each successful raw canonical response resolves identities for the
     root graph and every embedded definition before replacing nodes, edges,
-    definitions, and preamble through one history-aware store
-    action, updates the in-memory preserved-block ref, creates one undo entry,
+    definitions, and preamble through one history-aware store action. Definition
+    hydration replaces only resolved nodes and edges while preserving every
+    other child `PipelineGraph` field, including its preamble, preserved blocks,
+    source file, name, and description. The transition updates the in-memory
+    preserved-block ref, creates one undo entry,
     and leaves the persisted revision unchanged. The resulting dirty graph is
     written only by explicit Save. Other occurrences of the same definition
     remain collapsed and keep the registry entry; dissolving the final

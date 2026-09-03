@@ -1,8 +1,13 @@
 /** Shared API response/request types for the Haute backend. */
 
 // Re-export canonical types from their source locations
-import type { BackendNodeStatus, ColumnInfo, NodeTypeValue } from "../types/node"
-import type { PipelineEdge } from "../types/node"
+import type {
+  BackendNodeStatus,
+  ColumnInfo,
+  NodeTypeValue,
+  PipelineEdge,
+  PipelineGraph,
+} from "../types/node"
 import type {
   ExecutionStrategyBoundaryCollectionPayload as GeneratedExecutionStrategyCollection,
   ExecutionStrategyBoundaryPayload as GeneratedExecutionStrategyBoundary,
@@ -10,23 +15,8 @@ import type {
   ExecutionStrategyProvenancePayload as GeneratedExecutionStrategyProvenance,
   ExecutionStrategyReasonPayload as GeneratedExecutionStrategyReason,
 } from "../generated/api-contracts.generated"
-export type { BackendNodeStatus, ColumnInfo, NodeStatus } from "../types/node"
+export type { BackendNodeStatus, ColumnInfo, NodeStatus, PipelineGraph } from "../types/node"
 export type { TraceResult, TraceStep, TraceSchemaDiff } from "../types/trace"
-
-export interface PipelineGraph {
-  nodes: import("@xyflow/react").Node[]
-  edges: PipelineEdge[]
-  pipeline_name?: string | null
-  pipeline_description?: string | null
-  preamble?: string | null
-  source_file?: string | null
-  submodels?: Record<string, unknown> | null
-  warning?: string | null
-  sources?: string[]
-  active_source?: string
-  preserved_blocks?: string[]
-  source_revision?: string | null
-}
 
 export interface EditorIdentityRequestNode {
   node_id: string

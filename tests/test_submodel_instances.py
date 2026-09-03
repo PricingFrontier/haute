@@ -16,6 +16,7 @@ from haute._parser_submodels import extract_submodel_registrations, parse_submod
 from haute._polars_io_registry import validate_data_input_config
 from haute._submodel_instances import (
     qualified_runtime_node_id,
+    rewrite_boundary_input_names,
     validate_submodel_instances,
 )
 from haute._types import (
@@ -695,6 +696,102 @@ def test_flatten_rewrites_public_output_label_to_exact_internal_source_name() ->
     result = flatten_graph(graph)
 
     assert result.node_map["consumer"].data.config["ratebook_input"] == "Internal_Output"
+
+
+def test_flatten_rewrites_public_output_source_port_in_multi_frame_mapping() -> None:
+    child = PipelineGraph(nodes=[_node("output", label="Internal Output")], edges=[])
+    definition = _definition(
+        graph=child,
+        input_ports=[],
+        output_ports=[
+            SubmodelOutputPort(
+                port_id="results",
+                label="Published results",
+                source=SubmodelEndpoint(node_id="output"),
+            )
+        ],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _node("other", label="Unrelated source"),
+            _instance("instance_a", "score"),
+            _node(
+                "response",
+                NodeType.OUTPUT,
+                config={
+                    "outputMapping": [
+                        {
+                            "source_port": "Published_results",
+                            "source_column": "premium",
+                            "output_path": "$.premium",
+                            "enabled": True,
+                        },
+                        {
+                            "source_port": "Unrelated_source",
+                            "source_column": "reference",
+                            "output_path": "$.reference",
+                            "enabled": True,
+                        },
+                    ]
+                },
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                id="submodel_output",
+                source="instance_a",
+                target="response",
+                sourceHandle="out__results",
+            ),
+            GraphEdge(id="other_output", source="other", target="response"),
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    result = flatten_graph(graph)
+
+    assert result.node_map["response"].data.config["outputMapping"] == [
+        {
+            "source_port": "Internal_Output",
+            "source_column": "premium",
+            "output_path": "$.premium",
+            "enabled": True,
+        },
+        {
+            "source_port": "Unrelated_source",
+            "source_column": "reference",
+            "output_path": "$.reference",
+            "enabled": True,
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("output_mapping", "entry_index"),
+    [
+        pytest.param({"source_port": "Published_results"}, None, id="non-list-mapping"),
+        pytest.param(["not-an-object"], 0, id="non-object-entry"),
+        pytest.param([{}], 0, id="missing-source-port"),
+        pytest.param([{"source_port": ""}], 0, id="empty-source-port"),
+        pytest.param([{"source_port": 1}], 0, id="non-string-source-port"),
+    ],
+)
+def test_rewrite_boundary_input_names_rejects_malformed_output_mapping(
+    output_mapping: object,
+    entry_index: int | None,
+) -> None:
+    node = _node(
+        "response",
+        NodeType.OUTPUT,
+        config={"outputMapping": output_mapping},
+    )
+
+    with pytest.raises(ParseError) as exc_info:
+        rewrite_boundary_input_names([node], {"response": {"Published_results": "Internal_Output"}})
+
+    assert exc_info.value.context["node_id"] == "response"
+    if entry_index is not None:
+        assert exc_info.value.context["entry_index"] == entry_index
 
 
 def test_flatten_preserves_public_input_label_for_ordinary_polars_code() -> None:

@@ -328,6 +328,7 @@ export async function resolveCanonicalGraphIdentities({
     resolvedSubmodels[definitionId] = {
       ...definition,
       graph: {
+        ...definition.graph,
         nodes: graph.nodes.slice(0, -1),
         edges: graph.edges,
       },

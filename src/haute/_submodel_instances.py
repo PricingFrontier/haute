@@ -308,6 +308,40 @@ def rewrite_boundary_input_names(
         fields = _INPUT_SELECTOR_FIELDS.get(node.data.nodeType, frozenset())
         config = dict(node.data.config)
         changed = False
+        if node.data.nodeType == NodeType.OUTPUT and "outputMapping" in config:
+            raw_output_mapping = config["outputMapping"]
+            if not isinstance(raw_output_mapping, list):
+                raise ParseError(
+                    "Submodel boundary OUTPUT outputMapping must be a list.",
+                    node_id=node.id,
+                )
+            output_mapping: list[dict[str, Any]] = []
+            for entry_index, entry in enumerate(raw_output_mapping):
+                if not isinstance(entry, dict):
+                    raise ParseError(
+                        "Submodel boundary OUTPUT outputMapping entries must be objects.",
+                        node_id=node.id,
+                        entry_index=entry_index,
+                    )
+                source_port = entry.get("source_port")
+                if not isinstance(source_port, str) or not source_port:
+                    raise ParseError(
+                        "Submodel boundary OUTPUT outputMapping source_port must be a "
+                        "non-empty string.",
+                        node_id=node.id,
+                        entry_index=entry_index,
+                    )
+                replacement = renames.get(source_port)
+                if replacement is None:
+                    output_mapping.append(entry)
+                    continue
+                rewritten_entry = dict(entry)
+                rewritten_entry["source_port"] = replacement
+                output_mapping.append(rewritten_entry)
+            if output_mapping != raw_output_mapping:
+                config["outputMapping"] = output_mapping
+                changed = True
+
         for field in fields:
             selected = config.get(field)
             replacement = renames.get(selected) if isinstance(selected, str) else None

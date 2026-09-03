@@ -11,14 +11,24 @@ const SUBMODEL_NAME = "Pricing"
 const PLACEHOLDER_ID = "instance_primary"
 const DEFINITION_ID = "definition_pricing"
 
-type FixtureOptions = { bindInput?: boolean; outputPorts?: string[]; includeInternalEdge?: boolean }
+type FixtureOptions = {
+  bindInput?: boolean
+  outputPorts?: string[]
+  includeInternalEdge?: boolean
+  bindOutputConsumers?: boolean
+}
 type GraphIdentityRequest = {
   nodes: readonly Node[]
   edges: readonly Edge[]
   submodels: Record<string, unknown>
   reservedApiInputFrameLabels: ReadonlySet<string>
 }
-function makeFixture({ bindInput = false, outputPorts = [], includeInternalEdge = false }: FixtureOptions = {}) {
+function makeFixture({
+  bindInput = false,
+  outputPorts = [],
+  includeInternalEdge = false,
+  bindOutputConsumers = true,
+}: FixtureOptions = {}) {
   const identify = (node: Node) => ({
     ...node,
     data: {
@@ -56,7 +66,7 @@ function makeFixture({ bindInput = false, outputPorts = [], includeInternalEdge 
     targetHandle: "in__incoming",
     data: { _inputName: "external_input" },
   })
-  for (const childId of outputPorts) parentEdges.push(
+  for (const childId of bindOutputConsumers ? outputPorts : []) parentEdges.push(
     {
       ...makeEdge(PLACEHOLDER_ID, "consumer_a", { id: `consumer-a-${childId}` }),
       sourceHandle: `out__${childId}`,
@@ -263,6 +273,118 @@ describe("useSubmodelBoundaryEditing", () => {
       .toContain("workspace changed"))
     expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
     expect(fixture.graphRef.current).toBe(externallyChanged)
+  })
+
+  it("resolves stale parent output handles after an unbound output is removed and reused", async () => {
+    const fixture = makeFixture({ bindOutputConsumers: false })
+    const output = fixture.view.nodes.find(
+      (node) => (node.data as unknown as SubmodelPortData).portDirection === "output",
+    )!
+    const resolveGraphIdentities = vi.fn(async (request: GraphIdentityRequest) => {
+      const definition = request.submodels[DEFINITION_ID] as {
+        outputPorts: Array<{ portId: string; label: string }>
+      }
+      const mapping = Object.fromEntries(definition.outputPorts.map((port) => [
+        `out__${port.portId}`, `identity_${port.label.replaceAll(" ", "_")}`,
+      ]))
+      return {
+        nodes: request.nodes.map((node) => node.id === PLACEHOLDER_ID ? {
+          ...node,
+          data: { ...node.data, _sourceHandleInputNames: mapping },
+        } : node),
+        edges: [...request.edges],
+      }
+    })
+    const { result, rerender } = renderHook(
+      (params: ReturnType<typeof hookParams>) => useSubmodelBoundaryEditing(params),
+      { initialProps: { ...hookParams(fixture), resolveGraphIdentities } },
+    )
+
+    act(() => {
+      result.current.commitBoundaryConnection({
+        source: "child_a", sourceHandle: null, target: output.id, targetHandle: null,
+      })
+    })
+    await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledTimes(1))
+    rerender({
+      ...hookParams(fixture),
+      nodes: fixture.graphRef.current.nodes,
+      edges: fixture.graphRef.current.edges as PipelineEdge[],
+      submodels: fixture.submodelsRef.current,
+      resolveGraphIdentities,
+    })
+
+    const firstExport = fixture.graphRef.current.edges.find((edge) => edge.source === "child_a")!
+    act(() => expect(result.current.deleteBoundaryEdge(firstExport.id)).toBe(true))
+    await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledTimes(2))
+    expect(fixture.parentGraphRef.current!.nodes.find((node) => node.id === PLACEHOLDER_ID)
+      ?.data._sourceHandleInputNames).toEqual({})
+    rerender({
+      ...hookParams(fixture),
+      nodes: fixture.graphRef.current.nodes,
+      edges: fixture.graphRef.current.edges as PipelineEdge[],
+      submodels: fixture.submodelsRef.current,
+      resolveGraphIdentities,
+    })
+
+    act(() => {
+      result.current.commitBoundaryConnection({
+        source: "child_b", sourceHandle: null, target: output.id, targetHandle: null,
+      })
+    })
+    await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledTimes(3))
+    await vi.waitFor(() => expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledTimes(3))
+    expect(fixture.parentGraphRef.current!.nodes.find((node) => node.id === PLACEHOLDER_ID)
+      ?.data._sourceHandleInputNames).toEqual({ out__output_1: "identity_Node_child_b" })
+  })
+
+  it("layers overlapping output gestures onto the pending boundary candidate", async () => {
+    const fixture = makeFixture()
+    const output = fixture.view.nodes.find(
+      (node) => (node.data as unknown as SubmodelPortData).portDirection === "output",
+    )!
+    const resolutions: Array<{
+      resolve: (value: { nodes: Node[]; edges: Edge[] }) => void
+      reject: (reason?: unknown) => void
+    }> = []
+    const resolveGraphIdentities = vi.fn((_: GraphIdentityRequest) => new Promise<{ nodes: Node[]; edges: Edge[] }>(
+      (resolve, reject) => resolutions.push({ resolve, reject }),
+    ))
+    const { result } = renderHook(() => useSubmodelBoundaryEditing({
+      ...hookParams(fixture), resolveGraphIdentities,
+    }))
+
+    act(() => {
+      result.current.commitBoundaryConnection({ source: "child_a", sourceHandle: null, target: output.id, targetHandle: null })
+      result.current.commitBoundaryConnection({ source: "child_b", sourceHandle: null, target: output.id, targetHandle: null })
+    })
+    await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledTimes(2))
+    const latest = resolveGraphIdentities.mock.calls[1]![0]
+    expect((latest.submodels[DEFINITION_ID] as { outputPorts: Array<{ portId: string }> })
+      .outputPorts.map((port) => port.portId)).toEqual(["output_1", "output_2"])
+
+    const resolvedLatestNodes = latest.nodes.map((node) => node.id === PLACEHOLDER_ID ? {
+      ...node,
+      data: {
+        ...node.data,
+        _sourceHandleInputNames: {
+          out__output_1: "identity_child_a",
+          out__output_2: "identity_child_b",
+        },
+      },
+    } : node)
+    await act(async () => resolutions[1]!.resolve({ nodes: resolvedLatestNodes, edges: [...latest.edges] }))
+    await vi.waitFor(() => expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce())
+    await act(async () => resolutions[0]!.reject(new Error("superseded request failed")))
+
+    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+    expect(fixture.parentGraphRef.current!.nodes.find((node) => node.id === PLACEHOLDER_ID)
+      ?.data._sourceHandleInputNames).toEqual({
+        out__output_1: "identity_child_a", out__output_2: "identity_child_b",
+      })
+    expect(useToastStore.getState().toasts).toEqual([])
   })
 
   it("blocks deletion of a public output used by the active instance", () => {

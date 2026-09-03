@@ -136,8 +136,11 @@ consumers therefore require no generated alias/port rename. Expansion resolves
 public input and output labels to the concrete upstream or qualified child
 source names inside cloned and remaining configs. Ordinary Polars code keeps
 its public logical name through an explicit `inputMapping` whenever the physical
-expanded source name differs. Edge and config rewrites are one
-atomic transform, so role-bearing consumers never retain a stale identity.
+expanded source name differs. Every schema-owned incoming-frame reference is
+migrated with that edge identity, including selector fields, live-switch maps,
+instance mappings, and each OUTPUT `outputMapping[].source_port`. Edge and
+config rewrites are one atomic transform, so no consumer retains a stale
+identity.
 
 When the editor is drilled into one occurrence, preview and trace requests use
 the parent hierarchical graph and qualify the clicked child from the explicit
