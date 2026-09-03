@@ -299,8 +299,16 @@ def test_extreme_many_to_many_join_skew_is_estimated_and_rejected_without_execut
             materialisation_estimate=estimate,
             relevant_edges=graph.edges,
         )
-    assert rejected.value.reason_code == "materialisation_exceeds_headroom"
-    assert rejected.value.estimated_peak_bytes is not None
+    # A declared many-to-many contract carries the row product, which is not an
+    # estimate of anything the join holds: when it does not fit, the planner
+    # reports the boundary unestimable and, without a native cap, refuses it
+    # with the remediation to declare a bounding contract. The product itself
+    # stays visible in the estimator's own evidence.
+    assert rejected.value.reason_code == "materialisation_estimate_unavailable"
+    assert rejected.value.estimated_peak_bytes is None
+    assert "join_cardinality_many_to_many" in rejected.value.remediation
+    assert "validate=" in rejected.value.remediation
+    assert estimate.depends_on_many_to_many_join is True
     assert any(
         "cardinality_output_upper_bound=1000000000000000000" in item
         for item in estimate.assumptions
