@@ -153,7 +153,8 @@ golden validation, and served response therefore describe one output contract.
   service uses, and reads the schema from what the worker wrote. If that worker cannot
   run or cannot finish, the deploy fails at build time rather than at every request. The
   promise is also enforced at the far end: an image whose policy depends on that cap
-  refuses to start unless the host is configured to enforce worker memory caps, so a
+  refuses to start unless the host is configured to enforce worker memory caps and can
+  install one, so a
   container can never serve batches under weaker guarantees than its manifest
   advertises.
   Generated images select the fixed application admission policy

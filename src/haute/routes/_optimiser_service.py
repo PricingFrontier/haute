@@ -91,6 +91,7 @@ from haute.execution import (
     build_dataframe_execution_cache_request,
     dataframe_graph_input_fingerprint,
     execute_lazy_graph,
+    prune_source_switch_edges,
     ratebook_factor_required_columns,
 )
 from haute.executor import _build_node_fn
@@ -127,6 +128,7 @@ from haute.routes._optimiser_limits import (
     limited_frontier_payload,
 )
 from haute.schemas import (
+    OptimiserChunkFallback,
     OptimiserEstimateRequest,
     OptimiserFrontierAutoRangeRequest,
     OptimiserFrontierAutoRangeResponse,
@@ -570,7 +572,11 @@ class _ChunkFallback:
     the completed result carries the message as a warning.
     """
 
-    code: str
+    code: Literal[
+        "chunk_user_code_ineligible",
+        "model_score_ineligible",
+        "chunk_plan_unsupported",
+    ]
     node_id: str | None
     operator: str | None
     reason: str | None
@@ -3366,22 +3372,22 @@ class OptimiserSolveService:
     ) -> OptimiserFrontierAutoRangeStartResponse:
         """Start auto-range in a background thread and return a pollable job."""
         body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
+        job_key = self._frontier_auto_range_job_key(body)
+        setup_job_key = self._graph_node_setup_job_key(body.graph, body.node_id)
+        # Preparation may build a snapshot and plan chunking, so an already
+        # running job for this node answers before that work starts; the same
+        # check repeats under the creation lock to close the race.
+        with self._start_lock:
+            active = self._active_frontier_auto_range_start(setup_job_key)
+            if active is not None:
+                return active
         prepared = self._prepare_frontier_auto_range(body)
         node = prepared["node"]
         config = prepared["config"]
-        job_key = self._frontier_auto_range_job_key(body)
-        setup_job_key = self._graph_node_setup_job_key(body.graph, body.node_id)
         with self._start_lock:
-            active_setup = self._active_graph_node_setup(setup_job_key)
-            if active_setup is not None:
-                if active_setup.kind == _FRONTIER_AUTO_RANGE_JOB_TYPE:
-                    active_job = self._store.require_job(active_setup.job_id)
-                    if active_job.get("status") == "running":
-                        return OptimiserFrontierAutoRangeStartResponse(
-                            status="started",
-                            job_id=active_setup.job_id,
-                        )
-                raise self._graph_node_setup_conflict(active_setup)
+            active = self._active_frontier_auto_range_start(setup_job_key)
+            if active is not None:
+                return active
             initial_job: _FrontierAutoRangeRunningJob = {
                 "status": "running",
                 "job_type": _FRONTIER_AUTO_RANGE_JOB_TYPE,
@@ -3442,6 +3448,27 @@ class OptimiserSolveService:
             self._release_job_ownership(job_id, setup_singleflight_key=setup_job_key)
             raise
         return OptimiserFrontierAutoRangeStartResponse(status="started", job_id=job_id)
+
+    def _active_frontier_auto_range_start(
+        self,
+        setup_job_key: tuple[str, str, str],
+    ) -> OptimiserFrontierAutoRangeStartResponse | None:
+        """Return the running auto-range job for this node, or raise the setup conflict.
+
+        Must be called under ``_start_lock``. ``None`` means no setup job owns
+        the node and a new job may be created.
+        """
+        active_setup = self._active_graph_node_setup(setup_job_key)
+        if active_setup is None:
+            return None
+        if active_setup.kind == _FRONTIER_AUTO_RANGE_JOB_TYPE:
+            active_job = self._store.require_job(active_setup.job_id)
+            if active_job.get("status") == "running":
+                return OptimiserFrontierAutoRangeStartResponse(
+                    status="started",
+                    job_id=active_setup.job_id,
+                )
+        raise self._graph_node_setup_conflict(active_setup)
 
     def frontier_auto_range_status(
         self,
@@ -3772,6 +3799,7 @@ class OptimiserSolveService:
             config,
             mode=mode,
         )
+        self._prepare_auto_range_snapshot_inputs(body.graph, body.node_id)
         streaming_plan, chunk_fallback = _build_streaming_auto_range_plan(
             body.graph,
             body.node_id,
@@ -3790,6 +3818,53 @@ class OptimiserSolveService:
             "streaming_plan": streaming_plan,
             "chunk_fallback": (chunk_fallback.payload() if chunk_fallback is not None else None),
         }
+
+    @staticmethod
+    def _prepare_auto_range_snapshot_inputs(graph: PipelineGraph, node_id: str) -> None:
+        """Prepare snapshot-backed inputs before chunk planning runs schema-only.
+
+        Chunk planning executes the engine under the schema-only declaration,
+        which never builds a snapshot, so a missing or stale generation would
+        otherwise cost the first run its chunk plan. Preparation needs an
+        admitted context to spawn a hard-capped build, and the job's own
+        admission does not exist yet, so a scoped admission covers exactly this
+        step and is released before the job admits.
+        """
+        from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
+        from haute._path_resolution import runtime_project_root_scope
+        from haute._topo import ancestors
+        from haute.executor import _resolve_batch_scenario
+
+        scenario = _resolve_batch_scenario(graph) or "batch"
+        node_map = graph.node_map
+        edges = prune_source_switch_edges(
+            graph.edges,
+            node_map,
+            scenario,
+            submodels=graph.submodels,
+        )
+        order = sorted(ancestors(node_id, edges, set(node_map)))
+        try:
+            execution_context = create_admitted_execution_context(
+                operation="frontier_auto_range_preparation",
+                profile=ExecutionProfile.AUTO_RANGE,
+            )
+        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+            raise _memory_limit_http_exception(exc) from None
+        try:
+            with runtime_project_root_scope(graph.source_file):
+                prepare_input_snapshots(
+                    order,
+                    node_map,
+                    profile=ExecutionProfile.AUTO_RANGE,
+                    execution_context=execution_context,
+                    base_dir=preparation_base_dir(graph),
+                    schema_only=False,
+                )
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            raise contract_error_http_exception(exc) from None
+        finally:
+            execution_context.release_admission(preserve_primary_error=True)
 
     def _run_frontier_auto_range_job(
         self,
@@ -3917,7 +3992,11 @@ class OptimiserSolveService:
                     warning=(
                         str(chunk_fallback["message"]) if chunk_fallback is not None else None
                     ),
-                    chunk_fallback=chunk_fallback,
+                    chunk_fallback=(
+                        OptimiserChunkFallback.model_validate(chunk_fallback)
+                        if chunk_fallback is not None
+                        else None
+                    ),
                 )
                 self._lifecycle.transition(
                     job_id,

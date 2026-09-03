@@ -281,6 +281,7 @@ from haute._worker_isolation import (
     IsolatedWorkerTimeoutError,
     isolated_worker_failure_is_memory,
     isolated_worker_memory_detail,
+    process_memory_caps_supported,
     resolve_worker_memory_enforcement,
 )
 from haute.deploy._batch_scoring import (
@@ -333,7 +334,19 @@ def _require_fail_closed_batch_enforcement(policy):
         return
     enforcement = resolve_worker_memory_enforcement()
     if enforcement == "required":
-        return
+        if process_memory_caps_supported():
+            return
+        raise RuntimeError(
+            "This deployment's batch execution policy is "
+            f"{{policy.get('status')!r}} / {{policy.get('strategy')!r}} "
+            f"({{policy.get('reason_code')!r}}) at node "
+            f"{{policy.get('blocking_node_id')!r}} (operator "
+            f"{{policy.get('blocking_operator')!r}}), which is only valid while the "
+            "batch worker runs under an enforced hard memory cap. This host "
+            "cannot install a native memory cap, so HAUTE_WORKER_MEMORY_ENFORCEMENT"
+            "=required would fail every batch request. Serve this image on a host "
+            "that supports native memory caps."
+        )
     raise RuntimeError(
         "This deployment's batch execution policy is "
         f"{{policy.get('status')!r}} / {{policy.get('strategy')!r}} "
@@ -551,6 +564,39 @@ async def _quote_batch(request: Request, rows: list):
             )
     except ExecutionAdmissionError as exc:
         response = JSONResponse(status_code=507, content=exc.to_payload())
+    except ExecutionCancelledError as exc:
+        response = JSONResponse(
+            status_code=499,
+            content={{
+                "error_code": "execution_cancelled",
+                "operation": exc.operation,
+                "job_id": exc.job_id,
+                "reason": str(exc),
+            }},
+        )
+    except ExecutionMemoryLimitExceededError as exc:
+        response = JSONResponse(status_code=507, content=exc.to_payload())
+    except BoundedMemoryUnsupportedError as exc:
+        if is_public_contract_error(exc):
+            response = JSONResponse(status_code=422, content=exc.to_payload())
+        else:
+            response = JSONResponse(
+                status_code=422,
+                content={{
+                    "error_code": "bounded_streaming_unsupported",
+                    "error": "Bounded streaming unsupported",
+                    "detail": str(exc),
+                }},
+            )
+    except HauteError as exc:
+        if is_public_contract_error(exc):
+            response = JSONResponse(status_code=422, content=exc.to_payload())
+        else:
+            logger.exception("deploy_quote_batch_failed")
+            response = JSONResponse(
+                status_code=500,
+                content={{"error_code": "deploy_internal_error", "error": str(exc)}},
+            )
     except BatchScoreError as exc:
         response = _batch_error_response(exc)
     except (

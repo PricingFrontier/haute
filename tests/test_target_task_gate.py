@@ -37,6 +37,7 @@ from haute.modelling._target_check import training_target_task_issue
 from haute.modelling._training_job import TrainingJob
 from haute.routes._background_jobs import IsolatedJobSupervisor
 from haute.routes._train_service import TrainService, _worker_failure_payload
+from haute.routes._training_preparation import _validate_target_task_pairing
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -533,7 +534,7 @@ class TestPreDispatchServiceGate:
             profile=ExecutionProfile.TRAINING_PREP,
         )
         with pytest.raises(HTTPException) as excinfo:
-            TrainService._validate_target_task_pairing(
+            _validate_target_task_pairing(
                 str(tmp_parquet),
                 {"target": "sev", "task": "classification"},
                 execution_context=context,
@@ -550,7 +551,7 @@ class TestPreDispatchServiceGate:
             operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
         )
-        TrainService._validate_target_task_pairing(
+        _validate_target_task_pairing(
             str(tmp_parquet),
             {"target": "sev", "task": "regression"},
             execution_context=context,
@@ -570,7 +571,7 @@ class TestPreDispatchServiceGate:
             profile=ExecutionProfile.TRAINING_PREP,
         )
         with pytest.raises(HTTPException) as excinfo:
-            TrainService._validate_target_task_pairing(
+            _validate_target_task_pairing(
                 str(tmp_parquet),
                 {
                     "target": "prop",
@@ -600,7 +601,7 @@ class TestPreDispatchServiceGate:
             operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
         )
-        TrainService._validate_target_task_pairing(
+        _validate_target_task_pairing(
             str(tmp_parquet),
             {
                 "target": "prop",
@@ -627,7 +628,7 @@ class TestPreDispatchServiceGate:
             profile=ExecutionProfile.TRAINING_PREP,
         )
         with pytest.raises(HTTPException) as excinfo:
-            TrainService._validate_target_task_pairing(
+            _validate_target_task_pairing(
                 str(tmp_parquet),
                 {"target": "sev", "task": "regression", "metrics": "auc"},
                 execution_context=context,
@@ -647,7 +648,7 @@ class TestPreDispatchServiceGate:
             profile=ExecutionProfile.TRAINING_PREP,
         )
         with pytest.raises(pl.exceptions.ComputeError):
-            TrainService._validate_target_task_pairing(
+            _validate_target_task_pairing(
                 str(tmp_parquet),
                 {"target": "sev", "task": "classification"},
                 execution_context=context,

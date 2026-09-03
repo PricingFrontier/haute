@@ -215,7 +215,12 @@ and structured classification layer.
 ### Frontier auto-range estimation
 
 `start_frontier_auto_range` uses `_prepare_frontier_auto_range` to validate config/mode, resolve
-chunk size/partition count/timeout, compute the required-column projection, and attempt to
+chunk size/partition count/timeout, compute the required-column projection, prepare the
+lineage's snapshot-backed Data Inputs (`_prepare_auto_range_snapshot_inputs`: chunk planning
+runs the engine schema-only, which never builds a snapshot, so preparation runs first under a
+scoped `frontier_auto_range_preparation` admission that is released before the job admits, and
+a missing or stale generation never costs the first run its chunk plan; a preparation
+failure answers the typed contract-error status before any job exists), and attempt to
 prove a `_StreamingAutoRangePlan` (`_build_streaming_auto_range_plan`), falling back to
 the classic non-streaming path when the plan cannot be proven. A structural reason (ratebook
 mode, no resolvable data input, no scenario expander on the chain) falls back silently because
@@ -223,8 +228,9 @@ chunking never applied. A lost chunk optimisation is reported: when a chain node
 chunk-ineligible (`classify_chunk_local_polars_code`), when a model-score node keeps
 post-processing code or renames, or when `chunk_plan` raises `ChunkPlanUnsupportedError`,
 the preparation records a
-`chunk_fallback` payload (`code`, `node_id`, `operator`, `reason`, `line`, `column`,
-`message`) on the job and the completed result's `warning` string names the node and reason.
+`chunk_fallback` payload — the typed `schemas.OptimiserChunkFallback` (`code`, one of
+`chunk_user_code_ineligible` / `model_score_ineligible` / `chunk_plan_unsupported`;
+`node_id`, `operator`, `reason`, `line`, `column`, `message`) — on the job and the completed result's `warning` string names the node and reason.
 The classic path then runs under the same admitted context. Chunk ineligibility is never an
 HTTP 422; the 422 mapping remains for bounded streaming-collect failures.
 

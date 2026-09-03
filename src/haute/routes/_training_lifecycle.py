@@ -111,7 +111,6 @@ from haute.routes._training_preparation import (
     _seeded_training_sample,
     _training_projection_keep_columns,
     _training_required_columns_by_node,
-    _validate_target_task_pairing,
     create_training_parquet_path,
     prepare_training_data_worker,
 )
@@ -574,24 +573,6 @@ class TrainService:
                 if execution_context is not None:
                     execution_context.release_admission(preserve_primary_error=True)
                 self._training_jobs.release(job_id)
-
-    @staticmethod
-    def _validate_target_task_pairing(
-        tmp_parquet: str,
-        config: dict[str, Any],
-        *,
-        execution_context: ExecutionContext,
-    ) -> None:
-        """Thin wrapper over the preparation module's target/task gate.
-
-        The gate itself now runs inside the preparation worker; this stays as
-        the service-level name so direct callers keep one entry point.
-        """
-        _validate_target_task_pairing(
-            tmp_parquet,
-            config,
-            execution_context=execution_context,
-        )
 
     def _persist_preparation_http_failure(self, job_id: str, exc: HTTPException) -> None:
         message, fields = _http_failure_job_parts(exc, job_id=job_id)

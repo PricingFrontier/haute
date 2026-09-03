@@ -881,7 +881,7 @@ class TestSolveRoute:
         ):
             service._execute_pipeline(body, job_id, tmp_path)
 
-        assert exc_info.value.status_code == 422
+        assert exc_info.value.status_code == 507
         job = store.require_job(job_id)
         assert job["status"] == "memory_limited"
         assert job["terminal_reason"] == "memory_limited"
@@ -4248,6 +4248,7 @@ class TestEstimateRoute:
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import (
+            OptimiserChunkFallback,
             OptimiserFrontierAutoRangeRequest,
             OptimiserFrontierAutoRangeStatusResponse,
         )
@@ -4280,7 +4281,15 @@ class TestEstimateRoute:
         status = service.frontier_auto_range_status(job_id)
         validated = OptimiserFrontierAutoRangeStatusResponse.model_validate(status.model_dump())
         assert validated.result is not None
-        assert validated.result.chunk_fallback == result["chunk_fallback"]
+        # The fallback is a typed model, not a free-form dict: the emitted keys
+        # and the stable code set are part of the API contract.
+        typed_fallback = validated.result.chunk_fallback
+        assert isinstance(typed_fallback, OptimiserChunkFallback)
+        assert typed_fallback.code == result["chunk_fallback"]["code"]
+        assert typed_fallback.node_id == result["chunk_fallback"]["node_id"]
+        assert typed_fallback.reason == result["chunk_fallback"]["reason"]
+        assert typed_fallback.message == result["chunk_fallback"]["message"]
+        assert typed_fallback.model_dump() == result["chunk_fallback"]
 
     def test_frontier_auto_range_job_without_fallback_has_no_warning(
         self,
@@ -16284,3 +16293,49 @@ def test_model_score_fallback_names_its_actual_blocker(config: dict, expected_re
         ),
     )
     assert _streaming_auto_range_node_is_eligible(clean, frame_names=("df",)) == (True, None)
+
+
+def test_auto_range_prepares_snapshot_inputs_before_chunk_planning(scored_data, monkeypatch):
+    """Preparation runs first, under a scoped admission released before the job admits.
+
+    Chunk planning runs the engine schema-only, which never builds a snapshot,
+    so a missing or stale generation would otherwise cost the first run its
+    chunk plan.
+    """
+    from haute import _input_preparation
+    from haute._execution_context import ExecutionProfile
+    from haute.routes import _optimiser_service as service_module
+    from haute.routes._job_store import JobStore
+    from haute.routes._optimiser_service import OptimiserSolveService
+    from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+    graph = _make_optimiser_graph(scored_data)
+    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+    calls: list[tuple[str, object]] = []
+
+    def fake_prepare(order, node_map, *, profile, execution_context, base_dir, schema_only, **_):
+        assert execution_context is not None
+        assert execution_context.admission is not None
+        assert not execution_context._admission_released
+        calls.append(("prepare", (tuple(order), profile, schema_only, execution_context)))
+        return ()
+
+    real_plan = service_module._build_streaming_auto_range_plan
+
+    def recording_plan(*args, **kwargs):
+        calls.append(("plan", None))
+        return real_plan(*args, **kwargs)
+
+    monkeypatch.setattr(_input_preparation, "prepare_input_snapshots", fake_prepare)
+    monkeypatch.setattr(service_module, "_build_streaming_auto_range_plan", recording_plan)
+    service = OptimiserSolveService(JobStore())
+
+    prepared = service._prepare_frontier_auto_range(body)
+
+    assert prepared["node"].id == "opt"
+    assert [name for name, _ in calls] == ["prepare", "plan"]
+    order, profile, schema_only, context = calls[0][1]
+    assert profile is ExecutionProfile.AUTO_RANGE
+    assert schema_only is False
+    assert set(order) == {"source", "opt"}
+    assert context._admission_released

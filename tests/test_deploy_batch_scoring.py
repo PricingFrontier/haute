@@ -16,6 +16,7 @@ from typing import Any
 
 import polars as pl
 import pytest
+import structlog.testing
 from fastapi.testclient import TestClient
 
 from haute._execution_admission import (
@@ -51,7 +52,7 @@ from haute.deploy._container import _generate_app_source
 from haute.deploy._pruner import find_output_node, prune_for_deploy
 from haute.deploy._schema import infer_deploy_execution_policy, infer_output_schema
 from haute.deploy._utils import build_manifest
-from haute.errors import DeployError, PreambleError
+from haute.errors import BoundedMemoryUnsupportedError, DeployError, PreambleError
 from haute.graph_utils import PipelineGraph
 from haute.parser import parse_pipeline_file
 from tests._deploy_helpers import make_resolved_deploy
@@ -415,6 +416,73 @@ class TestGeneratedAppBatchPath:
         harness.assert_cleaned_up()
 
     @pytest.mark.parametrize(
+        ("exc", "status", "error_code"),
+        [
+            pytest.param(
+                ExecutionCancelledError("deploy_quote", job_id="job-1"),
+                499,
+                "execution_cancelled",
+                id="cancelled",
+            ),
+            pytest.param(
+                ExecutionMemoryLimitExceededError(
+                    "deploy_quote",
+                    rss_bytes=9,
+                    limit_bytes=4,
+                ),
+                507,
+                "memory_limit",
+                id="memory",
+            ),
+            pytest.param(
+                BoundedMemoryUnsupportedError("cannot stream"),
+                422,
+                "bounded_streaming_unsupported",
+                id="bounded",
+            ),
+            pytest.param(
+                PreambleError("bad preamble", source_line=3),
+                422,
+                "preamble_failed",
+                id="public_contract",
+            ),
+        ],
+    )
+    def test_parent_side_typed_failures_map_like_the_live_path(
+        self,
+        exc: BaseException,
+        status: int,
+        error_code: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Spooling NDJSON in the parent raises the same typed errors the live
+        path maps; the batch path must not collapse them into a 500."""
+        module = _load_app(tmp_path)
+        harness = _BatchHarness(module, monkeypatch)
+
+        def behaviour(plan):
+            _write_result(plan, pl.DataFrame({"premium": [1.5, 2.5]}))
+            return BatchScoreOutcome(row_count=2, execution_metrics={})
+
+        harness.set_worker(monkeypatch, behaviour)
+
+        def explode(*_args, **_kwargs):
+            raise exc
+
+        monkeypatch.setattr(module, "_materialize_batch_ndjson", explode)
+
+        response = TestClient(module.app).post(
+            "/quote",
+            json=[{"age": 30}, {"age": 31}],
+            headers={"accept": "application/x-ndjson"},
+        )
+
+        assert response.status_code == status
+        assert response.json()["error_code"] == error_code
+        harness.assert_cleaned_up()
+
+    @pytest.mark.parametrize(
         ("outcome", "status", "expected"),
         [
             (
@@ -754,6 +822,33 @@ class TestScoreBatchWorkerInProcess:
             assert [context.release_calls for context in recording_contexts] == [[True]]
         finally:
             plan.cleanup()
+
+    def test_unexpected_child_failures_are_logged_before_they_collapse(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The untyped ``error`` outcome carries only a detail string, so the
+        child must log the traceback before returning it."""
+        plan = _child_plan(tmp_path, _fixture_rows(2))
+
+        def failing_score_graph_lazy(**_kwargs):
+            raise KeyError("premium")
+
+        monkeypatch.setattr(
+            "haute.deploy._scorer.score_graph_lazy",
+            failing_score_graph_lazy,
+        )
+        try:
+            with structlog.testing.capture_logs() as captured:
+                outcome = score_batch_worker(plan.request, plan.budget)
+        finally:
+            plan.cleanup()
+
+        assert outcome.failure_kind == "error"
+        records = [entry for entry in captured if entry["event"] == "deploy_batch_scoring_failed"]
+        assert len(records) == 1
+        assert records[0]["error_type"] == "KeyError"
 
 
 # ---------------------------------------------------------------------------
@@ -1319,6 +1414,39 @@ class TestFailClosedBatchEnforcement:
         body = TestClient(module.app).get("/health").json()
         assert body["batch_memory_enforcement"] == "required"
         assert body["execution_policy"] == _WARNED_POLICY
+
+    def test_warned_policy_refuses_to_start_when_the_host_cannot_install_a_cap(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``required`` is a setting, not a capability: a host with no native
+        cap backend cannot keep a warned policy's promise either."""
+        monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "required")
+        monkeypatch.setattr(
+            "haute._worker_isolation.process_memory_caps_supported",
+            lambda: False,
+        )
+
+        with pytest.raises(RuntimeError) as error:
+            _load_app(tmp_path, execution_policy=_WARNED_POLICY)
+
+        assert "native memory cap" in str(error.value)
+
+    def test_warned_policy_starts_when_the_host_can_install_a_cap(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "required")
+        monkeypatch.setattr(
+            "haute._worker_isolation.process_memory_caps_supported",
+            lambda: True,
+        )
+
+        module = _load_app(tmp_path, execution_policy=_WARNED_POLICY)
+
+        assert TestClient(module.app).get("/health").json()["execution_policy"] == _WARNED_POLICY
 
     def test_provable_policy_starts_under_best_effort(
         self,

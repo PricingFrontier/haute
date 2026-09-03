@@ -69,7 +69,6 @@ class BatchScoreRequest:
     output_fields: list[str] | None
     input_path: str
     result_path: str
-    operation: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +233,11 @@ def score_batch_worker(
         outcome = _classify_batch_failure(exc)
         if outcome is None:
             raise
+        if outcome.failure_kind == "error":
+            # An unexpected child failure carries no typed payload, so the
+            # collapsed outcome would lose the traceback entirely. Log it here
+            # while the exception is live so the container logs keep it.
+            logger.exception("deploy_batch_scoring_failed", error_type=type(exc).__name__)
         return outcome
     finally:
         if context is not None:
@@ -309,7 +313,6 @@ def prepare_batch_scoring(
                 output_fields=list(output_fields) if output_fields else None,
                 input_path=str(input_path),
                 result_path=str(Path(temp_dir) / "result.parquet"),
-                operation=operation,
             )
             worker_config = worker_config_for_memory_policy(
                 memory_limit_bytes=budget.memory_limit_bytes,

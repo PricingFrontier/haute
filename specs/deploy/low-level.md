@@ -54,7 +54,8 @@
 - **`BatchScoreRequest`** (`_batch_scoring.py`, frozen dataclass) — the only evidence that
   crosses the spawn boundary: `graph`, `input_node_ids`, `output_node_id`,
   `artifact_paths`, `output_fields`, `input_path` (parent-written JSON rows),
-  `result_path` (child-written parquet), `operation`.
+  `result_path` (child-written parquet). The child derives its operation label from
+  the budget, so the request carries no `operation` field.
 - **`BatchScoreOutcome`** (`_batch_scoring.py`, frozen dataclass) — the child's picklable
   return: `row_count`, `execution_metrics` (the child context's payload), and on failure
   `failure_kind` (`contract` | `bounded` | `memory` | `cancelled` | `error`), `detail`,
@@ -62,7 +63,7 @@
 - **`BatchScorePlan`** (`_batch_scoring.py`, slotted dataclass) — parent-owned resources
   for one supervised worker: `request`, `budget` (`IsolatedExecutionBudget`),
   `execution_context` (the admitted `DEPLOY_BATCH` parent context), `worker_config`,
-  `temp_dir`. `cleanup(preserve_primary_error=...)` removes the temp directory and
+  `temp_dir`. `cleanup(primary_error=...)` removes the temp directory and
   releases the parent admission exactly once (idempotent).
 - **`BatchScoreResult`** / **`BatchScoreError`** (`_batch_scoring.py`) — the accepted
   result (`result_path`, `row_count`, `execution_metrics`) and the typed parent-side
@@ -240,8 +241,11 @@ an independently relocatable contract.
    Startup is fail-closed on that record: `_require_fail_closed_batch_enforcement`
    raises `RuntimeError` at module load when the policy's `status` is `"warned"` — a
    promise that only holds while the batch worker runs under an enforced hard cap — and
-   `resolve_worker_memory_enforcement()` is not `"required"`. The message names the
-   policy, the blocking node/operator, and `HAUTE_WORKER_MEMORY_ENFORCEMENT=required`.
+   `resolve_worker_memory_enforcement()` is not `"required"`, and also when it *is*
+   `"required"` but `_worker_isolation.process_memory_caps_supported()` is `False`,
+   because a host that cannot install a native memory cap cannot keep the promise
+   either. The message names the policy, the blocking node/operator, and either
+   `HAUTE_WORKER_MEMORY_ENFORCEMENT=required` or the host's missing native memory cap.
    Without the gate, a `best_effort` host whose cap installation fails would start a
    child with no native backend, and the planner would reject the unavailable estimate on
    every batch request while `/health` still advertised conservative execution. Under
@@ -274,12 +278,22 @@ an independently relocatable contract.
    `result.parquet` under a `deploy_batch_sink` stage, and returns row count plus its own
    `metrics_payload`. Because the child runs under a native cap, an unavailable
    materialisation estimate is warned and run conservatively there instead of rejected.
+   A child failure the classifier can only collapse to the untyped `error` kind is
+   logged with `logger.exception("deploy_batch_scoring_failed", error_type=...)` before it
+   is returned, so the child's traceback reaches the container logs instead of being lost
+   behind the parent's one-line detail string.
    `accept_batch_outcome` validates the outcome type, re-reads the parquet's row count,
    and rejects a missing/unreadable/mismatched file. The parent renders the same JSON
    envelope from that parquet (`head(limit)`) with the child's `execution_metrics`, or
    streams every row as NDJSON through `bounded_collect_batches` into the same spool. The
    plan's `cleanup()` runs on every path.
-5. Batch error mapping: `BatchScoreError` kinds `contract`/`bounded` → 422 (the child's
+5. Batch error mapping: parent-side `ExecutionCancelledError` → 499
+   `execution_cancelled` (`operation`, `job_id`, `reason`),
+   `ExecutionMemoryLimitExceededError` → 507 `to_payload()`,
+   `BoundedMemoryUnsupportedError` → 422 (its public payload, else the typed
+   `bounded_streaming_unsupported` envelope), and a public-contract `HauteError` → 422
+   `to_payload()` — the same mapping the live single-row path uses.
+   `BatchScoreError` kinds `contract`/`bounded` → 422 (the child's
    payload, else the typed bounded envelope), `memory` → 507, `cancelled` → 499,
    `error` → 500 `deploy_internal_error`; `IsolatedWorkerMemoryLimitExceededError`,
    `IsolatedWorkerMemoryLimitUnsupportedError`, a crash whose exit code looks
@@ -516,7 +530,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | `IsolatedWorkerMemoryLimitExceededError` / `IsolatedWorkerMemoryLimitUnsupportedError` / memory-bound `IsolatedWorkerCrashedError` / memory-typed `IsolatedWorkerRemoteError` | `_worker_isolation.run_isolated_worker` supervising the batch child | Caught in `_quote_batch` → HTTP 507 with `isolated_worker_memory_detail(...)`. |
 | `IsolatedWorkerTimeoutError` | Batch worker exceeded `deploy_batch_timeout_seconds()` | Caught in `_quote_batch` → HTTP 504 `deploy_batch_timeout`. |
 | Any other `IsolatedWorkerError` | Batch worker supervision | Caught in `_quote_batch`, logged `deploy_quote_batch_failed`, HTTP 500 `deploy_internal_error`. |
-| Any other `Exception` | Runtime scoring inside `/quote` (live path) or parent-side batch supervision in `_quote_batch` | Caught by the container's catch-all, logged via `logger.exception("deploy_quote_failed")` (live) or `logger.exception("deploy_quote_batch_failed")` (batch, after `BatchScorePlan.cleanup`), returned as HTTP 500 with `error_code: "deploy_internal_error"`. The MLflow `pyfunc` predict path has no equivalent catch-all. |
+| Any other non-Haute `Exception` | Runtime scoring inside `/quote` (live path) or parent-side batch supervision in `_quote_batch` (typed execution and public-contract Haute errors are mapped to 499/507/422 above and never reach here) | Caught by the container's catch-all, logged via `logger.exception("deploy_quote_failed")` (live) or `logger.exception("deploy_quote_batch_failed")` (batch, after `BatchScorePlan.cleanup`), returned as HTTP 500 with `error_code: "deploy_internal_error"`. The MLflow `pyfunc` predict path has no equivalent catch-all. |
 
 `build_and_push_image` and `deploy_to_mlflow` both wrap their build-directory-writing
 steps in `try/except BaseException: shutil.rmtree(...); raise` — cleanup happens on
