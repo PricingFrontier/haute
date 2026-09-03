@@ -785,6 +785,8 @@ def _plan_chunk_sizes(
     row_expansion_factor: int,
     projection: Any,
 ) -> tuple[int, int, int | None, int | None]:
+    from haute._builders import resolve_instance_node
+
     expansion = max(1, row_expansion_factor)
     if request.chunk_size is not None:
         chunk_size = request.chunk_size
@@ -801,6 +803,10 @@ def _plan_chunk_sizes(
                 relevant_edges=prepared.relevant_edges,
             )
         ),
+        target_node=resolve_instance_node(
+            prepared.node_map[request.target_node_id], prepared.node_map
+        ),
+        target_parent_ids=list(prepared.parents_of.get(request.target_node_id, [])),
     )
     source_columns = projection.needed_by_node.get(chunk_start_node_id)
     source_row_bytes = (
@@ -840,6 +846,8 @@ def _estimate_target_row_bytes(
     projection: Any,
     *,
     has_group_by: bool,
+    target_node: GraphNode,
+    target_parent_ids: list[str],
 ) -> int:
     """Cost one target row from the TARGET node's projected OUTPUT schema.
 
@@ -849,10 +857,23 @@ def _estimate_target_row_bytes(
     back to ~64 bytes, so the byte budget picks a chunk size many times larger
     than the real per-chunk footprint and the runner can OOM.
 
-    The target frame is built lazily through the production engine (no eager
-    materialisation of the full input); fixed-width dtypes are costed exactly and
-    variable-width columns (``String``/``Binary``/nested/…) are sampled.  Any
-    failure to derive the schema fails loudly rather than guessing a width.
+    The target frame is built lazily through the production engine under the
+    schema-only declaration (no eager materialisation of the full input);
+    fixed-width dtypes are costed exactly and variable-width columns
+    (``String``/``Binary``/nested/…) are sampled through a bounded ``limit`` of
+    the lazy target plan.  An OUTPUT target has no lazy plan to sample: under
+    the declaration its document is described from its schema and never
+    assembled (EXEC-P08).  A flat document column (``$[:].name``) is the
+    renamed source column of the target's single parent, so it is sampled from
+    that parent's lazy plan instead — but only when no materialising operator
+    sits upstream, because a sample through one would execute it at plan time.
+    A nested document column aggregates child rows and has no bounded sample, a
+    multi-frame document has no single parent plan, and a variable-width
+    document column under a materialising operator has no safe sample, so all
+    three are ``ChunkPlanUnsupportedError`` (the caller falls back to the full
+    executor) rather than the nominal width the planner still uses for other
+    targets under a materialising operator.  Any failure to derive the schema
+    fails loudly rather than guessing a width.
     """
     projected_columns = projection.needed_by_node.get(request.target_node_id)
     if projected_columns is None:
@@ -863,7 +884,11 @@ def _estimate_target_row_bytes(
     if not projected_columns:
         return 1
 
-    target_lf = _target_output_lazyframe(request)
+    is_output_target = target_node.data.nodeType == NodeType.OUTPUT
+    target_lf, preserved = _target_output_frames(
+        request,
+        preserve_node_ids=frozenset(target_parent_ids) if is_output_target else frozenset(),
+    )
     schema = target_lf.collect_schema()
     schema_by_name = dict(schema.items())
     missing = set(projected_columns) - set(schema_by_name)
@@ -883,7 +908,26 @@ def _estimate_target_row_bytes(
             variable_columns.append(column)
         else:
             widths[column] = fixed_width
-    if variable_columns and has_group_by:
+    if variable_columns and is_output_target:
+        if has_group_by:
+            raise ChunkPlanUnsupportedError(
+                "Byte-budgeted chunk planning cannot sample an OUTPUT document's "
+                "variable-width columns through a materialising operator: the sample "
+                "would execute the operator at plan time, and the document is never "
+                "assembled there.",
+                target_node_id=request.target_node_id,
+                columns=sorted(variable_columns),
+            )
+        widths.update(
+            _sample_output_document_widths(
+                target_node,
+                target_parent_ids,
+                preserved,
+                variable_columns,
+                target_node_id=request.target_node_id,
+            )
+        )
+    elif variable_columns and has_group_by:
         widths.update({column: _DEFAULT_PROJECTED_COLUMN_BYTES for column in variable_columns})
     elif variable_columns:
         widths.update(
@@ -899,6 +943,25 @@ def _estimate_target_row_bytes(
 
 def _target_output_lazyframe(request: ChunkPlanRequest) -> pl.LazyFrame:
     """Build the projected target-node output frame through the shared engine."""
+    target_lf, _preserved = _target_output_frames(request)
+    return target_lf
+
+
+def _target_output_frames(
+    request: ChunkPlanRequest,
+    *,
+    preserve_node_ids: frozenset[str] = frozenset(),
+) -> tuple[pl.LazyFrame, dict[str, pl.LazyFrame]]:
+    """Build the projected target-node output frame (and preserved parents).
+
+    The build declares ``schema_only=True``: it resolves the target schema
+    without the materialisation-admission gate and, since EXEC-P08, without an
+    OUTPUT node assembling its document.  The frame is therefore a real lazy
+    plan for every node type except OUTPUT, whose frame is empty under its
+    derived document schema; ``_estimate_target_row_bytes`` samples only the
+    former, and samples an OUTPUT document's flat columns from the parent frame
+    preserved through *preserve_node_ids*.
+    """
     from haute.execution import execute_lazy_graph
     from haute.executor import _build_node_fn
 
@@ -907,6 +970,7 @@ def _target_output_lazyframe(request: ChunkPlanRequest) -> pl.LazyFrame:
             request.graph,
             _build_node_fn,
             target_node_id=request.target_node_id,
+            preserve_node_ids=set(preserve_node_ids),
             source=request.source,
             required_columns_by_node=request.required_columns_by_node,
             schema_only=True,
@@ -936,7 +1000,79 @@ def _target_output_lazyframe(request: ChunkPlanRequest) -> pl.LazyFrame:
             "Byte-budgeted chunk planning target output frame is unavailable.",
             target_node_id=request.target_node_id,
         )
-    return _normalise_lazy_frame(frame)
+    preserved = {
+        node_id: _normalise_lazy_frame(frames[node_id])
+        for node_id in preserve_node_ids
+        if node_id in frames
+    }
+    return _normalise_lazy_frame(frame), preserved
+
+
+def _sample_output_document_widths(
+    target_node: GraphNode,
+    parent_ids: list[str],
+    preserved: Mapping[str, pl.LazyFrame],
+    variable_columns: list[str],
+    *,
+    target_node_id: str,
+) -> dict[str, int]:
+    """Measure an OUTPUT target's flat variable-width document columns.
+
+    A flat document column ``$[:].name`` is its source column renamed, so its
+    width is sampled from the target's single parent plan through the same
+    bounded ``limit`` as any other target.  Nested document columns and
+    multi-frame documents are typed rejections: neither has a bounded sample,
+    and the document is never assembled at plan time (EXEC-P08).
+    """
+    from haute._output_assembler import (
+        _array_prefix,
+        _own_subpath,
+        _parse_output_path,
+        is_active_mapping_entry,
+    )
+
+    if len(parent_ids) != 1:
+        raise ChunkPlanUnsupportedError(
+            "Byte-budgeted chunk planning samples an OUTPUT document's variable-width "
+            "columns from its single parent plan; a multi-frame document has no such "
+            "plan and is never assembled at plan time.",
+            target_node_id=target_node_id,
+            parent_ids=sorted(parent_ids),
+            columns=sorted(variable_columns),
+        )
+    mapping = target_node.data.config.get("outputMapping") or []
+    source_by_column: dict[str, str] = {}
+    for entry in mapping:
+        if not is_active_mapping_entry(entry):
+            continue
+        parsed = _parse_output_path(entry["output_path"])
+        own = _own_subpath(parsed)
+        if _array_prefix(parsed) == () and len(own) == 1:
+            source_by_column.setdefault(own[0], entry["source_column"])
+    nested = [column for column in variable_columns if column not in source_by_column]
+    if nested:
+        raise ChunkPlanUnsupportedError(
+            "Byte-budgeted chunk planning cannot sample nested OUTPUT document columns: "
+            "the document is described from its schema at plan time, never assembled.",
+            target_node_id=target_node_id,
+            columns=sorted(nested),
+        )
+    parent_lf = preserved.get(parent_ids[0])
+    if parent_lf is None:
+        raise ChunkPlanUnsupportedError(
+            "Byte-budgeted chunk planning parent output frame is unavailable.",
+            target_node_id=target_node_id,
+            parent_ids=sorted(parent_ids),
+        )
+    mapped = parent_lf.select(
+        [pl.col(source_by_column[column]).alias(column) for column in variable_columns]
+    )
+    return _sample_variable_column_widths(
+        mapped,
+        mapped.collect_schema(),
+        variable_columns,
+        target_node_id=target_node_id,
+    )
 
 
 def _sample_variable_column_widths(

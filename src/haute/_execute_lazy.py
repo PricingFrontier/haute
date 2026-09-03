@@ -908,7 +908,13 @@ def _execute_lazy(
         schema_only: Declares that the caller reads ``collect_schema()`` and
             never collects a frame or invokes a sink.  Strategy planning then
             skips the group-by materialisation-admission gate, which bounds
-            peak memory during materialisation only.
+            peak memory during materialisation only, and the declaration is
+            forwarded to every node builder through
+            ``NodeBuildContext.schema_only`` so a builder that would otherwise
+            materialise while the graph is being built honours it: the OUTPUT
+            node returns an empty frame under the document schema derived by
+            ``_output_assembler.output_document_schema`` instead of assembling
+            its document.
         runtime_source_frames_by_node: Request-local DataFrames injected at
             source nodes, used for group-by materialisation estimation.
 
@@ -1211,6 +1217,7 @@ def _execute_lazy(
             execution_profile=(
                 execution_context.profile if execution_context is not None else None
             ),
+            schema_only=schema_only,
         )
 
     boundary_runner = NodeBoundaryRunner(
@@ -1734,6 +1741,7 @@ def _build_funcs(
     | None = None,
     reuse_loaded_model_by_node: Mapping[str, bool] | None = None,
     execution_profile: ExecutionProfile | None = None,
+    schema_only: bool = False,
 ) -> dict[str, tuple[Callable, bool]]:
     """Build per-node executable functions from the graph.
 
@@ -1746,6 +1754,9 @@ def _build_funcs(
     without changing graph pruning/source-switch routing.
     ``reuse_loaded_model_by_node`` opts selected modelScore nodes into
     scorer-instance model reuse for chunked callers.
+    ``schema_only`` forwards the caller's schema-only declaration to every
+    builder, so a builder that would otherwise materialise at build time
+    (OUTPUT) honours it.
     """
     funcs: dict[str, tuple[Callable, bool]] = {}
     node_source_overrides = source_by_node or {}
@@ -1811,6 +1822,7 @@ def _build_funcs(
                 else False
             ),
             execution_profile=execution_profile.value if execution_profile is not None else None,
+            schema_only=schema_only,
         )
         funcs[nid] = (fn, is_source)
     return funcs

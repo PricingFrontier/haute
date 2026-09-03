@@ -3172,3 +3172,38 @@ def test_a_boundary_inside_an_argument_is_recorded_before_its_outer_call(
     )
 
     assert dict(sequences) == {"op": expected}
+
+
+def test_malformed_api_input_edge_classifies_without_raising() -> None:
+    """A malformed apiInput edge is skipped by the classifier, not fatal.
+
+    ``edge_input_name`` raises for an apiInput edge with no frame label, but
+    strategy planning must still classify the graph: the node builder is the
+    fail-loud point that reports the malformed edge.
+    """
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import materialising_operator_sequences_by_node
+
+    source = GraphNode(
+        id="src",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="src", nodeType=NodeType.API_INPUT, config={}),
+    )
+    target = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(
+            label="op",
+            nodeType=NodeType.POLARS,
+            config={"code": "df = src.unique(subset=['k'])"},
+        ),
+    )
+    edge = make_edge("src", "op", source_handle=None)
+
+    sequences = materialising_operator_sequences_by_node(
+        ["op"], {"src": source, "op": target}, relevant_edges=[edge]
+    )
+
+    assert dict(sequences) == {"op": ("unique",)}

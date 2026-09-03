@@ -924,16 +924,27 @@ def _edge_index_for_input_name(
     """Return the position of the one edge whose executable name is *input_name*.
 
     Estimation never raises for a stale or ambiguous selector; ``None`` lets
-    the caller report the cardinality as unavailable instead.
+    the caller report the cardinality as unavailable instead. A malformed edge
+    (an apiInput edge with no frame label) has no derivable name, so it simply
+    matches nothing here — the node builder is the fail-loud point for it.
     """
     if not isinstance(input_name, str) or not input_name:
         return None
     matching = [
         edge_index
         for edge_index, (edge, _result) in enumerate(edge_results)
-        if edge_input_name(edge, index.node_map[edge.source]) == input_name
+        if _safe_edge_input_name(edge, index) == input_name
     ]
     return matching[0] if len(matching) == 1 else None
+
+
+def _safe_edge_input_name(edge: GraphEdge, index: _EstimateGraphIndex) -> str | None:
+    """Return the edge's executable input name, or ``None`` when undecidable."""
+
+    try:
+        return edge_input_name(edge, index.node_map[edge.source])
+    except (KeyError, ValueError):
+        return None
 
 
 def _resolve_row_cardinality_from_index(

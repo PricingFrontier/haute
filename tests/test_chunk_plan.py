@@ -943,3 +943,237 @@ def test_the_chunk_suffix_table_covers_every_registered_boundary_method() -> Non
         "groupby",
     }
     assert materialising_frame_methods() <= covered
+
+
+def test_byte_budget_output_target_plans_without_assembling_the_document(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EXEC-P08: byte-budget planning declares ``schema_only=True`` when it builds
+    the target frame. With an OUTPUT target that declaration used to be false --
+    the assembler collected the whole document while the graph was being built.
+    Planning now derives the target width from the derived document schema, so
+    the assembler is never entered at all.
+
+    ``LazyFrame.collect`` itself cannot be poisoned here: the *source* row-byte
+    sampler legitimately collects a bounded sample. The tripwire is therefore
+    ``_assemble_document``, the OUTPUT document materialisation this package
+    removed from the schema-only path.
+    """
+    import haute._output_assembler as assembler_module
+
+    source_path = _write_projected_source(tmp_path)
+
+    def must_not_assemble(field_frames: object):
+        raise AssertionError("schema-only chunk planning must not assemble the document")
+
+    monkeypatch.setattr(assembler_module, "_assemble_document", must_not_assemble)
+
+    plan = chunk_plan(
+        ChunkPlanRequest(
+            graph=_source_output_graph(source_path, ["premium"]),
+            target_node_id="out",
+            chunk_size=None,
+            target_chunk_bytes=1_024,
+            required_columns_by_node={"out": ["premium"]},
+        )
+    )
+
+    # Float64 -- the 8-byte fixed width the derived document schema declares.
+    assert plan.chunk_size == 1_024 // 8
+
+
+def _wide_output_graph(source_path: Path, output_config: dict) -> object:
+    return make_graph(
+        {
+            "nodes": [
+                _node("source", "dataInput", {"path": str(source_path)}),
+                _node(
+                    "widen",
+                    "polars",
+                    {"code": "df = source.with_columns(pl.lit('x' * 500).alias('wide'))"},
+                ),
+                _node("out", "output", output_config),
+            ],
+            "edges": [
+                make_edge("source", "widen").model_dump(),
+                make_edge("widen", "out").model_dump(),
+            ],
+        }
+    )
+
+
+def test_byte_budgeted_chunk_plan_samples_flat_output_document_columns_from_the_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EXEC-P08: an OUTPUT target's document is never assembled at plan time --
+    before this package the sampler silently assembled the whole document to
+    measure its variable-width columns. A flat document column is its source
+    column renamed, so the planner samples it from the single parent plan through
+    the same bounded ``limit`` and still costs the downstream-created wide column.
+    """
+    import haute._output_assembler as assembler_module
+
+    def must_not_assemble(field_frames: object):
+        raise AssertionError("chunk planning must not assemble the OUTPUT document")
+
+    monkeypatch.setattr(assembler_module, "_assemble_document", must_not_assemble)
+    source_path = _write_projected_source(tmp_path)  # quote_id, premium
+
+    plan = chunk_plan(
+        ChunkPlanRequest(
+            graph=_wide_output_graph(
+                source_path, make_output_config(["quote_id", "premium", "wide"])
+            ),
+            target_node_id="out",
+            target_chunk_bytes=8_192,
+            required_columns_by_node={"out": {"quote_id", "premium", "wide"}},
+        )
+    )
+
+    assert plan.estimated_target_row_bytes is not None
+    assert plan.estimated_target_row_bytes >= 500
+    assert plan.chunk_size == max(1, 8_192 // plan.estimated_target_row_bytes)
+
+
+def test_byte_budgeted_chunk_plan_rejects_nested_output_document_columns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EXEC-P08: a nested document column aggregates child rows, so it has no
+    bounded sample once the document is no longer assembled at plan time. The
+    planner reports the target unsupported (the caller falls back to the full
+    executor) instead of guessing a nominal width that would under-bound the chunk.
+    """
+    import haute._output_assembler as assembler_module
+
+    def must_not_assemble(field_frames: object):
+        raise AssertionError("chunk planning must not assemble the OUTPUT document")
+
+    monkeypatch.setattr(assembler_module, "_assemble_document", must_not_assemble)
+    source_path = _write_projected_source(tmp_path)  # quote_id, premium
+    output_config = make_output_config(["quote_id", "wide"])
+    output_config["outputMapping"][1]["output_path"] = "$[:].items[:].wide"
+
+    with pytest.raises(ChunkPlanUnsupportedError) as exc_info:
+        chunk_plan(
+            ChunkPlanRequest(
+                graph=_wide_output_graph(source_path, output_config),
+                target_node_id="out",
+                target_chunk_bytes=8_192,
+                required_columns_by_node={"out": {"quote_id", "items"}},
+            )
+        )
+
+    # The projection contract rejects the nested document key before the sampler
+    # runs (an OUTPUT target's required columns are its parent's columns); the
+    # sampler's own nested and multi-frame rejections are pinned directly below.
+    assert exc_info.value.context["target_node_id"] == "out"
+
+
+def test_byte_budgeted_chunk_plan_rejects_output_sampling_through_a_materialising_operator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A materialising operator before an explicit chunk start is supported, and
+    the planner costs variable-width columns at the nominal width there because
+    a sample through the operator would execute it at plan time. An OUTPUT
+    target must not inherit that guess (its document is never assembled at plan
+    time, so a nominal width would silently under-bound the chunk): it is a typed
+    rejection, while the equivalent polars target keeps the nominal rule.
+    """
+    import haute._output_assembler as assembler_module
+
+    def must_not_assemble(field_frames: object):
+        raise AssertionError("chunk planning must not assemble the OUTPUT document")
+
+    monkeypatch.setattr(assembler_module, "_assemble_document", must_not_assemble)
+    source_path = _write_projected_source(tmp_path)  # quote_id, premium
+    graph = make_graph(
+        {
+            "nodes": [
+                _node("source", "dataInput", {"path": str(source_path)}),
+                _node(
+                    "agg",
+                    "polars",
+                    {
+                        "code": (
+                            "df = source.group_by('quote_id')"
+                            ".agg(pl.col('premium').sum().alias('premium'))"
+                        )
+                    },
+                ),
+                _node(
+                    "widen",
+                    "polars",
+                    {"code": "df = agg.with_columns(pl.lit('x' * 500).alias('wide'))"},
+                ),
+                _node("out", "output", make_output_config(["quote_id", "premium", "wide"])),
+            ],
+            "edges": [
+                make_edge("source", "agg").model_dump(),
+                make_edge("agg", "widen").model_dump(),
+                make_edge("widen", "out").model_dump(),
+            ],
+        }
+    )
+
+    with pytest.raises(ChunkPlanUnsupportedError) as exc_info:
+        chunk_plan(
+            ChunkPlanRequest(
+                graph=graph,
+                target_node_id="out",
+                chunk_start_node_id="widen",
+                target_chunk_bytes=8_192,
+                required_columns_by_node={"out": {"quote_id", "premium", "wide"}},
+            )
+        )
+    error = exc_info.value
+    assert error.context["target_node_id"] == "out"
+    assert error.context["columns"] == ["quote_id", "wide"]
+    assert "materialising operator" in str(error)
+
+    # The same lineage targeted at the polars node keeps the planner-wide nominal
+    # rule: two 64-byte variable-width guesses plus the 8-byte Float64.
+    plan = chunk_plan(
+        ChunkPlanRequest(
+            graph=graph,
+            target_node_id="widen",
+            chunk_start_node_id="widen",
+            target_chunk_bytes=8_192,
+            required_columns_by_node={"widen": {"quote_id", "premium", "wide"}},
+        )
+    )
+    assert plan.estimated_target_row_bytes == 64 + 64 + 8
+
+
+def test_output_document_width_sampler_rejects_nested_and_multi_frame_documents(
+    tmp_path: Path,
+) -> None:
+    from haute.chunking import _sample_output_document_widths
+
+    source_path = _write_projected_source(tmp_path)  # quote_id, premium
+    output_config = make_output_config(["quote_id", "wide"])
+    output_config["outputMapping"][1]["output_path"] = "$[:].items[:].wide"
+    graph = _wide_output_graph(source_path, output_config)
+    target = next(node for node in graph.nodes if node.id == "out")
+    parent = pl.LazyFrame({"quote_id": ["q1"], "wide": ["x" * 500]})
+
+    with pytest.raises(ChunkPlanUnsupportedError) as nested:
+        _sample_output_document_widths(
+            target, ["widen"], {"widen": parent}, ["items"], target_node_id="out"
+        )
+    assert nested.value.context["columns"] == ["items"]
+    assert "never assembled" in str(nested.value)
+
+    with pytest.raises(ChunkPlanUnsupportedError) as multi:
+        _sample_output_document_widths(
+            target, ["a", "b"], {"a": parent, "b": parent}, ["quote_id"], target_node_id="out"
+        )
+    assert multi.value.context["parent_ids"] == ["a", "b"]
+
+    widths = _sample_output_document_widths(
+        target, ["widen"], {"widen": parent}, ["quote_id"], target_node_id="out"
+    )
+    assert widths == {"quote_id": 2}

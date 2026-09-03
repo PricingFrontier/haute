@@ -635,6 +635,59 @@ class TestUnresolvableButInspectableNodes:
         result = get_node_schema("main.py", "enriched")
         assert "columns" in result, result
 
+    def test_output_node_schema_resolves_without_collecting(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """EXEC-P08: an OUTPUT terminal used to assemble its whole document while
+        the graph was being built, so the collect-poisoning invariant did not
+        hold for it. ``schema_only=True`` now reaches the OUTPUT builder, which
+        describes the document from its mapping and source schemas instead."""
+
+        import haute._sandbox as sandbox_module
+        import haute.assistant._tools as tools_module
+        from haute.assistant._tools import get_node_schema
+        from tests.conftest import make_edge, make_graph, make_output_config
+
+        monkeypatch.setattr(sandbox_module, "_PROJECT_ROOT", project_root.resolve())
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "quotes",
+                        "data": {
+                            "label": "quotes",
+                            "nodeType": "dataInput",
+                            "config": {
+                                "path": "data/quotes.parquet",
+                                "inputType": "file",
+                                "format": "parquet",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(
+                                ["quote_id", "vehicle_year"], source_port="quotes"
+                            ),
+                        },
+                    },
+                ],
+                "edges": [make_edge("quotes", "out").model_dump()],
+            }
+        )
+        monkeypatch.setattr(tools_module, "parse_pipeline_to_graph", lambda _path: graph)
+
+        def poisoned_collect(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            raise AssertionError("get_node_schema must never collect data")
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", poisoned_collect)
+        result = get_node_schema("main.py", "out")
+        assert _columns(result) == {"quote_id": "String", "vehicle_year": "Int64"}
+
 
 # ---------------------------------------------------------------------------
 # Pre-flatten target validation (crafted hierarchical graph)

@@ -379,7 +379,11 @@ running heavy work in a child process the parent can kill on timeout or memory l
   same flattening, preamble compilation, active-source selection, node building,
   and contract enforcement as production lazy execution up to the requested
   top-level node, then calls `collect_schema()` on the preserved lazy result.
-  It never collects rows. Multi-frame results report one schema per output port.
+  It never collects rows, and the declaration is now honoured end to end: an
+  OUTPUT terminal's document is *described* from its mapping and its source
+  schemas rather than assembled, so a schema-only execution never materialises a
+  document even when the requested lineage ends in an OUTPUT node.
+  Multi-frame results report one schema per output port.
   This is execution-plan evidence, not proof of row values or commercial
   correctness. The current assistant mutation service declares structural
   verification after save; it does not claim that this schema read ran for every

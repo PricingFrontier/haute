@@ -489,8 +489,18 @@ every node from `chunk_start_node_id` to the target via `_capability_for_node()`
 column), validates the
 chunk suffix is a single-parent chain, and sizes chunks either from an explicit
 `chunk_size` or from `target_chunk_bytes` (which requires building the real projected
-target-output schema through `execute_lazy_graph` and either costing fixed-width
-dtypes exactly or sampling up to 128 rows for variable-width columns).
+target-output schema through `execute_lazy_graph` under the schema-only declaration
+and either costing fixed-width dtypes exactly or sampling up to 128 rows for
+variable-width columns through a bounded `limit` of the lazy target plan; an OUTPUT
+target's document is described from its schema at plan time and never assembled, so
+its fixed-width document columns are costed from the derived schema, a variable-width
+flat column (`$[:].name`) is sampled from the mapped source column of the target's
+single parent plan when no materialising operator sits upstream (a sample through one
+would execute it at plan time), and a nested document column, a multi-frame document,
+or a variable-width document column under a materialising operator is a
+`ChunkPlanUnsupportedError` that routes the caller to the full executor instead of the
+nominal width the planner still uses for other targets under a materialising operator,
+which would silently under-bound the chunk).
 `iter_chunked_frames()` re-validates the plan still matches the currently-prepared
 graph order, collects the source in `plan.source_chunk_size`-row batches via
 `bounded_collect_batches`, and for each batch runs the SAME `_build_funcs`-built node
@@ -1097,7 +1107,10 @@ fallback after a process failure.
   so an analyst is told which call forced the boundary. `haute._execution_schemas`
   and the generated frontend contracts carry the same reason-code vocabulary.
   The executor's boundary lookups are named for the general case
-  (`materialising_operators_by_node`, `materialising_operators_by_input_names`). The lazy executor runs the graph-aware request planner so the estimate
+  (`materialising_operators_by_node`, `materialising_operators_by_input_names`). An edge whose
+  executable input name cannot be derived (a malformed apiInput edge with no frame label) is skipped
+  conservatively by the classifier — an unnamed input never hides a boundary — because the node
+  builder, not the planner, is the fail-loud point for that edge. The lazy executor runs the graph-aware request planner so the estimate
   is derived from the same prepared target lineage before any node executes. Every
   materialising profile requires a context with admission and positive
   memory/headroom. The ordinary admission branch additionally requires
@@ -1174,6 +1187,24 @@ fallback after a process failure.
   only for this gate. It exists because a caller that only resolves schemas would
   otherwise be refused for an operator it never runs — which made every
   aggregation invisible to the assistant's schema and dry-run boundaries.
+- **Node builders receive the schema-only declaration.** `execute_lazy_graph`
+  forwards its `schema_only` value to every builder through
+  `NodeBuildContext.schema_only`, so a builder that would otherwise materialise
+  while the graph is being built honours it. The only such builder is OUTPUT:
+  under the declaration `assemble_output_from_config` returns
+  `pl.LazyFrame(schema=output_document_schema(source_schemas, mapping))` and the
+  document is never assembled. `output_document_schema` is the **single schema
+  authority** — the collected path declares that same schema over the assembled
+  document instead of inferring it — so a schema-only execution and a collected
+  execution report the identical OUTPUT schema by construction. Python inference
+  no longer decides OUTPUT dtypes: an all-null column keeps its source dtype
+  rather than becoming `Null`, a narrow integer is not widened, and an empty
+  document keeps the typed schema instead of reporting no columns at all.
+  Rendering is unaffected, because `render_output_document` prunes the null
+  padding a declared uniform schema introduces. A referenced source port or
+  column that no incoming frame provides, and two entries mapping one output
+  path from source columns of different dtypes, are
+  `OutputMappingSchemaError` rejections.
 - **Sampler/fault/cleanup machinery is stable.** Windows RSS bindings initialize once
   per sampler-factory identity under concurrency, reset explicitly, and reinitialize
   after a factory change. Eager diamonds share one producer-side cached `LazyFrame`.
@@ -1435,6 +1466,29 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   eligibility, every rejection names its operator, closed reason, and source
   location, namespace admissions are receiver-specific, and a rejected polars node
   raises `ChunkUserCodeUnsupportedError` with that payload; every registered boundary operator in a chunk-local suffix is a `ChunkPlanUnsupportedError`, not only `group_by`.
+  `test_chunk_plan.py` also pins that byte-budget planning over an OUTPUT target
+  derives its row width from the derived document schema without ever entering
+  `_assemble_document`, that a flat variable-width document column is sampled from
+  the parent plan (the downstream-created wide-column guard still holds for an
+  OUTPUT target), that a nested document column is a `ChunkPlanUnsupportedError`
+  rather than an assembled sample or a nominal width, and that under a
+  materialising operator before an explicit chunk start an OUTPUT target is
+  rejected while the equivalent polars target keeps the nominal width.
+- **`tests/test_output_schema_only.py`** — the schema-only OUTPUT contract: a
+  tripwire over every document shape (flat, nested objects, one array level, two
+  array levels, a multi-port parent with sibling child arrays) proving a
+  schema-only execution neither collects nor assembles and reports exactly
+  `output_document_schema(...)`; derivation fidelity against the schema Python
+  inference produced from the assembled document on an inference-exact corpus;
+  dtype fidelity over a wide dtype matrix, container leaves (`List`, `Struct`,
+  `Array`) included (declaring the derived schema is rendering-neutral and every
+  leaf keeps its source dtype, all-null columns and an empty source frame
+  included); container-valued identities and relation keys (equal container
+  values group into one object, and a child carrying the same container key is
+  nested under its parent through the ancestor index and scoped lookup while an
+  unmatched child is dropped); equality by construction between the collected
+  and schema-only frames; and the typed rejections for a missing port, a
+  missing column, and conflicting dtypes on one output path.
 - **`test_chunk_runner.py`** — `iter_chunked_frames`/`run_chunked_reduce` execution,
   cancellation and checkpoint cleanup on failure.
 - **`test_chunk_whitelist_proofs.py`** — the AST whitelist's correctness contract: de-

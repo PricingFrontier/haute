@@ -323,6 +323,7 @@ def assemble_output_from_config(
     source_names: list[str] | None = None,
     named_frames: dict[str, _Frame] | None = None,
     label: str | None = None,
+    schema_only: bool = False,
 ) -> _Frame:
     """Assemble an OUTPUT node's response document from its incoming frames.
 
@@ -344,6 +345,13 @@ def assemble_output_from_config(
     multi-frame OUTPUT requires the names to line up and fails loud.
     *named_frames* is the future kwarg-by-port executor binding (empty
     today); it wins over the positional reconstruction.
+
+    The returned frame always declares the document schema derived by
+    :func:`~haute._output_assembler.output_document_schema` — the single schema
+    authority — so the schema never depends on Python inference over the
+    assembled rows. Under *schema_only* (the caller declared it reads
+    ``collect_schema()`` and never collects) the document is not assembled at
+    all: an empty frame under that schema is returned.
     """
     cfg = _resolve_node_config(config, base_dir)
     mapping = cfg.get("outputMapping")
@@ -352,6 +360,7 @@ def assemble_output_from_config(
         OutputMappingSchemaError,
         assemble_output_from_mapping,
         is_active_mapping_entry,
+        output_document_schema,
     )
 
     if mapping is None:
@@ -375,5 +384,11 @@ def assemble_output_from_config(
             f"{sorted(missing)!r} that no incoming edge provides; available "
             f"frames: {sorted(frames.keys())!r}.",
         )
+    schema = output_document_schema(
+        {port: frame.lazy().collect_schema() for port, frame in frames.items()},
+        mapping,
+    )
+    if schema_only:
+        return pl.LazyFrame(schema=schema)
     document = assemble_output_from_mapping(frames, mapping)
-    return pl.LazyFrame(document, infer_schema_length=None)
+    return pl.LazyFrame(document, schema=schema)

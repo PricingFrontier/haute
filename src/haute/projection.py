@@ -1865,7 +1865,15 @@ def materialising_operator_sequences_by_node(
         source_node = node_map.get(edge.source)
         if source_node is None:
             continue
-        input_names_by_node.setdefault(edge.target, set()).add(edge_input_name(edge, source_node))
+        try:
+            name = edge_input_name(edge, source_node)
+        except ValueError:
+            # A malformed edge (an apiInput edge with no frame label) has no
+            # input name to contribute. Skipping it stays conservative: an
+            # unnamed input never hides a boundary, and the node builder is the
+            # fail-loud point that reports the malformed edge to the user.
+            continue
+        input_names_by_node.setdefault(edge.target, set()).add(name)
     return materialising_operator_sequences_by_input_names(order, node_map, input_names_by_node)
 
 

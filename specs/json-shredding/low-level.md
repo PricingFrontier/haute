@@ -165,15 +165,39 @@ partials, and joins preserve the deterministic sorted-member left-to-right row o
 Every fold member must overlap the accumulated connected component; a violated plan
 invariant fails loudly instead of falling back to an unbounded Cartesian join.
 The prefix-tree builder nests child arrays by ancestor values without
-joining siblings. Relation-key guards examine a row only when that row actually
+joining siblings. An object's identity at a level is the tuple of its own leaf
+values, canonicalised by `_identity`: scalars (including `None`) pass through
+unchanged, while container-valued leaves (`List`, `Struct`, `Array`) are
+canonicalised into hashable tuples — recursively, with struct fields kept in
+their stable polars field order rather than sorted. Container leaves are
+therefore ordinary valid OUTPUT leaves, grouped and ancestor-indexed by value
+like any scalar. Relation-key guards examine a row only when that row actually
 contains the key; an absent column in another mapping frame is not a null. A present
 null component raises `OutputNestingKeyError`. `_prune` removes null-valued object fields and empty collection
 values from objects, and removes empty-object elements from arrays; null or
 empty-list elements already present inside arrays are retained.
 `render_output_document` applies that same pruning to the collected Polars shape.
 
+`output_document_schema(source_schemas, mapping)` derives the document's schema
+from the mapping paths and the source frames' schemas alone, mirroring
+`_assemble_document`'s nesting exactly: a leaf's dtype is its source column's
+dtype, object segments nest as `Struct`, array segments nest as `List(Struct)`,
+each leaf sits at its own subpath within its array element (so an ancestor key
+carried by a deeper frame for matching is emitted at the level it belongs to and
+never re-emitted inside the child element), and child arrays are attached after
+the level's own fields in sorted order — the field order `_set_nested` produces.
+A missing source port or column, and one output path mapped from source columns
+of different dtypes, are `OutputMappingSchemaError` rejections.
+
 `assemble_output_from_config` uses the same assembler and constructs the final
-document frame with `infer_schema_length=None`. OUTPUT is an inherent terminal
+document frame under that derived schema rather than by Python inference, which
+makes the derivation the single schema authority for both OUTPUT paths. Under a
+schema-only execution (`schema_only=True`) it returns an empty frame under the
+derived schema and never assembles; otherwise it assembles as before and
+declares the same schema. Declaring the schema is rendering-neutral —
+`render_output_document` prunes the null padding a uniform schema introduces —
+and an empty document keeps the typed schema instead of losing its columns.
+OUTPUT is an inherent terminal
 materialisation boundary because its public result is a complete nested Python/JSON
 document. Every lazy collection therefore routes through the shared streaming helper;
 when an `ExecutionContext` is active it uses native-query cancellation polling, records
@@ -801,7 +825,10 @@ V2 schema codec and OUTPUT shape:
   non-participating frame; `tests/test_output_nest_example_contract.py`
   pins the fixture-level nested-document contract, while
   `tests/test_executor_builders.py` and `tests/test_codegen_builders.py` own the
-  executor/generated-code integration boundary.
+  executor/generated-code integration boundary, and
+  `tests/test_output_schema_only.py` owns `output_document_schema` — its fidelity
+  against the assembler's own nesting and field order, its dtype fidelity and
+  rendering-neutrality, and the schema-only build that never assembles.
 - `frontend/src/__tests__/editors/OutputEditor.test.tsx`,
   `frontend/src/__tests__/editors/OutputEditorPathTools.test.tsx`, and
   `frontend/src/__tests__/editors/jsonpath.test.ts` own the UI-adjacent mapping,

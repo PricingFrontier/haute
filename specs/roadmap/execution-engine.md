@@ -38,11 +38,11 @@ allowlists. Global operations are never executed independently in each chunk.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | EXEC-P05 | Decision | P2 | Build snapshots for eager-only or schema-unknown inputs automatically inside a warned hard-capped worker. |
-| EXEC-P08 | Planned | P3 | Make the schema-only execution declaration enforceable for graphs that end in an OUTPUT document. |
 
 ## Planned improvements
 
-`EXEC-P08` is the next startable package. The operation registry with its
+`EXEC-P05` is the only remaining package, and it requires a decision before it
+can start. The operation registry with its
 evidence-backed policies (sort, unique, join, join_asof, top_k, bottom_k,
 reverse, explode, and window expressions admitted as estimated materialisation
 boundaries; unpivot, rolling, dynamic group-by, shift, merge_sorted, and
@@ -50,15 +50,17 @@ interpolate streaming with recorded evidence), the profile-independent
 projection planner, the operation-effect proof, the warned, hard-capped
 conservative execution policy, the receiver-aware chunk classifier, the
 version-pinned compatibility corpus, the performance-lane memory
-certification, and the hard-capped training-preparation and multi-row deploy
-workers that it builds on are current behaviour specified in the
-execution-engine, modelling, deploy, and optimiser specifications: an
-unavailable estimate runs once under the full reserved envelope on the
-worker-backed surfaces (Data Output writes, preview and trace, Explore, JSON
-cache builds, training preparation, multi-row deploy scoring) and remains a
-typed rejection elsewhere, and a chunk-ineligible auto-range suffix falls back
-to the full-lazy path with a recorded warning. Optimiser surfaces wait for
-`ROAD-WORKER-04`.
+certification, the hard-capped training-preparation and multi-row deploy
+workers, and the schema-only declaration honoured end to end (an OUTPUT
+document is described from its mapping and source schemas without being
+assembled, and the assembled document carries that same derived schema) are
+current behaviour specified in the execution-engine, modelling, deploy, and
+optimiser specifications: an unavailable estimate runs once under the full
+reserved envelope on the worker-backed surfaces (Data Output writes, preview
+and trace, Explore, JSON cache builds, training preparation, multi-row deploy
+scoring) and remains a typed rejection elsewhere, and a chunk-ineligible
+auto-range suffix falls back to the full-lazy path with a recorded warning.
+Optimiser surfaces wait for `ROAD-WORKER-04`.
 `EXEC-P05` requires an explicit architecture decision and is not startable
 until the specification amendment it names is approved. Each package extends a
 closed, tested optimisation model while retaining a general conservative
@@ -123,40 +125,3 @@ implementation.
 `src/haute/routes/input_cache.py`; `tests/test_polars_io_registry.py`;
 `tests/test_io.py`; `tests/test_source_cache.py`;
 `tests/test_input_cache_route.py`; `tests/test_worker_isolation.py`.
-
-### EXEC-P08 — Honour the schema-only declaration for OUTPUT documents
-
-**Why:** `execute_lazy_graph(schema_only=True)` and
-`plan_prepared_execution_strategy(schema_only=True)` declare that the caller
-resolves lazy schemas and never collects a frame, and the planner skips the
-group-by admission gate on that declaration. An OUTPUT node's apply step
-(`_node_apply.py` calling `_output_assembler.assemble_output_from_mapping`)
-materialises its document while the graph is being built, regardless of the
-declaration, so a schema-only caller whose lineage includes an OUTPUT node (the
-assistant's schema read, or a bundle-time schema inference) collects in the
-calling process with the gate relaxed. EXEC-P06 found this while proving the
-deploy dry-run and side-stepped it by running that dry-run inside a
-hard-capped worker instead.
-
-**Plan:** Give the OUTPUT assembler a schema-only build that derives the
-document schema from the assembled lazy plan (nesting, list wrapping, and
-null-filling are plan-level operations) without collecting, and route OUTPUT
-nodes through it when `schema_only` is declared; where a shape cannot be
-resolved lazily, reject the schema-only request with a typed error instead of
-collecting. Either way a schema-only execution must never reach
-`execution_collect`, and a tripwire test pins that.
-
-**Acceptance:** A schema-only execution over a graph ending in an OUTPUT node
-reports the same output schema the collected document has, with a tripwire
-proving no physical collection; the assistant schema read and chunk planning
-pass unchanged; the deploy bundle may then replace its capped dry-run for the
-conservative case with schema-only inference once that equivalence is proven
-for every OUTPUT shape.
-
-**Dependencies:** The OUTPUT assembler contract, the execution facade's
-`schema_only` declaration, and the assistant schema-read path.
-
-**Evidence:** `src/haute/_output_assembler.py`; `src/haute/_node_apply.py`;
-`src/haute/_execute_lazy.py`; `src/haute/assistant/_application.py`;
-`src/haute/chunking.py`; `tests/test_output_assembler.py`;
-`tests/test_assistant_application.py`; `tests/test_chunk_plan.py`.

@@ -185,6 +185,11 @@ class NodeBuildContext:
     #: repeats when one multi-port node feeds several edges). OUTPUT keys its
     #: frames by this so a multi-port apiInput → OUTPUT resolves each port.
     source_ports: list[str] | None = None
+    #: The caller's schema-only declaration (``execute_lazy_graph(schema_only=)``):
+    #: it reads ``collect_schema()`` and never collects. Builders that would
+    #: otherwise materialise at build time honour it — OUTPUT returns an empty
+    #: frame under its derived document schema instead of assembling.
+    schema_only: bool = False
 
     @property
     def func_name(self) -> str:
@@ -613,6 +618,7 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # sourceHandles).
     source_ports = list(ctx.source_ports or [])
     label = ctx.node.data.label
+    schema_only = ctx.schema_only
 
     def output_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
         # Delegate to the shared config-driven twin so the canvas executor
@@ -625,6 +631,7 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             source_names=source_ports,
             named_frames=dfs_by_name,
             label=label,
+            schema_only=schema_only,
         )
 
     return ctx.func_name, output_fn, False
@@ -1188,6 +1195,7 @@ def _build_node_fn(
     required_output_columns_by_port: Mapping[str, frozenset[str] | None] | None = None,
     reuse_loaded_model: bool = False,
     execution_profile: str | None = None,
+    schema_only: bool = False,
 ) -> tuple[str, Callable, bool]:
     """Build an executable function from a graph node dict.
 
@@ -1200,6 +1208,9 @@ def _build_node_fn(
         anything else for batched parquet scoring).
     reuse_loaded_model: opts modelScore nodes into scorer-instance model
         reuse for chunked callers that rebuild data but not node functions.
+    schema_only: the caller's schema-only declaration, forwarded to the
+        builder context so a builder that would otherwise materialise at
+        build time (OUTPUT) returns a declared-schema empty frame instead.
     """
     # Resolve instance → use original's config/nodeType
     if node_map:
@@ -1228,6 +1239,7 @@ def _build_node_fn(
         required_output_columns_by_port=required_output_columns_by_port,
         reuse_loaded_model=reuse_loaded_model,
         execution_profile=execution_profile,
+        schema_only=schema_only,
     )
 
     # Dispatch through the unified registry — the single source of truth.

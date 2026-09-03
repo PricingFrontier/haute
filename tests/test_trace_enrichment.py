@@ -22,6 +22,7 @@ import math
 import polars as pl
 import pytest
 
+from haute._native_memory_limit import native_memory_backend_scope
 from haute._trace_enrichment import _effective_node_code
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.trace import (
@@ -34,6 +35,20 @@ from tests.conftest import make_graph as _g
 from tests.conftest import make_ready_file_input_config
 from tests.conftest import make_source_node as _source_node
 from tests.conftest import make_transform_node as _transform_node
+
+
+@pytest.fixture(autouse=True)
+def _hard_capped_native_memory():
+    """Run each trace test under a declared native memory cap.
+
+    Production trace and preview run inside a hard-capped isolated worker
+    (``routes.pipeline._execute_trace_worker``). Declaring the backend here
+    lets an unmeasured materialisation boundary (a user cross join) run warned
+    exactly as it does there, instead of being rejected in-process.
+    """
+    with native_memory_backend_scope("rlimit"):
+        yield
+
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
