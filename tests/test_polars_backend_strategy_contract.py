@@ -65,6 +65,43 @@ _STATUS_BY_STRATEGY = {
 }
 
 
+def test_prepared_planner_ignores_a_missing_parent_when_deriving_input_names() -> None:
+    result = plan_prepared_execution_strategy(
+        [],
+        {"missing": ["child"]},
+        {},
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    assert result is not None
+
+
+def test_join_headroom_rejection_mentions_the_validate_contract() -> None:
+    from haute.execution import _materialisation_rejection
+
+    rejection = _materialisation_rejection(
+        node_id="join-node",
+        operator="join",
+        profile=ExecutionProfile.LAZY_SINK,
+        reason_code="materialisation_exceeds_headroom",
+        estimated_peak_bytes=20,
+        headroom_bytes=10,
+    )
+    assert "validate=" in rejection.remediation
+
+
+def test_snapshot_source_signature_fails_closed_on_invalid_config(monkeypatch) -> None:
+    from haute.execution import _snapshot_source_signature
+
+    def invalid_source_signature(*_args, **_kwargs):
+        raise ValueError("bad source")
+
+    monkeypatch.setattr(
+        "haute._input_providers.source_signature",
+        invalid_source_signature,
+    )
+    assert _snapshot_source_signature(make_graph({"nodes": [], "edges": []}), {}) is None
+
+
 def _available(items: list[dict[str, object]]) -> BoundedDiagnosticCollection:
     return BoundedDiagnosticCollection.available(items)
 

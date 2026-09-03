@@ -283,6 +283,24 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "pricing",
                 "label": "Pricing",
                 "node_type": "submodel",
+                "source_handles": ["out__result"],
+                "source_handle_labels": {"out__result": " Result "},
+            }
+        ],
+        [
+            {
+                "node_id": "pricing_port",
+                "label": "Pricing port",
+                "node_type": "submodelPort",
+                "source_handles": ["out__result"],
+                "source_handle_labels": {"out__result": " Result "},
+            }
+        ],
+        [
+            {
+                "node_id": "pricing",
+                "label": "Pricing",
+                "node_type": "submodel",
                 "source_handles": ["out__"],
                 "source_handle_labels": {"out__": "Result"},
             }

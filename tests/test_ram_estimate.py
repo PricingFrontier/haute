@@ -19,6 +19,7 @@ from haute._ram_estimate import (
     MaterialisationEstimateState,
     RamEstimate,
     _bounded_cardinality_evidence,
+    _cardinality_name_bindings,
     _data_input_parquet_artifact,
     _dedupe_resolved_columns,
     _detailed_ancestor_source_metadata,
@@ -31,11 +32,13 @@ from haute._ram_estimate import (
     _named_cardinality_inputs,
     _parquet_metadata,
     _passthrough_cardinality,
+    _port_operand_counts,
     _resolve_edge_join_column_names,
     _resolve_row_cardinality_from_index,
     _resolve_target_column_names,
     _resolve_target_columns,
     _ResolvedRowCardinality,
+    _safe_edge_input_name,
     _source_column_base_widths,
     estimate_gpu_vram_bytes,
     estimate_materialisation_boundaries,
@@ -1678,6 +1681,74 @@ def test_cardinality_proof_validation_and_evidence_cap_are_explicit() -> None:
 
     assert len(evidence) == 64
     assert evidence[-1] == "cardinality_evidence_truncated=2"
+
+
+def test_estimate_graph_index_rejects_non_dataframe_runtime_source_frame() -> None:
+    source = GraphNode(id="source", data=NodeData(nodeType=NodeType.CONSTANT))
+
+    with pytest.raises(TypeError, match="polars DataFrames"):
+        _EstimateGraphIndex.build(
+            PipelineGraph(nodes=[source]),
+            "batch",
+            runtime_source_frames_by_node={"source": object()},
+        )  # type: ignore[arg-type]
+
+
+def test_cardinality_binding_collision_and_safe_edge_names_fail_closed(monkeypatch) -> None:
+    import haute._ram_estimate as ram_estimate
+
+    index = _cardinality_index_for_node(NodeType.POLARS, {}, parent_count=2)
+    index.node_map["parent-0"].data.label = "left_source"
+    index.node_map["parent-1"].data.label = "right_source"
+    node = index.node_map["target"]
+    edges = tuple(edge for edge in index.pruned_edges if edge.target == "target")
+    names = [ram_estimate._safe_edge_input_name(edge, index) for edge in edges]
+    assert all(names)
+    monkeypatch.setattr(
+        ram_estimate,
+        "resolve_input_mapping_names",
+        lambda source_names, mapping: (source_names[1], source_names[1]),
+    )
+    node.data.config["inputMapping"] = {"left": names[0], "right": names[1]}
+    assert _cardinality_name_bindings(index, node, edges) is None
+
+    missing = GraphEdge(id="missing", source="absent", target="target")
+    assert _safe_edge_input_name(missing, index) is None
+    api = GraphNode(id="api", data=NodeData(nodeType=NodeType.API_INPUT))
+    api_index = _EstimateGraphIndex.build(PipelineGraph(nodes=[api, node], edges=[]), "batch")
+    malformed = GraphEdge(id="malformed", source="api", target="target")
+    assert _safe_edge_input_name(malformed, api_index) is None
+
+
+def test_port_operand_counts_rejects_missing_bindings_and_unbound_names(monkeypatch) -> None:
+    import haute._ram_estimate as ram_estimate
+
+    index = _cardinality_index_for_node(NodeType.POLARS, {}, parent_count=1)
+    node = index.node_map["target"]
+    edges = tuple(edge for edge in index.pruned_edges if edge.target == "target")
+    with monkeypatch.context() as patcher:
+        patcher.setattr(ram_estimate, "_cardinality_name_bindings", lambda *_args: None)
+        assert _port_operand_counts(edges, index, node, {"parent_0": 1}) is None
+
+    assert _port_operand_counts(edges, index, node, {"not_bound": 1}) is None
+
+
+def test_join_estimate_reports_unresolved_operand_binding(tmp_path: Path, monkeypatch) -> None:
+    import haute._ram_estimate as ram_estimate
+
+    path = tmp_path / "source.parquet"
+    _write_shape_source(path)
+    graph = _self_join_graph(path, "df = src.join(src, on='segment', validate='m:1')")
+    monkeypatch.setattr(ram_estimate, "_port_operand_counts", lambda *_args: None)
+
+    [(_, estimate)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+
+    assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
+    assert estimate.unavailable_reason == "join_operand_binding_unresolved"
 
 
 def _cardinality_index_for_node(

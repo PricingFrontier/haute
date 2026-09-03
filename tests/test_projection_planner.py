@@ -3351,3 +3351,106 @@ def test_malformed_api_input_edge_classifies_without_raising() -> None:
     )
 
     assert dict(sequences) == {"op": ("unique",)}
+
+
+def test_boundary_ast_walker_visits_less_common_valid_syntax() -> None:
+    code = """
+@decorator(src.unique())
+class Example(src.sort('a'), metaclass=meta(src.reverse())):
+    field: object
+    value: object = src.unique()
+    def method(
+        self, item=src.sort('a'), *args, option=src.reverse(), required, **kwargs
+    ) -> src.unique():
+        global_result.attr, mapping['key'], *items = src.unique(), src.sort('a'), src.reverse()
+        factory().attr = src.unique()
+        counter += src.sort('a')
+        holder.attr += src.reverse()
+        mapping['key'] += src.unique()
+        factory().attr += src.sort('a')
+        starred = [*src.reverse()]
+        with src.sort('a') as bound, src.reverse():
+            result = {src.unique(): src.sort('a'), **src.reverse()}
+        async def nested() -> src.unique():
+            async with src.sort('a') as async_bound, src.reverse():
+                return [src.unique() for item in src.sort('a') if src.reverse()]
+        return {src.unique(): src.sort('a') for item in src.reverse() if src.unique()}
+
+async def worker() -> src.sort('a'):
+    @decorator(src.reverse())
+    async def inner(default=src.unique(), *, named=src.sort('a'), **kwargs):
+        yield src.reverse()
+    import package
+    from package import member as alias
+    return src.unique()
+"""
+
+    sequences = _chained_boundary_sequences(code)
+
+    assert dict(sequences) == {"op": ("unique", "sort", "reverse")}
+
+
+def test_boundary_ast_walker_handles_a_malformed_augassign_target_conservatively() -> None:
+    import ast
+
+    from haute._polars_operations import (
+        materialising_expression_methods,
+        materialising_frame_methods,
+    )
+    from haute.projection import _materialising_calls_in_source_order
+
+    tree = ast.parse("counter += src.sort('a')")
+    statement = tree.body[0]
+    assert isinstance(statement, ast.AugAssign)
+    statement.target = ast.Constant(value=0)
+
+    calls = _materialising_calls_in_source_order(
+        tree,
+        frozenset({"src"}),
+        materialising_frame_methods(),
+        materialising_expression_methods(),
+    )
+
+    assert [call[3] for call in calls] == ["sort"]
+
+
+def test_boundary_helpers_skip_missing_sources_and_expose_first_operator_wrapper() -> None:
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import (
+        materialising_operator_sequences_by_node,
+        materialising_operators_by_input_names,
+    )
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={"code": "df = src.unique()"}),
+    )
+    edge = make_edge("missing", "op")
+
+    sequences = materialising_operator_sequences_by_node(
+        ["op"], {"op": node}, relevant_edges=[edge]
+    )
+    assert dict(sequences) == {"op": ("unique",)}
+    assert dict(materialising_operators_by_input_names(["op"], {"op": node}, {"op": ["src"]})) == {
+        "op": "unique"
+    }
+
+
+def test_opaque_contract_polars_fan_in_is_unprojected() -> None:
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import opaque_contract_demands_for_node
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={}),
+    )
+
+    result = opaque_contract_demands_for_node(node, ["left", "right"])
+
+    assert result.default is None
+    assert result.for_parent("left") is None
+    assert result.for_parent("right") is None

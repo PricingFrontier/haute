@@ -1947,6 +1947,16 @@ def test_join_asof_bounds_output_by_the_left_input_and_peaks_over_both() -> None
     assert result.peak_upper_bound == 4000
 
 
+def test_join_asof_rejects_two_positional_operands() -> None:
+    result = analyze_polars_cardinality(
+        "df = fact.join_asof(dim, 'ts')", {"fact": 1000, "dim": 4000}
+    )
+
+    assert not result.supported
+    assert result.reason == "dynamic_join_asof_input"
+    assert result.unsupported_operation == "join_asof"
+
+
 @pytest.mark.parametrize(
     "code",
     [
@@ -1973,6 +1983,29 @@ def test_window_expression_partitions_are_column_references() -> None:
     assert lineage.demands_by_input["src"] == frozenset({"premium", "segment"})
 
 
+def test_window_partition_keyword_keeps_cardinality_bounded() -> None:
+    code = "df = src.with_columns(pl.col('premium').sum().over(partition_by='segment'))"
+    result = analyze_polars_cardinality(code, {"src": 7})
+
+    assert result.supported, result.reason
+    assert result.output_upper_bound == 7
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = src.with_columns(pl.col('premium').sum().over())",
+        "df = src.with_columns(pl.col('premium').sum().over(partition_by=columns))",
+    ],
+)
+def test_unresolvable_window_partitions_fail_closed(code: str) -> None:
+    result = analyze_polars_cardinality(code, {"src": 7})
+
+    assert not result.supported
+    assert result.reason == "dynamic_with_columns"
+    assert result.unsupported_operation == "with_columns"
+
+
 def test_window_expression_with_an_unaudited_option_is_rejected() -> None:
     """``mapping_strategy='explode'`` changes the row count."""
     result = analyze_polars_cardinality(
@@ -1984,10 +2017,20 @@ def test_window_expression_with_an_unaudited_option_is_rejected() -> None:
     assert not result.supported
 
 
+def test_dynamic_unpivot_index_fails_closed_for_cardinality() -> None:
+    result = analyze_polars_cardinality("df = rows.unpivot(index=columns)", {"rows": 3})
+
+    assert not result.supported
+    assert result.reason == "dynamic_unpivot"
+    assert result.unsupported_operation == "unpivot"
+
+
 @pytest.mark.parametrize(
     "code",
     [
         "df = fact.join_asof(dim.select('ts', 'rate'), on='ts')",
+        "df = fact.join_asof(dim.select(['ts', 'rate']), on='ts')",
+        "df = fact.join_asof(dim.select(('ts', 'rate')), on='ts')",
         "df = fact.join_asof(dim.select(pl.col('ts'), pl.col('rate').alias('r')), on='ts')",
         "df = fact.join_asof(dim.sort('ts').select('ts'), on='ts')",
     ],
@@ -2007,6 +2050,8 @@ def test_join_asof_accepts_a_column_only_projection_as_a_right_operand(code: str
         "df = fact.join_asof(dim.select(pl.int_range(0, 1000000).alias('ts')), on='ts')",
         "df = fact.join_asof(dim.with_columns(pl.int_range(0, 99).alias('ts')), on='ts')",
         "df = fact.join_asof(dim.select(pl.col('ts').repeat_by(9)), on='ts')",
+        "df = fact.join_asof(dim.select(helper()), on='ts')",
+        "df = fact.join_asof(dim.select(column), on='ts')",
     ],
 )
 def test_join_asof_rejects_a_projection_that_can_synthesise_rows(code: str) -> None:

@@ -2244,6 +2244,14 @@ def test_explore_worker_validates_every_parent_owned_boundary(
         ),
         (
             lambda service, report, publication: service._ExploreWorkerOutcome(
+                failure_kind="public_contract",
+                detail="failed",
+                payload={"error_code": "contract_error", "error_detail": {}},
+            ),
+            "invalid public-contract terminal reason",
+        ),
+        (
+            lambda service, report, publication: service._ExploreWorkerOutcome(
                 report=report,
                 publication=publication,
                 detail="stale detail",

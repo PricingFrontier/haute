@@ -1177,3 +1177,141 @@ def test_output_document_width_sampler_rejects_nested_and_multi_frame_documents(
         target, ["widen"], {"widen": parent}, ["quote_id"], target_node_id="out"
     )
     assert widths == {"quote_id": 2}
+
+
+@pytest.mark.parametrize(
+    ("code", "reason", "operator"),
+    [
+        (
+            "df = df.with_columns(pl.col('a').replace(**mapping))",
+            "unsupported_call_shape",
+            "replace",
+        ),
+        ("df = df.with_columns(pl.col('a').replace(old=[1]))", "unsupported_call_shape", "replace"),
+        (
+            "df = df.with_columns(pl.col('a').replace(old=values, new=[1]))",
+            "unsupported_call_shape",
+            "replace",
+        ),
+        ("df = helper(df)", "unsupported_expression", "Call"),
+        ("df = unknown.str.contains('x')", "unsupported_expression", "Name"),
+        ("df = df.str.contains('x')", "unsupported_namespace_method", "str.contains"),
+        ("df = df.foo", "unsupported_expression", "Attribute"),
+        ("df = lambda x: x", "unsupported_expression", "Lambda"),
+        ("df[0] = df", "assignment_not_frame_derived", "df[0]"),
+        ("df: object", "assignment_not_frame_derived", "df"),
+        ("df = 1", "assignment_not_frame_derived", "df"),
+        ("helper(df)", "unsupported_expression", "Call"),
+        ("pl.col('a')", "unsupported_statement", "Expr"),
+    ],
+)
+def test_classifier_rejects_unproven_public_shapes(code: str, reason: str, operator: str) -> None:
+    decision = _classify(code)
+    assert not decision.eligible
+    assert decision.reason == reason
+    assert decision.blocking_operator == operator
+
+
+def test_classifier_admits_frame_derived_expression_statement() -> None:
+    decision = _classify("df.filter(pl.col('a') > 0)")
+    assert decision.eligible
+    assert decision.reason == "eligible"
+
+
+def test_chunk_classifier_defensive_helpers_preserve_their_contracts() -> None:
+    import ast
+
+    from haute.chunking import _ChunkLocalTrace, _embedded_frame_name, _source_ordered
+
+    trace = _ChunkLocalTrace()
+    first, second = ast.parse("first\nsecond").body
+    trace.record("first", "one", first)
+    trace.record("second", "two", second)
+    assert (trace.reason, trace.blocking_operator, trace.line) == ("first", "one", 1)
+    assert (
+        _embedded_frame_name(
+            ast.parse("other + 1", mode="eval").body, allowed_frames={"df"}, local_frames={"tmp"}
+        )
+        is None
+    )
+    left = ast.Name(id="left")
+    right = ast.Name(id="right")
+    assert _source_ordered((right, left)) == (right, left)
+    assert classify_chunk_local_polars_code("df = df", frame_names=()).reason == "no_frame_names"
+
+
+def test_target_output_lazyframe_exposes_the_projected_schema(tmp_path: Path) -> None:
+    from haute.chunking import _target_output_lazyframe
+
+    source_path = _write_projected_source(tmp_path)
+    target = _target_output_lazyframe(
+        ChunkPlanRequest(
+            graph=_source_output_graph(source_path, ["quote_id", "premium"]),
+            target_node_id="out",
+            required_columns_by_node={"out": {"quote_id", "premium"}},
+        )
+    )
+    assert target.collect_schema() == pl.Schema({"quote_id": pl.String, "premium": pl.Float64})
+
+
+def test_output_width_sampler_skips_inactive_mappings_and_requires_parent(tmp_path: Path) -> None:
+    from haute.chunking import _sample_output_document_widths
+
+    source_path = _write_projected_source(tmp_path)
+    config = make_output_config(["quote_id"])
+    config["outputMapping"].append(
+        {
+            "source_port": "widen",
+            "source_column": "ignored",
+            "output_path": "$[:].ignored",
+            "enabled": False,
+        }
+    )
+    graph = _wide_output_graph(source_path, config)
+    target = next(node for node in graph.nodes if node.id == "out")
+    parent = pl.LazyFrame({"quote_id": ["q1"]})
+    assert _sample_output_document_widths(
+        target, ["widen"], {"widen": parent}, ["quote_id"], target_node_id="out"
+    ) == {"quote_id": 2}
+    with pytest.raises(ChunkPlanUnsupportedError, match="parent output frame is unavailable"):
+        _sample_output_document_widths(target, ["widen"], {}, ["quote_id"], target_node_id="out")
+
+
+@pytest.mark.parametrize("node_type", ["scenarioExpander", "dataInput"])
+def test_chunk_plan_rejects_row_nonlocal_editor_code(node_type: str, tmp_path: Path) -> None:
+    source_path = _write_projected_source(tmp_path)
+    source_config: dict[str, object] = {"path": str(source_path)}
+    if node_type == "dataInput":
+        source_config["code"] = "df = df.sort('premium')"
+        nodes = [
+            _node("source", "dataInput", source_config),
+            _node("out", "output", make_output_config(["premium"])),
+        ]
+        edges = [make_edge("source", "out").model_dump()]
+        expected_node = "source"
+    else:
+        nodes = [
+            _node("source", "dataInput", source_config),
+            _node(
+                "scenario",
+                "scenarioExpander",
+                {
+                    "column_name": "factor",
+                    "min_value": 1,
+                    "max_value": 2,
+                    "steps": 2,
+                    "code": "df = df.sort('premium')",
+                },
+            ),
+            _node("out", "output", make_output_config(["premium"])),
+        ]
+        edges = [
+            make_edge("source", "scenario").model_dump(),
+            make_edge("scenario", "out").model_dump(),
+        ]
+        expected_node = "scenario"
+    graph = make_graph({"nodes": nodes, "edges": edges})
+    with pytest.raises(ChunkUserCodeUnsupportedError) as raised:
+        chunk_plan(ChunkPlanRequest(graph=graph, target_node_id="out", chunk_size=2))
+    assert raised.value.context["node_id"] == expected_node
+    assert raised.value.context["reason"] == "unsupported_frame_method"

@@ -504,3 +504,11 @@ def test_conflicting_dtypes_on_one_output_path_is_a_typed_rejection() -> None:
     mapping = [_entry("a", "k", "$[:].k"), _entry("b", "k", "$[:].k")]
     with pytest.raises(OutputMappingSchemaError, match="different types"):
         output_document_schema(_source_schemas(frames), mapping)
+
+
+def test_output_schema_ignores_duplicate_identical_mapping_entry_per_port() -> None:
+    frames, mapping = _flat_corpus()
+    duplicate = mapping[0].copy()
+    assert output_document_schema(
+        _source_schemas(frames), [*mapping, duplicate]
+    ) == output_document_schema(_source_schemas(frames), mapping)
