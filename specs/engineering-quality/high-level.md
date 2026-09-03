@@ -117,6 +117,11 @@ Out of scope:
   remains valid only while it names an unresolved target and links directly to
   an active package; the component specification README is the sole lifecycle
   authority.
+- Test writes are confined to a per-test scratch directory by three layers: a
+  named scratch fixture, an AST lint gate over the test tree with a
+  both-direction allowlist ratchet, and an autouse runtime guard that runs
+  strict for converted modules and observe-and-census elsewhere. The low-level
+  specification states the modes, the known interception gaps, and the ratchet.
 
 ## Design rationale
 
@@ -165,6 +170,15 @@ Out of scope:
   explicit regeneration and byte-for-byte stale checks avoid a hidden build-time
   fallback. Semantic rules remain handwritten where JSON Schema would obscure
   the product invariant or produce unstable user-facing failures.
+- The test write sandbox was built detector-first: an observe-mode census
+  enumerated the class empirically before any conversion — over 1,700
+  out-of-sandbox write events in one suite run, the flagship a log path frozen
+  at import time that 139 tests appended to in the real home directory. It has
+  three layers because none subsumes another: the convention makes the right
+  thing easy, the lint gate catches statically visible violations before they
+  run, and the runtime guard catches computed destinations no static scan can
+  resolve. The guard advertises its root in the environment so an external
+  permission gate can scope "run the tests" without parsing test internals.
 
 ## Assistant provider qualification
 

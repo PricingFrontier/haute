@@ -457,3 +457,85 @@ are never retained in the report artifact.
 - `mutation/` is tested as configuration/orchestration through its active
   script/tests and CI workflow. `specs/roadmap/`, `repro/`, and generated
   artifacts are intentionally not claimed as a current test suite.
+
+## Test write sandbox
+
+Test writes are confined to a per-test scratch directory by three independent
+layers. This section constrains what the *test suite* may write. It is distinct
+from the product runtime write policy — user-code execution, pickle and joblib
+artifact loading, project-root containment — owned by
+[sandbox-security](../sandbox-security/high-level.md).
+
+**Layer 1 — convention.** A `haute_scratch` fixture yields a per-test scratch
+directory backed by pytest's temporary-path machinery: unique per test,
+platform-appropriate, auto-pruned by pytest's retention policy. It is the named
+convention every new or converted test write derives from. The raw `tmp_path`
+fixture remains legal — it is the same substrate — but `haute_scratch` adds the
+stable name, an export of the root as `HAUTE_TEST_SANDBOX_ROOT`, and a seam
+where the root could later move without touching call sites.
+
+**Layer 2 — lint.** A source-scan test walks the test tree's AST and flags
+writes whose destination cannot be shown to derive from the scratch fixtures,
+using conservative intra-function taint tracking:
+
+- Leak-prone temporary-directory and temporary-file creation, unless its
+  directory argument is fixture-derived. Self-cleaning temporary-file context
+  managers stay legal — layer 3 redirects them into the sandbox at runtime.
+- Write-mode `open`, text and byte writes, directory creation, and
+  destination-writing copy/move/delete/archive helpers whose target is a string
+  literal or a name not reachable from the fixtures.
+- Absolute path literals and literals containing parent-directory traversal
+  **in filesystem contexts** — arguments to path construction, `open`, and the
+  write APIs above. Not bare string literals generally: route literals are
+  ubiquitous and are not paths.
+
+It ships with an explicit per-file allowlist for not-yet-converted files,
+asserted **in both directions**: a new violation in a clean file fails, *and* a
+conversion that forgets to remove its allowlist entry fails. Targets the scan
+cannot resolve — helper parameters, call results — deliberately pass lint;
+layer 3 owns those.
+
+**Layer 3 — runtime guard.** An autouse fixture, mode-dependent per test:
+
+- **strict** — the working directory moves into the sandbox; temporary-directory
+  and home-directory environment variables are pointed inside it; `open` and the
+  low-level open call are intercepted, and any write-intent open whose resolved
+  path falls outside the sandbox root raises immediately, naming the offending
+  path and the test. This catches the computed paths layer 2 cannot see.
+- **observe** — the same interception with no working-directory or environment
+  changes; out-of-sandbox writes are *recorded*, not failed, and a terminal
+  summary prints the census grouped by path class.
+- **off** — an escape hatch for debugging.
+
+The mode can be forced for a whole run with
+`HAUTE_TEST_WRITE_SANDBOX=strict|observe|off`; without it, modules in the
+strict set run strict and everything else runs observe.
+
+Strict membership is a module set plus the opt-in `sandbox_strict` marker.
+Tests carrying the `perf` marker are exempt from interception so wall-clock
+budgets see no overhead. Every test outside `off` mode gets the sandbox root
+exported as `HAUTE_TEST_SANDBOX_ROOT`, so an external permission gate can
+scope "run the tests" to writes under that root without parsing test internals.
+
+### Known gaps
+
+Stated, not silently omitted:
+
+- **Native-code writes** bypass Python's `open` entirely. In strict mode they
+  are still *contained* by the working-directory and temporary-directory
+  redirection — relative and temporary paths resolve inside the sandbox — but
+  they are not *intercepted*.
+- **Rename, directory creation, and file-descriptor-level APIs** are not
+  intercepted.
+- **Session-scoped fixtures** that run before the per-test guard are outside its
+  window.
+
+These are census-informed ratchet candidates.
+
+### The ratchet
+
+1. The allowlist shrinks monotonically; conversions delete entries, and the
+   both-direction staleness assertion enforces it.
+2. New test files are born clean — absent from the allowlist, so lint-gated from
+   day one.
+3. Census classes graduate to strict per module as they empty.
