@@ -4376,9 +4376,13 @@ class TestEstimateRoute:
         diagnostics = status["execution_metrics"]["execution_strategy"]
         assert diagnostics["schema_version"] == 1
         assert diagnostics["profile"] == "auto_range"
-        assert diagnostics["status"] == "projected"
-        assert diagnostics["boundedness"] == "bounded"
-        assert diagnostics["boundaries"]["total_count"] == 0
+        # The fan-in node joins, which EXEC-P07 admits as a materialisation
+        # boundary; the runtime projection reasons below are unaffected.
+        assert diagnostics["strategy"] == "materialisation-boundary"
+        assert diagnostics["status"] == "boundary"
+        assert diagnostics["boundedness"] == "unbounded"
+        assert diagnostics["boundaries"]["total_count"] == 1
+        assert diagnostics["blocking_operator"] == "join"
         reason_edges = {
             (item["parent_node_id"], item["node_id"], item["reason_code"])
             for item in diagnostics["reasons"]["items"]

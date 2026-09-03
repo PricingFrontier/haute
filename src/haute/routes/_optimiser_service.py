@@ -3807,7 +3807,9 @@ class OptimiserSolveService:
     ) -> OptimiserFrontierAutoRangeResponse:
         del node, mode, timeout
         if execution_context is None:
-            execution_context = ExecutionContext(
+            # A job entered without a caller-owned context still runs under
+            # admission: a materialising boundary is never admitted bare.
+            execution_context = create_admitted_execution_context(
                 operation="frontier_auto_range",
                 profile=ExecutionProfile.AUTO_RANGE,
                 job_id=job_id,
@@ -4049,7 +4051,7 @@ class OptimiserSolveService:
         import polars as pl
 
         if execution_context is None:
-            execution_context = ExecutionContext(
+            execution_context = create_admitted_execution_context(
                 operation="frontier_auto_range_streaming",
                 profile=ExecutionProfile.AUTO_RANGE,
                 job_id=job_id,
@@ -5252,7 +5254,7 @@ class OptimiserSolveService:
                 job_id,
                 execution_token=execution_token,
             )
-            execution_context = ExecutionContext(
+            execution_context = create_admitted_execution_context(
                 operation="optimiser_solve_worker",
                 profile=ExecutionProfile.OPTIMISER_SETUP,
                 job_id=job_id,

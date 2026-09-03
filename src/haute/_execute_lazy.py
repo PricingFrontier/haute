@@ -1104,7 +1104,7 @@ def _execute_lazy(
     strategy_profile = (
         execution_context.profile if execution_context is not None else ExecutionProfile.LAZY_SINK
     )
-    group_by_operators = projection_planner.group_by_operators_by_node(
+    group_by_operators = projection_planner.materialising_operators_by_node(
         order, node_map, relevant_edges=relevant_edges
     )
     if group_by_operators and not schema_only:
@@ -2272,7 +2272,7 @@ def _execute_eager_core(
                                 headroom_bytes=previous_diagnostic.headroom_bytes,
                                 assumptions=previous_diagnostic.assumptions,
                                 boundary_operators=(
-                                    projection_planner.group_by_operators_by_node(
+                                    projection_planner.materialising_operators_by_node(
                                         order,
                                         node_map,
                                         relevant_edges=relevant_edges,

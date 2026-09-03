@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._execution_schemas import MAX_JSON_SAFE_INTEGER
 from haute._native_memory_limit import native_memory_backend_scope
-from haute._ram_estimate import MaterialisationEstimate
+from haute._ram_estimate import MaterialisationEstimate, estimate_materialisation_boundaries
 from haute.chunking import ChunkPlanRequest, chunk_plan
 from haute.errors import (
     ChunkPlanUnsupportedError,
@@ -47,6 +47,7 @@ from tests.conftest import (
     make_edge,
     make_file_input_config,
     make_graph,
+    make_output_config,
     make_ready_file_input_config,
 )
 
@@ -724,7 +725,21 @@ _UNPROVABLE_FAN_IN_REASONS = {
 }
 
 
-def _plan_unprovable_fan_in(profile: ExecutionProfile, graph):
+# ``combine(left, right)`` is an opaque helper, so that node materialises
+# nothing the planner can name. The declared join does call a boundary operator
+# (EXEC-P07), so it is a materialisation boundary whose ports are unreadable.
+_UNPROVABLE_FAN_IN_IS_BOUNDARY = {
+    "multi_parent_polars": False,
+    "dynamic_suffix_join": True,
+}
+
+
+def _plan_unprovable_fan_in(
+    profile: ExecutionProfile,
+    graph,
+    *,
+    execution_context: ExecutionContext | None = None,
+):
     return plan_execution_strategy(
         ProjectionRequest(
             graph=graph,
@@ -732,6 +747,7 @@ def _plan_unprovable_fan_in(profile: ExecutionProfile, graph):
             profile=profile,
             required_columns_by_node={"join": {"premium"}},
         ),
+        execution_context=execution_context,
         materialisation_estimate=None,
     )
 
@@ -742,9 +758,24 @@ def test_unprovable_fan_in_keeps_a_full_width_boundary_on_every_profile(
     profile: ExecutionProfile,
     graph_name: str,
 ) -> None:
-    result = _plan_unprovable_fan_in(profile, _UNPROVABLE_FAN_IN_GRAPHS[graph_name]())
+    """The fan-in projection stays full-width whatever the memory strategy is."""
+    graph = _UNPROVABLE_FAN_IN_GRAPHS[graph_name]()
+    is_boundary = _UNPROVABLE_FAN_IN_IS_BOUNDARY[graph_name]
 
-    assert result.strategy is ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY
+    if is_boundary:
+        # A join is a materialisation boundary, and these sources are unreadable,
+        # so its estimate is unavailable: a hard worker cap bounds the run.
+        with native_memory_backend_scope("rlimit"):
+            result = _plan_unprovable_fan_in(profile, graph, execution_context=_context(profile))
+        assert result.strategy is ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+        assert result.status is ExecutionStrategyStatus.WARNED
+        assert result.diagnostic.blocking_node_id == "join"
+        assert result.diagnostic.blocking_operator == "join"
+    else:
+        result = _plan_unprovable_fan_in(profile, graph)
+        assert result.strategy is ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY
+
+    # Whichever memory strategy applies, the fan-in projection is unchanged.
     assert result.projection_plan.needed_by_node["left"] is None
     assert result.projection_plan.needed_by_node["right"] is None
     assert _UNPROVABLE_FAN_IN_REASONS[graph_name] in {
@@ -752,15 +783,37 @@ def test_unprovable_fan_in_keeps_a_full_width_boundary_on_every_profile(
     }
 
 
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+def test_unprovable_fan_in_boundary_without_a_native_cap_is_rejected(
+    profile: ExecutionProfile,
+) -> None:
+    """No cap and no estimate leaves no bounded envelope to run the join inside."""
+    graph = _UNPROVABLE_FAN_IN_GRAPHS["dynamic_suffix_join"]()
+
+    with pytest.raises(GroupByExecutionUnsupportedError) as error:
+        _plan_unprovable_fan_in(profile, graph, execution_context=_context(profile))
+
+    assert error.value.reason_code == "materialisation_estimate_unavailable"
+    assert error.value.operator == "join"
+    assert error.value.node_id == "join"
+
+
 @pytest.mark.parametrize("graph_name", sorted(_UNPROVABLE_FAN_IN_GRAPHS))
 def test_unprovable_fan_in_plans_differ_only_in_the_configured_profile(
     graph_name: str,
 ) -> None:
     graph = _UNPROVABLE_FAN_IN_GRAPHS[graph_name]()
+    is_boundary = _UNPROVABLE_FAN_IN_IS_BOUNDARY[graph_name]
 
     payloads = []
     for profile in ExecutionProfile:
-        result = _plan_unprovable_fan_in(profile, graph)
+        if is_boundary:
+            with native_memory_backend_scope("rlimit"):
+                result = _plan_unprovable_fan_in(
+                    profile, graph, execution_context=_context(profile)
+                )
+        else:
+            result = _plan_unprovable_fan_in(profile, graph)
         payload = result.diagnostic.to_dict()
         assert payload.pop("profile") == profile.value
         payloads.append(
@@ -1304,10 +1357,14 @@ def test_automatic_group_by_estimate_targets_the_boundary_node(
         source: str,
         edge_demands,
         runtime_source_frames_by_node=None,
+        boundary_operators=None,
     ) -> Iterable[tuple[str, MaterialisationEstimate]]:
         assert source == "live"
         assert edge_demands
         assert runtime_source_frames_by_node is None
+        # The planner names the boundary operator so the estimator can apply
+        # that operator's measured memory factor.
+        assert boundary_operators == {"agg": ("group_by",)}
         requested = list(node_ids)
         estimated_nodes.extend(requested)
         return [(node_id, MaterialisationEstimate.available(0)) for node_id in requested]
@@ -1895,3 +1952,344 @@ def test_real_estimator_gap_is_conservative_under_a_cap_and_rejected_without_one
 
     assert error.value.reason_code == "materialisation_estimate_unavailable"
     assert "dynamic_unpivot" in error.value.remediation
+
+
+_NEW_BOUNDARY_SHAPES: tuple[tuple[str, str], ...] = (
+    ("sort", "df = df.sort('premium')"),
+    ("unique", "df = df.unique(subset=['segment'])"),
+    ("reverse", "df = df.reverse()"),
+    ("top_k", "df = df.top_k(5, by='premium')"),
+    ("bottom_k", "df = df.bottom_k(5, by='premium')"),
+    (
+        "over",
+        "df = df.with_columns(pl.col('premium').sum().over('segment').alias('segment_total'))",
+    ),
+)
+
+
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+@pytest.mark.parametrize(
+    ("operator", "transform_code"),
+    [pytest.param(op, code, id=op) for op, code in _NEW_BOUNDARY_SHAPES],
+)
+def test_global_operations_plan_an_estimated_materialisation_boundary(
+    tmp_path: Path,
+    profile: ExecutionProfile,
+    operator: str,
+    transform_code: str,
+) -> None:
+    """EXEC-P07: every measured materialising operator is an admitted boundary."""
+    graph = _shape_group_by_graph(
+        tmp_path / "rows.parquet", transform_code, _GROUP_BY_PREMIUM, "premium"
+    )
+
+    result = _plan_shape(profile, graph)
+
+    assert result.strategy is ExecutionStrategy.MATERIALISATION_BOUNDARY
+    assert result.status is ExecutionStrategyStatus.BOUNDARY
+    assert result.diagnostic.reason_code == "materialisation_admitted"
+    assert result.diagnostic.blocking_node_id == "shape"
+    assert result.diagnostic.blocking_operator == operator
+    assert isinstance(result.diagnostic.estimated_peak_bytes, int)
+    assert result.diagnostic.estimated_peak_bytes > 0
+    assert "shape" in result.projection_plan.materialisation_boundaries
+
+
+@pytest.mark.parametrize(
+    ("operator", "transform_code"),
+    [pytest.param(op, code, id=op) for op, code in _NEW_BOUNDARY_SHAPES],
+)
+def test_global_operation_boundary_plans_differ_only_in_the_configured_profile(
+    tmp_path: Path,
+    operator: str,
+    transform_code: str,
+) -> None:
+    graph = _shape_group_by_graph(
+        tmp_path / "rows.parquet", transform_code, _GROUP_BY_PREMIUM, "premium"
+    )
+
+    payloads = []
+    for profile in ExecutionProfile:
+        payload = _plan_shape(profile, graph).diagnostic.to_dict()
+        assert payload.pop("profile") == profile.value
+        payloads.append(payload)
+
+    assert all(payload == payloads[0] for payload in payloads)
+
+
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+def test_explode_is_conservative_under_a_cap_and_rejected_without_one(
+    tmp_path: Path,
+    profile: ExecutionProfile,
+) -> None:
+    """``explode`` expands rows by an unbounded factor, so it has no estimate."""
+    graph = _shape_group_by_graph(
+        tmp_path / "rows.parquet", "df = df.explode('l')", _GROUP_BY_PREMIUM, "premium"
+    )
+
+    with native_memory_backend_scope("rlimit"):
+        capped = _plan_shape(profile, graph)
+
+    assert capped.strategy is ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+    assert capped.status is ExecutionStrategyStatus.WARNED
+    assert capped.diagnostic.blocking_operator == "explode"
+    assert any("row_expansion_unbounded" in item for item in capped.diagnostic.assumptions)
+
+    with pytest.raises(GroupByExecutionUnsupportedError) as error:
+        _plan_shape(profile, graph)
+
+    assert error.value.reason_code == "materialisation_estimate_unavailable"
+    assert error.value.operator == "explode"
+    assert "row_expansion_unbounded" in error.value.remediation
+
+
+def test_an_expression_method_named_like_a_frame_boundary_is_not_a_boundary(
+    tmp_path: Path,
+) -> None:
+    """EXEC-P04's receiver rule survives: ``pl.col(...).list.sort()`` is an expression."""
+    graph = _shape_group_by_graph(
+        tmp_path / "rows.parquet",
+        "df = df.with_columns(pl.col('l').list.sort().alias('l'))",
+        _GROUP_BY_PREMIUM,
+        "premium",
+    )
+
+    result = _plan_shape(ExecutionProfile.PREVIEW_EAGER, graph)
+
+    assert result.diagnostic.blocking_node_id == "agg"
+    assert result.diagnostic.blocking_operator == "group_by"
+    assert "shape" not in result.projection_plan.materialisation_boundaries
+
+
+@pytest.mark.parametrize(
+    ("operator", "transform_code"),
+    [
+        ("shift", "df = df.shift(1)"),
+        ("unpivot", "df = df.unpivot(on=['premium', 'extra'], index=['segment'])"),
+    ],
+)
+def test_measured_streaming_operations_do_not_become_boundaries(
+    tmp_path: Path,
+    operator: str,
+    transform_code: str,
+) -> None:
+    graph = _shape_group_by_graph(
+        tmp_path / "rows.parquet",
+        transform_code,
+        "df = df.group_by('segment').agg(pl.col('value').sum().alias('total'))"
+        if operator == "unpivot"
+        else _GROUP_BY_PREMIUM,
+        "total" if operator == "unpivot" else "premium",
+    )
+
+    with native_memory_backend_scope("rlimit"):
+        result = _plan_shape(ExecutionProfile.PREVIEW_EAGER, graph)
+
+    assert result.diagnostic.blocking_node_id == "agg"
+    assert result.diagnostic.blocking_operator == "group_by"
+    assert "shape" not in result.projection_plan.materialisation_boundaries
+
+
+# ------------------------------------------------- EXEC-P07 cross joins (#3)
+
+
+def _two_source_graph(left_path: Path, right_path: Path, code: str):
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": name,
+                    "data": {
+                        "label": name,
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(path),
+                    },
+                }
+                for name, path in (("left", left_path), ("right", right_path))
+            ]
+            + [
+                {
+                    "id": "op",
+                    "data": {"label": "op", "nodeType": "polars", "config": {"code": code}},
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": make_output_config(["premium"], source_port="op"),
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("left", "op").model_dump(),
+                make_edge("right", "op").model_dump(),
+                make_edge("op", "out").model_dump(),
+            ],
+        }
+    )
+
+
+def _write_two_join_sources(tmp_path: Path) -> tuple[Path, Path]:
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    return left_path, right_path
+
+
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+def test_cross_join_is_conservative_under_a_cap_and_rejected_without_one(
+    tmp_path: Path,
+    profile: ExecutionProfile,
+) -> None:
+    """A cross join is a boundary, but its peak was never measured."""
+    left_path, right_path = _write_two_join_sources(tmp_path)
+    graph = _two_source_graph(left_path, right_path, "df = left.join(right, how='cross')")
+
+    with native_memory_backend_scope("rlimit"):
+        capped = _plan_shape(profile, graph)
+
+    assert capped.strategy is ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+    assert capped.status is ExecutionStrategyStatus.WARNED
+    assert capped.diagnostic.blocking_operator == "join"
+    assert any("cross_join_unmeasured" in item for item in capped.diagnostic.assumptions)
+
+    with pytest.raises(GroupByExecutionUnsupportedError) as error:
+        _plan_shape(profile, graph)
+
+    assert error.value.reason_code == "materialisation_estimate_unavailable"
+    assert "cross_join_unmeasured" in error.value.remediation
+
+
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+def test_measured_join_kinds_still_plan_an_estimated_boundary(
+    tmp_path: Path,
+    profile: ExecutionProfile,
+) -> None:
+    """The cross-join gap must not withdraw the measured joins' admission."""
+    left_path, right_path = _write_two_join_sources(tmp_path)
+    graph = _two_source_graph(
+        left_path, right_path, "df = left.join(right, on='segment', how='left', validate='m:1')"
+    )
+
+    result = _plan_shape(profile, graph)
+
+    assert result.strategy is ExecutionStrategy.MATERIALISATION_BOUNDARY
+    assert result.diagnostic.blocking_operator == "join"
+    assert isinstance(result.diagnostic.estimated_peak_bytes, int)
+    assert result.diagnostic.estimated_peak_bytes > 0
+
+
+# ------------------------------------ EXEC-P07 boundary-table coverage (#6)
+
+
+_MULTI_INPUT_BOUNDARY_SHAPES: tuple[tuple[str, str], ...] = (
+    ("join", "df = left.join(right, on='segment', how='left', validate='m:1')"),
+    ("join_asof", "df = left.join_asof(right, on='t')"),
+)
+
+
+@pytest.mark.parametrize("profile", list(ExecutionProfile))
+@pytest.mark.parametrize(
+    ("operator", "code"),
+    [pytest.param(op, code, id=op) for op, code in _MULTI_INPUT_BOUNDARY_SHAPES],
+)
+def test_multi_input_boundaries_plan_an_estimated_boundary_on_every_profile(
+    tmp_path: Path,
+    profile: ExecutionProfile,
+    operator: str,
+    code: str,
+) -> None:
+    """Multi-input boundaries belong in the positive cross-profile table too."""
+    left_path, right_path = _write_two_join_sources(tmp_path)
+    graph = _two_source_graph(left_path, right_path, code)
+
+    result = _plan_shape(profile, graph)
+
+    assert result.strategy is ExecutionStrategy.MATERIALISATION_BOUNDARY
+    assert result.status is ExecutionStrategyStatus.BOUNDARY
+    assert result.diagnostic.blocking_node_id == "op"
+    assert result.diagnostic.blocking_operator == operator
+    assert isinstance(result.diagnostic.estimated_peak_bytes, int)
+    assert result.diagnostic.estimated_peak_bytes > 0
+
+
+def test_the_positive_boundary_tables_cover_every_registered_boundary_method() -> None:
+    """The tables cannot silently miss an operator the registry admits."""
+    from haute._polars_operations import materialising_frame_methods
+
+    covered = (
+        {operator for operator, _code in _NEW_BOUNDARY_SHAPES}
+        | {operator for operator, _code in _MULTI_INPUT_BOUNDARY_SHAPES}
+        # ``group_by``/``groupby`` have their own suite above; ``explode`` has no
+        # estimate and is covered by its conservative/rejected test.
+        | {"group_by", "groupby", "explode"}
+    )
+    assert materialising_frame_methods() <= covered
+
+
+# --------------------------- EXEC-P07 nested-argument boundary costing (#3)
+
+
+@pytest.mark.parametrize(
+    ("code", "first_operator", "operators", "factor"),
+    [
+        pytest.param(
+            "df = left.join_asof(right.unique(subset=['t']), on='t')",
+            "unique",
+            "unique,join_asof",
+            350,
+            id="inner_factor_higher_than_the_outer_call",
+        ),
+        pytest.param(
+            "df = left.join_asof(right.top_k(5, by='t'), on='t')",
+            "top_k",
+            "top_k,join_asof",
+            250,
+            id="outer_factor_higher_than_the_inner_argument",
+        ),
+        pytest.param(
+            "df = left.unique(subset=['segment']).join(right, on='segment', how='left',"
+            " validate='m:1')",
+            "unique",
+            "unique,join",
+            350,
+            id="high_factor_on_the_receiver",
+        ),
+    ],
+)
+def test_a_nested_boundary_argument_is_blamed_first_and_costed_at_the_maximum(
+    tmp_path: Path,
+    code: str,
+    first_operator: str,
+    operators: str,
+    factor: int,
+) -> None:
+    """A boundary nested in an argument runs before the call that receives it.
+
+    ``join`` (150) never hides a heavier inner operator: the diagnostic blames
+    the first operator evaluated, and the estimate carries the largest factor of
+    the whole chain.
+    """
+    left_path, right_path = _write_two_join_sources(tmp_path)
+    graph = _two_source_graph(left_path, right_path, code)
+
+    result = _plan_shape(ExecutionProfile.PREVIEW_EAGER, graph)
+
+    assert result.strategy is ExecutionStrategy.MATERIALISATION_BOUNDARY
+    assert result.diagnostic.blocking_node_id == "op"
+    assert result.diagnostic.blocking_operator == first_operator
+    assumptions = list(result.diagnostic.assumptions)
+    assert f"op: boundary_operator={first_operator}" in assumptions
+    assert f"op: boundary_operators={operators}" in assumptions
+    assert f"op: materialisation_factor_basis_points={factor}" in assumptions
+
+    raw = result.diagnostic.raw_estimated_peak_bytes
+    assert isinstance(raw, int) and raw > 0
+    # The recorded factor is the one actually applied to the estimate.
+    [(_, unfactored)] = list(
+        estimate_materialisation_boundaries(graph, ["op"], boundary_operators={"op": ()})
+    )
+    assert unfactored.estimated_peak_bytes is not None
+    assert raw == (unfactored.estimated_peak_bytes * factor + 99) // 100

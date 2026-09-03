@@ -233,7 +233,7 @@ def test_explore_cache_materialises_admitted_upstream_group_by(
     assert premium["max_value"] == "40"
     strategy = final["execution_metrics"]["execution_strategy"]
     assert strategy["profile"] == "explore_analysis"
-    assert strategy["reason_code"] == "group_by_materialisation_admitted"
+    assert strategy["reason_code"] == "materialisation_admitted"
     assert strategy["estimated_peak_bytes"] <= strategy["headroom_bytes"]
 
 

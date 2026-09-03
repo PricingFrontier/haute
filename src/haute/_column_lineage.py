@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import lru_cache
 from types import MappingProxyType
@@ -83,6 +83,9 @@ class ColumnLineageAnalysis:
     unsupported_operation: str | None = None
 
 
+_NO_OPERANDS: Mapping[str, int] = MappingProxyType({})
+
+
 @dataclass(frozen=True, slots=True)
 class RowCardinalityAnalysis:
     """Finite row-count proof for one accepted linear frame program."""
@@ -93,6 +96,31 @@ class RowCardinalityAnalysis:
     evidence: tuple[str, ...]
     reason: str
     unsupported_operation: str | None = None
+    operand_peak_rows: int | None = None
+    """Largest frame any single operation in the program *consumes*.
+
+    A join holds its input ports rather than its output, so a memory estimate
+    for the join itself is sized from this rather than from the output bound.
+    In a chain the later join consumes the earlier join's result, so that
+    result — the many-to-many product, if the keys are undeclared — is included
+    here and the chain is not mistaken for its original ports.
+    """
+
+    has_cross_join: bool = False
+    """Whether the program contains a cross join.
+
+    EXEC-P07 measured inner/left/asof joins; a cross join's peak was never
+    probed, so it must not inherit their admission.
+    """
+
+    operand_reference_counts: Mapping[str, int] = field(default_factory=lambda: _NO_OPERANDS)
+    """How many logical join operands each input name supplies.
+
+    One graph edge can be resident more than once: ``df.join(df, ...)`` holds
+    the same frame as both ports, and a lookup joined twice in a chain is held
+    twice. The estimator charges each port's width once per reference, so a
+    self-join is not costed as a single port.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +137,27 @@ class _ParseFailure:
 
 
 _ROW_ONLY_METHODS = frozenset({"head", "tail", "limit", "slice"})
+_CARDINALITY_ROW_ONLY_METHODS = frozenset({"reverse", "top_k", "bottom_k", "interpolate"})
+# Every ``join_asof`` argument that cannot change its "at most one right row per
+# left row" contract. Anything else leaves the closed model.
+_JOIN_ASOF_KEYWORDS = frozenset(
+    {
+        "on",
+        "left_on",
+        "right_on",
+        "by",
+        "by_left",
+        "by_right",
+        "strategy",
+        "suffix",
+        "tolerance",
+        "allow_parallel",
+        "force_parallel",
+        "coalesce",
+        "allow_exact_matches",
+        "check_sortedness",
+    }
+)
 _SELECT_METHODS = frozenset({"select", "select_seq"})
 _SUPPORTED_JOIN_HOW = frozenset({"inner", "left", "semi", "anti"})
 _CARDINALITY_JOIN_HOW = frozenset({"inner", "left", "right", "full", "semi", "anti", "cross"})
@@ -476,6 +525,30 @@ def _when_columns(call: ast.Call) -> frozenset[str] | None:
     return frozenset(columns)
 
 
+def _over_columns(call: ast.Call) -> frozenset[str] | None:
+    """Return the columns one ``Expr.over`` partitions (and orders) by.
+
+    Only ``partition_by`` and ``order_by`` are accepted, positionally or by
+    keyword, and only as literal column names. Every other keyword is refused:
+    ``mapping_strategy='explode'`` in particular changes the row count, which
+    the row-bounded expression model must never admit silently.
+    """
+    columns: set[str] = set()
+    nodes: list[ast.AST] = list(call.args)
+    for keyword in call.keywords:
+        if keyword.arg not in {"partition_by", "order_by"}:
+            return None
+        nodes.append(keyword.value)
+    if not nodes:
+        return None
+    for node in nodes:
+        parsed = _literal_columns(node)
+        if parsed is None:
+            return None
+        columns.update(parsed)
+    return frozenset(columns)
+
+
 def _horizontal_columns(call: ast.Call) -> frozenset[str] | None:
     """Return literal column references passed to one horizontal helper.
 
@@ -554,6 +627,16 @@ def _referenced_columns(node: ast.AST) -> frozenset[str] | None:
                 method in _LITERAL_STRING_ARGUMENT_METHODS.get(child.func.value.attr, frozenset())
             )
             if method == "alias" or is_name_suffix or is_literal_argument_method:
+                continue
+            if method == "over":
+                # ``over`` names partition (and ordering) columns, so its bare
+                # strings are column references rather than literals. Any other
+                # keyword — ``mapping_strategy`` above all, which can expand
+                # rows — leaves the closed model.
+                partitions = _over_columns(child)
+                if partitions is None:
+                    return None
+                columns.update(partitions)
                 continue
             # Polars expression methods are inconsistent about whether bare
             # strings are literals or column expressions (for example,
@@ -915,6 +998,120 @@ def _parse_join(
     )
 
 
+_ROW_NON_INCREASING_FRAME_METHODS = frozenset(
+    {
+        "sort",
+        "reverse",
+        "top_k",
+        "bottom_k",
+        "head",
+        "tail",
+        "limit",
+        "slice",
+        "unique",
+        "filter",
+        "drop",
+        "drop_nulls",
+        "rename",
+        "cast",
+        "with_row_index",
+    }
+)
+
+# A projection is row-non-increasing only when it projects: ``select`` and
+# ``with_columns`` evaluate arbitrary expressions, and a range constructor
+# (``select(pl.int_range(0, 1_000_000))``) synthesises rows out of nothing.
+_ROW_NON_INCREASING_PROJECTION_METHODS = frozenset({"select", "with_columns"})
+
+
+def _is_plain_column_expression(node: ast.AST) -> bool:
+    """Whether ``node`` only ever names an existing column.
+
+    A bare string, ``pl.col('x')``, and either of those with a trailing
+    ``.alias(...)`` read a column and cannot change the frame's height.
+    """
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return all(_is_plain_column_expression(element) for element in node.elts)
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str) and bool(node.value)
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Attribute):
+            return False
+        if node.func.attr == "alias":
+            return (
+                len(node.args) == 1
+                and not node.keywords
+                and _literal_string(node.args[0]) is not None
+                and _is_plain_column_expression(node.func.value)
+            )
+        return _polars_call_name(node) == "col" and _pl_col_name(node) is not None
+    return False
+
+
+def _projects_only_existing_columns(call: ast.Call) -> bool:
+    arguments = [*call.args, *(keyword.value for keyword in call.keywords)]
+    return bool(arguments) and all(_is_plain_column_expression(node) for node in arguments)
+
+
+def _row_non_increasing_chain_input(
+    node: ast.AST,
+    input_names: frozenset[str],
+) -> str | None:
+    """Return the input name bounding ``node``'s row count, or ``None``.
+
+    A right-hand operand is accepted when it is an input frame, optionally
+    followed by methods that can only preserve or reduce its rows. That input's
+    row count is then an upper bound for the operand, which is all a peak-memory
+    bound needs. Anything else (an expanding call, an unknown helper) is left
+    unresolved rather than guessed at.
+    """
+    current = node
+    while isinstance(current, ast.Call):
+        if not isinstance(current.func, ast.Attribute):
+            return None
+        method = current.func.attr
+        if method in _ROW_NON_INCREASING_PROJECTION_METHODS:
+            if not _projects_only_existing_columns(current):
+                return None
+        elif method not in _ROW_NON_INCREASING_FRAME_METHODS:
+            return None
+        current = current.func.value
+    if not isinstance(current, ast.Name) or current.id not in input_names:
+        return None
+    return current.id
+
+
+def _parse_join_asof(
+    call: ast.Call,
+    input_names: frozenset[str],
+) -> LineageOperation | _ParseFailure:
+    """Bound an as-of join's row count (cardinality analysis only).
+
+    A Polars as-of join matches each left row against at most one right row, so
+    its output row count is exactly a left join's with a unique right key,
+    whatever its keys, ``by`` groups, ``strategy``, or ``tolerance`` say — and
+    the right frame is still resident, so it enters the peak. Column lineage
+    has no transfer for it and never reaches here, so the projection planner
+    keeps the boundary at complete width.
+    """
+    if len(call.args) != 1:
+        return _ParseFailure("dynamic_join_asof_input", "join_asof")
+    right_input = _row_non_increasing_chain_input(call.args[0], input_names)
+    if right_input is None:
+        return _ParseFailure("dynamic_join_asof_input", "join_asof")
+    for keyword in call.keywords:
+        if keyword.arg not in _JOIN_ASOF_KEYWORDS:
+            return _ParseFailure("unsupported_join_asof_option", "join_asof")
+    return LineageOperation(
+        kind=LineageOperationKind.JOIN,
+        method="join_asof",
+        right_input=right_input,
+        how="left",
+        validate="m:1",
+        suffix="_right",
+    )
+
+
 def _is_literal_none(node: ast.AST) -> bool:
     return isinstance(node, ast.Constant) and node.value is None
 
@@ -1203,6 +1400,17 @@ def _parse_call_sequence(
             )
         elif method in _ROW_ONLY_METHODS:
             operations.append(LineageOperation(kind=LineageOperationKind.ROW_ONLY, method=method))
+        elif cardinality_only and method in _CARDINALITY_ROW_ONLY_METHODS:
+            # Row counts only: ``reverse`` permutes the frame and ``top_k`` /
+            # ``bottom_k`` truncate it, so the current bound still holds. Column
+            # lineage stays stricter because it would also have to demand the
+            # ranking key, which these cardinality-only entries never resolve.
+            operations.append(LineageOperation(kind=LineageOperationKind.ROW_ONLY, method=method))
+        elif cardinality_only and method == "join_asof":
+            parsed_asof = _parse_join_asof(call, input_names)
+            if isinstance(parsed_asof, _ParseFailure):
+                return [], parsed_asof
+            operations.append(parsed_asof)
         elif method == "sort":
             by_nodes = list(call.args)
             for keyword in call.keywords:
@@ -1680,6 +1888,18 @@ def analyze_polars_lineage(
             return _unsupported("unsupported_operation", operation.method)
 
     demands_by_input[program.root_input].update(demand)
+    # The root input's rows form the output, so it must always carry at least
+    # one column: a zero-column scan is an empty frame, and a demand that names
+    # only generated columns (a row index, a bare row count) would otherwise
+    # drop every row in silence. The carrier is the input's first column in
+    # sorted order, so the projection stays deterministic and one column wide.
+    # Other inputs keep an exact empty demand (an unused port has no rows to
+    # carry; a joined port always demands its keys).
+    root_demand = demands_by_input[program.root_input]
+    if not root_demand:
+        root_schema = normalised_inputs.get(program.root_input)
+        if root_schema:
+            root_demand.add(min(root_schema))
     return ColumnLineageAnalysis(
         supported=True,
         exact_output_columns=exact_output,
@@ -1721,6 +1941,10 @@ def analyze_polars_cardinality(
 
     current = normalised_inputs[program.root_input]
     peak = current
+    operand_peak = current
+    has_cross_join = False
+    # The root input is the initial left operand of the whole program.
+    operand_references: dict[str, int] = {program.root_input: 1}
     evidence: list[str] = [
         f"cardinality_root_input={program.root_input}",
         f"cardinality_root_upper_bound={current}",
@@ -1731,6 +1955,14 @@ def analyze_polars_cardinality(
         if operation.kind is LineageOperationKind.JOIN:
             assert operation.right_input is not None
             assert operation.how is not None
+            if operation.how == "cross":
+                has_cross_join = True
+            operand_references[operation.right_input] = (
+                operand_references.get(operation.right_input, 0) + 1
+            )
+            # The frame this join consumes is whatever the chain holds now, not
+            # the program's original root input.
+            operand_peak = max(operand_peak, current, normalised_inputs[operation.right_input])
             bound = join_cardinality_upper_bound(
                 current,
                 normalised_inputs[operation.right_input],
@@ -1741,6 +1973,7 @@ def analyze_polars_cardinality(
             peak = max(peak, normalised_inputs[operation.right_input], current)
             evidence.extend(f"operation[{index}].{item}" for item in bound.evidence)
         elif operation.kind in {LineageOperationKind.SELECT, LineageOperationKind.WITH_COLUMNS}:
+            operand_peak = max(operand_peak, current)
             # A scalar expression materialises one row even over an empty
             # frame. For non-empty inputs the accepted expression vocabulary
             # is bounded by the current height.
@@ -1748,6 +1981,7 @@ def analyze_polars_cardinality(
             peak = max(peak, current)
             evidence.append(f"operation[{index}].scalar_empty_frame_upper_bound={current}")
         elif operation.kind is LineageOperationKind.UNPIVOT:
+            operand_peak = max(operand_peak, current)
             # Cardinality parsing accepts ``unpivot`` only with a literal
             # non-empty ``on`` list, which is exactly the expansion factor.
             assert operation.subset_columns is not None
@@ -1771,6 +2005,9 @@ def analyze_polars_cardinality(
         evidence=tuple(evidence),
         reason="cardinality_proven",
         unsupported_operation=None,
+        operand_peak_rows=operand_peak,
+        has_cross_join=has_cross_join,
+        operand_reference_counts=MappingProxyType(dict(operand_references)),
     )
 
 

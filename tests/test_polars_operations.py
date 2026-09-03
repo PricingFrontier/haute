@@ -18,7 +18,10 @@ from haute._polars_operations import (
     PolarsOperation,
     chunk_admitted_names,
     lineage_supported_frame_methods,
+    materialisation_factor_basis_points,
+    materialising_expression_methods,
     materialising_frame_methods,
+    measured_operation_names,
     operation,
     registered_names,
     unbounded_expansion_expression_methods,
@@ -43,6 +46,8 @@ def _entry(**overrides: object) -> PolarsOperation:
         "expansion": "none",
         "chunk_admitted": False,
         "lineage_supported": False,
+        "materialisation_factor_basis_points": 100,
+        "memory_evidence": "none",
         "note": "probe entry",
     }
     fields.update(overrides)
@@ -83,8 +88,31 @@ def test_same_name_can_carry_different_classes_per_receiver() -> None:
         ),
         pytest.param(
             {"policy": OperationPolicy.MATERIALISATION_BOUNDARY},
-            "must be fan-in/stateful",
-            id="boundary_non_fan_in",
+            "must be order-dependent, row-expanding, or fan-in/stateful",
+            id="boundary_on_row_local_class",
+        ),
+        pytest.param(
+            {
+                "operation_class": OperationClass.FAN_IN_STATEFUL,
+                "policy": OperationPolicy.MATERIALISATION_BOUNDARY,
+            },
+            "may only be set from a measured peak",
+            id="boundary_without_measured_evidence",
+        ),
+        pytest.param(
+            {
+                "operation_class": OperationClass.FAN_IN_STATEFUL,
+                "policy": OperationPolicy.MATERIALISATION_BOUNDARY,
+                "materialisation_factor_basis_points": 50,
+                "memory_evidence": "measured",
+            },
+            "can never shrink it below 100 basis points",
+            id="boundary_factor_below_base",
+        ),
+        pytest.param(
+            {"materialisation_factor_basis_points": 200},
+            "must not carry an operator memory factor",
+            id="factor_on_streaming_policy",
         ),
         pytest.param(
             {"expansion": "unbounded"},
@@ -161,8 +189,108 @@ def test_lineage_unbounded_expansion_set_comes_from_the_registry() -> None:
     assert _ROW_EXPANDING_EXPRESSION_METHODS == unbounded_expansion_expression_methods()
 
 
-def test_group_by_is_the_only_materialisation_boundary() -> None:
-    assert materialising_frame_methods() == {"group_by", "groupby"}
+def test_materialisation_boundary_frame_methods_are_the_measured_global_operations() -> None:
+    """EXEC-P07 admits exactly the frame methods measured to materialise."""
+    assert materialising_frame_methods() == {
+        "bottom_k",
+        "explode",
+        "group_by",
+        "groupby",
+        "join",
+        "join_asof",
+        "reverse",
+        "sort",
+        "top_k",
+        "unique",
+    }
+
+
+def test_measured_streaming_global_operations_are_not_boundaries() -> None:
+    """Operations measured at or below the streaming floor keep streaming."""
+    for name in (
+        "unpivot",
+        "melt",
+        "rolling",
+        "group_by_dynamic",
+        "shift",
+        "merge_sorted",
+        "interpolate",
+        "filter",
+        "join_where",
+        "pivot",
+        "upsample",
+        "gather",
+        "sample",
+    ):
+        entry = operation(OperationReceiver.FRAME, name)
+        assert entry is not None, name
+        assert entry.policy is not OperationPolicy.MATERIALISATION_BOUNDARY, name
+
+
+def test_over_is_the_only_materialisation_boundary_expression_method() -> None:
+    assert materialising_expression_methods() == {"over"}
+
+
+def test_boundary_operator_memory_factors_are_pinned_to_the_evidence() -> None:
+    """The factors come from measured peaks; changing one must be deliberate."""
+    assert {
+        name: materialisation_factor_basis_points(name)
+        for name in (
+            *materialising_frame_methods(),
+            *materialising_expression_methods(),
+        )
+    } == {
+        "sort": 300,
+        "unique": 350,
+        "join": 150,
+        "join_asof": 250,
+        "over": 250,
+        "top_k": 100,
+        "bottom_k": 100,
+        "reverse": 250,
+        "group_by": 100,
+        "groupby": 100,
+        # explode's estimate is unavailable, so its factor is never applied.
+        "explode": 100,
+    }
+
+
+def test_every_boundary_entry_carries_an_evidence_class_in_its_note() -> None:
+    for entry in POLARS_OPERATIONS.values():
+        if entry.policy is OperationPolicy.MATERIALISATION_BOUNDARY:
+            assert "materialises:" in entry.note or "materialisation boundary" in entry.note, (
+                entry.name
+            )
+
+
+def test_streaming_frame_methods_record_evidence_or_its_absence() -> None:
+    """Every global operation EXEC-P07 measured cites its evidence class."""
+    for name in (
+        "unpivot",
+        "melt",
+        "rolling",
+        "group_by_dynamic",
+        "shift",
+        "merge_sorted",
+        "interpolate",
+        "filter",
+        "join_where",
+        "pivot",
+        "upsample",
+        "gather",
+        "sample",
+    ):
+        entry = operation(OperationReceiver.FRAME, name)
+        assert entry is not None, name
+        assert entry.policy is OperationPolicy.STREAMING or entry.policy is (
+            OperationPolicy.ROW_LOCAL
+        ), name
+        assert "streams:" in entry.note or "no evidence, streaming kept" in entry.note, entry.name
+
+
+def test_unregistered_operator_carries_no_memory_surcharge() -> None:
+    assert materialisation_factor_basis_points("with_columns") == 100
+    assert materialisation_factor_basis_points("not_a_polars_operation") == 100
 
 
 def test_lineage_supported_frame_methods_match_the_parser_vocabulary() -> None:
@@ -224,3 +352,41 @@ def test_opaque_method_is_chunk_rejected_and_lineage_unsupported() -> None:
     analysis = analyze_polars_lineage("df = df.collect()", {"df": frozenset({"a"})})
     assert not analysis.supported
     assert analysis.unsupported_operation == "collect"
+
+
+def test_every_measured_operation_is_named_by_the_evidence_accessor() -> None:
+    """The certification lane derives its candidate set from this accessor."""
+    assert measured_operation_names(OperationReceiver.FRAME) == {
+        "sort",
+        "unique",
+        "join",
+        "join_asof",
+        "top_k",
+        "bottom_k",
+        "reverse",
+        "explode",
+        "unpivot",
+        "rolling",
+        "group_by_dynamic",
+        "shift",
+        "merge_sorted",
+        "interpolate",
+        "filter",
+        "group_by",
+        "groupby",
+    }
+    assert measured_operation_names(OperationReceiver.EXPR) == {"over"}
+
+
+def test_every_materialisation_boundary_carries_measured_evidence() -> None:
+    """A boundary policy is an evidence claim, so it cannot be asserted."""
+    for entry in POLARS_OPERATIONS.values():
+        if entry.policy is OperationPolicy.MATERIALISATION_BOUNDARY:
+            assert entry.memory_evidence == "measured", entry.name
+
+
+def test_unmeasured_operations_declare_no_evidence() -> None:
+    for name in ("join_where", "pivot", "upsample", "gather", "sample", "melt"):
+        entry = operation(OperationReceiver.FRAME, name)
+        assert entry is not None, name
+        assert entry.memory_evidence == "none", name

@@ -40,7 +40,7 @@ from haute.execution import plan_prepared_execution_strategy
 from haute.projection import (
     ProjectionEdgeKey,
     _children_of,
-    group_by_operators_by_node,
+    materialising_operators_by_node,
     prepare_graph,
 )
 
@@ -795,7 +795,7 @@ def _plan_chunk_sizes(
         request,
         projection,
         has_group_by=bool(
-            group_by_operators_by_node(
+            materialising_operators_by_node(
                 prepared.order,
                 prepared.node_map,
                 relevant_edges=prepared.relevant_edges,

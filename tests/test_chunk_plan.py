@@ -23,7 +23,7 @@ from haute.errors import (
     ChunkUserCodeUnsupportedError,
 )
 from haute.graph_utils import NodeType
-from haute.projection import group_by_operators_by_node, prepare_graph
+from haute.projection import materialising_operators_by_node, prepare_graph
 from tests.conftest import make_edge, make_graph, make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -102,7 +102,7 @@ def test_chunk_group_by_evidence_is_receiver_aware(tmp_path: Path) -> None:
     expression_prepared = _prepared(
         "stats = pl.col('premium').list.group_by('quote_id')\ndf = df.filter(pl.col('premium') > 0)"
     )
-    assert not group_by_operators_by_node(
+    assert not materialising_operators_by_node(
         expression_prepared.order,
         expression_prepared.node_map,
         relevant_edges=expression_prepared.relevant_edges,
@@ -113,7 +113,7 @@ def test_chunk_group_by_evidence_is_receiver_aware(tmp_path: Path) -> None:
         "stats = lookup.group_by('quote_id')\ndf = df.filter(pl.col('premium') > 0)"
     )
     assert dict(
-        group_by_operators_by_node(
+        materialising_operators_by_node(
             preamble_prepared.order,
             preamble_prepared.node_map,
             relevant_edges=preamble_prepared.relevant_edges,
@@ -124,7 +124,7 @@ def test_chunk_group_by_evidence_is_receiver_aware(tmp_path: Path) -> None:
         "df = df.group_by('quote_id').agg(pl.col('premium').sum().alias('premium'))"
     )
     assert dict(
-        group_by_operators_by_node(
+        materialising_operators_by_node(
             frame_prepared.order,
             frame_prepared.node_map,
             relevant_edges=frame_prepared.relevant_edges,
@@ -885,3 +885,61 @@ def test_chunk_plan_raises_chunk_user_code_unsupported_with_the_decision_payload
     # Callers that route to the full executor still catch the base class.
     with pytest.raises(ChunkPlanUnsupportedError):
         chunk_plan(request)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = df.sort('premium')",
+        "df = df.unique(subset=['quote_id'])",
+        "df = df.reverse()",
+        "df = df.top_k(5, by='premium')",
+        "df = df.bottom_k(5, by='premium')",
+        "df = df.explode('l')",
+        "df = df.with_columns(pl.col('premium').sum().over('quote_id').alias('total'))",
+        "df = df.join(df, on='quote_id')",
+        "df = df.join_asof(df, on='premium')",
+    ],
+)
+def test_every_materialisation_boundary_operator_is_rejected_in_the_chunk_suffix(
+    tmp_path: Path,
+    code: str,
+) -> None:
+    """EXEC-P07 boundaries materialise the whole frame, so no chunk suffix admits one."""
+    path = _write_projected_source(tmp_path)
+    graph = make_graph(
+        {
+            "nodes": [
+                _node("source", "dataInput", {"path": str(path)}),
+                _node("shape", "polars", {"code": code}),
+                _node("out", "output", make_output_config(["premium"])),
+            ],
+            "edges": [
+                make_edge("source", "shape").model_dump(),
+                make_edge("shape", "out").model_dump(),
+            ],
+        }
+    )
+
+    with pytest.raises(ChunkUserCodeUnsupportedError):
+        chunk_plan(ChunkPlanRequest(graph=graph, target_node_id="out", chunk_size=10))
+
+
+def test_the_chunk_suffix_table_covers_every_registered_boundary_method() -> None:
+    """A newly admitted boundary cannot slip into the chunk suffix untested."""
+    from haute._polars_operations import materialising_frame_methods
+
+    covered = {
+        "sort",
+        "unique",
+        "reverse",
+        "top_k",
+        "bottom_k",
+        "explode",
+        "join",
+        "join_asof",
+        # group_by has its own dedicated chunk-suffix rejection tests above.
+        "group_by",
+        "groupby",
+    }
+    assert materialising_frame_methods() <= covered

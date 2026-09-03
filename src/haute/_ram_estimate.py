@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
@@ -43,9 +43,14 @@ from haute._edge_join import (
     edge_join_key_columns_by_role,
     resolve_edge_join_role_indices,
 )
-from haute._graph_utils import build_parents_of, edge_input_name
+from haute._graph_utils import (
+    build_parents_of,
+    edge_input_name,
+    resolve_input_mapping_names,
+)
 from haute._host_memory import available_ram_bytes, require_positive_available_ram
 from haute._logging import get_logger
+from haute._polars_operations import materialisation_factor_basis_points
 from haute._polars_utils import read_parquet_metadata
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import ConfigError
@@ -198,6 +203,9 @@ class _ResolvedTargetColumns(NamedTuple):
     width_columns: Mapping[str, str]
 
 
+_NO_OPERANDS: Mapping[str, int] = MappingProxyType({})
+
+
 @dataclass(frozen=True, slots=True)
 class _ResolvedRowCardinality:
     """One graph node's finite output/peak row proof, or a blocking reason."""
@@ -207,6 +215,14 @@ class _ResolvedRowCardinality:
     evidence: tuple[str, ...] = ()
     unavailable_reason: str | None = None
     blocking_node_id: str | None = None
+    operand_peak_rows: int | None = None
+    """Largest frame one operation of this node's own program consumes."""
+
+    has_cross_join: bool = False
+    """Whether this node's own program contains an unmeasured cross join."""
+
+    operand_reference_counts: Mapping[str, int] = field(default_factory=lambda: _NO_OPERANDS)
+    """How many logical join operands each of this node's input names supplies."""
 
     @property
     def available(self) -> bool:
@@ -218,6 +234,10 @@ class _ResolvedRowCardinality:
         output_rows: int,
         peak_rows: int,
         evidence: Iterable[str],
+        *,
+        operand_peak_rows: int | None = None,
+        has_cross_join: bool = False,
+        operand_reference_counts: Mapping[str, int] = _NO_OPERANDS,
     ) -> _ResolvedRowCardinality:
         if (
             not isinstance(output_rows, int)
@@ -232,6 +252,11 @@ class _ResolvedRowCardinality:
             output_rows=output_rows,
             peak_rows=peak_rows,
             evidence=_bounded_cardinality_evidence(evidence),
+            # Without a node-local program the node materialises whatever it
+            # emits, so its own peak is the operand it consumes.
+            operand_peak_rows=peak_rows if operand_peak_rows is None else operand_peak_rows,
+            has_cross_join=has_cross_join,
+            operand_reference_counts=operand_reference_counts,
         )
 
     @classmethod
@@ -757,7 +782,89 @@ def _cardinality_from_analysis(
             *prior_evidence,
             *(f"node={node_id}:{item}" for item in analysis.evidence),
         ),
+        # Both are facts about this node's own program: an ancestor's join does
+        # not make this node's boundary a cross join, and its operands are
+        # already folded into this node's input bounds.
+        operand_peak_rows=analysis.operand_peak_rows,
+        has_cross_join=analysis.has_cross_join,
+        operand_reference_counts=analysis.operand_reference_counts,
     )
+
+
+def _cardinality_name_bindings(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    edges: Sequence[GraphEdge],
+    *,
+    alias_first_as_df: bool = False,
+) -> Mapping[str, str] | None:
+    """Map every name the node's code can see to the edge id it binds.
+
+    This is the single authority for the runtime naming rules — the edge input
+    name, then ``inputMapping`` aliases, then the ``df`` alias for the first
+    input — so the cardinality inputs and the estimator's operand accounting
+    cannot disagree about which edge an alias refers to.
+
+    The alias relation itself is validated by the same canonical resolver the
+    executor uses, so a mapping the runtime would reject (a stale value, two
+    logical names sharing one edge, or two edges collapsing onto one logical
+    name) raises here rather than yielding a plausible-looking estimate for a
+    graph that cannot run.
+    """
+
+    by_name: dict[str, str] = {}
+    source_names: list[str] = []
+    for edge in edges:
+        try:
+            name = edge_input_name(edge, index.node_map[edge.source])
+        except (KeyError, ValueError):
+            return None
+        source_names.append(name)
+        previous = by_name.get(name)
+        if previous is not None and previous != edge.id:
+            return None
+        by_name[name] = edge.id
+
+    raw_mapping = node.data.config.get("inputMapping")
+    # Every non-``None`` value is validated, exactly as runtime code generation
+    # does: a falsey non-mapping (``[]``, ``""``, ``0``) is malformed, not absent.
+    if raw_mapping is not None:
+        # A mapping that is not even shaped like one leaves nothing to analyse,
+        # so the estimate is unavailable rather than an error: planning must
+        # stay able to describe a graph it cannot measure.
+        if not isinstance(raw_mapping, Mapping) or any(
+            not isinstance(logical, str)
+            or not logical
+            or not isinstance(current, str)
+            or not current
+            for logical, current in raw_mapping.items()
+        ):
+            return None
+        # The *relation* is the runtime's contract, and
+        # ``resolve_input_mapping_names`` owns it: a stale value, two logical
+        # names sharing one edge, or two edges collapsing onto one logical name
+        # raise here exactly as they do in the executor. Estimating such a graph
+        # would put a confident number on a run that cannot start.
+        for logical, edge in zip(
+            resolve_input_mapping_names(source_names, dict(raw_mapping)),
+            edges,
+            strict=True,
+        ):
+            existing = by_name.get(logical)
+            if existing is not None and existing != edge.id:
+                return None
+            by_name[logical] = edge.id
+
+    if alias_first_as_df:
+        if not edges:
+            return None
+        first_edge = edges[0]
+        existing = by_name.get("df")
+        if existing is not None and existing != first_edge.id:
+            return None
+        by_name["df"] = first_edge.id
+
+    return by_name
 
 
 def _named_cardinality_inputs(
@@ -769,43 +876,20 @@ def _named_cardinality_inputs(
 ) -> Mapping[str, _ResolvedRowCardinality] | None:
     """Mirror runtime edge/inputMapping names for AST cardinality analysis."""
 
-    by_name: dict[str, tuple[str, _ResolvedRowCardinality]] = {}
-    for edge, result in edge_results:
-        try:
-            name = edge_input_name(edge, index.node_map[edge.source])
-        except (KeyError, ValueError):
-            return None
-        previous = by_name.get(name)
-        if previous is not None and previous[0] != edge.id:
-            return None
-        by_name[name] = (edge.id, result)
-
-    raw_mapping = node.data.config.get("inputMapping")
-    if raw_mapping:
-        if not isinstance(raw_mapping, Mapping):
-            return None
-        for alias, current_name in raw_mapping.items():
-            if (
-                not isinstance(alias, str)
-                or not alias
-                or not isinstance(current_name, str)
-                or current_name not in by_name
-            ):
-                return None
-            current = by_name[current_name]
-            existing = by_name.get(alias)
-            if existing is not None and existing[0] != current[0]:
-                return None
-            by_name[alias] = current
-
-    if alias_first_as_df:
-        if not edge_results:
-            return None
-        first_edge, first_result = edge_results[0]
-        existing = by_name.get("df")
-        if existing is not None and existing[0] != first_edge.id:
-            return None
-        by_name["df"] = (first_edge.id, first_result)
+    bindings = _cardinality_name_bindings(
+        index,
+        node,
+        [edge for edge, _result in edge_results],
+        alias_first_as_df=alias_first_as_df,
+    )
+    if bindings is None:
+        return None
+    result_by_edge = {edge.id: result for edge, result in edge_results}
+    by_name: dict[str, tuple[str, _ResolvedRowCardinality]] = {
+        name: (edge_id, result_by_edge[edge_id])
+        for name, edge_id in bindings.items()
+        if edge_id in result_by_edge
+    }
 
     return MappingProxyType({name: result for name, (_edge_id, result) in by_name.items()})
 
@@ -1714,6 +1798,7 @@ def estimate_materialisation_boundaries(
     source: str = "live",
     edge_demands: Mapping[ProjectionEdgeKey, frozenset[str] | None] | None = None,
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    boundary_operators: Mapping[str, Sequence[str]] | None = None,
 ) -> Iterator[tuple[str, MaterialisationEstimate]]:
     """Yield boundary estimates through one request-local metadata index.
 
@@ -1722,6 +1807,9 @@ def estimate_materialisation_boundaries(
     result still shares all graph, schema, and source-metadata memoisation.
     ``runtime_source_frames_by_node`` supplies request-local source metadata
     for injected DataFrames, without reading the replaced configured path.
+    ``boundary_operators`` names the planner's boundary operator per node so the
+    estimate carries that operator's measured memory factor; a node without one
+    is estimated with no operator surcharge.
     """
 
     estimate_index = _EstimateGraphIndex.build(
@@ -1738,8 +1826,57 @@ def estimate_materialisation_boundaries(
                 source=source,
                 estimate_index=estimate_index,
                 edge_demands=edge_demands,
+                boundary_operators=(
+                    ()
+                    if boundary_operators is None
+                    else tuple(boundary_operators.get(target_node_id, ()))
+                ),
             ),
         )
+
+
+_PORT_SIZED_BOUNDARY_OPERATORS = frozenset({"join", "join_asof"})
+"""Boundaries whose own peak scales with their input ports, not their output.
+
+Every other boundary materialises the frame it produces, so the output bound
+sizes it. A join holds both ports and streams its output, and its output bound
+carries the many-to-many row product — which still propagates to downstream
+nodes' cardinality, and is charged to the downstream frame that materialises it.
+"""
+
+
+def _port_operand_counts(
+    incoming_edges: Sequence[GraphEdge],
+    estimate_index: _EstimateGraphIndex,
+    node: GraphNode,
+    operand_reference_counts: Mapping[str, int],
+) -> dict[ProjectionEdgeKey, int] | None:
+    """Map each incoming edge to how many join operands it supplies.
+
+    The cardinality analysis counts operands under the names the *code* uses,
+    which ``inputMapping`` can alias away from the edge's own name, and several
+    aliases can name the same edge. Resolving every counted name back to an edge
+    identity and summing there is what keeps ``logical.join(logical, ...)``
+    charged twice. A counted name that resolves to no edge means the estimator
+    and the analyser disagree about the node's inputs, so the caller must treat
+    the estimate as unavailable rather than assume one reference.
+    """
+    bindings = _cardinality_name_bindings(estimate_index, node, incoming_edges)
+    if bindings is None:
+        return None
+    edge_by_id = {edge.id: edge for edge in incoming_edges}
+    # An edge the program never names is still passed to the node, so it is
+    # resident once; only *extra* references have to be counted.
+    counts: dict[ProjectionEdgeKey, int] = {
+        ProjectionEdgeKey.from_edge(edge): 0 for edge in incoming_edges
+    }
+    for name, references in operand_reference_counts.items():
+        edge_id = bindings.get(name)
+        if edge_id is None or edge_id not in edge_by_id:
+            return None
+        key = ProjectionEdgeKey.from_edge(edge_by_id[edge_id])
+        counts[key] = counts[key] + max(0, references)
+    return {key: max(1, references) for key, references in counts.items()}
 
 
 def _estimate_materialisation_boundary_from_index(
@@ -1749,8 +1886,29 @@ def _estimate_materialisation_boundary_from_index(
     source: str,
     estimate_index: _EstimateGraphIndex,
     edge_demands: Mapping[ProjectionEdgeKey, frozenset[str] | None] | None,
+    boundary_operators: Sequence[str] = (),
 ) -> MaterialisationEstimate:
-    """Estimate one boundary using an already prepared request-local index."""
+    """Estimate one boundary using an already prepared request-local index.
+
+    ``boundary_operators`` is every materialising operator of the target node in
+    evaluation order. A node can chain several (``df.unique(...).reverse()``),
+    and each one materialises the frame, so the estimate carries the *largest*
+    measured factor among them rather than the first one's.
+    """
+
+    # max, not first: the node pays the worst of the operators it chains.
+    factor_basis_points = max(
+        (materialisation_factor_basis_points(operator) for operator in boundary_operators),
+        default=100,
+    )
+    operator_assumptions: tuple[str, ...] = (
+        (
+            f"boundary_operator={boundary_operators[0]}",
+            f"boundary_operators={','.join(boundary_operators)}",
+        )
+        if boundary_operators
+        else ()
+    ) + (f"materialisation_factor_basis_points={factor_basis_points}",)
 
     source_metadata = _detailed_ancestor_source_metadata(
         graph,
@@ -1785,6 +1943,58 @@ def _estimate_materialisation_boundary_from_index(
         )
         for edge in incoming_edges
     )
+    # Only the port-sized rule below charges an edge more than once; every other
+    # boundary materialises one frame, whatever fed it.
+    port_operand_counts: dict[ProjectionEdgeKey, int] = {}
+    if cardinality.has_cross_join and any(
+        operator in _PORT_SIZED_BOUNDARY_OPERATORS for operator in boundary_operators
+    ):
+        # EXEC-P07 measured inner/left/asof joins. A cross join's peak was never
+        # probed, so it cannot inherit their admission; its output product still
+        # propagates downstream unchanged.
+        return MaterialisationEstimate.unavailable("cross_join_unmeasured")
+    if (
+        boundary_operators
+        and all(operator in _PORT_SIZED_BOUNDARY_OPERATORS for operator in boundary_operators)
+        and incoming_edges
+        and cardinality.operand_peak_rows is not None
+    ):
+        # A join's own peak holds its input ports plus a streaming output, and is
+        # symmetric in which side builds (EXEC-P07 measured wide and narrow,
+        # small-build and big-build). Sizing it from the *output* bound would
+        # charge it the many-to-many row product, which is the downstream frame's
+        # problem, not this operator's. The port widths are still summed below,
+        # so the row bound is the largest operand, not their sum -- and the
+        # node's own program supplies it, so a chained join is sized from the
+        # previous join's result rather than from the original ports.
+        port_rows = cardinality.operand_peak_rows
+        total_rows = port_rows
+        # One edge can supply more than one resident operand: ``df.join(df, ...)``
+        # holds the same frame as both ports, and a lookup joined twice in a
+        # chain is held twice. Summing each edge's width once would undercount
+        # exactly those shapes, so each port's columns are repeated per
+        # reference. The row term stays the largest single operand.
+        boundary_node = estimate_index.node_map.get(target_node_id)
+        resolved_counts = (
+            None
+            if boundary_node is None
+            else _port_operand_counts(
+                incoming_edges,
+                estimate_index,
+                boundary_node,
+                cardinality.operand_reference_counts,
+            )
+        )
+        if resolved_counts is None:
+            return MaterialisationEstimate.unavailable("join_operand_binding_unresolved")
+        port_operand_counts = resolved_counts
+        repeated = sum(port_operand_counts.values())
+        if repeated != len(incoming_edges):
+            cardinality_assumptions += (f"boundary_resident_operand_count={repeated}",)
+        cardinality_assumptions += (
+            f"boundary_input_rows_upper_bound={port_rows}",
+            f"boundary_output_rows_upper_bound={cardinality.output_rows}",
+        )
     if total_rows == 0:
         exact_zero_width_proof = (
             bool(incoming_edges)
@@ -1803,7 +2013,7 @@ def _estimate_materialisation_boundary_from_index(
         )
         return MaterialisationEstimate.available(
             0,
-            assumptions=cardinality_assumptions,
+            assumptions=cardinality_assumptions + operator_assumptions,
             basis=(
                 MaterialisationEstimateBasis.PROJECTED_COLUMNS
                 if exact_zero_width_proof
@@ -1857,7 +2067,12 @@ def _estimate_materialisation_boundary_from_index(
                 if not names:
                     names = (resolved.columns[0],)
                     carriers += 1
-                selected.extend((name, resolved.width_columns.get(name, name)) for name in names)
+                for _reference in range(
+                    port_operand_counts.get(ProjectionEdgeKey.from_edge(edge), 1)
+                ):
+                    selected.extend(
+                        (name, resolved.width_columns.get(name, name)) for name in names
+                    )
             column_names = tuple(name for name, _width in selected)
             width_column_names = tuple(width for _name, width in selected)
             n_columns = len(selected)
@@ -1869,11 +2084,14 @@ def _estimate_materialisation_boundary_from_index(
             if any(resolved is None or not resolved.columns for _edge, resolved in resolved_inputs):
                 return MaterialisationEstimate.unavailable("target_schema_unavailable")
             complete: list[tuple[str, str]] = []
-            for _edge, resolved in resolved_inputs:
+            for edge, resolved in resolved_inputs:
                 assert resolved is not None
-                complete.extend(
-                    (name, resolved.width_columns.get(name, name)) for name in resolved.columns
-                )
+                for _reference in range(
+                    port_operand_counts.get(ProjectionEdgeKey.from_edge(edge), 1)
+                ):
+                    complete.extend(
+                        (name, resolved.width_columns.get(name, name)) for name in resolved.columns
+                    )
             column_names = tuple(name for name, _width in complete)
             width_column_names = tuple(width for _name, width in complete)
             n_columns = len(complete)
@@ -1890,16 +2108,22 @@ def _estimate_materialisation_boundary_from_index(
         target_width_columns=width_column_names,
         sources=source_metadata.sources,
     )
+    base_peak_bytes = _estimate_peak_bytes(
+        total_rows,
+        n_columns,
+        base_bytes_per_row=base_bytes_per_row,
+    )
+    # The operator factor is measured peak memory beyond the rows x width x
+    # overhead model (EXEC-P07), so it multiplies the finished estimate. Integer
+    # arithmetic rounds up: admission is a safety boundary.
+    peak_bytes = (base_peak_bytes * factor_basis_points + 99) // 100
     return MaterialisationEstimate.available(
-        _estimate_peak_bytes(
-            total_rows,
-            n_columns,
-            base_bytes_per_row=base_bytes_per_row,
-        ),
+        peak_bytes,
         assumptions=(
             *cardinality_assumptions,
             f"full-boundary overhead multiplier={_OVERHEAD_MULTIPLIER:g}",
         )
-        + projection_assumptions,
+        + projection_assumptions
+        + operator_assumptions,
         basis=basis,
     )

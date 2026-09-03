@@ -31,6 +31,9 @@ __all__ = [
     "PolarsOperation",
     "chunk_admitted_names",
     "lineage_supported_frame_methods",
+    "materialisation_factor_basis_points",
+    "measured_operation_names",
+    "materialising_expression_methods",
     "materialising_frame_methods",
     "operation",
     "registered_names",
@@ -65,10 +68,13 @@ class OperationPolicy(StrEnum):
     """Chunk-local and streaming."""
 
     STREAMING = "streaming"
-    """Runs through the lazy engine.
+    """Runs through the lazy engine without a planner-inserted boundary.
 
-    There is no per-operator admission today; evidence for memory boundedness
-    is tracked by a later roadmap package.
+    This is not a claim that the operation is memory-bounded: read
+    :attr:`PolarsOperation.memory_evidence` for that. ``measured`` means a probe
+    put the operation at or below the streaming floor; ``none`` means its policy
+    is inherited rather than measured. An operation only moves to
+    :attr:`MATERIALISATION_BOUNDARY` on measured evidence that it materialises.
     """
 
     MATERIALISATION_BOUNDARY = "materialisation_boundary"
@@ -79,6 +85,14 @@ class OperationPolicy(StrEnum):
 
 
 Expansion = Literal["none", "bounded", "unbounded"]
+
+MemoryEvidence = Literal["measured", "none"]
+"""Whether EXEC-P07's peak-memory probe covered this operation.
+
+``measured`` means the certification lane measured the operation's incremental
+peak RSS against the streaming floor and the policy below records that result.
+``none`` means the policy is inherited, not measured, and must not be read as
+evidence of anything."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +107,17 @@ class PolarsOperation:
     expansion: Expansion
     chunk_admitted: bool
     lineage_supported: bool
+    memory_evidence: MemoryEvidence
+    """Whether the EXEC-P07 probe measured this operation's peak memory."""
+
+    materialisation_factor_basis_points: int
+    """Operator memory multiplier applied on top of the rows x width estimate.
+
+    100 basis points is "no operator surcharge". Values above that come from
+    measured peak memory (see EXEC-P07): the measured peak minus the streaming
+    floor, divided by the existing estimate for the same frame.
+    """
+
     note: str
 
 
@@ -107,6 +132,8 @@ def _op(
     expansion: Expansion = "none",
     chunk_admitted: bool = False,
     lineage_supported: bool = False,
+    materialisation_factor_basis_points: int = 100,
+    memory_evidence: MemoryEvidence = "none",
 ) -> PolarsOperation:
     return PolarsOperation(
         receiver=receiver,
@@ -117,6 +144,8 @@ def _op(
         expansion=expansion,
         chunk_admitted=chunk_admitted,
         lineage_supported=lineage_supported,
+        materialisation_factor_basis_points=materialisation_factor_basis_points,
+        memory_evidence=memory_evidence,
         note=note,
     )
 
@@ -258,9 +287,10 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "filter",
         _ROW_LOCAL,
         _P_ROW_LOCAL,
-        "proof: df_filter",
+        "proof: df_filter. streams: 2.2x fact vs 2.2x floor at 4M rows, Polars 1.39.3",
         chunk_admitted=True,
         lineage_supported=True,
+        memory_evidence="measured",
     ),
     _op(
         _FRAME,
@@ -367,49 +397,106 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _FRAME,
         "sort",
         _ORDER_DEPENDENT,
-        _P_STREAMING,
-        "global ordering; lineage keeps the schema and demands the sort keys",
+        _P_BOUNDARY,
+        "global ordering; lineage keeps the schema and demands the sort keys. "
+        "materialises: 5.1x fact vs 2.2x floor at 4M rows, Polars 1.39.3; the certified "
+        "observed/(width x 3.0) ratio needs 300 basis points of margin",
         lineage_supported=True,
+        materialisation_factor_basis_points=300,
+        memory_evidence="measured",
     ),
     _op(
         _FRAME,
         "unique",
         _ORDER_DEPENDENT,
-        _P_STREAMING,
-        "duplicates can straddle a chunk boundary; lineage keeps the schema",
+        _P_BOUNDARY,
+        "duplicates can straddle a chunk boundary; lineage keeps the schema. "
+        "materialises: 6.6-8.4x fact vs 2.2x floor at 4M rows, Polars 1.39.3; the certified "
+        "observed/(width x 3.0) ratio needs 350 basis points of margin",
         lineage_supported=True,
+        materialisation_factor_basis_points=350,
+        memory_evidence="measured",
     ),
-    _op(_FRAME, "reverse", _ORDER_DEPENDENT, _P_STREAMING, "global row order"),
-    _op(_FRAME, "shift", _ORDER_DEPENDENT, _P_STREAMING, "reads neighbouring rows"),
-    _op(_FRAME, "gather", _ORDER_DEPENDENT, _P_STREAMING, "positional indices into the full frame"),
-    _op(_FRAME, "sample", _ORDER_DEPENDENT, _P_STREAMING, "samples the full frame"),
-    _op(_FRAME, "top_k", _ORDER_DEPENDENT, _P_STREAMING, "global ranking"),
-    _op(_FRAME, "bottom_k", _ORDER_DEPENDENT, _P_STREAMING, "global ranking"),
+    _op(
+        _FRAME,
+        "reverse",
+        _ORDER_DEPENDENT,
+        _P_BOUNDARY,
+        "global row order. materialises: 2.9x fact vs 2.2x floor at 4M rows, Polars 1.39.3; "
+        "the certified observed/(width x 3.0) ratio needs 250 basis points of margin",
+        materialisation_factor_basis_points=250,
+        memory_evidence="measured",
+    ),
+    _op(
+        _FRAME,
+        "shift",
+        _ORDER_DEPENDENT,
+        _P_STREAMING,
+        "reads neighbouring rows. streams: 2.4x fact vs 2.2x floor at 4M rows, Polars 1.39.3",
+        memory_evidence="measured",
+    ),
+    _op(
+        _FRAME,
+        "gather",
+        _ORDER_DEPENDENT,
+        _P_STREAMING,
+        "positional indices into the full frame; no evidence, streaming kept",
+    ),
+    _op(
+        _FRAME,
+        "sample",
+        _ORDER_DEPENDENT,
+        _P_STREAMING,
+        "samples the full frame; no evidence, streaming kept",
+    ),
+    _op(
+        _FRAME,
+        "top_k",
+        _ORDER_DEPENDENT,
+        _P_BOUNDARY,
+        "global ranking. materialises: 1.44x fact vs 0.4x tiny-output floor at 4M rows, "
+        "Polars 1.39.3",
+        memory_evidence="measured",
+    ),
+    _op(
+        _FRAME,
+        "bottom_k",
+        _ORDER_DEPENDENT,
+        _P_BOUNDARY,
+        "global ranking. materialises: 1.45x fact vs 0.4x tiny-output floor at 4M rows, "
+        "Polars 1.39.3",
+        memory_evidence="measured",
+    ),
     # Row-expanding frame methods.
     _op(
         _FRAME,
         "explode",
         _ROW_EXPANDING,
-        _P_STREAMING,
-        "list lengths are data-dependent, so the expansion factor is unbounded",
+        _P_BOUNDARY,
+        "list lengths are data-dependent, so the expansion factor is unbounded and the "
+        "estimate is therefore unavailable (row_expansion_unbounded); the factor is never "
+        "applied. materialises: 4.8x fact vs 2.2x floor at 4M rows, Polars 1.39.3",
         expansion="unbounded",
         lineage_supported=True,
+        memory_evidence="measured",
     ),
     _op(
         _FRAME,
         "unpivot",
         _ROW_EXPANDING,
         _P_STREAMING,
-        "expansion factor is the literal ``on`` column count, hence bounded",
+        "expansion factor is the literal ``on`` column count, hence bounded. "
+        "streams: 1.9x fact vs 2.2x floor at 12M output rows, Polars 1.39.3",
         expansion="bounded",
         lineage_supported=True,
+        memory_evidence="measured",
     ),
     _op(
         _FRAME,
         "melt",
         _ROW_EXPANDING,
         _P_STREAMING,
-        "deprecated unpivot spelling; no lineage transfer",
+        "deprecated unpivot spelling; no lineage transfer; no evidence, streaming kept",
         expansion="unbounded",
     ),
     # Fan-in / stateful frame methods.
@@ -420,14 +507,17 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _P_BOUNDARY,
         "aggregation state spans the whole frame; valid only at a materialisation boundary",
         lineage_supported=True,
+        memory_evidence="measured",
     ),
     _op(
         _FRAME,
         "groupby",
         _FAN_IN,
         _P_BOUNDARY,
-        "legacy group_by spelling; same materialisation boundary",
+        "legacy group_by spelling; same materialisation boundary; measured as group_by: "
+        "0.7x fact vs 2.2x floor at 4M rows, Polars 1.39.3",
         lineage_supported=True,
+        memory_evidence="measured",
     ),
     _op(
         _FRAME,
@@ -441,18 +531,83 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         _FRAME,
         "join",
         _FAN_IN,
-        _P_STREAMING,
-        "two-input fan-in; lineage routes demand per side and bounds cardinality by validation",
+        _P_BOUNDARY,
+        "two-input fan-in; lineage routes demand per side and bounds cardinality by "
+        "validation. materialises: 3.2-3.4x fact vs 2.2x floor at 4M rows, Polars 1.39.3; "
+        "the estimator already sums both ports' widths, and the certified "
+        "observed/(width x 3.0) ratio still needs 150 basis points of margin",
         lineage_supported=True,
+        materialisation_factor_basis_points=150,
+        memory_evidence="measured",
     ),
-    _op(_FRAME, "join_asof", _FAN_IN, _P_STREAMING, "ordered fan-in with no lineage transfer"),
-    _op(_FRAME, "group_by_dynamic", _FAN_IN, _P_STREAMING, "temporal windows span chunk edges"),
-    _op(_FRAME, "rolling", _FAN_IN, _P_STREAMING, "windows span chunk edges"),
-    _op(_FRAME, "join_where", _FAN_IN, _P_STREAMING, "predicate fan-in with no lineage transfer"),
-    _op(_FRAME, "merge_sorted", _FAN_IN, _P_STREAMING, "two-input ordered merge"),
-    _op(_FRAME, "pivot", _FAN_IN, _P_STREAMING, "output schema depends on the data"),
-    _op(_FRAME, "upsample", _FAN_IN, _P_STREAMING, "fills across the full time axis"),
-    _op(_FRAME, "interpolate", _FAN_IN, _P_STREAMING, "reads neighbouring rows across the frame"),
+    _op(
+        _FRAME,
+        "join_asof",
+        _FAN_IN,
+        _P_BOUNDARY,
+        "ordered fan-in with no lineage transfer. materialises: 5.5x fact vs 2.2x floor at "
+        "4M rows, Polars 1.39.3 (the plan includes a sort by the asof key); the certified "
+        "observed/(width x 3.0) ratio needs 250 basis points of margin",
+        materialisation_factor_basis_points=250,
+        memory_evidence="measured",
+    ),
+    _op(
+        _FRAME,
+        "group_by_dynamic",
+        _FAN_IN,
+        _P_STREAMING,
+        "temporal windows span chunk edges. streams: 0.4x fact vs 2.2x floor at 4M rows, "
+        "Polars 1.39.3",
+        memory_evidence="measured",
+    ),
+    _op(
+        _FRAME,
+        "rolling",
+        _FAN_IN,
+        _P_STREAMING,
+        "windows span chunk edges. streams: 0.7x fact vs 2.2x floor at 4M rows, Polars 1.39.3",
+        memory_evidence="measured",
+    ),
+    _op(
+        _FRAME,
+        "join_where",
+        _FAN_IN,
+        _P_STREAMING,
+        "predicate fan-in with no lineage transfer; no evidence, streaming kept",
+    ),
+    _op(
+        _FRAME,
+        "merge_sorted",
+        _FAN_IN,
+        _P_STREAMING,
+        "two-input ordered merge. streams: 1.2x fact vs 2.2x floor at 4M rows, Polars 1.39.3",
+        memory_evidence="measured",
+    ),
+    _op(
+        _FRAME,
+        "pivot",
+        _FAN_IN,
+        _P_STREAMING,
+        "output schema depends on the data; no evidence, streaming kept",
+    ),
+    _op(
+        _FRAME,
+        "upsample",
+        _FAN_IN,
+        _P_STREAMING,
+        "fills across the full time axis; no evidence, streaming kept",
+    ),
+    _op(
+        _FRAME,
+        "interpolate",
+        _FAN_IN,
+        _P_STREAMING,
+        "reads neighbouring rows across the frame. streams: about 1.1x the narrow "
+        "passthrough floor at 1.5M rows by interleaved paired sampling (single samples "
+        "range 0.9-1.4) once verification left the sampled process; an earlier 1.48 was "
+        "the verification pass",
+        memory_evidence="measured",
+    ),
     # Opaque frame methods.
     _opaque_frame("collect"),
     _opaque_frame("collect_batches"),
@@ -523,7 +678,17 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
     _order_dependent_expr("unique", "duplicates can straddle a chunk boundary"),
     _order_dependent_expr("n_unique", "distinct count over the whole column"),
     _order_dependent_expr("value_counts", "counts over the whole column"),
-    _fan_in_expr("over", "window partitions span the whole frame"),
+    _op(
+        _EXPR,
+        "over",
+        _FAN_IN,
+        _P_BOUNDARY,
+        "window partitions span the whole frame. materialises: 3.1x fact vs 2.2x floor at "
+        "4M rows, Polars 1.39.3; the certified observed/(width x 3.0) ratio needs 250 "
+        "basis points of margin",
+        materialisation_factor_basis_points=250,
+        memory_evidence="measured",
+    ),
     _fan_in_expr("mode", "reduction over the whole column"),
     _fan_in_expr("sum", "reduction over the whole column"),
     _fan_in_expr("mean", "reduction over the whole column"),
@@ -718,6 +883,7 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
 
 
 _EXPANSION_ALLOWED_CLASSES = frozenset({OperationClass.ROW_EXPANDING, OperationClass.OPAQUE})
+_ROW_LOCAL_OR_OPAQUE_CLASSES = frozenset({OperationClass.ROW_LOCAL, OperationClass.OPAQUE})
 
 
 def validate_operations(entries: tuple[PolarsOperation, ...] = _ENTRIES) -> None:
@@ -740,11 +906,31 @@ def validate_operations(entries: tuple[PolarsOperation, ...] = _ENTRIES) -> None
             )
         if (
             entry.policy is OperationPolicy.MATERIALISATION_BOUNDARY
-            and entry.operation_class is not OperationClass.FAN_IN_STATEFUL
+            and entry.operation_class in _ROW_LOCAL_OR_OPAQUE_CLASSES
         ):
             raise RuntimeError(
-                f"Materialisation-boundary operation {key!r} must be fan-in/stateful, "
-                f"not {entry.operation_class.value!r}."
+                f"Materialisation-boundary operation {key!r} must be order-dependent, "
+                f"row-expanding, or fan-in/stateful, not {entry.operation_class.value!r}."
+            )
+        factor = entry.materialisation_factor_basis_points
+        if not isinstance(factor, int) or isinstance(factor, bool) or factor < 100:
+            raise RuntimeError(
+                f"Operation {key!r} declares materialisation_factor_basis_points={factor!r}; "
+                "the operator memory factor is a whole multiple of the base estimate and "
+                "can never shrink it below 100 basis points."
+            )
+        if entry.policy is OperationPolicy.MATERIALISATION_BOUNDARY and (
+            entry.memory_evidence != "measured"
+        ):
+            raise RuntimeError(
+                f"Materialisation-boundary operation {key!r} declares "
+                f"memory_evidence={entry.memory_evidence!r}. A boundary policy is an "
+                "evidence claim: it may only be set from a measured peak."
+            )
+        if entry.policy is not OperationPolicy.MATERIALISATION_BOUNDARY and factor != 100:
+            raise RuntimeError(
+                f"Operation {key!r} is not a materialisation boundary, so it must not carry "
+                f"an operator memory factor (got {factor})."
             )
         if entry.expansion != "none" and entry.operation_class not in _EXPANSION_ALLOWED_CLASSES:
             raise RuntimeError(
@@ -813,6 +999,47 @@ def materialising_frame_methods() -> frozenset[str]:
         if entry.receiver is OperationReceiver.FRAME
         and entry.policy is OperationPolicy.MATERIALISATION_BOUNDARY
     )
+
+
+def measured_operation_names(receiver: OperationReceiver) -> frozenset[str]:
+    """Return the names whose memory policy comes from a measured peak.
+
+    The certification lane derives its candidate set from this, so an operation
+    can never claim measured evidence the lane does not actually re-measure.
+    """
+    return frozenset(
+        entry.name
+        for entry in POLARS_OPERATIONS.values()
+        if entry.receiver is receiver and entry.memory_evidence == "measured"
+    )
+
+
+def materialising_expression_methods() -> frozenset[str]:
+    """Return the ``Expr`` methods that materialise the frame they run over.
+
+    A window expression has no frame receiver, so the planner matches these by
+    attribute anywhere in a node's expressions rather than by receiver fact.
+    """
+    return frozenset(
+        entry.name
+        for entry in POLARS_OPERATIONS.values()
+        if entry.receiver is OperationReceiver.EXPR
+        and entry.policy is OperationPolicy.MATERIALISATION_BOUNDARY
+    )
+
+
+def materialisation_factor_basis_points(operator: str) -> int:
+    """Return the operator memory factor the estimator multiplies its estimate by.
+
+    ``operator`` is a boundary operator name as the planner records it, so a
+    frame method is looked up first and an expression method second. An
+    unregistered name carries no surcharge.
+    """
+    for receiver in (OperationReceiver.FRAME, OperationReceiver.EXPR):
+        entry = operation(receiver, operator)
+        if entry is not None and entry.policy is OperationPolicy.MATERIALISATION_BOUNDARY:
+            return entry.materialisation_factor_basis_points
+    return 100
 
 
 def lineage_supported_frame_methods() -> frozenset[str]:

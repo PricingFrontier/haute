@@ -38,23 +38,27 @@ allowlists. Global operations are never executed independently in each chunk.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | EXEC-P05 | Decision | P2 | Build snapshots for eager-only or schema-unknown inputs automatically inside a warned hard-capped worker. |
-| EXEC-P07 | Planned | P2 | Admit sort, unique, join, and window materialisation with peak-memory evidence instead of unproven streaming. |
 | EXEC-P08 | Planned | P3 | Make the schema-only execution declaration enforceable for graphs that end in an OUTPUT document. |
 
 ## Planned improvements
 
-`EXEC-P07` is the next startable package. The operation registry, the
-profile-independent projection planner, the operation-effect proof, the
-warned, hard-capped conservative execution policy, the receiver-aware chunk
-classifier, the version-pinned compatibility corpus, and the hard-capped
-training-preparation and multi-row deploy workers that it builds on are
-current behaviour specified in the execution-engine, modelling, deploy, and
-optimiser specifications: an unavailable estimate runs once under the full
-reserved envelope on the worker-backed surfaces (Data Output writes, preview
-and trace, Explore, JSON cache builds, training preparation, multi-row deploy
-scoring) and remains a typed rejection elsewhere, and a chunk-ineligible
-auto-range suffix falls back to the full-lazy path with a recorded warning.
-Optimiser surfaces wait for `ROAD-WORKER-04`.
+`EXEC-P08` is the next startable package. The operation registry with its
+evidence-backed policies (sort, unique, join, join_asof, top_k, bottom_k,
+reverse, explode, and window expressions admitted as estimated materialisation
+boundaries; unpivot, rolling, dynamic group-by, shift, merge_sorted, and
+interpolate streaming with recorded evidence), the profile-independent
+projection planner, the operation-effect proof, the warned, hard-capped
+conservative execution policy, the receiver-aware chunk classifier, the
+version-pinned compatibility corpus, the performance-lane memory
+certification, and the hard-capped training-preparation and multi-row deploy
+workers that it builds on are current behaviour specified in the
+execution-engine, modelling, deploy, and optimiser specifications: an
+unavailable estimate runs once under the full reserved envelope on the
+worker-backed surfaces (Data Output writes, preview and trace, Explore, JSON
+cache builds, training preparation, multi-row deploy scoring) and remains a
+typed rejection elsewhere, and a chunk-ineligible auto-range suffix falls back
+to the full-lazy path with a recorded warning. Optimiser surfaces wait for
+`ROAD-WORKER-04`.
 `EXEC-P05` requires an explicit architecture decision and is not startable
 until the specification amendment it names is approved. Each package extends a
 closed, tested optimisation model while retaining a general conservative
@@ -119,47 +123,6 @@ implementation.
 `src/haute/routes/input_cache.py`; `tests/test_polars_io_registry.py`;
 `tests/test_io.py`; `tests/test_source_cache.py`;
 `tests/test_input_cache_route.py`; `tests/test_worker_isolation.py`.
-
-### EXEC-P07 — Admit global operations beyond group-by with memory evidence
-
-**Why:** The operation registry records `sort`, `unique`, `join`, `join_asof`,
-window expressions, rolling and dynamic group-bys, `explode`, and `unpivot` as
-streaming through the lazy engine without per-operator admission. Polars'
-streaming engine buffers the build side of a join, the whole input of a sort,
-and every window partition in memory, so those operations are only as bounded
-as the host. Unlike group-by they have no estimate-based gate and no
-conservative envelope, and the logical plan Polars prints cannot show which
-nodes fall back to in-memory execution.
-
-**Plan:** For each registered fan-in stateful or order-dependent frame
-operation, measure peak RSS in the performance lane over representative widths
-and row counts with the pinned Polars version, then select the narrowest policy
-the evidence supports: proven streaming or spill-safe execution (keep the
-`streaming` policy and record the evidence), an operator-specific admitted
-materialisation estimate (the cardinality bound times physical width, with a
-join's build side sized from its own port), or one admitted pre-materialisation
-followed by a proven chunk-local suffix. Change a registry policy only with
-that evidence, add the operator to the planner's boundary set, and extend the
-cross-profile contract and the compatibility corpus in the same change. Do not
-treat every global operation as a group-by: an operation the evidence proves
-bounded keeps streaming.
-
-**Acceptance:** Peak-memory calibration or spill evidence in the performance
-lane supports every policy change. Full-versus-planned equivalence tests cover
-ordering, schema, row multiplicity, and multi-input column retention for every
-newly admitted operation. The compatibility corpus records each operation's
-policy before and after the change. Operations without evidence keep the
-`streaming` policy they have today, and unknown operations keep the
-conservative policy.
-
-**Dependencies:** The operation registry and compatibility corpus, the
-cardinality proof, the materialisation-calibration contract, and the
-performance lane.
-
-**Evidence:** `src/haute/_polars_operations.py`; `src/haute/projection.py`;
-`src/haute/_ram_estimate.py`;
-`tests/performance/test_execution_engine_certification.py`;
-`tests/test_polars_compatibility_corpus.py`.
 
 ### EXEC-P08 — Honour the schema-only declaration for OUTPUT documents
 

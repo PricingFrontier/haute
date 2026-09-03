@@ -20,6 +20,7 @@ import pytest
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._json_flatten import _json_cache_dir
 from haute._json_shred._cache import build_per_port_cache, load_v2_api_source
+from haute._polars_operations import OperationPolicy, OperationReceiver, operation
 from haute._polars_utils import execution_collect
 from haute._ram_estimate import estimate_materialisation_boundaries
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -58,6 +59,89 @@ _STREAM_CACHE_LARGE_ROWS = 120_000
 _STREAM_CACHE_PAYLOAD_BYTES = 512
 _STREAM_CACHE_GROWTH_ALLOWANCE_BYTES = 32 * 1024 * 1024
 _STREAM_CACHE_MAX_GROWTH_FACTOR = 1.35
+_OPERATION_PROBE = Path(__file__).with_name("_operation_memory_probe.py")
+_OPERATION_FACT_ROWS = 1_500_000
+_OPERATION_DIM_DIVISOR = 4
+# Many small row groups (60 of them across the fact file, comfortably more than
+# any host's thread count) keep parallel Parquet decoding from holding the whole
+# file resident, so the streaming control measures streaming and not the reader.
+_OPERATION_ROW_GROUP_SIZE = 25_000
+# Two controls. A full-width passthrough sink is the right floor only for an
+# operation whose output is the same order of magnitude as its input; for a
+# tiny-output operator it is an unfairly high control, so ``scan_head`` supplies
+# that floor instead.
+_FULL_WIDTH_FLOOR = "scan"
+_TINY_OUTPUT_FLOOR = "scan_head"
+_NARROW_FLOOR = "scan_narrow"
+_GAP_FLOOR = "scan_gaps"
+_FULL_WIDTH_OUTPUT_FRACTION = 0.5
+# Every ratio is the mean of this many interleaved (operation, control) runs.
+# A single fresh-process sample drifted by about +/-20% between batches on the
+# development host -- enough for a single-sample ratio to straddle a threshold --
+# so pairing is what makes the lane a measurement rather than a coin toss. It
+# roughly triples the lane's runtime, to about 70 seconds, which is affordable
+# for an opt-in perf marker. Run the lane through pytest, one fresh process per
+# run: repeating the test inside one interpreter reuses a warm page cache for the
+# fixture and flatters every ratio, so an in-process repeat is not a measurement.
+_PAIRED_SAMPLES = 3
+# A streaming policy is the safety-critical direction: an operator wrongly
+# recorded as streaming is one the planner will never admit. Every streaming
+# operator is bound by the full passthrough control, because a streaming
+# pipeline can never need more than the passthrough pipeline: decode buffers
+# plus output buffers, and a reducing operator's output buffers are smaller.
+_MAX_STREAMING_FLOOR_RATIO = 1.3
+# The operators whose measured memory motivated their promotion must also be
+# shown not to stream, each against the control matched to its output size --
+# ``scan_head`` for a reducing operator, where a full-width sink would be an
+# unfairly high floor.
+_DOES_NOT_STREAM_WITNESSES = frozenset({"sort", "unique", "join", "explode"})
+_MIN_WITNESS_FLOOR_RATIO = 1.25
+# Two boundaries cannot be witnessed by their own wide-frame measurement, each
+# for a different reason, so each names the variant that does show its state and
+# the control that variant is judged against:
+#   over        -- a window over a wide frame is dominated by the passthrough's
+#                  own buffers; its partition state dominates on a narrow frame.
+#   join_asof   -- an asof join buffers its right (lookup) port and streams its
+#                  left, so a wide left with a small right sits near the floor;
+#                  swapping the ports puts the large frame in the buffered one.
+# ``probe`` of ``None`` means the operation's own measurement is the witness.
+_WITNESS_VARIANTS = {
+    "over": {"probe": "over_narrow", "floor": _NARROW_FLOOR, "min_ratio": 1.5},
+    "join_asof": {
+        "probe": "join_asof_big_right",
+        "floor": _TINY_OUTPUT_FLOOR,
+        "min_ratio": _MIN_WITNESS_FLOOR_RATIO,
+    },
+}
+# The cross join is a boundary whose memory nobody has measured, so it is
+# certified through the planner's unavailable-estimate contract instead.
+_CROSS_JOIN_CODE = "df = fact.join(dim, how='cross')"
+# ``explode``'s row expansion is unbounded, so its estimate is unavailable by
+# construction and it is certified through the typed rejection instead.
+_UNAVAILABLE_ESTIMATE_OPERATIONS = frozenset({"explode"})
+_BOUNDARY_ADMISSION_BYTES = 64 * 1024 * 1024 * 1024
+_OPERATION_CODE = {
+    "group_by": "df = df.group_by('key').agg(pl.col('v1').sum())",
+    "sort": "df = df.sort('v1')",
+    "unique": "df = df.unique(subset=['key'])",
+    "join": "df = fact.join(dim, on='key', how='inner', validate='m:1')",
+    "join_asof": "df = fact.join_asof(dim, on='ts')",
+    "explode": "df = df.explode('tags')",
+    "over": "df = df.with_columns(pl.col('v1').sum().over('key'))",
+    "top_k": "df = df.top_k(1000, by='v1')",
+    "bottom_k": "df = df.bottom_k(1000, by='v1')",
+    "reverse": "df = df.reverse()",
+    "interpolate": "df = df.select('key', 'v1_gaps').interpolate()",
+}
+_TWO_INPUT_OPERATIONS = frozenset({"join", "join_asof"})
+# Chained boundaries take the maximum operator factor, so a case whose plan
+# contains a second boundary certifies that one instead. Pin the operator set
+# and the factor for the asof case, whose fixtures are written pre-sorted
+# precisely so it needs no leading sort.
+_SINGLE_OPERATOR_FACTORS = {"join_asof": 250}
+# ``over`` is an expression method; every other measured name is a frame method.
+_OPERATION_RECEIVERS = {"over": OperationReceiver.EXPR}
+_STREAMING_POLICIES = frozenset({OperationPolicy.ROW_LOCAL, OperationPolicy.STREAMING})
 _RESILIENCE_SCALES = {
     "ci": {"calls": 120, "replacements": 8, "timeout_seconds": 120},
     "1m": {"calls": 2_000, "replacements": 100, "timeout_seconds": 900},
@@ -1363,3 +1447,610 @@ def test_persistent_structured_cache_build_has_bounded_growth_rss(
             },
         )
     )
+
+
+def _write_operation_fixtures(root: Path) -> dict[str, Any]:
+    """Write the fact/dim parquets the operation probe plans against."""
+    from tests.performance import _operation_memory_probe as probe
+
+    rows = _OPERATION_FACT_ROWS
+    dim_rows = rows // _OPERATION_DIM_DIVISOR
+    index = pl.int_range(0, rows, eager=True)
+    row_index = pl.int_range(0, pl.len())
+    fact = pl.DataFrame(
+        {
+            "key": index % dim_rows,
+            "key2": (index % 1000).cast(pl.Utf8),
+            "ts": (index * 1000).cast(pl.Datetime("ms")),
+            "v1": (index * 7919 % 100_003).cast(pl.Float64) / 7.0,
+            "v2": (index * 104_729 % 99_991).cast(pl.Float64),
+            "v3": (index % 977).cast(pl.Float64),
+            "v4": (index % 13).cast(pl.Float64),
+            "v5": (index % 101).cast(pl.Float64),
+            "v6": (index % 3).cast(pl.Float64),
+            "s1": "row-" + (index % 50_000).cast(pl.Utf8),
+        }
+    ).with_columns(
+        # A straight line with runs of nulls punched across the row-group
+        # boundaries, so ``interpolate`` has real work spanning row groups.
+        v1_gaps=pl.when(
+            (row_index >= probe.GAP_MARGIN)
+            & (row_index < rows - probe.GAP_MARGIN)
+            & ((row_index + probe.GAP_RUN // 2) % probe.GAP_PERIOD < probe.GAP_RUN)
+        )
+        .then(None)
+        .otherwise(row_index.cast(pl.Float64) * probe.GAP_SLOPE)
+        .cast(pl.Float64),
+        tags=pl.concat_list(
+            pl.col("v4").cast(pl.Int64),
+            pl.col("v5").cast(pl.Int64),
+            pl.col("v6").cast(pl.Int64),
+        ),
+    )
+    dim_index = pl.int_range(0, dim_rows, eager=True)
+    dim = pl.DataFrame(
+        {
+            "key": dim_index,
+            "ts": (dim_index * 4000).cast(pl.Datetime("ms")),
+            "d1": (dim_index % 17).cast(pl.Float64),
+            "d2": "dim-" + (dim_index % 999).cast(pl.Utf8),
+        }
+    )
+    # Both fixtures are written in ascending ``ts`` order: ``join_asof`` and
+    # ``merge_sorted`` require sorted inputs, and pre-sorting them keeps a
+    # leading ``sort`` out of those plans, which would otherwise dominate the
+    # chained operator factor and certify the wrong operator.
+    assert fact["ts"].is_sorted() and dim["ts"].is_sorted()
+    fact_path = root / "operation-fact.parquet"
+    dim_path = root / "operation-dim.parquet"
+    fact.write_parquet(fact_path, row_group_size=_OPERATION_ROW_GROUP_SIZE)
+    dim.write_parquet(dim_path, row_group_size=_OPERATION_ROW_GROUP_SIZE)
+    return {
+        "fact_path": fact_path,
+        "dim_path": dim_path,
+        "fact_rows": fact.height,
+        "fact_columns": fact.width,
+        "fact_estimated_size_bytes": fact.estimated_size(),
+        "fact_row_groups": -(-fact.height // _OPERATION_ROW_GROUP_SIZE),
+        "fact_gap_null_count": int(fact["v1_gaps"].null_count()),
+        "dim_rows": dim.height,
+        "dim_estimated_size_bytes": dim.estimated_size(),
+    }
+
+
+def _run_operation_memory_probe(
+    tmp_path: Path,
+    fixtures: dict[str, Any],
+    operation_name: str,
+    *,
+    keep_sink: bool = False,
+) -> dict[str, Any]:
+    result_path = tmp_path / f"operation-{operation_name}.json"
+    child_output = io.BytesIO()
+    interpreter = str(getattr(sys, "_base_executable", sys.executable))
+    inherited_paths = [path for path in sys.path if path]
+    bootstrap = (
+        "import runpy,sys;"
+        f"sys.path[:0]={inherited_paths!r};"
+        f"runpy.run_path({str(_OPERATION_PROBE)!r},run_name='__main__')"
+    )
+    smoke = run_smoke(
+        command=[
+            interpreter,
+            "-c",
+            bootstrap,
+            "--operation",
+            operation_name,
+            "--fact",
+            str(fixtures["fact_path"]),
+            "--dim",
+            str(fixtures["dim_path"]),
+            "--output",
+            str(result_path),
+            *(["--keep-sink"] if keep_sink else []),
+        ],
+        enable_tracemalloc=False,
+        poll_interval_seconds=0.005,
+        child_output=child_output,
+    )
+    assert smoke["exit_code"] == 0, child_output.getvalue().decode(errors="replace")
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    baseline = result["rss_before_bytes"]
+    peak = smoke["child_peak_rss_bytes"]
+    assert isinstance(baseline, int) and baseline > 0
+    assert isinstance(peak, int) and peak >= baseline
+    assert smoke["child_rss_sample_count"] >= 2
+    return {
+        **result,
+        "child_peak_rss_bytes": peak,
+        "incremental_peak_rss_bytes": peak - baseline,
+        "rss_sample_count": smoke["child_rss_sample_count"],
+        "wall_seconds": smoke["elapsed_seconds"],
+    }
+
+
+def _verify_interpolated_output(sink_path: Path) -> dict[str, Any]:
+    """Prove the sunk output is really interpolated, in the *parent* process.
+
+    This must not run inside the sampled child: an eager read of the whole
+    result would land in the child's lifetime peak and be attributed to the
+    operator. The parent reads it lazily after ``run_smoke`` has returned.
+    """
+    from tests.performance import _operation_memory_probe as probe
+
+    sunk = pl.scan_parquet(sink_path)
+    # ``v1_gaps`` is a straight line in the row index, and interpolate preserves
+    # order and row count, so the index is recoverable here.
+    summary = (
+        sunk.with_row_index("row_index")
+        .select(
+            interior_null_count=pl.col("v1_gaps").is_null().sum(),
+            sampled_rows=pl.col("row_index")
+            .is_between(probe.GAP_MARGIN, probe.GAP_MARGIN + 4 * probe.GAP_PERIOD)
+            .sum(),
+            max_absolute_error=(
+                pl.when(
+                    pl.col("row_index").is_between(
+                        probe.GAP_MARGIN, probe.GAP_MARGIN + 4 * probe.GAP_PERIOD
+                    )
+                )
+                .then(
+                    (
+                        pl.col("v1_gaps") - pl.col("row_index").cast(pl.Float64) * probe.GAP_SLOPE
+                    ).abs()
+                )
+                .otherwise(None)
+            ).max(),
+        )
+        .collect()
+        .to_dicts()[0]
+    )
+    return {
+        "column": "v1_gaps",
+        "interior_null_count": int(summary["interior_null_count"]),
+        "sampled_rows": int(summary["sampled_rows"]),
+        "max_absolute_error": float(summary["max_absolute_error"] or 0.0),
+        "matches_linear_interpolation": (summary["max_absolute_error"] or 0.0) <= 1e-6,
+        "verified_in": "parent",
+    }
+
+
+def _registered_operation_policy(operation_name: str) -> OperationPolicy:
+    receiver = _OPERATION_RECEIVERS.get(operation_name, OperationReceiver.FRAME)
+    registered = operation(receiver, operation_name)
+    assert registered is not None, f"{operation_name} is not registered for {receiver}"
+    return registered.policy
+
+
+def _boundary_graph(
+    operation_name: str,
+    fixtures: dict[str, Any],
+    *,
+    code: str | None = None,
+    two_input: bool | None = None,
+):
+    """Build the two- or three-node graph the planner admits for an operation."""
+    from tests.conftest import make_edge, make_graph, make_ready_file_input_config
+
+    if two_input is None:
+        two_input = operation_name in _TWO_INPUT_OPERATIONS
+    fact_label = "fact" if two_input else "df"
+    config: dict[str, Any] = {"code": code or _OPERATION_CODE[operation_name]}
+    nodes = [
+        {
+            "id": fact_label,
+            "data": {
+                "label": fact_label,
+                "nodeType": "dataInput",
+                "config": make_ready_file_input_config(fixtures["fact_path"]),
+            },
+        }
+    ]
+    edges = [make_edge(fact_label, "op").model_dump()]
+    if two_input:
+        nodes.append(
+            {
+                "id": "dim",
+                "data": {
+                    "label": "dim",
+                    "nodeType": "dataInput",
+                    "config": make_ready_file_input_config(fixtures["dim_path"]),
+                },
+            }
+        )
+        edges.append(make_edge("dim", "op").model_dump())
+        # A fan-in Polars node needs a declared per-parent contract before the
+        # analyser will attribute either frame root, exactly as production does.
+        config["contract"] = {
+            "inputs": ["key", "ts", "v1"],
+            "outputs": [],
+            "inputs_by_parent": {"fact": ["key", "ts", "v1"], "dim": ["key", "ts"]},
+        }
+    nodes.append(
+        {
+            "id": "op",
+            "data": {"label": "op", "nodeType": "polars", "config": config},
+        }
+    )
+    return make_graph({"nodes": nodes, "edges": edges})
+
+
+def _plan_boundary(
+    operation_name: str,
+    fixtures: dict[str, Any],
+    *,
+    code: str | None = None,
+    two_input: bool | None = None,
+):
+    """Plan the operation as the executor would, under an ample admission."""
+    from haute.execution import ProjectionRequest, plan_execution_strategy
+
+    profile = ExecutionProfile.LAZY_SINK
+    context = ExecutionContext(
+        operation="operation_memory_certification",
+        profile=profile,
+        admission=ExecutionAdmission(
+            operation="operation_memory_certification",
+            profile=profile,
+            memory_limit_bytes=_BOUNDARY_ADMISSION_BYTES,
+            rss_at_admission_bytes=0,
+            rss_limit_bytes=_BOUNDARY_ADMISSION_BYTES,
+            headroom_bytes=_BOUNDARY_ADMISSION_BYTES,
+            config_key="operation_memory_certification",
+        ),
+    )
+    try:
+        return plan_execution_strategy(
+            ProjectionRequest(
+                graph=_boundary_graph(operation_name, fixtures, code=code, two_input=two_input),
+                target_node_id="op",
+                profile=profile,
+            ),
+            execution_context=context,
+        )
+    finally:
+        context.release_admission()
+
+
+def _control_for(
+    operation_name: str, policy: OperationPolicy, rows_out: int, fact_rows: int
+) -> str:
+    """Return the streaming control this operation's ratio is measured against."""
+    from tests.performance._operation_memory_probe import (
+        GAP_COLUMN_OPERATIONS,
+        NARROW_OPERATIONS,
+    )
+
+    if policy in _STREAMING_POLICIES:
+        if operation_name in GAP_COLUMN_OPERATIONS:
+            return _GAP_FLOOR
+        return _NARROW_FLOOR if operation_name in NARROW_OPERATIONS else _FULL_WIDTH_FLOOR
+    if rows_out >= fact_rows * _FULL_WIDTH_OUTPUT_FRACTION:
+        return _FULL_WIDTH_FLOOR
+    return _TINY_OUTPUT_FLOOR
+
+
+def _paired_measurement(
+    tmp_path: Path,
+    fixtures: dict[str, Any],
+    operation_name: str,
+    *,
+    control_name: str | None = None,
+    choose_control: Any = None,
+    keep_sink: bool = False,
+) -> dict[str, Any]:
+    """Measure one operation against its control as interleaved paired runs.
+
+    A single fresh-process sample is not a stable measurement: the same control
+    varied by about +/-20% between batches on the development host, enough for a
+    single-sample ratio to straddle a threshold. Alternating operation and
+    control runs cancels that drift. Controls are re-run inside the pairs that
+    use them rather than sampled once and shared, so no two operations lean on
+    the same control sample.
+
+    The ratio is taken over the two *means*, not the medians. Peak RSS here is
+    bimodal -- samples cluster around two values about 35 MiB apart, which is the
+    granularity of a streaming chunk buffer rather than continuous noise -- and a
+    median of three snaps to whichever mode won two of the three samples, so it
+    jumps between modes instead of settling. The mean is the stable estimator of
+    average cost over a discrete allocation pattern like this one. Medians are
+    still recorded for information.
+    """
+    runs = [_run_operation_memory_probe(tmp_path, fixtures, operation_name, keep_sink=keep_sink)]
+    if control_name is None:
+        control_name = choose_control(runs[0])
+    control_runs: list[dict[str, Any]] = []
+    for index in range(_PAIRED_SAMPLES):
+        control_runs.append(_run_operation_memory_probe(tmp_path, fixtures, control_name))
+        if index < _PAIRED_SAMPLES - 1:
+            runs.append(
+                _run_operation_memory_probe(tmp_path, fixtures, operation_name, keep_sink=keep_sink)
+            )
+    operation_samples = [run["incremental_peak_rss_bytes"] for run in runs]
+    control_samples = [run["incremental_peak_rss_bytes"] for run in control_runs]
+    operation_mean = statistics.fmean(operation_samples)
+    control_mean = statistics.fmean(control_samples)
+    assert control_mean > 0
+    return {
+        "operation": operation_name,
+        "control": control_name,
+        "samples": _PAIRED_SAMPLES,
+        "operation_samples": operation_samples,
+        "control_samples": control_samples,
+        "operation_mean_bytes": operation_mean,
+        "control_mean_bytes": control_mean,
+        "operation_median_bytes": statistics.median(operation_samples),
+        "control_median_bytes": statistics.median(control_samples),
+        "ratio": operation_mean / control_mean,
+        "last_run": runs[-1],
+    }
+
+
+def test_global_operation_memory_policies_match_the_registry(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Certify each global operation's registry policy against measured peak RSS.
+
+    The expected policy is read from ``haute._polars_operations`` at runtime, so
+    the registry and this evidence lane cannot drift apart. Every operation is
+    measured as the mean of three interleaved (operation, control) pairs, and
+    every control is re-run inside the pairs that use it rather than sampled once
+    and shared, so host drift cancels instead of accumulating into a ratio.
+    """
+    from haute._polars_operations import measured_operation_names
+    from tests.performance._operation_memory_probe import (
+        ALIASES,
+        CONTROLS,
+        OPERATIONS,
+        WITNESS_PROBES,
+    )
+
+    # Registry completeness: every entry the registry claims memory evidence for
+    # must have a plan here, so adding a measured entry without a measurement
+    # fails this lane rather than silently going uncertified.
+    buildable = set(OPERATIONS) | set(ALIASES)
+    measured_names = measured_operation_names(OperationReceiver.FRAME) | measured_operation_names(
+        OperationReceiver.EXPR
+    )
+    assert measured_names <= buildable, (
+        "registry entries claim memory evidence with no probe plan: "
+        f"{sorted(measured_names - buildable)}"
+    )
+
+    fixtures = _write_operation_fixtures(tmp_path)
+    measurements: list[dict[str, Any]] = []
+    failures: list[str] = []
+    environment: dict[str, Any] = {}
+    for operation_name in OPERATIONS:
+        if operation_name in CONTROLS or operation_name in WITNESS_PROBES:
+            continue
+        policy = _registered_operation_policy(operation_name)
+        verifies_real_work = operation_name == "interpolate"
+        paired = _paired_measurement(
+            tmp_path,
+            fixtures,
+            operation_name,
+            choose_control=lambda first, name=operation_name, current=policy: _control_for(
+                name, current, first["rows_out"], fixtures["fact_rows"]
+            ),
+            keep_sink=verifies_real_work,
+        )
+        measured = paired["last_run"]
+        environment = environment or {
+            "polars_version": measured["polars_version"],
+            "polars_threads": measured["polars_threads"],
+            "streaming_chunk_size": measured["streaming_chunk_size"],
+        }
+        incremental = paired["operation_mean_bytes"]
+        ratio = paired["ratio"]
+        control_name = paired["control"]
+        verification = None
+        if verifies_real_work:
+            sink_path = Path(measured["sink_path"])
+            verification = _verify_interpolated_output(sink_path)
+            sink_path.unlink()
+        record: dict[str, Any] = {
+            "operation": operation_name,
+            "policy": policy.value,
+            "rows_out": measured["rows_out"],
+            "incremental_peak_rss_bytes": incremental,
+            "control": control_name,
+            "paired": {
+                key: paired[key]
+                for key in (
+                    "samples",
+                    "operation_samples",
+                    "control_samples",
+                    "operation_mean_bytes",
+                    "control_mean_bytes",
+                    "operation_median_bytes",
+                    "control_median_bytes",
+                )
+            },
+            "ratio": ratio,
+            "elapsed_seconds": measured["elapsed_seconds"],
+            "estimated_peak_bytes": None,
+            "estimate_state": None,
+            "verification": verification,
+            "checks": [],
+        }
+
+        def _check(name: str, satisfied: bool, detail: str) -> None:
+            record["checks"].append({"check": name, "satisfied": satisfied, "detail": detail})
+            if not satisfied:
+                failures.append(f"{operation_name} ({policy.value}) {name}: {detail}")
+
+        if verification is not None:
+            _check(
+                "operation_did_real_work",
+                verification["interior_null_count"] == 0
+                and verification["sampled_rows"] > 0
+                and verification["matches_linear_interpolation"],
+                "sunk output must have no nulls left and match linear interpolation: "
+                f"{verification}",
+            )
+
+        if policy in _STREAMING_POLICIES:
+            _check(
+                "streams_within_passthrough",
+                ratio <= _MAX_STREAMING_FLOOR_RATIO,
+                f"paired-mean ratio={ratio:.2f} must be <= "
+                f"{_MAX_STREAMING_FLOOR_RATIO} of the {control_name} control",
+            )
+        elif policy is OperationPolicy.MATERIALISATION_BOUNDARY:
+            if operation_name in _UNAVAILABLE_ESTIMATE_OPERATIONS:
+                rejected = None
+                try:
+                    _plan_boundary(operation_name, fixtures)
+                except GroupByExecutionUnsupportedError as error:
+                    rejected = error.reason_code
+                record["estimate_state"] = rejected or "available"
+                _check(
+                    "estimate_unavailable",
+                    rejected == "materialisation_estimate_unavailable",
+                    f"unbounded expansion must reject as unavailable, got {rejected!r}",
+                )
+            else:
+                try:
+                    planned = _plan_boundary(operation_name, fixtures)
+                except GroupByExecutionUnsupportedError as error:
+                    # A mathematically unconstrained join bound can exceed any
+                    # admission. The estimate is still available and is still
+                    # the number that must bound the observation.
+                    estimated = error.estimated_peak_bytes
+                    record["estimate_state"] = error.reason_code
+                    record["blocking_operator"] = error.operator
+                else:
+                    estimated = planned.diagnostic.estimated_peak_bytes
+                    record["estimate_state"] = planned.status.value
+                    record["blocking_operator"] = planned.diagnostic.blocking_operator
+                    expected_factor = _SINGLE_OPERATOR_FACTORS.get(operation_name)
+                    if expected_factor is not None:
+                        assumptions = set(planned.diagnostic.assumptions)
+                        record["boundary_assumptions"] = sorted(
+                            item
+                            for item in assumptions
+                            if "boundary_operator" in item or "factor_basis_points" in item
+                        )
+                        _check(
+                            "certifies_its_own_factor",
+                            f"op: boundary_operators={operation_name}" in assumptions
+                            and f"op: materialisation_factor_basis_points={expected_factor}"
+                            in assumptions,
+                            f"plan must record only {operation_name} at "
+                            f"{expected_factor} basis points, got "
+                            f"{record['boundary_assumptions']}",
+                        )
+                record["estimated_peak_bytes"] = estimated
+                _check(
+                    "estimate_bounds_observation",
+                    isinstance(estimated, int) and estimated >= incremental,
+                    f"estimate={estimated} must bound observed mean peak={incremental}",
+                )
+            if operation_name in _DOES_NOT_STREAM_WITNESSES:
+                _check(
+                    "does_not_stream",
+                    ratio >= _MIN_WITNESS_FLOOR_RATIO,
+                    f"paired-mean ratio={ratio:.2f} must be >= {_MIN_WITNESS_FLOOR_RATIO} "
+                    f"of the {control_name} control",
+                )
+            variant = _WITNESS_VARIANTS.get(operation_name)
+            if variant is not None:
+                variant_paired = _paired_measurement(
+                    tmp_path,
+                    fixtures,
+                    variant["probe"],
+                    control_name=variant["floor"],
+                )
+                record["witness_variant"] = {
+                    **{
+                        key: variant_paired[key]
+                        for key in (
+                            "operation",
+                            "control",
+                            "samples",
+                            "operation_samples",
+                            "control_samples",
+                            "operation_mean_bytes",
+                            "control_mean_bytes",
+                            "operation_median_bytes",
+                            "control_median_bytes",
+                            "ratio",
+                        )
+                    },
+                    "min_ratio": variant["min_ratio"],
+                    "certifies": "does_not_stream",
+                    "wide_case_certifies": "estimate_bounds_observation and own factor",
+                }
+                _check(
+                    "does_not_stream_variant",
+                    variant_paired["ratio"] >= variant["min_ratio"],
+                    f"{variant['probe']} paired-mean ratio={variant_paired['ratio']:.2f} "
+                    f"must be >= {variant['min_ratio']} of the {variant['floor']} control",
+                )
+        else:
+            raise AssertionError(f"{operation_name} has unmeasurable policy {policy}")
+
+        measurements.append(record)
+
+    # A cross join is an admitted boundary whose memory nobody has measured, so
+    # it is certified through the planner rather than a probe: no estimate.
+    cross_join_reason = None
+    try:
+        _plan_boundary("join", fixtures, code=_CROSS_JOIN_CODE, two_input=True)
+    except GroupByExecutionUnsupportedError as error:
+        cross_join_reason = error.reason_code
+    cross_join = {
+        "code": _CROSS_JOIN_CODE,
+        "reason_code": cross_join_reason,
+        "satisfied": cross_join_reason == "materialisation_estimate_unavailable",
+    }
+    if not cross_join["satisfied"]:
+        failures.append(
+            f"cross join must reject with an unavailable estimate, got {cross_join_reason!r}"
+        )
+
+    request.node.user_properties.append(
+        (
+            "haute_perf_evidence",
+            {
+                "scenario": "global_operation_memory_policies",
+                "scale": "ci-operation-memory",
+                "execution_profiles": [ExecutionProfile.LAZY_SINK.value],
+                **environment,
+                "input": {
+                    "fact_rows": fixtures["fact_rows"],
+                    "fact_columns": fixtures["fact_columns"],
+                    "fact_estimated_size_bytes": fixtures["fact_estimated_size_bytes"],
+                    "fact_row_groups": fixtures["fact_row_groups"],
+                    "fact_gap_null_count": fixtures["fact_gap_null_count"],
+                    "dim_rows": fixtures["dim_rows"],
+                    "dim_estimated_size_bytes": fixtures["dim_estimated_size_bytes"],
+                    "row_group_size": _OPERATION_ROW_GROUP_SIZE,
+                },
+                "measurements": measurements,
+                "cross_join": cross_join,
+                "rss_contract": {
+                    "paired_samples": _PAIRED_SAMPLES,
+                    "full_width_output_fraction": _FULL_WIDTH_OUTPUT_FRACTION,
+                    "max_streaming_floor_ratio": _MAX_STREAMING_FLOOR_RATIO,
+                    "min_witness_floor_ratio": _MIN_WITNESS_FLOOR_RATIO,
+                    "does_not_stream_witnesses": sorted(_DOES_NOT_STREAM_WITNESSES),
+                    "witness_variants": _WITNESS_VARIANTS,
+                    "boundary_admission_bytes": _BOUNDARY_ADMISSION_BYTES,
+                },
+                "product_metrics": {
+                    "n_collects": sum(record["paired"]["samples"] * 2 for record in measurements),
+                    "n_checkpoints": 0,
+                    "chunk_count": 0,
+                    "output_bytes": 0,
+                    "temp_disk_peak_bytes": fixtures["fact_path"].stat().st_size
+                    + fixtures["dim_path"].stat().st_size,
+                },
+                "admission": {"state": "isolated_process_control", "detail": None},
+                "payload_bytes": 0,
+            },
+        )
+    )
+    assert not failures, "registry policy contradicted by measured peak RSS: " + "; ".join(failures)

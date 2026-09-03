@@ -42,6 +42,7 @@ from haute._ram_estimate import (
     estimate_safe_training_rows,
 )
 from haute._types import NodeType
+from haute.errors import ConfigError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 from tests.conftest import build_test_input_snapshot
 
@@ -1877,12 +1878,25 @@ def test_cardinality_resolution_covers_malformed_bindings_and_source_transforms(
     assert (
         _named_cardinality_inputs(malformed, malformed.node_map["target"], ((edge, proof),)) is None
     )
+    # A falsey non-mapping is malformed, not absent: runtime code generation
+    # validates every non-``None`` value, so the estimator must not treat it
+    # as "no mapping" and hand back an available estimate.
+    for falsey in ([], "", 0):
+        shaped = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": falsey})
+        shaped_edge = shaped.pruned_edges[0]
+        assert (
+            _named_cardinality_inputs(shaped, shaped.node_map["target"], ((shaped_edge, proof),))
+            is None
+        ), falsey
 
     mapped = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": {"alias": "Unnamed"}})
     mapped_edge = mapped.pruned_edges[0]
     bindings = _named_cardinality_inputs(mapped, mapped.node_map["target"], ((mapped_edge, proof),))
     assert bindings is not None and bindings["alias"] == proof
 
+    # Two edges collapsing onto one logical name is a graph the executor
+    # refuses, so the estimator raises its error rather than quietly declining
+    # to measure a run that cannot start.
     collision = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": {"a": "b"}}, 2)
     collision.node_map["parent-0"].data.label = "a"
     collision.node_map["parent-1"].data.label = "b"
@@ -1890,9 +1904,8 @@ def test_cardinality_resolution_covers_malformed_bindings_and_source_transforms(
         (item, collision.cardinality_by_target[(item.source, None)])
         for item in collision.pruned_edges
     )
-    assert (
-        _named_cardinality_inputs(collision, collision.node_map["target"], collision_edges) is None
-    )
+    with pytest.raises(ConfigError, match="duplicate logical input names"):
+        _named_cardinality_inputs(collision, collision.node_map["target"], collision_edges)
 
     no_edge_alias = _cardinality_index_for_node(NodeType.POLARS, {})
     assert (
@@ -2280,7 +2293,7 @@ class TestJsonApiInputPortMetadata:
         """One strategy request must not reopen the same source metadata per boundary."""
 
         import haute._ram_estimate as ram_estimate_mod
-        from haute.execution import _estimate_group_by_boundaries
+        from haute.execution import _estimate_materialising_boundaries
 
         _data_path, config, _cache_dir, _committed_dir = json_api_input
         source = _make_source_node(node_id="quote_in", node_type="apiInput", config=config)
@@ -2313,7 +2326,9 @@ class TestJsonApiInputPortMetadata:
             counting_port_metadata,
         )
 
-        estimate = _estimate_group_by_boundaries(graph, [first.id, second.id], source="live")
+        estimate = _estimate_materialising_boundaries(
+            graph, {first.id: "group_by", second.id: "group_by"}, source="live"
+        )
 
         assert estimate.state is MaterialisationEstimateState.AVAILABLE
         assert metadata_calls == 1
@@ -2325,7 +2340,7 @@ class TestJsonApiInputPortMetadata:
         """An unusable first boundary must not probe unrelated later sources."""
 
         import haute.execution as execution_mod
-        from haute.execution import _estimate_group_by_boundaries
+        from haute.execution import _estimate_materialising_boundaries
 
         graph = PipelineGraph(nodes=[], edges=[])
 
@@ -2335,7 +2350,7 @@ class TestJsonApiInputPortMetadata:
 
         monkeypatch.setattr(execution_mod, "estimate_materialisation_boundaries", estimates)
 
-        estimate = _estimate_group_by_boundaries(graph, ["first", "later"], source="live")
+        estimate = _estimate_materialising_boundaries(graph, ["first", "later"], source="live")
 
         assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
         assert estimate.unavailable_reason == "first:metadata_missing"
@@ -2846,3 +2861,552 @@ def test_literal_unpivot_cardinality_is_bounded_by_the_on_column_count() -> None
     assert result.available, result.unavailable_reason
     assert result.output_rows == 2 * _PROVABLE_SHAPE_ROWS
     assert result.peak_rows == 2 * _PROVABLE_SHAPE_ROWS
+
+
+@pytest.mark.parametrize(
+    ("operator", "factor_basis_points"),
+    [
+        ("group_by", 100),
+        ("sort", 300),
+        ("unique", 350),
+        ("reverse", 250),
+        ("over", 250),
+    ],
+)
+def test_boundary_estimate_applies_and_records_the_operator_memory_factor(
+    tmp_path: Path,
+    operator: str,
+    factor_basis_points: int,
+) -> None:
+    """EXEC-P07: the measured operator surcharge multiplies the finished estimate."""
+    path = tmp_path / "shapes.parquet"
+    _write_shape_source(path)
+    graph = _shape_graph(path, "df = df.filter(pl.col('premium') > 0)", _GROUP_BY_PREMIUM)
+
+    [(_, base)] = list(estimate_materialisation_boundaries(graph, ["agg"]))
+    [(_, scaled)] = list(
+        estimate_materialisation_boundaries(
+            graph,
+            ["agg"],
+            boundary_operators={"agg": (operator,)},
+        )
+    )
+
+    assert base.estimated_peak_bytes is not None
+    assert scaled.estimated_peak_bytes is not None
+    assert (
+        scaled.estimated_peak_bytes == (base.estimated_peak_bytes * factor_basis_points + 99) // 100
+    )
+    assert f"boundary_operator={operator}" in scaled.assumptions
+    assert f"materialisation_factor_basis_points={factor_basis_points}" in scaled.assumptions
+
+
+def test_boundary_estimate_without_an_operator_carries_no_surcharge(tmp_path: Path) -> None:
+    path = tmp_path / "shapes.parquet"
+    _write_shape_source(path)
+    graph = _shape_graph(path, "df = df.filter(pl.col('premium') > 0)", _GROUP_BY_PREMIUM)
+
+    estimate = _boundary_estimate(graph, "agg")
+
+    assert "materialisation_factor_basis_points=100" in estimate.assumptions
+    assert not any(item.startswith("boundary_operator=") for item in estimate.assumptions)
+
+
+def _join_graph(left_path: Path, right_path: Path, join_code: str) -> PipelineGraph:
+    """left/right sources -> join -> group_by."""
+    left = _make_source_node(
+        node_id="left",
+        label="left",
+        node_type="dataInput",
+        config=_ready_file_input_config(left_path),
+    )
+    right = _make_source_node(
+        node_id="right",
+        label="right",
+        node_type="dataInput",
+        config=_ready_file_input_config(right_path),
+    )
+    joined = _make_transform_node(node_id="joined", label="joined", config={"code": join_code})
+    aggregated = _make_transform_node(
+        node_id="agg",
+        label="agg",
+        config={
+            "code": "df = df.group_by('segment').agg(pl.col('premium').sum().alias('premium'))"
+        },
+    )
+    return PipelineGraph(
+        nodes=[left, right, joined, aggregated],
+        edges=[
+            GraphEdge(id="e1", source="left", target="joined"),
+            GraphEdge(id="e2", source="right", target="joined"),
+            GraphEdge(id="e3", source="joined", target="agg"),
+        ],
+    )
+
+
+def test_join_boundary_is_sized_from_its_ports_not_its_output_product(tmp_path: Path) -> None:
+    """EXEC-P07: a join holds both ports and streams its output.
+
+    An undeclared many-to-many join's *output* bound is the row product, but the
+    join itself never materialises that frame, so charging it the product would
+    reject every contract-free join. Its own estimate is the wider port.
+    """
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(left_path, right_path, "df = left.join(right, on='segment')")
+
+    estimate = _boundary_estimate(graph, "joined")
+
+    assert estimate.state is MaterialisationEstimateState.AVAILABLE, estimate.unavailable_reason
+    assert estimate.estimated_peak_bytes is not None
+    assert estimate.estimated_peak_bytes > 0
+
+    [(_, scaled)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+    assert scaled.state is MaterialisationEstimateState.AVAILABLE, scaled.unavailable_reason
+    assert scaled.estimated_peak_bytes is not None
+    # The port bound is one source's rows, not rows x rows.
+    assert f"boundary_input_rows_upper_bound={_PROVABLE_SHAPE_ROWS}" in scaled.assumptions
+    output_bound = next(
+        item for item in scaled.assumptions if item.startswith("boundary_output_rows_upper_bound=")
+    )
+    assert output_bound == (
+        f"boundary_output_rows_upper_bound={_PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS}"
+    )
+    # The operator factor still applies on top of the port-sized base. The
+    # unoperated estimate above is the same widths against the *product* bound,
+    # so dividing it by one port's rows recovers the port-sized base exactly.
+    assert "materialisation_factor_basis_points=150" in scaled.assumptions
+    port_sized_base = estimate.estimated_peak_bytes // _PROVABLE_SHAPE_ROWS
+    assert scaled.estimated_peak_bytes == (port_sized_base * 150 + 99) // 100
+    assert scaled.estimated_peak_bytes < estimate.estimated_peak_bytes
+
+
+def test_group_by_after_an_undeclared_join_still_sees_the_row_product(tmp_path: Path) -> None:
+    """The output bound propagates unchanged: the frame that materialises pays."""
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(left_path, right_path, "df = left.join(right, on='segment')")
+
+    [(_, join_estimate)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+    [(_, downstream)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["agg"], boundary_operators={"agg": ("group_by",)}
+        )
+    )
+
+    assert downstream.state is MaterialisationEstimateState.AVAILABLE
+    assert join_estimate.estimated_peak_bytes is not None
+    assert downstream.estimated_peak_bytes is not None
+    # The join streams its output; the group_by that materialises it pays the
+    # full many-to-many product.
+    assert downstream.estimated_peak_bytes > join_estimate.estimated_peak_bytes
+    assert (
+        f"cardinality_peak_upper_bound={_PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS}"
+        in downstream.assumptions
+    )
+
+
+def test_declared_join_uniqueness_keeps_the_downstream_bound_tight(tmp_path: Path) -> None:
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(
+        left_path,
+        right_path,
+        "df = left.join(right, on='segment', how='left', validate='m:1')",
+    )
+
+    downstream = _boundary_estimate(graph, "agg")
+
+    assert downstream.state is MaterialisationEstimateState.AVAILABLE
+    assert f"cardinality_peak_upper_bound={_PROVABLE_SHAPE_ROWS}" in downstream.assumptions
+
+
+def test_join_boundary_with_an_unresolvable_port_stays_unavailable(tmp_path: Path) -> None:
+    left_path = tmp_path / "left.parquet"
+    _write_shape_source(left_path)
+    left = _make_source_node(
+        node_id="left",
+        label="left",
+        node_type="dataInput",
+        config=_ready_file_input_config(left_path),
+    )
+    dynamic = _make_transform_node(
+        node_id="right",
+        label="right",
+        config={"code": "df = df.unpivot(index=['segment'])"},
+    )
+    joined = _make_transform_node(
+        node_id="joined", label="joined", config={"code": "df = left.join(right, on='segment')"}
+    )
+    graph = PipelineGraph(
+        nodes=[left, dynamic, joined],
+        edges=[
+            GraphEdge(id="e1", source="left", target="right"),
+            GraphEdge(id="e2", source="left", target="joined"),
+            GraphEdge(id="e3", source="right", target="joined"),
+        ],
+    )
+
+    [(_, estimate)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+
+    assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
+    assert estimate.unavailable_reason is not None
+    assert "dynamic_unpivot" in estimate.unavailable_reason
+
+
+@pytest.mark.parametrize(
+    ("operators", "expected_factor"),
+    [
+        (("unique", "reverse"), 350),
+        (("reverse", "unique"), 350),
+        (("sort", "reverse"), 300),
+        (("reverse",), 250),
+    ],
+)
+def test_boundary_estimate_applies_the_maximum_chained_factor(
+    tmp_path: Path,
+    operators: tuple[str, ...],
+    expected_factor: int,
+) -> None:
+    """A chained node's estimate must not depend on which operator came first."""
+    path = tmp_path / "shapes.parquet"
+    _write_shape_source(path)
+    graph = _shape_graph(path, "df = df.filter(pl.col('premium') > 0)", _GROUP_BY_PREMIUM)
+
+    [(_, base)] = list(estimate_materialisation_boundaries(graph, ["agg"]))
+    [(_, scaled)] = list(
+        estimate_materialisation_boundaries(graph, ["agg"], boundary_operators={"agg": operators})
+    )
+
+    assert base.estimated_peak_bytes is not None
+    assert scaled.estimated_peak_bytes is not None
+    assert scaled.estimated_peak_bytes == (base.estimated_peak_bytes * expected_factor + 99) // 100
+    assert f"materialisation_factor_basis_points={expected_factor}" in scaled.assumptions
+    # The diagnostic still blames the first operator evaluated; the whole chain
+    # is recorded so the factor can be audited.
+    assert f"boundary_operator={operators[0]}" in scaled.assumptions
+    assert f"boundary_operators={','.join(operators)}" in scaled.assumptions
+
+
+def _three_source_join_graph(
+    left_path: Path,
+    middle_path: Path,
+    right_path: Path,
+    join_code: str,
+) -> PipelineGraph:
+    nodes = [
+        _make_source_node(
+            node_id=name, label=name, node_type="dataInput", config=_ready_file_input_config(path)
+        )
+        for name, path in (
+            ("left", left_path),
+            ("middle", middle_path),
+            ("right", right_path),
+        )
+    ]
+    nodes.append(_make_transform_node(node_id="joined", label="joined", config={"code": join_code}))
+    return PipelineGraph(
+        nodes=nodes,
+        edges=[
+            GraphEdge(id="e1", source="left", target="joined"),
+            GraphEdge(id="e2", source="middle", target="joined"),
+            GraphEdge(id="e3", source="right", target="joined"),
+        ],
+    )
+
+
+def test_chained_join_is_sized_from_the_previous_join_not_the_original_ports(
+    tmp_path: Path,
+) -> None:
+    """The second join consumes the first join's result, product included."""
+    paths = []
+    for name in ("left", "middle", "right"):
+        path = tmp_path / f"{name}.parquet"
+        _write_shape_source(path)
+        paths.append(path)
+    undeclared = _three_source_join_graph(
+        *paths,
+        "df = left.join(middle, on='segment').join(right, on='segment')",
+    )
+    declared = _three_source_join_graph(
+        *paths,
+        "df = left.join(middle, on='segment', how='left', validate='m:1')"
+        ".join(right, on='segment', how='left', validate='m:1')",
+    )
+
+    [(_, chained)] = list(
+        estimate_materialisation_boundaries(
+            undeclared, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+    [(_, linear)] = list(
+        estimate_materialisation_boundaries(
+            declared, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+
+    assert chained.state is MaterialisationEstimateState.AVAILABLE, chained.unavailable_reason
+    assert linear.state is MaterialisationEstimateState.AVAILABLE, linear.unavailable_reason
+    # The undeclared chain's second join consumes the first join's product.
+    assert (
+        f"boundary_input_rows_upper_bound={_PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS}"
+        in chained.assumptions
+    )
+    # A declared m:1 chain never expands, so it stays at one port's rows.
+    assert f"boundary_input_rows_upper_bound={_PROVABLE_SHAPE_ROWS}" in linear.assumptions
+    assert chained.estimated_peak_bytes is not None
+    assert linear.estimated_peak_bytes is not None
+    assert chained.estimated_peak_bytes > linear.estimated_peak_bytes
+
+
+def test_cross_join_boundary_is_unmeasured_and_therefore_unavailable(tmp_path: Path) -> None:
+    """EXEC-P07 measured inner/left/asof joins; a cross join inherits nothing."""
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(left_path, right_path, "df = left.join(right, how='cross')")
+
+    [(_, estimate)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+
+    assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
+    assert estimate.unavailable_reason == "cross_join_unmeasured"
+
+
+def test_cross_join_output_product_still_propagates_downstream(tmp_path: Path) -> None:
+    """Only the join's own admission is withheld; its output bound is unchanged."""
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(left_path, right_path, "df = left.join(right, how='cross')")
+
+    downstream = _boundary_estimate(graph, "agg")
+
+    assert downstream.state is MaterialisationEstimateState.AVAILABLE
+    assert (
+        f"cardinality_peak_upper_bound={_PROVABLE_SHAPE_ROWS * _PROVABLE_SHAPE_ROWS}"
+        in downstream.assumptions
+    )
+
+
+def _self_join_graph(path: Path, join_code: str) -> PipelineGraph:
+    """One source wired into a join node twice: both ports hold the same frame."""
+    source = _make_source_node(
+        node_id="src", label="src", node_type="dataInput", config=_ready_file_input_config(path)
+    )
+    joined = _make_transform_node(node_id="joined", label="joined", config={"code": join_code})
+    return PipelineGraph(
+        nodes=[source, joined],
+        edges=[GraphEdge(id="e1", source="src", target="joined")],
+    )
+
+
+def test_self_join_charges_the_shared_port_width_twice(tmp_path: Path) -> None:
+    """``df.join(df, ...)`` holds one frame as two operands, so it costs two."""
+    path = tmp_path / "src.parquet"
+    _write_shape_source(path)
+    self_join = _self_join_graph(path, "df = src.join(src, on='segment', validate='m:1')")
+    single = _self_join_graph(path, "df = src.sort('premium')")
+
+    [(_, joined)] = list(
+        estimate_materialisation_boundaries(
+            self_join, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+    [(_, sorted_once)] = list(
+        estimate_materialisation_boundaries(
+            single, ["joined"], boundary_operators={"joined": ("sort",)}
+        )
+    )
+
+    assert joined.state is MaterialisationEstimateState.AVAILABLE, joined.unavailable_reason
+    assert "boundary_resident_operand_count=2" in joined.assumptions
+    assert joined.estimated_peak_bytes is not None
+    assert sorted_once.estimated_peak_bytes is not None
+    # Same rows and same source columns: only the doubled port width and the
+    # two operators' factors (150 for join, 300 for sort) differ.
+    single_port_width_at_join_factor = (sorted_once.estimated_peak_bytes * 150 + 299) // 300
+    assert joined.estimated_peak_bytes == 2 * single_port_width_at_join_factor
+
+
+def test_a_lookup_joined_twice_is_charged_twice(tmp_path: Path) -> None:
+    """A chain that joins the same lookup twice holds it twice."""
+    left_path = tmp_path / "left.parquet"
+    lookup_path = tmp_path / "lookup.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(lookup_path)
+
+    def _graph(code: str) -> PipelineGraph:
+        nodes = [
+            _make_source_node(
+                node_id=name,
+                label=name,
+                node_type="dataInput",
+                config=_ready_file_input_config(path),
+            )
+            for name, path in (("left", left_path), ("lookup", lookup_path))
+        ]
+        nodes.append(_make_transform_node(node_id="joined", label="joined", config={"code": code}))
+        return PipelineGraph(
+            nodes=nodes,
+            edges=[
+                GraphEdge(id="e1", source="left", target="joined"),
+                GraphEdge(id="e2", source="lookup", target="joined"),
+            ],
+        )
+
+    twice = _graph(
+        "df = left.join(lookup, on='segment', how='left', validate='m:1')"
+        ".join(lookup, on='segment', how='left', validate='m:1')"
+    )
+    once = _graph("df = left.join(lookup, on='segment', how='left', validate='m:1')")
+
+    estimates = {}
+    for name, graph in (("twice", twice), ("once", once)):
+        [(_, estimate)] = list(
+            estimate_materialisation_boundaries(
+                graph, ["joined"], boundary_operators={"joined": ("join",)}
+            )
+        )
+        estimates[name] = estimate
+
+    assert estimates["twice"].state is MaterialisationEstimateState.AVAILABLE
+    assert "boundary_resident_operand_count=3" in estimates["twice"].assumptions
+    # Two ports resident once each is the ordinary case and stays unannotated.
+    assert not any(
+        item.startswith("boundary_resident_operand_count=")
+        for item in estimates["once"].assumptions
+    )
+    assert estimates["twice"].estimated_peak_bytes is not None
+    assert estimates["once"].estimated_peak_bytes is not None
+    assert estimates["twice"].estimated_peak_bytes > estimates["once"].estimated_peak_bytes
+
+
+def test_an_ordinary_two_port_join_is_unchanged_by_operand_counting(tmp_path: Path) -> None:
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    _write_shape_source(left_path)
+    _write_shape_source(right_path)
+    graph = _join_graph(
+        left_path, right_path, "df = left.join(right, on='segment', how='left', validate='m:1')"
+    )
+
+    [(_, estimate)] = list(
+        estimate_materialisation_boundaries(
+            graph, ["joined"], boundary_operators={"joined": ("join",)}
+        )
+    )
+
+    assert estimate.state is MaterialisationEstimateState.AVAILABLE
+    assert not any(
+        item.startswith("boundary_resident_operand_count=") for item in estimate.assumptions
+    )
+    assert f"boundary_input_rows_upper_bound={_PROVABLE_SHAPE_ROWS}" in estimate.assumptions
+
+
+def _alias_join_graph(path: Path, code: str, input_mapping: dict[str, str]) -> PipelineGraph:
+    """One source into a join node that renames it through ``inputMapping``."""
+    source = _make_source_node(
+        node_id="src", label="src", node_type="dataInput", config=_ready_file_input_config(path)
+    )
+    joined = _make_transform_node(
+        node_id="joined",
+        label="joined",
+        config={"code": code, "inputMapping": input_mapping},
+    )
+    return PipelineGraph(
+        nodes=[source, joined],
+        edges=[GraphEdge(id="e1", source="src", target="joined")],
+    )
+
+
+def test_a_self_join_through_an_input_mapping_alias_is_charged_twice(tmp_path: Path) -> None:
+    """``inputMapping`` renames the frame; both operands are still resident.
+
+    Counting by the edge's own name and defaulting the alias to one reference
+    silently halved this estimate.
+    """
+    path = tmp_path / "src.parquet"
+    _write_shape_source(path)
+    aliased = _alias_join_graph(
+        path,
+        "df = logical.join(logical, on='segment', validate='m:1')",
+        {"logical": "src"},
+    )
+    direct = _self_join_graph(path, "df = src.join(src, on='segment', validate='m:1')")
+
+    estimates = {}
+    for name, graph in (("aliased", aliased), ("direct", direct)):
+        [(_, estimate)] = list(
+            estimate_materialisation_boundaries(
+                graph, ["joined"], boundary_operators={"joined": ("join",)}
+            )
+        )
+        estimates[name] = estimate
+
+    assert estimates["aliased"].state is MaterialisationEstimateState.AVAILABLE, estimates[
+        "aliased"
+    ].unavailable_reason
+    assert "boundary_resident_operand_count=2" in estimates["aliased"].assumptions
+    # The alias must not change what the estimate costs.
+    assert estimates["aliased"].estimated_peak_bytes == estimates["direct"].estimated_peak_bytes
+
+
+def test_a_duplicate_valued_input_mapping_fails_loudly_instead_of_estimating(
+    tmp_path: Path,
+) -> None:
+    """Two logical names for one edge is not a graph the runtime will execute.
+
+    ``resolve_input_mapping_names`` is the canonical contract: the mapping is
+    one-to-one. Summing the two aliases into one edge would have produced a
+    confident estimate for a graph the executor rejects, so the estimator
+    raises the same error rather than inventing an answer.
+    """
+    from haute._graph_utils import resolve_input_mapping_names
+
+    mapping = {"alpha": "src", "beta": "src"}
+
+    with pytest.raises(ConfigError) as runtime_error:
+        resolve_input_mapping_names(["src"], mapping)
+
+    path = tmp_path / "src.parquet"
+    _write_shape_source(path)
+    graph = _alias_join_graph(
+        path,
+        "df = alpha.join(beta, on='segment', validate='m:1')",
+        mapping,
+    )
+
+    with pytest.raises(ConfigError) as estimator_error:
+        list(
+            estimate_materialisation_boundaries(
+                graph, ["joined"], boundary_operators={"joined": ("join",)}
+            )
+        )
+
+    # The analyst sees the executor's diagnosis, not an estimator-specific one.
+    assert str(estimator_error.value) == str(runtime_error.value)
+    assert "one distinct current edge input name" in str(estimator_error.value)

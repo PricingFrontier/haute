@@ -13,7 +13,7 @@ import atexit
 import shutil
 import tempfile
 import threading
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -87,8 +87,9 @@ from haute.projection import (
     ProjectionRequest,
     build_execution_strategy_result,
     compute_prepared_plan,
-    group_by_operators_by_input_names,
-    group_by_operators_by_node,
+    first_materialising_operators,
+    materialising_operator_sequences_by_input_names,
+    materialising_operator_sequences_by_node,
     normalise_required_columns_by_node,
     prepare_graph,
     ratebook_factor_required_columns,
@@ -267,17 +268,18 @@ def plan_execution_strategy(
         prepared.node_map,
         prepared.relevant_edges,
     )
-    group_by_operators = group_by_operators_by_node(
+    materialising_sequences = materialising_operator_sequences_by_node(
         prepared.order,
         prepared.node_map,
         relevant_edges=prepared.relevant_edges,
     )
+    materialising_operators = first_materialising_operators(materialising_sequences)
     resolved_estimate: MaterialisationEstimate | None
-    if group_by_operators:
+    if materialising_operators:
         if materialisation_estimate is _AUTO_MATERIALISATION_ESTIMATE:
-            resolved_estimate = _estimate_group_by_boundaries(
+            resolved_estimate = _estimate_materialising_boundaries(
                 request.graph,
-                group_by_operators,
+                materialising_sequences,
                 source=request.source,
                 projection_plan=projection_plan,
                 runtime_source_frames_by_node=runtime_source_frames_by_node,
@@ -299,7 +301,7 @@ def plan_execution_strategy(
         children_of=children_of,
         node_map=prepared.node_map,
         has_projection_seed=bool(required_columns_by_node),
-        group_by_operators=group_by_operators,
+        materialising_operators=materialising_operators,
         execution_context=execution_context,
         materialisation_estimate=resolved_estimate,
         required_columns_by_node=required_columns_by_node,
@@ -309,22 +311,23 @@ def plan_execution_strategy(
     return result
 
 
-def _estimate_group_by_boundaries(
+def _estimate_materialising_boundaries(
     graph: PipelineGraph,
-    node_ids: Iterable[str],
+    boundary_operators: Mapping[str, Sequence[str]],
     *,
     source: str,
     projection_plan: ProjectionPlan | None = None,
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
 ) -> MaterialisationEstimate:
-    """Return the conservative peak across every declared group-by boundary."""
+    """Return the conservative peak across every declared materialisation boundary."""
     peak_bytes = 0
     assumptions: list[str] = []
     basis = MaterialisationEstimateBasis.PROJECTED_COLUMNS
     estimates = estimate_materialisation_boundaries(
         graph,
-        node_ids,
+        boundary_operators,
         source=source,
+        boundary_operators=boundary_operators,
         edge_demands=(projection_plan.edge_demands if projection_plan is not None else None),
         runtime_source_frames_by_node=runtime_source_frames_by_node,
     )
@@ -384,10 +387,12 @@ def plan_prepared_execution_strategy(
             prepared_relevant_edges,
         )
     if prepared_relevant_edges is not None:
-        group_by_operators = group_by_operators_by_node(
-            order,
-            node_map,
-            relevant_edges=prepared_relevant_edges,
+        materialising_operators = first_materialising_operators(
+            materialising_operator_sequences_by_node(
+                order,
+                node_map,
+                relevant_edges=prepared_relevant_edges,
+            )
         )
     else:
         # Without edges the parent labels still reproduce what
@@ -402,7 +407,9 @@ def plan_prepared_execution_strategy(
             name = _sanitize_func_name(parent_node.data.label)
             for child in children:
                 input_names_by_node.setdefault(child, set()).add(name)
-        group_by_operators = group_by_operators_by_input_names(order, node_map, input_names_by_node)
+        materialising_operators = first_materialising_operators(
+            materialising_operator_sequences_by_input_names(order, node_map, input_names_by_node)
+        )
     result = _finalise_execution_strategy(
         projection_plan,
         profile=profile,
@@ -410,7 +417,7 @@ def plan_prepared_execution_strategy(
         children_of=children_of,
         node_map=node_map,
         has_projection_seed=bool(required_columns_by_node),
-        group_by_operators=group_by_operators,
+        materialising_operators=materialising_operators,
         execution_context=execution_context,
         materialisation_estimate=materialisation_estimate,
         required_columns_by_node=required_columns_by_node,
@@ -433,7 +440,10 @@ def _children_of(
     return children
 
 
-def _group_by_rejection(
+_JOIN_OPERATORS = frozenset({"join", "join_asof"})
+
+
+def _materialisation_rejection(
     *,
     node_id: str,
     operator: str,
@@ -446,17 +456,25 @@ def _group_by_rejection(
     remediation = {
         "execution_admission_unavailable": (
             "Create an admitted execution context with positive memory-limit and "
-            "headroom values before running this group-by."
+            f"headroom values before running this '{operator}'."
         ),
         "materialisation_estimate_unavailable": (
             "Provide readable source/schema metadata so Haute can estimate the full "
-            "group-by boundary before execution."
+            f"'{operator}' materialisation boundary before execution."
         ),
         "materialisation_exceeds_headroom": (
             "Increase the configured memory headroom, narrow the input, or pre-aggregate "
-            "the source before this group-by."
+            f"the source before this '{operator}'."
         ),
     }[reason_code]
+    if reason_code == "materialisation_exceeds_headroom" and operator in _JOIN_OPERATORS:
+        # Only a join's estimate can blow up on an undeclared key contract, so
+        # only a join gets told to declare one.
+        remediation = (
+            f"{remediation} A join without a declared validate= uniqueness contract is "
+            "estimated at the many-to-many row product; declare validate= to estimate "
+            "the real bound."
+        )
     if estimate_detail:
         # The estimator already knows which node it could not measure and why.
         # Discarding that left the analyst with "provide readable metadata" and
@@ -469,7 +487,7 @@ def _group_by_rejection(
             "so Haute cannot run the plan conservatively here."
         )
     return GroupByExecutionUnsupportedError(
-        "Group-by materialisation could not be admitted for this execution.",
+        f"Materialisation of '{operator}' could not be admitted for this execution.",
         node_id=node_id,
         operator=operator,
         profile=profile.value,
@@ -488,7 +506,7 @@ def _finalise_execution_strategy(
     children_of: Mapping[str, Iterable[str]],
     node_map: Mapping[str, GraphNode],
     has_projection_seed: bool,
-    group_by_operators: Mapping[str, str],
+    materialising_operators: Mapping[str, str],
     execution_context: ExecutionContext | None,
     materialisation_estimate: MaterialisationEstimate | None,
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None,
@@ -504,8 +522,8 @@ def _finalise_execution_strategy(
     headroom_bytes: int | None = None
     assumptions: tuple[str, ...] = ()
 
-    if group_by_operators and not schema_only:
-        node_id, operator = next(iter(group_by_operators.items()))
+    if materialising_operators and not schema_only:
+        node_id, operator = next(iter(materialising_operators.items()))
         admission = execution_context.admission if execution_context is not None else None
         if (
             admission is None
@@ -517,7 +535,7 @@ def _finalise_execution_strategy(
             or isinstance(admission.headroom_bytes, bool)
             or admission.headroom_bytes <= 0
         ):
-            raise _group_by_rejection(
+            raise _materialisation_rejection(
                 node_id=node_id,
                 operator=operator,
                 profile=profile,
@@ -537,7 +555,7 @@ def _finalise_execution_strategy(
             )
             backend = current_native_memory_backend()
             if backend is None:
-                raise _group_by_rejection(
+                raise _materialisation_rejection(
                     node_id=node_id,
                     operator=operator,
                     profile=profile,
@@ -550,7 +568,7 @@ def _finalise_execution_strategy(
             # its full reserved envelope instead of being rejected outright.
             projection_plan = with_materialisation_boundaries(
                 projection_plan,
-                group_by_operators,
+                materialising_operators,
             )
             strategy = ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
             reason_code = "materialisation_estimate_unavailable_conservative"
@@ -575,7 +593,7 @@ def _finalise_execution_strategy(
             estimate_calibration_factor_basis_points = calibrated.factor_basis_points
             estimate_admission_basis = materialisation_estimate.basis.value
             if estimated_peak_bytes > headroom_bytes:
-                raise _group_by_rejection(
+                raise _materialisation_rejection(
                     node_id=node_id,
                     operator=operator,
                     profile=profile,
@@ -585,11 +603,14 @@ def _finalise_execution_strategy(
                 )
             projection_plan = with_materialisation_boundaries(
                 projection_plan,
-                group_by_operators,
+                materialising_operators,
             )
             strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
-            reason_code = "group_by_materialisation_admitted"
-            remediation = "Keep the admitted boundary within its reported memory headroom."
+            reason_code = "materialisation_admitted"
+            remediation = (
+                f"Keep the admitted '{operator}' boundary at '{node_id}' within "
+                "its reported memory headroom."
+            )
             assumptions = (
                 *materialisation_estimate.assumptions,
                 f"raw_estimated_peak_bytes={raw_estimated_peak_bytes}",
@@ -611,7 +632,7 @@ def _finalise_execution_strategy(
         required_columns_by_node=required_columns_by_node,
         strategy=strategy,
         reason_code=reason_code,
-        boundary_operators=group_by_operators,
+        boundary_operators=materialising_operators,
         remediation=remediation,
         estimated_peak_bytes=estimated_peak_bytes,
         raw_estimated_peak_bytes=raw_estimated_peak_bytes,

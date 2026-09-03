@@ -32,6 +32,7 @@ from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, build_parents_of, edge_input_name
 from haute._polars_operations import (
     OperationReceiver,
+    materialising_expression_methods,
     materialising_frame_methods,
     registered_names,
 )
@@ -60,7 +61,10 @@ __all__ = [
     "with_runtime_inferred_streaming_edges",
     "simple_join_calls_for_parent_inputs",
     "source_scan_projection",
-    "group_by_operators_by_input_names",
+    "materialising_operator_sequences_by_input_names",
+    "materialising_operator_sequences_by_node",
+    "materialising_operators_by_input_names",
+    "materialising_operators_by_node",
     "source_user_code_preserves_column_projection",
     "validate_projection_rule_coverage",
     "with_api_input_port_projection_boundaries",
@@ -778,7 +782,7 @@ def build_execution_strategy_result(
             ExecutionStrategy.SCHEMA_ALL_EXCEPT: "schema_all_except",
             ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: "full_width_admitted",
             ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: ("unprojected_streaming_boundary"),
-            ExecutionStrategy.MATERIALISATION_BOUNDARY: ("group_by_materialisation_admitted"),
+            ExecutionStrategy.MATERIALISATION_BOUNDARY: "materialisation_admitted",
             ExecutionStrategy.FULL_WIDTH_CONSERVATIVE: (
                 "materialisation_estimate_unavailable_conservative"
             ),
@@ -1416,7 +1420,14 @@ def source_user_code_preserves_column_projection(code: str) -> bool:
     return saw_df_assignment
 
 
-_MaterialisingCall = tuple[int, int, str]
+_MaterialisingCall = tuple[int, int, int, str]
+"""``(evaluation_index, lineno, col_offset, attribute)`` for one boundary call.
+
+The evaluation index leads because source position does not order chained calls:
+``df.unique(...).reverse()`` gives both calls the same ``(lineno, col_offset)``,
+which left the operator to a lexical tie-break. The classifier walks in Python
+evaluation order, so the order it records is the order the frame is transformed.
+"""
 
 _COMPREHENSION_TYPES = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
 
@@ -1451,6 +1462,7 @@ def _materialising_calls_in_source_order(
     tree: ast.Module,
     input_names: frozenset[str],
     materialising: frozenset[str],
+    materialising_expressions: frozenset[str] = frozenset(),
 ) -> list[_MaterialisingCall]:
     """Classify materialising calls with the receiver state at each evaluation.
 
@@ -1490,10 +1502,27 @@ def _materialising_calls_in_source_order(
     provable non-frame only when every element is. A subscript, attribute, or
     augmented assignment marks the root name it mutates as a may-frame. So an
     unsupported shape can only add a boundary, never hide one.
+
+    Frame methods in ``materialising`` are classified by receiver as described
+    above. ``materialising_expressions`` holds expression-level boundary
+    methods (``over``): a window expression's receiver is always a ``pl``-rooted
+    chain, which the receiver rule proves is not a frame, so these are matched
+    on the attribute wherever they appear in the node's code -- except on a
+    receiver the analyser proves *is* a frame, which cannot be an expression.
     """
     frames: set[str] = set(input_names) | {"df"}
     non_frames: set[str] = {"pl"}
     found: list[_MaterialisingCall] = []
+
+    def record(node: ast.Call, attr: str) -> None:
+        found.append(
+            (
+                len(found),
+                getattr(node, "lineno", _MAX_TOPOLOGICAL_RANK),
+                getattr(node, "col_offset", _MAX_TOPOLOGICAL_RANK),
+                attr,
+            )
+        )
 
     def name_fact(name: str) -> _BindingFact:
         if name in frames:
@@ -1566,16 +1595,12 @@ def _materialising_calls_in_source_order(
             evaluate(node.slice, definite=definite)
             return fact
         if isinstance(node, ast.Call):
+            materialises = False
             if isinstance(node.func, ast.Attribute):
                 receiver = evaluate(node.func.value, definite=definite)
-                if node.func.attr in materialising and receiver != "non_frame":
-                    found.append(
-                        (
-                            getattr(node, "lineno", _MAX_TOPOLOGICAL_RANK),
-                            getattr(node, "col_offset", _MAX_TOPOLOGICAL_RANK),
-                            node.func.attr,
-                        )
-                    )
+                materialises = (node.func.attr in materialising and receiver != "non_frame") or (
+                    node.func.attr in materialising_expressions and receiver != "frame"
+                )
                 if receiver != "non_frame":
                     fact = receiver
                 elif (
@@ -1595,6 +1620,13 @@ def _materialising_calls_in_source_order(
                 evaluate(argument, definite=definite)
             for keyword in node.keywords:
                 evaluate(keyword.value, definite=definite)
+            if materialises:
+                # Python evaluates the receiver, then the arguments, then the
+                # call. Recording before the arguments reported
+                # ``left.join(right.sort(...))`` as join-then-sort, which is the
+                # reverse of the order the frames are actually transformed in.
+                assert isinstance(node.func, ast.Attribute)
+                record(node, node.func.attr)
             return fact
         if isinstance(node, ast.BoolOp):
             first, *rest = node.values
@@ -1801,12 +1833,12 @@ def _materialising_calls_in_source_order(
     return found
 
 
-def group_by_operators_by_node(
+def materialising_operator_sequences_by_node(
     order: Iterable[str],
     node_map: Mapping[str, GraphNode],
     *,
     relevant_edges: Iterable[GraphEdge],
-) -> Mapping[str, str]:
+) -> Mapping[str, tuple[str, ...]]:
     """Return materialisation-boundary operators in deterministic execution order.
 
     The operator names come from the operation registry (the frame methods whose
@@ -1834,23 +1866,24 @@ def group_by_operators_by_node(
         if source_node is None:
             continue
         input_names_by_node.setdefault(edge.target, set()).add(edge_input_name(edge, source_node))
-    return group_by_operators_by_input_names(order, node_map, input_names_by_node)
+    return materialising_operator_sequences_by_input_names(order, node_map, input_names_by_node)
 
 
-def group_by_operators_by_input_names(
+def materialising_operator_sequences_by_input_names(
     order: Iterable[str],
     node_map: Mapping[str, GraphNode],
     input_names_by_node: Mapping[str, Iterable[str]],
-) -> Mapping[str, str]:
+) -> Mapping[str, tuple[str, ...]]:
     """Classify materialising operators from pre-derived input frame names.
 
     Callers that hold the prepared graph's edges use
-    :func:`group_by_operators_by_node`; this entry point serves the prepared
+    :func:`materialising_operator_sequences_by_node`; this entry point serves the prepared
     planner when edges were not supplied and the input names come from the
     parent labels instead.
     """
     materialising = materialising_frame_methods()
-    found: dict[str, str] = {}
+    materialising_expressions = materialising_expression_methods()
+    found: dict[str, tuple[str, ...]] = {}
     for node_id in order:
         node = node_map[node_id]
         if node.data.nodeType is not NodeType.POLARS:
@@ -1866,10 +1899,49 @@ def group_by_operators_by_input_names(
             tree,
             frozenset(input_names_by_node.get(node_id, ())),
             materialising,
+            materialising_expressions,
         )
         if calls:
-            found[node_id] = min(calls)[2]
+            # Evaluation order, deduplicated: the first entry is the operator the
+            # diagnostic blames, and the whole tuple is what the estimator costs.
+            found[node_id] = tuple(dict.fromkeys(call[3] for call in sorted(calls)))
     return MappingProxyType(found)
+
+
+def first_materialising_operators(
+    sequences: Mapping[str, tuple[str, ...]],
+) -> Mapping[str, str]:
+    """Reduce boundary sequences to the operator each node's diagnostic blames.
+
+    The first entry is the first materialising call reached in evaluation order,
+    which is the one that turns the node into a boundary.
+    """
+    return MappingProxyType(
+        {node_id: operators[0] for node_id, operators in sequences.items() if operators}
+    )
+
+
+def materialising_operators_by_node(
+    order: Iterable[str],
+    node_map: Mapping[str, GraphNode],
+    *,
+    relevant_edges: Iterable[GraphEdge],
+) -> Mapping[str, str]:
+    """Return each boundary node's first materialising operator."""
+    return first_materialising_operators(
+        materialising_operator_sequences_by_node(order, node_map, relevant_edges=relevant_edges)
+    )
+
+
+def materialising_operators_by_input_names(
+    order: Iterable[str],
+    node_map: Mapping[str, GraphNode],
+    input_names_by_node: Mapping[str, Iterable[str]],
+) -> Mapping[str, str]:
+    """Return each boundary node's first materialising operator."""
+    return first_materialising_operators(
+        materialising_operator_sequences_by_input_names(order, node_map, input_names_by_node)
+    )
 
 
 def builder_required_output_columns_by_node(

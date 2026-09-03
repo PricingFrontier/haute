@@ -834,10 +834,14 @@ def test_projection_diagnostics_payload_is_json_safe():
 
 
 def test_execution_facade_attaches_projection_strategy_to_context():
-    from haute._execution_context import ExecutionContext
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._native_memory_limit import native_memory_backend_scope
     from haute.execution import plan_execution_strategy
 
-    context = ExecutionContext(
+    # The fan-in node joins, which EXEC-P07 admits as a materialisation
+    # boundary, so the plan needs an admitted context; the sources are not
+    # readable here, so a hard worker cap supplies the bounded envelope.
+    context = create_admitted_execution_context(
         operation="test_projection_facade",
         profile=ExecutionProfile.LAZY_SINK,
     )
@@ -848,7 +852,8 @@ def test_execution_facade_attaches_projection_strategy_to_context():
         required_columns_by_node={"out": {"quote_id", "left_value"}},
     )
 
-    projection = plan_execution_strategy(request, execution_context=context)
+    with native_memory_backend_scope("rlimit"):
+        projection = plan_execution_strategy(request, execution_context=context)
 
     assert context.projection_plan is projection
     diagnostics = context.projection_plan.projection_plan.diagnostics_payload(
@@ -3080,3 +3085,90 @@ def test_source_scan_projection_rejects_malformed_projection_config():
             {"column_renames": {"raw_premium": 123}},
             {"premium"},
         )
+
+
+# ----------------------------------------------- EXEC-P07 chained boundaries
+
+
+def _chained_boundary_sequences(code: str):
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import (
+        materialising_operator_sequences_by_input_names,
+    )
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={"code": code}),
+    )
+    return materialising_operator_sequences_by_input_names(["op"], {"op": node}, {"op": ["src"]})
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("df = src.unique(subset=['k']).reverse()", ("unique", "reverse")),
+        ("df = src.reverse().unique(subset=['k'])", ("reverse", "unique")),
+        ("df = src.sort('a').unique(subset=['k']).reverse()", ("sort", "unique", "reverse")),
+    ],
+)
+def test_chained_boundaries_are_recorded_in_evaluation_order(
+    code: str,
+    expected: tuple[str, ...],
+) -> None:
+    """Chained calls share a source position, so order must come from evaluation.
+
+    Sorting by ``(lineno, col_offset)`` tied every call in one chain and left the
+    operator to a lexical tie-break, which named ``reverse`` for
+    ``unique(...).reverse()``.
+    """
+    assert dict(_chained_boundary_sequences(code)) == {"op": expected}
+
+
+def test_chained_boundary_diagnostic_names_the_first_operator_evaluated() -> None:
+    from haute.projection import first_materialising_operators
+
+    for code, first in (
+        ("df = src.unique(subset=['k']).reverse()", "unique"),
+        ("df = src.reverse().unique(subset=['k'])", "reverse"),
+    ):
+        sequences = _chained_boundary_sequences(code)
+        assert dict(first_materialising_operators(sequences)) == {"op": first}
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("df = left.join(right.sort('a'), on='k')", ("sort", "join")),
+        ("df = left.join(right.unique(subset=['k']), on='k')", ("unique", "join")),
+        (
+            "df = left.sort('a').join(right.unique(subset=['k']), on='k')",
+            ("sort", "unique", "join"),
+        ),
+    ],
+)
+def test_a_boundary_inside_an_argument_is_recorded_before_its_outer_call(
+    code: str,
+    expected: tuple[str, ...],
+) -> None:
+    """Python evaluates the receiver, then the arguments, then the call.
+
+    Recording the outer call first reported ``left.join(right.sort(...))`` as
+    join-then-sort, which is the reverse of the order the frames are transformed.
+    """
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import materialising_operator_sequences_by_input_names
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={"code": code}),
+    )
+
+    sequences = materialising_operator_sequences_by_input_names(
+        ["op"], {"op": node}, {"op": ["left", "right"]}
+    )
+
+    assert dict(sequences) == {"op": expected}

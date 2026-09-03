@@ -203,7 +203,10 @@ def test_cardinality_analysis_rejects_invalid_proof_inputs(code: object, inputs:
     assert result.reason in {"empty_code", "invalid_inputs"}
 
 
-def test_row_count_select_expresses_an_exact_empty_column_demand() -> None:
+def test_row_count_select_demands_one_carrier_column() -> None:
+    """A row count needs no column values but every row: the demand keeps one
+    carrier column (the first in sorted order) so a projected scan cannot
+    collapse to a zero-column, zero-row frame."""
     result = analyze_polars_lineage(
         "df = rows.select(pl.len().alias('row_count'))",
         {"rows": frozenset({"a", "b"})},
@@ -211,7 +214,19 @@ def test_row_count_select_expresses_an_exact_empty_column_demand() -> None:
 
     assert result.supported
     assert result.exact_output_columns == frozenset({"row_count"})
-    assert result.demands_by_input == {"rows": frozenset()}
+    assert result.demands_by_input == {"rows": frozenset({"a"})}
+
+
+def test_generated_column_only_demand_keeps_a_carrier_column() -> None:
+    """Demanding only a generated row index still requires the input's rows."""
+    result = analyze_polars_lineage(
+        "df = rows.with_row_index('index_0')",
+        {"rows": frozenset({"s", "t", "a"})},
+        ("index_0",),
+    )
+
+    assert result.supported
+    assert result.demands_by_input == {"rows": frozenset({"a"})}
 
 
 @pytest.mark.parametrize("code", ["df = rows", "df = df"])
@@ -483,7 +498,8 @@ def test_unknown_helper_with_clean_scalar_arguments_stays_supported() -> None:
 
     assert result.supported
     assert result.exact_output_columns == frozenset({"idx"})
-    assert result.demands_by_input == {"rows": frozenset()}
+    # No column values are read, but the rows still carry through one column.
+    assert result.demands_by_input == {"rows": frozenset({"a"})}
 
 
 def test_filter_constraint_keywords_demand_their_columns() -> None:
@@ -844,7 +860,8 @@ def test_projected_inputs_execute_identically_to_full_inputs(
             {"a"},
             {"rows": {"a"}},
         ),
-        ("df = rows.select(pl.len())", {"rows": frozenset({"a"})}, None, {"len"}, {"rows": set()}),
+        # A bare row count reads no values but keeps one carrier column for the rows.
+        ("df = rows.select(pl.len())", {"rows": frozenset({"a"})}, None, {"len"}, {"rows": {"a"}}),
         ("df = rows.select(pl.lit(1))", {"rows": None}, None, {"literal"}, {"rows": set()}),
         ("df = rows.select(True)", {"rows": None}, None, {"literal"}, {"rows": set()}),
         (
@@ -1459,7 +1476,8 @@ def test_unknown_schema_rename_permutation_demands_every_mapping_source() -> Non
             {"rows": frozenset({"a", "b"})},
             None,
             {"n"},
-            {"rows": set()},
+            # The index is generated, but its rows come from the input: one carrier.
+            {"rows": {"a"}},
         ),
         (
             "df = rows.with_row_index(name='n', offset=0).select(['n', 'a'])",
@@ -1895,3 +1913,135 @@ def test_cardinality_analysis_fails_closed_for_selector_unpivot_columns() -> Non
     # Lazy Polars expands the selector to both ``m_`` columns: two rows become four.
     frame = pl.DataFrame({"m_a": [1, 2], "m_b": [3, 4], "k": ["x", "y"]})
     assert frame.lazy().unpivot(on="^m_.*$", index="k").collect().height == 4
+
+
+# --------------------------------------------------- EXEC-P07 global operations
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = src.reverse()",
+        "df = src.top_k(5, by='premium')",
+        "df = src.bottom_k(5, by='premium')",
+    ],
+)
+def test_row_non_increasing_global_operations_keep_the_cardinality_bound(code: str) -> None:
+    """A permutation or a truncation cannot add rows, so the bound survives."""
+    result = analyze_polars_cardinality(code, {"src": 1000})
+
+    assert result.supported, result.reason
+    assert result.output_upper_bound == 1000
+    assert result.peak_upper_bound == 1000
+
+
+def test_join_asof_bounds_output_by_the_left_input_and_peaks_over_both() -> None:
+    """An as-of join matches at most one right row per left row."""
+    result = analyze_polars_cardinality(
+        "df = fact.sort('ts').join_asof(dim.sort('ts'), on='ts', by='key')",
+        {"fact": 1000, "dim": 4000},
+    )
+
+    assert result.supported, result.reason
+    assert result.output_upper_bound == 1000
+    assert result.peak_upper_bound == 4000
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = fact.join_asof(build_dim(), on='ts')",
+        "df = fact.join_asof(dim.explode('l'), on='ts')",
+        "df = fact.join_asof(dim, on='ts', mystery=1)",
+    ],
+)
+def test_join_asof_with_an_unresolvable_operand_stays_unavailable(code: str) -> None:
+    result = analyze_polars_cardinality(code, {"fact": 1000, "dim": 40})
+
+    assert not result.supported
+    assert result.unsupported_operation == "join_asof"
+
+
+def test_window_expression_partitions_are_column_references() -> None:
+    """``over`` names columns, so the closed model can prove the shape."""
+    lineage = analyze_polars_lineage(
+        "df = src.with_columns(pl.col('premium').sum().over('segment').alias('total'))",
+        {"src": frozenset({"premium", "segment"})},
+    )
+
+    assert lineage.supported, lineage.reason
+    assert lineage.demands_by_input["src"] == frozenset({"premium", "segment"})
+
+
+def test_window_expression_with_an_unaudited_option_is_rejected() -> None:
+    """``mapping_strategy='explode'`` changes the row count."""
+    result = analyze_polars_cardinality(
+        "df = src.with_columns("
+        "pl.col('premium').sum().over('segment', mapping_strategy='explode'))",
+        {"src": 1000},
+    )
+
+    assert not result.supported
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = fact.join_asof(dim.select('ts', 'rate'), on='ts')",
+        "df = fact.join_asof(dim.select(pl.col('ts'), pl.col('rate').alias('r')), on='ts')",
+        "df = fact.join_asof(dim.sort('ts').select('ts'), on='ts')",
+    ],
+)
+def test_join_asof_accepts_a_column_only_projection_as_a_right_operand(code: str) -> None:
+    """A projection that only names columns cannot change the operand's height."""
+    result = analyze_polars_cardinality(code, {"fact": 1000, "dim": 40})
+
+    assert result.supported, result.reason
+    assert result.output_upper_bound == 1000
+    assert result.peak_upper_bound == 1000
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = fact.join_asof(dim.select(pl.int_range(0, 1000000).alias('ts')), on='ts')",
+        "df = fact.join_asof(dim.with_columns(pl.int_range(0, 99).alias('ts')), on='ts')",
+        "df = fact.join_asof(dim.select(pl.col('ts').repeat_by(9)), on='ts')",
+    ],
+)
+def test_join_asof_rejects_a_projection_that_can_synthesise_rows(code: str) -> None:
+    """``select`` evaluates arbitrary expressions, so it is not row-bounded."""
+    result = analyze_polars_cardinality(code, {"fact": 1000, "dim": 40})
+
+    assert not result.supported
+    assert result.reason == "dynamic_join_asof_input"
+    assert result.unsupported_operation == "join_asof"
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        (
+            "df = left.join(right, on='k')",
+            {"left": 1, "right": 1},
+        ),
+        (
+            "df = df.join(df, on='k')",
+            {"df": 2},
+        ),
+        (
+            "df = left.join(lookup, on='k', validate='m:1').join(lookup, on='j', validate='m:1')",
+            {"left": 1, "lookup": 2},
+        ),
+    ],
+)
+def test_join_operands_are_counted_per_input_name(
+    code: str,
+    expected: dict[str, int],
+) -> None:
+    """One graph edge can supply more than one resident join operand."""
+    inputs = {name: 100 for name in expected}
+    result = analyze_polars_cardinality(code, inputs)
+
+    assert result.supported, result.reason
+    assert dict(result.operand_reference_counts) == expected

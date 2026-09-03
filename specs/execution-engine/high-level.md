@@ -203,22 +203,75 @@ running heavy work in a child process the parent can kill on timeout or memory l
   `haute._polars_operations` is the closed, receiver-aware table of the frame
   methods, expression methods, `str`/`dt` namespace methods, and top-level `pl`
   helpers the analysers recognise. Each entry records its class (row-local,
-  order-dependent, row-expanding, fan-in stateful, or opaque), its current
+  order-dependent, row-expanding, fan-in stateful, or opaque), its
   execution policy (row-local, streaming, materialisation boundary, or opaque),
-  whether it has a chunked-equals-full proof, and whether lineage has a transfer
-  for it. Lineage, cardinality, projection, and chunk planning derive their
+  whether that policy rests on a memory measurement or on none, its
+  materialisation memory factor, whether it has a chunked-equals-full proof, and
+  whether lineage has a transfer for it. Lineage, cardinality, projection, and
+  chunk planning derive their
   vocabularies from that table: chunk planning admits only registered row-local
   operations that carry a proof, cardinality treats registered unbounded-expansion
-  expressions as unavailable, and the planner's materialisation boundaries come
-  from the registered fan-in stateful frame methods whose policy is a
-  materialisation boundary. An operation outside the registry is opaque
+  expressions as unavailable, and the planner's materialisation boundaries are
+  every registered frame method whose policy is a materialisation boundary --
+  order-dependent and row-expanding ones as well as fan-in stateful ones --
+  together with the registered `over` expression method, each admitted on
+  measured evidence. A streaming policy likewise records whether it was measured
+  or is simply unmeasured, so no policy in the table is an assumption whose
+  provenance cannot be checked. An operation outside the registry is opaque
   everywhere: lineage keeps a visible boundary, cardinality is unavailable, chunk
   planning rejects it, and execution follows the conservative policy. Comments,
   literals, aliases, and non-Polars methods cannot create a classification because
   every consumer inspects receiver-aware AST calls only. Admitting a new
   optimisation for a registered operation still requires its proof; a policy
-  change for a streaming operation requires the memory evidence a later roadmap
-  package owns.
+  change for a streaming operation requires recorded memory evidence.
+- **Global operation policies are memory evidence, not intuition.** Every
+  materialisation-boundary policy is backed by a fresh-process peak-RSS
+  measurement against the streaming control matched to that operator, recorded in
+  the registry entry's note; a streaming policy is either measured the same way or
+  inherited unmeasured, and which of the two it is is recorded per operator rather
+  than assumed.
+  `sort`, `unique`, `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, and
+  `explode` measurably hold operator state proportional to the frame and are
+  therefore admitted materialisation boundaries alongside `group_by`: the planner
+  places them at a boundary, and admission is the estimate against the caller's
+  memory limit and headroom exactly as for a group-by. Window expressions
+  materialise their partitions, so `over` is a boundary recorded at the expression
+  level: the containing node becomes the boundary with `over` as its operator.
+  `unpivot`, `rolling`, `group_by_dynamic`, `shift`, `merge_sorted`,
+  `interpolate`, and `filter` were measured at or below the streaming control
+  matched to what they read rather than what they emit — a full-width passthrough
+  sink for a wide plan, a two-column sink for a narrow one, and a two-column sink
+  over the same nullable column for a plan that reads one, since a dense scan
+  under-represents the cost of a nullable read — and keep streaming with that
+  evidence recorded. A reducing operator is bound by the same full-width control
+  as any other wide plan, because emitting few rows does not change what it must
+  read; the tiny `head` sink is only the matched floor for a reducing
+  boundary's does-not-stream witness. A cross join is a boundary whose cost
+  nobody has measured, so it is admitted as a boundary but its estimate is
+  unavailable until someone measures it: warned under a native worker cap,
+  rejected without one, with its row product still carried downstream.
+  Operations no measurement covers —
+  `join_where`, `pivot`, `upsample`, `gather`, `sample` — keep
+  streaming with "no evidence" recorded; widening or narrowing any of these
+  policies requires new evidence, never a judgement call. Boundary admission
+  multiplies the row-count-and-width estimate by the operator's measured memory
+  factor before comparing it with headroom, and the same runtime calibration that
+  tightens group-by admission keeps correcting those factors upward from observed
+  peaks. A join boundary is sized from what it holds rather than what it emits:
+  the largest frame any operation in the node consumes — so a chained join is
+  sized from the previous join's product, not from the original sources —
+  against the ports' widths summed once per logical reference, so a self-join or
+  a lookup table joined twice is resident twice and charged twice, all under the
+  usual overhead multiplier and the largest factor among the node's chained
+  boundary operators. The joined row count is recorded separately and carried to
+  the next boundary downstream — so an undeclared many-to-many join is refused
+  where its product actually has to be materialised, with the remediation to
+  declare the join's validation, rather than at the join itself. `explode` is the one
+  admitted boundary whose expansion is unbounded, so
+  its cardinality — and therefore its estimate — is unavailable: under an active
+  native worker cap it runs `full-width-conservative` with status `warned` under
+  the run's full envelope, and without one it is the typed
+  `materialisation_estimate_unavailable` rejection.
 - **Polars projection is one compositional lineage proof.** Opaque-contract Polars
   code is parsed into a fail-closed linear frame-operation model rather than a set of
   node-shape exceptions. Identity assignment and supported operations publish both

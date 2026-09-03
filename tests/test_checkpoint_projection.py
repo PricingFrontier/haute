@@ -15,7 +15,9 @@ import pytest
 
 from haute._contracts import get_column_contract
 from haute._execute_lazy import _execute_lazy
+from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._native_memory_limit import native_memory_backend_scope
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -1448,9 +1450,16 @@ class TestCheckpointProjection:
                 return node.id, lambda frame: frame.select("band"), False
             return node.id, lambda left, right: left.join(right, on="band"), False
 
-        with pytest.raises(
-            ContractMismatchError,
-            match="Checkpoint projection references columns missing",
+        # The sink joins, which EXEC-P07 admits as a materialisation boundary,
+        # so this run needs an admitted context; the injected source carries no
+        # readable metadata, so a hard worker cap bounds the run instead of an
+        # estimate. Neither changes what this test observes.
+        with (
+            native_memory_backend_scope("rlimit"),
+            pytest.raises(
+                ContractMismatchError,
+                match="Checkpoint projection references columns missing",
+            ),
         ):
             _execute_lazy(
                 graph,
@@ -1458,4 +1467,8 @@ class TestCheckpointProjection:
                 target_node_id="sink",
                 checkpoint_dir=tmp_path,
                 required_columns_by_node={"sink": {"band"}},
+                execution_context=create_admitted_execution_context(
+                    operation="test_checkpoint_projection",
+                    profile=ExecutionProfile.LAZY_SINK,
+                ),
             )

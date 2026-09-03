@@ -13,7 +13,7 @@
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, source-scan projection, and bounded strategy diagnostics. |
 | `src/haute/_execution_schemas.py` | Canonical Pydantic API DTOs for execution-strategy diagnostic boundaries, reasons, provenance, bounded collections, calibration, and the versioned diagnostic payload. `src/haute/schemas.py` re-exports the public models so existing imports remain stable. |
 | `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer, per-input backward column demand, and a closed row-effect class (row-preserving, row-non-increasing, bounded-expansion, or unavailable) for the supported operation vocabulary, plus the audited per-namespace registry of `str`/`dt` expression methods whose bare string arguments Polars parses as literals. |
-| `src/haute/_polars_operations.py` | The closed, receiver-aware registry of recognised Polars operations (`PolarsOperation` entries keyed by receiver, namespace, and name) with their class, current policy, expansion, chunk-proof status, and lineage support, plus the lookup helpers the chunk classifier, the lineage/cardinality analyser, and the planner derive their vocabularies from. Import-time validation rejects duplicate keys and class/policy/expansion combinations that contradict each other. |
+| `src/haute/_polars_operations.py` | The closed, receiver-aware registry of recognised Polars operations (`PolarsOperation` entries keyed by receiver, namespace, and name) with their class, evidence-backed policy, expansion, chunk-proof status, lineage support, and materialisation memory factor in basis points, plus the lookup helpers the chunk classifier, the lineage/cardinality analyser, and the planner derive their vocabularies from. Import-time validation rejects duplicate keys and class/policy/expansion combinations that contradict each other. |
 | `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, deterministic request-local fault points, bounded opt-in terminal telemetry, cancellation-latency evidence, cleanup precedence, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
 | `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve fault, collect-count, and typed-error telemetry. |
@@ -839,15 +839,23 @@ fallback after a process failure.
   (`row_local`, `order_dependent`, `row_expanding`, `fan_in_stateful`, `opaque`),
   `policy` (`row_local`, `streaming`, `materialisation_boundary`, `opaque`),
   `expansion` (`none`, `bounded`, `unbounded`), `chunk_admitted`, `lineage_supported`,
-  and a one-line note. Import-time validation rejects duplicate keys, a missing note,
+  `materialisation_factor_basis_points`, `memory_evidence` (`measured` or `none`),
+  and a one-line note. Import-time validation
+  rejects duplicate keys, a missing note,
   a chunk admission outside `row_local`, a materialisation policy outside
-  `fan_in_stateful`, and an expansion outside `row_expanding` or `opaque` (an opaque
-  callback such as `map_batches` may record its unbounded expansion). The chunk classifier's frame, expression,
+  `fan_in_stateful` or `order_dependent`/`row_expanding`, an expansion outside
+  `row_expanding` or `opaque` (an opaque
+  callback such as `map_batches` may record its unbounded expansion), a
+  materialisation boundary without a factor, and a streaming or row-local policy
+  carrying any factor other than exactly 100 basis points (no multiplier). The chunk classifier's frame, expression,
   namespace, and `pl` allowlists are the registry's `chunk_admitted` names; the
   cardinality analyser's unbounded-expansion expression set is the registry's
-  `unbounded` expressions; the planner's materialisation-boundary operators are the
-  registry's frame methods with the `materialisation_boundary` policy (today
-  `group_by`/`groupby`), matched receiver-aware in evaluation order. The
+  `unbounded` expressions; the planner's materialisation-boundary operators are
+  `materialising_frame_methods()` — every frame method with the
+  `materialisation_boundary` policy (`group_by`/`groupby`, `sort`, `unique`,
+  `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, `explode`) — plus
+  `materialising_expression_methods()` (`over`), matched receiver-aware in
+  evaluation order. The
   classifier tracks, for every simple name, whether it is a *frame* (one of
   the node's input frame names per incoming edge, as `_build_funcs` binds
   them, `df`, or a name bound from a frame), a *provable non-frame* (`pl`
@@ -881,12 +889,37 @@ fallback after a process failure.
   root name it mutates as a may-frame, so an unsupported shape can only add a
   boundary, never hide one. A same-named method on a `pl` expression never
   creates a
-  boundary. Every other registered global operation (`sort`, `unique`,
-  `join`, windows, rolling and dynamic group-bys, `explode`, `unpivot`) currently
-  streams through the lazy engine without per-operator admission; that policy is
-  recorded as `streaming` and changing it requires the memory evidence the roadmap
-  package for admitted global policies owns. `tests/test_polars_operations.py` keeps
-  every derived set equal to the registry.
+  boundary. `over` is the exception to the receiver rule: window expressions are
+  written on a `pl` chain, so an `over` call admits a boundary on any receiver
+  that is not a provable frame method of another name, and the containing node
+  records `over` as its operator.
+  `unpivot`, `rolling`, `group_by_dynamic`, `shift`, `merge_sorted`,
+  `interpolate`, and `filter` keep the `streaming`/`row_local` policy with the
+  measurement that justifies it in the note; `join_where`, `pivot`, `upsample`,
+  `gather`, and `sample` keep `streaming` with `memory_evidence=none` recorded.
+  `memory_evidence` is what makes the lane self-checking: `measured_operation_names(receiver)`
+  returns every entry claiming evidence, and the certification test requires each
+  of them to have a probe plan, so a policy can never rest on a measurement that
+  was never taken. Each boundary entry's `materialisation_factor_basis_points` is
+  derived from that evidence — measured peak divided by the estimator's
+  rows × width × 3.0 figure for the same frame, with margin, rounded up to a whole
+  multiple: `sort` 300, `unique` 350, `join` 150, `join_asof` 250, `over` 250,
+  `reverse` 250, `top_k`/`bottom_k` 100, `group_by` 100.
+  `join_asof` holds its right (lookup) port while streaming its left, so its
+  evidence is the big-right variant: a wide left against a small right sits near
+  the streaming floor and proves nothing, while swapping the ports puts the large
+  frame in the buffered position and shows the state plainly. `interpolate`
+  streams: it measures about 1.1x its like-for-like control at 1.5M rows -- a
+  passthrough of the same two columns with the same nullability (mean of
+  interleaved pairs; observed 1.0 to 1.2 across fresh-process runs). Two earlier readings were
+  measurement artefacts rather than the operator: one near 1.5x was the real-work
+  verification running inside the sampled process, which is why that verification
+  now runs in the parent, and one near 1.4x came from comparing a nullable read
+  against a dense two-column scan. `explode` carries the
+  default 100 that is never applied, because its estimate is unavailable. `tests/test_polars_operations.py` keeps
+  every derived set equal to the registry, and
+  `tests/performance/test_execution_engine_certification.py` keeps the policies
+  equal to fresh-process measurements.
 - **The chunk classifier is a receiver-aware AST walk with a closed decision
   vocabulary.** There is no textual prefilter: a comment or string literal containing
   `.sort(` cannot affect eligibility. Frame-level methods are admitted only when the
@@ -987,6 +1020,44 @@ fallback after a process failure.
   multi-input built-in returns `row_cardinality_unavailable:<node>:<reason>`; the
   normal materialisation-estimate-unavailable diagnostic surfaces that detail and
   refuses admission.
+- **The boundary operator scales the estimate.** The planner passes the boundary
+  operator it recorded for the node to
+  `haute._ram_estimate::_estimate_materialisation_boundary_from_index`, which
+  multiplies the rows × width × 3.0 figure by the registry's
+  `materialisation_factor_basis_points` for that operator before calibration and
+  the headroom comparison, and records `boundary_operator=<op>` and
+  `materialisation_factor_basis_points=<n>` in the assumptions. `explode`'s
+  unbounded row expansion keeps its cardinality — and therefore its estimate —
+  unavailable, so it is the first admitted boundary that routinely reaches the
+  unavailable-estimate contract rather than a number.
+- **A join boundary is sized from its inputs, not its output.** A `join` or
+  `join_asof` holds both ports' rows while it builds and probes; the joined rows
+  it emits are the next node's problem, not this boundary's peak. The row term is
+  `operand_peak_rows` — the largest frame any operation in the node consumes, so a
+  chained join is sized from the previous join's product rather than from the
+  original sources. The width term sums each port's width once per *logical
+  reference* rather than once per port (`operand_reference_counts`): a self-join,
+  or a lookup table joined twice, is resident twice and is charged twice, with the
+  count recorded as `boundary_resident_operand_count`. The estimate is that
+  `operand_peak_rows × <referenced port widths> × 3.0 × <factor>`, where the factor
+  is the maximum across the node's chained boundary operators, and the assumptions
+  record both `boundary_input_rows_upper_bound=<n>` and
+  `boundary_output_rows_upper_bound=<n>` so the two numbers can never be confused
+  for one another. The output bound — the
+  many-to-many row product for an undeclared join, the validation-bounded count
+  for a declared one — still propagates to every downstream boundary, so a
+  `group_by` after an undeclared `m:m` join estimates that product and is rejected
+  with the remediation to declare `validate=` on the join. An incoming port whose
+  cardinality or width cannot be resolved keeps the whole estimate unavailable, as
+  for any other boundary: a join sized from one readable port and one unreadable
+  one would be an under-estimate, which is the one failure mode admission must
+  never have. A cross join (`how='cross'`) is a boundary like any other
+  join, but nobody has measured what it costs, so its estimate is unavailable
+  with reason `cross_join_unmeasured`: under an active native worker cap it plans
+  `full-width-conservative` with status `warned`, and without one it is the typed
+  `materialisation_estimate_unavailable` rejection. Its row product still
+  propagates to every downstream boundary, so a later `group_by` is estimated and
+  refused on that product exactly as for an undeclared many-to-many join.
 
 - **Estimate calibration only tightens admission.** A bounded process-local registry
   stores one basis-point multiplier per `ExecutionProfile`. On terminal metrics with
@@ -1010,15 +1081,23 @@ fallback after a process failure.
   topological order and, when truncated, retains the earliest representative of
   every boundary kind present before filling the remaining capacity. A mixed plan
   therefore cannot truncate away its only unprojected-boundary evidence.
-- **Group-by admission is profile-independent:**
+- **Boundary admission is profile-independent** (every admitted materialisation
+  operator, not only `group_by`):
 
   | Profile | Version-1 result |
   | --- | --- |
   | Every `ExecutionProfile` | `materialisation-boundary` when admission and estimate fit; `full-width-conservative` when admission is present, the estimate is unavailable, and `current_native_memory_backend()` reports an active cap; otherwise a typed rejection |
 
-  The group-by remains a materialisation boundary inside the caller's admitted budget;
-  a streaming sink or chunked consumer is not treated as proof that the aggregation
-  itself streams. The lazy executor runs the graph-aware request planner so the estimate
+  The boundary remains a materialisation boundary inside the caller's admitted budget;
+  a streaming sink or chunked consumer is not treated as proof that the operator
+  itself streams. An admitted boundary's reason code is `materialisation_admitted`
+  for every operator, and the diagnostic's `blocking_operator` names which one
+  (`group_by`, `sort`, `unique`, `join`, `join_asof`, `top_k`, `bottom_k`,
+  `reverse`, `explode`, or `over`); the remediation text names that operator too,
+  so an analyst is told which call forced the boundary. `haute._execution_schemas`
+  and the generated frontend contracts carry the same reason-code vocabulary.
+  The executor's boundary lookups are named for the general case
+  (`materialising_operators_by_node`, `materialising_operators_by_input_names`). The lazy executor runs the graph-aware request planner so the estimate
   is derived from the same prepared target lineage before any node executes. Every
   materialising profile requires a context with admission and positive
   memory/headroom. The ordinary admission branch additionally requires
@@ -1063,12 +1142,19 @@ fallback after a process failure.
   expanded variable-width sizing. Replaced inputs are not estimated from their persisted
   path configuration. Static inputs in the same graph continue to use their ordinary
   source metadata.
-- **Chunking starts after global aggregation.** Pure chunk planning performs schema-only
-  strategy analysis and may place a group-by in the pre-chunk prefix. The prefix is
+- **Chunking starts after global materialisation.** Pure chunk planning performs
+  schema-only
+  strategy analysis and may place a materialisation boundary in the pre-chunk prefix. The
+  prefix is
   executed exactly once by the normal graph-aware admitted executor; only its resulting
-  frame may become a chunk-runner `start_frame`. A group-by inside the chunk-local suffix
-  remains a `ChunkPlanUnsupportedError`, because aggregating each chunk independently is
-  not equivalent to a global group-by. This is a physical-plan constraint, not an
+  frame may become a chunk-runner `start_frame`. Any boundary operator inside the
+  chunk-local suffix
+  remains a `ChunkPlanUnsupportedError`, because evaluating a global operation per chunk
+  is not equivalent to evaluating it once — aggregating, sorting, de-duplicating,
+  joining, or taking a top-k per chunk all differ from the global result. The
+  chunk-local allowlist already excludes every boundary operator, so the guard is
+  a second, explicit refusal keyed on the registry rather than a new restriction.
+  This is a physical-plan constraint, not an
   execution-profile rejection.
 - **Context ownership follows materialisation lifetime.** Top-level helpers that own the
   complete materialising operation, including the compatibility `write_data_output`
@@ -1114,6 +1200,17 @@ fallback after a process failure.
   when that width is known for every recorded node; partial evidence remains `null`
   rather than looking like a deceptively narrow complete total. They never include cache paths,
   source identities, column names, graph ids, or exception messages.
+
+- **The root input of a lineage program always carries at least one column.** When the
+  demand the analyser derives for the input whose rows form the output is empty (the program
+  reads no column values but still needs every row: `select(pl.len())`, a demand that names only
+  a `with_row_index` column, a literal projection), `analyze_polars_lineage` adds one carrier
+  column, the input's first column in sorted order, to `demands_by_input`. A zero-column scan is
+  an empty frame, so without the carrier a projected execution would silently drop every row.
+  Other inputs keep an exact empty demand: an unused port has no rows to carry, and the runtime
+  join path (`_execute_lazy.py`) keeps its own carrier for an empty-demand edge. Pinned by
+  `tests/test_column_lineage.py` and the projected-versus-full property tests in
+  `tests/test_column_lineage_properties.py`.
 
 ## Error handling
 
@@ -1235,7 +1332,7 @@ fallback after a process failure.
 ## Testing
 
 - `tests/performance/test_polars_scale_scenario.py` — bounded Polars join/training projection scale generation, modelling-menu demand propagation, and CI-small execution-profile smoke contracts.
-- `tests/performance/test_execution_engine_certification.py` — isolated projected-versus-full wide-Parquet RSS comparison, per-port API-input and direct-JSONL checkpoint evidence, and a fresh-interpreter restart certificate for cache-proof reuse, telemetry privacy, and snapshot-owner cleanup.
+- `tests/performance/test_execution_engine_certification.py` — isolated projected-versus-full wide-Parquet RSS comparison, per-port API-input and direct-JSONL checkpoint evidence, a fresh-interpreter restart certificate for cache-proof reuse, telemetry privacy, and snapshot-owner cleanup, and `test_global_operation_memory_policies_match_the_registry`, which measures every global operation's incremental peak RSS in a fresh process through `tests/performance/_operation_memory_probe.py` and `bounded_sink` and certifies it against the policy read from `haute._polars_operations::operation` at runtime. Its 1.5M-row fact fixture and 375k-row dimension table are written with 25,000-row row groups — 60 row groups, more than any host's thread count — so parallel Parquet decoding cannot hold the whole file resident and the control measures streaming rather than the reader. Four controls are measured in the same run: `scan` (full-width passthrough sink), `scan_head` (a 1000-row sink), `scan_narrow` (a dense two-column sink) and `scan_gaps` (the same two columns where one is nullable and carries the gap runs). A control matches the operation's input columns *and* their nullability: a dense two-column scan under-represents the validity-bitmap and gap-handling cost of the same read, so measuring a nullable-column operator against it charges the operator for a read cost the control never paid. That is a correctness requirement for the comparison, not an allowance -- `interpolate` reads the nullable gap column and is therefore floored by `scan_gaps`, while a dense narrow plan keeps `scan_narrow`. Every `streaming` or `row_local` policy is bound by its matched passthrough control -- incremental peak <= 1.3x -- because a streaming pipeline can never need more than the passthrough pipeline over the same input (decode buffers plus output buffers, and a reducing operator's output buffers are smaller); a wide plan is bound by `scan` however few rows it emits, since its output size does not change what it must read. This is the safety-critical direction, since an operator wrongly recorded as streaming is one the planner never admits. `scan_head` is used only as the matched floor for a reducing boundary operator's witness. A `materialisation_boundary` policy is certified against the planner instead of a ratio: the same fixture is planned as a `dataInput` -> `polars` graph through `plan_execution_strategy` under an ample admission, and the admission estimate must bound the observed peak. The join graph declares `validate='m:1'` because that is the practice the product asks of an analyst and because it keeps the bound this join propagates downstream realistic; the join's own estimate is sized from its input ports and does not depend on the declaration. A fan-in Polars node also carries the declared per-parent contract production requires. `explode` is certified as the typed unavailable-estimate rejection instead, its expansion being unbounded. `sort`, `unique`, `join`, and `explode` additionally carry a does-not-stream witness at 1.25x their matched floor. Two boundaries cannot be witnessed by their own wide-frame measurement and each names the variant that does show its state: `over` is dominated by the passthrough's own buffers on a 12-column frame, so the `over_narrow` probe must reach 1.5x `scan_narrow`, where its partition state dominates; and `join_asof` buffers its right (lookup) port and streams its left, so the wide-left case sits near the floor and the `join_asof_big_right` probe (`dim.join_asof(fact, ...)`, the large frame in the buffered position) must reach 1.25x `scan_head` — the wide case still certifies the estimate and the operator factor. `group_by`, `top_k`, `bottom_k`, and `reverse` are boundaries by construction or conservatism and carry no witness. The lane is registry-complete rather than a hand-kept list: it asserts that every name `measured_operation_names` returns has a plan in the probe (modulo the registered spelling aliases `groupby` and `melt`), so a new measured entry without a measurement fails here. `interpolate`'s probe reads a dedicated `v1_gaps` column — a straight line with 50-row null runs punched across the row-group boundaries — so the measurement cannot be of a passthrough over a column with nothing to fill, and the test verifies that the sunk output has no interior nulls left and that the filled values equal the linear interpolation of their neighbours. That verification runs in the *parent*, lazily over the retained sink after `run_smoke` has returned, precisely so it cannot contaminate the measurement: every child does nothing but build its plan, sink it, and exit, because anything else a child does lands in the lifetime peak the parent attributes to the operator. Reading the result inside the child once cost `interpolate` roughly 60 MiB and made a streaming operator look like a boundary. The `join_asof` fixtures are written pre-sorted for the same reason: a leading `sort` would make the chained boundary take sort's larger factor and certify the wrong operator. The cross join is certified through the planner alone — the graph plans `how='cross'` and must report the unavailable estimate — since there is no measurement to compare it against. Every ratio in the lane is a paired mean rather than a single reading: each operation is run alternately with its control, three of each, and the ratio is the mean operation peak over the mean control peak. A control is re-run inside the pairs that use it and never sampled once and shared, because a single fresh-process sample drifted by about 20% between batches on the development host -- enough for a single-sample ratio to straddle a threshold and for a quoted figure to be noise rather than measurement. Pairing cancels that drift. The mean rather than the median is deliberate: peak RSS is bimodal, with samples clustering around two values about 35 MiB apart -- the granularity of a streaming chunk buffer, not continuous noise -- so a median of three snaps to whichever mode won two of the three samples and jumps between modes instead of settling, while the mean is the stable estimator of average cost over a discrete allocation pattern. Medians are still recorded for information. No threshold is widened to absorb the variance and no max-of-controls bias is applied. The residual is stated rather than hidden: a run can still fail when all three operation samples land in the high mode while all three control samples land in the low one, roughly a 1-in-64 event per operation, which is the accepted noise floor of an opt-in perf lane. The lane must be run through pytest, one fresh process per run: repeating the test inside a single interpreter reuses a warm page cache for the fixture and flatters every ratio, so an in-process repeat is not a valid measurement of this lane. This roughly triples the lane's runtime, to about 70 seconds, which is affordable for an opt-in perf marker. Polars version, thread count, row-group size, fixture rows, and every operation's rows out, all six paired samples, both means, both medians, the control it was paired against, the ratio, the estimate, and each check's outcome are recorded in the test's evidence payload, so the registry cannot claim a policy the measurements contradict.
 - `tests/performance/_execution_resilience_probe.py` plus
   `test_execution_engine_certification.py` — fresh-interpreter worker-pool soak with
   real crash replacement and RSS/descriptor-or-handle plateau evidence; five-phase
@@ -1263,8 +1360,8 @@ fallback after a process failure.
 - `tests/test_cardinality.py` — overflow-safe join-cardinality formulas, uniqueness
   contracts, evidence payloads, invalid bounds, and row-cardinality lineage analysis.
 - `tests/test_column_lineage_properties.py` — Hypothesis differential properties for the closed Polars column-lineage model, including projected-versus-full execution equivalence and row-count bounds that hold over empty, null-heavy, and NaN-heavy frames.
-- `tests/test_polars_operations.py` — the operation registry's invariants (frozen, unique receiver-aware keys, import-time validation of class/policy/expansion), the consistency of every analyser's derived vocabulary with the registry, and representative snippets per class proving the chunk classifier and the lineage/cardinality analyser agree with the registered class.
-- `tests/test_polars_compatibility_corpus.py` — the version-pinned compatibility corpus: `tests/polars_compatibility_corpus.json` records, for representative shapes across every maintained namespace, the classification they receive today (lineage support, cardinality availability, chunk eligibility, and the planner strategy under an admitted context) together with the pinned Polars version; the test fails on any difference, so a Polars upgrade or analyser change cannot silently turn a working shape into a rejection, and every change to the corpus is a reviewed edit of that file.
+- `tests/test_polars_operations.py` — the operation registry's invariants (frozen, unique receiver-aware keys, import-time validation of class/policy/expansion, a boundary without a memory factor, and a streaming policy carrying one), the consistency of every analyser's derived vocabulary with the registry, the derived boundary sets (`materialising_frame_methods`, `materialising_expression_methods`), and representative snippets per class proving the chunk classifier and the lineage/cardinality analyser agree with the registered class.
+- `tests/test_polars_compatibility_corpus.py` — the version-pinned compatibility corpus: `tests/polars_compatibility_corpus.json` records, for representative shapes across every maintained namespace, the classification they receive today (lineage support, cardinality availability, chunk eligibility, and the planner strategy under an admitted context) together with the pinned Polars version; the test fails on any difference, so a Polars upgrade or analyser change cannot silently turn a working shape into a rejection, and every change to the corpus is a reviewed edit of that file. A registry policy change regenerates the corpus, and only the operators whose evidence changed may move.
 - `tests/test_interactive_route_isolation.py` — preview and trace routes execute serialisable production targets through the spawn-worker boundary.
 - `tests/test_interactive_worker_pool.py` — warm interactive-worker pool readiness, protocol, timeout, cancellation, RSS-limit, replacement, and execution-mode contracts.
 - `tests/test_native_memory_limit.py` — native-backend selection, strict-policy
@@ -1279,7 +1376,7 @@ fallback after a process failure.
 - `tests/test_data_input_chunking.py` — Data Input provider snapshots and chunk-plan/runner execution, including unsupported chunk plans.
 - `tests/test_extract_column_refs.py` — extraction of referenced columns across empty/minimal, selected/excluded, and node-config shapes.
 - `tests/test_graph_input_identity.py` — edge-derived pipeline input-name derivation contract across source handles and graph edges.
-- `tests/test_polars_backend_strategy_contract.py` — execution-strategy planning, boundedness/diagnostics payloads, projection/chunking, and error contracts, including the cross-profile table that plans each admitted Polars shape (row-preserving, row-reducing, bounded-expansion, and audited string/temporal predicates ahead of a group-by) under every `ExecutionProfile` with the real estimator and requires identical strategy diagnostics apart from the profile itself; it also proves that an unavailable estimate becomes the `warned` `full-width-conservative` strategy under an active native cap (`native_memory_backend_scope`) and the typed `materialisation_estimate_unavailable` rejection without one, with admission and headroom failures unchanged in both.
+- `tests/test_polars_backend_strategy_contract.py` — execution-strategy planning, boundedness/diagnostics payloads, projection/chunking, and error contracts, including the cross-profile table that plans each admitted Polars shape (row-preserving, row-reducing, bounded-expansion, and audited string/temporal predicates ahead of a group-by) under every `ExecutionProfile` with the real estimator and requires identical strategy diagnostics apart from the profile itself; it also proves that an unavailable estimate becomes the `warned` `full-width-conservative` strategy under an active native cap (`native_memory_backend_scope`) and the typed `materialisation_estimate_unavailable` rejection without one, with admission and headroom failures unchanged in both. It also covers every newly admitted boundary operator: `sort`, `unique`, `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, and an `over` inside `with_columns` each plan `materialisation-boundary` with a positive estimate and identical diagnostics on every profile; `explode` plans `warned` `full-width-conservative` under a native cap and rejects without one; and `unpivot`, `rolling`, `shift`, and `merge_sorted` plan no boundary at all.
 - `tests/test_data_io_nodes.py` — sink execution and publication: the isolated output worker's admission release and failure classification, atomic staging/commit, overwrite and race handling, and the end-to-end group-by sink, including a conservative (`warned`) run whose written frame equals plain Polars and whose metrics payload carries the warned strategy.
 - `tests/test_scenario_propagation.py` — active scenario propagation through routes, executor, builders, and live-switch pruning.
 - `tests/test_streaming_collect_contract.py` — static contract that bounded callers use `streaming_collect` across execution/deploy/training/optimiser modules.
@@ -1290,7 +1387,10 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   `PreparedExecution`/`NodeBoundaryRunner` preparation and routing parity,
   `_execute_lazy`, `_build_funcs`, `_execute_eager_core` (swallow
   vs. raise, timings, memory accounting), `_apply_selected_columns`, `EagerResult`
-  shape.
+  shape, and full-versus-planned equivalence for every admitted boundary operator —
+  a graph executed through the real admitted executor equals the plain lazy result on
+  ordering (`sort`, `reverse`, `top_k`), schema, row multiplicity (`unique`, a
+  duplicate-key `join`, `explode`), and both ports' retained columns for a join.
 - **`test_execute_lazy_contracts.py`** / **`test_execute_lazy_contract_coverage.py`**
   — column-contract enforcement at node boundaries on both paths, including the
   contract-resolution-degradation behaviour.
@@ -1334,7 +1434,7 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   classifier decision contract: comments and string literals cannot change
   eligibility, every rejection names its operator, closed reason, and source
   location, namespace admissions are receiver-specific, and a rejected polars node
-  raises `ChunkUserCodeUnsupportedError` with that payload.
+  raises `ChunkUserCodeUnsupportedError` with that payload; every registered boundary operator in a chunk-local suffix is a `ChunkPlanUnsupportedError`, not only `group_by`.
 - **`test_chunk_runner.py`** — `iter_chunked_frames`/`run_chunked_reduce` execution,
   cancellation and checkpoint cleanup on failure.
 - **`test_chunk_whitelist_proofs.py`** — the AST whitelist's correctness contract: de-
@@ -1369,10 +1469,22 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   and an unreadable cache each reported unavailable rather than guessed; plus
   ancestor sizing drawing only the tables that feed the target. Both
   `unavailable_reason` values are pinned by identity, because the group-by
-  rejection now quotes them back to the analyst. This module is under a
+  rejection now quotes them back to the analyst. The boundary operator's
+  `materialisation_factor_basis_points` is proved applied to the estimate and
+  recorded in the assumptions alongside `boundary_operator`, and a join boundary
+  is proved to sum both ports' widths. This module is under a
   critical coverage gate: estimates protect users from oversized runtime jobs,
   and an untested estimator is how a wrong number reaches a caller that treats
   "unknown" as "unlimited".
+- **`test_boundary_operator_equivalence.py`** — full-versus-planned equivalence for every
+  admitted boundary operator (sort, reverse, top_k, bottom_k, unique, join inner/left with
+  duplicate keys and `validate='m:1'`, join_asof, over, explode under a native cap): each graph
+  materialises the boundary mid-graph through the real lazy executor under admission, asserts
+  the boundary was planned (`materialisation_boundaries` and `blocking_operator`), and compares
+  with plain Polars on ordering (exact in-order equality for the order-defining operators),
+  schema (names and dtypes), row multiplicity (heights and multiset equality after a
+  deterministic sort), and multi-input column retention (both join ports' columns, suffixes
+  included).
 - **`test_worker_isolation.py`** — the shared `isolated_worker_failure_is_memory` predicate over every worker outcome; picklable-result round-trip, remote-exception
   reporting, live draining of a large result before child join (the pipe-feeder
   deadlock regression), crash-without-killing-parent, cleanup-on-failure, timeout,
