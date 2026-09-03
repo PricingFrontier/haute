@@ -200,7 +200,7 @@ async def resolve_pipeline_editor_identities(
                 node_type=node.node_type,
                 label=node.label,
                 source_handles=node.source_handles,
-                submodel_alias=node.submodel_alias,
+                source_handle_labels=node.source_handle_labels,
             )
             identities.append(
                 EditorIdentityResponseNode(
@@ -829,7 +829,12 @@ def _preview_response_from_results(
         raise _PreviewTargetNotReturnedError(f"Node '{body.node_id}' not found in results")
 
     node_map = graph.node_map
-    pruned = prune_source_switch_edges(graph.edges, node_map, body.source)
+    pruned = prune_source_switch_edges(
+        graph.edges,
+        node_map,
+        body.source,
+        submodels=graph.submodels,
+    )
     relevant = ancestors(body.node_id, pruned, set(node_map.keys()))
     timings = [
         NodeTimingInfo(

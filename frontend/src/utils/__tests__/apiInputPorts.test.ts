@@ -847,7 +847,7 @@ describe("canonical submodel boundary resolution", () => {
     ).toBe("policy_data")
   })
 
-  it("resolves an arbitrary-id occurrence output through its public port", () => {
+  it("resolves an arbitrary-id occurrence output through its public label", () => {
     const child: SimpleNode = {
       ...sourceNode("polars"),
       id: "child_output",
@@ -866,7 +866,7 @@ describe("canonical submodel boundary resolution", () => {
           alias: "pricing_secondary",
         },
         _sourceHandleInputNames: {
-          "out__written_premium": "pricing_secondary__written_premium",
+          "out__written_premium": "Written_premium",
         },
       },
     }
@@ -891,7 +891,7 @@ describe("canonical submodel boundary resolution", () => {
         occurrence,
         { definition_pricing: definition },
       ),
-    ).toBe("pricing_secondary__written_premium")
+    ).toBe("Written_premium")
   })
 
   it("matches every internal target of a canonical fan-out input port", () => {

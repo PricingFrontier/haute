@@ -33,7 +33,7 @@ from haute._types import (
 from haute.codegen import graph_to_code_multi
 from haute.errors import ParseError
 from haute.parser import parse_pipeline_source
-from haute.routes._submodel_ops import SubmodelValidationError, create_submodel_graph
+from haute.routes._submodel_ops import create_submodel_graph
 
 
 def _node(
@@ -614,9 +614,15 @@ def test_exact_input_selectors_are_not_rewritten_as_node_ids(
     assert consumer.data.config[field] == "referenced"
 
 
-def test_flatten_rewrites_public_input_selector_to_exact_external_frame_name() -> None:
+def test_flatten_rewrites_public_input_label_to_exact_external_frame_name() -> None:
     child = PipelineGraph(
-        nodes=[_node("consumer", NodeType.OPTIMISER, config={"data_input": "quotes"})],
+        nodes=[
+            _node(
+                "consumer",
+                NodeType.OPTIMISER,
+                config={"data_input": "Quote_records"},
+            )
+        ],
         edges=[],
     )
     definition = _definition(
@@ -624,7 +630,7 @@ def test_flatten_rewrites_public_input_selector_to_exact_external_frame_name() -
         input_ports=[
             SubmodelInputPort(
                 port_id="quotes",
-                label="Quotes",
+                label="Quote records",
                 targets=[SubmodelEndpoint(node_id="consumer")],
             )
         ],
@@ -653,7 +659,7 @@ def test_flatten_rewrites_public_input_selector_to_exact_external_frame_name() -
     assert consumer.data.config["data_input"] == "quote_info"
 
 
-def test_flatten_rewrites_public_output_selector_to_exact_internal_source_name() -> None:
+def test_flatten_rewrites_public_output_label_to_exact_internal_source_name() -> None:
     child = PipelineGraph(nodes=[_node("output", label="Internal Output")], edges=[])
     definition = _definition(
         graph=child,
@@ -661,7 +667,7 @@ def test_flatten_rewrites_public_output_selector_to_exact_internal_source_name()
         output_ports=[
             SubmodelOutputPort(
                 port_id="results",
-                label="Results",
+                label="Published results",
                 source=SubmodelEndpoint(node_id="output"),
             )
         ],
@@ -672,7 +678,7 @@ def test_flatten_rewrites_public_output_selector_to_exact_internal_source_name()
             _node(
                 "consumer",
                 NodeType.OPTIMISER_APPLY,
-                config={"ratebook_input": "score__results"},
+                config={"ratebook_input": "Published_results"},
             ),
         ],
         edges=[
@@ -689,6 +695,161 @@ def test_flatten_rewrites_public_output_selector_to_exact_internal_source_name()
     result = flatten_graph(graph)
 
     assert result.node_map["consumer"].data.config["ratebook_input"] == "Internal_Output"
+
+
+def test_flatten_preserves_public_input_label_for_ordinary_polars_code() -> None:
+    child = PipelineGraph(
+        nodes=[
+            _node(
+                "consumer",
+                NodeType.POLARS,
+                label="Child transform",
+                config={"code": "df = Policy_records"},
+            )
+        ],
+        edges=[],
+    )
+    definition = _definition(
+        graph=child,
+        input_ports=[
+            SubmodelInputPort(
+                port_id="policy",
+                label="Policy records",
+                targets=[SubmodelEndpoint(node_id="consumer")],
+            )
+        ],
+        output_ports=[],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _node("source", label="External policies"),
+            _instance("instance_a", "scoring"),
+        ],
+        edges=[
+            GraphEdge(
+                id="input",
+                source="source",
+                target="instance_a",
+                targetHandle="in__policy",
+            )
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    result = flatten_graph(graph)
+    consumer = result.node_map[qualified_runtime_node_id("instance_a", "consumer")]
+
+    assert consumer.data.config["inputMapping"] == {"Policy_records": "External_policies"}
+    generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
+    assert "def Child_transform(Policy_records: pl.LazyFrame)" in generated
+    assert "df = Policy_records" in generated
+
+
+def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> None:
+    child = PipelineGraph(nodes=[_node("output", label="Internal Output")], edges=[])
+    definition = _definition(
+        graph=child,
+        input_ports=[],
+        output_ports=[
+            SubmodelOutputPort(
+                port_id="results",
+                label="Published results",
+                source=SubmodelEndpoint(node_id="output"),
+            )
+        ],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _instance("instance_a", "score"),
+            _node(
+                "consumer",
+                NodeType.POLARS,
+                label="Consumer",
+                config={"code": "df = Published_results"},
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                id="output",
+                source="instance_a",
+                target="consumer",
+                sourceHandle="out__results",
+            )
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    result = flatten_graph(graph)
+
+    assert result.node_map["consumer"].data.config["inputMapping"] == {
+        "Published_results": "Internal_Output"
+    }
+    generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
+    assert "def Consumer(Published_results: pl.LazyFrame)" in generated
+    assert "df = Published_results" in generated
+
+
+def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
+    child = PipelineGraph(
+        nodes=[
+            _node(
+                "original",
+                NodeType.POLARS,
+                label="Original",
+                config={"code": "df = Published_input"},
+            ),
+            _node(
+                "copy",
+                NodeType.POLARS,
+                label="Copy",
+                config={
+                    "instanceOf": "original",
+                    "inputMapping": {"Published_input": "Published_input"},
+                },
+            ),
+        ],
+        edges=[],
+    )
+    definition = _definition(
+        graph=child,
+        input_ports=[
+            SubmodelInputPort(
+                port_id="published",
+                label="Published input",
+                targets=[
+                    SubmodelEndpoint(node_id="original"),
+                    SubmodelEndpoint(node_id="copy"),
+                ],
+            )
+        ],
+        output_ports=[],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _node("source", label="External source"),
+            _instance("instance_a", "scoring"),
+        ],
+        edges=[
+            GraphEdge(
+                id="input",
+                source="source",
+                target="instance_a",
+                targetHandle="in__published",
+            )
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    flattened = flatten_graph(graph)
+    original = flattened.node_map[qualified_runtime_node_id("instance_a", "original")]
+    copy = flattened.node_map[qualified_runtime_node_id("instance_a", "copy")]
+
+    assert original.data.config["inputMapping"] == {"Published_input": "External_source"}
+    assert copy.data.config["inputMapping"] == {"Published_input": "External_source"}
+    generated = graph_to_code_multi(flattened, pipeline_name="main")["main.py"]
+    assert "def Original(Published_input: pl.LazyFrame)" in generated
+    assert "def Copy(External_source: pl.LazyFrame)" in generated
+    assert "return Original(Published_input=External_source)" in generated
 
 
 def test_stale_schema_declared_node_reference_fails_loudly() -> None:
@@ -1145,7 +1306,7 @@ def test_grouping_stores_local_positions_and_flatten_restores_authored_positions
     }
 
 
-def test_grouping_normalises_child_input_configs_to_public_port_ids() -> None:
+def test_grouping_preserves_child_input_configs_and_uses_public_labels() -> None:
     graph = PipelineGraph(
         nodes=[
             _node("source", NodeType.API_INPUT, label="Quote source"),
@@ -1194,17 +1355,20 @@ def test_grouping_normalises_child_input_configs_to_public_port_ids() -> None:
     definition = (grouped.graph.submodels or {})["pricing"]
     children = definition.graph.node_map
 
+    assert [(port.port_id, port.label) for port in definition.input_ports] == [
+        ("input_1", "drivers")
+    ]
     assert children["child_router"].data.config["input_scenario_map"] == {
-        "input_1": "live",
+        "drivers": "live",
         "stable_input": "batch",
     }
     assert children["child_instance"].data.config["inputMapping"] == {
-        "input_1": "input_1",
+        "drivers": "drivers",
         "stable_input": "stable_input",
     }
 
 
-def test_grouping_rejects_public_input_mapping_key_collisions() -> None:
+def test_grouping_does_not_rewrite_configs_to_opaque_public_port_ids() -> None:
     graph = PipelineGraph(
         nodes=[
             _node("source", NodeType.API_INPUT, label="Quote source"),
@@ -1235,11 +1399,19 @@ def test_grouping_rejects_public_input_mapping_key_collisions() -> None:
         ],
     )
 
-    with pytest.raises(SubmodelValidationError) as exc_info:
-        create_submodel_graph(graph, ["child_router", "child_output"], "pricing")
+    grouped = create_submodel_graph(
+        graph,
+        ["child_router", "child_output"],
+        "pricing",
+    )
 
-    assert exc_info.value.code == "input_mapping_collision"
-    assert "input_scenario_map" in exc_info.value.detail
+    definition = (grouped.graph.submodels or {})["pricing"]
+    assert definition.input_ports[0].port_id == "input_1"
+    assert definition.input_ports[0].label == "drivers"
+    assert definition.graph.node_map["child_router"].data.config["input_scenario_map"] == {
+        "drivers": "live",
+        "input_1": "batch",
+    }
 
 
 def test_canonical_input_port_rejects_more_than_one_parent_binding() -> None:

@@ -119,6 +119,73 @@ class TestCreateSubmodelGraph:
             ("output_1", "Priced quotes")
         ]
 
+    def test_grouping_keeps_public_boundary_labels_as_polars_frame_names(self):
+        """Opaque port ids never leak into child or parent Polars signatures."""
+        graph = make_graph(
+            {
+                "pipeline_name": "test",
+                "nodes": [
+                    {
+                        "id": "raw_quotes",
+                        "data": {
+                            "label": "raw quotes",
+                            "nodeType": "dataInput",
+                            "config": {"path": "quotes.parquet"},
+                        },
+                    },
+                    {
+                        "id": "features",
+                        "data": {
+                            "label": "risk features",
+                            "nodeType": "polars",
+                            "config": {"code": "df = raw_quotes"},
+                        },
+                    },
+                    {
+                        "id": "switch",
+                        "data": {
+                            "label": "live switch",
+                            "nodeType": "polars",
+                            "config": {"code": "df = risk_features"},
+                        },
+                    },
+                    {
+                        "id": "consumer",
+                        "data": {
+                            "label": "consumer",
+                            "nodeType": "polars",
+                            "config": {"code": "df = live_switch"},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "in", "source": "raw_quotes", "target": "features"},
+                    {"id": "inside", "source": "features", "target": "switch"},
+                    {"id": "out", "source": "switch", "target": "consumer"},
+                ],
+            }
+        )
+
+        result = create_submodel_graph(graph, ["features", "switch"], "Inputs")
+        definition = result.graph.submodels["Inputs"]
+        assert [(port.port_id, port.label) for port in definition.input_ports] == [
+            ("input_1", "raw quotes")
+        ]
+        assert [(port.port_id, port.label) for port in definition.output_ports] == [
+            ("output_1", "live switch")
+        ]
+        assert definition.graph.node_map["features"].data.config["code"] == "df = raw_quotes"
+        assert result.graph.node_map["consumer"].data.config["code"] == "df = live_switch"
+
+        files = graph_to_code_multi(
+            result.graph,
+            pipeline_name="test",
+            source_file="main.py",
+        )
+        assert "def risk_features(raw_quotes: pl.LazyFrame)" in files["modules/Inputs.py"]
+        assert "def consumer(live_switch: pl.LazyFrame)" in files["main.py"]
+        assert "Inputs__output_1" not in files["main.py"]
+
     def test_submodels_metadata_populated(self):
         """Submodel metadata includes child IDs, ports, and internal graph."""
         graph = _simple_graph()

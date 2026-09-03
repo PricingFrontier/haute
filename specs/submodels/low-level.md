@@ -106,8 +106,9 @@ Expansion is a pure transform per instance:
    to qualified runtime ids and from each bound public input port id to its
    upstream parent identity. Rewrite cloned child configs through that map.
    Also rewrite remaining parent consumers from the selected occurrence's
-   canonical `<alias>__<outputPortId>` identity to the qualified runtime
-   output source. An unbound, ambiguous, or otherwise stale declared reference
+   sanitised public output label to the qualified runtime output source. When
+   this changes the physical name of an ordinary Polars input, preserve the
+   public logical name with `inputMapping`. An unbound, ambiguous, or otherwise stale declared reference
    is an error. Unregistered opaque fields are unchanged, never guessed.
 4. Expand each input binding to the port's ordered targets and each output
    binding from the port's single source, preserving authored endpoint handles
@@ -232,22 +233,21 @@ document and returns the new revision.
    frame become one input port with ordered internal targets and exactly one
    parent binding. Outgoing edges sharing one internal source endpoint become
    one output port. Allocate opaque `input_N`/`output_N` ids independent of
-   child ids and labels.
-5. Before storing the definition, rewrite each boundary-fed child's
-   `input_scenario_map` keys and `inputMapping` values from the external input
-   name to the sanitised public port id. Rewrite `inputMapping` keys on
-   instances of that child as well. Reject malformed mappings, ambiguous
-   renames, or key collisions atomically.
+   child ids and labels. Preserve each pre-group executable frame name as the
+   corresponding public port label, so child and parent consumer code requires
+   no generated rename.
+5. Validate that every generated public label resolves to the same executable
+   name as its pre-group edge. Reject malformed, ambiguous, or colliding names
+   atomically rather than rewriting configs to opaque port ids.
 6. Compute the selected bounding-box centre as the occurrence position and
    subtract it from every selected child position before storing the definition
    graph. Internal positions are therefore occurrence-local.
 7. Create one typed `SubmodelDefinition` and one `SUBMODEL` occurrence whose
    config is exactly `{definitionId, alias}`. Rewire parent edges only through
    `in__<portId>`/`out__<portId>` handles, preserving still-hidden authored
-   ports in both edge data and deterministic ids. For every outgoing boundary,
-   rewrite schema-declared references on its remaining parent consumer from
-   the selected internal source id to the canonical
-   `<alias>__<outputPortId>` identity in the same pure transform.
+   ports in both edge data and deterministic ids. Remaining parent consumers
+   keep the same executable input name because the public output label carries
+   the pre-group source identity.
 8. Return a new parent graph with the prior registry entries preserved plus the
    definition and occurrence. Return `SubmodelGraphResult` metadata for the
    transform-only route; the input graph is untouched.
@@ -334,8 +334,8 @@ Acquires `save_lock` and runs the body in a threadpool:
   an edge-join endpoint restores its authored base/join `targetHandle` and
   rewrites the port-id role reference to the bound upstream parent identity.
 - **Outbound edge-join roles survive extraction and flattening.** A remaining
-  edge join fed by one or more selected sources uses distinct canonical
-  `<alias>__<outputPortId>` role identities while hierarchical, then qualified
+  edge join fed by one or more selected sources uses the canonical sanitised
+  public output labels while hierarchical, then qualified
   runtime source ids after expansion; two outputs of one occurrence never
   collapse to the shared occurrence id.
 - **`_submodel_paths.py` checks the resolved pipeline-relative path before

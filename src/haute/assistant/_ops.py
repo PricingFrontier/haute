@@ -1513,7 +1513,13 @@ def _incoming_input_names(
         if source_node is None:
             continue
         try:
-            names.append(edge_input_name(edge, source_node))
+            names.append(
+                edge_input_name(
+                    edge,
+                    source_node,
+                    submodels=result.submodels,
+                )
+            )
         except ValueError:
             # A malformed edge is the save validator's verdict, not this one's.
             continue

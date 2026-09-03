@@ -73,8 +73,8 @@ by one shared **definition** and any number of parent-graph **instances**:
   occurrence-local: grouping subtracts the first occurrence's origin and each
   expansion adds the selected occurrence's position, so copies never inherit
   another occurrence's absolute canvas coordinates.
-- Definition ids, instance ids, and public port ids are identity, not
-  presentation. Renaming a definition, instance, source alias, internal node,
+- Definition ids, instance ids, and public port ids are structural identity, not
+  executable frame names or presentation. Renaming a definition, instance, source alias, internal node,
   or file must not change them. Authored and generated source persists these ids
   explicitly. Missing definition, instance, alias, or port identity is an
   invalid document and fails during parsing; identity is never inferred from a
@@ -85,7 +85,10 @@ by one shared **definition** and any number of parent-graph **instances**:
   declared target. A public output port has an immutable
   `portId`, label, and exactly one internal source `{nodeId, handleId}`.
   Parent edges may address only `in__<portId>` and `out__<portId>` handles;
-  internal child ids are never a parent-graph interface.
+  internal child ids are never a parent-graph interface. After backend
+  sanitisation, the input label is the child-side frame name and the output
+  label is the parent-side frame name. Aliases and port ids never become
+  executable parameter names.
 - Referential integrity is checked on load, mutation, flatten, and save:
   instance definitions must exist, public port ids must be unique, endpoints
   must exist with matching directions, and parent bindings must use a declared
@@ -127,12 +130,13 @@ Edge Join role, trace, and projection references). Unknown or stale declared
 references fail loudly; opaque config fields are never guessed. Cross-instance
 data flow is legal only from a declared public output to a declared public
 input.
-Extraction rewrites those declared references on remaining parent consumers
-from a selected internal source id to the canonical
-`<alias>__<outputPortId>` identity at the same time as it rewires the edge.
-Expansion resolves bound public-input ids to their upstream parent identities
-inside cloned child configs and resolves parent `<alias>__<outputPortId>`
-references to the qualified runtime source id. Edge and config rewrites are one
+Extraction preserves the existing semantic frame name by assigning it to the
+new public port label at the same time as it rewires the edge; remaining parent
+consumers therefore require no generated alias/port rename. Expansion resolves
+public input and output labels to the concrete upstream or qualified child
+source names inside cloned and remaining configs. Ordinary Polars code keeps
+its public logical name through an explicit `inputMapping` whenever the physical
+expanded source name differs. Edge and config rewrites are one
 atomic transform, so role-bearing consumers never retain a stale identity.
 
 When the editor is drilled into one occurrence, preview and trace requests use
@@ -181,9 +185,10 @@ must resolve the original pipeline-owned sidecars.
   each output records one internal source. Parent handles are
   `in__<portId>`/`out__<portId>`, never internal node ids, and each logical
   input produces exactly one parent binding even when it fans out internally.
-  Schema-owned `input_scenario_map` keys and `inputMapping` keys/values are
-  atomically rewritten from external input names to sanitised public port ids;
-  a rename collision rejects creation rather than overwriting config. The
+  Each public label preserves the executable name that crossed that boundary
+  before grouping, so schema-owned selectors and Polars input mappings remain
+  unchanged; a duplicate executable label rejects creation rather than being
+  disambiguated with a generated alias or port id. The
   parent registry gains one typed definition keyed by its exact definition id
   and containing the file, structured ports, and internal graph. The
   occurrence is placed at the selected bounding-box centre; child positions
@@ -248,10 +253,10 @@ must resolve the original pipeline-owned sidecars.
   the input to sanitisation. A canonical name, occurrence alias, or occurrence
   identity already present in the parent under any casing is a conflict,
   matching the case-insensitive module no-clobber rule.
-- **Canonical boundary identity and presentation are separate.** Parent edges
+- **Canonical boundary identity and executable naming are separate.** Parent edges
   address only `in__<portId>` and `out__<portId>` handles. Public port labels
-  are presentation, internal endpoint ids stay definition-private, and neither
-  may substitute for immutable port identity. Drill-down projects the
+  provide the semantic executable frame names, internal endpoint ids stay
+  definition-private, and neither may substitute for immutable port identity. Drill-down projects the
   definition contract as one composite Input and one composite Output card.
   Declared outputs remain visible and round-trip without consumers. Draft or
   stale boundary handles are rejected before save or execution.
@@ -349,8 +354,8 @@ must resolve the original pipeline-owned sidecars.
 - A downstream node fed across a canonical submodel boundary resolves the
   occurrence's `out__<portId>` handle through the referenced definition to
   that public output's internal `{nodeId, handleId}` data source. Its parent
-  input name is the sanitised `<alias>__<portId>` identity emitted by codegen;
-  the internal child label is not part of the public naming contract. See
+  input name is the sanitised public output label emitted by codegen; the
+  occurrence alias and structural port id are not part of that name. See
   [frontend-node-editors](../frontend-node-editors/high-level.md)
   for chip derivation and [codegen](../codegen/high-level.md) for the backend
   rule.

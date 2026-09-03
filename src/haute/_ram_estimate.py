@@ -314,7 +314,14 @@ class _EstimateGraphIndex:
         from haute._execute_lazy import _prune_live_switch_edges
 
         node_map = {node.id: node for node in graph.nodes}
-        pruned_edges = tuple(_prune_live_switch_edges(graph.edges, node_map, source))
+        pruned_edges = tuple(
+            _prune_live_switch_edges(
+                graph.edges,
+                node_map,
+                source,
+                submodels=graph.submodels,
+            )
+        )
         runtime_metadata_by_node: dict[str, _DetailedSourceMetadata | None] = {}
         if runtime_source_frames_by_node is not None:
             for node_id, frame in runtime_source_frames_by_node.items():
@@ -816,7 +823,11 @@ def _cardinality_name_bindings(
     source_names: list[str] = []
     for edge in edges:
         try:
-            name = edge_input_name(edge, index.node_map[edge.source])
+            name = edge_input_name(
+                edge,
+                index.node_map[edge.source],
+                submodels=index.graph.submodels,
+            )
         except (KeyError, ValueError):
             return None
         source_names.append(name)
@@ -942,7 +953,11 @@ def _safe_edge_input_name(edge: GraphEdge, index: _EstimateGraphIndex) -> str | 
     """Return the edge's executable input name, or ``None`` when undecidable."""
 
     try:
-        return edge_input_name(edge, index.node_map[edge.source])
+        return edge_input_name(
+            edge,
+            index.node_map[edge.source],
+            submodels=index.graph.submodels,
+        )
     except (KeyError, ValueError):
         return None
 

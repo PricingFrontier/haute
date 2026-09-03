@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import NoReturn
 from uuid import uuid4
 
 from pydantic import ValidationError
 
-from haute._graph_utils import _edge_id, edge_input_name
-from haute._submodel_instances import (
-    canonical_downstream_identity,
-    rewrite_input_selectors,
-)
+from haute._graph_utils import _edge_id, edge_input_label
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -47,10 +42,30 @@ class SubmodelGraphResult:
     sm_name: str
 
 
+def _public_frame_label(
+    edge: GraphEdge,
+    source: GraphNode,
+    submodels: dict[str, SubmodelDefinition] | None,
+) -> str:
+    """Return the public label that preserves this edge's executable name."""
+    try:
+        return edge_input_label(edge, source, submodels=submodels)
+    except ValueError as exc:
+        raise SubmodelValidationError(
+            code="invalid_input_binding",
+            status_code=400,
+            detail=(
+                f"Cannot create submodel: boundary edge {edge.id!r} "
+                "does not identify an executable source frame."
+            ),
+        ) from exc
+
+
 def _build_public_interface(
     cross_edges: list[GraphEdge],
     child_node_ids: set[str],
     node_map: dict[str, GraphNode],
+    submodels: dict[str, SubmodelDefinition] | None,
 ) -> tuple[
     list[SubmodelInputPort],
     list[SubmodelOutputPort],
@@ -72,7 +87,7 @@ def _build_public_interface(
         port_id = f"input_{index}"
         input_ids[identity] = port_id
         source = node_map[edges[0].source]
-        label = edges[0].sourceHandle or source.data.label
+        label = _public_frame_label(edges[0], source, submodels)
         input_ports.append(
             SubmodelInputPort(
                 portId=port_id,
@@ -96,7 +111,7 @@ def _build_public_interface(
         output_ids[identity] = port_id
         edge = edges[0]
         source = node_map[edge.source]
-        label = edge.sourceHandle or source.data.label
+        label = _public_frame_label(edge, source, submodels)
         output_ports.append(
             SubmodelOutputPort(
                 portId=port_id,
@@ -110,180 +125,6 @@ def _build_public_interface(
             )
         )
     return input_ports, output_ports, input_ids, output_ids
-
-
-def _mapping_error(*, code: str, node_id: str, field: str, detail: str) -> NoReturn:
-    raise SubmodelValidationError(
-        code=code,
-        status_code=400,
-        detail=(
-            f"Cannot create submodel: node {node_id!r} has an invalid {field!r} mapping ({detail})."
-        ),
-    )
-
-
-def _rewrite_mapping_keys(
-    value: object,
-    renames: dict[str, str],
-    *,
-    node_id: str,
-    field: str,
-) -> dict[str, object]:
-    if not isinstance(value, dict):
-        _mapping_error(
-            code="invalid_input_mapping",
-            node_id=node_id,
-            field=field,
-            detail="expected an object",
-        )
-
-    rewritten: dict[str, object] = {}
-    for key, mapping_value in value.items():
-        if not isinstance(key, str):
-            _mapping_error(
-                code="invalid_input_mapping",
-                node_id=node_id,
-                field=field,
-                detail="all keys must be strings",
-            )
-        rewritten_key = renames.get(key, key)
-        if rewritten_key in rewritten:
-            _mapping_error(
-                code="input_mapping_collision",
-                node_id=node_id,
-                field=field,
-                detail=f"renaming {key!r} would duplicate {rewritten_key!r}",
-            )
-        rewritten[rewritten_key] = mapping_value
-    return rewritten
-
-
-def _rewrite_mapping_values(
-    value: object,
-    renames: dict[str, str],
-    *,
-    node_id: str,
-    field: str,
-) -> dict[str, object]:
-    if not isinstance(value, dict):
-        _mapping_error(
-            code="invalid_input_mapping",
-            node_id=node_id,
-            field=field,
-            detail="expected an object",
-        )
-
-    rewritten: dict[str, object] = {}
-    for key, mapping_value in value.items():
-        if not isinstance(key, str):
-            _mapping_error(
-                code="invalid_input_mapping",
-                node_id=node_id,
-                field=field,
-                detail="all keys must be strings",
-            )
-        rewritten[key] = (
-            renames.get(mapping_value, mapping_value)
-            if isinstance(mapping_value, str)
-            else mapping_value
-        )
-    return rewritten
-
-
-def _normalise_public_input_config_names(
-    child_nodes: list[GraphNode],
-    cross_edges: list[GraphEdge],
-    *,
-    child_node_ids: set[str],
-    input_ids: dict[tuple[str, str | None], str],
-    node_map: dict[str, GraphNode],
-) -> list[GraphNode]:
-    """Replace external input names with canonical public-port parameter names."""
-    renames_by_target: dict[str, dict[str, str]] = {}
-    for edge in cross_edges:
-        if edge.target not in child_node_ids:
-            continue
-        try:
-            old_name = edge_input_name(edge, node_map[edge.source])
-        except ValueError as exc:
-            raise SubmodelValidationError(
-                code="invalid_input_binding",
-                status_code=400,
-                detail=(
-                    f"Cannot create submodel: input edge {edge.id!r} "
-                    "does not identify an executable source frame."
-                ),
-            ) from exc
-        new_name = _sanitize_func_name(input_ids[(edge.source, edge.sourceHandle)])
-        target_renames = renames_by_target.setdefault(edge.target, {})
-        previous = target_renames.get(old_name)
-        if previous is not None and previous != new_name:
-            _mapping_error(
-                code="input_mapping_collision",
-                node_id=edge.target,
-                field="public input",
-                detail=(f"input name {old_name!r} maps to both {previous!r} and {new_name!r}"),
-            )
-        target_renames[old_name] = new_name
-
-    normalised: list[GraphNode] = []
-    for node in child_nodes:
-        config = dict(node.data.config)
-        changed = False
-        direct_renames = renames_by_target.get(node.id)
-        if direct_renames:
-            rewritten_node = rewrite_input_selectors([node], {node.id: direct_renames})[0]
-            rewritten_config = dict(rewritten_node.data.config)
-            changed = changed or rewritten_config != config
-            config = rewritten_config
-            if "input_scenario_map" in config:
-                rewritten = _rewrite_mapping_keys(
-                    config["input_scenario_map"],
-                    direct_renames,
-                    node_id=node.id,
-                    field="input_scenario_map",
-                )
-                changed = changed or rewritten != config["input_scenario_map"]
-                config["input_scenario_map"] = rewritten
-            if "inputMapping" in config:
-                rewritten = _rewrite_mapping_values(
-                    config["inputMapping"],
-                    direct_renames,
-                    node_id=node.id,
-                    field="inputMapping",
-                )
-                changed = changed or rewritten != config["inputMapping"]
-                config["inputMapping"] = rewritten
-
-        original_id = config.get("instanceOf")
-        original_renames = (
-            renames_by_target.get(original_id) if isinstance(original_id, str) else None
-        )
-        if original_renames and "inputMapping" in config:
-            rewritten = _rewrite_mapping_keys(
-                config["inputMapping"],
-                original_renames,
-                node_id=node.id,
-                field="inputMapping",
-            )
-            changed = changed or rewritten != config["inputMapping"]
-            config["inputMapping"] = rewritten
-
-        if not changed:
-            normalised.append(node)
-            continue
-        normalised.append(
-            node.model_copy(
-                deep=True,
-                update={
-                    "data": node.data.model_copy(
-                        deep=True,
-                        update={"config": config},
-                    )
-                },
-            )
-        )
-    return normalised
 
 
 def _rewire_canonical_boundary_edges(
@@ -472,34 +313,7 @@ def create_submodel_graph(
         cross_edges,
         child_node_id_set,
         graph.node_map,
-    )
-    parent_reference_maps: dict[str, dict[str, str]] = {}
-    for edge in cross_edges:
-        if edge.source not in child_node_id_set:
-            continue
-        port_id = output_ids[(edge.source, edge.sourceHandle)]
-        target_map = parent_reference_maps.setdefault(edge.target, {})
-        identity = canonical_downstream_identity(sm_name, port_id)
-        old_name = edge_input_name(edge, graph.node_map[edge.source])
-        previous = target_map.get(old_name)
-        if previous is not None and previous != identity:
-            raise SubmodelValidationError(
-                code="boundary_reference_collision",
-                status_code=400,
-                detail=(
-                    "Cannot create submodel: parent node "
-                    f"{edge.target!r} would map input {old_name!r} to both "
-                    f"{previous!r} and {identity!r}."
-                ),
-            )
-        target_map[old_name] = identity
-    parent_nodes = rewrite_input_selectors(parent_nodes, parent_reference_maps)
-    local_child_nodes = _normalise_public_input_config_names(
-        local_child_nodes,
-        cross_edges,
-        child_node_ids=child_node_id_set,
-        input_ids=input_ids,
-        node_map=graph.node_map,
+        graph.submodels,
     )
     sm_graph = PipelineGraph(
         nodes=local_child_nodes,

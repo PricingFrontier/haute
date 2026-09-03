@@ -40,7 +40,7 @@ function makeFixture({ bindInput = false, outputPorts = [], includeInternalEdge 
       _functionName: "pricing_function",
       _defaultInputName: null,
       _sourceHandleInputNames: Object.fromEntries(
-        outputPorts.map((portId) => [`out__${portId}`, `pricing__${portId}`]),
+        outputPorts.map((portId) => [`out__${portId}`, `Public_${portId}`]),
       ),
     },
   })
@@ -60,12 +60,12 @@ function makeFixture({ bindInput = false, outputPorts = [], includeInternalEdge 
     {
       ...makeEdge(PLACEHOLDER_ID, "consumer_a", { id: `consumer-a-${childId}` }),
       sourceHandle: `out__${childId}`,
-      data: { _inputName: `pricing__${childId}` },
+      data: { _inputName: `Public_${childId}` },
     },
     {
       ...makeEdge(PLACEHOLDER_ID, "consumer_b", { id: `consumer-b-${childId}` }),
       sourceHandle: `out__${childId}`,
-      data: { _inputName: `pricing__${childId}` },
+      data: { _inputName: `Public_${childId}` },
     },
   )
   const definition = {
@@ -74,15 +74,15 @@ function makeFixture({ bindInput = false, outputPorts = [], includeInternalEdge 
     graph: { nodes: childNodes, edges: childEdges },
     inputPorts: [{
       portId: "incoming",
-      label: "Incoming",
+      label: "Incoming policy data",
       targets: [{ nodeId: "child_a", handleId: null }],
     }],
     outputPorts: outputPorts.map((portId) => ({
       portId,
-      label: portId,
+      label: `Public ${portId}`,
       source: { nodeId: portId, handleId: null },
     })),
-    _inputPortInputNames: { incoming: "incoming" },
+    _inputPortInputNames: { incoming: "Incoming_policy_data" },
   }
   const submodels = { [DEFINITION_ID]: definition }
   const view = buildSubmodelViewGraph({ submodelName: SUBMODEL_NAME, instanceId: PLACEHOLDER_ID, definition, childNodes, childEdges, parentNodes, parentEdges })
@@ -97,7 +97,7 @@ function makeFixture({ bindInput = false, outputPorts = [], includeInternalEdge 
         ...node.data,
         _functionName: input ? "input_boundary" : "output_boundary",
         _defaultInputName: null,
-        _sourceHandleInputNames: input ? { incoming: "incoming" } : {},
+        _sourceHandleInputNames: input ? { incoming: "Incoming_policy_data" } : {},
       },
     }
   })
@@ -105,7 +105,7 @@ function makeFixture({ bindInput = false, outputPorts = [], includeInternalEdge 
     ...edge,
     data: {
       ...edge.data,
-      _inputName: edge.source === inputBoundaryId ? "incoming" : `${edge.source}_input`,
+      _inputName: edge.source === inputBoundaryId ? "Incoming_policy_data" : `${edge.source}_input`,
     },
   }))
   const identifiedView = { nodes: viewNodes, edges: viewEdges }
@@ -203,7 +203,7 @@ describe("useSubmodelBoundaryEditing", () => {
           ...node,
           data: {
             ...node.data,
-            _sourceHandleInputNames: { out__output_1: "pricing__output_1" },
+            _sourceHandleInputNames: { out__output_1: "Public_output_1" },
           },
         }
       : node)
@@ -217,7 +217,7 @@ describe("useSubmodelBoundaryEditing", () => {
       (node) => node.id === PLACEHOLDER_ID,
     )!
     expect(committedParent.data._sourceHandleInputNames).toEqual({
-      out__output_1: "pricing__output_1",
+      out__output_1: "Public_output_1",
     })
     expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
       outputPorts: [{ portId: "output_1" }],

@@ -262,6 +262,7 @@ def plan_execution_strategy(
         prepared.node_map,
         required_columns_by_node=required_columns_by_node,
         relevant_edges=prepared.relevant_edges,
+        submodels=prepared.submodels,
     )
     projection_plan = with_api_input_port_projection_boundaries(
         projection_plan,
@@ -272,6 +273,7 @@ def plan_execution_strategy(
         prepared.order,
         prepared.node_map,
         relevant_edges=prepared.relevant_edges,
+        submodels=prepared.submodels,
     )
     materialising_operators = first_materialising_operators(materialising_sequences)
     resolved_estimate: MaterialisationEstimate | None
@@ -358,6 +360,7 @@ def plan_prepared_execution_strategy(
     materialisation_estimate: MaterialisationEstimate | None = None,
     schema_only: bool = False,
     relevant_edges: Iterable[GraphEdge] | None = None,
+    submodels: Mapping[str, Any] | None = None,
 ) -> ExecutionStrategyResult:
     """Plan projection/streaming strategy for an already prepared graph.
 
@@ -379,6 +382,7 @@ def plan_prepared_execution_strategy(
         dict(node_map),
         required_columns_by_node=required_columns_by_node,
         relevant_edges=prepared_relevant_edges,
+        submodels=submodels,
     )
     if prepared_relevant_edges is not None:
         projection_plan = with_api_input_port_projection_boundaries(
@@ -392,6 +396,7 @@ def plan_prepared_execution_strategy(
                 order,
                 node_map,
                 relevant_edges=prepared_relevant_edges,
+                submodels=submodels,
             )
         )
     else:
@@ -1264,11 +1269,18 @@ def prune_source_switch_edges(
     edges: list[GraphEdge],
     node_map: dict[str, GraphNode],
     source: str,
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> list[GraphEdge]:
     """Return graph edges pruned to the active source-switch branch."""
     from haute._execute_lazy import _prune_live_switch_edges
 
-    return _prune_live_switch_edges(edges, node_map, source)
+    return _prune_live_switch_edges(
+        edges,
+        node_map,
+        source,
+        submodels=submodels,
+    )
 
 
 def build_linear_execution_chain_functions(

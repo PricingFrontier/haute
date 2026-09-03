@@ -1795,6 +1795,84 @@ def test_cardinality_helpers_fail_closed_for_invalid_bindings_and_missing_nodes(
     assert missing.unavailable_reason == "node_missing"
 
 
+def test_cardinality_binding_uses_collapsed_submodel_public_output_label() -> None:
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [
+                {
+                    "id": "occurrence",
+                    "type": "submodel",
+                    "data": {
+                        "label": "Occurrence presentation",
+                        "nodeType": "submodel",
+                        "config": {
+                            "definitionId": "definition_public_output",
+                            "alias": "unrelated_alias",
+                        },
+                    },
+                },
+                {
+                    "id": "target",
+                    "data": {
+                        "label": "target",
+                        "nodeType": "polars",
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "public-result-edge",
+                    "source": "occurrence",
+                    "target": "target",
+                    "sourceHandle": "out__opaque-output-id",
+                }
+            ],
+            "submodels": {
+                "definition_public_output": {
+                    "definitionId": "definition_public_output",
+                    "file": "modules/public_output.py",
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "internal_result",
+                                "data": {
+                                    "label": "private implementation result",
+                                    "nodeType": "polars",
+                                    "config": {},
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    },
+                    "inputPorts": [],
+                    "outputPorts": [
+                        {
+                            "portId": "opaque-output-id",
+                            "label": "public result",
+                            "source": {
+                                "nodeId": "internal_result",
+                                "handleId": None,
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    index = _EstimateGraphIndex.build(graph, "batch")
+    edge = index.pruned_edges[0]
+    proof = _ResolvedRowCardinality.proven(4, 4, ("proof",))
+
+    bindings = _named_cardinality_inputs(
+        index,
+        index.node_map["target"],
+        ((edge, proof),),
+    )
+
+    assert bindings == {"public_result": proof}
+
+
 def test_cardinality_resolution_handles_constants_and_rejects_invalid_join_arity() -> None:
     constant_index = _EstimateGraphIndex.build(
         PipelineGraph(nodes=[GraphNode(id="constant", data=NodeData(nodeType=NodeType.CONSTANT))]),

@@ -622,7 +622,8 @@ labels. `adaptPipelineEditorDocument` clones configs and maps these values to tr
 
 `editorIdentities.ts` sends bounded prospective nodes to
 `POST /api/pipeline/editor-identities`, requires response cardinality and order to exactly match
-the request, requires each source-handle map to cover exactly the requested handles, and enforces
+the request, supplies exact public-label coverage for submodel and drilled Input handles,
+requires each returned source-handle map to cover exactly the requested handles, and enforces
 ordinary-versus-multi-output default-identity nullability before attaching node and edge identities
 immutably. Missing, reordered, malformed, semantically mismatched, or rejected identities throw
 before callers commit graph or history state. No frontend
@@ -631,7 +632,8 @@ production module derives Python executable names or config references.
 Raw canonical graphs entering an editable surface are resolved recursively and
 atomically: the root is one identity scope, and each embedded submodel definition
 is a separate scope. A definition scope adds a synthetic Input boundary whose
-handles are its declared input-port ids; the returned exact handle map becomes
+handles are its declared input-port ids and whose labels are the corresponding
+public input labels; the returned exact handle map becomes
 the definition's transient `_inputPortInputNames`, while child-node and child-edge
 identities are attached normally. No partially resolved root or registry is
 published. Conversely, every canonical graph request uses the shared recursive

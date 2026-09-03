@@ -359,7 +359,12 @@ def _trace_preparation_order(
     inactive branch's inputs are never prepared.
     """
     all_ids = {node.id for node in graph.nodes}
-    edges = _prune_live_switch_edges(graph.edges, graph.node_map, source)
+    edges = _prune_live_switch_edges(
+        graph.edges,
+        graph.node_map,
+        source,
+        submodels=graph.submodels,
+    )
     return sorted(ancestors(target_node_id, edges, all_ids))
 
 

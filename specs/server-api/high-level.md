@@ -168,7 +168,9 @@ its resolved executable input name. Recovery edges retain the field but may use
 `null` when an unavailable source prevents resolution. Capabilities include the
 sorted reserved API-input frame-label set. Prospective browser-created or renamed
 nodes use the bounded, side-effect-free `POST /api/pipeline/editor-identities`
-contract, whose response preserves request order and never reads or writes project state.
+contract. Submodel and drilled Input requests carry an exact handle-to-public-label
+map so the server, rather than the browser, derives their executable names. The
+response preserves request order and never reads or writes project state.
 `POST /api/pipeline/save` is the single write path for a pipeline's `.py` source, its
 per-node config JSON sidecars, and its `.haute.json` position sidecar — described in detail
 below. Before changing an existing named document, Save and submodel create/dissolve reread

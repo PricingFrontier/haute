@@ -28,6 +28,34 @@ from tests._projection_helpers import has_pair, pair_value, pair_value_or_none
 from tests.conftest import make_edge, make_graph, make_output_config
 
 
+def _public_output_definition(*, label: str = "public result") -> dict[str, object]:
+    return {
+        "definitionId": "definition_public_output",
+        "file": "modules/public_output.py",
+        "graph": {
+            "nodes": [
+                {
+                    "id": "internal_result",
+                    "data": {
+                        "label": "private implementation result",
+                        "nodeType": "polars",
+                        "config": {},
+                    },
+                }
+            ],
+            "edges": [],
+        },
+        "inputPorts": [],
+        "outputPorts": [
+            {
+                "portId": "opaque-output-id",
+                "label": label,
+                "source": {"nodeId": "internal_result", "handleId": None},
+            }
+        ],
+    }
+
+
 def test_projection_coverage_map_mentions_every_node_type() -> None:
     coverage = projection_rule_coverage_by_node_type()
     assert set(coverage) == set(NodeType)
@@ -97,6 +125,122 @@ def test_projection_rule_coverage_declares_opaque_node_types_explicitly() -> Non
     assert opaque_types == {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
     for node_type in opaque_types:
         assert coverage[node_type].rules == frozenset({"opaque_contract"})
+
+
+def test_projection_resolves_collapsed_submodel_inputs_by_public_output_label() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "occurrence",
+                    "type": "submodel",
+                    "data": {
+                        "label": "Occurrence presentation",
+                        "nodeType": "submodel",
+                        "config": {
+                            "definitionId": "definition_public_output",
+                            "alias": "unrelated_alias",
+                        },
+                    },
+                },
+                {
+                    "id": "consumer",
+                    "data": {
+                        "label": "consumer",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": "df = public_result.select(pl.col('premium'))",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "public-result-edge",
+                    "source": "occurrence",
+                    "target": "consumer",
+                    "sourceHandle": "out__opaque-output-id",
+                }
+            ],
+            "submodels": {
+                "definition_public_output": _public_output_definition(),
+            },
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="consumer",
+            required_columns_by_node={"consumer": {"premium"}},
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+    )
+
+    [edge_reason] = projection.diagnostics.edge_reasons.values()
+    assert edge_reason.details["input_name"] == "public_result"
+
+
+def test_live_switch_pruning_uses_collapsed_submodel_public_output_label() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "occurrence",
+                    "type": "submodel",
+                    "data": {
+                        "label": "Occurrence presentation",
+                        "nodeType": "submodel",
+                        "config": {
+                            "definitionId": "definition_public_output",
+                            "alias": "unrelated_alias",
+                        },
+                    },
+                },
+                {
+                    "id": "fallback",
+                    "data": {
+                        "label": "fallback result",
+                        "nodeType": "dataInput",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "switch",
+                    "data": {
+                        "label": "switch",
+                        "nodeType": "liveSwitch",
+                        "config": {
+                            "input_scenario_map": {
+                                "public_result": "live",
+                                "fallback_result": "batch",
+                            }
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "public-result-edge",
+                    "source": "occurrence",
+                    "target": "switch",
+                    "sourceHandle": "out__opaque-output-id",
+                },
+                {
+                    "id": "fallback-edge",
+                    "source": "fallback",
+                    "target": "switch",
+                },
+            ],
+            "submodels": {
+                "definition_public_output": _public_output_definition(),
+            },
+        }
+    )
+
+    prepared = prepare_graph(graph, "switch", source="live")
+
+    assert [edge.id for edge in prepared.relevant_edges] == ["public-result-edge"]
 
 
 def _projection_signature(projection_plan):

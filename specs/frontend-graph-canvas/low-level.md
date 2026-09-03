@@ -52,7 +52,7 @@
 | `frontend/src/utils/flowElements.ts` | `appNode`/`appEdge`/`nodeLabel`/`edgeId`/`deselectNodes`/`selectOnlyNode` — node/edge factories and id/selection helpers. |
 | `frontend/src/utils/flowHandles.ts` | `DEFAULT_TARGET_HANDLE`/`normalizeDefaultTargetHandle` — collapses React Flow's synthetic default-target-handle id to `null`. |
 | `frontend/src/utils/nodeTypes.ts` | Canvas metadata derived from shared `types/node.ts::PIPELINE_NODE_TYPES`: `NODE_TYPE_META` and lookups (`SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `SINGLETON_TYPES`, `PALETTE_TYPES`, `nodeTypeIcons`/`nodeTypeColors`/`nodeTypeLabels`, `PILL_TYPES`). |
-| `frontend/src/utils/apiInputPorts.ts` | Mirrors backend API-input frame identity and resolves executable names across ordinary nodes, public-port ids, and alias-prefixed public-output names; also owns label validation, conservative rename updates, and orphan-handle pruning. |
+| `frontend/src/utils/apiInputPorts.ts` | Mirrors backend API-input frame identity and resolves authoritative executable names across ordinary nodes and public submodel labels while retaining public-port ids as boundary handles; also owns label validation, conservative rename updates, and orphan-handle pruning. |
 | `frontend/src/utils/edgeJoinRoles.ts` | Defines edge-join base/join handle roles and maps the rendered bottom join handle onto the canonical join role. |
 | `frontend/src/utils/edgeJoinGraph.ts` | Pure edge-join candidate validation and insertion/rewrite helpers; candidate feedback and release-time insertion share the same validator. |
 | `frontend/src/utils/edgeJoinInsertionFeedback.ts` | Pure render-only Edge Join candidate decoration that preserves edge-array identity when inactive. |
@@ -153,8 +153,9 @@ and layout complete before any graph, ref, selection, or view-stack mutation.
 A successful frame stores both `instanceId` and `definitionId`; failure leaves
 the current view unchanged. Synthetic canonical Input/Output nodes retain that
 `definitionId` marker. Drilled Input edges contribute the sanitised public
-`portId` to child configs/codegen, while a parent edge sourced from an
-occurrence contributes sanitised `<alias>__<portId>`.
+input label to child configs/codegen, while a parent edge sourced from an
+occurrence contributes the sanitised public output label. Public port ids remain
+structural handle identities in both views.
 
 Shared-definition save performs an interface diff by immutable port id and
 checks all parent placeholder edges. Any removed or direction-changed bound
@@ -494,7 +495,7 @@ newer overlapping transform.
     matching values rewritten to the new edge name but are not synthesized
     when absent. Input names are derived through the same `edgeInputName`
     contract as connection validation, including API-frame and collapsed
-    submodel alias/port identities; callers supply the current submodel
+    submodel public-output-label identities; callers supply the current submodel
     definitions needed to resolve those boundaries. An unresolved or malformed
     identity fails before any graph rewrite or id allocation.
     Failure leaves graph,

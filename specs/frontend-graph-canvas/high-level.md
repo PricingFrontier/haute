@@ -165,11 +165,11 @@ well as occurrence-specific positions and bindings.
   source-right for Input and target-left for Output. In the canonical
   projection, Input lists one row per declared public input port and maps its
   immutable `portId` to one or more ordered internal target endpoints. Its
-  child-side executable input name is the sanitised port id; the displayed
-  label never becomes parameter identity. Output keeps one target handle;
+  child-side executable input name is the sanitised public input label; the
+  immutable port id remains handle identity only. Output keeps one target handle;
   every child-to-Output mapping carries an immutable public output `portId` and
   one internal source endpoint. A canonical occurrence contributes the
-  sanitised `<alias>__<portId>` name downstream. Parent bindings stay on
+  sanitised public output label downstream. Parent bindings stay on
   `in__<portId>`/`out__<portId>`. Changing internal endpoints while retaining
   a port id and direction is a compatible shared-definition edit; removing or
   changing the direction of a bound port is rejected atomically across all
@@ -462,8 +462,8 @@ well as occurrence-specific positions and bindings.
 - **Connections that would duplicate an input name are rejected at drag
   time.** Every ordinary incoming edge contributes its API frame label or
   sanitised source label. A canonical drilled Input contributes its sanitised
-  public port id, and a canonical occurrence output contributes sanitised
-  `<alias>__<portId>`. A connection whose derived name duplicates an existing
+  public input label, and a canonical occurrence output contributes its sanitised
+  public output label. A connection whose derived name duplicates an existing
   executable input on the target is refused with a named toast, mirroring the
   backend's save-time `ParseError`. The
   alternative — accepting the edge and letting codegen suffix a parameter —

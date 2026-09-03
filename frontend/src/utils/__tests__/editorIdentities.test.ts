@@ -26,7 +26,7 @@ function node(
 }
 
 describe("editor identity resolution", () => {
-  it("builds a strict batch from authored labels and structural source handles", () => {
+  it("builds a strict batch with public submodel port labels", () => {
     const api = node("api", "class", "apiInput", {
       tables: [
         {
@@ -60,7 +60,7 @@ describe("editor identity resolution", () => {
     }
 
     expect(buildEditorIdentityRequest(
-      [api, occurrence],
+      [api, node("ordinary", "Polars", "polars"), occurrence],
       { "pricing-definition": definition },
       RESERVED,
     )).toEqual({
@@ -69,15 +69,22 @@ describe("editor identity resolution", () => {
           node_id: "api",
           label: "class",
           node_type: "apiInput",
-          submodel_alias: null,
           source_handles: ["quotes"],
+          source_handle_labels: {},
+        },
+        {
+          node_id: "ordinary",
+          label: "Polars",
+          node_type: "polars",
+          source_handles: [],
+          source_handle_labels: {},
         },
         {
           node_id: "pricing",
           label: "Tarif café",
           node_type: "submodel",
-          submodel_alias: "pricing_secondary",
           source_handles: ["out__written-premium"],
+          source_handle_labels: { "out__written-premium": "Written premium" },
         },
       ],
     })
@@ -194,6 +201,11 @@ describe("editor identity resolution", () => {
     ))).toEqual([
       ["instance"], ["__submodel_input_ports__", "__submodel_input_ports___1"],
     ])
+    expect(resolve.mock.calls[1]?.[0].nodes.at(-1)).toMatchObject({
+      node_type: "submodelPort",
+      source_handles: ["policy"],
+      source_handle_labels: { policy: "Policy" },
+    })
     expect(result.nodes[0].data._functionName).toBe("fn_instance")
     expect(result.submodels.pricing.graph.nodes[0].data._functionName).toBe("fn___submodel_input_ports__")
     expect(result.submodels.pricing.graph.edges[0].data?._inputName).toBe("in___submodel_input_ports__")

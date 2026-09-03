@@ -36,7 +36,7 @@ function requireNodeType(node: Node): NodeTypeValue {
 function submodelDefinition(
   node: Node,
   submodels: SubmodelRegistry,
-): { definition: SubmodelDefinition; alias: string } {
+): SubmodelDefinition {
   if (!isSubmodelInstanceConfig(node.data.config)) {
     throw new Error(`Cannot resolve editor identity for submodel ${node.id}: malformed occurrence`)
   }
@@ -46,15 +46,16 @@ function submodelDefinition(
       `Cannot resolve editor identity for submodel ${node.id}: definition ${node.data.config.definitionId} is unavailable`,
     )
   }
-  return { definition, alias: node.data.config.alias }
+  return definition
 }
 
-function submodelPortHandles(node: Node): string[] {
-  if (node.data.portDirection !== "input") return []
+function submodelPortHandles(node: Node): { handles: string[]; labels: Record<string, string> } {
+  if (node.data.portDirection !== "input") return { handles: [], labels: {} }
   if (!Array.isArray(node.data.ports)) {
     throw new Error(`Cannot resolve editor identity for submodel port ${node.id}: ports are malformed`)
   }
-  return node.data.ports.map((value, index) => {
+  const labels: Record<string, string> = {}
+  const handles = node.data.ports.map((value, index) => {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
       throw new Error(`Cannot resolve editor identity for submodel port ${node.id}: port ${index} is malformed`)
     }
@@ -62,8 +63,14 @@ function submodelPortHandles(node: Node): string[] {
     if (typeof id !== "string" || id.length === 0) {
       throw new Error(`Cannot resolve editor identity for submodel port ${node.id}: port ${index} has no id`)
     }
+    const label = (value as Record<string, unknown>).label
+    if (typeof label !== "string" || label.length === 0) {
+      throw new Error(`Cannot resolve editor identity for submodel port ${node.id}: port ${index} has no label`)
+    }
+    labels[id] = label
     return id
   })
+  return { handles, labels }
 }
 
 function requestNode(
@@ -76,19 +83,23 @@ function requestNode(
   if (typeof label !== "string" || label.length === 0) {
     throw new Error(`Cannot resolve editor identity for node ${node.id}: label is missing`)
   }
-  let submodelAlias: string | null = null
   let sourceHandles: string[] = []
+  let sourceHandleLabels: Record<string, string> = {}
   if (nodeType === NODE_TYPES.API_INPUT) {
     sourceHandles = apiInputFrameLabels(
       node.data.config as Record<string, unknown> | undefined,
       reservedApiInputFrameLabels,
     )
   } else if (nodeType === NODE_TYPES.SUBMODEL) {
-    const { definition, alias } = submodelDefinition(node, submodels)
-    submodelAlias = alias
+    const definition = submodelDefinition(node, submodels)
     sourceHandles = definition.outputPorts.map((port) => `out__${port.portId}`)
+    sourceHandleLabels = Object.fromEntries(
+      definition.outputPorts.map((port) => [`out__${port.portId}`, port.label]),
+    )
   } else if (nodeType === NODE_TYPES.SUBMODEL_PORT) {
-    sourceHandles = submodelPortHandles(node)
+    const ports = submodelPortHandles(node)
+    sourceHandles = ports.handles
+    sourceHandleLabels = ports.labels
   }
   if (new Set(sourceHandles).size !== sourceHandles.length) {
     throw new Error(`Cannot resolve editor identity for node ${node.id}: source handles are duplicated`)
@@ -97,8 +108,8 @@ function requestNode(
     node_id: node.id,
     label,
     node_type: nodeType,
-    submodel_alias: submodelAlias,
     source_handles: sourceHandles,
+    source_handle_labels: sourceHandleLabels,
   }
 }
 
@@ -242,7 +253,7 @@ function syntheticSubmodelPortNode(definition: SubmodelDefinition): Node {
       label: "Submodel inputs",
       nodeType: NODE_TYPES.SUBMODEL_PORT,
       portDirection: "input",
-      ports: definition.inputPorts.map((port) => ({ id: port.portId })),
+      ports: definition.inputPorts.map((port) => ({ id: port.portId, label: port.label })),
     },
   }
 }

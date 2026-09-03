@@ -1194,6 +1194,10 @@ class PreparedGraph(NamedTuple):
     # frame-aware binding) can index incoming edges per child without
     # re-deriving the prune set themselves.
     relevant_edges: list[GraphEdge]
+    # Public port labels remain definition-owned while a graph still contains
+    # collapsed submodel occurrences. Keep that registry with the prepared
+    # edges so planner-side input-name derivation uses the same identity.
+    submodels: Mapping[str, Any] | None
 
 
 def normalise_required_columns_by_node(
@@ -1838,6 +1842,7 @@ def materialising_operator_sequences_by_node(
     node_map: Mapping[str, GraphNode],
     *,
     relevant_edges: Iterable[GraphEdge],
+    submodels: Mapping[str, Any] | None = None,
 ) -> Mapping[str, tuple[str, ...]]:
     """Return materialisation-boundary operators in deterministic execution order.
 
@@ -1866,7 +1871,7 @@ def materialising_operator_sequences_by_node(
         if source_node is None:
             continue
         try:
-            name = edge_input_name(edge, source_node)
+            name = edge_input_name(edge, source_node, submodels=submodels)
         except ValueError:
             # A malformed edge (an apiInput edge with no frame label) has no
             # input name to contribute. Skipping it stays conservative: an
@@ -1934,10 +1939,16 @@ def materialising_operators_by_node(
     node_map: Mapping[str, GraphNode],
     *,
     relevant_edges: Iterable[GraphEdge],
+    submodels: Mapping[str, Any] | None = None,
 ) -> Mapping[str, str]:
     """Return each boundary node's first materialising operator."""
     return first_materialising_operators(
-        materialising_operator_sequences_by_node(order, node_map, relevant_edges=relevant_edges)
+        materialising_operator_sequences_by_node(
+            order,
+            node_map,
+            relevant_edges=relevant_edges,
+            submodels=submodels,
+        )
     )
 
 
@@ -2208,6 +2219,8 @@ class OptimiserParentDemandRule:
         node_map: Mapping[str, GraphNode],
         my_needed: set[str] | None,
         seeded_required: Mapping[str, set[str] | AllExceptColumns],
+        *,
+        submodels: Mapping[str, Any] | None = None,
     ) -> ParentDemandResult | None:
         incoming = list(incoming_edges)
         parent_set = {edge.source for edge in incoming}
@@ -2220,7 +2233,17 @@ class OptimiserParentDemandRule:
         config = node.data.config
         configured_data_input = config.get("data_input")
         banding_source = config.get("banding_source")
-        named_edges = [(edge, edge_input_name(edge, node_map[edge.source])) for edge in incoming]
+        named_edges = [
+            (
+                edge,
+                edge_input_name(
+                    edge,
+                    node_map[edge.source],
+                    submodels=submodels,
+                ),
+            )
+            for edge in incoming
+        ]
 
         if configured_data_input in (None, "") and len(named_edges) == 1:
             data_edge = named_edges[0][0]
@@ -2300,13 +2323,20 @@ def parent_demands_for_node(
     node_map: Mapping[str, GraphNode],
     my_needed: set[str] | None,
     seeded_required: Mapping[str, set[str] | AllExceptColumns],
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> ParentDemandResult | None:
     """Return node-specific parent demands that the generic algebra cannot infer.
 
     Return optimiser-specific parent demands when configured.
     """
     return _OPTIMISER_PARENT_DEMAND_RULE.parent_demands(
-        node, incoming_edges, node_map, my_needed, seeded_required
+        node,
+        incoming_edges,
+        node_map,
+        my_needed,
+        seeded_required,
+        submodels=submodels,
     )
 
 
@@ -3069,6 +3099,8 @@ def prune_live_switch_edges(
     edges: list[GraphEdge],
     node_map: Mapping[str, GraphNode],
     source: str,
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> list[GraphEdge]:
     """Remove edges to live-switch nodes from inputs inactive for *source*."""
     switch_nodes = {
@@ -3090,7 +3122,7 @@ def prune_live_switch_edges(
             parent = node_map.get(edge.source)
             if parent is None:
                 continue
-            input_name = edge_input_name(edge, parent)
+            input_name = edge_input_name(edge, parent, submodels=submodels)
             mapped = input_scenario_map.get(input_name)
             if mapped is not None and mapped != source:
                 exclude_edge_ids.add(edge.id)
@@ -3108,7 +3140,12 @@ def prepare_graph(
 ) -> PreparedGraph:
     """Prepare graph lookups used by projection planning."""
     node_map = graph.node_map
-    edges = prune_live_switch_edges(graph.edges, node_map, source)
+    edges = prune_live_switch_edges(
+        graph.edges,
+        node_map,
+        source,
+        submodels=graph.submodels,
+    )
 
     all_ids = set(node_map)
     if target_node_id:
@@ -3126,6 +3163,7 @@ def prepare_graph(
         parents_of=parents_of,
         id_to_name=id_to_name,
         relevant_edges=relevant_edges,
+        submodels=graph.submodels,
     )
 
 
@@ -3199,11 +3237,17 @@ def _lineage_input_bindings(
     incoming_edges: Iterable[GraphEdge],
     node_map: Mapping[str, GraphNode],
     exact_output_by_node: Mapping[str, frozenset[str]],
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> tuple[_LineageInputBinding, ...] | None:
     by_name: dict[str, _LineageInputBinding] = {}
     for edge in incoming_edges:
         try:
-            name = edge_input_name(edge, node_map[edge.source])
+            name = edge_input_name(
+                edge,
+                node_map[edge.source],
+                submodels=submodels,
+            )
         except (KeyError, ValueError):
             return None
         binding = _LineageInputBinding(
@@ -3245,6 +3289,8 @@ def _analyse_polars_node_lineage(
     exact_output_by_node: Mapping[str, frozenset[str]],
     demanded_output: set[str] | None,
     contract: Contract,
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> tuple[ColumnLineageAnalysis, tuple[_LineageInputBinding, ...]] | None:
     if node.data.nodeType is not NodeType.POLARS:
         return None
@@ -3259,6 +3305,7 @@ def _analyse_polars_node_lineage(
         incoming_edges,
         node_map,
         exact_output_by_node,
+        submodels=submodels,
     )
     if not bindings:
         return None
@@ -3294,6 +3341,8 @@ def _exact_structural_outputs(
     node_map: Mapping[str, GraphNode],
     registered_contract_for: Callable[[GraphNode], Contract],
     effective_contract_for: Callable[[GraphNode], Contract],
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> dict[str, frozenset[str]]:
     """Propagate every mechanically proven exact schema topologically."""
     exact: dict[str, frozenset[str]] = {}
@@ -3306,6 +3355,7 @@ def _exact_structural_outputs(
             exact,
             set(),
             effective_contract_for(node_map[node_id]),
+            submodels=submodels,
         )
         if analysed is not None:
             result, _bindings = analysed
@@ -3338,6 +3388,7 @@ def compute_prepared_plan(
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
     *,
     relevant_edges: Iterable[GraphEdge] | None = None,
+    submodels: Mapping[str, Any] | None = None,
 ) -> ProjectionPlan:
     """Run the reverse topological projection sweep on a prepared graph."""
     prepared_edges = _projection_edges(order, children_of, relevant_edges)
@@ -3370,6 +3421,7 @@ def compute_prepared_plan(
         node_map,
         registered_contract_for,
         effective_contract_for,
+        submodels=submodels,
     )
     needed: dict[str, set[str] | None] = {}
     edge_demands: dict[ProjectionEdgeKey, set[str] | None] = {}
@@ -3518,6 +3570,7 @@ def compute_prepared_plan(
             exact_output_by_node,
             my_needed,
             effective_contract_for(node),
+            submodels=submodels,
         )
         if lineage is not None:
             lineage_result, bindings = lineage
@@ -3555,7 +3608,11 @@ def compute_prepared_plan(
                                     if binding.key == key
                                     and binding.name in lineage_result.demands_by_input
                                 ),
-                                edge_input_name(edge, node_map[edge.source]),
+                                edge_input_name(
+                                    edge,
+                                    node_map[edge.source],
+                                    submodels=submodels,
+                                ),
                             )
                         },
                     )
@@ -3606,6 +3663,7 @@ def compute_prepared_plan(
                     node_map,
                     my_needed,
                     seeded_required,
+                    submodels=submodels,
                 )
                 # The node type and non-empty parent set likewise make the
                 # generic helper's optional case unreachable here.
@@ -3636,6 +3694,7 @@ def compute_prepared_plan(
             node_map,
             my_needed,
             seeded_required,
+            submodels=submodels,
         )
         if routed_demands is not None:
             store_parent_result(
@@ -3921,6 +3980,7 @@ def plan(request: ProjectionRequest) -> ProjectionPlan:
         prepared.node_map,
         required_columns_by_node=request.required_columns_by_node,
         relevant_edges=prepared.relevant_edges,
+        submodels=prepared.submodels,
     )
     return with_api_input_port_projection_boundaries(
         projection_plan,

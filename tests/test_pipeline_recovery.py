@@ -159,22 +159,22 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                     "node_id": "ordinary",
                     "label": "class",
                     "node_type": "polars",
-                    "submodel_alias": None,
                     "source_handles": [],
+                    "source_handle_labels": {},
                 },
                 {
                     "node_id": "api",
                     "label": "Café request",
                     "node_type": "apiInput",
-                    "submodel_alias": None,
                     "source_handles": ["quotes", "vehicles"],
+                    "source_handle_labels": {},
                 },
                 {
                     "node_id": "pricing",
                     "label": "Pricing",
                     "node_type": "submodel",
-                    "submodel_alias": "pricing_secondary",
                     "source_handles": ["out__written-premium"],
+                    "source_handle_labels": {"out__written-premium": "Written premium"},
                 },
             ]
         },
@@ -200,7 +200,7 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
     }
     assert payload["identities"][1]["config_reference"].startswith("config/quote_input/")
     assert payload["identities"][2]["source_handle_input_names"] == {
-        "out__written-premium": "pricing_secondary__written_premium"
+        "out__written-premium": "Written_premium"
     }
 
 
@@ -212,8 +212,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "node",
                 "label": "Node",
                 "node_type": "polars",
-                "submodel_alias": None,
                 "source_handles": [],
+                "source_handle_labels": {},
                 "unexpected": True,
             }
         ],
@@ -222,15 +222,15 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "same",
                 "label": "First",
                 "node_type": "polars",
-                "submodel_alias": None,
                 "source_handles": [],
+                "source_handle_labels": {},
             },
             {
                 "node_id": "same",
                 "label": "Second",
                 "node_type": "polars",
-                "submodel_alias": None,
                 "source_handles": [],
+                "source_handle_labels": {},
             },
         ],
         [
@@ -238,8 +238,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "api",
                 "label": "Request",
                 "node_type": "apiInput",
-                "submodel_alias": None,
                 "source_handles": ["quotes", "quotes"],
+                "source_handle_labels": {},
             }
         ],
         [
@@ -247,8 +247,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "api",
                 "label": "Request",
                 "node_type": "apiInput",
-                "submodel_alias": None,
                 "source_handles": [""],
+                "source_handle_labels": {},
             }
         ],
         [
@@ -256,8 +256,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "api",
                 "label": "Request",
                 "node_type": "apiInput",
-                "submodel_alias": None,
                 "source_handles": ["class"],
+                "source_handle_labels": {},
             }
         ],
         [
@@ -265,8 +265,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "api",
                 "label": "Request",
                 "node_type": "apiInput",
-                "submodel_alias": None,
                 "source_handles": ["café"],
+                "source_handle_labels": {},
             }
         ],
         [
@@ -274,8 +274,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "pricing",
                 "label": "Pricing",
                 "node_type": "submodel",
-                "submodel_alias": None,
                 "source_handles": ["out__result"],
+                "source_handle_labels": {},
             }
         ],
         [
@@ -283,8 +283,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "pricing",
                 "label": "Pricing",
                 "node_type": "submodel",
-                "submodel_alias": "pricing",
                 "source_handles": ["out__"],
+                "source_handle_labels": {"out__": "Result"},
             }
         ],
         [
@@ -292,8 +292,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "ordinary",
                 "label": "Ordinary",
                 "node_type": "polars",
-                "submodel_alias": "pricing",
                 "source_handles": [],
+                "source_handle_labels": {"out__result": "Result"},
             }
         ],
         [
@@ -301,8 +301,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "ordinary",
                 "label": "Ordinary",
                 "node_type": "polars",
-                "submodel_alias": None,
                 "source_handles": ["unexpected"],
+                "source_handle_labels": {},
             }
         ],
     ],
@@ -384,8 +384,8 @@ def test_editor_identity_route_translates_resolver_value_error(
                     "node_id": "ordinary",
                     "label": "Ordinary",
                     "node_type": "polars",
-                    "submodel_alias": None,
                     "source_handles": [],
+                    "source_handle_labels": {},
                 }
             ]
         },
@@ -1019,6 +1019,77 @@ def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
         known_bytes={parent: parent_bytes},
     )
     assert document.source_revision != changed_on_disk
+
+
+def test_ready_document_exposes_public_submodel_labels_as_executable_names(
+    tmp_path: Path,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    modules = tmp_path / "modules"
+    modules.mkdir()
+    _write(
+        modules / "child.py",
+        """
+        import haute
+        submodel = haute.Submodel(
+            "child",
+            definition_id="child-definition",
+            input_ports=[{
+                "portId": "input_1",
+                "label": "raw records",
+                "targets": [{"nodeId": "transform", "handleId": None}],
+            }],
+            output_ports=[{
+                "portId": "output_1",
+                "label": "priced records",
+                "source": {"nodeId": "transform", "handleId": None},
+            }],
+        )
+
+        @submodel.polars
+        def transform(raw_records):
+            return raw_records
+        """,
+    )
+    parent = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("public-label-recovery")
+
+        @pipeline.polars
+        def source():
+            return None
+
+        @pipeline.polars
+        def consumer(priced_records):
+            return priced_records
+
+        pipeline.submodel(
+            "modules/child.py",
+            definition_id="child-definition",
+            instance_id="child-occurrence",
+            alias="unrelated_alias",
+        )
+        pipeline.connect("source", "unrelated_alias", target_port="input_1")
+        pipeline.connect("unrelated_alias", "consumer", source_port="output_1")
+        """,
+    )
+
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+
+    assert document.load_status == "ready"
+    occurrence = next(node for node in document.nodes if node.authored_id == "child-occurrence")
+    assert occurrence.source_handle_input_names == {"out__output_1": "priced_records"}
+    output_edge = next(
+        edge for edge in document.edges if edge.source_recovery_id == occurrence.recovery_id
+    )
+    assert output_edge.input_name == "priced_records"
+    assert document.submodels is not None
+    assert document.submodels["child-definition"].input_port_input_names == {
+        "input_1": "raw_records"
+    }
 
 
 def test_recovery_revision_authenticates_child_bytes_the_document_presents(

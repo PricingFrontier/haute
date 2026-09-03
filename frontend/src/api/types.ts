@@ -32,8 +32,8 @@ export interface EditorIdentityRequestNode {
   node_id: string
   label: string
   node_type: NodeTypeValue
-  submodel_alias: string | null
   source_handles: string[]
+  source_handle_labels: Record<string, string>
 }
 
 export interface EditorIdentityBatchRequest {

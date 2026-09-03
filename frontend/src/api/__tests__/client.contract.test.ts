@@ -178,8 +178,8 @@ describe("client runtime contracts", () => {
         node_id: "source",
         label: "class",
         node_type: "polars",
-        submodel_alias: null,
         source_handles: [],
+        source_handle_labels: {},
       }],
     })).resolves.toEqual({
       identities: [{
@@ -198,8 +198,8 @@ describe("client runtime contracts", () => {
         node_id: "source",
         label: "class",
         node_type: "polars",
-        submodel_alias: null,
         source_handles: [],
+        source_handle_labels: {},
       }],
     })
   })
@@ -244,8 +244,8 @@ describe("client runtime contracts", () => {
         node_id: nodeId,
         label: nodeId,
         node_type: "polars",
-        submodel_alias: null,
         source_handles: [],
+        source_handle_labels: {},
       })),
     })).rejects.toThrow(/exactly match request node order/)
   })
@@ -266,8 +266,8 @@ describe("client runtime contracts", () => {
         node_id: "api",
         label: "API",
         node_type: "apiInput",
-        submodel_alias: null,
         source_handles: ["quotes", "vehicles"],
+        source_handle_labels: {},
       }],
     })).rejects.toThrow(/source handles must exactly match the request/i)
   })
@@ -288,8 +288,8 @@ describe("client runtime contracts", () => {
         node_id: "ordinary",
         label: "Ordinary",
         node_type: "polars",
-        submodel_alias: null,
         source_handles: [],
+        source_handle_labels: {},
       }],
     })).rejects.toThrow(/default input identity/i)
   })
@@ -310,8 +310,8 @@ describe("client runtime contracts", () => {
         node_id: "api",
         label: "API",
         node_type: "apiInput",
-        submodel_alias: null,
         source_handles: ["quotes"],
+        source_handle_labels: {},
       }],
     })).rejects.toThrow(/API frame identities must preserve raw source handles/i)
   })

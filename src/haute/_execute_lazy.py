@@ -835,6 +835,8 @@ def _prune_live_switch_edges(
     edges: list[GraphEdge],
     node_map: dict[str, GraphNode],
     source: str,
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> list[GraphEdge]:
     """Remove edges to live_switch nodes from inputs inactive for *source*.
 
@@ -843,7 +845,12 @@ def _prune_live_switch_edges(
     matching the active source are kept; the unused branch is pruned so
     it is neither executed nor shown in profilers.
     """
-    return projection_planner.prune_live_switch_edges(edges, node_map, source)
+    return projection_planner.prune_live_switch_edges(
+        edges,
+        node_map,
+        source,
+        submodels=submodels,
+    )
 
 
 @runtime_project_root_scoped
@@ -1125,7 +1132,10 @@ def _execute_lazy(
         execution_context.profile if execution_context is not None else ExecutionProfile.LAZY_SINK
     )
     group_by_operators = projection_planner.materialising_operators_by_node(
-        order, node_map, relevant_edges=relevant_edges
+        order,
+        node_map,
+        relevant_edges=relevant_edges,
+        submodels=graph.submodels,
     )
     if group_by_operators and not schema_only:
         # A materialising group-by needs the request planner's source-aware RAM
@@ -1152,6 +1162,7 @@ def _execute_lazy(
             execution_context=execution_context,
             schema_only=schema_only,
             relevant_edges=relevant_edges,
+            submodels=graph.submodels,
         )
     public_projection_plan = public_strategy_result.projection_plan
     projection_plan = public_projection_plan
@@ -1165,6 +1176,7 @@ def _execute_lazy(
             node_map,
             normalised_required_columns,
             relevant_edges=relevant_edges,
+            submodels=graph.submodels,
         )
         if cache_broadens_projection
         else projection_plan
@@ -2018,6 +2030,7 @@ def _execute_eager_core(
             node_map,
             required_columns_by_node=normalised_required_columns,
             relevant_edges=relevant_edges,
+            submodels=graph.submodels,
         )
     else:
         projection_plan = None
@@ -2302,6 +2315,7 @@ def _execute_eager_core(
                                         order,
                                         node_map,
                                         relevant_edges=relevant_edges,
+                                        submodels=graph.submodels,
                                     )
                                 ),
                                 **_conservative_strategy_passthrough(previous_diagnostic),

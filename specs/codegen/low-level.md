@@ -56,7 +56,8 @@
    `haute.Submodel(..., definition_id=..., input_ports=...,
    output_ports=...)` file. Then omit occurrence nodes from the root function
    list, translate parent boundary handles only to declared public port ids,
-   derive downstream names as `<alias>__<portId>`, and emit one explicit
+   derive child-boundary parameters and downstream names from the respective
+   sanitised public port labels, and emit one explicit
    `pipeline.submodel(...)` registration per occurrence with its definition
    id, instance id, alias, and label. Parent `connect` calls refer to aliases
    plus public port ids; synthetic `in__`/`out__` handles never enter source.

@@ -801,6 +801,7 @@ def _plan_chunk_sizes(
                 prepared.order,
                 prepared.node_map,
                 relevant_edges=prepared.relevant_edges,
+                submodels=prepared.submodels,
             )
         ),
         target_node=resolve_instance_node(

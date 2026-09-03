@@ -913,7 +913,12 @@ def _result_order_for_target(
     if target_node_id not in graph.node_map:
         return []
 
-    edges = _prune_live_switch_edges(graph.edges, graph.node_map, source)
+    edges = _prune_live_switch_edges(
+        graph.edges,
+        graph.node_map,
+        source,
+        submodels=graph.submodels,
+    )
     needed = ancestors(target_node_id, edges, set(graph.node_map))
     return [nid for nid in order if nid in needed]
 
@@ -931,7 +936,12 @@ def _preview_preparation_order(
     if target_node_id is None or target_node_id not in graph.node_map:
         return [node.id for node in graph.nodes]
     all_ids = {node.id for node in graph.nodes}
-    edges = _prune_live_switch_edges(graph.edges, graph.node_map, source)
+    edges = _prune_live_switch_edges(
+        graph.edges,
+        graph.node_map,
+        source,
+        submodels=graph.submodels,
+    )
     return sorted(ancestors(target_node_id, edges, all_ids))
 
 
