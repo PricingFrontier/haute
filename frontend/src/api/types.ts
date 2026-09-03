@@ -1,8 +1,13 @@
 /** Shared API response/request types for the Haute backend. */
 
 // Re-export canonical types from their source locations
-import type { BackendNodeStatus, ColumnInfo, NodeTypeValue } from "../types/node"
-import type { PipelineEdge } from "../types/node"
+import type {
+  BackendNodeStatus,
+  ColumnInfo,
+  NodeTypeValue,
+  PipelineEdge,
+  PipelineGraph,
+} from "../types/node"
 import type {
   ExecutionStrategyBoundaryCollectionPayload as GeneratedExecutionStrategyCollection,
   ExecutionStrategyBoundaryPayload as GeneratedExecutionStrategyBoundary,
@@ -10,30 +15,15 @@ import type {
   ExecutionStrategyProvenancePayload as GeneratedExecutionStrategyProvenance,
   ExecutionStrategyReasonPayload as GeneratedExecutionStrategyReason,
 } from "../generated/api-contracts.generated"
-export type { BackendNodeStatus, ColumnInfo, NodeStatus } from "../types/node"
+export type { BackendNodeStatus, ColumnInfo, NodeStatus, PipelineGraph } from "../types/node"
 export type { TraceResult, TraceStep, TraceSchemaDiff } from "../types/trace"
-
-export interface PipelineGraph {
-  nodes: import("@xyflow/react").Node[]
-  edges: PipelineEdge[]
-  pipeline_name?: string | null
-  pipeline_description?: string | null
-  preamble?: string | null
-  source_file?: string | null
-  submodels?: Record<string, unknown> | null
-  warning?: string | null
-  sources?: string[]
-  active_source?: string
-  preserved_blocks?: string[]
-  source_revision?: string | null
-}
 
 export interface EditorIdentityRequestNode {
   node_id: string
   label: string
   node_type: NodeTypeValue
-  submodel_alias: string | null
   source_handles: string[]
+  source_handle_labels: Record<string, string>
 }
 
 export interface EditorIdentityBatchRequest {
@@ -180,6 +170,20 @@ export interface ExecutionCacheProof {
   }
 }
 
+export interface InputPreparationRecord {
+  node_id: string
+  identity_digest: string
+  action: "reused" | "built" | "refreshed"
+  build_class: string
+  execution: "in_process" | "worker"
+  memory_limit_bytes: number | null
+  elapsed_seconds: number
+  row_count: number | null
+  size_bytes: number | null
+  generation_id: string | null
+  warning_code: string | null
+}
+
 export interface ExecutionMetrics {
   schema_version: number
   operation: string
@@ -228,6 +232,7 @@ export interface ExecutionMetrics {
   execution_strategy: ExecutionStrategyDiagnostic | null
   stages: ExecutionStageMetrics[]
   memory_pressure_events: ExecutionMemoryPressureEvent[]
+  input_preparation: InputPreparationRecord[]
 }
 
 export interface NodeResult {
@@ -304,6 +309,7 @@ export interface SubmodelCreateResponse {
 export interface SubmodelGraphResponse {
   status: string
   submodel_name: string
+  /** Canonical transport graph; it does not contain editor identity metadata. */
   graph: PipelineGraph
   submodel_file: string
   definition_id: string

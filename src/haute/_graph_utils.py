@@ -141,29 +141,93 @@ def _sanitize_identifier_characters(label: str) -> str:
     return "".join(out_chars)
 
 
-def edge_input_name(edge: GraphEdge, source_node: GraphNode) -> str:
+def submodel_output_label(
+    source_node: GraphNode,
+    source_handle: str | None,
+    submodels: Mapping[str, Any] | None,
+) -> str:
+    """Resolve one collapsed occurrence handle to its public output label."""
+    prefix = "out__"
+    if source_handle is None or not source_handle.startswith(prefix) or source_handle == prefix:
+        raise ValueError("Submodel output handles must use the canonical 'out__<port_id>' form.")
+
+    definition_id = source_node.data.config.get("definitionId")
+    if not isinstance(definition_id, str) or not definition_id:
+        raise ValueError(f"Submodel node {source_node.id!r} has no canonical definition identity.")
+    if submodels is None:
+        raise ValueError(
+            f"Submodel node {source_node.id!r} requires its definition registry "
+            "to resolve public output labels."
+        )
+    definition = submodels.get(definition_id)
+    if definition is None:
+        raise ValueError(
+            f"Submodel node {source_node.id!r} references missing definition {definition_id!r}."
+        )
+
+    raw_ports = (
+        definition.get("outputPorts")
+        if isinstance(definition, Mapping)
+        else getattr(definition, "output_ports", None)
+    )
+    if not isinstance(raw_ports, list):
+        raise ValueError(f"Submodel definition {definition_id!r} has malformed output ports.")
+    port_id = source_handle[len(prefix) :]
+    for port in raw_ports:
+        candidate_id = (
+            port.get("portId") if isinstance(port, Mapping) else getattr(port, "port_id", None)
+        )
+        if candidate_id != port_id:
+            continue
+        label = port.get("label") if isinstance(port, Mapping) else getattr(port, "label", None)
+        if not isinstance(label, str) or not label:
+            raise ValueError(
+                f"Submodel output port {port_id!r} in definition {definition_id!r} "
+                "has no public label."
+            )
+        return label
+    raise ValueError(
+        f"Submodel output handle {source_handle!r} is not declared by definition {definition_id!r}."
+    )
+
+
+def edge_input_label(
+    edge: GraphEdge,
+    source_node: GraphNode,
+    *,
+    submodels: Mapping[str, Any] | None = None,
+) -> str:
+    """Return the semantic frame label contributed by one incoming edge."""
+    node_type = str(source_node.data.nodeType)
+    if node_type == "apiInput":
+        if edge.sourceHandle is None:
+            raise ValueError(f"apiInput edge {edge.id!r} has no sourceHandle/frame label")
+        return edge.sourceHandle
+    if node_type == "submodel":
+        return submodel_output_label(source_node, edge.sourceHandle, submodels)
+    return source_node.data.label
+
+
+def edge_input_name(
+    edge: GraphEdge,
+    source_node: GraphNode,
+    *,
+    submodels: Mapping[str, Any] | None = None,
+) -> str:
     """Return the one input name contributed by an incoming edge.
 
     API-input edges use their persisted frame handle verbatim. Submodel
-    outputs use the instance alias plus public output port. Every ordinary
+    outputs use the public output label from the referenced definition. Every ordinary
     edge uses the sanitised source-node label; source handles on ordinary
     nodes identify an output port and are not input names.
     """
     node_type = str(source_node.data.nodeType)
-    if node_type == "apiInput" and edge.sourceHandle is None:
-        # Name the malformed edge: executable_input_name has no edge context,
-        # and this identity is how callers locate the offending edge.
-        raise ValueError(f"apiInput edge {edge.id!r} has no sourceHandle/frame label")
-    submodel_alias: str | None = None
-    if node_type == "submodel":
-        raw_alias = source_node.data.config.get("alias")
-        if isinstance(raw_alias, str) and raw_alias:
-            submodel_alias = raw_alias
+    input_label = edge_input_label(edge, source_node, submodels=submodels)
     return executable_input_name(
         node_type=source_node.data.nodeType,
         label=source_node.data.label,
         source_handle=edge.sourceHandle,
-        submodel_alias=submodel_alias,
+        source_handle_label=input_label if node_type == "submodel" else None,
     )
 
 
@@ -188,7 +252,12 @@ def incoming_edge_bindings(
             raise ValueError(
                 f"Incoming edge {edge.id!r} references missing source node {edge.source!r}."
             )
-        bindings.append((edge, edge_input_name(edge, source_node)))
+        bindings.append(
+            (
+                edge,
+                edge_input_name(edge, source_node, submodels=graph.submodels),
+            )
+        )
     return bindings
 
 
@@ -238,19 +307,12 @@ def select_edge_source_output(source_output: Any, edge: GraphEdge) -> Any:
     return source_output[source_handle]
 
 
-def canonical_downstream_identity(alias: str, port_id: str) -> str:
-    """Return the stable config identity of one public submodel output."""
-    if not alias or not port_id:
-        raise ValueError("Canonical submodel output identities require alias and port id.")
-    return _sanitize_func_name(f"{alias}__{port_id}")
-
-
 def executable_input_name(
     *,
     node_type: object,
     label: str,
     source_handle: str | None,
-    submodel_alias: str | None = None,
+    source_handle_label: str | None = None,
 ) -> str:
     """Derive one executable input identity without mutating graph data."""
     kind = str(node_type)
@@ -259,18 +321,28 @@ def executable_input_name(
             raise ValueError("API input handles are required for executable identities.")
         return source_handle
     if kind == "submodel":
-        if source_handle is None or not submodel_alias:
-            raise ValueError("Submodel output identities require alias and source handle.")
         prefix = "out__"
-        if not source_handle.startswith(prefix) or len(source_handle) == len(prefix):
+        if (
+            source_handle is None
+            or not source_handle.startswith(prefix)
+            or len(source_handle) == len(prefix)
+        ):
             raise ValueError(
                 "Submodel output handles must use the canonical 'out__<port_id>' form."
             )
-        return canonical_downstream_identity(submodel_alias, source_handle[len(prefix) :])
+        if not isinstance(source_handle_label, str) or not source_handle_label:
+            raise ValueError("Submodel output identities require a public output label.")
+        return _sanitize_func_name(source_handle_label)
     if kind == "submodelPort":
-        if source_handle is None:
-            raise ValueError("Submodel port identities require a source handle.")
-        return _sanitize_func_name(source_handle)
+        if (
+            source_handle is None
+            or not isinstance(source_handle_label, str)
+            or not source_handle_label
+        ):
+            raise ValueError(
+                "Submodel input identities require a source handle and public input label."
+            )
+        return _sanitize_func_name(source_handle_label)
     return _sanitize_func_name(label)
 
 
@@ -464,6 +536,8 @@ def resolve_orig_source_names(
     node: GraphNode,
     node_map: dict[str, GraphNode],
     incoming_edges_by_target: Mapping[str, list[GraphEdge]],
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> list[str] | None:
     """Return logical input names that differ from the current edge names.
 
@@ -477,16 +551,29 @@ def resolve_orig_source_names(
     if ref:
         if ref not in node_map:
             return None
-        return [
-            edge_input_name(edge, node_map[edge.source])
+        original = node_map[ref]
+        source_names = [
+            edge_input_name(
+                edge,
+                node_map[edge.source],
+                submodels=submodels,
+            )
             for edge in incoming_edges_by_target.get(ref, [])
         ]
+        input_mapping = original.data.config.get("inputMapping")
+        if original.data.nodeType == "polars" and input_mapping is not None:
+            return resolve_input_mapping_names(source_names, input_mapping)
+        return source_names
 
     input_mapping = node.data.config.get("inputMapping")
     if node.data.nodeType != "polars" or input_mapping is None:
         return None
     source_names = [
-        edge_input_name(edge, node_map[edge.source])
+        edge_input_name(
+            edge,
+            node_map[edge.source],
+            submodels=submodels,
+        )
         for edge in incoming_edges_by_target.get(node.id, [])
     ]
     return resolve_input_mapping_names(source_names, input_mapping)

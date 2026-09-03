@@ -513,6 +513,10 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
     "tests/test_algorithms_coverage.py": 3,
     "tests/test_dataframe_execution_cache.py": 1,
     "tests/test_deploy.py": 1,
+    # The temp directory is created by the code under test
+    # (``_batch_scoring.py``'s ``tempfile.mkdtemp``, which takes no ``dir=``),
+    # so the tests can only write into and clean up the path it hands back.
+    "tests/test_deploy_batch_scoring.py": 4,
     "tests/test_deploy_contract_integrity.py": 1,
     "tests/test_deploy_scorer_artifact_cache.py": 1,
     "tests/test_executor.py": 2,
@@ -539,6 +543,9 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
     "tests/test_model_score_executor.py": 1,
     "tests/test_optimiser_routes.py": 2,
     "tests/test_optimiser_service_coverage.py": 2,
+    # ``main()`` regenerates the checked-in compatibility corpus offline; it
+    # never runs under pytest.
+    "tests/test_polars_compatibility_corpus.py": 1,
     "tests/test_polars_utils.py": 1,
     "tests/test_server.py": 1,
     "tests/test_submodel_routes.py": 3,

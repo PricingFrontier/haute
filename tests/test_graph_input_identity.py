@@ -11,7 +11,16 @@ import pytest
 
 import haute._graph_utils as graph_utils
 from haute._editor_identities import resolve_editor_identity
-from haute._types import GraphEdge, GraphNode, NodeData, NodeType
+from haute._types import (
+    GraphEdge,
+    GraphNode,
+    NodeData,
+    NodeType,
+    PipelineGraph,
+    SubmodelDefinition,
+    SubmodelEndpoint,
+    SubmodelOutputPort,
+)
 
 
 def _node(node_id: str, label: str, node_type: NodeType) -> GraphNode:
@@ -110,15 +119,15 @@ def test_edge_input_name_does_not_mutate_its_inputs() -> None:
     assert edge == edge_before
 
 
-def test_submodel_output_identity_uses_port_id_not_boundary_handle_prefix() -> None:
+def test_submodel_output_identity_uses_public_label_not_structural_handle() -> None:
     assert (
         graph_utils.executable_input_name(
             node_type=NodeType.SUBMODEL,
             label="Pricing",
             source_handle="out__written-premium",
-            submodel_alias="pricing_secondary",
+            source_handle_label="Written premium",
         )
-        == "pricing_secondary__written_premium"
+        == "Written_premium"
     )
 
     with pytest.raises(ValueError, match="out__<port_id>"):
@@ -126,11 +135,11 @@ def test_submodel_output_identity_uses_port_id_not_boundary_handle_prefix() -> N
             node_type=NodeType.SUBMODEL,
             label="Pricing",
             source_handle="written-premium",
-            submodel_alias="pricing_secondary",
+            source_handle_label="Written premium",
         )
 
 
-def test_submodel_edge_uses_alias_and_public_output_port_identity() -> None:
+def test_submodel_edge_resolves_public_output_label_from_definition() -> None:
     source = GraphNode(
         id="pricing_instance",
         data=NodeData(
@@ -140,8 +149,63 @@ def test_submodel_edge_uses_alias_and_public_output_port_identity() -> None:
         ),
     )
     edge = _edge("pricing_instance", source_handle="out__written-premium")
+    definition = SubmodelDefinition(
+        definitionId="pricing_definition",
+        file="modules/pricing.py",
+        graph=PipelineGraph(nodes=[_node("source", "Source", NodeType.POLARS)]),
+        inputPorts=[],
+        outputPorts=[
+            SubmodelOutputPort(
+                portId="written-premium",
+                label="Written premium",
+                source=SubmodelEndpoint(nodeId="source"),
+            )
+        ],
+    )
 
-    assert graph_utils.edge_input_name(edge, source) == "pricing_secondary__written_premium"
+    assert (
+        graph_utils.edge_input_name(
+            edge,
+            source,
+            submodels={"pricing_definition": definition},
+        )
+        == "Written_premium"
+    )
+
+
+def test_submodel_edge_requires_its_definition_for_public_label_resolution() -> None:
+    source = GraphNode(
+        id="pricing_instance",
+        data=NodeData(
+            label="Pricing",
+            nodeType=NodeType.SUBMODEL,
+            config={"definitionId": "pricing_definition", "alias": "pricing_secondary"},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="definition registry"):
+        graph_utils.edge_input_name(
+            _edge("pricing_instance", source_handle="out__written-premium"),
+            source,
+        )
+
+
+def test_editor_identity_resolver_uses_public_labels_for_boundary_handles() -> None:
+    output = resolve_editor_identity(
+        node_type=NodeType.SUBMODEL,
+        label="Pricing",
+        source_handles=("out__written-premium",),
+        source_handle_labels={"out__written-premium": "Written premium"},
+    )
+    public_input = resolve_editor_identity(
+        node_type=NodeType.SUBMODEL_PORT,
+        label="Submodel inputs",
+        source_handles=("policy-input",),
+        source_handle_labels={"policy-input": "Policy records"},
+    )
+
+    assert output.source_handle_input_names == {"out__written-premium": "Written_premium"}
+    assert public_input.source_handle_input_names == {"policy-input": "Policy_records"}
 
 
 def test_editor_identity_resolver_owns_keyword_unicode_and_config_paths() -> None:

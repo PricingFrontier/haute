@@ -168,7 +168,9 @@ its resolved executable input name. Recovery edges retain the field but may use
 `null` when an unavailable source prevents resolution. Capabilities include the
 sorted reserved API-input frame-label set. Prospective browser-created or renamed
 nodes use the bounded, side-effect-free `POST /api/pipeline/editor-identities`
-contract, whose response preserves request order and never reads or writes project state.
+contract. Submodel and drilled Input requests carry an exact handle-to-public-label
+map so the server, rather than the browser, derives their executable names. The
+response preserves request order and never reads or writes project state.
 `POST /api/pipeline/save` is the single write path for a pipeline's `.py` source, its
 per-node config JSON sidecars, and its `.haute.json` position sidecar — described in detail
 below. Before changing an existing named document, Save and submodel create/dissolve reread
@@ -251,7 +253,15 @@ public-error adapter is a closed set mapped to synchronous HTTP 422 and backgrou
 `ChunkMemoryRiskError`, `GroupByExecutionUnsupportedError`,
 `TraceCorrelationUnsupportedError`, `RatingExtremaUndefinedError`,
 `RatingFactorMissingError`, `RatingFactorDtypeContractError`,
-`LiveSwitchScenarioError`, and `OutputNestingKeyError`. Every payload preserves the
+`LiveSwitchScenarioError`, `OutputNestingKeyError`, and `InputPreparationError`. The one
+exception to the uniform mapping is `InputPreparationError` with reason code
+`memory_limited`: automatic input preparation is the single public contract error that can
+report memory exhaustion, so it maps to background-job `memory_limited` with error code
+`memory_limit` and HTTP status 507; a synchronous route answers that same 507 rather than
+the uniform 422. A worker that raises a public contract error returns it
+in its closed outcome envelope together with that terminal reason, so the supervising parent
+records `memory_limited` rather than flattening it to `contract_error`. Every payload
+preserves the
 exception's stable code and named safe fields; malformed or unsupported diagnostic versions
 become diagnostic-unavailable rather than a fabricated success.
 

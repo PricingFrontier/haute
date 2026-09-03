@@ -102,6 +102,7 @@ _LITERAL_KEYWORDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "eol_char",
             "has_header",
             "infer_schema",
+            "infer_schema_length",
             "quote_char",
             "raise_if_empty",
             "schema_overrides",

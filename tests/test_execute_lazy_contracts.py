@@ -19,7 +19,9 @@ from haute._execute_lazy import (
     _runtime_join_demands,
     _strict_contract_resolution,
 )
+from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._native_memory_limit import native_memory_backend_scope
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import (
     ConfigError,
@@ -397,6 +399,20 @@ def _contract_free_join_graph(*, code: str, fields: list[str]) -> PipelineGraph:
     )
 
 
+@pytest.fixture
+def _hard_worker_cap():
+    """Run a join boundary whose ports carry no readable source metadata.
+
+    EXEC-P07 admits ``join`` as a materialisation boundary, and these fixtures
+    inject their frames through ``build_node_fn`` rather than from a readable
+    source, so the boundary estimate is genuinely unavailable. A hard worker cap
+    bounds the process, which is the documented contract for that proof gap: the
+    run continues inside its reserved envelope instead of being rejected.
+    """
+    with native_memory_backend_scope("rlimit"):
+        yield
+
+
 def _execute_contract_free_join(
     *,
     code: str,
@@ -424,20 +440,23 @@ def _execute_contract_free_join(
             return node.id, join, False
         return node.id, lambda df: df, False
 
-    outputs, *_ = _execute_lazy(
-        graph,
-        build_node_fn,
-        target_node_id="out",
-        execution_context=ExecutionContext(
-            operation="test_runtime_join_projection",
-            profile=ExecutionProfile.LAZY_SINK,
-        ),
-    )
+    with native_memory_backend_scope("rlimit"):
+        outputs, *_ = _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="out",
+            execution_context=create_admitted_execution_context(
+                operation="test_runtime_join_projection",
+                profile=ExecutionProfile.LAZY_SINK,
+            ),
+        )
 
     return outputs, seen_join_schemas
 
 
-def test_execute_lazy_rejects_simple_join_key_dtype_mismatch_before_running_node() -> None:
+def test_execute_lazy_rejects_simple_join_key_dtype_mismatch_before_running_node(
+    _hard_worker_cap: None,
+) -> None:
     graph = _join_graph(code="df = left.join(right, on='quote_id', how='left')")
 
     def build_node_fn(node: GraphNode, **_kwargs):
@@ -463,7 +482,7 @@ def test_execute_lazy_rejects_simple_join_key_dtype_mismatch_before_running_node
             build_node_fn,
             target_node_id="out",
             enforce_contracts=True,
-            execution_context=ExecutionContext(
+            execution_context=create_admitted_execution_context(
                 operation="test_join_dtype",
                 profile=ExecutionProfile.LAZY_SINK,
             ),
@@ -474,7 +493,7 @@ def test_execute_lazy_rejects_simple_join_key_dtype_mismatch_before_running_node
     assert excinfo.value.context["right_key"] == "quote_id"
 
 
-def test_execute_lazy_accepts_matching_simple_join_key_dtypes() -> None:
+def test_execute_lazy_accepts_matching_simple_join_key_dtypes(_hard_worker_cap: None) -> None:
     graph = _join_graph(code="df = left.join(right, on='quote_id', how='left')")
 
     def build_node_fn(node: GraphNode, **_kwargs):
@@ -495,7 +514,7 @@ def test_execute_lazy_accepts_matching_simple_join_key_dtypes() -> None:
         build_node_fn,
         target_node_id="out",
         enforce_contracts=True,
-        execution_context=ExecutionContext(
+        execution_context=create_admitted_execution_context(
             operation="test_join_dtype",
             profile=ExecutionProfile.LAZY_SINK,
         ),
@@ -553,7 +572,9 @@ def test_bounded_lazy_execution_context_carries_projection_plan() -> None:
     assert context.projection_plan.needed_by_node["source"] == frozenset({"quote_id"})
 
 
-def test_bounded_lazy_execution_refines_unowned_fan_in_from_parent_schemas() -> None:
+def test_bounded_lazy_execution_refines_unowned_fan_in_from_parent_schemas(
+    _hard_worker_cap: None,
+) -> None:
     graph = make_graph(
         {
             "nodes": [
@@ -597,7 +618,7 @@ def test_bounded_lazy_execution_refines_unowned_fan_in_from_parent_schemas() -> 
             ],
         }
     )
-    context = ExecutionContext(
+    context = create_admitted_execution_context(
         operation="test_projection_contract",
         profile=ExecutionProfile.LAZY_SINK,
     )
@@ -620,7 +641,10 @@ def test_bounded_lazy_execution_refines_unowned_fan_in_from_parent_schemas() -> 
     assert context.projection_plan is not None
     assert context.projection_plan.needed_by_node["left"] == frozenset({"quote_id"})
     assert context.projection_plan.needed_by_node["right"] == frozenset({"quote_id"})
-    assert context.projection_plan.status.value == "projected"
+    # The projection is unchanged; the status is "warned" only because the join
+    # is now a materialisation boundary whose ports carry no source metadata.
+    assert context.projection_plan.status.value == "warned"
+    assert context.projection_plan.diagnostic.blocking_operator == "join"
 
 
 def test_bounded_lazy_execution_runtime_projects_simple_contract_free_join() -> None:
@@ -691,17 +715,18 @@ def test_bounded_lazy_execution_runtime_projects_simple_contract_free_join() -> 
             return node.id, join, False
         return node.id, lambda df: df, False
 
-    context = ExecutionContext(
+    context = create_admitted_execution_context(
         operation="test_runtime_join_projection",
         profile=ExecutionProfile.LAZY_SINK,
     )
 
-    outputs, *_ = _execute_lazy(
-        graph,
-        build_node_fn,
-        target_node_id="out",
-        execution_context=context,
-    )
+    with native_memory_backend_scope("rlimit"):
+        outputs, *_ = _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="out",
+            execution_context=context,
+        )
 
     assert seen_join_schemas == [(["quote_id"], ["quote_id", "right_value"])]
     assert outputs["out"].collect().select("quote_id", "right_value").to_dict(as_series=False) == {
@@ -720,7 +745,10 @@ def test_bounded_lazy_execution_runtime_projects_simple_contract_free_join() -> 
         "columns": ("quote_id", "right_value"),
     }
     assert diagnostics["strategy_summary"]["profile"] == "lazy_sink"
-    assert diagnostics["strategy_summary"]["node_strategy_counts"] == {"projected": 4}
+    assert diagnostics["strategy_summary"]["node_strategy_counts"] == {
+        "projected": 3,
+        "materialisation_boundary": 1,
+    }
     json.dumps(diagnostics)
 
 
@@ -1262,7 +1290,9 @@ def test_bounded_lazy_execution_runtime_projects_common_join_hows(
     assert outputs["out"].collect().select(fields).to_dict(as_series=False) == expected_output
 
 
-def test_bounded_lazy_execution_runtime_projection_preserves_join_suffixes() -> None:
+def test_bounded_lazy_execution_runtime_projection_preserves_join_suffixes(
+    _hard_worker_cap: None,
+) -> None:
     graph = make_graph(
         {
             "nodes": [
@@ -1326,7 +1356,7 @@ def test_bounded_lazy_execution_runtime_projection_preserves_join_suffixes() -> 
         graph,
         build_node_fn,
         target_node_id="out",
-        execution_context=ExecutionContext(
+        execution_context=create_admitted_execution_context(
             operation="test_runtime_join_suffix_projection",
             profile=ExecutionProfile.LAZY_SINK,
         ),
@@ -1353,7 +1383,9 @@ def test_bounded_lazy_execution_runtime_projection_preserves_custom_join_suffix(
     }
 
 
-def test_bounded_lazy_execution_contract_free_join_missing_key_fails_loudly() -> None:
+def test_bounded_lazy_execution_contract_free_join_missing_key_fails_loudly(
+    _hard_worker_cap: None,
+) -> None:
     graph = _contract_free_join_graph(
         code="df = left.join(right, on='quote_id')",
         fields=["quote_id", "right_value"],
@@ -1385,7 +1417,7 @@ def test_bounded_lazy_execution_contract_free_join_missing_key_fails_loudly() ->
             graph,
             build_node_fn,
             target_node_id="out",
-            execution_context=ExecutionContext(
+            execution_context=create_admitted_execution_context(
                 operation="test_runtime_join_missing_key",
                 profile=ExecutionProfile.LAZY_SINK,
             ),
@@ -1486,7 +1518,9 @@ def test_bounded_lazy_execution_empty_join_suffix_stays_unprojected_boundary() -
     }
 
 
-def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join() -> None:
+def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join(
+    _hard_worker_cap: None,
+) -> None:
     graph = make_graph(
         {
             "nodes": [
@@ -1556,7 +1590,7 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join() -> None
         graph,
         build_node_fn,
         target_node_id="out",
-        execution_context=ExecutionContext(
+        execution_context=create_admitted_execution_context(
             operation="test_runtime_left_right_join_projection",
             profile=ExecutionProfile.LAZY_SINK,
         ),
@@ -1569,7 +1603,9 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join() -> None
     }
 
 
-def test_bounded_lazy_execution_runtime_projection_fails_loudly_on_missing_join_key() -> None:
+def test_bounded_lazy_execution_runtime_projection_fails_loudly_on_missing_join_key(
+    _hard_worker_cap: None,
+) -> None:
     graph = make_graph(
         {
             "nodes": [
@@ -1614,7 +1650,7 @@ def test_bounded_lazy_execution_runtime_projection_fails_loudly_on_missing_join_
             graph,
             build_node_fn,
             target_node_id="out",
-            execution_context=ExecutionContext(
+            execution_context=create_admitted_execution_context(
                 operation="test_runtime_missing_join_key",
                 profile=ExecutionProfile.LAZY_SINK,
             ),
@@ -1624,7 +1660,9 @@ def test_bounded_lazy_execution_runtime_projection_fails_loudly_on_missing_join_
     assert excinfo.value.context["missing"] == ["quote_id"]
 
 
-def test_bounded_lazy_execution_keeps_full_width_for_unsupported_join_type() -> None:
+def test_bounded_lazy_execution_keeps_full_width_for_unsupported_join_type(
+    _hard_worker_cap: None,
+) -> None:
     graph = make_graph(
         {
             "nodes": [
@@ -1690,7 +1728,7 @@ def test_bounded_lazy_execution_keeps_full_width_for_unsupported_join_type() -> 
         graph,
         build_node_fn,
         target_node_id="out",
-        execution_context=ExecutionContext(
+        execution_context=create_admitted_execution_context(
             operation="test_runtime_join_boundary",
             profile=ExecutionProfile.LAZY_SINK,
         ),
@@ -2457,7 +2495,9 @@ def test_bounded_lazy_execution_runs_terminal_uncontracted_user_code_as_boundary
     assert context.projection_plan.needed_by_node["source"] is None
 
 
-def test_execute_lazy_rejects_left_on_right_on_join_key_dtype_mismatch() -> None:
+def test_execute_lazy_rejects_left_on_right_on_join_key_dtype_mismatch(
+    _hard_worker_cap: None,
+) -> None:
     graph = _join_graph(
         code="df = left.join(right, left_on=['quote_id'], right_on=['policy_id'])",
         right_parent_inputs=["policy_id", "value"],
@@ -2486,7 +2526,7 @@ def test_execute_lazy_rejects_left_on_right_on_join_key_dtype_mismatch() -> None
             build_node_fn,
             target_node_id="out",
             enforce_contracts=True,
-            execution_context=ExecutionContext(
+            execution_context=create_admitted_execution_context(
                 operation="test_join_dtype",
                 profile=ExecutionProfile.LAZY_SINK,
             ),
@@ -2494,3 +2534,128 @@ def test_execute_lazy_rejects_left_on_right_on_join_key_dtype_mismatch() -> None
 
     assert excinfo.value.context["left_key"] == "quote_id"
     assert excinfo.value.context["right_key"] == "policy_id"
+
+
+def test_conservative_strategy_survives_runtime_join_refinement(
+    monkeypatch: pytest.MonkeyPatch,
+    _hard_worker_cap: None,
+) -> None:
+    """A warned plan keeps its strategy and group-by operator through a rebuild."""
+    from haute._execution_context import ExecutionAdmission
+    from haute._native_memory_limit import native_memory_backend_scope
+    from haute._ram_estimate import MaterialisationEstimate
+
+    graph = make_graph(
+        {
+            "nodes": [
+                {"id": "left", "data": {"label": "left", "nodeType": "dataInput", "config": {}}},
+                {"id": "right", "data": {"label": "right", "nodeType": "dataInput", "config": {}}},
+                {
+                    "id": "joined",
+                    "data": {
+                        "label": "joined",
+                        "nodeType": "polars",
+                        "config": {"code": "df = left.join(right, on='quote_id')"},
+                    },
+                },
+                {
+                    "id": "agg",
+                    "data": {
+                        "label": "agg",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = joined.group_by('quote_id').agg("
+                                "pl.col('right_value').sum().alias('total'))"
+                            )
+                        },
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": make_output_config(["quote_id", "total"]),
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("left", "joined").model_dump(),
+                make_edge("right", "joined").model_dump(),
+                make_edge("joined", "agg").model_dump(),
+                make_edge("agg", "out").model_dump(),
+            ],
+        }
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "left":
+            return (
+                node.id,
+                lambda: pl.DataFrame({"quote_id": ["q1"], "left_unused": [100]}).lazy(),
+                True,
+            )
+        if node.id == "right":
+            return (
+                node.id,
+                lambda: pl.DataFrame({"quote_id": ["q1"], "right_value": [2]}).lazy(),
+                True,
+            )
+        if node.id == "joined":
+            return node.id, lambda left, right: left.join(right, on="quote_id"), False
+        if node.id == "agg":
+            return (
+                node.id,
+                lambda df: df.group_by("quote_id").agg(pl.col("right_value").sum().alias("total")),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    def unavailable(_graph, node_ids, **_kwargs):
+        return [
+            (node_id, MaterialisationEstimate.unavailable("metadata_unavailable"))
+            for node_id in node_ids
+        ]
+
+    monkeypatch.setattr(execution_facade, "estimate_materialisation_boundaries", unavailable)
+    limit = 1 << 30
+    context = ExecutionContext(
+        operation="test_conservative_rebuild",
+        profile=ExecutionProfile.LAZY_SINK,
+        admission=ExecutionAdmission(
+            operation="test_conservative_rebuild",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=limit,
+            rss_at_admission_bytes=10,
+            rss_limit_bytes=10 + limit,
+            headroom_bytes=limit,
+            config_key="test",
+        ),
+    )
+
+    with native_memory_backend_scope("rlimit"):
+        outputs, *_ = _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="out",
+            execution_context=context,
+        )
+
+    assert outputs["out"].collect().select("quote_id", "total").to_dict(as_series=False) == {
+        "quote_id": ["q1"],
+        "total": [2],
+    }
+    result = context.projection_plan
+    assert result is not None
+    assert result.strategy is projection_planner.ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+    assert result.status is projection_planner.ExecutionStrategyStatus.WARNED
+    assert result.diagnostic.reason_code == "materialisation_estimate_unavailable_conservative"
+    # ``join`` is the first materialisation boundary in topological order
+    # (EXEC-P07), so it, not the downstream group-by, names the blocked node.
+    assert result.diagnostic.blocking_node_id == "joined"
+    assert result.diagnostic.blocking_operator == "join"
+    assert "proof_gap=joined:metadata_unavailable" in result.diagnostic.assumptions
+    diagnostics = result.projection_plan.diagnostics_payload(profile=result.profile)
+    assert diagnostics is not None
+    assert diagnostics["edge_reasons"]["left->joined"]["rule"] == "runtime_inferred_streaming"

@@ -226,7 +226,7 @@ describe("insertEdgeJoinNode", () => {
     })
   })
 
-  it("preserves a collapsed submodel alias and output port as the logical input", () => {
+  it("preserves a collapsed submodel public output label as the logical input", () => {
     const child = node("child_output")
     const occurrence: Node = {
       ...node("pricing_instance"),
@@ -240,7 +240,7 @@ describe("insertEdgeJoinNode", () => {
         },
         _defaultInputName: null,
         _sourceHandleInputNames: {
-          out__written_premium: "pricing_secondary__written_premium",
+          out__written_premium: "Written_premium",
         },
       },
     }
@@ -274,7 +274,7 @@ describe("insertEdgeJoinNode", () => {
     if (!result.ok) return
     const finalized = finalizeInsertion(result, "Edge_Join_1")
     expect(finalized.nodes.find((n) => n.id === "enriched")?.data.config).toMatchObject({
-      inputMapping: { pricing_secondary__written_premium: "Edge_Join_1" },
+      inputMapping: { Written_premium: "Edge_Join_1" },
     })
   })
 

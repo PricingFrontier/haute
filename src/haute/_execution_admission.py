@@ -205,6 +205,8 @@ _IN_FLIGHT_PROFILE_SET = frozenset(
     }
 )
 _IN_FLIGHT_LOCK = threading.RLock()
+# A refusal names at most this many distinct holders; the byte totals stay exact.
+_MAX_REPORTED_IN_FLIGHT_OPERATIONS = 8
 _IN_FLIGHT_COUNTER = count(1)
 _IN_FLIGHT_RESERVATIONS: dict[int, tuple[ExecutionProfile, int, str]] = {}
 
@@ -348,6 +350,7 @@ class ExecutionAdmissionError(MemoryError):
         process_rss_limit_bytes: int | None = None,
         in_flight_reserved_bytes: int | None = None,
         in_flight_limit_bytes: int | None = None,
+        in_flight_operations: tuple[str, ...] = (),
     ) -> None:
         headroom_bytes = (
             None
@@ -365,6 +368,9 @@ class ExecutionAdmissionError(MemoryError):
         self.headroom_bytes = headroom_bytes
         self.in_flight_reserved_bytes = in_flight_reserved_bytes
         self.in_flight_limit_bytes = in_flight_limit_bytes
+        # ``profile:operation`` labels of the reservations that were already
+        # held, so a refusal names the work it lost to instead of "other work".
+        self.in_flight_operations = tuple(in_flight_operations)
         self.reason = reason
 
     def to_payload(self) -> dict[str, object]:
@@ -383,6 +389,8 @@ class ExecutionAdmissionError(MemoryError):
             payload["in_flight_reserved_bytes"] = self.in_flight_reserved_bytes
         if self.in_flight_limit_bytes is not None:
             payload["in_flight_limit_bytes"] = self.in_flight_limit_bytes
+        if self.in_flight_operations:
+            payload["in_flight_operations"] = list(self.in_flight_operations)
         return payload
 
 
@@ -595,6 +603,16 @@ def _reserve_in_flight_budget(
     with _IN_FLIGHT_LOCK:
         reserved = sum(amount for _profile, amount, _operation in _IN_FLIGHT_RESERVATIONS.values())
         if reserved + reservation_bytes > limit_bytes:
+            holders = tuple(
+                sorted(
+                    {
+                        f"{held_profile.value}:{held_operation}"
+                        for held_profile, _amount, held_operation in (
+                            _IN_FLIGHT_RESERVATIONS.values()
+                        )
+                    }
+                )
+            )[:_MAX_REPORTED_IN_FLIGHT_OPERATIONS]
             raise ExecutionAdmissionError(
                 operation,
                 profile=profile,
@@ -604,6 +622,7 @@ def _reserve_in_flight_budget(
                 process_rss_limit_bytes=budget.process_rss_limit_bytes,
                 in_flight_reserved_bytes=reserved,
                 in_flight_limit_bytes=limit_bytes,
+                in_flight_operations=holders,
             )
         reservation_id = next(_IN_FLIGHT_COUNTER)
         _IN_FLIGHT_RESERVATIONS[reservation_id] = (

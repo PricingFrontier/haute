@@ -11,6 +11,7 @@ import {
   type SubmodelPortData,
 } from "../types/node"
 import { normalizeDefaultTargetHandle } from "./flowHandles"
+import { attachEditorEdgeIdentities } from "./editorIdentities"
 import { buildSubmodelViewGraph } from "./submodelViewGraph"
 import type {
   SubmodelBoundaryEditResult,
@@ -199,15 +200,86 @@ function assertCompatibleSharedEdit(
   }
 }
 
-function preserveBoundaryPositions(previous: Node[], next: Node[]): Node[] {
-  const positions = new Map(
+interface BoundaryIdentity {
+  functionName: string
+  defaultInputName: null
+  sourceHandleInputNames: Record<string, string>
+  configReference?: string
+}
+
+function boundaryIdentity(
+  previous: Node[],
+  direction: "input" | "output",
+  nextHandleIds: readonly string[],
+): BoundaryIdentity {
+  const node = boundaryNode(previous, direction)
+  if (!node) throw new Error(`Canonical submodel view is missing its ${direction} boundary`)
+  const functionName = node.data._functionName
+  const defaultInputName = node.data._defaultInputName
+  const mappings = node.data._sourceHandleInputNames
+  const configReference = node.data._configReference
+  if (typeof functionName !== "string" || functionName.length === 0) {
+    throw new Error(`Canonical submodel ${direction} boundary has no authoritative function identity`)
+  }
+  if (defaultInputName !== null) {
+    throw new Error(`Canonical submodel ${direction} boundary has malformed default identity`)
+  }
+  if (!isRecord(mappings)) {
+    throw new Error(`Canonical submodel ${direction} boundary has no authoritative source-handle identities`)
+  }
+  if (configReference !== undefined && (typeof configReference !== "string" || configReference.length === 0)) {
+    throw new Error(`Canonical submodel ${direction} boundary has malformed config identity`)
+  }
+  const sourceHandleInputNames: Record<string, string> = {}
+  for (const handleId of nextHandleIds) {
+    const value = mappings[handleId]
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        `Canonical submodel ${direction} boundary handle ${handleId} has no authoritative identity`,
+      )
+    }
+    sourceHandleInputNames[handleId] = value
+  }
+  return {
+    functionName,
+    defaultInputName,
+    sourceHandleInputNames,
+    ...(configReference === undefined ? {} : { configReference }),
+  }
+}
+
+function preserveBoundaryProjection(
+  previous: Node[],
+  next: Node[],
+  inputIdentity: BoundaryIdentity,
+  outputIdentity: BoundaryIdentity,
+): Node[] {
+  const previousPositions = new Map(
     previous
       .filter((node) => node.type === "submodelPort")
       .map((node) => [node.id, node.position]),
   )
   return next.map((node) => {
-    const position = positions.get(node.id)
-    return position ? { ...node, position } : node
+    if (node.type !== "submodelPort") return node
+    const direction = (node.data as Partial<SubmodelPortData>).portDirection
+    const identity = direction === "input" ? inputIdentity : outputIdentity
+    if (direction !== "input" && direction !== "output") {
+      throw new Error(`Canonical submodel boundary ${node.id} has malformed direction`)
+    }
+    const data: Record<string, unknown> = {
+      ...node.data,
+      _functionName: identity.functionName,
+      _defaultInputName: identity.defaultInputName,
+      _sourceHandleInputNames: { ...identity.sourceHandleInputNames },
+    }
+    if (identity.configReference === undefined) delete data._configReference
+    else data._configReference = identity.configReference
+    const position = previousPositions.get(node.id)
+    return {
+      ...node,
+      ...(position ? { position } : {}),
+      data,
+    }
   })
 }
 
@@ -233,6 +305,12 @@ export function reconcileCanonicalSubmodelBoundaryState(
   const inputPorts = deriveInputPorts(state, definition)
   const outputPorts = deriveOutputPorts(state, definition)
   assertCompatibleSharedEdit(state, definition, inputPorts, outputPorts)
+  const inputIdentity = boundaryIdentity(
+    state.viewNodes,
+    "input",
+    inputPorts.map((port) => port.portId),
+  )
+  const outputIdentity = boundaryIdentity(state.viewNodes, "output", [])
   const nextDefinition: SubmodelDefinition = {
     ...definition,
     graph: {
@@ -242,6 +320,7 @@ export function reconcileCanonicalSubmodelBoundaryState(
     },
     inputPorts,
     outputPorts,
+    _inputPortInputNames: { ...inputIdentity.sourceHandleInputNames },
   }
   const submodels = { ...state.submodels, [state.definitionId]: nextDefinition }
   const view = buildSubmodelViewGraph({
@@ -253,12 +332,19 @@ export function reconcileCanonicalSubmodelBoundaryState(
     parentNodes: state.parentNodes,
     parentEdges: state.parentEdges,
   })
+  const viewNodes = preserveBoundaryProjection(
+    state.viewNodes,
+    view.nodes,
+    inputIdentity,
+    outputIdentity,
+  )
+  const viewEdges = attachEditorEdgeIdentities(view.edges, viewNodes)
   return {
     submodelName: state.submodelName,
     instanceId: state.instanceId,
     definitionId: state.definitionId,
-    viewNodes: preserveBoundaryPositions(state.viewNodes, view.nodes),
-    viewEdges: view.edges as PipelineEdge[],
+    viewNodes,
+    viewEdges,
     parentNodes: state.parentNodes,
     parentEdges: state.parentEdges,
     submodels,

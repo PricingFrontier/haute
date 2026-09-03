@@ -202,6 +202,8 @@ that durable fact, in its original position after the mutation tool row.
   withheld, reducing unnecessary disclosure; low-cardinality strings can still be returned,
   including repeated personal data. This is the only tool that reads project data, and the
   project's explicit `allow_row_samples` policy is therefore the authorization boundary.
+  Its bounded collection owns the ordinary admitted preview-execution context, so upstream
+  group-bys follow the same memory-admission contract as every other execution workflow.
 - `get_node_schema` — the column names and dtypes at any node's *output* **and on each of
   its inputs**, resolved by the
   same execution engine that runs the pipeline: the lazy plan is built up to that node —

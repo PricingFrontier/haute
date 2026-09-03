@@ -1,12 +1,16 @@
 import type { Edge, Node } from "@xyflow/react"
 import { describe, expect, it, vi } from "vitest"
 
-import type { EditorIdentityBatchResponse } from "../../api/types"
+import type {
+  EditorIdentityBatchResponse,
+  EditorIdentityRequestNode,
+} from "../../api/types"
 import type { SubmodelDefinition } from "../../types/node"
 import {
   applyEditorIdentityResponse,
   attachEditorEdgeIdentities,
   buildEditorIdentityRequest,
+  resolveCanonicalGraphIdentities,
   resolveEditorGraphIdentities,
 } from "../editorIdentities"
 
@@ -22,7 +26,7 @@ function node(
 }
 
 describe("editor identity resolution", () => {
-  it("builds a strict batch from authored labels and structural source handles", () => {
+  it("builds a strict batch with public submodel port labels", () => {
     const api = node("api", "class", "apiInput", {
       tables: [
         {
@@ -56,7 +60,7 @@ describe("editor identity resolution", () => {
     }
 
     expect(buildEditorIdentityRequest(
-      [api, occurrence],
+      [api, node("ordinary", "Polars", "polars"), occurrence],
       { "pricing-definition": definition },
       RESERVED,
     )).toEqual({
@@ -65,15 +69,22 @@ describe("editor identity resolution", () => {
           node_id: "api",
           label: "class",
           node_type: "apiInput",
-          submodel_alias: null,
           source_handles: ["quotes"],
+          source_handle_labels: {},
+        },
+        {
+          node_id: "ordinary",
+          label: "Polars",
+          node_type: "polars",
+          source_handles: [],
+          source_handle_labels: {},
         },
         {
           node_id: "pricing",
           label: "Tarif café",
           node_type: "submodel",
-          submodel_alias: "pricing_secondary",
           source_handles: ["out__written-premium"],
+          source_handle_labels: { "out__written-premium": "Written premium" },
         },
       ],
     })
@@ -158,5 +169,81 @@ describe("editor identity resolution", () => {
     expect(resolve).toHaveBeenCalledOnce()
     expect(result.nodes[0].data._functionName).toBe("node_class")
     expect(result.edges[0].data?._inputName).toBe("node_class")
+  })
+
+  it("resolves root and canonical definition scopes without retaining the boundary node", async () => {
+    const child = node("__submodel_input_ports__", "Child", "polars")
+    const definition: SubmodelDefinition = {
+      definitionId: "pricing", file: "modules/pricing.py",
+      graph: {
+        nodes: [child], edges: [{ id: "child-edge", source: child.id, target: "sink" }],
+        pipeline_name: "Pricing child", pipeline_description: null,
+        preamble: "from haute import submodel", source_file: "modules/pricing.py",
+        preserved_blocks: ["# keep this"],
+      },
+      inputPorts: [{ portId: "policy", label: "Policy", targets: [{ nodeId: child.id, handleId: null }] }],
+      outputPorts: [],
+    }
+    const root = node("instance", "Pricing", "submodel", { definitionId: "pricing", alias: "pricing" })
+    const resolve = vi.fn(async (request): Promise<EditorIdentityBatchResponse> => ({
+      identities: request.nodes.map((requestNode: EditorIdentityRequestNode) => ({
+        node_id: requestNode.node_id,
+        function_name: `fn_${requestNode.node_id}`,
+        config_reference: null,
+        default_input_name: `in_${requestNode.node_id}`,
+        source_handle_input_names: requestNode.node_type === "submodelPort" ? { policy: "policy_input" } : {},
+      })),
+    }))
+
+    const result = await resolveCanonicalGraphIdentities({
+      nodes: [root], edges: [], submodels: { pricing: definition },
+      reservedApiInputFrameLabels: RESERVED, resolve,
+    })
+
+    expect(resolve).toHaveBeenCalledTimes(2)
+    expect(resolve.mock.calls.map(([request]) => request.nodes.map(
+      (item: EditorIdentityRequestNode) => item.node_id,
+    ))).toEqual([
+      ["instance"], ["__submodel_input_ports__", "__submodel_input_ports___1"],
+    ])
+    expect(resolve.mock.calls[1]?.[0].nodes.at(-1)).toMatchObject({
+      node_type: "submodelPort",
+      source_handles: ["policy"],
+      source_handle_labels: { policy: "Policy" },
+    })
+    expect(result.nodes[0].data._functionName).toBe("fn_instance")
+    expect(result.submodels.pricing.graph.nodes[0].data._functionName).toBe("fn___submodel_input_ports__")
+    expect(result.submodels.pricing.graph.edges[0].data?._inputName).toBe("in___submodel_input_ports__")
+    expect(result.submodels.pricing._inputPortInputNames).toEqual({ policy: "policy_input" })
+    expect(result.submodels.pricing.graph.nodes).toHaveLength(1)
+    expect(result.submodels.pricing.graph).toMatchObject({
+      pipeline_name: "Pricing child", pipeline_description: null,
+      preamble: "from haute import submodel", source_file: "modules/pricing.py",
+      preserved_blocks: ["# keep this"],
+    })
+    expect(result.submodels.pricing.graph).not.toHaveProperty("warning")
+    expect(result.submodels.pricing.graph).not.toBe(definition.graph)
+    expect(definition.graph.nodes[0].data).not.toHaveProperty("_functionName")
+    expect(definition.graph).toEqual({
+      nodes: [child], edges: [{ id: "child-edge", source: child.id, target: "sink" }],
+      pipeline_name: "Pricing child", pipeline_description: null,
+      preamble: "from haute import submodel", source_file: "modules/pricing.py",
+      preserved_blocks: ["# keep this"],
+    })
+    expect(definition).not.toHaveProperty("_inputPortInputNames")
+  })
+
+  it("rejects a malformed canonical definition boundary identity", async () => {
+    const definition: SubmodelDefinition = {
+      definitionId: "empty", file: "modules/empty.py", graph: { nodes: [], edges: [] },
+      inputPorts: [], outputPorts: [],
+    }
+    await expect(resolveCanonicalGraphIdentities({
+      nodes: [], edges: [], submodels: { empty: definition }, reservedApiInputFrameLabels: RESERVED,
+      resolve: async (request) => ({ identities: request.nodes.map((requestNode) => ({
+        node_id: requestNode.node_id, function_name: "boundary", config_reference: null,
+        default_input_name: null, source_handle_input_names: null as unknown as Record<string, string>,
+      })) }),
+    })).rejects.toThrow(/boundary.*map|input.*map/i)
   })
 })

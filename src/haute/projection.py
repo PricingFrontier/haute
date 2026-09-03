@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Generic, NamedTuple, TypeVar, cast
+from typing import Any, Generic, Literal, NamedTuple, TypeVar, cast
 
 from haute._cache import canonical_json
 from haute._column_lineage import ColumnLineageAnalysis, analyze_polars_lineage
@@ -30,9 +30,15 @@ from haute._estimate_calibration import (
 )
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, build_parents_of, edge_input_name
+from haute._polars_operations import (
+    OperationReceiver,
+    materialising_expression_methods,
+    materialising_frame_methods,
+    registered_names,
+)
 from haute._topo import ancestors, topo_sort_ids
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
-from haute.errors import ContractMismatchError, ProjectionImpossibleError
+from haute.errors import ContractMismatchError
 
 __all__ = [
     "AllExcept",
@@ -55,8 +61,11 @@ __all__ = [
     "with_runtime_inferred_streaming_edges",
     "simple_join_calls_for_parent_inputs",
     "source_scan_projection",
+    "materialising_operator_sequences_by_input_names",
+    "materialising_operator_sequences_by_node",
+    "materialising_operators_by_input_names",
+    "materialising_operators_by_node",
     "source_user_code_preserves_column_projection",
-    "strict_projection_required",
     "validate_projection_rule_coverage",
     "with_api_input_port_projection_boundaries",
 ]
@@ -70,6 +79,7 @@ class ExecutionStrategy(StrEnum):
     FULL_WIDTH_ADMITTED_EAGER = "full-width-admitted-eager"
     UNPROJECTED_STREAMING_BOUNDARY = "unprojected-streaming-boundary"
     MATERIALISATION_BOUNDARY = "materialisation-boundary"
+    FULL_WIDTH_CONSERVATIVE = "full-width-conservative"
     UNSUPPORTED = "unsupported"
     NOT_PLANNED = "not-planned"
 
@@ -78,6 +88,7 @@ class ExecutionStrategyStatus(StrEnum):
     PROJECTED = "projected"
     ADMITTED_EAGER = "admitted_eager"
     BOUNDARY = "boundary"
+    WARNED = "warned"
     REJECTED = "rejected"
     NOT_PLANNED = "not_planned"
 
@@ -101,6 +112,7 @@ _STATUS_BY_STRATEGY: Mapping[ExecutionStrategy, ExecutionStrategyStatus] = Mappi
         ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: ExecutionStrategyStatus.ADMITTED_EAGER,
         ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: ExecutionStrategyStatus.BOUNDARY,
         ExecutionStrategy.MATERIALISATION_BOUNDARY: ExecutionStrategyStatus.BOUNDARY,
+        ExecutionStrategy.FULL_WIDTH_CONSERVATIVE: ExecutionStrategyStatus.WARNED,
         ExecutionStrategy.UNSUPPORTED: ExecutionStrategyStatus.REJECTED,
         ExecutionStrategy.NOT_PLANNED: ExecutionStrategyStatus.NOT_PLANNED,
     }
@@ -770,7 +782,10 @@ def build_execution_strategy_result(
             ExecutionStrategy.SCHEMA_ALL_EXCEPT: "schema_all_except",
             ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: "full_width_admitted",
             ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: ("unprojected_streaming_boundary"),
-            ExecutionStrategy.MATERIALISATION_BOUNDARY: ("group_by_materialisation_admitted"),
+            ExecutionStrategy.MATERIALISATION_BOUNDARY: "materialisation_admitted",
+            ExecutionStrategy.FULL_WIDTH_CONSERVATIVE: (
+                "materialisation_estimate_unavailable_conservative"
+            ),
             ExecutionStrategy.UNSUPPORTED: "unsupported",
             ExecutionStrategy.NOT_PLANNED: "not_planned",
         }[strategy]
@@ -794,6 +809,11 @@ def build_execution_strategy_result(
             ExecutionStrategy.MATERIALISATION_BOUNDARY: (
                 "Keep the materialisation within the reported memory headroom or narrow its input."
             ),
+            ExecutionStrategy.FULL_WIDTH_CONSERVATIVE: (
+                "The run continued under its full reserved memory envelope because the "
+                "materialisation estimate was unavailable. Provide readable source metadata "
+                "or rewrite the blocking operator so Haute can prove the estimate."
+            ),
             ExecutionStrategy.UNSUPPORTED: (
                 "Narrow the input or remove the unsupported operator before running this profile."
             ),
@@ -808,6 +828,7 @@ def build_execution_strategy_result(
         ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY: ExecutionBoundedness.BOUNDED,
         ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: ExecutionBoundedness.UNBOUNDED,
         ExecutionStrategy.MATERIALISATION_BOUNDARY: ExecutionBoundedness.UNBOUNDED,
+        ExecutionStrategy.FULL_WIDTH_CONSERVATIVE: ExecutionBoundedness.UNBOUNDED,
         ExecutionStrategy.UNSUPPORTED: ExecutionBoundedness.UNKNOWN,
         ExecutionStrategy.NOT_PLANNED: ExecutionBoundedness.UNKNOWN,
     }[strategy]
@@ -889,6 +910,11 @@ def build_execution_strategy_result(
     )
     primary_boundary_kind = {
         ExecutionStrategy.MATERIALISATION_BOUNDARY: (
+            ExecutionStrategy.MATERIALISATION_BOUNDARY.value
+        ),
+        # A conservative run still materialises at the group-by; its blocking
+        # boundary is that materialisation, not an earlier projection boundary.
+        ExecutionStrategy.FULL_WIDTH_CONSERVATIVE: (
             ExecutionStrategy.MATERIALISATION_BOUNDARY.value
         ),
         ExecutionStrategy.FULL_WIDTH_ADMITTED_EAGER: (
@@ -1127,6 +1153,7 @@ class ParentDemandResult:
     by_parent: dict[str, set[str] | None]
     rule_name: str = "projection_rule"
     resolved_output: set[str] | None = None
+    message: str | None = None
 
     def for_parent(self, parent_id: str) -> set[str] | None:
         return self.by_parent.get(parent_id, self.default)
@@ -1136,6 +1163,8 @@ def _unprojected_boundary_demands(
     *,
     default: set[str] | None = None,
     by_parent: dict[str, set[str] | None] | None = None,
+    rule_name: str | None = None,
+    message: str | None = None,
 ) -> ParentDemandResult:
     """Return a demand result for an explicit bounded full-width boundary.
 
@@ -1148,7 +1177,8 @@ def _unprojected_boundary_demands(
     return ParentDemandResult(
         default=default,
         by_parent={} if by_parent is None else by_parent,
-        rule_name=UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME,
+        rule_name=UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME if rule_name is None else rule_name,
+        message=message,
     )
 
 
@@ -1164,28 +1194,10 @@ class PreparedGraph(NamedTuple):
     # frame-aware binding) can index incoming edges per child without
     # re-deriving the prune set themselves.
     relevant_edges: list[GraphEdge]
-
-
-_STRICT_PROJECTION_PROFILES = frozenset(
-    {
-        ExecutionProfile.LAZY_SINK,
-        ExecutionProfile.TRAINING_PREP,
-        ExecutionProfile.OPTIMISER_SETUP,
-        ExecutionProfile.EXPLORE_ANALYSIS,
-        ExecutionProfile.AUTO_RANGE,
-        ExecutionProfile.DEPLOY_BATCH,
-        ExecutionProfile.CHUNKED_MAP_REDUCE,
-    }
-)
-
-
-def strict_projection_required(
-    profile: ExecutionProfile,
-    required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None,
-) -> bool:
-    """Return whether projection-impossible cases must fail loudly."""
-    _ = required_columns_by_node
-    return profile in _STRICT_PROJECTION_PROFILES
+    # Public port labels remain definition-owned while a graph still contains
+    # collapsed submodel occurrences. Keep that registry with the prepared
+    # edges so planner-side input-name derivation uses the same identity.
+    submodels: Mapping[str, Any] | None
 
 
 def normalise_required_columns_by_node(
@@ -1372,7 +1384,8 @@ def source_user_code_preserves_column_projection(code: str) -> bool:
     reading only downstream-required columns is equivalent to reading the full
     source and then applying the same code.  Anything that might depend on
     column values, alter the schema, or obscure the frame flow remains opaque
-    and must be described with a concrete contract in strict profiles.
+    and keeps a visible full-width boundary in every profile unless a concrete
+    contract describes it.
     """
     stripped = code.strip()
     if not stripped:
@@ -1411,18 +1424,495 @@ def source_user_code_preserves_column_projection(code: str) -> bool:
     return saw_df_assignment
 
 
-def group_by_operators_by_node(
+_MaterialisingCall = tuple[int, int, int, str]
+"""``(evaluation_index, lineno, col_offset, attribute)`` for one boundary call.
+
+The evaluation index leads because source position does not order chained calls:
+``df.unique(...).reverse()`` gives both calls the same ``(lineno, col_offset)``,
+which left the operator to a lexical tie-break. The classifier walks in Python
+evaluation order, so the order it records is the order the frame is transformed.
+"""
+
+_COMPREHENSION_TYPES = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
+
+# What a value provably is: a frame chain, provably not a frame, or unresolvable.
+_BindingFact = Literal["frame", "non_frame", "unknown"]
+
+# ``pl.<name>(...)`` calls that build expressions rather than frames. Any other
+# ``pl`` attribute call (``pl.concat``, ``pl.scan_parquet``, ``pl.DataFrame``)
+# may construct a frame and is therefore unresolvable.
+_POLARS_EXPRESSION_FUNCTIONS = registered_names(OperationReceiver.POLARS_FUNCTION)
+
+
+def _mutation_root_name(target: ast.AST) -> str | None:
+    """Return the name whose object an attribute/subscript assignment mutates."""
+    current = target
+    while isinstance(current, ast.Attribute | ast.Subscript):
+        current = current.value
+    return current.id if isinstance(current, ast.Name) else None
+
+
+def _combine_facts(facts: Iterable[_BindingFact]) -> _BindingFact:
+    """Return the most frame-like fact in ``facts`` (frame > unknown > non-frame)."""
+    collected = list(facts)
+    if "frame" in collected:
+        return "frame"
+    if "unknown" in collected:
+        return "unknown"
+    return "non_frame"
+
+
+def _materialising_calls_in_source_order(
+    tree: ast.Module,
+    input_names: frozenset[str],
+    materialising: frozenset[str],
+    materialising_expressions: frozenset[str] = frozenset(),
+) -> list[_MaterialisingCall]:
+    """Classify materialising calls with the receiver state at each evaluation.
+
+    The pass walks statements in program order and expressions in Python
+    evaluation order, tracking for every simple name whether it is a *frame*
+    (one of the node's bound input names, ``df``, or a name bound from a
+    frame), a *provable non-frame* (``pl`` itself, a literal, an operator or
+    comparison result, a ``pl``-rooted expression chain, a function or lambda
+    object, or a name definitely rebound to one of those), or a *may-frame*
+    (every other name: a preamble name, a function parameter, or a name bound
+    from a call the analyser cannot see through). A materialising call is a
+    boundary unless its receiver is a provable non-frame, so a preamble
+    frame's ``group_by``, a helper's returned frame, and a parameter inside a
+    user function all admit a boundary, while ``pl.col(...).list.group_by(...)``
+    never does.
+
+    Binding model. Every simple-name binding form is applied in evaluation
+    order: plain, chained (``a = b = value``), annotated, and element-wise
+    unpacked assignments, walrus bindings, loop, ``with``, and comprehension
+    targets, imports, and function/class definitions. The fact of each
+    right-hand value is captured when that value is evaluated, and one
+    assignment binds all of its targets from those captured facts afterwards
+    (Python's parallel semantics). Function and lambda bodies are analysed in
+    a scoped environment whose parameters are may-frames; names that may hold
+    a frame inside the body remain may-frames outside it. A *definite*
+    rebinding (a top-level statement, or a walrus in a position that is
+    always evaluated) to a provable non-frame stops the name from being a
+    frame only for the code that follows. Bindings inside nested blocks,
+    short-circuit operands (later operands of ``and``/``or`` and later
+    comparators of a chained comparison), conditional branches, lambda and
+    function bodies, and comprehensions are may-bindings: they can add a
+    frame fact but never remove one. Values the analyser cannot resolve
+    (unpacking from an unknown value, starred, loop, ``with``, and
+    comprehension targets, calls it cannot see through) and every mutable
+    container (a list, set, or dict display or comprehension, whatever it
+    holds, since it may receive a frame later) yield may-frames; a tuple is a
+    provable non-frame only when every element is. A subscript, attribute, or
+    augmented assignment marks the root name it mutates as a may-frame. So an
+    unsupported shape can only add a boundary, never hide one.
+
+    Frame methods in ``materialising`` are classified by receiver as described
+    above. ``materialising_expressions`` holds expression-level boundary
+    methods (``over``): a window expression's receiver is always a ``pl``-rooted
+    chain, which the receiver rule proves is not a frame, so these are matched
+    on the attribute wherever they appear in the node's code -- except on a
+    receiver the analyser proves *is* a frame, which cannot be an expression.
+    """
+    frames: set[str] = set(input_names) | {"df"}
+    non_frames: set[str] = {"pl"}
+    found: list[_MaterialisingCall] = []
+
+    def record(node: ast.AST, attr: str) -> None:
+        found.append(
+            (
+                len(found),
+                getattr(node, "lineno", _MAX_TOPOLOGICAL_RANK),
+                getattr(node, "col_offset", _MAX_TOPOLOGICAL_RANK),
+                attr,
+            )
+        )
+
+    def name_fact(name: str) -> _BindingFact:
+        if name in frames:
+            return "frame"
+        if name in non_frames:
+            return "non_frame"
+        return "unknown"
+
+    def apply_facts(facts: Iterable[tuple[str, _BindingFact]], *, definite: bool) -> None:
+        for name, fact in facts:
+            if fact == "non_frame":
+                if definite:
+                    frames.discard(name)
+                    non_frames.add(name)
+            else:
+                # A frame, or an unresolvable value that may hold one.
+                frames.add(name)
+                non_frames.discard(name)
+
+    def collect(
+        target: ast.AST,
+        fact: _BindingFact,
+        element_facts: list[_BindingFact] | None,
+        facts: list[tuple[str, _BindingFact]],
+    ) -> None:
+        """Pair every simple name bound by ``target`` with its captured fact."""
+        if isinstance(target, ast.Name):
+            facts.append((target.id, fact))
+        elif isinstance(target, ast.Starred):
+            collect(target.value, "unknown", None, facts)
+        elif isinstance(target, ast.Tuple | ast.List):
+            elements = target.elts
+            if (
+                element_facts is not None
+                and len(element_facts) == len(elements)
+                and not any(isinstance(item, ast.Starred) for item in elements)
+            ):
+                for element, element_fact in zip(elements, element_facts, strict=True):
+                    collect(element, element_fact, None, facts)
+            else:
+                for element in elements:
+                    collect(element, "unknown", None, facts)
+        else:
+            # ``obj.attr = value`` / ``obj[key] = value`` mutate whatever the
+            # root name holds, which may now contain a frame.
+            root = _mutation_root_name(target)
+            if root is not None:
+                facts.append((root, "unknown"))
+
+    def evaluate(node: ast.AST, *, definite: bool) -> _BindingFact:
+        """Walk ``node`` in evaluation order and return the fact of its value.
+
+        Walrus bindings take effect and materialising calls are recorded as
+        they are reached, so a name's fact is read exactly when Python reads it.
+        """
+        if isinstance(node, ast.Constant):
+            return "non_frame"
+        if isinstance(node, ast.Name):
+            return name_fact(node.id)
+        if isinstance(node, ast.NamedExpr):
+            fact = evaluate(node.value, definite=definite)
+            bound: list[tuple[str, _BindingFact]] = []
+            collect(node.target, fact, None, bound)
+            apply_facts(bound, definite=definite)
+            return fact
+        if isinstance(node, ast.Attribute):
+            fact = evaluate(node.value, definite=definite)
+            # A materialising method taken as a value (``g = df.group_by``) is
+            # recorded where it is bound: the later ``g(...)`` call has a plain
+            # name for its callee and cannot be classified by receiver.
+            if (node.attr in materialising and fact != "non_frame") or (
+                node.attr in materialising_expressions and fact != "frame"
+            ):
+                record(node, node.attr)
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id == "pl"
+                and node.attr not in _POLARS_EXPRESSION_FUNCTIONS
+            ):
+                # ``pl.LazyFrame`` / ``pl.DataFrame`` are frame classes whose
+                # unbound methods take a frame as their first argument.
+                return "unknown"
+            return fact
+        if isinstance(node, ast.Subscript):
+            fact = evaluate(node.value, definite=definite)
+            evaluate(node.slice, definite=definite)
+            return fact
+        if isinstance(node, ast.Call):
+            materialises = False
+            if isinstance(node.func, ast.Attribute):
+                receiver = evaluate(node.func.value, definite=definite)
+                materialises = (node.func.attr in materialising and receiver != "non_frame") or (
+                    node.func.attr in materialising_expressions and receiver != "frame"
+                )
+                if receiver != "non_frame":
+                    fact = receiver
+                elif (
+                    isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "pl"
+                    and node.func.attr not in _POLARS_EXPRESSION_FUNCTIONS
+                ):
+                    fact = "unknown"
+                else:
+                    fact = "non_frame"
+            else:
+                # Any other callable (a user function, a preamble helper, a
+                # builtin) may return a frame.
+                evaluate(node.func, definite=definite)
+                fact = "unknown"
+            for argument in node.args:
+                evaluate(argument, definite=definite)
+            for keyword in node.keywords:
+                evaluate(keyword.value, definite=definite)
+            if materialises:
+                # Python evaluates the receiver, then the arguments, then the
+                # call. Recording before the arguments reported
+                # ``left.join(right.sort(...))`` as join-then-sort, which is the
+                # reverse of the order the frames are actually transformed in.
+                assert isinstance(node.func, ast.Attribute)
+                record(node, node.func.attr)
+            return fact
+        if isinstance(node, ast.BoolOp):
+            first, *rest = node.values
+            operand_facts = [evaluate(first, definite=definite)]
+            operand_facts.extend(evaluate(value, definite=False) for value in rest)
+            return _combine_facts(operand_facts)
+        if isinstance(node, ast.IfExp):
+            evaluate(node.test, definite=definite)
+            return _combine_facts(
+                (
+                    evaluate(node.body, definite=False),
+                    evaluate(node.orelse, definite=False),
+                )
+            )
+        if isinstance(node, ast.Compare):
+            # Only the first comparison is always evaluated; later comparators
+            # short-circuit like ``and`` operands.
+            evaluate(node.left, definite=definite)
+            for index, comparator in enumerate(node.comparators):
+                evaluate(comparator, definite=definite and index == 0)
+            return "non_frame"
+        if isinstance(node, ast.BinOp | ast.UnaryOp):
+            return _combine_facts(
+                evaluate(child, definite=definite) for child in ast.iter_child_nodes(node)
+            )
+        if isinstance(node, ast.Tuple):
+            content = _combine_facts(evaluate(item, definite=definite) for item in node.elts)
+            return "non_frame" if content == "non_frame" else "unknown"
+        if isinstance(node, ast.List | ast.Set):
+            # A mutable container may receive a frame after it is built.
+            for item in node.elts:
+                evaluate(item, definite=definite)
+            return "unknown"
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                if key is not None:
+                    evaluate(key, definite=definite)
+                evaluate(value, definite=definite)
+            return "unknown"
+        if isinstance(node, _COMPREHENSION_TYPES):
+            # The first iterable is evaluated in the enclosing scope; every
+            # other part runs zero or more times inside the comprehension, and
+            # each generator target may hold a frame drawn from its iterable.
+            for index, generator in enumerate(node.generators):
+                evaluate(generator.iter, definite=definite and index == 0)
+                bind_targets((generator.target,), None, definite=False)
+                for condition in generator.ifs:
+                    evaluate(condition, definite=False)
+            if isinstance(node, ast.DictComp):
+                evaluate(node.key, definite=False)
+                evaluate(node.value, definite=False)
+            else:
+                evaluate(node.elt, definite=False)
+            return "unknown"
+        if isinstance(node, ast.Lambda):
+            analyse_function(node.args, node.body, definite=definite)
+            return "non_frame"
+        if isinstance(node, ast.JoinedStr | ast.FormattedValue | ast.Slice):
+            for child in ast.iter_child_nodes(node):
+                evaluate(child, definite=definite)
+            return "non_frame"
+        if isinstance(node, ast.Starred):
+            return evaluate(node.value, definite=definite)
+        for child in ast.iter_child_nodes(node):
+            evaluate(child, definite=definite)
+        return "unknown"
+
+    def bind_targets(
+        targets: Iterable[ast.AST],
+        value: ast.AST | None,
+        *,
+        definite: bool,
+    ) -> None:
+        """Evaluate ``value`` once, then bind all ``targets`` from its captured facts."""
+        element_facts: list[_BindingFact] | None = None
+        if value is None:
+            fact: _BindingFact = "unknown"
+        elif isinstance(value, ast.Tuple | ast.List) and not any(
+            isinstance(item, ast.Starred) for item in value.elts
+        ):
+            element_facts = [evaluate(item, definite=definite) for item in value.elts]
+            fact = (
+                "non_frame"
+                if isinstance(value, ast.Tuple) and _combine_facts(element_facts) == "non_frame"
+                else "unknown"
+            )
+        else:
+            fact = evaluate(value, definite=definite)
+        facts: list[tuple[str, _BindingFact]] = []
+        for target in targets:
+            collect(target, fact, element_facts, facts)
+        apply_facts(facts, definite=definite)
+
+    def analyse_function(
+        args: ast.arguments,
+        body: list[ast.stmt] | ast.expr,
+        *,
+        definite: bool,
+    ) -> None:
+        """Analyse a function or lambda body with its parameters as may-frames."""
+        nonlocal frames, non_frames
+        for default in (*args.defaults, *args.kw_defaults):
+            if default is not None:
+                evaluate(default, definite=definite)
+        parameters = {
+            argument.arg for argument in (*args.posonlyargs, *args.args, *args.kwonlyargs)
+        }
+        for variadic in (args.vararg, args.kwarg):
+            if variadic is not None:
+                parameters.add(variadic.arg)
+        outer_frames, outer_non_frames = frames, non_frames
+        frames = set(outer_frames) | parameters
+        non_frames = set(outer_non_frames) - parameters
+        try:
+            if isinstance(body, list):
+                for stmt in body:
+                    visit(stmt, definite=False)
+            else:
+                evaluate(body, definite=False)
+        finally:
+            inner_frames = frames
+            frames, non_frames = outer_frames, outer_non_frames
+        # A name that may hold a frame inside the body (a nonlocal or global
+        # write, or simply a local the analyser cannot scope) stays a
+        # may-frame outside it; the parameters themselves do not escape.
+        escaped = inner_frames - parameters
+        frames.update(escaped)
+        non_frames.difference_update(escaped)
+
+    def visit(node: ast.AST, *, definite: bool) -> None:
+        if isinstance(node, ast.Assign):
+            bind_targets(node.targets, node.value, definite=definite)
+            return
+        if isinstance(node, ast.AnnAssign):
+            if node.value is not None:
+                bind_targets((node.target,), node.value, definite=definite)
+            return
+        if isinstance(node, ast.AugAssign):
+            # Python reads the target before it evaluates the right-hand side,
+            # so the target's fact is captured first; the store happens last.
+            target_fact: _BindingFact | None = None
+            if isinstance(node.target, ast.Name):
+                target_fact = name_fact(node.target.id)
+            elif isinstance(node.target, ast.Attribute):
+                evaluate(node.target.value, definite=definite)
+            elif isinstance(node.target, ast.Subscript):
+                evaluate(node.target.value, definite=definite)
+                evaluate(node.target.slice, definite=definite)
+            value_fact = evaluate(node.value, definite=definite)
+            if isinstance(node.target, ast.Name) and target_fact is not None:
+                combined = _combine_facts((target_fact, value_fact))
+                apply_facts(((node.target.id, combined),), definite=definite)
+            else:
+                root = _mutation_root_name(node.target)
+                if root is not None:
+                    apply_facts(((root, "unknown"),), definite=definite)
+            return
+        if isinstance(node, ast.For | ast.AsyncFor):
+            evaluate(node.iter, definite=definite)
+            bind_targets((node.target,), None, definite=False)
+            for stmt in (*node.body, *node.orelse):
+                visit(stmt, definite=False)
+            return
+        if isinstance(node, ast.With | ast.AsyncWith):
+            for item in node.items:
+                evaluate(item.context_expr, definite=definite)
+                if item.optional_vars is not None:
+                    bind_targets((item.optional_vars,), None, definite=False)
+            for stmt in node.body:
+                visit(stmt, definite=False)
+            return
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            for decorator in node.decorator_list:
+                evaluate(decorator, definite=definite)
+            analyse_function(node.args, node.body, definite=definite)
+            if node.returns is not None:
+                evaluate(node.returns, definite=definite)
+            apply_facts(((node.name, "non_frame"),), definite=definite)
+            return
+        if isinstance(node, ast.ClassDef):
+            for expression in (*node.decorator_list, *node.bases):
+                evaluate(expression, definite=definite)
+            for keyword in node.keywords:
+                evaluate(keyword.value, definite=definite)
+            for stmt in node.body:
+                visit(stmt, definite=False)
+            apply_facts(((node.name, "non_frame"),), definite=definite)
+            return
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            apply_facts(
+                (((alias.asname or alias.name).split(".")[0], "non_frame") for alias in node.names),
+                definite=definite,
+            )
+            return
+        # Header expressions are evaluated before nested statements run.
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.stmt | ast.ExceptHandler | ast.match_case):
+                visit(child, definite=False)
+            else:
+                evaluate(child, definite=definite)
+
+    for stmt in tree.body:
+        visit(stmt, definite=True)
+    return found
+
+
+def materialising_operator_sequences_by_node(
     order: Iterable[str],
     node_map: Mapping[str, GraphNode],
-) -> Mapping[str, str]:
-    """Return group-by operators in deterministic execution order.
+    *,
+    relevant_edges: Iterable[GraphEdge],
+    submodels: Mapping[str, Any] | None = None,
+) -> Mapping[str, tuple[str, ...]]:
+    """Return materialisation-boundary operators in deterministic execution order.
 
-    Only actual AST call attributes are classified; comments and string
-    literals containing ``group_by`` cannot accidentally trigger the boundary.
-    Syntax failures remain the owning code validator's error rather than being
-    broadened through a textual fallback.
+    The operator names come from the operation registry (the frame methods whose
+    policy is a materialisation boundary), so the planner cannot disagree with
+    the other analysers about which operations materialise. Only actual AST
+    call attributes are classified; comments and string literals containing
+    ``group_by`` cannot accidentally trigger the boundary. Syntax failures
+    remain the owning code validator's error rather than being broadened
+    through a textual fallback.
+
+    Classification is receiver-aware and evaluation-ordered: a call
+    materialises unless its receiver is provably not a frame at that point
+    (``pl`` itself, a literal, a ``pl``-rooted expression chain, or a name
+    definitely rebound to one of those). The node's input frame names (as
+    ``_build_funcs`` binds them), ``df``, names derived from them, and every
+    name the analyser cannot resolve (a preamble name, a function parameter,
+    the result of a call it cannot see through) admit a boundary, so
+    ``pl.col(...).list.group_by(...)`` never materialises while a preamble
+    frame's ``group_by`` does, and rebinding an alias after its group-by
+    cannot hide one.
     """
-    found: dict[str, str] = {}
+    input_names_by_node: dict[str, set[str]] = {}
+    for edge in relevant_edges:
+        source_node = node_map.get(edge.source)
+        if source_node is None:
+            continue
+        try:
+            name = edge_input_name(edge, source_node, submodels=submodels)
+        except ValueError:
+            # A malformed edge (an apiInput edge with no frame label) has no
+            # input name to contribute. Skipping it stays conservative: an
+            # unnamed input never hides a boundary, and the node builder is the
+            # fail-loud point that reports the malformed edge to the user.
+            continue
+        input_names_by_node.setdefault(edge.target, set()).add(name)
+    return materialising_operator_sequences_by_input_names(order, node_map, input_names_by_node)
+
+
+def materialising_operator_sequences_by_input_names(
+    order: Iterable[str],
+    node_map: Mapping[str, GraphNode],
+    input_names_by_node: Mapping[str, Iterable[str]],
+) -> Mapping[str, tuple[str, ...]]:
+    """Classify materialising operators from pre-derived input frame names.
+
+    Callers that hold the prepared graph's edges use
+    :func:`materialising_operator_sequences_by_node`; this entry point serves the prepared
+    planner when edges were not supplied and the input names come from the
+    parent labels instead.
+    """
+    materialising = materialising_frame_methods()
+    materialising_expressions = materialising_expression_methods()
+    found: dict[str, tuple[str, ...]] = {}
     for node_id in order:
         node = node_map[node_id]
         if node.data.nodeType is not NodeType.POLARS:
@@ -1434,22 +1924,59 @@ def group_by_operators_by_node(
             tree = ast.parse(code)
         except SyntaxError:
             continue
-        calls: list[tuple[ast.Call, str]] = []
-        for ast_node in ast.walk(tree):
-            if not isinstance(ast_node, ast.Call) or not isinstance(ast_node.func, ast.Attribute):
-                continue
-            if ast_node.func.attr in {"group_by", "groupby"}:
-                calls.append((ast_node, ast_node.func.attr))
-        calls.sort(
-            key=lambda item: (
-                getattr(item[0], "lineno", _MAX_TOPOLOGICAL_RANK),
-                getattr(item[0], "col_offset", _MAX_TOPOLOGICAL_RANK),
-                item[1],
-            )
+        calls = _materialising_calls_in_source_order(
+            tree,
+            frozenset(input_names_by_node.get(node_id, ())),
+            materialising,
+            materialising_expressions,
         )
         if calls:
-            found[node_id] = calls[0][1]
+            # Evaluation order, deduplicated: the first entry is the operator the
+            # diagnostic blames, and the whole tuple is what the estimator costs.
+            found[node_id] = tuple(dict.fromkeys(call[3] for call in sorted(calls)))
     return MappingProxyType(found)
+
+
+def first_materialising_operators(
+    sequences: Mapping[str, tuple[str, ...]],
+) -> Mapping[str, str]:
+    """Reduce boundary sequences to the operator each node's diagnostic blames.
+
+    The first entry is the first materialising call reached in evaluation order,
+    which is the one that turns the node into a boundary.
+    """
+    return MappingProxyType(
+        {node_id: operators[0] for node_id, operators in sequences.items() if operators}
+    )
+
+
+def materialising_operators_by_node(
+    order: Iterable[str],
+    node_map: Mapping[str, GraphNode],
+    *,
+    relevant_edges: Iterable[GraphEdge],
+    submodels: Mapping[str, Any] | None = None,
+) -> Mapping[str, str]:
+    """Return each boundary node's first materialising operator."""
+    return first_materialising_operators(
+        materialising_operator_sequences_by_node(
+            order,
+            node_map,
+            relevant_edges=relevant_edges,
+            submodels=submodels,
+        )
+    )
+
+
+def materialising_operators_by_input_names(
+    order: Iterable[str],
+    node_map: Mapping[str, GraphNode],
+    input_names_by_node: Mapping[str, Iterable[str]],
+) -> Mapping[str, str]:
+    """Return each boundary node's first materialising operator."""
+    return first_materialising_operators(
+        materialising_operator_sequences_by_input_names(order, node_map, input_names_by_node)
+    )
 
 
 def builder_required_output_columns_by_node(
@@ -1708,6 +2235,8 @@ class OptimiserParentDemandRule:
         node_map: Mapping[str, GraphNode],
         my_needed: set[str] | None,
         seeded_required: Mapping[str, set[str] | AllExceptColumns],
+        *,
+        submodels: Mapping[str, Any] | None = None,
     ) -> ParentDemandResult | None:
         incoming = list(incoming_edges)
         parent_set = {edge.source for edge in incoming}
@@ -1720,7 +2249,17 @@ class OptimiserParentDemandRule:
         config = node.data.config
         configured_data_input = config.get("data_input")
         banding_source = config.get("banding_source")
-        named_edges = [(edge, edge_input_name(edge, node_map[edge.source])) for edge in incoming]
+        named_edges = [
+            (
+                edge,
+                edge_input_name(
+                    edge,
+                    node_map[edge.source],
+                    submodels=submodels,
+                ),
+            )
+            for edge in incoming
+        ]
 
         if configured_data_input in (None, "") and len(named_edges) == 1:
             data_edge = named_edges[0][0]
@@ -1800,13 +2339,20 @@ def parent_demands_for_node(
     node_map: Mapping[str, GraphNode],
     my_needed: set[str] | None,
     seeded_required: Mapping[str, set[str] | AllExceptColumns],
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> ParentDemandResult | None:
     """Return node-specific parent demands that the generic algebra cannot infer.
 
     Return optimiser-specific parent demands when configured.
     """
     return _OPTIMISER_PARENT_DEMAND_RULE.parent_demands(
-        node, incoming_edges, node_map, my_needed, seeded_required
+        node,
+        incoming_edges,
+        node_map,
+        my_needed,
+        seeded_required,
+        submodels=submodels,
     )
 
 
@@ -1820,8 +2366,6 @@ class OpaqueContractRule:
         self,
         node: GraphNode,
         parent_ids: Iterable[str],
-        *,
-        strict_projection: bool,
     ) -> ParentDemandResult:
         parent_set = set(parent_ids)
         parent_inputs = declared_inputs_by_parent(node, parent_set)
@@ -1832,9 +2376,9 @@ class OpaqueContractRule:
                 node_id=node.id,
                 node_type=node.data.nodeType.value,
             )
-        if strict_projection and len(parent_set) > 1 and node.data.nodeType == NodeType.POLARS:
+        if len(parent_set) > 1 and node.data.nodeType == NodeType.POLARS:
             return _unprojected_boundary_demands()
-        if strict_projection and _user_code_has_unbounded_projection_contract(node):
+        if _user_code_has_unbounded_projection_contract(node):
             return _unprojected_boundary_demands()
         return ParentDemandResult(
             default=None,
@@ -1904,8 +2448,6 @@ def _must_run_source_user_code_unprojected(node: GraphNode) -> bool:
 def opaque_contract_demands_for_node(
     node: GraphNode,
     parent_ids: Iterable[str],
-    *,
-    strict_projection: bool,
 ) -> ParentDemandResult:
     """Return parent demand for an opaque projection contract.
 
@@ -1914,11 +2456,7 @@ def opaque_contract_demands_for_node(
     projection also needs concrete `inputs` and `outputs` so it can decide what
     each parent owns.
     """
-    return _OPAQUE_CONTRACT_RULE.parent_demands(
-        node,
-        parent_ids,
-        strict_projection=strict_projection,
-    )
+    return _OPAQUE_CONTRACT_RULE.parent_demands(node, parent_ids)
 
 
 @dataclass(frozen=True)
@@ -1933,8 +2471,6 @@ class PolarsFanInRule:
         parent_ids: Iterable[str],
         base_contribution: set[str],
         referenced: set[str],
-        *,
-        strict_projection: bool,
     ) -> ParentDemandResult | None:
         parent_set = set(parent_ids)
         if len(parent_set) <= 1 or node.data.nodeType != NodeType.POLARS:
@@ -1942,7 +2478,6 @@ class PolarsFanInRule:
 
         parent_inputs = declared_inputs_by_parent(node, parent_set)
         if parent_inputs is None:
-            _ = strict_projection
             return _unprojected_boundary_demands()
 
         opaque_parent_ids = [
@@ -1965,11 +2500,15 @@ class PolarsFanInRule:
             covered |= parent_columns
             by_parent[parent_id] = base_contribution & parent_columns
 
-        joins = _join_calls_for_parent_inputs(
-            node,
-            parent_set,
-            strict_projection=strict_projection,
-        )
+        inference = _join_calls_for_parent_inputs(node, parent_set)
+        if inference.unprovable_rule is not None:
+            # The join cannot be proven mechanically, so keep the full-width
+            # boundary and record why rather than guessing a narrower demand.
+            return _unprojected_boundary_demands(
+                rule_name=inference.unprovable_rule,
+                message=inference.unprovable_message,
+            )
+        joins = inference.joins
         for join in joins:
             for left_key, right_key in join.key_pairs:
                 by_parent[join.left_parent].add(left_key)
@@ -1981,7 +2520,6 @@ class PolarsFanInRule:
                 node,
                 parent_set,
                 missing,
-                strict_projection=strict_projection,
             )
             for parent_id, extra_columns in join_demands.items():
                 parent_demand = by_parent[parent_id]
@@ -2028,8 +2566,6 @@ def fan_in_demands_for_node(
     parent_ids: Iterable[str],
     base_contribution: set[str],
     referenced: set[str],
-    *,
-    strict_projection: bool,
 ) -> ParentDemandResult | None:
     """Return routed demands for concrete multi-parent fan-in nodes."""
     return _POLARS_FAN_IN_RULE.parent_demands(
@@ -2037,7 +2573,6 @@ def fan_in_demands_for_node(
         parent_ids,
         base_contribution,
         referenced,
-        strict_projection=strict_projection,
     )
 
 
@@ -2069,10 +2604,8 @@ class EdgeJoinFanInRule:
         base_contribution: set[str],
         referenced: set[str],
         parent_produced: Mapping[str, set[str] | None],
-        *,
-        strict_projection: bool,
     ) -> ParentDemandResult:
-        _ = (referenced, strict_projection)
+        _ = referenced
         incoming = list(incoming_edges)
         parent_set = {edge.source for edge in incoming}
         # Resolve roles and validate config; fail loudly on stale/missing roles.
@@ -2142,8 +2675,6 @@ def edge_join_fan_in_demands_for_node(
     base_contribution: set[str],
     referenced: set[str],
     parent_produced: Mapping[str, set[str] | None],
-    *,
-    strict_projection: bool,
 ) -> ParentDemandResult | None:
     """Return routed demands for an opaque-contract edge-join fan-in node."""
     incoming = list(incoming_edges)
@@ -2155,7 +2686,6 @@ def edge_join_fan_in_demands_for_node(
         base_contribution,
         referenced,
         parent_produced,
-        strict_projection=strict_projection,
     )
 
 
@@ -2441,33 +2971,42 @@ def _parent_aliases(tree: ast.AST, parent_set: set[str]) -> dict[str, str]:
     return aliases
 
 
+FAN_IN_JOIN_UNPARSED_RULE_NAME = "fan_in_join_unparsed"
+FAN_IN_JOIN_DYNAMIC_ARGUMENTS_RULE_NAME = "fan_in_join_dynamic_arguments"
+
+
+@dataclass(frozen=True)
+class _JoinInference:
+    """Inferred fan-in joins plus why the inference could not be proven."""
+
+    joins: list[_JoinCallInfo]
+    unprovable_rule: str | None = None
+    unprovable_message: str | None = None
+
+
 def _join_calls_for_parent_inputs(
     node: GraphNode,
     parent_ids: Iterable[str],
-    *,
-    strict_projection: bool = False,
-) -> list[_JoinCallInfo]:
+) -> _JoinInference:
     """Infer simple Polars join calls between incoming parents from node code."""
     code = node.data.config.get("code")
     if not isinstance(code, str) or ".join" not in code:
-        return []
+        return _JoinInference(joins=[])
     parent_set = set(parent_ids)
     try:
         tree = ast.parse(code)
     except SyntaxError as exc:
-        if strict_projection:
-            raise ProjectionImpossibleError(
-                "Fan-in join projection could not be parsed.",
-                node_id=node.id,
-                node_type=node.data.nodeType.value,
-                reason=str(exc),
-                line=exc.lineno,
-                offset=exc.offset,
-            ) from exc
-        return []
+        return _JoinInference(
+            joins=[],
+            unprovable_rule=FAN_IN_JOIN_UNPARSED_RULE_NAME,
+            unprovable_message=(
+                f"fan-in join projection for node {node.id!r} could not be parsed: {exc}"
+            ),
+        )
 
     aliases = _parent_aliases(tree, parent_set)
     joins: list[_JoinCallInfo] = []
+    dynamic_arguments = False
 
     for ast_node in ast.walk(tree):
         if not isinstance(ast_node, ast.Call):
@@ -2500,12 +3039,7 @@ def _join_calls_for_parent_inputs(
                 else:
                     suffix = literal_suffix
         if unsupported_dynamic_keyword:
-            if strict_projection:
-                raise ProjectionImpossibleError(
-                    "Fan-in join projection requires literal how/suffix arguments.",
-                    node_id=node.id,
-                    node_type=node.data.nodeType.value,
-                )
+            dynamic_arguments = True
             continue
         key_pairs = () if how == "cross" else _join_key_pairs_from_call(ast_node)
         joins.append(
@@ -2517,38 +3051,32 @@ def _join_calls_for_parent_inputs(
                 key_pairs=key_pairs,
             )
         )
-    return joins
+    if dynamic_arguments:
+        return _JoinInference(
+            joins=joins,
+            unprovable_rule=FAN_IN_JOIN_DYNAMIC_ARGUMENTS_RULE_NAME,
+            unprovable_message=(
+                f"fan-in join projection for node {node.id!r} requires literal how/suffix arguments"
+            ),
+        )
+    return _JoinInference(joins=joins)
 
 
 def simple_join_calls_for_parent_inputs(
     node: GraphNode,
     parent_ids: Iterable[str],
-    *,
-    strict_projection: bool = False,
 ) -> tuple[_JoinCallInfo, ...]:
     """Return simple inferred Polars joins between incoming parent frames."""
-    return tuple(
-        _join_calls_for_parent_inputs(
-            node,
-            parent_ids,
-            strict_projection=strict_projection,
-        )
-    )
+    return tuple(_join_calls_for_parent_inputs(node, parent_ids).joins)
 
 
 def join_parent_demands(
     node: GraphNode,
     parent_ids: Iterable[str],
     output_columns: set[str],
-    *,
-    strict_projection: bool = False,
 ) -> tuple[dict[str, set[str]], set[str]]:
     """Return parent input columns inferred from simple Polars join output columns."""
-    joins = _join_calls_for_parent_inputs(
-        node,
-        parent_ids,
-        strict_projection=strict_projection,
-    )
+    joins = _join_calls_for_parent_inputs(node, parent_ids).joins
     if not joins:
         return {}, set()
 
@@ -2587,6 +3115,8 @@ def prune_live_switch_edges(
     edges: list[GraphEdge],
     node_map: Mapping[str, GraphNode],
     source: str,
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> list[GraphEdge]:
     """Remove edges to live-switch nodes from inputs inactive for *source*."""
     switch_nodes = {
@@ -2608,7 +3138,7 @@ def prune_live_switch_edges(
             parent = node_map.get(edge.source)
             if parent is None:
                 continue
-            input_name = edge_input_name(edge, parent)
+            input_name = edge_input_name(edge, parent, submodels=submodels)
             mapped = input_scenario_map.get(input_name)
             if mapped is not None and mapped != source:
                 exclude_edge_ids.add(edge.id)
@@ -2626,7 +3156,12 @@ def prepare_graph(
 ) -> PreparedGraph:
     """Prepare graph lookups used by projection planning."""
     node_map = graph.node_map
-    edges = prune_live_switch_edges(graph.edges, node_map, source)
+    edges = prune_live_switch_edges(
+        graph.edges,
+        node_map,
+        source,
+        submodels=graph.submodels,
+    )
 
     all_ids = set(node_map)
     if target_node_id:
@@ -2644,6 +3179,7 @@ def prepare_graph(
         parents_of=parents_of,
         id_to_name=id_to_name,
         relevant_edges=relevant_edges,
+        submodels=graph.submodels,
     )
 
 
@@ -2717,11 +3253,17 @@ def _lineage_input_bindings(
     incoming_edges: Iterable[GraphEdge],
     node_map: Mapping[str, GraphNode],
     exact_output_by_node: Mapping[str, frozenset[str]],
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> tuple[_LineageInputBinding, ...] | None:
     by_name: dict[str, _LineageInputBinding] = {}
     for edge in incoming_edges:
         try:
-            name = edge_input_name(edge, node_map[edge.source])
+            name = edge_input_name(
+                edge,
+                node_map[edge.source],
+                submodels=submodels,
+            )
         except (KeyError, ValueError):
             return None
         binding = _LineageInputBinding(
@@ -2763,6 +3305,8 @@ def _analyse_polars_node_lineage(
     exact_output_by_node: Mapping[str, frozenset[str]],
     demanded_output: set[str] | None,
     contract: Contract,
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> tuple[ColumnLineageAnalysis, tuple[_LineageInputBinding, ...]] | None:
     if node.data.nodeType is not NodeType.POLARS:
         return None
@@ -2777,6 +3321,7 @@ def _analyse_polars_node_lineage(
         incoming_edges,
         node_map,
         exact_output_by_node,
+        submodels=submodels,
     )
     if not bindings:
         return None
@@ -2812,6 +3357,8 @@ def _exact_structural_outputs(
     node_map: Mapping[str, GraphNode],
     registered_contract_for: Callable[[GraphNode], Contract],
     effective_contract_for: Callable[[GraphNode], Contract],
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> dict[str, frozenset[str]]:
     """Propagate every mechanically proven exact schema topologically."""
     exact: dict[str, frozenset[str]] = {}
@@ -2824,6 +3371,7 @@ def _exact_structural_outputs(
             exact,
             set(),
             effective_contract_for(node_map[node_id]),
+            submodels=submodels,
         )
         if analysed is not None:
             result, _bindings = analysed
@@ -2855,8 +3403,8 @@ def compute_prepared_plan(
     node_map: Mapping[str, GraphNode],
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
     *,
-    strict_projection: bool = False,
     relevant_edges: Iterable[GraphEdge] | None = None,
+    submodels: Mapping[str, Any] | None = None,
 ) -> ProjectionPlan:
     """Run the reverse topological projection sweep on a prepared graph."""
     prepared_edges = _projection_edges(order, children_of, relevant_edges)
@@ -2889,6 +3437,7 @@ def compute_prepared_plan(
         node_map,
         registered_contract_for,
         effective_contract_for,
+        submodels=submodels,
     )
     needed: dict[str, set[str] | None] = {}
     edge_demands: dict[ProjectionEdgeKey, set[str] | None] = {}
@@ -2910,7 +3459,7 @@ def compute_prepared_plan(
                 edge_demands[key] = set(parent_demand)
             edge_reasons[key] = ProjectionReason(
                 rule=result.rule_name,
-                message=message,
+                message=message if result.message is None else result.message,
                 details={} if details is None else details,
             )
 
@@ -2990,15 +3539,6 @@ def compute_prepared_plan(
                         rule="projection_seed",
                         message="caller required columns",
                     )
-                elif strict_projection:
-                    raise ProjectionImpossibleError(
-                        "Projection seed cannot replace opaque demand from "
-                        "multiple downstream consumers.",
-                        node_id=node_id,
-                        node_type=node.data.nodeType.value,
-                        seeded_columns=sorted(seed),
-                        child_node_ids=sorted({edge.target for edge in outgoing}),
-                    )
                 else:
                     node_reasons[node_id] = ProjectionReason(
                         rule="projection_seed_blocked_by_opaque_fan_out",
@@ -3022,7 +3562,7 @@ def compute_prepared_plan(
                     message="caller required columns",
                 )
 
-        if strict_projection and _must_run_source_user_code_unprojected(node):
+        if _must_run_source_user_code_unprojected(node):
             needed[node_id] = None
             node_reasons[node_id] = ProjectionReason(
                 rule=UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME,
@@ -3046,6 +3586,7 @@ def compute_prepared_plan(
             exact_output_by_node,
             my_needed,
             effective_contract_for(node),
+            submodels=submodels,
         )
         if lineage is not None:
             lineage_result, bindings = lineage
@@ -3083,7 +3624,11 @@ def compute_prepared_plan(
                                     if binding.key == key
                                     and binding.name in lineage_result.demands_by_input
                                 ),
-                                edge_input_name(edge, node_map[edge.source]),
+                                edge_input_name(
+                                    edge,
+                                    node_map[edge.source],
+                                    submodels=submodels,
+                                ),
                             )
                         },
                     )
@@ -3118,7 +3663,6 @@ def compute_prepared_plan(
                     set() if my_needed is None else set(my_needed),
                     set(),
                     parent_produced,
-                    strict_projection=strict_projection,
                 )
                 # This block already establishes the helper's Edge Join and
                 # multi-edge preconditions, so its optional case is unreachable.
@@ -3135,6 +3679,7 @@ def compute_prepared_plan(
                     node_map,
                     my_needed,
                     seeded_required,
+                    submodels=submodels,
                 )
                 # The node type and non-empty parent set likewise make the
                 # generic helper's optional case unreachable here.
@@ -3165,6 +3710,7 @@ def compute_prepared_plan(
             node_map,
             my_needed,
             seeded_required,
+            submodels=submodels,
         )
         if routed_demands is not None:
             store_parent_result(
@@ -3197,7 +3743,6 @@ def compute_prepared_plan(
                 set(my_needed),
                 set(),
                 parent_produced,
-                strict_projection=strict_projection,
             )
             if edge_join_demands is not None:
                 store_parent_result(
@@ -3206,11 +3751,7 @@ def compute_prepared_plan(
                     message="edge-join fan-in ownership rule",
                 )
                 continue
-            opaque_demands = opaque_contract_demands_for_node(
-                node,
-                parent_ids,
-                strict_projection=strict_projection,
-            )
+            opaque_demands = opaque_contract_demands_for_node(node, parent_ids)
             store_parent_result(
                 incoming,
                 opaque_demands,
@@ -3224,7 +3765,6 @@ def compute_prepared_plan(
             parent_ids,
             base_contribution,
             referenced,
-            strict_projection=strict_projection,
         )
         if fan_in_demands is not None:
             store_parent_result(
@@ -3455,11 +3995,8 @@ def plan(request: ProjectionRequest) -> ProjectionPlan:
         _children_of(prepared.order, prepared.parents_of),
         prepared.node_map,
         required_columns_by_node=request.required_columns_by_node,
-        strict_projection=strict_projection_required(
-            request.profile,
-            request.required_columns_by_node,
-        ),
         relevant_edges=prepared.relevant_edges,
+        submodels=prepared.submodels,
     )
     return with_api_input_port_projection_boundaries(
         projection_plan,

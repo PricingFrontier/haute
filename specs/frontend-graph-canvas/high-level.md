@@ -85,9 +85,21 @@ bound public port hard-blocks the transaction and lists all affected
 instance/port pairs. Interface-preserving internal edits save once and become
 visible from all occurrences. Per-instance internal overrides are not offered.
 
-Reload, WebSocket replacement, undo/redo, breadcrumbs, comparison views, and
-dirty-state tracking preserve immutable definition/instance/port identities as
-well as occurrence-specific positions and bindings.
+Reload, WebSocket replacement, create/dissolve response hydration, undo/redo,
+breadcrumbs, comparison views, and dirty-state tracking preserve immutable
+definition/instance/port identities, the complete definition graph metadata,
+and occurrence-specific positions and bindings.
+
+An output-interface edit is published only with an exact authoritative handle
+identity map on every parent occurrence. While that identity is resolving,
+later boundary gestures extend the same pending candidate and supersede only
+the obsolete request; they are not recomputed from the last committed graph or
+reported as failed workspace changes. Staleness is judged structurally — node
+and edge identities and every definition's public interface — not by object
+identity, so selecting or moving a node while identities resolve extends the
+pending candidate and those positions and selections are merged into the
+committed view rather than reverted. Only a structural change voids the
+candidate, with the error toast.
 
 - **Node rendering.** All non-submodel pipeline node types render through one
   component, `PipelineNode`, dispatched via a shared `nodeTypes` registry
@@ -165,11 +177,11 @@ well as occurrence-specific positions and bindings.
   source-right for Input and target-left for Output. In the canonical
   projection, Input lists one row per declared public input port and maps its
   immutable `portId` to one or more ordered internal target endpoints. Its
-  child-side executable input name is the sanitised port id; the displayed
-  label never becomes parameter identity. Output keeps one target handle;
+  child-side executable input name is the sanitised public input label; the
+  immutable port id remains handle identity only. Output keeps one target handle;
   every child-to-Output mapping carries an immutable public output `portId` and
   one internal source endpoint. A canonical occurrence contributes the
-  sanitised `<alias>__<portId>` name downstream. Parent bindings stay on
+  sanitised public output label downstream. Parent bindings stay on
   `in__<portId>`/`out__<portId>`. Changing internal endpoints while retaining
   a port id and direction is a compatible shared-definition edit; removing or
   changing the direction of a bound port is rejected atomically across all
@@ -462,8 +474,8 @@ well as occurrence-specific positions and bindings.
 - **Connections that would duplicate an input name are rejected at drag
   time.** Every ordinary incoming edge contributes its API frame label or
   sanitised source label. A canonical drilled Input contributes its sanitised
-  public port id, and a canonical occurrence output contributes sanitised
-  `<alias>__<portId>`. A connection whose derived name duplicates an existing
+  public input label, and a canonical occurrence output contributes its sanitised
+  public output label. A connection whose derived name duplicates an existing
   executable input on the target is refused with a named toast, mirroring the
   backend's save-time `ParseError`. The
   alternative — accepting the edge and letting codegen suffix a parameter —

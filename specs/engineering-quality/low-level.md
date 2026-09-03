@@ -23,10 +23,11 @@
 | `frontend/eslint.config.js` | Defines blocking browser TypeScript/React ESLint rules, fourteen explicit pre-existing file/rule exceptions, generated-report ignores, and underscore-prefixed intentionally-unused names. |
 | `frontend/vitest.config.ts` | Configures the Vitest unit-test environment, setup, source/test selection, coverage reporting, and blocking 80/75/80/80 global thresholds. |
 | `frontend/playwright.config.ts` | Configures serial browser E2E projects, retries, artifacts, and readiness-managed local E2E server. |
+| `frontend/e2e/browserInteractions.ts` | Shared Playwright helpers for app-level modifier shortcuts and React Flow submodel double-click dispatch. |
 | `frontend/e2e/core-flows.spec.ts` | Playwright coverage for core browser flows. |
 | `frontend/e2e/canvas-assurance.spec.ts` | Deterministic Chromium coverage and visual baselines for mixed Banding-to-Rating persistence and optimiser result/apply/MLflow-boundary journeys. |
 | `frontend/e2e/data-io-nodes.spec.ts` | Playwright coverage for data-I/O node browser flows. |
-| `frontend/e2e/edge-join.spec.ts` | Deterministic full-browser Edge Join workflow: compatible-edge feedback and insertion, configuration/preview, save/reload topology, repeated joins, named API-input source-handle preservation, and downstream trace highlighting. |
+| `frontend/e2e/edge-join.spec.ts` | Deterministic full-browser Edge Join workflow: compatible-edge feedback and insertion, configuration/preview, save/reload topology, repeated joins, named API-input source-handle preservation, immediate unsaved-submodel drill/render identity coverage, and downstream trace highlighting. |
 | `frontend/e2e/data-preview-scroll.benchmark.spec.ts` | `@benchmark` Playwright coverage for data-preview scrolling. |
 | `frontend/e2e/git-graph.spec.ts` | Playwright coverage for the Git graph. |
 | `frontend/e2e/git-sidebar-regression.spec.ts` | Playwright regression coverage for the Git sidebar. |
@@ -163,7 +164,9 @@
   persisted source handle. The workflow targets nodes, handles, and rendered
   edge ids through stable locators and derives drag coordinates from live
   handle bounds and rendered SVG path geometry; it does not use production
-  data, fixed sleeps, or hard-coded canvas coordinates.
+  data, fixed sleeps, or hard-coded canvas coordinates. The same fixture also
+  groups the complete graph and immediately drills into the unsaved definition,
+  proving its API Input retains an authoritative rendered source handle.
 - **Pytest configuration** constrains collection to `tests/`, has strict
   markers/configuration/xfails, excludes `perf` by default, and recognises
   `slow`, `perf`, and `sandbox_strict` markers.
@@ -429,8 +432,9 @@ are never retained in the report artifact.
   real canvas and backend: pre-release candidate feedback, insertion and role
   handles, same-name-key configuration, joined preview columns/rows, persisted
   split topology/config after reload, two joins on one branch after a second
-  reload, exact named API-input `sourceHandle`, and an Edge Join retained and
-  highlighted in a downstream trace. Private React state is not an oracle.
+  reload, exact named API-input `sourceHandle`, immediate drill and render of an
+  API Input inside a newly created unsaved submodel, and an Edge Join retained
+  and highlighted in a downstream trace. Private React state is not an oracle.
 - `tests/test_check_critical_coverage.py`, `tests/test_check_changed_coverage.py`,
   `tests/test_mutation_suite_runner.py`, `tests/test_run_mutation_pytest.py`,
   `tests/test_mutation_sharding.py`, `tests/test_run_perf_suite.py`,

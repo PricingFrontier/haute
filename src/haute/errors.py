@@ -141,6 +141,45 @@ class ChunkPlanUnsupportedError(BoundedMemoryUnsupportedError):
     """Raised when a graph cannot prove a safe chunked execution plan."""
 
 
+class ChunkUserCodeUnsupportedError(ChunkPlanUnsupportedError):
+    """Raised when user Polars code is not provably chunk-local.
+
+    The public payload copies the classifier decision so callers can route the
+    work to the full executor and surface a warning naming the blocking
+    operator, closed reason, and source location without scraping the message.
+    """
+
+    error_code = "chunk_user_code_unsupported"
+    public_fields = ("node_id", "node_type", "reason", "blocking_operator", "line", "column")
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        node_id: str,
+        node_type: str,
+        reason: str,
+        blocking_operator: str | None,
+        line: int | None,
+        column: int | None,
+    ) -> None:
+        self.node_id = node_id
+        self.node_type = node_type
+        self.reason = reason
+        self.blocking_operator = blocking_operator
+        self.line = line
+        self.column = column
+        super().__init__(
+            message,
+            node_id=node_id,
+            node_type=node_type,
+            reason=reason,
+            blocking_operator=blocking_operator,
+            line=line,
+            column=column,
+        )
+
+
 class ChunkMemoryRiskError(BoundedMemoryUnsupportedError):
     """Raised when the minimum executable chunk exceeds its byte budget."""
 
@@ -187,7 +226,7 @@ class ChunkMemoryRiskError(BoundedMemoryUnsupportedError):
 
 
 class GroupByExecutionUnsupportedError(BoundedMemoryUnsupportedError):
-    """Raised before a group-by that cannot honour the active profile."""
+    """Raised before a group-by that cannot honour its admission contract."""
 
     error_code = "group_by_execution_unsupported"
     public_fields = (
@@ -350,6 +389,57 @@ class TraceCorrelationUnsupportedError(ExecutionError):
         )
 
 
+INPUT_PREPARATION_REASON_CODES: tuple[str, ...] = (
+    "cap_unavailable",
+    "build_failed",
+    "memory_limited",
+    "cancelled",
+    "timed_out",
+    "quota_exceeded",
+)
+
+
+class InputPreparationError(ExecutionError):
+    """Raised when automatic snapshot preparation cannot publish a generation.
+
+    Carries digests and codes only: never a configured locator or a secret.
+    """
+
+    error_code = "input_preparation_failed"
+    public_fields = (
+        "node_id",
+        "identity_digest",
+        "build_class",
+        "reason_code",
+        "remediation",
+    )
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        node_id: str,
+        identity_digest: str,
+        build_class: str,
+        reason_code: str,
+        remediation: str,
+    ) -> None:
+        if reason_code not in INPUT_PREPARATION_REASON_CODES:
+            raise ValueError(f"unknown input preparation reason code: {reason_code!r}")
+        self.node_id = node_id
+        self.identity_digest = identity_digest
+        self.build_class = build_class
+        self.reason_code = reason_code
+        self.remediation = remediation
+        super().__init__(
+            message,
+            node_id=node_id,
+            identity_digest=identity_digest,
+            build_class=build_class,
+            reason_code=reason_code,
+        )
+
+
 class ContractMismatchError(HauteError):
     """Raised when a declared column contract does not match observed columns.
 
@@ -369,7 +459,3 @@ class ContractMismatchError(HauteError):
     The error always names the offending node id and the symmetric
     column diff so a user can fix a typo'd contract in one edit.
     """
-
-
-class ProjectionImpossibleError(ContractMismatchError, BoundedMemoryUnsupportedError):
-    """Raised when bounded projection cannot determine a safe column subset."""

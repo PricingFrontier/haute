@@ -6,7 +6,7 @@
  * orchestration and rendering.
  */
 import { useCallback, useRef, useState, type MutableRefObject } from "react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node, Edge, NodeChange } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useUIStore from "../stores/useUIStore"
@@ -37,6 +37,8 @@ type UseNodeHandlersParams = {
   commitSharedNodeDeletion?: (
     nodeIds: ReadonlySet<string>,
     selectedEdgeIds?: ReadonlySet<string>,
+    nodeChanges?: NodeChange[],
+    onSettled?: (committed: boolean) => void,
   ) => SharedNodeDeletionResult
 }
 // Strips one trailing copy-number so cloning "scoring_10" counts from
@@ -83,8 +85,44 @@ export default function useNodeHandlers({
       addToast("error", 'Use "Dissolve Submodel" to remove a submodel owner; instance copies delete directly')
       return
     }
-    const sharedDeletion = commitSharedNodeDeletion?.(new Set([id]))
+    // Selection, preview and cached-result cleanup only runs once the node has
+    // actually left the graph; a shared-boundary deletion may still be
+    // resolving parent identities and can yet fail.
+    const cleanupAfterRemoval = () => {
+      setSelectedNode((prev) => (prev?.id === id ? null : prev))
+      setPreviewData((prev) => (prev?.nodeId === id ? null : prev))
+      // Defer cache cleanup by one task tick (Issue #32). If `clearNode(id)`
+      // fires synchronously here, any downstream component reading the store
+      // during the same render cycle (before React has committed the
+      // setNodes update that removes the node from the graph) will see a
+      // state where the node still exists in the graph but its cached result
+      // has already been wiped — producing a flicker-crash.
+      setTimeout(() => { clearNode(id) }, 0)
+      if (lastSelectedNodeRef.current?.id === id) {
+        lastSelectedNodeRef.current = null
+        setLastSelectedId?.(null)
+      }
+
+      // Clear UI dialogs that reference the deleted node (Issues #8, #14)
+      const uiState = useUIStore.getState()
+      if (uiState.renameDialog?.nodeId === id) setRenameDialog(null)
+      const subDlg = uiState.submodelDialog
+      if (subDlg && subDlg.nodeIds.includes(id)) setSubmodelDialog(null)
+    }
+
+    let cleanedUp = false
+    const sharedDeletion = commitSharedNodeDeletion?.(
+      new Set([id]),
+      undefined,
+      undefined,
+      (committed) => {
+        if (!committed) return
+        cleanedUp = true
+        cleanupAfterRemoval()
+      },
+    )
     if (sharedDeletion === "blocked") return
+    if (sharedDeletion === "pending") return
 
     // Node + its edges removed as ONE undo step. setNodes-then-setEdges would
     // push two snapshots, so a single delete would need two undos to reverse
@@ -95,25 +133,7 @@ export default function useNodeHandlers({
         (eds) => eds.filter((edge) => edge.source !== id && edge.target !== id),
       )
     }
-    setSelectedNode((prev) => (prev?.id === id ? null : prev))
-    setPreviewData((prev) => (prev?.nodeId === id ? null : prev))
-    // Defer cache cleanup by one task tick (Issue #32). If `clearNode(id)`
-    // fires synchronously here, any downstream component reading the store
-    // during the same render cycle (before React has committed the
-    // setNodes update that removes the node from the graph) will see a
-    // state where the node still exists in the graph but its cached result
-    // has already been wiped — producing a flicker-crash.
-    setTimeout(() => { clearNode(id) }, 0)
-    if (lastSelectedNodeRef.current?.id === id) {
-      lastSelectedNodeRef.current = null
-      setLastSelectedId?.(null)
-    }
-
-    // Clear UI dialogs that reference the deleted node (Issues #8, #14)
-    const uiState = useUIStore.getState()
-    if (uiState.renameDialog?.nodeId === id) setRenameDialog(null)
-    const subDlg = uiState.submodelDialog
-    if (subDlg && subDlg.nodeIds.includes(id)) setSubmodelDialog(null)
+    if (!cleanedUp) cleanupAfterRemoval()
   }, [graphRef, setNodesAndEdges, lastSelectedNodeRef, setSelectedNode, setLastSelectedId, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog, addToast, commitSharedNodeDeletion])
 
   const handleDuplicateNode = useCallback(async (id: string): Promise<void> => {

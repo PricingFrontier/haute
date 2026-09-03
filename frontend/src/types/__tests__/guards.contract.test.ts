@@ -276,6 +276,21 @@ function executionMetricsFixture() {
         pressure_ratio: 0.75,
       },
     ],
+    input_preparation: [
+      {
+        node_id: "policies",
+        identity_digest: "digest-1",
+        action: "reused",
+        build_class: "in_memory",
+        execution: "in_process",
+        memory_limit_bytes: 2000,
+        elapsed_seconds: 0.25,
+        row_count: 10,
+        size_bytes: 512,
+        generation_id: "gen-1",
+        warning_code: null,
+      },
+    ],
     cache_proof: {
       hits: 1,
       misses: 2,
@@ -297,6 +312,7 @@ describe("parseExecutionStrategyDiagnostic", () => {
     ["full-width-admitted-eager", "admitted_eager"],
     ["unprojected-streaming-boundary", "boundary"],
     ["materialisation-boundary", "boundary"],
+    ["full-width-conservative", "warned"],
     ["unsupported", "rejected"],
     ["not-planned", "not_planned"],
   ])("accepts the V1 %s strategy mapping", (strategy, status) => {
@@ -558,6 +574,36 @@ describe("API response guards", () => {
     expect(parsed.execution_metrics?.admission?.available_ram_bytes).toBe(8000)
     expect(parsed.execution_metrics?.memory_pressure_events[0]?.pressure_ratio).toBe(0.75)
     expect(parsed.execution_metrics?.memory_pressure_events[0]?.budget_policy).toBe("adaptive_local")
+    expect(parsed.execution_metrics?.input_preparation).toHaveLength(1)
+    expect(parsed.execution_metrics?.input_preparation[0]?.node_id).toBe("policies")
+    expect(parsed.execution_metrics?.input_preparation[0]?.action).toBe("reused")
+    expect(parsed.execution_metrics?.input_preparation[0]?.execution).toBe("in_process")
+    expect(parsed.execution_metrics?.input_preparation[0]?.elapsed_seconds).toBe(0.25)
+    expect(parsed.execution_metrics?.input_preparation[0]?.warning_code).toBeNull()
+  })
+
+  it("defaults input preparation records to an empty list when omitted", () => {
+    const { input_preparation: _omitted, ...metrics } = executionMetricsFixture()
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: metrics,
+    })
+
+    expect(parsed.execution_metrics?.input_preparation).toEqual([])
+  })
+
+  it("rejects an input preparation record with an unknown action literal", () => {
+    const metrics = executionMetricsFixture()
+
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...metrics,
+          input_preparation: [{ ...metrics.input_preparation[0], action: "recycled" }],
+        },
+      }),
+    ).toThrow(/action/i)
   })
 
   it("makes malformed execution-strategy diagnostics unavailable without rejecting metrics", () => {

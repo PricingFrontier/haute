@@ -146,9 +146,12 @@
   "error"|"info"|"warning", text}`. `id` is a monotonically increasing
   string counter, not a UUID.
 - **`GraphPayload`** (`api/types.ts`): `{nodes, edges, submodels?,
-  preamble?}` — the minimal shape every pipeline-mutating endpoint accepts;
-  distinct from the richer `PipelineGraph` (adds pipeline metadata) that
-  `loadPipeline`/`getCommitPipeline` return.
+  preamble?}` — the minimal canonical shape every pipeline-mutating endpoint
+  accepts. Before transport, the browser recursively removes React Flow UI
+  fields and all underscore-prefixed editor metadata from root and embedded
+  graphs without mutating the live graph. It is distinct from the richer
+  `PipelineGraph` (adds pipeline metadata) that `loadPipeline`/
+  `getCommitPipeline` return.
 
 ## Control flow
 
@@ -536,10 +539,14 @@ producer's Python-only canonical-JSON tie-break.
 
 The parser enforces the authoritative mapping: `projected` and `schema-all-except` map to
 `projected`; `full-width-admitted-eager` to `admitted_eager`;
-`unprojected-streaming-boundary` and `materialisation-boundary` to `boundary`; `unsupported`
-to `rejected`; and `not-planned` to `not_planned`. The shared UI states are therefore
-`projected`, `boundary`, `admitted_eager`, `rejected`, and `not_planned`, plus a distinct
-diagnostic-unavailable render state.
+`unprojected-streaming-boundary` and `materialisation-boundary` to `boundary`;
+`full-width-conservative` to `warned`; `unsupported` to `rejected`; and `not-planned` to
+`not_planned`. The shared UI states are therefore `projected`, `boundary`, `admitted_eager`,
+`warned`, `rejected`, and `not_planned`, plus a distinct diagnostic-unavailable render state.
+`warned` means the run completed under its full reserved memory envelope because the
+group-by estimate was unavailable; it is rendered as a warning, never an error, and a
+terminal memory-limit failure or a memory-pressure event on the same run takes precedence
+over the warned strategy in every consumer.
 
 Consumers ignore unknown additive fields only within version 1. Missing or malformed required
 fields and unknown version-1 enum values throw; unsupported higher versions produce diagnostic
@@ -615,11 +622,22 @@ labels. `adaptPipelineEditorDocument` clones configs and maps these values to tr
 
 `editorIdentities.ts` sends bounded prospective nodes to
 `POST /api/pipeline/editor-identities`, requires response cardinality and order to exactly match
-the request, requires each source-handle map to cover exactly the requested handles, and enforces
+the request, supplies exact public-label coverage for submodel and drilled Input handles,
+requires each returned source-handle map to cover exactly the requested handles, and enforces
 ordinary-versus-multi-output default-identity nullability before attaching node and edge identities
 immutably. Missing, reordered, malformed, semantically mismatched, or rejected identities throw
 before callers commit graph or history state. No frontend
 production module derives Python executable names or config references.
+
+Raw canonical graphs entering an editable surface are resolved recursively and
+atomically: the root is one identity scope, and each embedded submodel definition
+is a separate scope. A definition scope adds a synthetic Input boundary whose
+handles are its declared input-port ids and whose labels are the corresponding
+public input labels; the returned exact handle map becomes
+the definition's transient `_inputPortInputNames`, while child-node and child-edge
+identities are attached normally. No partially resolved root or registry is
+published. Conversely, every canonical graph request uses the shared recursive
+projection that removes these editor-only fields before schema validation.
 
 `frontend/src/stores/useDocumentStatusStore.ts` performs one atomic status transition and clones
 all externally supplied arrays/objects. Its `capabilities` value is the shared UI admission fence;

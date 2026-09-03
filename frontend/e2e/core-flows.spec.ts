@@ -2,8 +2,9 @@ import { execFileSync } from "node:child_process"
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test } from "@playwright/test"
 
+import { dispatchAppShortcut, dispatchNodeDoubleClick } from "./browserInteractions"
 import { e2eProjectRoot, resetE2eProject, unsetWorkingBranch } from "./projectIsolation"
 
 const ratingDir = resolve(e2eProjectRoot, "rating")
@@ -12,29 +13,6 @@ const utilityModulePath = resolve(ratingDir, "utility", "browser_helpers.py")
 const gitMainPath = resolve(ratingDir, "main.py")
 const browserSubmodelPath = resolve(e2eProjectRoot, "rating", "modules", "browser_group.py")
 const selectAll = process.platform === "darwin" ? "Meta+A" : "Control+A"
-
-async function dispatchAppShortcut(page: Page, key: string): Promise<void> {
-  await page.evaluate(
-    ({ key, useMeta }) => {
-      window.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key,
-          bubbles: true,
-          cancelable: true,
-          ctrlKey: !useMeta,
-          metaKey: useMeta,
-        }),
-      )
-    },
-    { key, useMeta: process.platform === "darwin" },
-  )
-}
-
-async function dispatchNodeDoubleClick(page: Page, label: string): Promise<void> {
-  await page
-    .locator(`[aria-label^="Submodel node: ${label}"]`)
-    .dispatchEvent("dblclick", { bubbles: true, cancelable: true, composed: true })
-}
 
 test.describe.configure({ mode: "serial" })
 

@@ -600,6 +600,15 @@ def test_heavy_execution_admission_counts_in_flight_budget(
                 memory_sampler=lambda: 100,
             )
         assert exc_info.value.reason == "in_flight_memory_budget_exceeded"
+        # The refusal names the work it lost to, not just the byte totals.
+        assert exc_info.value.in_flight_operations == ("optimiser_setup:optimiser_setup_a",)
+        assert exc_info.value.to_payload()["in_flight_operations"] == [
+            "optimiser_setup:optimiser_setup_a"
+        ]
+        from haute.routes._memory_messages import memory_limit_user_message
+
+        message = memory_limit_user_message(exc_info.value, operation_noun="Optimiser estimate")
+        assert "reserved by optimiser_setup:optimiser_setup_a" in message
 
         first.release_admission()
 
@@ -4154,10 +4163,11 @@ def test_optimiser_auto_range_start_creates_admitted_context(monkeypatch) -> Non
     assert background_context.admission is not None
 
 
-def test_train_execute_and_sink_forwards_execution_context(tmp_path) -> None:
-    from haute.routes._job_store import JobStore
-    from haute.routes._train_service import TrainService
-    from haute.schemas import TrainRequest
+def test_train_prepare_training_data_forwards_execution_context(tmp_path) -> None:
+    from haute.routes._training_preparation import (
+        TrainingPreparationRequest,
+        prepare_training_data,
+    )
 
     graph = make_graph(
         {
@@ -4174,9 +4184,7 @@ def test_train_execute_and_sink_forwards_execution_context(tmp_path) -> None:
             "edges": [],
         }
     )
-    body = TrainRequest(graph=graph, node_id="model")
-    service = TrainService(JobStore())
-    job_id = service._store.create_job({"status": "running"})
+    job_id = "job-forwards-context"
     context = ExecutionContext(
         operation="training",
         profile=ExecutionProfile.TRAINING_PREP,
@@ -4189,20 +4197,27 @@ def test_train_execute_and_sink_forwards_execution_context(tmp_path) -> None:
         captured.update(kwargs)
         return {"model": pl.DataFrame({"target": [1.0]}).lazy()}, ["model"], {}, {}
 
+    tmp_parquet = str(tmp_path / "prepared.parquet")
+    request = TrainingPreparationRequest(
+        graph=graph,
+        node_id="model",
+        job_id=job_id,
+        source="live",
+        parquet_path=tmp_parquet,
+        config={},
+        project_root=str(tmp_path),
+    )
     with patch(
-        "haute.routes._training_lifecycle.execute_lazy_graph", side_effect=fake_execute_lazy
+        "haute.routes._training_preparation.execute_lazy_graph", side_effect=fake_execute_lazy
     ):
-        tmp_parquet = service._execute_and_sink(
-            body,
-            preamble_ns=None,
-            row_limit=None,
-            job_id=job_id,
-            execution_context=context,
-        )
+        outcome = prepare_training_data(request, execution_context=context)
 
+    assert outcome.failure is None
     assert captured["execution_context"] is context
     assert any(metric.name == "training_sink_write" for metric in context.metrics.snapshot())
-    stored_metrics = service._store.require_job(job_id)["execution_metrics"]
+    # The child's own payload is the one the supervisor persists on the job.
+    stored_metrics = outcome.execution_metrics
+    assert stored_metrics is not None
     assert stored_metrics["operation"] == "training"
     assert stored_metrics["job_id"] == job_id
     assert pl.read_parquet(tmp_parquet)["target"].to_list() == [1.0]
@@ -5406,3 +5421,128 @@ def test_deploy_pyfunc_predict_creates_admitted_live_context(monkeypatch) -> Non
     assert context.memory_limit_bytes == 128 * 1024 * 1024
     assert context.admission is not None
     assert context.admission.rss_at_admission_bytes == 11_000
+
+
+def test_conservative_strategy_reports_materialising_streamability() -> None:
+    """A warned conservative run still materialises at its group-by boundary."""
+    from types import SimpleNamespace
+
+    from haute.execution import (
+        BoundedDiagnosticCollection,
+        ExecutionBoundedness,
+        ExecutionStrategy,
+        ExecutionStrategyDiagnostic,
+    )
+
+    context = ExecutionContext(operation="sink", profile=ExecutionProfile.LAZY_SINK)
+    diagnostic = ExecutionStrategyDiagnostic.create(
+        strategy=ExecutionStrategy.FULL_WIDTH_CONSERVATIVE,
+        profile=ExecutionProfile.LAZY_SINK,
+        boundedness=ExecutionBoundedness.UNBOUNDED,
+        reason_code="materialisation_estimate_unavailable_conservative",
+        boundaries=BoundedDiagnosticCollection.available([]),
+        reasons=BoundedDiagnosticCollection.available([]),
+        provenance=BoundedDiagnosticCollection.available([]),
+    )
+    context.projection_plan = SimpleNamespace(diagnostic=diagnostic)  # type: ignore[assignment]
+
+    payload = context.metrics_payload(status="completed")
+
+    assert payload["execution_strategy"]["status"] == "warned"
+    assert payload["streamability"] == "materialising"
+    assert (
+        "materialisation_estimate_unavailable_conservative"
+        in (payload["streamability_evidence"]["items"])
+    )
+
+
+def test_in_flight_refusal_names_sorted_unique_holders_up_to_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Holders are ``profile:operation``, deduplicated, sorted, and capped at eight."""
+    from haute._execution_admission import (
+        _MAX_REPORTED_IN_FLIGHT_OPERATIONS,
+        create_admitted_execution_context,
+    )
+
+    _clear_execution_memory_env(monkeypatch)
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "1")
+
+    held = []
+    # Ten distinct operations plus one duplicate name: eleven reservations, ten
+    # distinct labels, of which only the first eight sorted labels are reported.
+    operations = [f"setup_{index:02d}" for index in range(10)] + ["setup_00"]
+    try:
+        for operation in operations:
+            held.append(
+                create_admitted_execution_context(
+                    operation=operation,
+                    profile=ExecutionProfile.OPTIMISER_SETUP,
+                    memory_sampler=lambda: 100,
+                )
+            )
+        monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", str(20 * 1024))
+        with pytest.raises(ExecutionAdmissionError) as exc_info:
+            create_admitted_execution_context(
+                operation="train_prepare",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+            )
+    finally:
+        for context in held:
+            context.release_admission()
+
+    error = exc_info.value
+    assert error.reason == "in_flight_memory_budget_exceeded"
+    assert error.in_flight_reserved_bytes == 11 * 1024 * 1024
+    assert _MAX_REPORTED_IN_FLIGHT_OPERATIONS == 8
+    assert error.in_flight_operations == tuple(
+        f"optimiser_setup:setup_{index:02d}" for index in range(8)
+    )
+    assert error.to_payload()["in_flight_operations"] == list(error.in_flight_operations)
+
+
+def test_input_preparation_records_reach_the_metrics_payload() -> None:
+    from haute._execution_schemas import ExecutionMetricsPayload
+    from haute._input_preparation import InputPreparationRecord
+
+    context = ExecutionContext(operation="metrics", profile=ExecutionProfile.LAZY_SINK)
+    assert context.metrics_payload()["input_preparation"] == []
+
+    context.record_input_preparation(
+        InputPreparationRecord(
+            node_id="input",
+            identity_digest="b" * 64,
+            action="refreshed",
+            build_class="bounded",
+            execution="worker",
+            memory_limit_bytes=1024,
+            elapsed_seconds=0.5,
+            row_count=3,
+            size_bytes=64,
+            generation_id="8f0d4a2c-1c3b-4f5a-9c2d-0e1f2a3b4c5d",
+            warning_code="eager_read_mode_scanned",
+        )
+    )
+    payload = context.metrics_payload()
+
+    assert payload["input_preparation"] == [
+        {
+            "node_id": "input",
+            "identity_digest": "b" * 64,
+            "action": "refreshed",
+            "build_class": "bounded",
+            "execution": "worker",
+            "memory_limit_bytes": 1024,
+            "elapsed_seconds": 0.5,
+            "row_count": 3,
+            "size_bytes": 64,
+            "generation_id": "8f0d4a2c-1c3b-4f5a-9c2d-0e1f2a3b4c5d",
+            "warning_code": "eager_read_mode_scanned",
+        }
+    ]
+    validated = ExecutionMetricsPayload.model_validate(payload)
+    assert validated.input_preparation[0].action == "refreshed"

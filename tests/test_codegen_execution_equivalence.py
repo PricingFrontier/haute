@@ -36,12 +36,14 @@ from polars.testing import assert_frame_equal
 from haute._builders import _build_node_fn
 from haute._config_io import collect_node_configs, config_path_for_node
 from haute._execute_lazy import _execute_lazy
+from haute._execution_admission import create_admitted_execution_context
 from haute._json_flatten import _json_cache_dir
 from haute._json_shred._cache import build_per_port_cache
 from haute._model_scorer import _scenario_ctx
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code
+from haute.execution import ExecutionProfile
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -93,9 +95,27 @@ def _write_and_import(graph: PipelineGraph, tmp_path: Path):
 
 
 def _executor_frame(graph: PipelineGraph, target_id: str, source: str) -> pl.DataFrame:
-    """Full-frame output for *target_id* from the canvas lazy executor."""
-    outputs, _, _, _ = _execute_lazy(graph, _build_node_fn, source=source)
-    return _collect(outputs[target_id])
+    """Full-frame output for *target_id* from the canvas lazy executor.
+
+    The reference runs under an admitted execution context, as every production
+    surface does: a materialisation boundary (a join, a sort, a group-by) is a
+    typed rejection without one, and the generated standalone module is the
+    user's own process with no such gate.
+    """
+    context = create_admitted_execution_context(
+        operation="codegen_equivalence_reference",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    try:
+        outputs, _, _, _ = _execute_lazy(
+            graph, _build_node_fn, source=source, execution_context=context
+        )
+        return _collect(outputs[target_id])
+    finally:
+        # Release the in-flight reservation as the production surfaces do; an
+        # unreleased admission would count against every later admission in
+        # the process.
+        context.release_admission(preserve_primary_error=True)
 
 
 def _executor_node_fn(node: GraphNode, source_names, source_ids, source: str):

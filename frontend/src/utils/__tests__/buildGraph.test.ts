@@ -29,8 +29,10 @@ describe("buildGraph", () => {
     expect(result.nodes[0].id).toBe("n1")
     expect(result.nodes[0].type).toBe("polars")
     expect(result.nodes[0].position).toEqual({ x: 0, y: 0 })
-    expect(result.nodes[0].data).toBe(nodes[0].data)
-    expect(result.edges).toBe(edges)
+    expect(result.nodes[0].data).toEqual(nodes[0].data)
+    expect(result.nodes[0].data).not.toBe(nodes[0].data)
+    expect(result.edges).toEqual(edges)
+    expect(result.edges).not.toBe(edges)
   })
 
   it("falls back to data.nodeType when node.type is undefined", () => {
@@ -55,7 +57,7 @@ describe("buildGraph", () => {
     expect(result.nodes[0].type).toBe("submodel")
   })
 
-  it("passes through submodels and preamble when provided", () => {
+  it("preserves canonical submodels and preamble when provided", () => {
     // Catches: if these optional fields are accidentally dropped,
     // saving a pipeline with submodels or preamble would lose that data.
     const submodels = { sub1: { graph: { nodes: [], edges: [] } } }
@@ -63,7 +65,8 @@ describe("buildGraph", () => {
 
     const result = buildGraph([], [], submodels, preamble)
 
-    expect(result.submodels).toBe(submodels)
+    expect(result.submodels).toEqual(submodels)
+    expect(result.submodels).not.toBe(submodels)
     expect(result.preamble).toBe(preamble)
   })
 
@@ -101,6 +104,51 @@ describe("buildGraph", () => {
     })
     expect(result.nodes[0].data.description).toBe("Important step")
   })
+
+  it("strips editor identities from root and nested graphs", () => {
+    const nodes = [makeSimpleNode("n1", "polars", {
+      config: { _semanticOption: true },
+      _functionName: "root_identity",
+      _defaultInputName: "root_identity",
+    })]
+    const edges = [{
+      ...makeSimpleEdge("e1", "n1", "n2"),
+      data: { _inputName: "root_identity" },
+    }]
+    const submodels = {
+      pricing: {
+        definitionId: "pricing",
+        file: "modules/pricing.py",
+        graph: {
+          nodes: [{
+            id: "child",
+            type: "polars",
+            position: { x: 0, y: 0 },
+            data: { label: "Child", nodeType: "polars", _functionName: "child_identity" },
+          }],
+          edges: [],
+        },
+        inputPorts: [],
+        outputPorts: [],
+        _inputPortInputNames: {},
+      },
+    }
+
+    const result = buildGraph(nodes, edges, submodels)
+
+    expect(result.nodes[0].data).toEqual({
+      label: "Node n1",
+      description: "",
+      nodeType: "polars",
+      config: { _semanticOption: true },
+    })
+    expect(result.edges[0]).not.toHaveProperty("data")
+    const definition = result.submodels?.pricing as Record<string, unknown>
+    expect(definition).not.toHaveProperty("_inputPortInputNames")
+    const child = (definition.graph as { nodes: Array<{ data: Record<string, unknown> }> }).nodes[0]
+    expect(child.data).not.toHaveProperty("_functionName")
+    expect(nodes[0].data).toHaveProperty("_functionName", "root_identity")
+  })
 })
 
 describe("graphForRequestIdentity", () => {
@@ -125,27 +173,29 @@ describe("graphForRequestIdentity", () => {
       nodeType: "polars",
       config: { code: "pl.col('value')" },
     }
+    const topNode = {
+      id: "top",
+      type: "polars",
+      data: { ...semanticData, ...volatileNodeData },
+    }
+    const nestedNode = {
+      id: "nested",
+      type: "polars",
+      data: {
+        ...semanticData,
+        label: "Nested",
+        ...volatileNodeData,
+      },
+      position: { x: 12, y: 34 },
+    }
     const graph = buildGraph(
-      [{
-        id: "top",
-        type: "polars",
-        data: { ...semanticData, ...volatileNodeData },
-      }],
+      [topNode],
       [],
       {
         child: {
           label: "Child",
           graph: {
-            nodes: [{
-              id: "nested",
-              type: "polars",
-              data: {
-                ...semanticData,
-                label: "Nested",
-                ...volatileNodeData,
-              },
-              position: { x: 12, y: 34 },
-            }],
+            nodes: [nestedNode],
             edges: [],
           },
         },
@@ -163,7 +213,9 @@ describe("graphForRequestIdentity", () => {
     expect(childNodes[0].data).toEqual({ ...semanticData, label: "Nested" })
     expect(childGraph.edges).toEqual([])
     expect(identity.preamble).toBe("import polars as pl")
-    expect(graph.nodes[0].data._columns).toEqual(volatileNodeData._columns)
+    expect(graph.nodes[0].data).not.toHaveProperty("_columns")
+    expect(topNode.data._columns).toEqual(volatileNodeData._columns)
+    expect(nestedNode.data._columns).toEqual(volatileNodeData._columns)
   })
 
   it("preserves opaque legacy nodes and submodel definitions", () => {
@@ -233,9 +285,12 @@ describe("resolveGraphFromRefs", () => {
 
     const result = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
 
-    expect(result.nodes).toBe(parentNodes)
-    expect(result.edges).toBe(parentEdges)
-    expect(result.submodels).toBe(parentSubmodels)
+    expect(result.nodes).toEqual(parentNodes)
+    expect(result.nodes).not.toBe(parentNodes)
+    expect(result.edges).toEqual(parentEdges)
+    expect(result.edges).not.toBe(parentEdges)
+    expect(result.submodels).toEqual(parentSubmodels)
+    expect(result.submodels).not.toBe(parentSubmodels)
     expect(result.preamble).toBe("import numpy")
   })
 
@@ -253,9 +308,12 @@ describe("resolveGraphFromRefs", () => {
 
     const result = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
 
-    expect(result.nodes).toBe(nodes)
-    expect(result.edges).toBe(edges)
-    expect(result.submodels).toBe(submodels)
+    expect(result.nodes).toEqual(nodes)
+    expect(result.nodes).not.toBe(nodes)
+    expect(result.edges).toEqual(edges)
+    expect(result.edges).not.toBe(edges)
+    expect(result.submodels).toEqual(submodels)
+    expect(result.submodels).not.toBe(submodels)
     expect(result.preamble).toBe("# preamble")
   })
 

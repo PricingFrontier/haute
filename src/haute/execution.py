@@ -13,9 +13,12 @@ import atexit
 import shutil
 import tempfile
 import threading
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import polars as pl
 
 from haute._api_input_schema import is_json_api_input_path
 from haute._cache import (
@@ -51,9 +54,10 @@ from haute._dataframe_execution_cache import (
 )
 from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._graph_utils import upstream_node_ids
+from haute._graph_utils import _sanitize_func_name, upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
 from haute._json_flatten import cache_state_signature_for_graph
+from haute._native_memory_limit import current_native_memory_backend
 from haute._path_resolution import _infer_project_root, resolve_runtime_file_path
 from haute._ram_estimate import (
     MaterialisationEstimate,
@@ -84,12 +88,13 @@ from haute.projection import (
     ProjectionRequest,
     build_execution_strategy_result,
     compute_prepared_plan,
-    group_by_operators_by_node,
+    first_materialising_operators,
+    materialising_operator_sequences_by_input_names,
+    materialising_operator_sequences_by_node,
     normalise_required_columns_by_node,
     prepare_graph,
     ratebook_factor_required_columns,
     source_scan_projection,
-    strict_projection_required,
     with_api_input_port_projection_boundaries,
     with_materialisation_boundaries,
 )
@@ -147,14 +152,6 @@ _DEFAULT_DATAFRAME_EXECUTION_CACHE: DataFrameExecutionCache | None = None
 _DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK = threading.Lock()
 _AUTO_MATERIALISATION_ESTIMATE = object()
 _DATAFRAME_ROW_HASH_ENCODING = "polars-u64-le:v1"
-_GROUP_BY_MATERIALISATION_PROFILES = frozenset(
-    {
-        ExecutionProfile.PREVIEW_EAGER,
-        ExecutionProfile.EXPLORE_ANALYSIS,
-        ExecutionProfile.DEPLOY_LIVE,
-    }
-)
-
 _SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
     NodeType.API_INPUT: "path",
     NodeType.DATA_INPUT: "path",
@@ -247,6 +244,7 @@ def plan_execution_strategy(
     materialisation_estimate: MaterialisationEstimate | None | object = (
         _AUTO_MATERIALISATION_ESTIMATE
     ),
+    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
 ) -> ExecutionStrategyResult:
     """Return the sole route-facing V1 execution-planning result."""
     prepared = prepare_graph(
@@ -264,26 +262,30 @@ def plan_execution_strategy(
         children_of,
         prepared.node_map,
         required_columns_by_node=required_columns_by_node,
-        strict_projection=strict_projection_required(
-            request.profile,
-            required_columns_by_node,
-        ),
         relevant_edges=prepared.relevant_edges,
+        submodels=prepared.submodels,
     )
     projection_plan = with_api_input_port_projection_boundaries(
         projection_plan,
         prepared.node_map,
         prepared.relevant_edges,
     )
-    group_by_operators = group_by_operators_by_node(prepared.order, prepared.node_map)
+    materialising_sequences = materialising_operator_sequences_by_node(
+        prepared.order,
+        prepared.node_map,
+        relevant_edges=prepared.relevant_edges,
+        submodels=prepared.submodels,
+    )
+    materialising_operators = first_materialising_operators(materialising_sequences)
     resolved_estimate: MaterialisationEstimate | None
-    if group_by_operators and request.profile in _GROUP_BY_MATERIALISATION_PROFILES:
+    if materialising_operators:
         if materialisation_estimate is _AUTO_MATERIALISATION_ESTIMATE:
-            resolved_estimate = _estimate_group_by_boundaries(
+            resolved_estimate = _estimate_materialising_boundaries(
                 request.graph,
-                group_by_operators,
+                materialising_sequences,
                 source=request.source,
                 projection_plan=projection_plan,
+                runtime_source_frames_by_node=runtime_source_frames_by_node,
             )
         elif materialisation_estimate is None:
             resolved_estimate = MaterialisationEstimate.unavailable(
@@ -302,7 +304,7 @@ def plan_execution_strategy(
         children_of=children_of,
         node_map=prepared.node_map,
         has_projection_seed=bool(required_columns_by_node),
-        group_by_operators=group_by_operators,
+        materialising_operators=materialising_operators,
         execution_context=execution_context,
         materialisation_estimate=resolved_estimate,
         required_columns_by_node=required_columns_by_node,
@@ -312,22 +314,26 @@ def plan_execution_strategy(
     return result
 
 
-def _estimate_group_by_boundaries(
+def _estimate_materialising_boundaries(
     graph: PipelineGraph,
-    node_ids: Iterable[str],
+    boundary_operators: Mapping[str, Sequence[str]],
     *,
     source: str,
     projection_plan: ProjectionPlan | None = None,
+    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
 ) -> MaterialisationEstimate:
-    """Return the conservative peak across every declared group-by boundary."""
+    """Return the conservative peak across every declared materialisation boundary."""
     peak_bytes = 0
     assumptions: list[str] = []
     basis = MaterialisationEstimateBasis.PROJECTED_COLUMNS
+    depends_on_many_to_many_join = False
     estimates = estimate_materialisation_boundaries(
         graph,
-        node_ids,
+        boundary_operators,
         source=source,
+        boundary_operators=boundary_operators,
         edge_demands=(projection_plan.edge_demands if projection_plan is not None else None),
+        runtime_source_frames_by_node=runtime_source_frames_by_node,
     )
     for node_id, estimate in estimates:
         if estimate.state is MaterialisationEstimateState.UNAVAILABLE:
@@ -337,11 +343,15 @@ def _estimate_group_by_boundaries(
         peak_bytes = max(peak_bytes, estimate.estimated_peak_bytes)
         if estimate.basis is not MaterialisationEstimateBasis.PROJECTED_COLUMNS:
             basis = MaterialisationEstimateBasis.COMPLETE_WIDTH_FALLBACK
+        depends_on_many_to_many_join = (
+            depends_on_many_to_many_join or estimate.depends_on_many_to_many_join
+        )
         assumptions.extend(f"{node_id}: {item}" for item in estimate.assumptions)
     return MaterialisationEstimate.available(
         peak_bytes,
         assumptions=assumptions,
         basis=basis,
+        depends_on_many_to_many_join=depends_on_many_to_many_join,
     )
 
 
@@ -356,6 +366,7 @@ def plan_prepared_execution_strategy(
     materialisation_estimate: MaterialisationEstimate | None = None,
     schema_only: bool = False,
     relevant_edges: Iterable[GraphEdge] | None = None,
+    submodels: Mapping[str, Any] | None = None,
 ) -> ExecutionStrategyResult:
     """Plan projection/streaming strategy for an already prepared graph.
 
@@ -376,8 +387,8 @@ def plan_prepared_execution_strategy(
         children_of,
         dict(node_map),
         required_columns_by_node=required_columns_by_node,
-        strict_projection=strict_projection_required(profile, required_columns_by_node),
         relevant_edges=prepared_relevant_edges,
+        submodels=submodels,
     )
     if prepared_relevant_edges is not None:
         projection_plan = with_api_input_port_projection_boundaries(
@@ -385,7 +396,31 @@ def plan_prepared_execution_strategy(
             node_map,
             prepared_relevant_edges,
         )
-    group_by_operators = group_by_operators_by_node(order, node_map)
+    if prepared_relevant_edges is not None:
+        materialising_operators = first_materialising_operators(
+            materialising_operator_sequences_by_node(
+                order,
+                node_map,
+                relevant_edges=prepared_relevant_edges,
+                submodels=submodels,
+            )
+        )
+    else:
+        # Without edges the parent labels still reproduce what
+        # ``edge_input_name`` yields for every non-apiInput edge; apiInput
+        # frame labels live on the edge handle and are therefore only known
+        # when edges are supplied.
+        input_names_by_node: dict[str, set[str]] = {}
+        for parent, children in children_of.items():
+            parent_node = node_map.get(parent)
+            if parent_node is None:
+                continue
+            name = _sanitize_func_name(parent_node.data.label)
+            for child in children:
+                input_names_by_node.setdefault(child, set()).add(name)
+        materialising_operators = first_materialising_operators(
+            materialising_operator_sequences_by_input_names(order, node_map, input_names_by_node)
+        )
     result = _finalise_execution_strategy(
         projection_plan,
         profile=profile,
@@ -393,7 +428,7 @@ def plan_prepared_execution_strategy(
         children_of=children_of,
         node_map=node_map,
         has_projection_seed=bool(required_columns_by_node),
-        group_by_operators=group_by_operators,
+        materialising_operators=materialising_operators,
         execution_context=execution_context,
         materialisation_estimate=materialisation_estimate,
         required_columns_by_node=required_columns_by_node,
@@ -416,7 +451,25 @@ def _children_of(
     return children
 
 
-def _group_by_rejection(
+MANY_TO_MANY_JOIN_DETAIL = "join_cardinality_many_to_many"
+"""Estimator detail for a join whose only row bound is the many-to-many product."""
+
+_MANY_TO_MANY_JOIN_REMEDIATION = (
+    "The join has no declared validate= contract, so only the many-to-many row "
+    "product bounds it; declare validate='m:1', '1:m', or '1:1' where a key side "
+    "is unique to get a real estimate."
+)
+
+
+def _with_many_to_many_join_remediation(remediation: str, detail: str | None) -> str:
+    """Append the validate= contract advice when the gap is an unbounded join."""
+
+    if detail is None or not detail.endswith(MANY_TO_MANY_JOIN_DETAIL):
+        return remediation
+    return f"{remediation} {_MANY_TO_MANY_JOIN_REMEDIATION}"
+
+
+def _materialisation_rejection(
     *,
     node_id: str,
     operator: str,
@@ -427,21 +480,17 @@ def _group_by_rejection(
     estimate_detail: str | None = None,
 ) -> GroupByExecutionUnsupportedError:
     remediation = {
-        "profile_requires_bounded_execution": (
-            "Remove the group-by, pre-aggregate the source, or run it through an "
-            "admitted preview, Explore-cache, or deploy-live materialisation boundary."
-        ),
         "execution_admission_unavailable": (
             "Create an admitted execution context with positive memory-limit and "
-            "headroom values before running this group-by."
+            f"headroom values before running this '{operator}'."
         ),
         "materialisation_estimate_unavailable": (
             "Provide readable source/schema metadata so Haute can estimate the full "
-            "group-by boundary before execution."
+            f"'{operator}' materialisation boundary before execution."
         ),
         "materialisation_exceeds_headroom": (
             "Increase the configured memory headroom, narrow the input, or pre-aggregate "
-            "the source before this group-by."
+            f"the source before this '{operator}'."
         ),
     }[reason_code]
     if estimate_detail:
@@ -449,8 +498,15 @@ def _group_by_rejection(
         # Discarding that left the analyst with "provide readable metadata" and
         # no way to tell an unreadable file from an unsummarisable source shape.
         remediation = f"{remediation} Estimator reported: {estimate_detail}."
+    if reason_code == "materialisation_estimate_unavailable":
+        # Without a hard cap there is no bounded envelope to run inside.
+        remediation = (
+            f"{remediation} This surface runs without a hard worker memory cap, "
+            "so Haute cannot run the plan conservatively here."
+        )
+    remediation = _with_many_to_many_join_remediation(remediation, estimate_detail)
     return GroupByExecutionUnsupportedError(
-        "Group-by execution is unsupported for the selected execution strategy.",
+        f"Materialisation of '{operator}' could not be admitted for this execution.",
         node_id=node_id,
         operator=operator,
         profile=profile.value,
@@ -458,6 +514,72 @@ def _group_by_rejection(
         remediation=remediation,
         estimated_peak_bytes=estimated_peak_bytes,
         headroom_bytes=headroom_bytes,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _UnprovenMaterialisation:
+    """The plan and diagnostic fields for a boundary with no usable estimate."""
+
+    projection_plan: ProjectionPlan
+    strategy: ExecutionStrategy
+    reason_code: str
+    assumptions: tuple[str, ...]
+    remediation: str
+
+
+def _plan_unproven_materialisation(
+    projection_plan: ProjectionPlan,
+    *,
+    node_id: str,
+    operator: str,
+    profile: ExecutionProfile,
+    materialising_operators: Mapping[str, str],
+    detail: str,
+    headroom_bytes: int,
+) -> _UnprovenMaterialisation:
+    """Run conservatively under a hard cap, or reject when there is no cap.
+
+    Both the estimator reporting no estimate and the planner refusing a
+    many-to-many join's row product land here: neither has a number that bounds
+    the boundary, and the only difference is what the analyst is told to fix.
+    """
+    backend = current_native_memory_backend()
+    if backend is None:
+        raise _materialisation_rejection(
+            node_id=node_id,
+            operator=operator,
+            profile=profile,
+            reason_code="materialisation_estimate_unavailable",
+            estimated_peak_bytes=None,
+            headroom_bytes=headroom_bytes,
+            estimate_detail=detail,
+        )
+    # A hard worker cap bounds the process, so the run continues under
+    # its full reserved envelope instead of being rejected outright.
+    remediation = (
+        "The run continued under its full reserved memory envelope of "
+        f"{headroom_bytes} bytes because the materialisation estimate was "
+        f"unavailable ({detail}). Provide readable source metadata or rewrite "
+        f"'{operator}' at '{node_id}' so Haute can prove the estimate; the run "
+        "may use more memory and time than an estimated boundary."
+    )
+    return _UnprovenMaterialisation(
+        projection_plan=with_materialisation_boundaries(
+            projection_plan,
+            materialising_operators,
+        ),
+        strategy=ExecutionStrategy.FULL_WIDTH_CONSERVATIVE,
+        reason_code="materialisation_estimate_unavailable_conservative",
+        assumptions=(
+            f"proof_gap={detail}",
+            f"reserved_envelope_bytes={headroom_bytes}",
+            f"hard_cap_backend={backend}",
+            "disabled_optimisations=estimate_based_admission",
+        ),
+        # The envelope narrative is capped, then the contract advice is appended
+        # so it is never the half that gets cut.
+        remediation=_with_many_to_many_join_remediation(remediation[:512], detail),
     )
 
 
@@ -469,7 +591,7 @@ def _finalise_execution_strategy(
     children_of: Mapping[str, Iterable[str]],
     node_map: Mapping[str, GraphNode],
     has_projection_seed: bool,
-    group_by_operators: Mapping[str, str],
+    materialising_operators: Mapping[str, str],
     execution_context: ExecutionContext | None,
     materialisation_estimate: MaterialisationEstimate | None,
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None,
@@ -485,18 +607,8 @@ def _finalise_execution_strategy(
     headroom_bytes: int | None = None
     assumptions: tuple[str, ...] = ()
 
-    if group_by_operators and not schema_only:
-        node_id, operator = next(iter(group_by_operators.items()))
-        if profile not in _GROUP_BY_MATERIALISATION_PROFILES:
-            raise _group_by_rejection(
-                node_id=node_id,
-                operator=operator,
-                profile=profile,
-                reason_code="profile_requires_bounded_execution",
-                estimated_peak_bytes=None,
-                headroom_bytes=None,
-            )
-
+    if materialising_operators and not schema_only:
+        node_id, operator = next(iter(materialising_operators.items()))
         admission = execution_context.admission if execution_context is not None else None
         if (
             admission is None
@@ -508,7 +620,7 @@ def _finalise_execution_strategy(
             or isinstance(admission.headroom_bytes, bool)
             or admission.headroom_bytes <= 0
         ):
-            raise _group_by_rejection(
+            raise _materialisation_rejection(
                 node_id=node_id,
                 operator=operator,
                 profile=profile,
@@ -521,51 +633,91 @@ def _finalise_execution_strategy(
             materialisation_estimate is None
             or materialisation_estimate.state is MaterialisationEstimateState.UNAVAILABLE
         ):
-            raise _group_by_rejection(
+            detail: str
+            if materialisation_estimate is None:
+                detail = "no materialisation estimate was requested"
+            else:
+                # ``MaterialisationEstimate.unavailable`` rejects an empty reason.
+                assert materialisation_estimate.unavailable_reason is not None
+                detail = materialisation_estimate.unavailable_reason
+            unproven = _plan_unproven_materialisation(
+                projection_plan,
                 node_id=node_id,
                 operator=operator,
                 profile=profile,
-                reason_code="materialisation_estimate_unavailable",
-                estimated_peak_bytes=None,
-                headroom_bytes=headroom_bytes,
-                estimate_detail=(
-                    materialisation_estimate.unavailable_reason
-                    if materialisation_estimate is not None
-                    else "no materialisation estimate was requested"
-                ),
-            )
-        raw_estimated_peak_bytes = materialisation_estimate.estimated_peak_bytes
-        assert raw_estimated_peak_bytes is not None
-        calibrated = calibrate_materialisation_bytes(profile, raw_estimated_peak_bytes)
-        estimated_peak_bytes = calibrated.calibrated_bytes
-        estimate_calibration_factor_basis_points = calibrated.factor_basis_points
-        estimate_admission_basis = materialisation_estimate.basis.value
-        if estimated_peak_bytes > headroom_bytes:
-            raise _group_by_rejection(
-                node_id=node_id,
-                operator=operator,
-                profile=profile,
-                reason_code="materialisation_exceeds_headroom",
-                estimated_peak_bytes=estimated_peak_bytes,
+                materialising_operators=materialising_operators,
+                detail=detail,
                 headroom_bytes=headroom_bytes,
             )
-        projection_plan = with_materialisation_boundaries(
-            projection_plan,
-            group_by_operators,
-        )
-        strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
-        reason_code = "group_by_materialisation_admitted"
-        remediation = "Keep the admitted boundary within its reported memory headroom."
-        assumptions = (
-            *materialisation_estimate.assumptions,
-            f"raw_estimated_peak_bytes={raw_estimated_peak_bytes}",
-            f"calibrated_estimated_peak_bytes={estimated_peak_bytes}",
-            (
-                "estimate_calibration_factor_basis_points="
-                f"{estimate_calibration_factor_basis_points}"
-            ),
-            f"estimate_admission_basis={estimate_admission_basis}",
-        )
+            projection_plan = unproven.projection_plan
+            strategy = unproven.strategy
+            reason_code = unproven.reason_code
+            assumptions = unproven.assumptions
+            remediation = unproven.remediation
+        else:
+            raw_estimated_peak_bytes = materialisation_estimate.estimated_peak_bytes
+            assert raw_estimated_peak_bytes is not None
+            calibrated = calibrate_materialisation_bytes(profile, raw_estimated_peak_bytes)
+            estimated_peak_bytes = calibrated.calibrated_bytes
+            estimate_calibration_factor_basis_points = calibrated.factor_basis_points
+            estimate_admission_basis = materialisation_estimate.basis.value
+            if (
+                estimated_peak_bytes > headroom_bytes
+                and materialisation_estimate.depends_on_many_to_many_join
+            ):
+                # The row product is not an estimate of anything the join will
+                # actually hold; it is the absence of one. Rejecting on it would
+                # report a measured over-run that was never measured, so the
+                # boundary is treated as unproven instead.
+                unproven = _plan_unproven_materialisation(
+                    projection_plan,
+                    node_id=node_id,
+                    operator=operator,
+                    profile=profile,
+                    materialising_operators=materialising_operators,
+                    detail=f"{node_id}:{MANY_TO_MANY_JOIN_DETAIL}",
+                    headroom_bytes=headroom_bytes,
+                )
+                projection_plan = unproven.projection_plan
+                strategy = unproven.strategy
+                reason_code = unproven.reason_code
+                assumptions = unproven.assumptions
+                remediation = unproven.remediation
+                # The product was never an estimate, so none is reported.
+                raw_estimated_peak_bytes = None
+                estimated_peak_bytes = None
+                estimate_calibration_factor_basis_points = None
+                estimate_admission_basis = None
+            elif estimated_peak_bytes > headroom_bytes:
+                raise _materialisation_rejection(
+                    node_id=node_id,
+                    operator=operator,
+                    profile=profile,
+                    reason_code="materialisation_exceeds_headroom",
+                    estimated_peak_bytes=estimated_peak_bytes,
+                    headroom_bytes=headroom_bytes,
+                )
+            else:
+                projection_plan = with_materialisation_boundaries(
+                    projection_plan,
+                    materialising_operators,
+                )
+                strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
+                reason_code = "materialisation_admitted"
+                remediation = (
+                    f"Keep the admitted '{operator}' boundary at '{node_id}' within "
+                    "its reported memory headroom."
+                )
+                assumptions = (
+                    *materialisation_estimate.assumptions,
+                    f"raw_estimated_peak_bytes={raw_estimated_peak_bytes}",
+                    f"calibrated_estimated_peak_bytes={estimated_peak_bytes}",
+                    (
+                        "estimate_calibration_factor_basis_points="
+                        f"{estimate_calibration_factor_basis_points}"
+                    ),
+                    f"estimate_admission_basis={estimate_admission_basis}",
+                )
 
     return build_execution_strategy_result(
         projection_plan,
@@ -577,7 +729,7 @@ def _finalise_execution_strategy(
         required_columns_by_node=required_columns_by_node,
         strategy=strategy,
         reason_code=reason_code,
-        boundary_operators=group_by_operators,
+        boundary_operators=materialising_operators,
         remediation=remediation,
         estimated_peak_bytes=estimated_peak_bytes,
         raw_estimated_peak_bytes=raw_estimated_peak_bytes,
@@ -854,15 +1006,38 @@ def _runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
     return tuple(fields)
 
 
+def _snapshot_source_signature(
+    graph: PipelineGraph,
+    config: Mapping[str, object],
+) -> str | None:
+    """Current source signature of a snapshot-backed input (``None`` when none)."""
+    from haute._builders import _configured_pipeline_dir
+    from haute._input_providers import source_signature
+
+    try:
+        return source_signature(
+            config,
+            base_dir=_cache_pipeline_dir(graph) or _configured_pipeline_dir(),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def _runtime_input_fingerprint_entry(
     graph: PipelineGraph,
     node: GraphNode,
 ) -> Mapping[str, object]:
     config = node.data.config
-    files = {
+    files: dict[str, object] = {
         path_field: _runtime_file_fingerprint(node, path_field, path)
         for path_field, path in _runtime_file_signature_paths(graph, node).items()
     }
+    if "snapshot_pointer" in files:
+        # A snapshot-backed input is signed by its generation pointer *and* the
+        # current source signature, so a rewritten source misses every cache
+        # and reaches automatic preparation instead of serving a stale
+        # generation from a warm entry.
+        files["source_signature"] = _snapshot_source_signature(graph, config)
     return checked_cache_identity_record(
         CacheIdentityRecord.RUNTIME_INPUT_ENTRY,
         {
@@ -1150,12 +1325,16 @@ def execute_lazy_graph(
     source_by_node: Mapping[str, str] | None = None,
     dataframe_cache_request: DataFrameExecutionCacheRequest | None = None,
     schema_only: bool = False,
+    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    prepare_inputs: bool = True,
 ) -> LazyExecutionResult:
     """Execute a graph lazily through the shared production engine.
 
     Set ``schema_only`` when the caller resolves schemas through
     ``collect_schema()`` and never collects a frame or invokes a sink; see
     ``plan_prepared_execution_strategy`` for what that declaration relaxes.
+    Supply ``runtime_source_frames_by_node`` when source nodes are injected
+    DataFrames and group-by admission must estimate those request-local inputs.
     """
     from haute._execute_lazy import _execute_lazy
 
@@ -1173,6 +1352,8 @@ def execute_lazy_graph(
         source_by_node=source_by_node,
         dataframe_cache_request=dataframe_cache_request,
         schema_only=schema_only,
+        runtime_source_frames_by_node=runtime_source_frames_by_node,
+        prepare_inputs=prepare_inputs,
     )
 
 
@@ -1180,11 +1361,18 @@ def prune_source_switch_edges(
     edges: list[GraphEdge],
     node_map: dict[str, GraphNode],
     source: str,
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> list[GraphEdge]:
     """Return graph edges pruned to the active source-switch branch."""
     from haute._execute_lazy import _prune_live_switch_edges
 
-    return _prune_live_switch_edges(edges, node_map, source)
+    return _prune_live_switch_edges(
+        edges,
+        node_map,
+        source,
+        submodels=submodels,
+    )
 
 
 def build_linear_execution_chain_functions(

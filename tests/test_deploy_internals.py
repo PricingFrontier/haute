@@ -1081,6 +1081,107 @@ class TestScoreGraphApiInputInjection:
         assert "x" in result.columns
         assert "y" in result.columns
 
+    @pytest.mark.parametrize(
+        ("input_df", "expected"),
+        [
+            (
+                pl.DataFrame(
+                    {
+                        "segment": pl.Series([], dtype=pl.String),
+                        "premium": pl.Series([], dtype=pl.Float64),
+                    }
+                ),
+                [],
+            ),
+            (
+                pl.DataFrame({"segment": ["a"], "premium": [1.0]}),
+                [{"segment": "a", "premium": 1.0}],
+            ),
+            (
+                pl.DataFrame({"segment": ["a", "a", "b"], "premium": [1.0, 2.0, 4.0]}),
+                [
+                    {"segment": "a", "premium": 3.0},
+                    {"segment": "b", "premium": 4.0},
+                ],
+            ),
+        ],
+        ids=["deploy-live-empty", "deploy-live", "deploy-batch"],
+    )
+    def test_group_by_admission_uses_injected_deploy_frame_metadata(
+        self,
+        input_df: pl.DataFrame,
+        expected: list[dict[str, object]],
+    ) -> None:
+        from haute.deploy._scorer import score_graph
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {
+                                "path": "",
+                                "tables": [
+                                    {
+                                        "path": "$[:]",
+                                        "label": "src",
+                                        "emit": True,
+                                        "columns": [
+                                            {
+                                                "name": "segment",
+                                                "path": "$[:].segment",
+                                                "type": "str",
+                                                "selected": True,
+                                            },
+                                            {
+                                                "name": "premium",
+                                                "path": "$[:].premium",
+                                                "type": "float",
+                                                "selected": True,
+                                            },
+                                        ],
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                    {
+                        "id": "agg",
+                        "data": {
+                            "label": "agg",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = src.group_by('segment').agg("
+                                    "pl.col('premium').sum().alias('premium'))"
+                                )
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "agg",
+                        "sourceHandle": "src",
+                    }
+                ],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=input_df,
+            input_node_ids=["src"],
+            output_node_id="agg",
+        )
+
+        assert result.sort("segment").to_dicts() == expected
+
     def test_api_input_frame_label_is_the_deploy_parameter_name(self):
         """Deploy user code binds the edge's frame name, not its source-node label."""
         from haute.deploy._scorer import score_graph
@@ -3960,6 +4061,29 @@ class TestLoadEnv:
         assert os.environ["HAUTE_TEST_KEEP"] == "original"
 
 
+def _force_schema_cache_miss(tmp_path, monkeypatch) -> None:
+    """Point the on-disk output-schema cache at an empty temp location."""
+    from haute.deploy import _schema
+
+    monkeypatch.setattr(
+        _schema,
+        "_SCHEMA_CACHE_FILE",
+        str(tmp_path / "schema_cache" / "output_schema.json"),
+    )
+
+
+_STUB_EXECUTION_POLICY = {
+    "schema_version": 1,
+    "profile": "deploy_batch",
+    "status": "projected",
+    "strategy": "projected",
+    "reason_code": "projection_available",
+    "blocking_node_id": None,
+    "blocking_operator": None,
+    "remediation": "No change is needed.",
+}
+
+
 class TestResolveConfigEdgeCases:
     """Tests for resolve_config() edge cases."""
 
@@ -4051,11 +4175,115 @@ class TestResolveConfigEdgeCases:
             patch("haute.deploy._config.find_source_nodes", return_value=["single_src"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
+            patch(
+                "haute.deploy._schema.infer_deploy_execution_policy",
+                return_value=_STUB_EXECUTION_POLICY,
+            ),
             patch("haute.deploy._schema.infer_output_schema", return_value={"out": "Float64"}),
         ):
             resolved = resolve_config(config)
 
         assert resolved.input_node_ids == ["single_src"]
+
+    @staticmethod
+    def _conservative_deploy_graph(tmp_path):
+        """A real apiInput graph whose group-by estimate cannot be proven."""
+        from tests.test_deploy_batch_scoring import (
+            _conservative_graph,
+            _write_policy_sample,
+        )
+
+        return _write_policy_sample(tmp_path, _conservative_graph())
+
+    @staticmethod
+    def _tmp_pipeline_file(tmp_path):
+        """A pipeline path inside the temp project root (parsing is patched)."""
+        pipeline = tmp_path / "pipeline.py"
+        pipeline.write_text("# conservative deploy fixture", encoding="utf-8")
+        return pipeline
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_resolve_config_bundles_an_unprovable_group_by_for_a_container_target(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A cache-miss resolve must reach policy inference, not die in the dry-run.
+
+        The output-schema dry-run runs uncapped, so the conservative graph's
+        group-by is rejected there; the capped-worker fallback keeps resolution
+        alive and the recorded policy is the capped worker's warning.
+        """
+        from haute.deploy._config import ContainerConfig, DeployConfig, resolve_config
+
+        _force_schema_cache_miss(tmp_path, monkeypatch)
+        # The capped dry-run really spawns; the child derives its project root
+        # from the working directory it inherits.
+        monkeypatch.chdir(tmp_path)
+        graph = self._conservative_deploy_graph(tmp_path)
+        config = DeployConfig(
+            pipeline_file=self._tmp_pipeline_file(tmp_path),
+            project_dir=tmp_path,
+            model_name="test-model",
+            target="container",
+            container=ContainerConfig(base_image="python:3.11.9-slim"),
+        )
+
+        with (
+            patch("haute.parser.parse_pipeline_file", return_value=graph),
+            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch(
+                "haute.deploy._config.prune_for_deploy",
+                return_value=(graph, ["quotes", "shape", "agg", "out"], []),
+            ),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quotes"]),
+            patch("haute.deploy._bundler.collect_artifacts", return_value={}),
+            patch("haute.deploy._schema.infer_input_schema", return_value={"segment": "String"}),
+        ):
+            resolved = resolve_config(config)
+
+        assert resolved.execution_policy["status"] == "warned"
+        assert resolved.execution_policy["strategy"] == "full-width-conservative"
+        assert resolved.execution_policy["runtime"] == "hard_capped_worker"
+        assert resolved.output_schema
+        assert "total" in resolved.output_schema
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_resolve_config_refuses_an_unprovable_group_by_for_databricks(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The pyfunc target scores batches in process, so it cannot be capped."""
+        from haute.deploy._config import DeployConfig, resolve_config
+        from haute.errors import DeployError
+
+        _force_schema_cache_miss(tmp_path, monkeypatch)
+        graph = self._conservative_deploy_graph(tmp_path)
+        config = DeployConfig(
+            pipeline_file=self._tmp_pipeline_file(tmp_path),
+            project_dir=tmp_path,
+            model_name="test-model",
+            target="databricks",
+        )
+
+        def forbidden_runner(*_args, **_kwargs):
+            raise AssertionError("policy inference must refuse before any spawn")
+
+        with (
+            patch("haute.parser.parse_pipeline_file", return_value=graph),
+            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch(
+                "haute.deploy._config.prune_for_deploy",
+                return_value=(graph, ["quotes", "shape", "agg", "out"], []),
+            ),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quotes"]),
+            patch("haute.deploy._bundler.collect_artifacts", return_value={}),
+            patch("haute.deploy._schema.infer_input_schema", return_value={"segment": "String"}),
+            patch("haute.deploy._schema.run_isolated_worker", forbidden_runner),
+        ):
+            with pytest.raises(DeployError, match="serving process"):
+                resolve_config(config)
 
     def test_resolve_config_rejects_a_sole_non_data_input_source(self):
         """A constant must never be promoted to the live deploy input."""
@@ -4106,6 +4334,10 @@ class TestResolveConfigEdgeCases:
             patch("haute.deploy._config.find_deploy_input_nodes", return_value=["api"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
+            patch(
+                "haute.deploy._schema.infer_deploy_execution_policy",
+                return_value=_STUB_EXECUTION_POLICY,
+            ),
             patch("haute.deploy._schema.infer_output_schema", return_value={"out": "Float64"}),
         ):
             resolved = resolve_config(config)
@@ -4186,6 +4418,10 @@ class TestResolveConfigEdgeCases:
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
             patch(
+                "haute.deploy._schema.infer_deploy_execution_policy",
+                return_value=_STUB_EXECUTION_POLICY,
+            ),
+            patch(
                 "haute.deploy._schema.infer_output_schema",
                 return_value={"premium": "Float64", "age": "Int64"},
             ),
@@ -4212,6 +4448,10 @@ class TestResolveConfigEdgeCases:
             patch("haute.deploy._config.find_deploy_input_nodes", return_value=["api"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
+            patch(
+                "haute.deploy._schema.infer_deploy_execution_policy",
+                return_value=_STUB_EXECUTION_POLICY,
+            ),
             patch(
                 "haute.deploy._schema.infer_output_schema",
                 return_value={"premium": "Float64", "age": "Int64"},

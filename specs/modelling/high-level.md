@@ -77,8 +77,12 @@ compatibility facade and route own no duplicate state or worker implementation.
   validation synchronously, creates and registers the cancellable job, starts an owned
   preparation thread, and returns `status="started"` plus the job ID before RAM
   estimation or upstream materialisation begins. The preparation thread estimates
-  memory requirements, executes the upstream pipeline to materialise training data,
-  and derives the exact feature choice from the materialised schema. Materialisation
+  memory requirements and then supervises a single hard-capped worker process that
+  executes the upstream pipeline, derives the exact feature choice from the
+  materialised schema, and writes the training data — so no training frame is ever
+  materialised in the server process. Because that worker runs under a real kernel
+  memory cap, a boundary Haute cannot size ahead of time runs conservatively there
+  instead of being refused. A failed preparation leaves no partial training file. Materialisation
   consumes the execution facade's typed strategy result and carries its deterministic
   inclusion/exclusion provenance into the modelling status/result; modelling does not
   select a competing plan. It then runs fit, evaluation, diagnostics, and model staging

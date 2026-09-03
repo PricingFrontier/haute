@@ -743,6 +743,16 @@ def read_polars_input(
                 profile=str(profile),
             )
 
+    return _invoke_polars_input(fmt, callable_name, config, arguments)
+
+
+def _invoke_polars_input(
+    fmt: IoFormat,
+    callable_name: str,
+    config: Mapping[str, Any],
+    arguments: Mapping[str, Any],
+) -> pl.LazyFrame:
+    """Invoke one validated polars input callable and normalise its result."""
     _require_engines(fmt, fmt.read_engines, operation="read")
 
     source_args = _resolve_input_source(fmt, config)
@@ -763,6 +773,74 @@ def read_polars_input(
         f"polars.{callable_name} returned {type(result).__name__}, not a table; "
         f"format {fmt.name!r} config does not describe a single-table input."
     )
+
+
+# A scanner can accept an argument *name* the reader accepts while admitting
+# fewer values for it: ``scan_csv`` decodes only UTF-8, ``read_csv`` any codec.
+# Preferring the scanner on names alone planned a scan that then failed raw.
+_SCANNER_VALUE_DOMAINS: Mapping[str, Mapping[str, frozenset[str]]] = {
+    "csv": {"encoding": frozenset({"utf8", "utf8-lossy"})},
+}
+
+
+def _scanner_accepts_values(fmt: IoFormat, config: Mapping[str, Any]) -> bool:
+    """Whether every configured value sits inside the scanner's value domain."""
+    domains = _SCANNER_VALUE_DOMAINS.get(fmt.name, {})
+    if not domains:
+        return True
+    return all(
+        str(value) in domains[name]
+        for name, value in (config.get("arguments") or {}).items()
+        if name in domains
+    )
+
+
+def snapshot_input_plan(
+    fmt: IoFormat,
+    config: Mapping[str, Any],
+) -> tuple[InputMode, Literal["bounded", "admitted_eager", "unsupported"], str | None]:
+    """Effective mode, build class, and warning code for one snapshot build.
+
+    A configured eager ``read`` is built through the scanner whenever the
+    format has one and every configured argument is scanner-accepted by name
+    and by value; only a genuinely reader-only argument keeps the eager read
+    (and its
+    ``admitted_eager`` class, which the hard-capped worker then contains).
+    """
+    base = _snapshot_build(fmt)
+    if base == "unsupported":
+        return resolve_input_mode(fmt, config), base, None
+    mode = resolve_input_mode(fmt, config)
+    if mode == "read" and fmt.scanner is not None:
+        owner, scanner_name = input_callable_key(fmt, "scan")
+        configured = set(config.get("arguments") or {})
+        if configured <= allowed_arguments(fmt, owner, scanner_name) and _scanner_accepts_values(
+            fmt, config
+        ):
+            return "scan", "bounded", "eager_read_mode_scanned"
+        return "read", "admitted_eager", None
+    return mode, base, None
+
+
+def read_polars_input_for_snapshot(
+    config: Mapping[str, Any],
+) -> tuple[pl.LazyFrame, str | None]:
+    """Build-only read: inspect the source completely, never sample.
+
+    Returns the frame and the plan's warning code. Unlike
+    :func:`read_polars_input` this never applies the bounded-profile refusals:
+    a snapshot build is contained by its own hard memory cap, and a format
+    needing a declared schema in bounded profiles is inferred from the whole
+    file (``infer_schema_length=None``) when the config declares none, so a
+    late row cannot be mis-typed by sample-limited inference.
+    """
+    fmt = format_for_config(config)
+    mode, _build_class, warning_code = snapshot_input_plan(fmt, config)
+    owner, callable_name = input_callable_key(fmt, mode)
+    arguments = dict(validate_arguments(fmt, owner, callable_name, config.get("arguments") or {}))
+    if fmt.needs_schema_when_bounded and "schema" not in arguments:
+        arguments["infer_schema_length"] = None
+    return _invoke_polars_input(fmt, callable_name, config, arguments), warning_code
 
 
 def _resolve_output_target(fmt: IoFormat, config: Mapping[str, Any]) -> dict[str, Any]:

@@ -45,6 +45,7 @@ import polars as pl
 import haute.execution as execution_facade
 from haute._cache import GraphFingerprintMemo
 from haute._env import int_env
+from haute._execute_lazy import _prune_live_switch_edges
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._expression_parser import (
@@ -52,9 +53,12 @@ from haute._expression_parser import (
     parse_expression,
     parse_expression_chain,
 )
+from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
+from haute._path_resolution import runtime_project_root_scope
+from haute._topo import ancestors
 from haute._trace_correlation import (
     CorrelationWork,
     SchemaDiff,
@@ -344,6 +348,26 @@ def _integer_output_node_ids(
     }
 
 
+def _trace_preparation_order(
+    graph: PipelineGraph,
+    target_node_id: str,
+    source: str,
+) -> list[str]:
+    """Node ids of the trace's executed lineage, for input preparation.
+
+    Walked over the same live-switch-pruned edges the execution uses, so an
+    inactive branch's inputs are never prepared.
+    """
+    all_ids = {node.id for node in graph.nodes}
+    edges = _prune_live_switch_edges(
+        graph.edges,
+        graph.node_map,
+        source,
+        submodels=graph.submodels,
+    )
+    return sorted(ancestors(target_node_id, edges, all_ids))
+
+
 def execute_trace(
     graph: PipelineGraph,
     row_index: int = 0,
@@ -432,6 +456,20 @@ def execute_trace(
             admitted_context.release_admission(preserve_primary_error=True)
 
     requested_columns = _requested_preview_columns_from_row(row_values, column)
+    # A cold trace executes the graph itself, so it prepares its own snapshot
+    # inputs first — before the strategy is planned and before the lineage cache
+    # key is computed, so a refreshed generation is the one this entry is keyed
+    # by. Only an admitted context can spawn the hard-capped build.
+    if execution_context.admission is not None:
+        with runtime_project_root_scope(graph.source_file):
+            prepare_input_snapshots(
+                _trace_preparation_order(graph, target_node_id, source),
+                graph.node_map,
+                profile=execution_context.profile,
+                execution_context=execution_context,
+                base_dir=preparation_base_dir(graph),
+                schema_only=False,
+            )
     execution_facade.plan_execution_strategy(
         execution_facade.ProjectionRequest(
             graph=graph,

@@ -23,7 +23,7 @@ Vocabulary (kept to tables / fields / join-constraints throughout):
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -330,6 +330,28 @@ def _own_subpath(parsed: _ParsedPath) -> list[str]:
     return [seg.name for seg in parsed.segments[last_array + 1 :]]
 
 
+def _identity(value: Any) -> Any:
+    """Canonicalise one leaf value into a hashable identity component.
+
+    An object's identity is the tuple of its own leaf values, so every value that
+    can reach a dict key must be hashable. Scalars (including ``None``,
+    ``Decimal``, dates, ``bytes``) are already hashable and pass through
+    unchanged — in particular ``None`` keeps behaving exactly as before. A
+    container leaf carries Python ``list`` (``List``/``Array``) or ``dict``
+    (``Struct``) values, which are canonicalised recursively into tuples.
+
+    Struct fields arrive in the dtype's field order, which polars keeps stable
+    across rows, so the ``dict`` form is **not** sorted: insertion order is
+    already canonical, and preserving it keeps the identity aligned with the
+    declared schema. Polars never yields sets, so no set case exists.
+    """
+    if isinstance(value, dict):
+        return tuple((k, _identity(v)) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return tuple(_identity(v) for v in value)
+    return value
+
+
 def _group_rows(
     rows: list[dict[str, Any]],
     keys: list[str],
@@ -342,7 +364,7 @@ def _group_rows(
     for r in rows:
         if on_row is not None:
             on_row()
-        k = tuple(r.get(key) for key in keys)
+        k = tuple(_identity(r.get(key)) for key in keys)
         if k not in groups:
             groups[k] = []
             order.append(k)
@@ -361,7 +383,7 @@ def _index_rows(
     for row in rows:
         if on_row is not None:
             on_row()
-        index.setdefault(tuple(row.get(key) for key in keys), []).append(row)
+        index.setdefault(tuple(_identity(row.get(key)) for key in keys), []).append(row)
     return index
 
 
@@ -613,7 +635,7 @@ def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
                     keys,
                     on_row=lambda: progress.advance("output_assembly_build"),
                 )
-        return indexes[cache_key].get(tuple(scope[key] for key in keys), [])
+        return indexes[cache_key].get(tuple(_identity(scope[key]) for key in keys), [])
 
     def build(prefix: tuple[str, ...], scope: dict[str, Any]) -> list[dict[str, Any]]:
         rows = scoped_rows(prefix, scope)
@@ -852,6 +874,126 @@ def assemble_output_from_mapping(
         for port, entries in by_port.items()
     }
     return _assemble_document(field_frames)
+
+
+def _document_dtype(node: Any) -> pl.DataType:
+    """Convert one derived nesting node into its polars dtype.
+
+    A leaf is already a ``pl.DataType``; a ``dict`` is an object level
+    (``Struct``, fields in insertion order); a ``("list", dict)`` marker is an
+    array level (``List(Struct(...))``).
+    """
+    if isinstance(node, tuple):
+        return pl.List(pl.Struct({k: _document_dtype(v) for k, v in node[1].items()}))
+    if isinstance(node, dict):
+        return pl.Struct({k: _document_dtype(v) for k, v in node.items()})
+    assert isinstance(node, pl.DataType)
+    return node
+
+
+def output_document_schema(
+    source_schemas: Mapping[str, pl.Schema],
+    mapping: list[dict[str, Any]],
+) -> pl.Schema:
+    """Derive the OUTPUT document's schema from the mapping + source schemas.
+
+    The **single schema authority** for both OUTPUT paths: the schema-only build
+    returns ``pl.LazyFrame(schema=output_document_schema(...))`` without
+    assembling, and the collected build declares this same schema over the
+    assembled document instead of letting Python inference decide dtypes. So a
+    schema-only execution and a collected execution report the identical schema,
+    an all-null column keeps its source dtype, and an empty document keeps its
+    columns.
+
+    The derivation mirrors :func:`_assemble_document` exactly (it is the
+    schema-level shadow of that function's ``build``):
+
+    * a leaf's dtype is its source column's dtype;
+    * the nesting node of a level is its array prefix (:func:`_array_prefix`);
+      the columns *owned* by a level are those whose array prefix equals it, in
+      ``all_paths`` order (ports in mapping order, columns in mapping order);
+    * each owned column is placed at :func:`_own_subpath` — its keys *within*
+      its own array element, so an ancestor key carried by a deeper frame for
+      matching is emitted at the level it belongs to and never re-emitted
+      inside the child element;
+    * each child array is attached under its own final name, after the level's
+      own fields, children in sorted order — where ``_set_nested`` puts it.
+
+    Raises :class:`OutputMappingSchemaError` when the mapping is structurally
+    invalid, when a referenced source port or column is absent, or when two
+    entries map the same output path from source columns of different dtypes.
+    """
+    validate_v2_output_mapping(mapping)
+
+    by_port: dict[str, list[dict[str, Any]]] = {}
+    for entry in mapping:
+        if not is_active_mapping_entry(entry):
+            continue
+        by_port.setdefault(entry["source_port"], []).append(entry)
+
+    # all_paths / leaf dtypes in the assembler's order: ports in mapping order,
+    # each port's columns in mapping order (the order `select(...)` aliases them).
+    all_paths: dict[str, _ParsedPath] = {}
+    leaf_dtypes: dict[str, pl.DataType] = {}
+    port_paths: dict[str, list[str]] = {}
+    for port, entries in by_port.items():
+        if port not in source_schemas:
+            raise OutputMappingSchemaError(
+                f"OUTPUT mapping references source frame {port!r}, which no "
+                f"incoming frame provides; available frames: "
+                f"{sorted(source_schemas)!r}.",
+                source_port=port,
+            )
+        schema = source_schemas[port]
+        paths: list[str] = []
+        for entry in entries:
+            column = entry["source_column"]
+            path = entry["output_path"]
+            if column not in schema:
+                raise OutputMappingSchemaError(
+                    f"OUTPUT mapping reads column {column!r} for output path "
+                    f"{path!r}, which source frame {port!r} does not provide; "
+                    f"available columns: {list(schema)!r}.",
+                    source_port=port,
+                    output_path=path,
+                )
+            dtype = schema[column]
+            if path in leaf_dtypes and leaf_dtypes[path] != dtype:
+                raise OutputMappingSchemaError(
+                    f"output path {path!r} is mapped from source columns of "
+                    f"different types ({leaf_dtypes[path]!r} and {dtype!r}); "
+                    f"a shared path must carry one type.",
+                    source_port=port,
+                    output_path=path,
+                )
+            leaf_dtypes[path] = dtype
+            all_paths.setdefault(path, _parse_output_path(path))
+            if path not in paths:
+                paths.append(path)
+        port_paths[port] = paths
+
+    emit_prefix: dict[str, tuple[str, ...]] = {
+        port: max((_array_prefix(all_paths[p]) for p in paths), key=len, default=())
+        for port, paths in port_paths.items()
+    }
+    nodes: set[tuple[str, ...]] = set()
+    for pref in emit_prefix.values():
+        for i in range(len(pref) + 1):
+            nodes.add(pref[:i])
+
+    def level(prefix: tuple[str, ...]) -> dict[str, Any]:
+        obj: dict[str, Any] = {}
+        for path, parsed in all_paths.items():
+            if _array_prefix(parsed) == prefix:
+                _set_nested(obj, _own_subpath(parsed), leaf_dtypes[path])
+        children = sorted(
+            n for n in nodes if len(n) == len(prefix) + 1 and n[: len(prefix)] == prefix
+        )
+        for child in children:
+            _set_nested(obj, [child[-1]], ("list", level(child)))
+        return obj
+
+    return pl.Schema({key: _document_dtype(value) for key, value in level(()).items()})
 
 
 def render_output_document(df: pl.DataFrame) -> list[Any]:

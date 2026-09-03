@@ -50,6 +50,7 @@ def build_manifest(resolved: ResolvedDeploy) -> dict[str, Any]:
         "output_fields": config.output_fields,
         "input_schema": resolved.input_schema,
         "output_schema": resolved.output_schema,
+        "execution_policy": resolved.execution_policy,
         "artifacts": {name: path.as_posix() for name, path in resolved.artifacts.items()},
         "snapshot_provenance": resolved.snapshot_provenance,
         "pruned_graph": resolved.pruned_graph.model_dump(),

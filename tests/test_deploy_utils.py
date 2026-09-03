@@ -154,6 +154,7 @@ _EXPECTED_KEYS = {
     "nodes_deployed",
     "nodes_skipped",
     "nodes_skipped_names",
+    "execution_policy",
 }
 
 

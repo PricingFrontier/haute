@@ -299,6 +299,72 @@ def _profiles_by_name(result: dict[str, object]) -> dict[str, dict[str, object]]
 
 
 class TestColumnProfiles:
+    def test_group_by_output_is_profiled_under_an_admitted_preview(
+        self,
+        project_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        _widen_sandbox_root: None,
+    ) -> None:
+        config_dir = project_root / "config" / "data_input"
+        config_dir.mkdir(parents=True)
+        (config_dir / "quotes.json").write_text(
+            json.dumps(
+                {
+                    "inputType": "file",
+                    "format": "parquet",
+                    "mode": "scan",
+                    "path": str(project_root / "data" / "quotes.parquet"),
+                    "arguments": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        source = """\
+import polars as pl
+
+import haute
+from haute.graph_utils import resolve_data_input_from_config
+
+pipeline = haute.Pipeline("main", description="group-by fixture")
+
+
+@pipeline.data_input(config="config/data_input/quotes.json")
+def quotes() -> pl.LazyFrame:
+    return resolve_data_input_from_config(
+        "config/data_input/quotes.json",
+        base_dir=".",
+    )
+
+
+@pipeline.polars
+def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
+    return quotes.group_by("vehicle_year").agg(pl.len().alias("quote_count"))
+"""
+        (project_root / "main.py").write_text(source, encoding="utf-8")
+        import haute.assistant._tools as tools_module
+        from haute.assistant._config import EgressPolicy
+
+        monkeypatch.setattr(
+            tools_module,
+            "resolve_egress_policy",
+            lambda _root: EgressPolicy(
+                trust="organization",
+                max_sensitivity="restricted",
+                allow_project_knowledge=True,
+                allow_executable_source=True,
+                allow_row_samples=True,
+            ),
+        )
+
+        result = tools_module.get_column_profiles("main.py", "by_year")
+
+        assert "error" not in result, result
+        by_name = {column["name"]: column for column in result["columns"]}
+        assert by_name["vehicle_year"]["min"] == 2019
+        assert by_name["vehicle_year"]["max"] == 2021
+        assert by_name["quote_count"]["min"] == 1
+        assert by_name["quote_count"]["max"] == 1
+
     def test_small_cardinality_categories_are_reported_with_counts(self, profile_project: Path):
         """The encoding is the fact a schema cannot carry. Guessing `"Y"` here
         yields code that runs, validates, and counts nothing."""
@@ -568,6 +634,59 @@ class TestUnresolvableButInspectableNodes:
         monkeypatch.setattr(pl.LazyFrame, "collect", poisoned_collect)
         result = get_node_schema("main.py", "enriched")
         assert "columns" in result, result
+
+    def test_output_node_schema_resolves_without_collecting(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """EXEC-P08: an OUTPUT terminal used to assemble its whole document while
+        the graph was being built, so the collect-poisoning invariant did not
+        hold for it. ``schema_only=True`` now reaches the OUTPUT builder, which
+        describes the document from its mapping and source schemas instead."""
+
+        import haute._sandbox as sandbox_module
+        import haute.assistant._tools as tools_module
+        from haute.assistant._tools import get_node_schema
+        from tests.conftest import make_edge, make_graph, make_output_config
+
+        monkeypatch.setattr(sandbox_module, "_PROJECT_ROOT", project_root.resolve())
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "quotes",
+                        "data": {
+                            "label": "quotes",
+                            "nodeType": "dataInput",
+                            "config": {
+                                "path": "data/quotes.parquet",
+                                "inputType": "file",
+                                "format": "parquet",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(
+                                ["quote_id", "vehicle_year"], source_port="quotes"
+                            ),
+                        },
+                    },
+                ],
+                "edges": [make_edge("quotes", "out").model_dump()],
+            }
+        )
+        monkeypatch.setattr(tools_module, "parse_pipeline_to_graph", lambda _path: graph)
+
+        def poisoned_collect(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            raise AssertionError("get_node_schema must never collect data")
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", poisoned_collect)
+        result = get_node_schema("main.py", "out")
+        assert _columns(result) == {"quote_id": "String", "vehicle_year": "Int64"}
 
 
 # ---------------------------------------------------------------------------

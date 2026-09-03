@@ -19,6 +19,7 @@ import pytest
 from fastapi import HTTPException
 
 from haute._config_builder import _build_node_config
+from haute._execution_context import ExecutionProfile
 from haute._sandbox import set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import NodeType
@@ -189,7 +190,64 @@ def _make_optimiser_graph(data_path: str, config: dict | None = None) -> dict:
     return graph.model_dump()
 
 
-def _make_estimate_projection_impossible_graph(left_path: str, right_path: str) -> dict:
+def _make_streaming_auto_range_graph(source_path: str, *, scenario_code: str | None = None) -> dict:
+    """Build source -> scenarioExpander -> optimiser, eligible for chunked auto-range."""
+    scenario_config: dict = {
+        "quote_id": "quote_id",
+        "column_name": "premium_multiplier",
+        "min_value": 0.9,
+        "max_value": 1.1,
+        "steps": 2,
+        "step_column": "scenario_index",
+    }
+    if scenario_code is not None:
+        scenario_config["code"] = scenario_code
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": _snapshot_parquet_data_input(source_path),
+                    },
+                },
+                {
+                    "id": "scenario",
+                    "data": {
+                        "label": "scenario",
+                        "nodeType": "scenarioExpander",
+                        "config": scenario_config,
+                    },
+                },
+                {
+                    "id": "opt",
+                    "data": {
+                        "label": "optimiser",
+                        "nodeType": "optimiser",
+                        "config": {
+                            "mode": "online",
+                            "objective": "not_needed_for_auto_range",
+                            "constraints": {"premium": {"min": 0.0}},
+                            "quote_id": "quote_id",
+                            "scenario_index": "scenario_index",
+                            "scenario_value": "premium_multiplier",
+                            "chunk_size": 2,
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "scenario").model_dump(),
+                make_edge("scenario", "opt").model_dump(),
+            ],
+        }
+    )
+    return graph.model_dump()
+
+
+def _make_estimate_contract_free_fan_in_graph(left_path: str, right_path: str) -> dict:
     """Build a fan-in optimiser graph that needs parent ownership metadata."""
     graph = make_graph(
         {
@@ -792,6 +850,81 @@ class TestSolveRoute:
         assert job["error_detail"] == "bad setup"
         assert "bad setup" in job["message"]
         launch_background.assert_not_called()
+
+    def test_setup_memory_limited_preparation_ends_memory_limited(self, scored_data, tmp_path):
+        """A memory-limited preparation failure is not flattened to contract_error."""
+        from haute.errors import InputPreparationError
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running"})
+        failure = InputPreparationError(
+            "Preparing this Data Input's snapshot failed.",
+            node_id="source",
+            identity_digest="b" * 64,
+            build_class="admitted_eager",
+            reason_code="memory_limited",
+            remediation="Give the execution more memory headroom and try again.",
+        )
+
+        with (
+            patch(
+                "haute.routes._optimiser_service.execute_lazy_graph",
+                side_effect=failure,
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._execute_pipeline(body, job_id, tmp_path)
+
+        assert exc_info.value.status_code == 507
+        job = store.require_job(job_id)
+        assert job["status"] == "memory_limited"
+        assert job["terminal_reason"] == "memory_limited"
+        assert job["error"] == str(failure)
+        assert job["error_code"] == "memory_limit"
+        assert job["http_status_code"] == 507
+        assert job["error_detail"]["reason_code"] == "memory_limited"
+
+    def test_setup_build_failed_preparation_ends_contract_error(self, scored_data, tmp_path):
+        """A non-memory preparation failure still ends the job contract_error."""
+        from haute.errors import InputPreparationError
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running"})
+        failure = InputPreparationError(
+            "Preparing this Data Input's snapshot failed.",
+            node_id="source",
+            identity_digest="c" * 64,
+            build_class="admitted_eager",
+            reason_code="build_failed",
+            remediation="Build this Data Input's snapshot and try again.",
+        )
+
+        with (
+            patch(
+                "haute.routes._optimiser_service.execute_lazy_graph",
+                side_effect=failure,
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._execute_pipeline(body, job_id, tmp_path)
+
+        assert exc_info.value.status_code == 422
+        job = store.require_job(job_id)
+        assert job["status"] == "contract_error"
+        assert job["terminal_reason"] == "contract_error"
+        assert job["http_status_code"] == 422
 
     def test_solve_marks_job_error_when_factor_extraction_fails(
         self,
@@ -1497,6 +1630,37 @@ class TestEstimateRoute:
         assert resp.status_code == 422
         assert "bounded streaming mode" in resp.json()["detail"]
 
+    def test_estimate_maps_admission_failure_to_memory_limit_response(
+        self,
+        client,
+        scored_data,
+    ) -> None:
+        from haute._execution_admission import ExecutionAdmissionError
+
+        graph = _make_optimiser_graph(scored_data)
+        error = ExecutionAdmissionError(
+            "optimiser_estimate",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            memory_limit_bytes=1024,
+            rss_at_admission_bytes=512,
+            reason="in_flight_memory_budget_exceeded",
+            in_flight_reserved_bytes=2048,
+            in_flight_limit_bytes=1024,
+        )
+
+        with patch("haute.routes.optimiser._optimiser_input_metrics", side_effect=error):
+            resp = client.post(
+                "/api/optimiser/estimate",
+                json={"graph": graph, "node_id": "opt"},
+            )
+
+        assert resp.status_code == 507
+        detail = resp.json()["detail"]
+        assert detail["error_code"] == "memory_limit"
+        assert detail["profile"] == ExecutionProfile.OPTIMISER_SETUP.value
+        assert detail["reason"] == "in_flight_memory_budget_exceeded"
+        assert detail["message"].startswith("Optimiser estimate was not started")
+
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_estimate_allows_contract_free_fan_in_boundary(self, client, tmp_path):
         left_path = tmp_path / "estimate_left.parquet"
@@ -1510,7 +1674,7 @@ class TestEstimateRoute:
             }
         ).write_parquet(left_path)
         pl.DataFrame({"quote_id": ["q1", "q2"], "volume": [1.0, 0.8]}).write_parquet(right_path)
-        graph = _make_estimate_projection_impossible_graph(
+        graph = _make_estimate_contract_free_fan_in_graph(
             str(left_path),
             str(right_path),
         )
@@ -3207,7 +3371,7 @@ class TestEstimateRoute:
             }
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -3302,7 +3466,7 @@ class TestEstimateRoute:
             mode="online",
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -3402,7 +3566,7 @@ class TestEstimateRoute:
             mode="online",
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -3484,7 +3648,7 @@ class TestEstimateRoute:
             }
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -3571,7 +3735,7 @@ class TestEstimateRoute:
             }
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -3683,7 +3847,7 @@ class TestEstimateRoute:
             }
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -3783,7 +3947,7 @@ class TestEstimateRoute:
             }
         )
 
-        plan = _build_streaming_auto_range_plan(
+        plan, _fallback = _build_streaming_auto_range_plan(
             graph,
             "opt",
             graph.node_map["opt"].data.config,
@@ -3990,33 +4154,11 @@ class TestEstimateRoute:
         assert prepared["chunk_size"] == _default_auto_range_chunk_size()
         assert prepared["partition_count"] == _default_auto_range_partitions()
 
-    def test_frontier_auto_range_prepare_treats_projection_plan_failure_as_ineligible(
-        self,
-        scored_data,
-    ):
-        """The streaming probe must not escape before the auto-range job wrapper."""
-        from haute.errors import ProjectionImpossibleError
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserFrontierAutoRangeRequest
-
-        graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-        service = OptimiserSolveService(JobStore())
-
-        with patch(
-            "haute.routes._optimiser_service._build_streaming_auto_range_plan",
-            side_effect=ProjectionImpossibleError("missing parent ownership"),
-        ):
-            prepared = service._prepare_frontier_auto_range(body)
-
-        assert prepared["streaming_plan"] is None
-
     def test_frontier_auto_range_prepare_does_not_hide_contract_errors(
         self,
         scored_data,
     ):
-        """Only projection-impossible preflight failures are streaming ineligibility."""
+        """Only chunk-plan preflight rejections are streaming ineligibility."""
         from haute.errors import ContractMismatchError
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -4035,81 +4177,147 @@ class TestEstimateRoute:
         ):
             service._prepare_frontier_auto_range(body)
 
-    def test_frontier_auto_range_prepare_does_not_fallback_after_chunk_plan_rejection(
+    def test_frontier_auto_range_prepare_records_chunk_plan_rejection_as_fallback(
         self,
         tmp_path,
     ):
-        """Eligible streaming shapes must fail loudly if the chunk planner rejects them."""
+        """A chunk-plan rejection loses the optimisation, it does not fail the request."""
+        from haute.errors import ChunkUserCodeUnsupportedError
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         source_path = tmp_path / "quotes.parquet"
         pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
-        graph = make_graph(
-            {
-                "nodes": [
-                    {
-                        "id": "source",
-                        "data": {
-                            "label": "source",
-                            "nodeType": "dataInput",
-                            "config": _snapshot_parquet_data_input(str(source_path)),
-                        },
-                    },
-                    {
-                        "id": "scenario",
-                        "data": {
-                            "label": "scenario",
-                            "nodeType": "scenarioExpander",
-                            "config": {
-                                "column_name": "premium_multiplier",
-                                "steps": 2,
-                                "contract": {
-                                    "inputs": ["premium"],
-                                    "outputs": ["premium_multiplier", "scenario_index"],
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "optimiser",
-                            "nodeType": "optimiser",
-                            "config": {
-                                "mode": "online",
-                                "objective": "not_needed",
-                                "constraints": {"premium": {"min": 0.0}},
-                                "quote_id": "quote_id",
-                                "scenario_index": "scenario_index",
-                                "scenario_value": "premium_multiplier",
-                            },
-                        },
-                    },
-                ],
-                "edges": [
-                    make_edge("source", "scenario").model_dump(),
-                    make_edge("scenario", "opt").model_dump(),
-                ],
-            }
+        graph = _make_streaming_auto_range_graph(str(source_path))
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+
+        error = ChunkUserCodeUnsupportedError(
+            "forced chunk-plan rejection",
+            node_id="scenario",
+            node_type="scenarioExpander",
+            reason="unsupported_frame_method",
+            blocking_operator="sort",
+            line=1,
+            column=5,
+        )
+        with patch("haute.chunking.chunk_plan", side_effect=error):
+            prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
+
+        assert prepared["streaming_plan"] is None
+        fallback = prepared["chunk_fallback"]
+        assert fallback["code"] == "chunk_plan_unsupported"
+        assert fallback["node_id"] == "scenario"
+        assert fallback["reason"] == "unsupported_frame_method"
+        assert fallback["operator"] == "sort"
+        assert fallback["line"] == 1
+        assert fallback["column"] == 5
+
+    def test_frontier_auto_range_prepare_records_user_code_ineligibility_as_fallback(
+        self,
+        tmp_path,
+    ):
+        """Ineligible scenario post-processing code names the blocking operator."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        source_path = tmp_path / "quotes.parquet"
+        pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
+        graph = _make_streaming_auto_range_graph(
+            str(source_path),
+            scenario_code="df = df.sort('quote_id')",
         )
         body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
 
-        from haute.errors import ChunkPlanUnsupportedError
+        prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
 
-        with (
-            patch(
-                "haute.chunking.chunk_plan",
-                side_effect=ChunkPlanUnsupportedError("forced chunk-plan rejection"),
-            ),
-            pytest.raises(HTTPException) as exc_info,
-        ):
-            OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
+        assert prepared["streaming_plan"] is None
+        fallback = prepared["chunk_fallback"]
+        assert fallback["code"] == "chunk_user_code_ineligible"
+        assert fallback["node_id"] == "scenario"
+        assert fallback["reason"] == "unsupported_frame_method"
+        assert fallback["operator"] == "sort"
+        assert fallback["line"] == 1
 
-        assert exc_info.value.status_code == 422
-        assert "bounded streaming mode" in str(exc_info.value.detail)
-        assert "forced chunk-plan rejection" in str(exc_info.value.detail)
+    def test_frontier_auto_range_job_warns_about_recorded_chunk_fallback(
+        self,
+        tmp_path,
+    ):
+        """The classic path completes and reports the lost chunk optimisation."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import (
+            OptimiserChunkFallback,
+            OptimiserFrontierAutoRangeRequest,
+            OptimiserFrontierAutoRangeStatusResponse,
+        )
+
+        source_path = tmp_path / "quotes.parquet"
+        pl.DataFrame({"quote_id": ["q1", "q2"], "premium": [100.0, 200.0]}).write_parquet(
+            source_path
+        )
+        graph = _make_streaming_auto_range_graph(
+            str(source_path),
+            scenario_code="df = df.sort('quote_id')",
+        )
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        prepared = service._prepare_frontier_auto_range(body)
+        assert prepared["streaming_plan"] is None
+        assert prepared["chunk_fallback"] is not None
+
+        service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+        job = store.require_job(job_id)
+        assert job["status"] == "completed"
+        result = job["result"]
+        assert "scenario" in result["warning"]
+        assert prepared["chunk_fallback"]["reason"] in result["warning"]
+        assert result["chunk_fallback"]["code"] == prepared["chunk_fallback"]["code"]
+
+        status = service.frontier_auto_range_status(job_id)
+        validated = OptimiserFrontierAutoRangeStatusResponse.model_validate(status.model_dump())
+        assert validated.result is not None
+        # The fallback is a typed model, not a free-form dict: the emitted keys
+        # and the stable code set are part of the API contract.
+        typed_fallback = validated.result.chunk_fallback
+        assert isinstance(typed_fallback, OptimiserChunkFallback)
+        assert typed_fallback.code == result["chunk_fallback"]["code"]
+        assert typed_fallback.node_id == result["chunk_fallback"]["node_id"]
+        assert typed_fallback.reason == result["chunk_fallback"]["reason"]
+        assert typed_fallback.message == result["chunk_fallback"]["message"]
+        assert typed_fallback.model_dump() == result["chunk_fallback"]
+
+    def test_frontier_auto_range_job_without_fallback_has_no_warning(
+        self,
+        tmp_path,
+    ):
+        """A classic run with no lost optimisation carries neither warning nor payload."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        source_path = tmp_path / "quotes.parquet"
+        pl.DataFrame({"quote_id": ["q1", "q2"], "premium": [100.0, 200.0]}).write_parquet(
+            source_path
+        )
+        graph = _make_streaming_auto_range_graph(str(source_path))
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        prepared = service._prepare_frontier_auto_range(body)
+        prepared["streaming_plan"] = None
+        assert prepared["chunk_fallback"] is None
+
+        service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+        result = store.require_job(job_id)["result"]
+        assert result["warning"] is None
+        assert result["chunk_fallback"] is None
 
     def test_frontier_auto_range_prepare_prefers_auto_range_chunk_override(
         self,
@@ -4252,9 +4460,13 @@ class TestEstimateRoute:
         diagnostics = status["execution_metrics"]["execution_strategy"]
         assert diagnostics["schema_version"] == 1
         assert diagnostics["profile"] == "auto_range"
-        assert diagnostics["status"] == "projected"
-        assert diagnostics["boundedness"] == "bounded"
-        assert diagnostics["boundaries"]["total_count"] == 0
+        # The fan-in node joins, which EXEC-P07 admits as a materialisation
+        # boundary; the runtime projection reasons below are unaffected.
+        assert diagnostics["strategy"] == "materialisation-boundary"
+        assert diagnostics["status"] == "boundary"
+        assert diagnostics["boundedness"] == "unbounded"
+        assert diagnostics["boundaries"]["total_count"] == 1
+        assert diagnostics["blocking_operator"] == "join"
         reason_edges = {
             (item["parent_node_id"], item["node_id"], item["reason_code"])
             for item in diagnostics["reasons"]["items"]
@@ -7497,47 +7709,6 @@ class TestExecutePipelineArgs:
         build_grid.assert_not_called()
         launch_background.assert_not_called()
 
-    def test_execute_pipeline_maps_projection_impossible_to_422(self, scored_data, tmp_path):
-        from haute.errors import ProjectionImpossibleError
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-        from haute.schemas import OptimiserSolveRequest
-
-        graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
-
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        job_id = store.create_job({"status": "running"})
-        checkpoint_dir = tmp_path / "ckpt"
-        checkpoint_dir.mkdir()
-
-        with (
-            patch(
-                "haute.routes._optimiser_service.execute_lazy_graph",
-                side_effect=ProjectionImpossibleError(
-                    "Fan-in join projection requires literal how/suffix arguments.",
-                    node_id="join",
-                    node_type="polars",
-                ),
-            ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
-            patch("haute.executor._compile_preamble", return_value={}),
-            pytest.raises(HTTPException) as exc_info,
-        ):
-            service._execute_pipeline(
-                body,
-                job_id,
-                checkpoint_dir,
-                required_columns_by_node={"source": frozenset({"volume"})},
-            )
-
-        assert exc_info.value.status_code == 422
-        assert "bounded projection" in str(exc_info.value.detail)
-        job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
-        assert job["terminal_reason"] == "contract_error"
-
     def test_estimate_passes_optimiser_seed_to_execute_pipeline(self, scored_data):
         from haute.routes import optimiser as optimiser_module
         from haute.schemas import OptimiserEstimateRequest
@@ -7555,6 +7726,10 @@ class TestExecutePipelineArgs:
 
         assert metrics["expanded_row_count"] == 250
         assert execute.call_args.kwargs["target_node_id"] == "source"
+        execution_context = execute.call_args.kwargs["execution_context"]
+        assert execution_context.profile is ExecutionProfile.OPTIMISER_SETUP
+        assert execution_context.admission is not None
+        assert execution_context._admission_released is True
         assert execute.call_args.kwargs["required_columns_by_node"] == {
             "source": frozenset(
                 {
@@ -16051,3 +16226,116 @@ class TestOptimiserMutationBoundaries:
         assert points[0]["lambda_volume"] == 0.0
         # Non-trivial precision is preserved (no integer truncation).
         assert points[1]["lambda_volume"] == pytest.approx(0.7128, rel=1e-6)
+
+
+def test_generic_chunk_plan_rejection_keeps_the_rejected_node(tmp_path) -> None:
+    """A rejection without a public payload still names the node the planner rejected."""
+    from haute.errors import ChunkPlanUnsupportedError
+    from haute.routes._job_store import JobStore
+    from haute.routes._optimiser_service import OptimiserSolveService
+    from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+    source_path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
+    graph = _make_streaming_auto_range_graph(str(source_path))
+    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+
+    error = ChunkPlanUnsupportedError(
+        "Node type is not chunk-safe in the V1 chunk contract.",
+        node_id="scenario",
+        node_type="scenarioExpander",
+    )
+    with patch("haute.chunking.chunk_plan", side_effect=error):
+        prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
+
+    assert prepared["streaming_plan"] is None
+    fallback = prepared["chunk_fallback"]
+    assert fallback["code"] == "chunk_plan_unsupported"
+    assert fallback["node_id"] == "scenario"
+    assert fallback["operator"] == "scenarioExpander"
+    assert fallback["reason"] == "Node type is not chunk-safe in the V1 chunk contract."
+    assert "at node 'scenario'" in fallback["message"]
+
+
+@pytest.mark.parametrize(
+    ("config", "expected_reason"),
+    [
+        ({"model_reuse_lifetime": "request"}, "model_reuse_lifetime"),
+        ({"model_reuse_lifetime": "batch", "code": "df = df"}, "post_processing_code"),
+        ({"model_reuse_lifetime": "batch", "column_renames": {"a": "b"}}, "column_renames"),
+    ],
+)
+def test_model_score_fallback_names_its_actual_blocker(config: dict, expected_reason: str) -> None:
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.routes._optimiser_service import _streaming_auto_range_node_is_eligible
+
+    node = GraphNode(
+        id="score",
+        data=NodeData(label="score", nodeType=NodeType.MODEL_SCORE, config=config),
+    )
+
+    eligible, fallback = _streaming_auto_range_node_is_eligible(node, frame_names=("df",))
+
+    assert eligible is False
+    assert fallback is not None
+    assert fallback.code == "model_score_ineligible"
+    assert fallback.node_id == "score"
+    assert fallback.operator == "modelScore"
+    assert fallback.reason == expected_reason
+    assert expected_reason in fallback.message
+
+    clean = GraphNode(
+        id="score",
+        data=NodeData(
+            label="score",
+            nodeType=NodeType.MODEL_SCORE,
+            config={"model_reuse_lifetime": "batch"},
+        ),
+    )
+    assert _streaming_auto_range_node_is_eligible(clean, frame_names=("df",)) == (True, None)
+
+
+def test_auto_range_prepares_snapshot_inputs_before_chunk_planning(scored_data, monkeypatch):
+    """Preparation runs first, under a scoped admission released before the job admits.
+
+    Chunk planning runs the engine schema-only, which never builds a snapshot,
+    so a missing or stale generation would otherwise cost the first run its
+    chunk plan.
+    """
+    from haute import _input_preparation
+    from haute._execution_context import ExecutionProfile
+    from haute.routes import _optimiser_service as service_module
+    from haute.routes._job_store import JobStore
+    from haute.routes._optimiser_service import OptimiserSolveService
+    from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+    graph = _make_optimiser_graph(scored_data)
+    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+    calls: list[tuple[str, object]] = []
+
+    def fake_prepare(order, node_map, *, profile, execution_context, base_dir, schema_only, **_):
+        assert execution_context is not None
+        assert execution_context.admission is not None
+        assert not execution_context._admission_released
+        calls.append(("prepare", (tuple(order), profile, schema_only, execution_context)))
+        return ()
+
+    real_plan = service_module._build_streaming_auto_range_plan
+
+    def recording_plan(*args, **kwargs):
+        calls.append(("plan", None))
+        return real_plan(*args, **kwargs)
+
+    monkeypatch.setattr(_input_preparation, "prepare_input_snapshots", fake_prepare)
+    monkeypatch.setattr(service_module, "_build_streaming_auto_range_plan", recording_plan)
+    service = OptimiserSolveService(JobStore())
+
+    prepared = service._prepare_frontier_auto_range(body)
+
+    assert prepared["node"].id == "opt"
+    assert [name for name, _ in calls] == ["prepare", "plan"]
+    order, profile, schema_only, context = calls[0][1]
+    assert profile is ExecutionProfile.AUTO_RANGE
+    assert schema_only is False
+    assert set(order) == {"source", "opt"}
+    assert context._admission_released

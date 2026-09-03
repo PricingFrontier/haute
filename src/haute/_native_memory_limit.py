@@ -214,6 +214,10 @@ class NativeMemoryLease:
     def apply(self, growth_bytes: int, *, required: bool) -> bool:
         if growth_bytes <= 0:
             raise ValueError("memory growth limit must be positive")
+        # Evidence from an earlier request must never survive into this one:
+        # a failed best-effort attempt after a successful request would
+        # otherwise advertise a cap that is not installed.
+        self._backend = None
         try:
             if sys.platform == "win32":
                 self._apply_windows(growth_bytes)
@@ -249,6 +253,8 @@ class NativeMemoryLease:
             (self._cgroup / "memory.max").write_text("max\n", encoding="ascii")
         elif self._backend == "windows_job":
             self._set_windows_limit(None)
+        # The cap is gone, so the lease no longer holds hard-cap evidence.
+        self._backend = None
 
     def close(self) -> None:
         if self._cgroup is not None:

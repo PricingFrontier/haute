@@ -5,13 +5,17 @@ from typing import Any
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
+from haute._execution_admission import create_admitted_execution_context
+from haute._execution_context import ExecutionProfile
 from haute._types import ModellingConfig
 from haute.modelling._training_job import TrainingJob
-from haute.routes import _training_lifecycle as train_service
-from haute.routes._job_store import JobStore
-from haute.routes._train_service import TrainService, _training_required_columns_by_node
+from haute.routes import _training_preparation as training_preparation
+from haute.routes._train_service import _training_required_columns_by_node
+from haute.routes._training_preparation import (
+    TrainingPreparationRequest,
+    prepare_training_data,
+)
 from haute.schemas import TrainRequest
 from tests.conftest import make_graph
 
@@ -215,12 +219,39 @@ def test_catboost_schema_features_exclude_fold_and_id_metadata_without_manual_ex
     assert prepared.cat_features == ["territory"]
 
 
+def _preparation_request(
+    body: TrainRequest,
+    parquet_path: Path,
+    **overrides: Any,
+) -> TrainingPreparationRequest:
+    return TrainingPreparationRequest(
+        graph=body.graph,
+        node_id="train",
+        job_id="job",
+        source=body.source,
+        parquet_path=str(parquet_path),
+        config=dict(body.graph.node_map["train"].data.config),
+        project_root=str(parquet_path.parent),
+        **overrides,
+    )
+
+
+def _prepare(request: TrainingPreparationRequest) -> Any:
+    context = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+    )
+    try:
+        return prepare_training_data(request, execution_context=context)
+    finally:
+        context.release_admission(preserve_primary_error=True)
+
+
 def test_missing_target_fails_before_training_sink_write(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    service = TrainService(JobStore())
     body = _training_request({"algorithm": "catboost", "target": "missing_target"})
-    job_id = service._store.create_job({"status": "running"})
 
     def fake_execute_lazy(*_args: Any, **_kwargs: Any):
         return {"train": pl.DataFrame({"feature": [1.0]}).lazy()}, ["train"], {}, {}
@@ -228,27 +259,31 @@ def test_missing_target_fails_before_training_sink_write(
     def fail_bounded_sink(*_args: Any, **_kwargs: Any) -> None:
         pytest.fail("training sink write should not run after schema validation fails")
 
-    monkeypatch.setattr(train_service, "execute_lazy_graph", fake_execute_lazy)
+    monkeypatch.setattr(training_preparation, "execute_lazy_graph", fake_execute_lazy)
     monkeypatch.setattr("haute._polars_utils.bounded_sink", fail_bounded_sink)
 
-    with pytest.raises(HTTPException) as exc_info:
-        service._execute_and_sink(
+    parquet_path = tmp_path / "prepared.parquet"
+    outcome = _prepare(
+        _preparation_request(
             body,
-            preamble_ns=None,
-            row_limit=None,
-            job_id=job_id,
+            parquet_path,
             exclude=None,
             keep_columns=["missing_target"],
         )
+    )
 
-    assert exc_info.value.status_code == 422
-    assert "missing_target" in str(exc_info.value.detail)
+    failure = outcome.failure
+    assert failure is not None
+    assert failure.terminal_reason == "contract_error"
+    assert failure.http_status_code == 422
+    assert "missing_target" in str(failure.http_detail)
+    assert not parquet_path.exists()
 
 
 def test_missing_explicit_feature_fails_before_training_sink_write(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    service = TrainService(JobStore())
     body = _training_request(
         {
             "algorithm": "catboost",
@@ -256,7 +291,6 @@ def test_missing_explicit_feature_fails_before_training_sink_write(
             "feature_columns": ["driver_age", "missing_feature"],
         }
     )
-    job_id = service._store.create_job({"status": "running"})
 
     def fake_execute_lazy(*_args: Any, **_kwargs: Any):
         return (
@@ -269,19 +303,25 @@ def test_missing_explicit_feature_fails_before_training_sink_write(
     def fail_bounded_sink(*_args: Any, **_kwargs: Any) -> None:
         pytest.fail("training sink write should not run after schema validation fails")
 
-    monkeypatch.setattr(train_service, "execute_lazy_graph", fake_execute_lazy)
+    monkeypatch.setattr(training_preparation, "execute_lazy_graph", fake_execute_lazy)
     monkeypatch.setattr("haute._polars_utils.bounded_sink", fail_bounded_sink)
 
-    with pytest.raises(HTTPException) as exc_info:
-        service._execute_and_sink(
+    parquet_path = tmp_path / "prepared.parquet"
+    outcome = _prepare(
+        _preparation_request(
             body,
-            preamble_ns=None,
-            row_limit=None,
-            job_id=job_id,
+            parquet_path,
             exclude=None,
             keep_columns=["claim_count"],
-            required_columns_by_node={"train": {"claim_count", "driver_age", "missing_feature"}},
+            required_columns_by_node={
+                "train": frozenset({"claim_count", "driver_age", "missing_feature"})
+            },
         )
+    )
 
-    assert exc_info.value.status_code == 422
-    assert "missing_feature" in str(exc_info.value.detail)
+    failure = outcome.failure
+    assert failure is not None
+    assert failure.terminal_reason == "contract_error"
+    assert failure.http_status_code == 422
+    assert "missing_feature" in str(failure.http_detail)
+    assert not parquet_path.exists()

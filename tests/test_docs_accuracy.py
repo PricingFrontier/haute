@@ -211,10 +211,19 @@ def test_execution_strategy_guide_is_in_public_navigation_and_states_key_contrac
         "Schema all-except",
         "Streaming boundary",
         "Materialisation boundary",
-        "Haute never generically chunks a group-by.",
-        "`preview_eager`",
-        "`explore_analysis` cache-materialisation",
-        "`deploy_live`",
+        "Global operations (group-by, sort, unique, join, join_asof, top_k, bottom_k,",
+        "are supported in every workflow.",
+        "Haute never computes a global operation independently in each generic chunk.",
+        "strategy `full-width-conservative`",
+        "Data Output writes",
+        "assistant value profiling",
+        "both live and batch",
+        # The capped and uncapped surfaces must match the execution-engine spec:
+        # training preparation and multi-row deploy batches run under a native
+        # cap (EXEC-P06); optimiser stages and live scoring do not.
+        "training preparation, and multi-row batch scoring in a deployed container all run",
+        "inside a worker with a native memory cap",
+        "Optimiser stages and single-row live scoring run without that cap",
         "unavailable or `null`",
     ):
         assert claim in guide

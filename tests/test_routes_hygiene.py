@@ -286,14 +286,16 @@ class TestPipelineImportableCold:
         finally:
             _restore_haute_modules(snapshot)
 
+    @pytest.mark.perf
     def test_cold_import_within_latency_budget(self) -> None:
         """Measured cold-import latency for ``haute.routes.pipeline``.
 
         The budget is tight enough to catch accidentally-hoisted heavyweight
-        dependencies.  Measure in a clean child interpreter with coverage
-        auto-start disabled: the coverage tracer otherwise makes this a
-        shared-runner load test instead of an import-graph tripwire.  The
-        deterministic companion below still names known heavyweight imports.
+        dependencies.  Run it in the dedicated performance lane and measure in
+        a clean child interpreter with coverage auto-start disabled: coverage
+        workers or their tracer otherwise turn it into a shared-runner load test
+        instead of an import-graph tripwire.  The deterministic companion below
+        still names known heavyweight imports in the regular test lanes.
         """
         probe = (
             "import importlib, time\n"

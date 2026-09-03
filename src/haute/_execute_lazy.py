@@ -41,6 +41,7 @@ from haute._graph_utils import (
     select_edge_source_output,
     upstream_node_ids,
 )
+from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
 from haute._path_resolution import runtime_project_root_scoped
 from haute._polars_utils import (
@@ -489,17 +490,6 @@ class NodeBoundaryRunner:
         _assert_outputs_satisfy_contract(boundary.node, boundary.contract, output_columns)
 
 
-def _strict_projection_for_context(
-    execution_context: ExecutionContext | None,
-    required_columns_by_node: Mapping[str, Iterable[str] | projection_planner.AllExceptColumns],
-) -> bool:
-    """Return whether projection-impossible cases should fail loudly."""
-    return execution_context is not None and projection_planner.strict_projection_required(
-        execution_context.profile,
-        required_columns_by_node,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Adaptive checkpoint strategy
 # ---------------------------------------------------------------------------
@@ -693,6 +683,26 @@ def _assert_simple_join_key_dtypes_compatible(
                 )
 
 
+def _conservative_strategy_passthrough(
+    previous_diagnostic: projection_planner.ExecutionStrategyDiagnostic,
+) -> dict[str, Any]:
+    """Carry a conservative strategy through a runtime projection rebuild.
+
+    ``full-width-conservative`` is decided once, at admission time, from the
+    absence of an estimate plus the presence of a hard worker cap.  A refined
+    plan cannot re-derive it, so the decision is passed through unchanged.
+    """
+
+    conservative = projection_planner.ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+    if previous_diagnostic.strategy is not conservative:
+        return {}
+    return {
+        "strategy": previous_diagnostic.strategy,
+        "reason_code": previous_diagnostic.reason_code,
+        "remediation": previous_diagnostic.remediation,
+    }
+
+
 def _runtime_join_demands(
     node: GraphNode,
     incoming_edges: Sequence[GraphEdge],
@@ -703,6 +713,7 @@ def _runtime_join_demands(
         set[str] | frozenset[str] | None,
     ],
     node_map: Mapping[str, GraphNode],
+    submodels: Mapping[str, Any] | None = None,
 ) -> dict[projection_planner.ProjectionEdgeKey, set[str]]:
     """Resolve a safe join projection from lazy parent schemas."""
     if projection is None or len(incoming_edges) < 2:
@@ -747,7 +758,11 @@ def _runtime_join_demands(
         schemas: dict[str, frozenset[str]] = {}
         for edge in incoming_edges:
             try:
-                name = edge_input_name(edge, node_map[edge.source])
+                name = edge_input_name(
+                    edge,
+                    node_map[edge.source],
+                    submodels=submodels,
+                )
             except (KeyError, ValueError):
                 return {}
             if name in by_name:
@@ -825,6 +840,8 @@ def _prune_live_switch_edges(
     edges: list[GraphEdge],
     node_map: dict[str, GraphNode],
     source: str,
+    *,
+    submodels: Mapping[str, Any] | None = None,
 ) -> list[GraphEdge]:
     """Remove edges to live_switch nodes from inputs inactive for *source*.
 
@@ -833,7 +850,12 @@ def _prune_live_switch_edges(
     matching the active source are kept; the unused branch is pruned so
     it is neither executed nor shown in profilers.
     """
-    return projection_planner.prune_live_switch_edges(edges, node_map, source)
+    return projection_planner.prune_live_switch_edges(
+        edges,
+        node_map,
+        source,
+        submodels=submodels,
+    )
 
 
 @runtime_project_root_scoped
@@ -852,6 +874,8 @@ def _execute_lazy(
     source_by_node: Mapping[str, str] | None = None,
     dataframe_cache_request: execution_facade.DataFrameExecutionCacheRequest | None = None,
     schema_only: bool = False,
+    runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
+    prepare_inputs: bool = True,
 ) -> tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]:
     """Execute a graph lazily and return per-node LazyFrames.
 
@@ -898,7 +922,15 @@ def _execute_lazy(
         schema_only: Declares that the caller reads ``collect_schema()`` and
             never collects a frame or invokes a sink.  Strategy planning then
             skips the group-by materialisation-admission gate, which bounds
-            peak memory during materialisation only.
+            peak memory during materialisation only, and the declaration is
+            forwarded to every node builder through
+            ``NodeBuildContext.schema_only`` so a builder that would otherwise
+            materialise while the graph is being built honours it: the OUTPUT
+            node returns an empty frame under the document schema derived by
+            ``_output_assembler.output_document_schema`` instead of assembling
+            its document.
+        runtime_source_frames_by_node: Request-local DataFrames injected at
+            source nodes, used for group-by materialisation estimation.
 
     Returns:
         (lazy_outputs, order, parents_of, id_to_name)
@@ -923,6 +955,18 @@ def _execute_lazy(
     parents_of = graph_plan.parents_of
     id_to_name = graph_plan.id_to_name
     relevant_edges = graph_plan.relevant_edges
+    # Automatic input preparation runs between graph preparation and strategy
+    # planning, so the RAM estimator reads a published generation.
+    prepare_input_snapshots(
+        order,
+        node_map,
+        profile=execution_context.profile if execution_context is not None else None,
+        execution_context=execution_context,
+        base_dir=preparation_base_dir(graph),
+        # Deploy scoring reads bundled artifacts through its own build_node_fn
+        # intercept, so its canonical configs must never be prepared here.
+        schema_only=schema_only or not prepare_inputs,
+    )
     normalised_required_columns = prepared_execution.normalised_required_columns
     planning_required_columns: dict[
         str,
@@ -1092,7 +1136,12 @@ def _execute_lazy(
     strategy_profile = (
         execution_context.profile if execution_context is not None else ExecutionProfile.LAZY_SINK
     )
-    group_by_operators = projection_planner.group_by_operators_by_node(order, node_map)
+    group_by_operators = projection_planner.materialising_operators_by_node(
+        order,
+        node_map,
+        relevant_edges=relevant_edges,
+        submodels=graph.submodels,
+    )
     if group_by_operators and not schema_only:
         # A materialising group-by needs the request planner's source-aware RAM
         # estimate. The prepared-only planner deliberately cannot derive one
@@ -1106,6 +1155,7 @@ def _execute_lazy(
                 source=source,
             ),
             execution_context=execution_context,
+            runtime_source_frames_by_node=runtime_source_frames_by_node,
         )
     else:
         public_strategy_result = execution_facade.plan_prepared_execution_strategy(
@@ -1117,6 +1167,7 @@ def _execute_lazy(
             execution_context=execution_context,
             schema_only=schema_only,
             relevant_edges=relevant_edges,
+            submodels=graph.submodels,
         )
     public_projection_plan = public_strategy_result.projection_plan
     projection_plan = public_projection_plan
@@ -1129,11 +1180,8 @@ def _execute_lazy(
             children_of,
             node_map,
             normalised_required_columns,
-            strict_projection=_strict_projection_for_context(
-                execution_context,
-                normalised_required_columns,
-            ),
             relevant_edges=relevant_edges,
+            submodels=graph.submodels,
         )
         if cache_broadens_projection
         else projection_plan
@@ -1200,6 +1248,8 @@ def _execute_lazy(
             execution_profile=(
                 execution_context.profile if execution_context is not None else None
             ),
+            schema_only=schema_only,
+            submodels=graph.submodels,
         )
 
     boundary_runner = NodeBoundaryRunner(
@@ -1328,6 +1378,7 @@ def _execute_lazy(
             needed_cols.get(child_id),
             edge_demands,
             node_map,
+            graph.submodels,
         )
 
     def _build_lazy_node(boundary: NodeBoundary) -> tuple[_Frame, bool, GraphNode]:
@@ -1408,6 +1459,8 @@ def _execute_lazy(
                     estimate_admission_basis=previous_diagnostic.estimate_admission_basis,
                     headroom_bytes=previous_diagnostic.headroom_bytes,
                     assumptions=previous_diagnostic.assumptions,
+                    boundary_operators=group_by_operators,
+                    **_conservative_strategy_passthrough(previous_diagnostic),
                 )
                 execution_context.projection_plan = public_strategy_result
             for incoming_edge, input_lf in zip(incoming_edges, input_lfs, strict=True):
@@ -1721,6 +1774,8 @@ def _build_funcs(
     | None = None,
     reuse_loaded_model_by_node: Mapping[str, bool] | None = None,
     execution_profile: ExecutionProfile | None = None,
+    schema_only: bool = False,
+    submodels: Mapping[str, Any] | None = None,
 ) -> dict[str, tuple[Callable, bool]]:
     """Build per-node executable functions from the graph.
 
@@ -1733,6 +1788,9 @@ def _build_funcs(
     without changing graph pruning/source-switch routing.
     ``reuse_loaded_model_by_node`` opts selected modelScore nodes into
     scorer-instance model reuse for chunked callers.
+    ``schema_only`` forwards the caller's schema-only declaration to every
+    builder, so a builder that would otherwise materialise at build time
+    (OUTPUT) honours it.
     """
     funcs: dict[str, tuple[Callable, bool]] = {}
     node_source_overrides = source_by_node or {}
@@ -1749,7 +1807,7 @@ def _build_funcs(
         for edge in connected_edges:
             source_node = node_map[edge.source]
             try:
-                src_names.append(edge_input_name(edge, source_node))
+                src_names.append(edge_input_name(edge, source_node, submodels=submodels))
             except ValueError:
                 # Preview reports null-handle routing errors on the consumer.
                 if not (
@@ -1798,6 +1856,7 @@ def _build_funcs(
                 else False
             ),
             execution_profile=execution_profile.value if execution_profile is not None else None,
+            schema_only=schema_only,
         )
         funcs[nid] = (fn, is_source)
     return funcs
@@ -1978,11 +2037,8 @@ def _execute_eager_core(
             children_of,
             node_map,
             required_columns_by_node=normalised_required_columns,
-            strict_projection=_strict_projection_for_context(
-                execution_context,
-                normalised_required_columns,
-            ),
             relevant_edges=relevant_edges,
+            submodels=graph.submodels,
         )
     else:
         projection_plan = None
@@ -2028,6 +2084,7 @@ def _execute_eager_core(
         required_output_columns_by_node=builder_needed_cols,
         required_output_columns_by_port_by_node=api_port_columns_by_node,
         execution_profile=execution_context.profile if execution_context is not None else None,
+        submodels=graph.submodels,
     )
     boundary_runner = NodeBoundaryRunner(
         prepared=prepared_execution,
@@ -2204,6 +2261,7 @@ def _execute_eager_core(
                     needed_cols.get(nid),
                     projection_plan.edge_demands if projection_plan is not None else {},
                     node_map,
+                    graph.submodels,
                 )
                 if runtime_edge_demands:
                     projected_inputs: list[pl.LazyFrame] = []
@@ -2262,6 +2320,15 @@ def _execute_eager_core(
                                 ),
                                 headroom_bytes=previous_diagnostic.headroom_bytes,
                                 assumptions=previous_diagnostic.assumptions,
+                                boundary_operators=(
+                                    projection_planner.materialising_operators_by_node(
+                                        order,
+                                        node_map,
+                                        relevant_edges=relevant_edges,
+                                        submodels=graph.submodels,
+                                    )
+                                ),
+                                **_conservative_strategy_passthrough(previous_diagnostic),
                             )
                         )
 

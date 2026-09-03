@@ -160,11 +160,22 @@ def deploy_execution_profile(row_count: int) -> ExecutionProfile:
     return ExecutionProfile.DEPLOY_BATCH if row_count > 1 else ExecutionProfile.DEPLOY_LIVE
 
 
-def admit_deploy_execution(*, operation: str, row_count: int) -> ExecutionContext:
-    """Create an admitted deploy execution context from request metadata."""
+def admit_deploy_execution(
+    *,
+    operation: str,
+    row_count: int,
+    profile: ExecutionProfile | None = None,
+) -> ExecutionContext:
+    """Create an admitted deploy execution context from request metadata.
+
+    ``profile`` overrides the row-count-derived profile for a caller that runs
+    one fixed execution path whatever the payload size: the batch worker always
+    admits ``DEPLOY_BATCH``, including for the bundle's one-row schema dry-run,
+    so the served envelope and the batch ``modelScore`` contract apply there.
+    """
     return create_admitted_execution_context(
         operation=operation,
-        profile=deploy_execution_profile(row_count),
+        profile=profile if profile is not None else deploy_execution_profile(row_count),
     )
 
 
@@ -657,6 +668,11 @@ def _score_graph_lazy(
             _validate_deploy_model_score_source(node, remap)
     input_set = set(input_node_ids)
     input_lf = input_df.lazy()
+    runtime_source_frames_by_node = {
+        node.id: input_df
+        for node in graph.nodes
+        if node.id in input_set and node.data.nodeType in {NodeType.API_INPUT, NodeType.DATA_INPUT}
+    }
     model_score_temp_paths: list[str] = []
     retained_lazy_frames: list[pl.LazyFrame] = []
 
@@ -1048,6 +1064,11 @@ def _score_graph_lazy(
                 execution_context=execution_context,
                 source_by_node=source_by_node,
                 dataframe_cache_request=dataframe_cache_request,
+                runtime_source_frames_by_node=runtime_source_frames_by_node,
+                # Deploy scoring reads its Data Inputs through the bundled
+                # artifact intercept above; the canonical configs it carries
+                # must never trigger an automatic provider build here.
+                prepare_inputs=False,
             )
 
         output_lf = lazy_outputs.get(output_node_id)

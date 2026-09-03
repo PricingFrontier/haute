@@ -28,6 +28,34 @@ from tests._projection_helpers import has_pair, pair_value, pair_value_or_none
 from tests.conftest import make_edge, make_graph, make_output_config
 
 
+def _public_output_definition(*, label: str = "public result") -> dict[str, object]:
+    return {
+        "definitionId": "definition_public_output",
+        "file": "modules/public_output.py",
+        "graph": {
+            "nodes": [
+                {
+                    "id": "internal_result",
+                    "data": {
+                        "label": "private implementation result",
+                        "nodeType": "polars",
+                        "config": {},
+                    },
+                }
+            ],
+            "edges": [],
+        },
+        "inputPorts": [],
+        "outputPorts": [
+            {
+                "portId": "opaque-output-id",
+                "label": label,
+                "source": {"nodeId": "internal_result", "handleId": None},
+            }
+        ],
+    }
+
+
 def test_projection_coverage_map_mentions_every_node_type() -> None:
     coverage = projection_rule_coverage_by_node_type()
     assert set(coverage) == set(NodeType)
@@ -97,6 +125,122 @@ def test_projection_rule_coverage_declares_opaque_node_types_explicitly() -> Non
     assert opaque_types == {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
     for node_type in opaque_types:
         assert coverage[node_type].rules == frozenset({"opaque_contract"})
+
+
+def test_projection_resolves_collapsed_submodel_inputs_by_public_output_label() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "occurrence",
+                    "type": "submodel",
+                    "data": {
+                        "label": "Occurrence presentation",
+                        "nodeType": "submodel",
+                        "config": {
+                            "definitionId": "definition_public_output",
+                            "alias": "unrelated_alias",
+                        },
+                    },
+                },
+                {
+                    "id": "consumer",
+                    "data": {
+                        "label": "consumer",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": "df = public_result.select(pl.col('premium'))",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "public-result-edge",
+                    "source": "occurrence",
+                    "target": "consumer",
+                    "sourceHandle": "out__opaque-output-id",
+                }
+            ],
+            "submodels": {
+                "definition_public_output": _public_output_definition(),
+            },
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="consumer",
+            required_columns_by_node={"consumer": {"premium"}},
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+    )
+
+    [edge_reason] = projection.diagnostics.edge_reasons.values()
+    assert edge_reason.details["input_name"] == "public_result"
+
+
+def test_live_switch_pruning_uses_collapsed_submodel_public_output_label() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "occurrence",
+                    "type": "submodel",
+                    "data": {
+                        "label": "Occurrence presentation",
+                        "nodeType": "submodel",
+                        "config": {
+                            "definitionId": "definition_public_output",
+                            "alias": "unrelated_alias",
+                        },
+                    },
+                },
+                {
+                    "id": "fallback",
+                    "data": {
+                        "label": "fallback result",
+                        "nodeType": "dataInput",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "switch",
+                    "data": {
+                        "label": "switch",
+                        "nodeType": "liveSwitch",
+                        "config": {
+                            "input_scenario_map": {
+                                "public_result": "live",
+                                "fallback_result": "batch",
+                            }
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "public-result-edge",
+                    "source": "occurrence",
+                    "target": "switch",
+                    "sourceHandle": "out__opaque-output-id",
+                },
+                {
+                    "id": "fallback-edge",
+                    "source": "fallback",
+                    "target": "switch",
+                },
+            ],
+            "submodels": {
+                "definition_public_output": _public_output_definition(),
+            },
+        }
+    )
+
+    prepared = prepare_graph(graph, "switch", source="live")
+
+    assert [edge.id for edge in prepared.relevant_edges] == ["public-result-edge"]
 
 
 def _projection_signature(projection_plan):
@@ -834,10 +978,14 @@ def test_projection_diagnostics_payload_is_json_safe():
 
 
 def test_execution_facade_attaches_projection_strategy_to_context():
-    from haute._execution_context import ExecutionContext
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._native_memory_limit import native_memory_backend_scope
     from haute.execution import plan_execution_strategy
 
-    context = ExecutionContext(
+    # The fan-in node joins, which EXEC-P07 admits as a materialisation
+    # boundary, so the plan needs an admitted context; the sources are not
+    # readable here, so a hard worker cap supplies the bounded envelope.
+    context = create_admitted_execution_context(
         operation="test_projection_facade",
         profile=ExecutionProfile.LAZY_SINK,
     )
@@ -848,7 +996,8 @@ def test_execution_facade_attaches_projection_strategy_to_context():
         required_columns_by_node={"out": {"quote_id", "left_value"}},
     )
 
-    projection = plan_execution_strategy(request, execution_context=context)
+    with native_memory_backend_scope("rlimit"):
+        projection = plan_execution_strategy(request, execution_context=context)
 
     assert context.projection_plan is projection
     diagnostics = context.projection_plan.projection_plan.diagnostics_payload(
@@ -3080,3 +3229,256 @@ def test_source_scan_projection_rejects_malformed_projection_config():
             {"column_renames": {"raw_premium": 123}},
             {"premium"},
         )
+
+
+# ----------------------------------------------- EXEC-P07 chained boundaries
+
+
+def _chained_boundary_sequences(code: str):
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import (
+        materialising_operator_sequences_by_input_names,
+    )
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={"code": code}),
+    )
+    return materialising_operator_sequences_by_input_names(["op"], {"op": node}, {"op": ["src"]})
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("df = src.unique(subset=['k']).reverse()", ("unique", "reverse")),
+        ("df = src.reverse().unique(subset=['k'])", ("reverse", "unique")),
+        ("df = src.sort('a').unique(subset=['k']).reverse()", ("sort", "unique", "reverse")),
+    ],
+)
+def test_chained_boundaries_are_recorded_in_evaluation_order(
+    code: str,
+    expected: tuple[str, ...],
+) -> None:
+    """Chained calls share a source position, so order must come from evaluation.
+
+    Sorting by ``(lineno, col_offset)`` tied every call in one chain and left the
+    operator to a lexical tie-break, which named ``reverse`` for
+    ``unique(...).reverse()``.
+    """
+    assert dict(_chained_boundary_sequences(code)) == {"op": expected}
+
+
+def test_chained_boundary_diagnostic_names_the_first_operator_evaluated() -> None:
+    from haute.projection import first_materialising_operators
+
+    for code, first in (
+        ("df = src.unique(subset=['k']).reverse()", "unique"),
+        ("df = src.reverse().unique(subset=['k'])", "reverse"),
+    ):
+        sequences = _chained_boundary_sequences(code)
+        assert dict(first_materialising_operators(sequences)) == {"op": first}
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("df = left.join(right.sort('a'), on='k')", ("sort", "join")),
+        ("df = left.join(right.unique(subset=['k']), on='k')", ("unique", "join")),
+        (
+            "df = left.sort('a').join(right.unique(subset=['k']), on='k')",
+            ("sort", "unique", "join"),
+        ),
+    ],
+)
+def test_a_boundary_inside_an_argument_is_recorded_before_its_outer_call(
+    code: str,
+    expected: tuple[str, ...],
+) -> None:
+    """Python evaluates the receiver, then the arguments, then the call.
+
+    Recording the outer call first reported ``left.join(right.sort(...))`` as
+    join-then-sort, which is the reverse of the order the frames are transformed.
+    """
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import materialising_operator_sequences_by_input_names
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={"code": code}),
+    )
+
+    sequences = materialising_operator_sequences_by_input_names(
+        ["op"], {"op": node}, {"op": ["left", "right"]}
+    )
+
+    assert dict(sequences) == {"op": expected}
+
+
+def test_malformed_api_input_edge_classifies_without_raising() -> None:
+    """A malformed apiInput edge is skipped by the classifier, not fatal.
+
+    ``edge_input_name`` raises for an apiInput edge with no frame label, but
+    strategy planning must still classify the graph: the node builder is the
+    fail-loud point that reports the malformed edge.
+    """
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import materialising_operator_sequences_by_node
+
+    source = GraphNode(
+        id="src",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="src", nodeType=NodeType.API_INPUT, config={}),
+    )
+    target = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(
+            label="op",
+            nodeType=NodeType.POLARS,
+            config={"code": "df = src.unique(subset=['k'])"},
+        ),
+    )
+    edge = make_edge("src", "op", source_handle=None)
+
+    sequences = materialising_operator_sequences_by_node(
+        ["op"], {"src": source, "op": target}, relevant_edges=[edge]
+    )
+
+    assert dict(sequences) == {"op": ("unique",)}
+
+
+def test_boundary_ast_walker_visits_less_common_valid_syntax() -> None:
+    code = """
+@decorator(src.unique())
+class Example(src.sort('a'), metaclass=meta(src.reverse())):
+    field: object
+    value: object = src.unique()
+    def method(
+        self, item=src.sort('a'), *args, option=src.reverse(), required, **kwargs
+    ) -> src.unique():
+        global_result.attr, mapping['key'], *items = src.unique(), src.sort('a'), src.reverse()
+        factory().attr = src.unique()
+        counter += src.sort('a')
+        holder.attr += src.reverse()
+        mapping['key'] += src.unique()
+        factory().attr += src.sort('a')
+        starred = [*src.reverse()]
+        with src.sort('a') as bound, src.reverse():
+            result = {src.unique(): src.sort('a'), **src.reverse()}
+        async def nested() -> src.unique():
+            async with src.sort('a') as async_bound, src.reverse():
+                return [src.unique() for item in src.sort('a') if src.reverse()]
+        return {src.unique(): src.sort('a') for item in src.reverse() if src.unique()}
+
+async def worker() -> src.sort('a'):
+    @decorator(src.reverse())
+    async def inner(default=src.unique(), *, named=src.sort('a'), **kwargs):
+        yield src.reverse()
+    import package
+    from package import member as alias
+    return src.unique()
+"""
+
+    sequences = _chained_boundary_sequences(code)
+
+    assert dict(sequences) == {"op": ("unique", "sort", "reverse")}
+
+
+def test_boundary_ast_walker_handles_a_malformed_augassign_target_conservatively() -> None:
+    import ast
+
+    from haute._polars_operations import (
+        materialising_expression_methods,
+        materialising_frame_methods,
+    )
+    from haute.projection import _materialising_calls_in_source_order
+
+    tree = ast.parse("counter += src.sort('a')")
+    statement = tree.body[0]
+    assert isinstance(statement, ast.AugAssign)
+    statement.target = ast.Constant(value=0)
+
+    calls = _materialising_calls_in_source_order(
+        tree,
+        frozenset({"src"}),
+        materialising_frame_methods(),
+        materialising_expression_methods(),
+    )
+
+    assert [call[3] for call in calls] == ["sort"]
+
+
+def test_boundary_helpers_skip_missing_sources_and_expose_first_operator_wrapper() -> None:
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import (
+        materialising_operator_sequences_by_node,
+        materialising_operators_by_input_names,
+    )
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={"code": "df = src.unique()"}),
+    )
+    edge = make_edge("missing", "op")
+
+    sequences = materialising_operator_sequences_by_node(
+        ["op"], {"op": node}, relevant_edges=[edge]
+    )
+    assert dict(sequences) == {"op": ("unique",)}
+    assert dict(materialising_operators_by_input_names(["op"], {"op": node}, {"op": ["src"]})) == {
+        "op": "unique"
+    }
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("df = pl.LazyFrame.group_by(src, 'segment').agg(pl.len())", "group_by"),
+        ("df = pl.DataFrame.sort(src, 'premium')", "sort"),
+        ("g = src.group_by\ndf = g('segment').agg(pl.len())", "group_by"),
+        ("s = src.sort\ndf = s('premium')", "sort"),
+        ("df = src.with_columns(pl.col('premium').cast(pl.Int64))", None),
+    ],
+)
+def test_bound_methods_and_frame_class_calls_are_materialising_boundaries(
+    code: str, expected: str | None
+) -> None:
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import materialising_operators_by_input_names
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={"code": code}),
+    )
+
+    operators = dict(materialising_operators_by_input_names(["op"], {"op": node}, {"op": ["src"]}))
+
+    assert operators == ({} if expected is None else {"op": expected})
+
+
+def test_opaque_contract_polars_fan_in_is_unprojected() -> None:
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.projection import opaque_contract_demands_for_node
+
+    node = GraphNode(
+        id="op",
+        type="custom",
+        position={"x": 0, "y": 0},
+        data=NodeData(label="op", nodeType=NodeType.POLARS, config={}),
+    )
+
+    result = opaque_contract_demands_for_node(node, ["left", "right"])
+
+    assert result.default is None
+    assert result.for_parent("left") is None
+    assert result.for_parent("right") is None

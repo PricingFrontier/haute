@@ -10,7 +10,7 @@ single-node dispatcher that drives the unified
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from haute._codegen_builders import (
     _build_params,
@@ -35,11 +35,12 @@ from haute._graph_utils import (
     build_instance_mapping,
     duplicate_input_names,
     edge_input_name,
+    resolve_input_mapping_names,
 )
 from haute._logging import get_logger
 from haute._python_syntax import inject_decorator_keyword
 from haute._registry import NODE_REGISTRY
-from haute._submodel_instances import canonical_downstream_identity, resolve_submodel_instances
+from haute._submodel_instances import resolve_submodel_instances
 from haute._topo import topo_sort_ids
 from haute._types import (
     NODE_TYPE_TO_DECORATOR,
@@ -476,7 +477,12 @@ def _error_on_name_collisions(labels: list[str]) -> None:
     )
 
 
-def _edge_input_name_for_codegen(edge: GraphEdge, source_node: GraphNode) -> str:
+def _edge_input_name_for_codegen(
+    edge: GraphEdge,
+    source_node: GraphNode,
+    *,
+    submodels: Mapping[str, SubmodelDefinition] | None = None,
+) -> str:
     """Derive one emitted parameter name from an incoming graph edge.
 
     ``edge_input_name`` is the single source of truth shared with execution.
@@ -491,7 +497,7 @@ def _edge_input_name_for_codegen(edge: GraphEdge, source_node: GraphNode) -> str
             source_node=source_node.id,
             source_node_label=source_node.data.label,
         )
-    return edge_input_name(edge, source_node)
+    return edge_input_name(edge, source_node, submodels=submodels)
 
 
 def _build_node_input_metadata(
@@ -695,6 +701,7 @@ def _generate_pipeline_lines(
 
     # Nodes: originals then instances --------------------------------------
     instance_of_map = _build_instance_of_map(sorted_nodes)
+    node_by_id = {node.id: node for node in sorted_nodes}
     originals = [n for n in sorted_nodes if n.id not in instance_of_map]
     instances = [n for n in sorted_nodes if n.id in instance_of_map]
 
@@ -709,6 +716,11 @@ def _generate_pipeline_lines(
         orig_id = instance_of_map[node.id]
         orig_func = id_to_func.get(orig_id, orig_id)
         orig_src = node_sources.get(orig_id, [])
+        original = node_by_id.get(orig_id)
+        if original is not None and original.data.nodeType == NodeType.POLARS:
+            input_mapping = original.data.config.get("inputMapping")
+            if input_mapping is not None:
+                orig_src = resolve_input_mapping_names(orig_src, input_mapping)
         inst_code = _instance_to_code(
             node,
             orig_func,
@@ -918,7 +930,7 @@ def _canonical_definition_source_metadata(
     node_source_ids: dict[str, list[str]] = {}
 
     for port in definition.input_ports:
-        parameter_name = _sanitize_func_name(port.port_id)
+        parameter_name = _sanitize_func_name(port.label)
         for target in port.targets:
             add_binding(target.node_id, parameter_name, port.port_id, target.handle_id)
 
@@ -1095,16 +1107,18 @@ def _graph_to_code_multi_instances(
         source_instance = instances.get(edge.source)
         if source_instance is None:
             source_node = node_map[edge.source]
-            source_name = _edge_input_name_for_codegen(edge, source_node)
+            source_name = _edge_input_name_for_codegen(
+                edge,
+                source_node,
+                submodels=graph.submodels,
+            )
             source_id = edge.source
         else:
-            port_id = _canonical_port_id(
-                edge.sourceHandle,
-                prefix="out__",
-                edge=edge,
-                endpoint="source",
+            source_identity = _edge_input_name_for_codegen(
+                edge,
+                source_instance.node,
+                submodels=graph.submodels,
             )
-            source_identity = canonical_downstream_identity(source_instance.config.alias, port_id)
             source_name = source_identity
             source_id = source_identity
         root_node_sources.setdefault(edge.target, []).append(source_name)

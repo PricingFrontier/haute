@@ -200,9 +200,10 @@ def _interactive_worker_entrypoint(
             if not isinstance(request, tuple) or len(request) != 7 or request[0] != "run":
                 raise RuntimeError("interactive worker received a malformed request")
             _kind, job_id, function, args, kwargs, native_growth, native_required = request
+            applied = False
             try:
                 if native_growth is not None:
-                    lease.apply(native_growth, required=native_required)
+                    applied = lease.apply(native_growth, required=native_required)
             except BaseException as exc:
                 envelope = (
                     "result",
@@ -219,7 +220,8 @@ def _interactive_worker_entrypoint(
                 backend = None
                 run_function = False
             else:
-                backend = lease.backend
+                # Only a cap installed by THIS request is evidence for it.
+                backend = lease.backend if applied else None
                 run_function = True
             with native_memory_backend_scope(backend):
                 if run_function:

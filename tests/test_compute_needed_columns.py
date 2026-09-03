@@ -99,15 +99,12 @@ def _needed_by_node(
     children_of: dict[str, list[str]],
     node_map: dict[str, GraphNode],
     required_columns_by_node=None,
-    *,
-    strict_projection: bool = False,
 ):
     return compute_prepared_plan(
         order,
         children_of,
         node_map,
         required_columns_by_node,
-        strict_projection=strict_projection,
     ).needed_by_node
 
 

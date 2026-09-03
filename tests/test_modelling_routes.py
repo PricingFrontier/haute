@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -1281,6 +1282,42 @@ class TestEstimateEndpoint:
             "max_selection_validation_rows": 12,
         }
 
+    def test_estimate_evaluation_preview_accepts_upstream_group_by(
+        self,
+        client,
+        training_data,
+    ):
+        graph = _make_modelling_graph(training_data)
+        graph["nodes"].insert(
+            1,
+            {
+                "id": "grouped_features",
+                "data": {
+                    "label": "grouped_features",
+                    "nodeType": "polars",
+                    "config": {
+                        "code": (
+                            "df = source.group_by('x1').agg("
+                            "pl.col('x2').mean().alias('x2'), "
+                            "pl.col('y').mean().alias('y'))"
+                        )
+                    },
+                },
+            },
+        )
+        graph["edges"] = [
+            make_edge("source", "grouped_features").model_dump(),
+            make_edge("grouped_features", "train").model_dump(),
+        ]
+
+        resp = client.post(
+            "/api/modelling/estimate",
+            json={"graph": graph, "node_id": "train"},
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["evaluation_preview"] is not None
+
     def test_estimate_preview_includes_group_counts(
         self,
         client,
@@ -1771,6 +1808,22 @@ class TestBackgroundThreadErrors:
 # ---------------------------------------------------------------------------
 
 
+@contextmanager
+def _training_prep_context():
+    """Yield an admitted TRAINING_PREP context for direct child-core calls."""
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._execution_context import ExecutionProfile
+
+    context = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+    )
+    try:
+        yield context
+    finally:
+        context.release_admission(preserve_primary_error=True)
+
+
 class TestTrainingProjection:
     def test_glm_training_columns_include_terms_aux_and_split_column(self):
         seeds = _training_required_columns_by_node(
@@ -1916,12 +1969,12 @@ class TestTrainingProjection:
         assert projection.demand_for_edge(graph.edges[0]) == expected
         assert projection.diagnostics.node_reasons["train"].rule == "schema_all_except"
 
-    def test_execute_and_sink_forwards_training_projection(self, tmp_path):
-        from haute.routes._job_store import JobStore
-        from haute.schemas import TrainRequest
+    def test_prepare_training_data_forwards_training_projection(self, tmp_path):
+        from haute.routes._training_preparation import (
+            TrainingPreparationRequest,
+            prepare_training_data,
+        )
 
-        store = JobStore()
-        service = TrainService(store)
         graph = make_graph(
             {
                 "nodes": [
@@ -1937,8 +1990,6 @@ class TestTrainingProjection:
                 "edges": [],
             }
         )
-        body = TrainRequest(graph=graph, node_id="train")
-        job_id = store.create_job({"status": "running"})
         captured: dict[str, object] = {}
 
         def fake_execute_lazy(*args, **kwargs):
@@ -1951,41 +2002,52 @@ class TestTrainingProjection:
             )
 
         seeds = {"train": frozenset({"claim_count", "driver_age"})}
+        parquet_path = str(tmp_path / "prepared.parquet")
+        request = TrainingPreparationRequest(
+            graph=graph,
+            node_id="train",
+            job_id="job",
+            source="live",
+            parquet_path=parquet_path,
+            config={"target": "claim_count"},
+            project_root=str(tmp_path),
+            required_columns_by_node=seeds,
+        )
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph", side_effect=fake_execute_lazy
+                "haute.routes._training_preparation.execute_lazy_graph",
+                side_effect=fake_execute_lazy,
             ),
             patch("haute.executor._build_node_fn", return_value=None),
             patch("haute.modelling._algorithms._mem_checkpoint"),
             patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
             patch("haute.executor._preview_cache", MagicMock()),
             patch("haute.trace._cache", MagicMock()),
-            patch("haute._polars_utils.bounded_sink"),
         ):
-            tmp_parquet = service._execute_and_sink(
-                body,
-                preamble_ns=None,
-                row_limit=None,
-                job_id=job_id,
-                required_columns_by_node=seeds,
-            )
+            with _training_prep_context() as context:
+                outcome = prepare_training_data(request, execution_context=context)
 
+        assert outcome.failure is None
         assert captured["required_columns_by_node"] == seeds
         cache_request = captured["dataframe_cache_request"]
         assert cache_request is not None
         assert set(cache_request.keys_by_node) == {"train"}
-        assert Path(tmp_parquet).exists()
-        Path(tmp_parquet).unlink()
+        assert outcome.parquet_path == parquet_path
+        assert Path(parquet_path).exists()
+        assert outcome.feature_selection is not None
+        assert outcome.execution_metrics is not None
+        assert pl.read_parquet(parquet_path)["claim_count"].to_list() == [1.0]
 
-    def test_execute_and_sink_maps_bounded_sink_failure_to_http_422(self) -> None:
-        from fastapi import HTTPException
-
+    def test_prepare_training_data_maps_bounded_sink_failure_to_contract_failure(
+        self,
+        tmp_path,
+    ) -> None:
         from haute.errors import BoundedMemoryUnsupportedError
-        from haute.routes._job_store import JobStore
-        from haute.schemas import TrainRequest
+        from haute.routes._training_preparation import (
+            TrainingPreparationRequest,
+            prepare_training_data,
+        )
 
-        store = JobStore()
-        service = TrainService(store)
         graph = make_graph(
             {
                 "nodes": [
@@ -2001,8 +2063,6 @@ class TestTrainingProjection:
                 "edges": [],
             }
         )
-        body = TrainRequest(graph=graph, node_id="train")
-        job_id = store.create_job({"status": "running"})
 
         def fake_execute_lazy(*_args, **_kwargs):
             return (
@@ -2012,9 +2072,20 @@ class TestTrainingProjection:
                 {},
             )
 
+        parquet_path = str(tmp_path / "prepared.parquet")
+        request = TrainingPreparationRequest(
+            graph=graph,
+            node_id="train",
+            job_id="job",
+            source="live",
+            parquet_path=parquet_path,
+            config={"target": "claim_count"},
+            project_root=str(tmp_path),
+        )
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph", side_effect=fake_execute_lazy
+                "haute.routes._training_preparation.execute_lazy_graph",
+                side_effect=fake_execute_lazy,
             ),
             patch("haute.executor._build_node_fn", return_value=None),
             patch("haute.modelling._algorithms._mem_checkpoint"),
@@ -2024,14 +2095,143 @@ class TestTrainingProjection:
                 side_effect=BoundedMemoryUnsupportedError("Bounded streaming sink failed"),
             ),
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
+            with _training_prep_context() as context:
+                outcome = prepare_training_data(request, execution_context=context)
 
-        assert exc_info.value.status_code == 422
-        assert "bounded streaming mode" in exc_info.value.detail
-        job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
-        assert job["terminal_reason"] == "contract_error"
+        assert outcome.parquet_path is None
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.terminal_reason == "contract_error"
+        assert failure.http_status_code == 422
+        assert "bounded streaming mode" in failure.message
+        assert not Path(parquet_path).exists()
+
+    def test_prepare_training_data_gate_failure_removes_parquet(self, tmp_path) -> None:
+        """A target/task mismatch fails as a contract failure with no artifact."""
+        from haute.routes._training_preparation import (
+            TrainingPreparationRequest,
+            prepare_training_data,
+        )
+
+        config = {
+            "target": "claim_count",
+            "task": "classification",
+            "metrics": ["auc"],
+        }
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "train",
+                        "data": {
+                            "label": "train",
+                            "nodeType": "modelling",
+                            "config": config,
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        def fake_execute_lazy(*_args, **_kwargs):
+            return (
+                {
+                    "train": pl.DataFrame(
+                        {"claim_count": [0.5, 1.25, 2.75], "driver_age": [40, 41, 42]}
+                    ).lazy()
+                },
+                ["train"],
+                {},
+                {},
+            )
+
+        parquet_path = str(tmp_path / "prepared.parquet")
+        request = TrainingPreparationRequest(
+            graph=graph,
+            node_id="train",
+            job_id="job",
+            source="live",
+            parquet_path=parquet_path,
+            config=config,
+            project_root=str(tmp_path),
+        )
+        with (
+            patch(
+                "haute.routes._training_preparation.execute_lazy_graph",
+                side_effect=fake_execute_lazy,
+            ),
+            patch("haute.executor._build_node_fn", return_value=None),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
+        ):
+            with _training_prep_context() as context:
+                outcome = prepare_training_data(request, execution_context=context)
+
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.terminal_reason == "contract_error"
+        assert failure.http_status_code == 422
+        assert not Path(parquet_path).exists()
+
+    def test_prepare_training_data_maps_memory_failure_to_memory_outcome(self, tmp_path) -> None:
+        from haute._execution_context import ExecutionMemoryLimitExceededError
+        from haute.routes._training_preparation import (
+            TrainingPreparationRequest,
+            prepare_training_data,
+        )
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "train",
+                        "data": {
+                            "label": "train",
+                            "nodeType": "modelling",
+                            "config": {"target": "claim_count"},
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+        parquet_path = str(tmp_path / "prepared.parquet")
+        request = TrainingPreparationRequest(
+            graph=graph,
+            node_id="train",
+            job_id="job",
+            source="live",
+            parquet_path=parquet_path,
+            config={"target": "claim_count"},
+            project_root=str(tmp_path),
+        )
+
+        def raise_memory(*_args, **_kwargs):
+            raise ExecutionMemoryLimitExceededError(
+                "training_pipeline",
+                rss_bytes=2048,
+                limit_bytes=1024,
+            )
+
+        with (
+            patch(
+                "haute.routes._training_preparation.execute_lazy_graph",
+                side_effect=raise_memory,
+            ),
+            patch("haute.executor._build_node_fn", return_value=None),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
+        ):
+            with _training_prep_context() as context:
+                outcome = prepare_training_data(request, execution_context=context)
+
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.terminal_reason == "memory_limited"
+        assert failure.http_status_code == 507
+        assert failure.fields["error_code"] == "memory_limit"
+        assert not Path(parquet_path).exists()
 
 
 class TestExecuteAndSinkCheckpointCleanup:
@@ -2039,11 +2239,10 @@ class TestExecuteAndSinkCheckpointCleanup:
 
     def test_checkpoint_dir_cleaned_on_error(self, tmp_path):
         """If _execute_lazy raises, checkpoint_dir must still be cleaned up."""
-        from haute.routes._job_store import JobStore
-        from haute.schemas import TrainRequest
-
-        store = JobStore()
-        service = TrainService(store)
+        from haute.routes._training_preparation import (
+            TrainingPreparationRequest,
+            prepare_training_data,
+        )
 
         graph = make_graph(
             {
@@ -2060,8 +2259,16 @@ class TestExecuteAndSinkCheckpointCleanup:
                 "edges": [],
             }
         )
-        body = TrainRequest(graph=graph, node_id="n")
-        job_id = store.create_job({"status": "running"})
+        parquet_path = str(tmp_path / "prepared.parquet")
+        request = TrainingPreparationRequest(
+            graph=graph,
+            node_id="n",
+            job_id="job",
+            source="live",
+            parquet_path=parquet_path,
+            config={"target": "claim_count"},
+            project_root=str(tmp_path),
+        )
 
         created_dirs: list[Path] = []
 
@@ -2071,11 +2278,9 @@ class TestExecuteAndSinkCheckpointCleanup:
                 created_dirs.append(cp_dir)
             raise RuntimeError("boom")
 
-        from fastapi import HTTPException
-
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=failing_execute_lazy,
             ),
             patch("haute.executor._build_node_fn", return_value=None),
@@ -2083,9 +2288,12 @@ class TestExecuteAndSinkCheckpointCleanup:
             patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
             patch("haute.executor._preview_cache", MagicMock()),
         ):
-            with pytest.raises(HTTPException):
-                service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
+            with _training_prep_context() as context:
+                outcome = prepare_training_data(request, execution_context=context)
 
+        assert outcome.failure is not None
+        assert outcome.failure.terminal_reason == "error"
+        assert outcome.failure.http_status_code == 500
         # Checkpoint dir should have been created and then cleaned up
         assert len(created_dirs) == 1
         assert not created_dirs[0].exists(), "checkpoint_dir should be cleaned up after error"

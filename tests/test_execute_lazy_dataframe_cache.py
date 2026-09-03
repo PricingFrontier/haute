@@ -7,7 +7,9 @@ import polars as pl
 import pytest
 
 import haute.execution as execution
+from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionProfile
+from haute._native_memory_limit import native_memory_backend_scope
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 
 
@@ -606,18 +608,32 @@ def test_missing_cache_only_column_does_not_break_structural_checkpoint(
 
     checkpoint_dir = tmp_path / "checkpoints"
     checkpoint_dir.mkdir()
-    outputs, *_ = execution.execute_lazy_graph(
-        graph,
-        build_node,
-        target_node_id="sink",
-        source="batch",
-        checkpoint_dir=checkpoint_dir,
-        required_columns_by_node={
-            "mid": frozenset({"x"}),
-            "sink": frozenset({"x"}),
-        },
-        dataframe_cache_request=cache_request,
+    # The synthetic source node carries no readable metadata, so the join's
+    # estimate is unavailable; the declared native cap lets it run warned, as
+    # it does inside the production hard-capped worker.
+    # The sink's join is a materialisation boundary; production surfaces always
+    # supply an admitted context (and release it afterwards), so the test does too.
+    context = create_admitted_execution_context(
+        operation="execute_lazy_cache_structural_checkpoint",
+        profile=ExecutionProfile.LAZY_SINK,
     )
+    try:
+        with native_memory_backend_scope("rlimit"):
+            outputs, *_ = execution.execute_lazy_graph(
+                graph,
+                build_node,
+                target_node_id="sink",
+                source="batch",
+                checkpoint_dir=checkpoint_dir,
+                required_columns_by_node={
+                    "mid": frozenset({"x"}),
+                    "sink": frozenset({"x"}),
+                },
+                dataframe_cache_request=cache_request,
+                execution_context=context,
+            )
+    finally:
+        context.release_admission(preserve_primary_error=True)
 
     assert cache.get(cache_request.keys_by_node["mid"]) is None
     assert pl.read_parquet(checkpoint_dir / "mid.parquet").columns == ["x"]

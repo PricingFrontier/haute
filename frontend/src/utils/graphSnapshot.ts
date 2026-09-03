@@ -126,6 +126,20 @@ function stripGraphMetadataTransientFields(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stripGraphMetadataTransientFields)
 
   const record = value as Record<string, unknown>
+  const isSubmodelDefinition =
+    typeof record.definitionId === "string"
+    && typeof record.file === "string"
+    && typeof record.graph === "object"
+    && record.graph !== null
+    && Array.isArray(record.inputPorts)
+    && Array.isArray(record.outputPorts)
+  if (isSubmodelDefinition) {
+    return Object.fromEntries(
+      Object.entries(record)
+        .filter(([key]) => !key.startsWith("_"))
+        .map(([key, child]) => [key, stripGraphMetadataTransientFields(child)]),
+    )
+  }
   if (typeof record.source === "string" && typeof record.target === "string") {
     return stripEdgeUiFields(record as unknown as PipelineEdge)
   }
@@ -212,6 +226,38 @@ export function canonicalize(value: unknown): unknown {
 // ---------------------------------------------------------------------------
 
 /**
+ * Clone a live editor graph into the strict canonical payload accepted by
+ * backend graph schemas. Presentation fields and server-owned editor identity
+ * metadata are removed recursively from root and embedded definition graphs.
+ */
+export function toCanonicalGraphPayload(input: {
+  nodes: readonly Node[]
+  edges: readonly PipelineEdge[]
+  submodels?: Record<string, unknown>
+  preamble?: string
+}): {
+  nodes: Node[]
+  edges: PipelineEdge[]
+  submodels: Record<string, unknown> | undefined
+  preamble: string | undefined
+} {
+  return {
+    nodes: input.nodes.map(
+      (node) => cloneGraphValue(stripNodeUiFields(node)) as Node,
+    ),
+    edges: input.edges.map(
+      (edge) => cloneGraphValue(stripEdgeUiFields(edge)) as PipelineEdge,
+    ),
+    submodels: input.submodels === undefined
+      ? undefined
+      : cloneGraphValue(
+        stripGraphMetadataTransientFields(input.submodels),
+      ) as Record<string, unknown>,
+    preamble: input.preamble,
+  }
+}
+
+/**
  * Canonical serialization of a graph snapshot used for dirty-derivation.
  *
  * Scope: `{nodes, edges, preamble, submodels}` — the complete persisted,
@@ -228,12 +274,13 @@ export function serializeSnapshot(input: {
   preamble: string
   submodels: Record<string, unknown>
 }): string {
+  const graph = toCanonicalGraphPayload(input)
   return JSON.stringify(
     canonicalize({
-      nodes: input.nodes.map(stripNodeUiFields),
-      edges: input.edges.map(stripEdgeUiFields),
-      preamble: input.preamble,
-      submodels: stripGraphMetadataTransientFields(input.submodels),
+      nodes: graph.nodes,
+      edges: graph.edges,
+      preamble: graph.preamble,
+      submodels: graph.submodels,
     }),
   )
 }

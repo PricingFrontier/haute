@@ -474,11 +474,14 @@ class EditorIdentityRequestNode(BaseModel):
     node_id: str = Field(min_length=1, max_length=512)
     label: str = Field(min_length=1, max_length=2048)
     node_type: NodeType
-    submodel_alias: str | None = Field(default=None, min_length=1, max_length=512)
     source_handles: list[Annotated[str, Field(min_length=1, max_length=512)]] = Field(
         default_factory=list,
         max_length=1024,
     )
+    source_handle_labels: dict[
+        Annotated[str, Field(min_length=1, max_length=512)],
+        Annotated[str, Field(min_length=1, max_length=2048)],
+    ] = Field(default_factory=dict, max_length=1024)
 
     @field_validator("source_handles")
     @classmethod
@@ -490,23 +493,27 @@ class EditorIdentityRequestNode(BaseModel):
     @model_validator(mode="after")
     def _identity_inputs_match_node_type(self) -> EditorIdentityRequestNode:
         if self.node_type == NodeType.SUBMODEL:
-            if self.submodel_alias is None:
-                raise ValueError("submodel_alias is required for submodel nodes.")
             if any(
                 not handle.startswith("out__") or len(handle) == len("out__")
                 for handle in self.source_handles
             ):
                 raise ValueError("submodel source handles must use out__<port_id>.")
-            return self
-        if self.submodel_alias is not None:
-            raise ValueError("submodel_alias is only valid for submodel nodes.")
+        if self.node_type in {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}:
+            if set(self.source_handle_labels) != set(self.source_handles):
+                raise ValueError("source_handle_labels must exactly cover submodel source_handles.")
+            if any(label != label.strip() for label in self.source_handle_labels.values()):
+                raise ValueError("submodel public labels must be unpadded.")
+        elif self.source_handle_labels:
+            raise ValueError(
+                "source_handle_labels are only valid for submodel and submodelPort nodes."
+            )
         if self.node_type == NodeType.API_INPUT and any(
             not handle.isascii() or not handle.isidentifier() or keyword.iskeyword(handle)
             for handle in self.source_handles
         ):
             raise ValueError("apiInput source handles must be non-keyword ASCII identifiers.")
         if (
-            self.node_type not in {NodeType.API_INPUT, NodeType.SUBMODEL_PORT}
+            self.node_type not in {NodeType.API_INPUT, NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
             and self.source_handles
         ):
             raise ValueError("source_handles are not valid for this node type.")
@@ -2581,11 +2588,33 @@ class OptimiserFrontierRange(BaseModel):
     max: float
 
 
+class OptimiserChunkFallback(BaseModel):
+    """A lost chunk optimisation recorded on an auto-range job.
+
+    Chunk ineligibility never fails the request, so this record is the only
+    place the reason survives; typing it keeps the emitted keys and the three
+    stable codes part of the API contract.
+    """
+
+    code: Literal[
+        "chunk_user_code_ineligible",
+        "model_score_ineligible",
+        "chunk_plan_unsupported",
+    ]
+    node_id: str | None = None
+    operator: str | None = None
+    reason: str | None = None
+    line: int | None = None
+    column: int | None = None
+    message: str
+
+
 class OptimiserFrontierAutoRangeResponse(BaseModel):
     status: str = "ok"
     ranges: dict[str, OptimiserFrontierRange] = Field(default_factory=dict)
     method: str = "scenario_envelope"
     warning: str | None = None
+    chunk_fallback: OptimiserChunkFallback | None = None
 
 
 class OptimiserFrontierAutoRangeStartResponse(BaseModel):

@@ -791,3 +791,56 @@ def test_private_cgroup_unwind_wraps_filesystem_failure(
 
     with pytest.raises(native.NativeMemoryLimitCleanupError, match="could not safely remove"):
         native._unwind_private_cgroup(child, parent, move_self=False)
+
+
+def test_restore_clears_backend_evidence_between_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hard-cap evidence lives only between a successful apply and its restore."""
+    lease = native.NativeMemoryLease()
+    monkeypatch.setattr(native.sys, "platform", "win32")
+    monkeypatch.setattr(
+        native.NativeMemoryLease,
+        "_apply_windows",
+        lambda self, _growth: setattr(self, "_backend", "windows_job"),
+    )
+    monkeypatch.setattr(native.NativeMemoryLease, "_set_windows_limit", lambda *_args: None)
+
+    assert lease.apply(10, required=True) is True
+    assert lease.backend == "windows_job"
+    lease.restore()
+    assert lease.backend is None
+
+
+def test_failed_best_effort_apply_after_a_successful_request_leaves_no_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later failed RLIMIT attempt must not inherit the earlier request's backend."""
+    attempts: list[int] = []
+
+    def apply_rlimit(self: native.NativeMemoryLease, growth: int) -> None:
+        attempts.append(growth)
+        if len(attempts) == 1:
+            self._backend = "rlimit"
+            return
+        raise OSError("setrlimit rejected the request")
+
+    lease = native.NativeMemoryLease()
+    monkeypatch.setattr(native.sys, "platform", "sunos5")
+    monkeypatch.setattr(native.NativeMemoryLease, "_apply_rlimit", apply_rlimit)
+
+    assert lease.apply(10, required=True) is True
+    assert lease.backend == "rlimit"
+    # A second request without an intervening restore.
+    assert lease.apply(10, required=False) is False
+    assert lease.backend is None
+    # And a second request after the normal restore.
+    attempts.clear()
+    assert lease.apply(10, required=True) is True
+    lease.restore()
+    assert lease.backend is None
+    assert lease.apply(10, required=False) is False
+    assert lease.backend is None
+    with pytest.raises(native.NativeMemoryLimitUnsupportedError):
+        lease.apply(10, required=True)
+    assert lease.backend is None

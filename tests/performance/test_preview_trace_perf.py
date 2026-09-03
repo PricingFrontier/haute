@@ -123,7 +123,12 @@ df = features.with_columns(
                 NodeType.POLARS,
                 {
                     "code": """
-df = freq.join(sev, on=["policy_id", "territory_key"], how="inner")
+df = freq.join(
+    sev,
+    on=["policy_id", "territory_key"],
+    how="inner",
+    validate="1:1",
+)
 """,
                 },
             ),

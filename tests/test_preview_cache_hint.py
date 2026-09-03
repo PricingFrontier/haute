@@ -338,7 +338,7 @@ def _build_branching_graph(src_path: str, n_branches: int) -> PipelineGraph:
     prev = "b0"
     for i in range(1, n_branches):
         sink_id = f"j{i}"
-        code = f"df = {prev}.join(b{i}, on='id', how='inner')"
+        code = f"df = {prev}.join(b{i}, on='id', how='inner', validate='1:1')"
         nodes.append(_transform_node(sink_id, code))
         edges.append(_edge(prev, sink_id))
         edges.append(_edge(f"b{i}", sink_id))

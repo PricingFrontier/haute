@@ -31,6 +31,7 @@ from haute._worker_isolation import (
     address_space_caps_supported,
     create_worker_queue,
     ensure_spawnable_interpreter,
+    isolated_worker_failure_is_memory,
     process_memory_caps_supported,
     resolve_worker_memory_enforcement,
     run_isolated_worker,
@@ -352,6 +353,49 @@ async def test_run_isolated_worker_async_uses_no_stop_reason_when_unconfigured(
         )
         == "done"
     )
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (IsolatedWorkerMemoryLimitExceededError(rss_bytes=200, rss_limit_bytes=100), True),
+        (IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=100), True),
+        (IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=100), True),
+        (IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=100), False),
+        (
+            IsolatedWorkerRemoteError(
+                remote_type="MemoryError",
+                remote_message="out of memory",
+                remote_traceback="traceback",
+            ),
+            True,
+        ),
+        (
+            IsolatedWorkerRemoteError(
+                remote_type="NativeMemoryLimitUnsupportedError",
+                remote_message="unsupported",
+                remote_traceback="traceback",
+            ),
+            True,
+        ),
+        (
+            IsolatedWorkerRemoteError(
+                remote_type="ValueError",
+                remote_message="bad value",
+                remote_traceback="traceback",
+            ),
+            False,
+        ),
+        (IsolatedWorkerTimeoutError(timeout_seconds=1.0), False),
+        (RuntimeError("generic"), False),
+    ],
+)
+def test_isolated_worker_failure_is_memory_classifies_every_worker_outcome(
+    failure: BaseException,
+    expected: bool,
+) -> None:
+    """Every supervisor maps worker failures to 507 through one shared predicate."""
+    assert isolated_worker_failure_is_memory(failure) is expected
 
 
 def test_isolated_worker_returns_picklable_value() -> None:
@@ -1598,6 +1642,37 @@ class TestSpawnableInterpreter:
             assert os.access(resolved, os.X_OK)
         finally:
             spawn.set_executable(original)
+
+
+def test_isolated_entrypoint_exposes_no_backend_when_best_effort_apply_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stale lease evidence must not become the request's active backend."""
+    import haute._worker_isolation as isolation_mod
+    from haute._native_memory_limit import current_native_memory_backend
+
+    results = _EntrypointQueue()
+    monkeypatch.setattr(
+        isolation_mod,
+        "NativeMemoryLease",
+        lambda: SimpleNamespace(
+            backend="rlimit",
+            apply=lambda *_args, **_kwargs: False,
+            restore=lambda: None,
+            close=lambda: None,
+        ),
+    )
+
+    isolation_mod._isolated_worker_entrypoint(
+        results,
+        current_native_memory_backend,
+        (),
+        {},
+        64,
+        False,
+    )
+
+    assert pickle.loads(results.get_nowait()) == ("ok", None)
 
 
 def test_running_interpreter_resource_tracker_has_the_private_shape_recovery_needs() -> None:

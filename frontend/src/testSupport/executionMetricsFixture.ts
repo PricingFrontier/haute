@@ -120,6 +120,21 @@ export function makeExecutionMetricsFixture(overrides: Partial<ExecutionMetrics>
         pressure_ratio: 0.75,
       },
     ],
+    input_preparation: [
+      {
+        node_id: "policies",
+        identity_digest: "digest-1",
+        action: "reused",
+        build_class: "in_memory",
+        execution: "in_process",
+        memory_limit_bytes: 2_000,
+        elapsed_seconds: 0.25,
+        row_count: 10,
+        size_bytes: 512,
+        generation_id: "gen-1",
+        warning_code: null,
+      },
+    ],
     ...overrides,
   }
 }

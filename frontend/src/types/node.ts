@@ -123,6 +123,22 @@ export type PipelineEdge = Edge<Record<string, unknown>> & {
   targetPort?: string | null
 }
 
+/** Complete persisted graph envelope returned by the pipeline API. */
+export interface PipelineGraph {
+  nodes: Node[]
+  edges: PipelineEdge[]
+  pipeline_name?: string | null
+  pipeline_description?: string | null
+  preamble?: string | null
+  source_file?: string | null
+  submodels?: Record<string, unknown> | null
+  warning?: string | null
+  sources?: string[]
+  active_source?: string
+  preserved_blocks?: string[]
+  source_revision?: string | null
+}
+
 /** A definition-owned endpoint; never used as the parent graph handle id. */
 export interface SubmodelEndpoint {
   nodeId: string
@@ -145,7 +161,7 @@ export interface SubmodelOutputPort {
 export interface SubmodelDefinition {
   definitionId: string
   file: string
-  graph: { nodes: Node[]; edges: Edge[] }
+  graph: PipelineGraph
   inputPorts: SubmodelInputPort[]
   outputPorts: SubmodelOutputPort[]
   /** Server-owned executable input identity for each public input port. */

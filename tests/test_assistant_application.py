@@ -651,3 +651,59 @@ def test_dry_run_rejects_invalid_banding_semantics_before_storing(
         )
 
     assert len(service.plan_store) == 0
+
+
+class TestOutputTargetEvidence:
+    def test_output_terminal_evidence_resolves_without_collecting(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """EXEC-P08: ``_resolve_target_evidence`` declares ``schema_only=True``.
+
+        An OUTPUT terminal used to assemble its whole document at build time, so
+        the declaration was false for exactly the graphs it mattered for. The
+        declaration now reaches the OUTPUT builder, which describes the document
+        from its mapping and its source schemas instead of assembling it.
+        """
+        import polars as pl
+
+        from haute.assistant._application import _PreparedGraph, _resolve_target_evidence
+        from tests.conftest import make_edge, make_graph, make_output_config
+
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "quotes",
+                        "data": {
+                            "label": "quotes",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": "df = pl.LazyFrame({'quote_id': ['q1'], 'premium': [1.5]})"
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(
+                                ["quote_id", "premium"], source_port="quotes"
+                            ),
+                        },
+                    },
+                ],
+                "edges": [make_edge("quotes", "out").model_dump()],
+            }
+        )
+
+        def poisoned_collect(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            raise AssertionError("target evidence must never collect data")
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", poisoned_collect)
+        evidence = _resolve_target_evidence(_PreparedGraph.build(graph), "out")
+
+        assert evidence["kind"] == "node_schema_resolved"
+        assert evidence["node"] == "out"
+        assert evidence["shape"] == "frame"
+        assert evidence["column_count"] == 2

@@ -56,6 +56,7 @@ from haute.routes._background_jobs import CancellableJobRegistry, JobCancellatio
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_job_fields,
+    contract_error_terminal_reason,
 )
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, find_typed_node
 from haute.routes._job_lifecycle import (
@@ -797,6 +798,10 @@ class _ExploreWorkerOutcome:
     failure_kind: Literal["public_contract", "contract", "memory"] | None = None
     detail: str | None = None
     payload: dict[str, Any] | None = None
+    # A public contract error the child raised carries its own terminal reason
+    # (automatic input preparation can report ``memory_limited``), so the parent
+    # does not flatten every child contract failure to ``contract_error``.
+    terminal_reason: str | None = None
 
 
 class _ExploreWorkerReportedError(RuntimeError):
@@ -807,11 +812,13 @@ class _ExploreWorkerReportedError(RuntimeError):
         kind: Literal["public_contract", "contract", "memory"],
         detail: str,
         payload: dict[str, Any] | None,
+        terminal_reason: str | None = None,
     ) -> None:
         super().__init__(detail)
         self.kind = kind
         self.detail = detail
         self.payload = payload
+        self.terminal_reason = terminal_reason
 
 
 def _prepare_explore_spec(body: ExploreRunRequest) -> ExploreCacheSpec:
@@ -959,6 +966,7 @@ def _run_explore_worker(
             failure_kind="public_contract",
             detail=str(exc),
             payload=contract_error_job_fields(exc),
+            terminal_reason=contract_error_terminal_reason(exc),
         )
     except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
         return _ExploreWorkerOutcome(
@@ -991,6 +999,10 @@ def _validated_explore_worker_success(
                 or not isinstance(payload.get("error_detail"), dict)
             ):
                 raise RuntimeError("Explore worker returned an invalid public-contract payload")
+            if outcome.terminal_reason not in ("contract_error", "memory_limited"):
+                raise RuntimeError(
+                    "Explore worker returned an invalid public-contract terminal reason"
+                )
         elif outcome.failure_kind == "memory":
             if (
                 not isinstance(outcome.payload, dict)
@@ -1006,6 +1018,7 @@ def _validated_explore_worker_success(
             outcome.failure_kind,
             outcome.detail,
             outcome.payload,
+            outcome.terminal_reason,
         )
     if outcome.detail is not None or outcome.payload is not None:
         raise RuntimeError("Explore worker success carried failure fields")
@@ -1237,7 +1250,7 @@ class ExploreService:
                 terminal_reason: TerminalReason = "memory_limited"
             elif exc.kind == "public_contract":
                 fields = cast(dict[str, Any], exc.payload)
-                terminal_reason = "contract_error"
+                terminal_reason = cast(TerminalReason, exc.terminal_reason or "contract_error")
             else:
                 fields = {"error": exc.detail}
                 terminal_reason = "contract_error"
@@ -1296,7 +1309,7 @@ class ExploreService:
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
             self._lifecycle.transition(
                 job_id,
-                to="contract_error",
+                to=contract_error_terminal_reason(exc),
                 message=str(exc),
                 fields=contract_error_job_fields(exc),
                 elapsed_seconds=time.monotonic() - start_time,

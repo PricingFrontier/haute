@@ -862,7 +862,10 @@ def test_cardinality_only_preview_reads_one_carrier_without_losing_rows(
     )
 
     assert results["driver_count"].status == "ok", results["driver_count"].error
-    assert observed_demands == [{"drivers": frozenset()}]
+    # Column lineage supplies one carrier column for an otherwise empty root
+    # demand (the alphabetically first column of the port schema); the loader
+    # does not choose one itself.
+    assert observed_demands == [{"drivers": frozenset({"age_band"})}]
     assert results["driver_count"].preview == [{"driver_count": 3}]
 
 

@@ -22,6 +22,7 @@ import type {
   ExecutionAdmission,
   ExecutionCacheProof,
   ExecutionMemoryPressureEvent,
+  InputPreparationRecord,
   ExecutionMetrics,
   ExecutionColumnWidth,
   ExecutionColumnWidths,
@@ -661,6 +662,27 @@ function parseExecutionMemoryPressureEvent(
   }
 }
 
+function parseInputPreparationRecord(
+  parser: string,
+  value: unknown,
+  field: string,
+): InputPreparationRecord {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    node_id: optionalString(parser, obj, "node_id"),
+    identity_digest: optionalString(parser, obj, "identity_digest"),
+    action: expectStringLiteral(parser, obj.action, `${field}.action`, ["reused", "built", "refreshed"]),
+    build_class: optionalString(parser, obj, "build_class"),
+    execution: expectStringLiteral(parser, obj.execution, `${field}.execution`, ["in_process", "worker"]),
+    memory_limit_bytes: optionalNullableNumber(parser, obj, "memory_limit_bytes"),
+    elapsed_seconds: optionalNumber(parser, obj, "elapsed_seconds"),
+    row_count: optionalNullableNumber(parser, obj, "row_count"),
+    size_bytes: optionalNullableNumber(parser, obj, "size_bytes"),
+    generation_id: optionalNullableString(parser, obj, "generation_id"),
+    warning_code: optionalNullableString(parser, obj, "warning_code"),
+  }
+}
+
 function parseExecutionMetrics(
   parser: string,
   value: unknown,
@@ -734,6 +756,9 @@ function parseExecutionMetrics(
     ),
     memory_pressure_events: optionalArray(parser, obj, "memory_pressure_events", (item, itemField) =>
       parseExecutionMemoryPressureEvent(parser, item, itemField),
+    ),
+    input_preparation: optionalArray(parser, obj, "input_preparation", (item, itemField) =>
+      parseInputPreparationRecord(parser, item, itemField),
     ),
   }
 }
@@ -845,6 +870,7 @@ const STRATEGY_STATUS = {
   "full-width-admitted-eager": "admitted_eager",
   "unprojected-streaming-boundary": "boundary",
   "materialisation-boundary": "boundary",
+  "full-width-conservative": "warned",
   unsupported: "rejected",
   "not-planned": "not_planned",
 } as const

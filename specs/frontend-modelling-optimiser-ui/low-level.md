@@ -130,8 +130,11 @@
    orders scenario rows, and calculates full-preview statistics only when its Statistics tab is open.
 
 `ExecutionDiagnosticsSummary` consumes the guarded versioned metrics contract
-and renders only actionable memory pressure or rejected strategy, with
-technical collections behind disclosure. `useDataInputColumns` consumes
+and renders only actionable memory pressure, a rejected strategy, or a `warned`
+conservative strategy, with technical collections behind disclosure. Memory
+pressure takes precedence over a warned strategy, and the strategy-specific
+disclosure label is used only when the rendered diagnostic is the strategy
+itself. `useDataInputColumns` consumes
 guarded schema/preview results keyed by node/config/source generation and never
 derives columns from path, provider internals, or a snapshot-build side effect.
 The Banding classifier supplies both ordered healthy levels and named

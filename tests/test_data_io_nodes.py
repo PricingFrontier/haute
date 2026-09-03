@@ -24,11 +24,12 @@ from haute._config_io import (
     config_path_for_node,
     load_node_config,
 )
-from haute._execution_context import ExecutionProfile
+from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
+from haute._native_memory_limit import native_memory_backend_scope
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from haute.errors import SchemaMismatchError
+from haute.errors import GroupByExecutionUnsupportedError, SchemaMismatchError
 from haute.executor import (
     DataOutputDestinationExistsError,
     DataOutputDurabilityError,
@@ -41,8 +42,9 @@ from haute.executor import (
     validate_prepared_data_output_identity,
     write_data_output,
 )
+from haute.projection import ExecutionStrategy, ExecutionStrategyStatus
 from haute.routes._isolated_worker_async import WorkerCancellationGate
-from haute.schemas import WriteOutputResponse
+from haute.schemas import ExecutionMetricsPayload, WriteOutputResponse
 from tests.conftest import build_test_input_snapshot
 
 ensure_registry_ready()
@@ -618,6 +620,206 @@ class TestExecuteSinkDataOutput:
         assert result.row_count == 2
         assert destination.is_file()
         assert not staging.exists()
+
+    @pytest.mark.parametrize("caller_supplies_context", [False, True])
+    def test_lazy_sink_writes_group_by_pipeline_with_or_without_caller_context(
+        self,
+        haute_scratch: Path,
+        caller_supplies_context: bool,
+    ) -> None:
+        source = haute_scratch / "claims.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", "q2"],
+                "amount_paid": [10.0, 20.0, 30.0],
+            }
+        ).write_parquet(source)
+        destination = haute_scratch / "claims_agg.parquet"
+        graph = PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "claims",
+                    {"inputType": "file", "format": "parquet", "path": str(source)},
+                ),
+                GraphNode(
+                    id="claims_agg",
+                    data=NodeData(
+                        label="claims_agg",
+                        nodeType=NodeType.POLARS,
+                        config={
+                            "contract": "opaque",
+                            "code": (
+                                "df = claims.group_by('quote_id').agg("
+                                "pl.col('amount_paid').sum().alias('total_incurred'))"
+                            ),
+                        },
+                    ),
+                ),
+                _data_output_node(
+                    "batch_output",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(destination),
+                    },
+                ),
+            ],
+            edges=[
+                _edge("claims", "claims_agg"),
+                _edge("claims_agg", "batch_output"),
+            ],
+        )
+        memory_limit = 1024**3
+        admission = ExecutionAdmission(
+            operation="pipeline_write_output",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=memory_limit,
+            rss_at_admission_bytes=0,
+            rss_limit_bytes=memory_limit,
+            headroom_bytes=memory_limit,
+            config_key="test",
+        )
+        context = ExecutionContext(
+            operation="pipeline_write_output",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=memory_limit,
+            memory_baseline_bytes=0,
+            rss_limit_bytes=memory_limit,
+            admission=admission,
+            memory_sampler=lambda: 0,
+        )
+
+        result = write_data_output(
+            graph,
+            "batch_output",
+            source="batch",
+            execution_context=context if caller_supplies_context else None,
+            project_root=haute_scratch,
+        )
+
+        assert result.row_count == 2
+        if caller_supplies_context:
+            assert context.projection_plan is not None
+            assert context.projection_plan.strategy.value == "materialisation-boundary"
+            assert context.projection_plan.projection_plan.materialisation_boundaries == frozenset(
+                {"claims_agg"}
+            )
+        assert_frame_equal(
+            pl.read_parquet(destination).sort("quote_id"),
+            pl.DataFrame(
+                {
+                    "quote_id": ["q1", "q2"],
+                    "total_incurred": [30.0, 30.0],
+                }
+            ),
+        )
+
+    def test_lazy_sink_runs_an_unprovable_group_by_conservatively_under_a_native_cap(
+        self,
+        haute_scratch: Path,
+    ) -> None:
+        source = haute_scratch / "claims.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", "q2"],
+                "amount_paid": [10.0, 20.0, 30.0],
+            }
+        ).write_parquet(source)
+        destination = haute_scratch / "claims_agg.parquet"
+        graph = PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "claims",
+                    {"inputType": "file", "format": "parquet", "path": str(source)},
+                ),
+                GraphNode(
+                    id="claims_agg",
+                    data=NodeData(
+                        label="claims_agg",
+                        nodeType=NodeType.POLARS,
+                        config={
+                            "contract": "opaque",
+                            "code": (
+                                "df = claims.unpivot(index=['quote_id'])\n"
+                                "df = df.group_by('quote_id').agg("
+                                "pl.col('value').sum().alias('total'))"
+                            ),
+                        },
+                    ),
+                ),
+                _data_output_node(
+                    "batch_output",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(destination),
+                    },
+                ),
+            ],
+            edges=[
+                _edge("claims", "claims_agg"),
+                _edge("claims_agg", "batch_output"),
+            ],
+        )
+
+        def _context() -> ExecutionContext:
+            memory_limit = 1024**3
+            admission = ExecutionAdmission(
+                operation="pipeline_write_output",
+                profile=ExecutionProfile.LAZY_SINK,
+                memory_limit_bytes=memory_limit,
+                rss_at_admission_bytes=0,
+                rss_limit_bytes=memory_limit,
+                headroom_bytes=memory_limit,
+                config_key="test",
+            )
+            return ExecutionContext(
+                operation="pipeline_write_output",
+                profile=ExecutionProfile.LAZY_SINK,
+                memory_limit_bytes=memory_limit,
+                memory_baseline_bytes=0,
+                rss_limit_bytes=memory_limit,
+                admission=admission,
+                memory_sampler=lambda: 0,
+            )
+
+        context = _context()
+        with native_memory_backend_scope("windows_job"):
+            write_data_output(
+                graph,
+                "batch_output",
+                source="batch",
+                execution_context=context,
+                project_root=haute_scratch,
+            )
+
+        assert context.projection_plan is not None
+        assert context.projection_plan.strategy is ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+        assert context.projection_plan.status is ExecutionStrategyStatus.WARNED
+        expected = (
+            pl.read_parquet(source)
+            .unpivot(index=["quote_id"])
+            .group_by("quote_id")
+            .agg(pl.col("value").sum().alias("total"))
+        )
+        assert_frame_equal(
+            pl.read_parquet(destination).sort("quote_id"),
+            expected.sort("quote_id"),
+        )
+        payload = context.metrics_payload(status="completed")
+        assert payload["execution_strategy"]["status"] == "warned"
+        ExecutionMetricsPayload.model_validate(payload)
+
+        destination.unlink()
+        with pytest.raises(GroupByExecutionUnsupportedError):
+            write_data_output(
+                graph,
+                "batch_output",
+                source="batch",
+                execution_context=_context(),
+                project_root=haute_scratch,
+            )
+        assert not destination.exists()
 
     def test_parent_rejects_tampered_output_stage_without_replacing_target(
         self, haute_scratch

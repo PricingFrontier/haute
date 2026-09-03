@@ -532,7 +532,13 @@ class TestBuildNodeFnDispatcher:
 
 class TestBuildOutputEmptyDataFrame:
     def test_build_output_empty_dataframe(self) -> None:
-        """A 0-row source frame assembles to an empty document."""
+        """A 0-row source frame assembles to an empty document — under the
+        document schema derived from the mapping and the source schema.
+
+        EXEC-P08: the frame's schema no longer comes from Python inference over
+        the assembled rows, so an empty document keeps its mapped columns and
+        their source dtypes instead of degenerating to no columns at all.
+        """
         _, fn, _ = _build("output", make_output_config(["a", "c"]), source_names=["up"])
         lf = pl.DataFrame(
             {
@@ -542,5 +548,6 @@ class TestBuildOutputEmptyDataFrame:
             }
         ).lazy()
         result = fn(lf).collect()
-        assert result.columns == []
-        assert result.shape == (0, 0)
+        assert result.columns == ["a", "c"]
+        assert result.schema == pl.Schema({"a": pl.Int64, "c": pl.Int64})
+        assert result.height == 0

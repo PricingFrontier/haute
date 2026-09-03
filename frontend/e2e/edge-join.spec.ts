@@ -3,6 +3,7 @@ import { resolve } from "node:path"
 
 import { expect, test, type Locator, type Page, type Request } from "@playwright/test"
 
+import { dispatchAppShortcut, dispatchNodeDoubleClick } from "./browserInteractions"
 import { e2eProjectRoot, resetE2eProject } from "./projectIsolation"
 
 const ratingDir = resolve(e2eProjectRoot, "rating")
@@ -310,6 +311,27 @@ test.describe("Edge Join insertion workflow", () => {
   test.beforeEach(() => {
     resetE2eProject()
     seedPipeline()
+  })
+
+  test("drills into an unsaved submodel containing an API Input", async ({ page }) => {
+    await captureInitialGraph(page)
+    const apiInput = page.getByRole("button", { name: /Quote Input node: quotes/i })
+    await expect(apiInput).toBeVisible()
+    await apiInput.click()
+    await dispatchAppShortcut(page, "a")
+    await dispatchAppShortcut(page, "g")
+
+    await expect(page.getByRole("dialog", { name: "Create submodel" })).toBeVisible()
+    await page.getByPlaceholder("e.g. model_scoring").fill("api_input_group")
+    await page.getByRole("button", { name: "Create", exact: true }).click()
+    await expect(page.getByRole("button", { name: /Submodel node: api_input_group/i })).toBeVisible()
+
+    await dispatchNodeDoubleClick(page, "api_input_group")
+
+    await expect(page.getByRole("button", { name: "api_input_group", exact: true })).toBeVisible()
+    await expect(page.getByRole("button", { name: /Quote Input node: quotes/i })).toBeVisible()
+    await expect(page.getByTestId("rf__node-quotes").locator('[data-handleid="api_lookup"]')).toBeVisible()
+    await expect(page.getByText("Something went wrong", { exact: true })).toHaveCount(0)
   })
 
   test("inserts lookup and named API joins on rendered edges, persists them, and traces both", async ({ page }) => {

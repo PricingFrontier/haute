@@ -513,7 +513,9 @@ def test_generation_quota_rejects_another_current_snapshot(tmp_path: Path) -> No
 
 
 def test_generation_quota_reclaims_an_unleased_superseded_generation(tmp_path: Path) -> None:
-    store = SourceCacheStore(tmp_path, max_bytes=1_000_000, max_generations=1)
+    store = SourceCacheStore(
+        tmp_path, max_bytes=1_000_000, max_generations=1, retire_grace_seconds=0
+    )
     identity = _identity(path="refreshable.parquet")
     first = store.build(
         identity,
@@ -669,6 +671,111 @@ def test_retained_staging_bytes_count_against_publication_quota(tmp_path: Path) 
     assert staging.exists()
 
 
+def test_a_parent_chosen_pair_names_the_staging_directory_and_the_generation(
+    tmp_path: Path,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="pair.parquet")
+    generation_id = str(uuid.uuid4())
+    context = SourceCacheBuildContext(
+        profile=ExecutionProfile.LAZY_SINK,
+        build_class="bounded",
+        generation_id=generation_id,
+        staging_token="0123abcd",
+    )
+    observed: list[str] = []
+
+    @dataclass
+    class _StagingObserver:
+        build_class: str = "bounded"
+
+        def build(self, ctx: SourceCacheBuildContext) -> pl.LazyFrame:
+            observed.extend(path.name for path in store.identity_path(identity).glob(".staging-*"))
+            return pl.DataFrame({"id": [1]}).lazy()
+
+    generation = store.build(identity, _StagingObserver(), context=context)
+
+    # Eight hex characters, not a full UUID: the staging path stays inside
+    # Windows' traditional limit beneath long temporary roots.
+    assert observed == [".staging-0123abcd"]
+    assert generation.generation_id == generation_id
+    assert generation.data_path.parent.name == generation_id
+    assert not list(store.identity_path(identity).glob(".staging-*"))
+
+
+@pytest.mark.parametrize(
+    ("generation_id", "staging_token"),
+    [("00000000-0000-4000-8000-000000000001", None), (None, "0123abcd")],
+)
+def test_a_build_context_carrying_only_one_of_the_pair_is_rejected(
+    generation_id: str | None,
+    staging_token: str | None,
+) -> None:
+    with pytest.raises(ValueError, match="set together or not at all"):
+        SourceCacheBuildContext(
+            profile=ExecutionProfile.LAZY_SINK,
+            build_class="bounded",
+            generation_id=generation_id,
+            staging_token=staging_token,
+        )
+
+
+def test_reconcile_reports_published_for_the_current_generation(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="published.parquet")
+    generation = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+
+    assert store.reconcile_unpublished(identity, generation.generation_id, "0123abcd") == (
+        "published"
+    )
+    assert store.open_generation(identity).generation_id == generation.generation_id
+
+
+def test_reconcile_removes_only_the_named_generation_and_staging(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="orphan.parquet")
+    current = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+    identity_dir = store.identity_path(identity)
+    orphan_id = str(uuid.uuid4())
+    orphan = identity_dir / "generations" / orphan_id
+    orphan.mkdir(parents=True)
+    mine = identity_dir / ".staging-0123abcd"
+    mine.mkdir()
+    theirs = identity_dir / ".staging-89abcdef"
+    theirs.mkdir()
+
+    assert store.reconcile_unpublished(identity, orphan_id, "0123abcd") == "discarded_generation"
+
+    assert not orphan.exists()
+    assert not mine.exists()
+    assert theirs.exists()
+    assert store.open_generation(identity).generation_id == current.generation_id
+
+
+def test_reconcile_discards_a_lone_staging_directory_and_otherwise_reports_absent(
+    tmp_path: Path,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="staging-only.parquet")
+    identity_dir = store.identity_path(identity)
+    identity_dir.mkdir(parents=True, exist_ok=True)
+    staging = identity_dir / ".staging-0123abcd"
+    staging.mkdir()
+    generation_id = str(uuid.uuid4())
+
+    assert store.reconcile_unpublished(identity, generation_id, "0123abcd") == "discarded_staging"
+    assert not staging.exists()
+    assert store.reconcile_unpublished(identity, generation_id, "0123abcd") == "absent"
+
+
 # ---------------------------------------------------------------------------
 # Polars dtype spellings are a persisted format
 # ---------------------------------------------------------------------------
@@ -720,3 +827,138 @@ def test_polars_dtype_spellings_match_the_persisted_golden_table() -> None:
         "the old spelling may fail to parse. Decide the migration deliberately; do not "
         "regenerate this table."
     )
+
+
+# ---------------------------------------------------------------------------
+# Superseded generations are retired only after a reader grace period
+# ---------------------------------------------------------------------------
+
+
+def test_a_superseded_generation_survives_its_retirement_grace(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path, retire_grace_seconds=1800)
+    identity = _identity(path="graced.parquet")
+    first = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+
+    second = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+        context=_context(),
+        refresh=True,
+    )
+
+    assert second.generation_id != first.generation_id
+    # A reader in another process may still be scanning it: leases are
+    # process-local, so only the grace protects that scan.
+    assert first.data_path.parent.is_dir()
+    assert pl.scan_parquet(first.data_path).collect()["id"].to_list() == [1]
+
+
+def test_a_zero_grace_retires_a_superseded_generation_immediately(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path, retire_grace_seconds=0)
+    identity = _identity(path="ungraced.parquet")
+    first = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+
+    store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+        context=_context(),
+        refresh=True,
+    )
+
+    assert not first.data_path.parent.exists()
+
+
+def test_clear_reclaims_a_graced_generation(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path, retire_grace_seconds=1800)
+    identity = _identity(path="cleared.parquet")
+    first = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+    store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+        context=_context(),
+        refresh=True,
+    )
+    assert first.data_path.parent.is_dir()
+
+    store.clear(identity)
+
+    assert not any((store.identity_path(identity) / "generations").glob("*"))
+
+
+def test_quota_pressure_reclaims_a_graced_generation_and_publishes(tmp_path: Path) -> None:
+    store = SourceCacheStore(
+        tmp_path, max_bytes=1_000_000, max_generations=1, retire_grace_seconds=1800
+    )
+    identity = _identity(path="pressured.parquet")
+    first = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+    second = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+        context=_context(),
+        refresh=True,
+    )
+    # The graced first generation puts this identity over its generation quota.
+    assert first.data_path.parent.is_dir()
+
+    third = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [3]}).lazy()),
+        context=_context(),
+        refresh=True,
+    )
+
+    assert third.generation_id not in (first.generation_id, second.generation_id)
+    # Quota pressure reclaimed the graced generation and the build published.
+    assert not first.data_path.parent.exists()
+    assert store.open_generation(identity).lazy_frame.collect()["id"].to_list() == [3]
+
+
+def test_reconcile_keeps_a_generation_this_process_leases(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="leased-reconcile.parquet")
+    generation = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+
+    with store.lease(identity) as leased:
+        # The pointer has moved on, but this process still reads the generation.
+        store._pointer_path(identity).unlink()
+        outcome = store.reconcile_unpublished(identity, leased.generation_id, "0123abcd")
+        assert outcome == "absent"
+        assert generation.data_path.exists()
+
+
+def test_reconcile_reports_a_removal_that_left_its_directory_behind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="unremovable.parquet")
+    identity_dir = store.identity_path(identity)
+    generation_id = str(uuid.uuid4())
+    (identity_dir / "generations" / generation_id).mkdir(parents=True)
+
+    monkeypatch.setattr(
+        "haute._source_cache.shutil.rmtree",
+        lambda path, ignore_errors=False: None,
+    )
+
+    assert store.reconcile_unpublished(identity, generation_id, "0123abcd") == "unremovable"

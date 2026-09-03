@@ -260,6 +260,70 @@ class IsolatedWorkerTerminationError(IsolatedWorkerError):
         )
 
 
+_MEMORY_REMOTE_TYPES = frozenset(
+    {
+        "MemoryError",
+        "ExecutionAdmissionError",
+        "ExecutionMemoryLimitExceededError",
+        "NativeMemoryLimitUnsupportedError",
+    }
+)
+
+
+def isolated_worker_failure_is_memory(exc: BaseException) -> bool:
+    """Return whether a worker failure is a memory outcome.
+
+    An RSS breach and an unsupported native cap always are; a crashed child
+    is memory-bound only when its exit-code heuristic said so; a remote
+    exception is when the child's own exception type names a memory refusal.
+    """
+    if isinstance(
+        exc,
+        IsolatedWorkerMemoryLimitExceededError | IsolatedWorkerMemoryLimitUnsupportedError,
+    ):
+        return True
+    if isinstance(exc, IsolatedWorkerCrashedError):
+        return exc.terminal_reason == "memory_limited"
+    if isinstance(exc, IsolatedWorkerRemoteError):
+        return exc.remote_type in _MEMORY_REMOTE_TYPES
+    return False
+
+
+def isolated_worker_memory_detail(
+    exc: BaseException,
+    *,
+    operation: str,
+    memory_limit_bytes: int | None,
+) -> dict[str, object]:
+    """Return the typed ``memory_limit`` payload for a worker memory outcome.
+
+    Shared by every surface that supervises a hard-capped worker so a worker
+    RSS breach, an unsupported native cap, and a crash that looks memory-bound
+    are reported with the same closed reason codes.
+    """
+    payload: dict[str, object] = {
+        "error_code": "memory_limit",
+        "operation": operation,
+        "reason": "worker_memory_limit",
+    }
+    if memory_limit_bytes is not None:
+        payload["memory_limit_bytes"] = memory_limit_bytes
+    if isinstance(exc, IsolatedWorkerMemoryLimitExceededError):
+        payload.update(
+            rss_bytes=exc.rss_bytes,
+            rss_limit_bytes=exc.rss_limit_bytes,
+            reason="worker_rss_limit_exceeded",
+        )
+    elif isinstance(exc, IsolatedWorkerMemoryLimitUnsupportedError) or (
+        isinstance(exc, IsolatedWorkerRemoteError)
+        and exc.remote_type == "NativeMemoryLimitUnsupportedError"
+    ):
+        payload["reason"] = "native_memory_cap_unavailable"
+    elif isinstance(exc, IsolatedWorkerCrashedError):
+        payload["reason"] = "worker_may_have_exceeded_memory_limit"
+    return payload
+
+
 def address_space_caps_supported() -> bool:
     """Return whether this platform can enforce child address-space limits.
 
@@ -715,9 +779,10 @@ def _isolated_worker_entrypoint(
     require_memory_limit: bool = False,
 ) -> None:
     lease = NativeMemoryLease()
+    applied = False
     try:
         if memory_limit_bytes is not None:
-            lease.apply(memory_limit_bytes, required=require_memory_limit)
+            applied = lease.apply(memory_limit_bytes, required=require_memory_limit)
     except BaseException as exc:
         envelope = _worker_error_envelope(exc)
         payload = _serialise_worker_payload(envelope)
@@ -725,7 +790,7 @@ def _isolated_worker_entrypoint(
         result_queue.close()
         result_queue.join_thread()
         return
-    with native_memory_backend_scope(lease.backend):
+    with native_memory_backend_scope(lease.backend if applied else None):
         try:
             envelope = ("ok", function(*args, **kwargs))
         except BaseException as exc:

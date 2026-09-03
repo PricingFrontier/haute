@@ -37,6 +37,7 @@ from haute.errors import BoundedMemoryUnsupportedError, HauteValidationError
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_job_fields,
+    contract_error_terminal_reason,
 )
 from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._training_artifacts import (
@@ -334,7 +335,7 @@ def _known_training_worker_failure(
     if isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
         return _worker_failure_payload(
             exc,
-            terminal_reason="contract_error",
+            terminal_reason=contract_error_terminal_reason(exc),
             fields=contract_error_job_fields(exc),
             user_facing=True,
         )

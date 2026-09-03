@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import gc
 import math
-import os
 import shutil
 import tempfile
 import threading
@@ -20,7 +18,9 @@ from pydantic import ValidationError
 from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
+    IsolatedExecutionBudget,
     create_admitted_execution_context,
+    isolated_execution_budget,
 )
 from haute._execution_context import (
     ExecutionCancellationToken,
@@ -30,8 +30,18 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._logging import get_logger
+from haute._sandbox import _get_project_root
 from haute._types import PipelineGraph
-from haute._worker_isolation import worker_config_for_memory_policy
+from haute._worker_isolation import (
+    IsolatedWorkerConfig,
+    IsolatedWorkerError,
+    IsolatedWorkerStoppedError,
+    IsolatedWorkerTimeoutError,
+    isolated_worker_failure_is_memory,
+    isolated_worker_memory_detail,
+    run_isolated_worker,
+    worker_config_for_memory_policy,
+)
 from haute._worker_protocol import (
     WorkerProgressEvent,
     WorkerProtocolError,
@@ -66,7 +76,6 @@ from haute.routes._background_jobs import (
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
-    contract_error_job_fields,
 )
 from haute.routes._job_lifecycle import (
     JobLifecycle,
@@ -89,7 +98,8 @@ from haute.routes._training_evaluation import (
     _validate_glm_family_link,
 )
 from haute.routes._training_preparation import (
-    _build_training_feature_selection,
+    TrainingPreparationOutcome,
+    TrainingPreparationRequest,
     _check_gpu_vram,
     _clamp_row_limit,
     _declared_categorical_levels_for_training,
@@ -97,16 +107,18 @@ from haute.routes._training_preparation import (
     _gpu_vram_http_exception,
     _http_failure_job_parts,
     _memory_limit_http_exception,
+    _remove_prepared_parquet,
     _seeded_training_sample,
     _training_projection_keep_columns,
     _training_required_columns_by_node,
+    create_training_parquet_path,
+    prepare_training_data_worker,
 )
 from haute.routes._training_worker import (
     _assert_json_finite,
     _friendly_error,
     _job_elapsed_seconds,
     _max_train_loss_history,
-    _remove_gated_temp_parquet,
     _run_dispersion_process_job,
     _run_training_process_job,
     _training_context_phrase,
@@ -513,11 +525,6 @@ class TrainService:
                 required_columns_by_node=_training_required_columns_by_node(node_id, config),
                 execution_context=execution_context,
             )
-            self._validate_target_task_pairing(
-                tmp_parquet,
-                config,
-                execution_context=execution_context,
-            )
             execution_context.checkpoint(label="training_preparation_complete")
             feature_selection = self._store.require_job(job_id).get("feature_selection")
             launch_config = config
@@ -566,58 +573,6 @@ class TrainService:
                 if execution_context is not None:
                     execution_context.release_admission(preserve_primary_error=True)
                 self._training_jobs.release(job_id)
-
-    @staticmethod
-    def _validate_target_task_pairing(
-        tmp_parquet: str,
-        config: dict[str, Any],
-        *,
-        execution_context: ExecutionContext,
-    ) -> None:
-        """Gate a target whose materialised values cannot serve the task/metrics.
-
-        Runs on the sunk training parquet, after materialisation but before
-        the fit worker is dispatched, so a config/data mismatch (a continuous
-        target under a classification task, or under objective-implied
-        AUC/log-loss defaults — e.g. a binomial family with
-        ``task="regression"``) fails with the target column, task, and metrics
-        named instead of surfacing a context-free library error from inside
-        the child. The gate keys on the effective metric set
-        (``effective_metrics`` — explicit config metrics or the
-        objective-implied defaults), the same derivation
-        ``build_training_job_kwargs`` uses. Removes the temp parquet before
-        raising — no later owner exists for it on this path.
-        """
-        from haute._polars_utils import streaming_collect
-        from haute.modelling._target_check import training_target_task_issue
-        from haute.modelling._train_config import TrainingConfigError, effective_metrics
-
-        # Derive the effective metrics before the data scan: it is a pure
-        # config computation, and a malformed metrics config (normally caught
-        # by the route's upfront validation) must map to the same
-        # 422/contract_error taxonomy as the gate itself, not fall through
-        # the scan-failure path below.
-        try:
-            metrics = effective_metrics(config)
-        except TrainingConfigError as exc:
-            _remove_gated_temp_parquet(tmp_parquet)
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        try:
-            issue = training_target_task_issue(
-                pl.scan_parquet(tmp_parquet),
-                target=str(config.get("target", "")),
-                task=str(config.get("task", "regression")),
-                metrics=metrics,
-                collect=lambda lf: streaming_collect(lf, execution_context=execution_context),
-            )
-        except BaseException:
-            # A failure inside the scan itself (corrupt parquet, cancellation,
-            # memory pressure) must not orphan the multi-GB temp input either.
-            _remove_gated_temp_parquet(tmp_parquet)
-            raise
-        if issue is not None:
-            _remove_gated_temp_parquet(tmp_parquet)
-            raise HTTPException(status_code=422, detail=issue)
 
     def _persist_preparation_http_failure(self, job_id: str, exc: HTTPException) -> None:
         message, fields = _http_failure_job_parts(exc, job_id=job_id)
@@ -1334,261 +1289,232 @@ class TrainService:
         required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
         execution_context: ExecutionContext | None = None,
     ) -> str:
-        """Execute the pipeline lazily and sink to a temp parquet file.
+        """Supervise one hard-capped preparation worker and own its parquet.
 
-        If *exclude* and *keep_columns* are provided, projects down to
-        only the needed columns before sinking.  This reduces peak memory
-        by dropping columns that won't be used for training.
+        The parent creates the destination path, hands the child a picklable
+        request plus the admitted budget envelope, and converts the child's
+        single outcome (or a typed worker failure) into exactly the terminal
+        job state and HTTP shape the former in-thread path produced. Admission
+        is released by the caller, never here, so it is released exactly once.
 
         Returns the path to the temp parquet file.
-        Raises ``HTTPException`` on failure (cleans up temp file first).
+        Raises ``HTTPException`` on failure (no parquet is left behind).
         """
-        from haute.executor import _build_node_fn
-        from haute.modelling._algorithms import _mem_checkpoint, _mem_log_path
+        if execution_context is None:
+            raise ValueError("training preparation requires an admitted execution context")
+        budget = isolated_execution_budget(execution_context)
 
-        mem_log = _mem_log_path()
-        mem_log.parent.mkdir(parents=True, exist_ok=True)
-        mem_log.write_text("")
-        _mem_checkpoint("train_model endpoint START")
+        # Every fallible setup step runs before the temp path exists, so a
+        # setup failure cannot orphan one; from creation onward the try/except
+        # below owns it on every exit that is not a successful hand-off.
+        self._store.update_job(job_id, message="Executing pipeline")
+        stored_job = self._store.require_job(job_id)
+        start_time, timeout_seconds = _worker_timing(stored_job, job_id=job_id)
+        remaining = timeout_seconds - (time.monotonic() - start_time)
+        if remaining <= 0:
+            self.timeout(job_id, timeout=int(timeout_seconds), start_time=start_time)
+            raise ExecutionCancelledError("training_preparation", job_id=job_id)
+        worker_config = worker_config_for_memory_policy(
+            memory_limit_bytes=budget.memory_limit_bytes,
+            timeout_seconds=remaining,
+            stop_reason=lambda: self._training_jobs.cancellation_reason(job_id),
+            process_name="haute-training-prep",
+        )
 
-        # Free the preview cache to reclaim memory
-        from haute.executor import _preview_cache
-
-        _preview_cache.clear()
-        from haute.trace import _cache as _trace_cache
-
-        _trace_cache.clear()
-        gc.collect()
-        _mem_checkpoint("cleared preview cache")
-
-        tmp_fd, tmp_parquet = tempfile.mkstemp(suffix=".parquet", prefix="haute_train_")
-        os.close(tmp_fd)
-
-        checkpoint_dir: Path | None = None
+        tmp_parquet = create_training_parquet_path()
         try:
-            self._store.update_job(job_id, message="Executing pipeline")
-            _mem_checkpoint("before _execute_lazy")
-
-            checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_train_ckpt_"))
-            from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE
-
-            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-            dataframe_cache_request = build_dataframe_execution_cache_request(
-                body.graph,
-                node_ids=[body.node_id],
-                namespace="training_prep",
-                source=body.source,
-                profile=(
-                    execution_context.profile
-                    if execution_context is not None
-                    else ExecutionProfile.LAZY_SINK
-                ),
-                input_fingerprint=dataframe_graph_input_fingerprint(
-                    body.graph,
-                    target_node_id=body.node_id,
-                    source=body.source,
-                ),
-                target_node_id=body.node_id,
+            return self._supervise_preparation_worker(
+                body,
+                preamble_ns,
+                row_limit,
+                job_id,
+                exclude=exclude,
+                keep_columns=keep_columns,
                 required_columns_by_node=required_columns_by_node,
-                enforce_contracts=True,
-                preamble_ns_supplied=preamble_ns is not None,
-                streaming_chunk_size=chunk_size,
+                budget=budget,
+                worker_config=worker_config,
+                tmp_parquet=tmp_parquet,
+                start_time=start_time,
+                timeout_seconds=timeout_seconds,
             )
+        except BaseException:
+            # Ownership backstop: no exit from supervision may leave the
+            # parent-owned temp parquet behind.
+            self._discard_prepared_parquet(job_id, tmp_parquet)
+            raise
 
-            lazy_outputs, _order, _parents, _id_to_name = execute_lazy_graph(
-                body.graph,
-                _build_node_fn,
-                target_node_id=body.node_id,
-                preamble_ns=preamble_ns,
-                source=body.source,
-                checkpoint_dir=checkpoint_dir,
-                enforce_contracts=True,
-                required_columns_by_node=required_columns_by_node,
-                execution_context=execution_context,
-                dataframe_cache_request=dataframe_cache_request,
+    def _discard_prepared_parquet(self, job_id: str, tmp_parquet: str) -> None:
+        """Remove the parent-owned parquet, failing the job loudly if it survives.
+
+        A removal failure is never swallowed: a surviving partial training file
+        contradicts every terminal state this path can record, so it becomes a
+        500 ``error`` naming the cleanup failure.
+        """
+        try:
+            _remove_prepared_parquet(tmp_parquet)
+        except OSError as exc:
+            logger.error(
+                "training_preparation_temp_cleanup_failed",
+                job_id=job_id,
+                path=tmp_parquet,
+                error=str(exc),
             )
+            raise self._fail_preparation_worker(
+                job_id,
+                message=f"Training preparation cleanup failed: {exc}",
+            ) from exc
 
-            target_lf = lazy_outputs.get(body.node_id)
-            if target_lf is None:
-                raise HauteValidationError(
-                    "No training data arrived at the modelling node. "
-                    "Make sure an upstream data source is connected and producing data."
-                )
+    def _supervise_preparation_worker(
+        self,
+        body: TrainRequest,
+        preamble_ns: dict[str, Any] | None,
+        row_limit: int | None,
+        job_id: str,
+        *,
+        exclude: list[str] | None,
+        keep_columns: list[str] | None,
+        required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None,
+        budget: IsolatedExecutionBudget,
+        worker_config: IsolatedWorkerConfig,
+        tmp_parquet: str,
+        start_time: float,
+        timeout_seconds: float,
+    ) -> str:
+        """Run the preparation child and map its single outcome onto the job."""
+        request = TrainingPreparationRequest(
+            graph=body.graph,
+            node_id=body.node_id,
+            job_id=job_id,
+            source=body.source,
+            parquet_path=tmp_parquet,
+            config=dict(body.graph.node_map[body.node_id].data.config),
+            project_root=str(_get_project_root()),
+            streaming_chunk_size=body.streaming_chunk_size,
+            row_limit=row_limit,
+            exclude=list(exclude) if exclude else None,
+            keep_columns=list(keep_columns) if keep_columns else None,
+            required_columns_by_node=(
+                None
+                if required_columns_by_node is None
+                else {
+                    node_id: (
+                        demand
+                        if isinstance(demand, AllExceptColumns)
+                        else frozenset(str(column) for column in demand)
+                    )
+                    for node_id, demand in required_columns_by_node.items()
+                }
+            ),
+            preamble_supplied=preamble_ns is not None,
+        )
 
-            if row_limit:
-                target_lf = _seeded_training_sample(target_lf, row_limit)
-
-            schema_cols = (
-                target_lf.collect_schema().names()
-                if hasattr(target_lf, "collect_schema")
-                else target_lf.columns
+        try:
+            outcome = run_isolated_worker(
+                prepare_training_data_worker,
+                request,
+                budget,
+                config=worker_config,
             )
-            schema_set = set(schema_cols)
-            try:
-                feature_selection = _build_training_feature_selection(
-                    body.graph.node_map[body.node_id].data.config,
-                    schema_cols,
-                )
-            except ValueError as exc:
-                http_exc = HTTPException(status_code=422, detail=str(exc))
-                message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
-                self._lifecycle.transition(
-                    job_id,
-                    to="contract_error",
-                    message=message,
-                    fields=fields,
-                )
-                raise http_exc from None
-            self._store.update_job(job_id, feature_selection=feature_selection)
-            required_training_columns = set(keep_columns or [])
-            node_demand = (
-                required_columns_by_node.get(body.node_id)
-                if required_columns_by_node is not None
-                else None
-            )
-            if isinstance(node_demand, AllExceptColumns):
-                required_training_columns.update(node_demand.required_columns)
-            elif node_demand is not None:
-                required_training_columns.update(str(column) for column in node_demand)
-            missing_training_columns = sorted(required_training_columns - schema_set)
-            if missing_training_columns:
+        except IsolatedWorkerStoppedError:
+            self._discard_prepared_parquet(job_id, tmp_parquet)
+            raise ExecutionCancelledError("training_preparation", job_id=job_id) from None
+        except IsolatedWorkerTimeoutError:
+            self._discard_prepared_parquet(job_id, tmp_parquet)
+            self.timeout(job_id, timeout=int(timeout_seconds), start_time=start_time)
+            raise ExecutionCancelledError("training_preparation", job_id=job_id) from None
+        except IsolatedWorkerError as exc:
+            self._discard_prepared_parquet(job_id, tmp_parquet)
+            if isolated_worker_failure_is_memory(exc):
                 http_exc = HTTPException(
-                    status_code=422,
-                    detail=(
-                        "Training input is missing required column(s): "
-                        f"{missing_training_columns}. Available columns: {schema_cols}"
+                    status_code=507,
+                    detail=isolated_worker_memory_detail(
+                        exc,
+                        operation=budget.operation,
+                        memory_limit_bytes=budget.memory_limit_bytes,
                     ),
                 )
                 message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
                 self._lifecycle.transition(
                     job_id,
-                    to="contract_error",
+                    to="memory_limited",
                     message=message,
                     fields=fields,
                 )
-                raise http_exc
-
-            # Project down to only the columns needed for training.
-            # This reduces peak memory during sink and all subsequent
-            # phases (evaluation partitions, pool construction, diagnostics).
-            if exclude and keep_columns:
-                all_cols = schema_cols
-                drop_cols = [c for c in all_cols if c in exclude and c not in keep_columns]
-                if drop_cols:
-                    target_lf = target_lf.drop(drop_cols)
-                    _mem_checkpoint(f"projected: dropped {len(drop_cols)} excluded columns")
-
-            from haute._polars_utils import (
-                _malloc_trim,
-                bounded_sink,
-            )
-
-            _mem_checkpoint("before sink_parquet")
-            if execution_context is not None:
-                execution_context.checkpoint(
-                    label="before_training_sink_write",
-                    node_id=body.node_id,
-                )
-                with execution_context.stage("training_sink_write", node_id=body.node_id):
-                    bounded_sink(
-                        target_lf,
-                        tmp_parquet,
-                        streaming_chunk_size=chunk_size,
-                    )
-                execution_context.checkpoint(
-                    label="after_training_sink_write",
-                    node_id=body.node_id,
-                )
-            else:
-                bounded_sink(
-                    target_lf,
-                    tmp_parquet,
-                    streaming_chunk_size=chunk_size,
-                )
-
-            del lazy_outputs, target_lf
-            gc.collect()
-            _malloc_trim()
-            _mem_checkpoint("sunk to temp parquet")
-        except ExecutionCancelledError:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
-            raise
-        except ExecutionMemoryLimitExceededError as exc:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
-            logger.warning(
-                "pipeline_exec_memory_limited",
-                error=str(exc),
+                raise http_exc from None
+            logger.error(
+                "training_preparation_worker_failed",
+                job_id=job_id,
                 node_id=body.node_id,
-            )
-            http_exc = _memory_limit_http_exception(exc)
-            message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
-            self._lifecycle.transition(
-                job_id,
-                to="memory_limited",
-                message=message,
-                fields=fields,
-            )
-            raise http_exc from None
-        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
-            self._lifecycle.transition(
-                job_id,
-                to="contract_error",
-                message=str(exc),
-                fields=contract_error_job_fields(exc),
-            )
-            raise contract_error_http_exception(exc) from None
-        except BoundedMemoryUnsupportedError as exc:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
-            error_msg = f"Pipeline cannot run in bounded streaming mode: {exc}"
-            logger.warning(
-                "pipeline_bounded_streaming_unsupported",
                 error=str(exc),
-                node_id=body.node_id,
+                error_type=type(exc).__name__,
             )
-            http_exc = HTTPException(status_code=422, detail=error_msg)
-            message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
-            self._lifecycle.transition(
-                job_id,
-                to="contract_error",
-                message=message,
-                fields=fields,
-            )
-            raise http_exc from None
-        except HTTPException:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
-            raise
-        except Exception as exc:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
-            logger.error("pipeline_exec_failed", error=str(exc), node_id=body.node_id)
-            http_exc = HTTPException(
-                status_code=500,
-                detail="Pipeline execution failed. Check the server logs for details.",
-            )
-            message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
-            self._lifecycle.transition(
-                job_id,
-                to="error",
-                message=message,
-                fields=fields,
-            )
-            raise http_exc
-        finally:
-            if execution_context is not None:
-                self._store.update_job(
-                    job_id,
-                    execution_metrics=execution_context.metrics_payload(),
-                )
-            if checkpoint_dir and checkpoint_dir.exists():
-                shutil.rmtree(checkpoint_dir, ignore_errors=True)
+            raise self._fail_preparation_worker(job_id) from None
 
+        if not isinstance(outcome, TrainingPreparationOutcome):
+            self._discard_prepared_parquet(job_id, tmp_parquet)
+            logger.error(
+                "training_preparation_worker_failed",
+                job_id=job_id,
+                node_id=body.node_id,
+                error="worker returned an invalid outcome",
+                error_type=type(outcome).__name__,
+            )
+            raise self._fail_preparation_worker(job_id)
+
+        if outcome.execution_metrics is not None:
+            self._store.update_job(job_id, execution_metrics=outcome.execution_metrics)
+
+        failure = outcome.failure
+        if failure is not None:
+            self._discard_prepared_parquet(job_id, tmp_parquet)
+            self._lifecycle.transition(
+                job_id,
+                to=failure.terminal_reason,
+                message=failure.message,
+                fields=dict(failure.fields),
+            )
+            raise HTTPException(
+                status_code=failure.http_status_code,
+                detail=failure.http_detail,
+            )
+
+        prepared_path = Path(tmp_parquet)
+        if (
+            outcome.parquet_path != tmp_parquet
+            or not prepared_path.exists()
+            or prepared_path.stat().st_size == 0
+        ):
+            self._discard_prepared_parquet(job_id, tmp_parquet)
+            raise self._fail_preparation_worker(
+                job_id,
+                message="Training preparation worker did not produce its prepared data.",
+            )
+
+        if outcome.feature_selection is not None:
+            self._store.update_job(
+                job_id,
+                feature_selection=TrainingFeatureSelectionDiagnosticPayload.model_validate(
+                    outcome.feature_selection
+                ),
+            )
         return tmp_parquet
+
+    def _fail_preparation_worker(
+        self,
+        job_id: str,
+        *,
+        message: str = "Training preparation failed. Check the server logs for details.",
+    ) -> HTTPException:
+        """Record a supervisor-side preparation failure and return its 500."""
+        http_exc = HTTPException(status_code=500, detail=message)
+        job_message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
+        self._lifecycle.transition(
+            job_id,
+            to="error",
+            message=job_message,
+            fields=fields,
+        )
+        return http_exc
 
     def _launch_training_protocol(
         self,

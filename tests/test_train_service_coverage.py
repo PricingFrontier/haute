@@ -10,7 +10,6 @@ training job stuck in the wrong state, so these assert on job-store state too.
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from pathlib import Path
@@ -83,6 +82,32 @@ def _source_only_request(path: str = "x.parquet"):
         }
     )
     return TrainRequest(graph=graph, node_id="n")
+
+
+def _preparation_request(body, parquet_path, **overrides):
+    """Build the picklable preparation request the child core consumes."""
+    from haute.routes._training_preparation import TrainingPreparationRequest
+
+    return TrainingPreparationRequest(
+        graph=body.graph,
+        node_id=body.node_id,
+        job_id="job",
+        source=body.source,
+        parquet_path=str(parquet_path),
+        config={},
+        project_root=str(Path(parquet_path).parent),
+        **overrides,
+    )
+
+
+def _prepare(request, context: ExecutionContext | None = None):
+    """Run the preparation core in-process against a TRAINING_PREP context."""
+    from haute.routes._training_preparation import prepare_training_data
+
+    return prepare_training_data(
+        request,
+        execution_context=context if context is not None else _training_execution_context(),
+    )
 
 
 def _patch_execute_env():
@@ -201,15 +226,11 @@ class TestCheckGpuFallbackFailure:
 # ---------------------------------------------------------------------------
 
 
-class TestExecuteAndSinkMissingTarget:
-    def test_no_target_lf_raises_http_500_and_marks_error(self, tmp_path):
+class TestPreparationMissingTarget:
+    def test_no_target_lf_becomes_an_error_outcome(self, tmp_path):
         """If no LazyFrame arrives at the target node, fail with HTTP 500."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
         body = _source_only_request()
+        parquet_path = tmp_path / "prepared.parquet"
 
         def lazy_without_target(*args, **kwargs):
             # Returns the 4-tuple shape but with the target node absent.
@@ -218,7 +239,7 @@ class TestExecuteAndSinkMissingTarget:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_without_target,
             ),
             p1,
@@ -226,30 +247,27 @@ class TestExecuteAndSinkMissingTarget:
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
+            outcome = _prepare(_preparation_request(body, parquet_path))
 
-        assert exc_info.value.status_code == 500
-        job = store.require_job(job_id)
-        assert job["status"] == "error"
-        assert "Pipeline execution failed" in job["message"]
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.http_status_code == 500
+        assert failure.terminal_reason == "error"
+        assert "Pipeline execution failed" in failure.message
+        assert not parquet_path.exists()
 
 
 # ---------------------------------------------------------------------------
-# _execute_and_sink — column projection path (lines 524-535)
+# prepare_training_data — column projection path
 # ---------------------------------------------------------------------------
 
 
-class TestExecuteAndSinkProjection:
+class TestPreparationProjection:
     def test_excluded_columns_dropped_before_sink(self, tmp_path):
         """exclude + keep_columns should drop excluded non-keep columns."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
         body = _source_only_request()
+        parquet_path = tmp_path / "prepared.parquet"
 
         lf = pl.LazyFrame(
             {
@@ -271,7 +289,7 @@ class TestExecuteAndSinkProjection:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
             patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
@@ -282,16 +300,18 @@ class TestExecuteAndSinkProjection:
             p4,
             p5,
         ):
-            tmp_parquet = service._execute_and_sink(
-                body,
-                preamble_ns=None,
-                row_limit=2,
-                job_id=job_id,
-                exclude=["drop_me", "keep_me"],
-                keep_columns=["y", "keep_me"],
+            outcome = _prepare(
+                _preparation_request(
+                    body,
+                    parquet_path,
+                    row_limit=2,
+                    exclude=["drop_me", "keep_me"],
+                    keep_columns=["y", "keep_me"],
+                )
             )
 
-        assert Path(tmp_parquet).name.startswith("haute_train_")
+        assert outcome.failure is None
+        assert outcome.parquet_path == str(parquet_path)
         assert len(sunk_frames) == 1
         cols = sunk_frames[0].collect_schema().names()
         # drop_me is excluded and not in keep_columns → dropped.
@@ -299,17 +319,11 @@ class TestExecuteAndSinkProjection:
         # keep_me is excluded but protected → retained.
         assert "keep_me" in cols
         assert "y" in cols
-        # Cleanup the temp file the helper created.
-        Path(tmp_parquet).unlink(missing_ok=True)
 
     def test_no_drop_when_nothing_excluded_matches(self, tmp_path):
         """exclude listing only protected columns drops nothing."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
         body = _source_only_request()
+        parquet_path = tmp_path / "prepared.parquet"
 
         lf = pl.LazyFrame({"y": [1.0, 2.0], "x1": [0.1, 0.2]})
         sunk_frames: list[object] = []
@@ -323,7 +337,7 @@ class TestExecuteAndSinkProjection:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
             patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
@@ -334,18 +348,18 @@ class TestExecuteAndSinkProjection:
             p4,
             p5,
         ):
-            tmp_parquet = service._execute_and_sink(
-                body,
-                preamble_ns=None,
-                row_limit=None,
-                job_id=job_id,
-                exclude=["y"],
-                keep_columns=["y"],
+            outcome = _prepare(
+                _preparation_request(
+                    body,
+                    parquet_path,
+                    exclude=["y"],
+                    keep_columns=["y"],
+                )
             )
 
+        assert outcome.failure is None
         cols = sunk_frames[0].collect_schema().names()
         assert cols == ["y", "x1"]
-        Path(tmp_parquet).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -522,24 +536,24 @@ class TestStartGlmMergeAndKeepColumns:
 # ---------------------------------------------------------------------------
 
 
-class TestExecuteAndSinkWithExecutionContext:
+class TestPreparationWithExecutionContext:
     def test_context_stages_sink_and_publishes_metrics(self, tmp_path):
-        """With a context, the sink runs inside a staged region and metrics are
-        published in the finally arm; the checkpoint_dir is also cleaned up."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+        """The sink runs inside a staged region, the checkpoint dir is cleaned
+        up, and the outcome carries the metrics payload the supervisor stores."""
         body = _source_only_request()
+        parquet_path = tmp_path / "prepared.parquet"
 
         lf = pl.LazyFrame({"y": [1.0, 2.0], "x1": [0.1, 0.2]})
         sunk_frames: list[object] = []
+        checkpoint_dirs: list[Path] = []
 
         def fake_bounded_sink(frame, path, **kwargs):
             sunk_frames.append(frame)
 
         def lazy_returns_target(*args, **kwargs):
+            checkpoint_dir = kwargs.get("checkpoint_dir")
+            if checkpoint_dir is not None:
+                checkpoint_dirs.append(checkpoint_dir)
             return ({"n": lf}, [], {}, {})
 
         context = _training_execution_context()
@@ -547,7 +561,7 @@ class TestExecuteAndSinkWithExecutionContext:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
             patch("haute._polars_utils.bounded_sink", side_effect=fake_bounded_sink),
@@ -558,34 +572,24 @@ class TestExecuteAndSinkWithExecutionContext:
             p4,
             p5,
         ):
-            tmp_parquet = service._execute_and_sink(
-                body,
-                preamble_ns=None,
-                row_limit=None,
-                job_id=job_id,
-                execution_context=context,
-            )
+            outcome = _prepare(_preparation_request(body, parquet_path), context=context)
 
-        # The staged context branch (940-954) was taken: the frame was sunk and
-        # the before/after sink checkpoints recorded stage timings.
+        # The staged sink branch was taken: the frame was sunk and the
+        # before/after sink checkpoints recorded stage timings.
+        assert outcome.failure is None
         assert len(sunk_frames) == 1
-        # The finally arm (1014-1018) published execution metrics onto the job.
-        job = store.require_job(job_id)
-        assert "execution_metrics" in job
-        metrics = job["execution_metrics"]
+        # The metrics the parent persists on the job come from the child.
+        metrics = outcome.execution_metrics
+        assert metrics is not None
         assert "training_sink_write" in metrics["stage_elapsed_ms"]
-        Path(tmp_parquet).unlink(missing_ok=True)
+        assert checkpoint_dirs and not checkpoint_dirs[0].exists()
 
     def test_all_except_demand_columns_required_and_missing_raises_422(self, tmp_path):
         """An AllExcept node demand contributes its required_columns to the
-        training-input contract; a missing one trips the 422 contract error and
-        flips the job to contract_error (903-904 + 908-922 + finally 1014-1018)."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+        training-input contract; a missing one trips the 422 contract failure
+        and still returns the metrics payload."""
         body = _source_only_request()
+        parquet_path = tmp_path / "prepared.parquet"
 
         # Frame is missing the AllExcept-required "target_col".
         lf = pl.LazyFrame({"x1": [0.1, 0.2], "x2": [0.3, 0.4]})
@@ -604,7 +608,7 @@ class TestExecuteAndSinkWithExecutionContext:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
             patch("haute._polars_utils.bounded_sink"),
@@ -614,33 +618,26 @@ class TestExecuteAndSinkWithExecutionContext:
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(
-                body,
-                preamble_ns=None,
-                row_limit=None,
-                job_id=job_id,
-                required_columns_by_node=demand,
-                execution_context=context,
+            outcome = _prepare(
+                _preparation_request(body, parquet_path, required_columns_by_node=demand),
+                context=context,
             )
 
-        assert exc_info.value.status_code == 422
-        assert "target_col" in str(exc_info.value.detail)
-        job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
-        # Even on the contract-error raise, the finally arm published metrics.
-        assert "execution_metrics" in job
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.http_status_code == 422
+        assert failure.terminal_reason == "contract_error"
+        assert "target_col" in str(failure.http_detail)
+        # Even on the contract-error arm, the child reports its metrics.
+        assert outcome.execution_metrics is not None
+        assert not parquet_path.exists()
 
     def test_iterable_demand_columns_required(self, tmp_path):
         """A plain-iterable (non-AllExcept) node demand also contributes its
-        columns to the contract (branch 905-906)."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+        columns to the contract."""
         body = _source_only_request()
+        parquet_path = tmp_path / "prepared.parquet"
 
         lf = pl.LazyFrame({"x1": [0.1, 0.2]})
 
@@ -652,7 +649,7 @@ class TestExecuteAndSinkWithExecutionContext:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_returns_target,
             ),
             patch("haute._polars_utils.bounded_sink"),
@@ -662,38 +659,30 @@ class TestExecuteAndSinkWithExecutionContext:
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(
-                body,
-                preamble_ns=None,
-                row_limit=None,
-                job_id=job_id,
-                required_columns_by_node=demand,
+            outcome = _prepare(
+                _preparation_request(body, parquet_path, required_columns_by_node=demand)
             )
 
-        assert exc_info.value.status_code == 422
-        assert "needed_col" in str(exc_info.value.detail)
-        assert store.require_job(job_id)["status"] == "contract_error"
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.http_status_code == 422
+        assert failure.terminal_reason == "contract_error"
+        assert "needed_col" in str(failure.http_detail)
 
 
 # ---------------------------------------------------------------------------
-# _execute_and_sink — memory-limit + bounded-unsupported cleanup arms
-# (lines 966-979, 980-994).  multi-frame added these typed cleanup handlers;
-# each must unlink the temp parquet, transition the job, and re-raise the
-# right HTTP shape.
+# prepare_training_data — memory-limit + bounded-unsupported cleanup arms.
+# multi-frame added these typed cleanup handlers; each must remove the temp
+# parquet, classify the terminal reason, and carry the right HTTP shape.
 # ---------------------------------------------------------------------------
 
 
-class TestExecuteAndSinkCleanupArms:
-    def test_public_contract_error_unlinks_temp_and_preserves_payload(self):
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+class TestPreparationCleanupArms:
+    def test_public_contract_error_removes_temp_and_preserves_payload(self, tmp_path):
         body = _source_only_request()
-        unlinked: list[str] = []
+        parquet_path = tmp_path / "prepared.parquet"
+        parquet_path.write_bytes(b"")
 
         def lazy_raises_contract_error(*args, **kwargs):
             raise PreambleError("invalid preamble", source_line=7)
@@ -701,90 +690,70 @@ class TestExecuteAndSinkCleanupArms:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_raises_contract_error,
-            ),
-            patch(
-                "haute.routes._training_lifecycle.os.unlink",
-                side_effect=lambda path: unlinked.append(path),
             ),
             p1,
             p2,
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
+            outcome = _prepare(_preparation_request(body, parquet_path))
 
-        assert exc_info.value.status_code == 422
-        assert exc_info.value.detail == {
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.http_status_code == 422
+        assert failure.http_detail == {
             "error_code": "preamble_failed",
             "message": "invalid preamble",
             "source_line": 7,
         }
-        assert unlinked and unlinked[0].endswith(".parquet")
-        job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
-        assert job["error_code"] == "preamble_failed"
+        assert not parquet_path.exists()
+        assert failure.terminal_reason == "contract_error"
+        assert failure.fields["error_code"] == "preamble_failed"
 
-    def test_memory_limit_unlinks_temp_and_raises_507(self, tmp_path):
-        """ExecutionMemoryLimitExceededError → temp parquet removed, job
-        memory_limited, HTTP 507 (lines 966-979)."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+    def test_memory_limit_removes_temp_and_reports_507(self, tmp_path):
+        """ExecutionMemoryLimitExceededError → temp parquet removed, terminal
+        reason memory_limited, HTTP 507."""
         body = _source_only_request()
-
-        created_paths: list[str] = []
-        real_exists = os.path.exists
+        parquet_path = tmp_path / "prepared.parquet"
+        parquet_path.write_bytes(b"")
 
         def lazy_raises_memory(*args, **kwargs):
             raise ExecutionMemoryLimitExceededError(
                 "training_pipeline",
                 rss_bytes=20,
                 limit_bytes=10,
-                job_id=job_id,
+                job_id="job",
             )
 
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_raises_memory,
-            ),
-            patch(
-                "haute.routes._training_lifecycle.os.unlink",
-                side_effect=lambda p: created_paths.append(p),
             ),
             p1,
             p2,
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
+            outcome = _prepare(_preparation_request(body, parquet_path))
 
-        assert exc_info.value.status_code == 507
-        # The freshly mkstemp'd temp parquet was unlinked on the way out.
-        assert created_paths and created_paths[0].endswith(".parquet")
-        assert real_exists  # sanity: os module still intact
-        assert store.require_job(job_id)["status"] == "memory_limited"
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.http_status_code == 507
+        # The staged temp parquet was removed on the way out.
+        assert not parquet_path.exists()
+        assert failure.terminal_reason == "memory_limited"
 
-    def test_bounded_unsupported_unlinks_temp_and_raises_422(self, tmp_path):
-        """BoundedMemoryUnsupportedError → temp removed, job contract_error,
-        HTTP 422 (lines 980-994)."""
-        from haute.routes._job_store import JobStore
-
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
+    def test_bounded_unsupported_removes_temp_and_reports_422(self, tmp_path):
+        """BoundedMemoryUnsupportedError → temp removed, contract_error, 422."""
         body = _source_only_request()
-
-        unlinked: list[str] = []
+        parquet_path = tmp_path / "prepared.parquet"
+        parquet_path.write_bytes(b"")
 
         def lazy_raises_unsupported(*args, **kwargs):
             raise BoundedMemoryUnsupportedError("node X cannot stream")
@@ -792,160 +761,117 @@ class TestExecuteAndSinkCleanupArms:
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_raises_unsupported,
-            ),
-            patch(
-                "haute.routes._training_lifecycle.os.unlink",
-                side_effect=lambda p: unlinked.append(p),
             ),
             p1,
             p2,
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
+            outcome = _prepare(_preparation_request(body, parquet_path))
 
-        assert exc_info.value.status_code == 422
-        assert "bounded streaming mode" in str(exc_info.value.detail)
-        assert unlinked and unlinked[0].endswith(".parquet")
-        job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
+        failure = outcome.failure
+        assert failure is not None
+        assert failure.http_status_code == 422
+        assert "bounded streaming mode" in str(failure.http_detail)
+        assert not parquet_path.exists()
+        assert failure.terminal_reason == "contract_error"
 
 
 # ---------------------------------------------------------------------------
-# _execute_and_sink — cleanup arms when the temp parquet is already gone and
-# when the checkpoint dir never materialised. Each error handler guards the
-# unlink with ``if os.path.exists(tmp_parquet)``; the False arm (967->969,
-# 981->983, 996->998, 1000->1002) and the finally's checkpoint-dir-absent arm
-# (1019->1022) are only reachable when those paths don't exist.
+# prepare_training_data — cleanup arms when the temp parquet is already gone
+# and when the checkpoint dir never materialised. Removal is idempotent
+# (``Path.unlink(missing_ok=True)``), so an absent temp must still produce the
+# same typed failure without raising a filesystem error of its own.
 # ---------------------------------------------------------------------------
 
 
-class TestExecuteAndSinkCleanupAbsentPaths:
-    def _service_body(self):
-        from haute.routes._job_store import JobStore
+class TestPreparationCleanupAbsentPaths:
+    def _run_with_absent_paths(self, lazy_side_effect, tmp_path: Path):
+        """Run the preparation core with the temp parquet never created.
 
-        store = JobStore()
-        service = TrainService(store)
-        job_id = store.create_job({"status": "running"})
-        return store, service, job_id, _source_only_request()
-
-    def _run_with_absent_paths(self, service, body, job_id, lazy_side_effect, tmp_path: Path):
-        """Run _execute_and_sink with the temp parquet absent, exercising the
-        cleanup guards' skip-unlink arms.
-
-        The training temp parquet is deleted the instant mkstemp hands it back,
-        so the ``if Path(tmp_parquet).exists()`` guards are naturally False
-        without mocking pathlib globally. Only the ``haute_train_`` temp is
-        special-cased; the dataframe-cache machinery's own mkstemp temps are
-        delegated to the real implementation untouched. The dataframe-cache
-        request is irrelevant once execute_lazy_graph is mocked, so stub it to
-        prevent this test's mkdtemp patch from becoming the process-wide cache
-        root. os.path.exists stays globally False (as before) to keep the
-        remaining machinery off real filesystem I/O, and os.unlink is mocked
-        as the belt-and-braces assertion target."""
+        The child owns removal on every failure arm; with nothing at the path
+        the removal is a no-op and must not turn a typed failure into a
+        filesystem error. The dataframe-cache request is irrelevant once
+        execute_lazy_graph is mocked, so stub it to prevent this test's mkdtemp
+        patch from becoming the process-wide cache root.
+        """
         import tempfile as _tempfile
 
+        body = _source_only_request()
+        parquet_path = tmp_path / "never_created.parquet"
         ckpt_missing = tmp_path / "haute_ckpt_absent"
-        real_mkstemp = _tempfile.mkstemp
-        real_unlink = os.unlink  # capture before the with-block mocks os.unlink
-        real_close = os.close
-
-        def _mkstemp_training_absent(*a, **k):
-            fd, path = real_mkstemp(*a, **k)
-            if k.get("prefix") == "haute_train_":
-                # Drop the training temp immediately so the cleanup guards see it
-                # as already gone. Windows cannot unlink an open mkstemp file,
-                # so close it first and return a harmless replacement descriptor
-                # for the caller's unconditional os.close.
-                real_close(fd)
-                real_unlink(path)
-                fd = os.open(os.devnull, os.O_RDONLY)
-            return fd, path
 
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
+                "haute.routes._training_preparation.execute_lazy_graph",
                 side_effect=lazy_side_effect,
             ),
-            patch("haute.routes._training_lifecycle.os.path.exists", return_value=False),
-            patch.object(_tempfile, "mkstemp", side_effect=_mkstemp_training_absent),
             patch.object(_tempfile, "mkdtemp", return_value=str(ckpt_missing)),
             patch(
-                "haute.routes._training_lifecycle.build_dataframe_execution_cache_request",
+                "haute.routes._training_preparation.build_dataframe_execution_cache_request",
                 return_value=MagicMock(),
             ),
-            patch("haute.routes._training_lifecycle.os.unlink") as mock_unlink,
             p1,
             p2,
             p3,
             p4,
             p5,
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
-        return exc_info, mock_unlink
+            outcome = _prepare(_preparation_request(body, parquet_path))
+        assert not parquet_path.exists()
+        assert not ckpt_missing.exists()
+        return outcome
 
-    def test_memory_limit_skips_unlink_when_temp_absent(self, tmp_path: Path):
-        """ExecutionMemoryLimitExceededError with the temp already gone: the
-        unlink guard is False (967->969) and no unlink is attempted."""
-        store, service, job_id, body = self._service_body()
+    def test_memory_limit_when_temp_absent(self, tmp_path: Path):
+        """ExecutionMemoryLimitExceededError with the temp never created."""
 
         def lazy(*a, **k):
             raise ExecutionMemoryLimitExceededError(
-                "training_pipeline", rss_bytes=2, limit_bytes=1, job_id=job_id
+                "training_pipeline", rss_bytes=2, limit_bytes=1, job_id="job"
             )
 
-        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy, tmp_path)
-        assert exc_info.value.status_code == 507
-        mock_unlink.assert_not_called()
-        assert store.require_job(job_id)["status"] == "memory_limited"
+        outcome = self._run_with_absent_paths(lazy, tmp_path)
+        assert outcome.failure is not None
+        assert outcome.failure.http_status_code == 507
+        assert outcome.failure.terminal_reason == "memory_limited"
 
-    def test_bounded_unsupported_skips_unlink_when_temp_absent(self, tmp_path: Path):
-        """BoundedMemoryUnsupportedError with the temp already gone (981->983)."""
-        store, service, job_id, body = self._service_body()
+    def test_bounded_unsupported_when_temp_absent(self, tmp_path: Path):
+        """BoundedMemoryUnsupportedError with the temp never created."""
 
         def lazy(*a, **k):
             raise BoundedMemoryUnsupportedError("cannot stream")
 
-        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy, tmp_path)
-        assert exc_info.value.status_code == 422
-        mock_unlink.assert_not_called()
-        assert store.require_job(job_id)["status"] == "contract_error"
+        outcome = self._run_with_absent_paths(lazy, tmp_path)
+        assert outcome.failure is not None
+        assert outcome.failure.http_status_code == 422
+        assert outcome.failure.terminal_reason == "contract_error"
 
-    def test_http_reraise_skips_unlink_when_temp_absent(self, tmp_path: Path):
-        """A re-raised HTTPException with the temp gone (996->998). The missing
-        target node raises an HTTPException inside the try, which the HTTPException
-        handler re-raises after the (skipped) unlink guard."""
-        store, service, job_id, body = self._service_body()
+    def test_http_failure_when_temp_absent(self, tmp_path: Path):
+        """An HTTPException raised inside the body keeps its status code."""
 
-        # Returns the 4-tuple shape but without the target node, so the body
-        # raises HTTPException(422) for missing required columns... actually the
-        # missing-target path raises ValueError → caught by generic handler.
-        # To hit the HTTPException re-raise arm, raise an HTTPException directly.
         def lazy(*a, **k):
             raise HTTPException(status_code=418, detail="teapot")
 
-        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy, tmp_path)
-        assert exc_info.value.status_code == 418
-        mock_unlink.assert_not_called()
+        outcome = self._run_with_absent_paths(lazy, tmp_path)
+        assert outcome.failure is not None
+        assert outcome.failure.http_status_code == 418
+        assert outcome.failure.terminal_reason == "contract_error"
 
-    def test_generic_failure_skips_unlink_when_temp_absent(self, tmp_path: Path):
-        """A generic Exception with the temp gone (1000->1002) plus the
-        checkpoint-dir-absent finally arm (1019->1022)."""
-        store, service, job_id, body = self._service_body()
+    def test_generic_failure_when_temp_absent(self, tmp_path: Path):
+        """A generic Exception with the temp gone, plus the checkpoint-dir-absent
+        cleanup arm."""
 
         def lazy(*a, **k):
             raise RuntimeError("kaboom")
 
-        exc_info, mock_unlink = self._run_with_absent_paths(service, body, job_id, lazy, tmp_path)
-        assert exc_info.value.status_code == 500
-        mock_unlink.assert_not_called()
-        assert store.require_job(job_id)["status"] == "error"
+        outcome = self._run_with_absent_paths(lazy, tmp_path)
+        assert outcome.failure is not None
+        assert outcome.failure.http_status_code == 500
+        assert outcome.failure.terminal_reason == "error"
 
 
 # ---------------------------------------------------------------------------

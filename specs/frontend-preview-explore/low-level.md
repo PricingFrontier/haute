@@ -229,7 +229,15 @@ successfully admitted `materialisation-boundary` with no unprojected boundary st
 silent; an `unprojected-streaming-boundary` (including one carried in a mixed
 materialisation plan) or rejection places a warning/error icon
 immediately after the row/column summary, and memory pressure uses the warning
-path (including when it accompanies materialisation). Activating the icon
+path (including when it accompanies materialisation). A `warned` conservative run
+places the warning icon titled "Execution ran without a memory estimate", explaining
+that the step ran under the run's full reserved memory envelope inside a hard-capped
+worker; memory pressure on such a run appends the pressure message exactly once
+rather than duplicating the strategy remediation, a terminal memory-limit failure
+is reported instead of the warned strategy — in `ExecutionDiagnosticsIndicator`
+too, where the pressure diagnostic's title wins over the warned strategy's while
+the warned detail stays in the explanation — and the requested and blocking nodes
+are promoted to the canvas warning state. Activating the icon
 explains projection limits, correctness, possible I/O/memory cost, and
 remediation without exposing raw bounded-collection JSON.
 `ExplorePreview` passes progress or cache-report metrics to

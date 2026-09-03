@@ -106,8 +106,9 @@ Expansion is a pure transform per instance:
    to qualified runtime ids and from each bound public input port id to its
    upstream parent identity. Rewrite cloned child configs through that map.
    Also rewrite remaining parent consumers from the selected occurrence's
-   canonical `<alias>__<outputPortId>` identity to the qualified runtime
-   output source. An unbound, ambiguous, or otherwise stale declared reference
+   sanitised public output label to the qualified runtime output source. When
+   this changes the physical name of an ordinary Polars input, preserve the
+   public logical name with `inputMapping`. An unbound, ambiguous, or otherwise stale declared reference
    is an error. Unregistered opaque fields are unchanged, never guessed.
 4. Expand each input binding to the port's ordered targets and each output
    binding from the port's single source, preserving authored endpoint handles
@@ -206,6 +207,18 @@ document and returns the new revision.
    binding to the selected input port's ordered targets and each outgoing
    binding from the selected output port's one source, preserving authored
    endpoint handles and all hidden-port components in deterministic edge ids.
+   Rewrite every schema-owned incoming-frame reference from the public boundary
+   name to the expanded physical name: exact selector fields,
+   `input_scenario_map` keys, instance `inputMapping` values, and every OUTPUT
+   `outputMapping[].source_port`. A malformed referenced mapping fails with
+   contextual `ParseError`; it is never retained as a stale logical name.
+   A rename that collides on a target's input names or on an OUTPUT mapping
+   fails with `ParseError`; malformed mapping shapes are validated on renamed
+   nodes. Two distinct old input names for one target mapping to one new name
+   is a collision, as is a rewritten `outputMapping` in which two active
+   entries become identical in `(source_port, source_column, output_path)` or
+   two entries share `output_path` and `source_port` with different
+   `source_column`.
 5. Remove only selected occurrence nodes and their incident boundary edges.
    Deduplicate exact six-field edge identities, assert that no selected
    occurrence endpoint remains, and merge definition support code once. A
@@ -232,22 +245,27 @@ document and returns the new revision.
    frame become one input port with ordered internal targets and exactly one
    parent binding. Outgoing edges sharing one internal source endpoint become
    one output port. Allocate opaque `input_N`/`output_N` ids independent of
-   child ids and labels.
-5. Before storing the definition, rewrite each boundary-fed child's
-   `input_scenario_map` keys and `inputMapping` values from the external input
-   name to the sanitised public port id. Rewrite `inputMapping` keys on
-   instances of that child as well. Reject malformed mappings, ambiguous
-   renames, or key collisions atomically.
+   child ids and labels. Preserve each pre-group executable frame name as the
+   corresponding public port label, so child and parent consumer code requires
+   no generated rename.
+5. Validate that every generated public label resolves to the same executable
+   name as its pre-group edge. Reject malformed, ambiguous, or colliding names
+   atomically rather than rewriting configs to opaque port ids. Collision is
+   checked per direction, on the sanitised label: two input ports (or two
+   output ports) whose `_sanitize_func_name(label)` is the same raise
+   `SubmodelValidationError(code="duplicate_public_label", status_code=400)`
+   naming the colliding labels and the shared executable name, before the
+   definition is built. Codegen still rejects a duplicate derived input name at
+   save; the creation gate stops that graph from being created at all.
 6. Compute the selected bounding-box centre as the occurrence position and
    subtract it from every selected child position before storing the definition
    graph. Internal positions are therefore occurrence-local.
 7. Create one typed `SubmodelDefinition` and one `SUBMODEL` occurrence whose
    config is exactly `{definitionId, alias}`. Rewire parent edges only through
    `in__<portId>`/`out__<portId>` handles, preserving still-hidden authored
-   ports in both edge data and deterministic ids. For every outgoing boundary,
-   rewrite schema-declared references on its remaining parent consumer from
-   the selected internal source id to the canonical
-   `<alias>__<outputPortId>` identity in the same pure transform.
+   ports in both edge data and deterministic ids. Remaining parent consumers
+   keep the same executable input name because the public output label carries
+   the pre-group source identity.
 8. Return a new parent graph with the prior registry entries preserved plus the
    definition and occurrence. Return `SubmodelGraphResult` metadata for the
    transform-only route; the input graph is untouched.
@@ -334,8 +352,8 @@ Acquires `save_lock` and runs the body in a threadpool:
   an edge-join endpoint restores its authored base/join `targetHandle` and
   rewrites the port-id role reference to the bound upstream parent identity.
 - **Outbound edge-join roles survive extraction and flattening.** A remaining
-  edge join fed by one or more selected sources uses distinct canonical
-  `<alias>__<outputPortId>` role identities while hierarchical, then qualified
+  edge join fed by one or more selected sources uses the canonical sanitised
+  public output labels while hierarchical, then qualified
   runtime source ids after expansion; two outputs of one occurrence never
   collapse to the shared occurrence id.
 - **`_submodel_paths.py` checks the resolved pipeline-relative path before
@@ -421,8 +439,9 @@ Tests live in `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
   outputs feeding distinct edge-join roles through `out__<portId>` handles.
 - `tests/test_submodel_instances.py` — canonical definition and occurrence
   validation, parse/codegen round trips, public-port expansion, targeted
-  flattening, shared-definition retention, and explicit rejection of missing
-  identity or malformed topology.
+  flattening, shared-definition retention, OUTPUT source-port migration across
+  a public boundary, and explicit rejection of missing identity or malformed
+  topology.
 - `tests/test_flattening_dedup.py` — parity between parser-driven flattening
   and the shared `flatten_graph` implementation, including single-node,
   multi-node, chained, nested, and hierarchical-then-flat cases.

@@ -8,7 +8,11 @@ import pytest
 
 from haute.codegen import graph_to_code_multi
 from haute.graph_utils import NodeType
-from haute.routes._submodel_ops import SubmodelGraphResult, create_submodel_graph
+from haute.routes._submodel_ops import (
+    SubmodelGraphResult,
+    SubmodelValidationError,
+    create_submodel_graph,
+)
 from tests.conftest import make_graph
 
 
@@ -118,6 +122,73 @@ class TestCreateSubmodelGraph:
         assert [(port.port_id, port.label) for port in definition.output_ports] == [
             ("output_1", "Priced quotes")
         ]
+
+    def test_grouping_keeps_public_boundary_labels_as_polars_frame_names(self):
+        """Opaque port ids never leak into child or parent Polars signatures."""
+        graph = make_graph(
+            {
+                "pipeline_name": "test",
+                "nodes": [
+                    {
+                        "id": "raw_quotes",
+                        "data": {
+                            "label": "raw quotes",
+                            "nodeType": "dataInput",
+                            "config": {"path": "quotes.parquet"},
+                        },
+                    },
+                    {
+                        "id": "features",
+                        "data": {
+                            "label": "risk features",
+                            "nodeType": "polars",
+                            "config": {"code": "df = raw_quotes"},
+                        },
+                    },
+                    {
+                        "id": "switch",
+                        "data": {
+                            "label": "live switch",
+                            "nodeType": "polars",
+                            "config": {"code": "df = risk_features"},
+                        },
+                    },
+                    {
+                        "id": "consumer",
+                        "data": {
+                            "label": "consumer",
+                            "nodeType": "polars",
+                            "config": {"code": "df = live_switch"},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "in", "source": "raw_quotes", "target": "features"},
+                    {"id": "inside", "source": "features", "target": "switch"},
+                    {"id": "out", "source": "switch", "target": "consumer"},
+                ],
+            }
+        )
+
+        result = create_submodel_graph(graph, ["features", "switch"], "Inputs")
+        definition = result.graph.submodels["Inputs"]
+        assert [(port.port_id, port.label) for port in definition.input_ports] == [
+            ("input_1", "raw quotes")
+        ]
+        assert [(port.port_id, port.label) for port in definition.output_ports] == [
+            ("output_1", "live switch")
+        ]
+        assert definition.graph.node_map["features"].data.config["code"] == "df = raw_quotes"
+        assert result.graph.node_map["consumer"].data.config["code"] == "df = live_switch"
+
+        files = graph_to_code_multi(
+            result.graph,
+            pipeline_name="test",
+            source_file="main.py",
+        )
+        assert "def risk_features(raw_quotes: pl.LazyFrame)" in files["modules/Inputs.py"]
+        assert "def consumer(live_switch: pl.LazyFrame)" in files["main.py"]
+        assert "Inputs__output_1" not in files["main.py"]
 
     def test_submodels_metadata_populated(self):
         """Submodel metadata includes child IDs, ports, and internal graph."""
@@ -677,3 +748,58 @@ class TestCreateSubmodelGraph:
             node for node in result.graph.nodes if node.data.nodeType == NodeType.SUBMODEL
         )
         assert placeholder.position == {"x": 60.0, "y": 120.0}
+
+
+class TestDuplicatePublicLabels:
+    """Creation rejects public ports that collide on their executable name."""
+
+    @staticmethod
+    def _two_source_graph(label_a: str, label_b: str):
+        return make_graph(
+            {
+                "pipeline_name": "test",
+                "nodes": [
+                    {
+                        "id": "a",
+                        "data": {
+                            "label": label_a,
+                            "nodeType": "dataInput",
+                            "config": {"path": "a.parquet"},
+                        },
+                    },
+                    {
+                        "id": "b",
+                        "data": {
+                            "label": label_b,
+                            "nodeType": "dataInput",
+                            "config": {"path": "b.parquet"},
+                        },
+                    },
+                    {"id": "t1", "data": {"label": "t1", "nodeType": "polars", "config": {}}},
+                    {"id": "t2", "data": {"label": "t2", "nodeType": "polars", "config": {}}},
+                ],
+                "edges": [
+                    {"id": "e1", "source": "a", "target": "t1"},
+                    {"id": "e2", "source": "b", "target": "t2"},
+                ],
+            }
+        )
+
+    def test_duplicate_input_label_rejected(self):
+        """Two boundary inputs sanitising to one name fail creation."""
+        graph = self._two_source_graph("My src", "My-src")
+        with pytest.raises(SubmodelValidationError) as excinfo:
+            create_submodel_graph(graph, ["t1", "t2"], "grp")
+        assert excinfo.value.code == "duplicate_public_label"
+        assert excinfo.value.status_code == 400
+        assert "My_src" in excinfo.value.detail
+
+    def test_distinct_input_labels_succeed(self):
+        """Distinct executable names still create the submodel."""
+        graph = self._two_source_graph("My src", "Other src")
+        result = create_submodel_graph(graph, ["t1", "t2"], "grp")
+        definition = result.graph.submodels["grp"]
+        assert sorted(port.label for port in definition.input_ports) == [
+            "My src",
+            "Other src",
+        ]

@@ -10,7 +10,6 @@ from __future__ import annotations
 import ast
 import contextlib
 import math
-import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -28,15 +27,22 @@ from haute._polars_io_registry import (
     PolarsIoConfigError,
     validate_data_input_config,
 )
+from haute._polars_operations import OperationReceiver, chunk_admitted_names
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, streaming_collect
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import (
     ChunkMemoryRiskError,
     ChunkPlanUnsupportedError,
+    ChunkUserCodeUnsupportedError,
     ContractMismatchError,
 )
 from haute.execution import plan_prepared_execution_strategy
-from haute.projection import ProjectionEdgeKey, _children_of, prepare_graph
+from haute.projection import (
+    ProjectionEdgeKey,
+    _children_of,
+    materialising_operators_by_node,
+    prepare_graph,
+)
 
 __all__ = [
     "BoundedChunkReducer",
@@ -50,6 +56,8 @@ __all__ = [
     "ChunkRunnerRequest",
     "chunk_plan",
     "chunk_capability_declarations",
+    "ChunkLocalDecision",
+    "classify_chunk_local_polars_code",
     "is_chunk_local_polars_code",
     "collect_chunked",
     "iter_chunked_frames",
@@ -398,36 +406,6 @@ def validate_chunk_capability_declarations(
 validate_chunk_capability_declarations()
 
 
-_GLOBAL_CODE_MARKERS = (
-    ".collect(",
-    ".collect_batches(",
-    ".fetch(",
-    ".group_by(",
-    ".groupby(",
-    ".join(",
-    ".pivot(",
-    ".sort(",
-    ".unique(",
-    ".upsample(",
-    ".window(",
-)
-_GLOBAL_METHOD_NAMES = frozenset(
-    {
-        "agg",
-        "collect",
-        "collect_batches",
-        "explode",
-        "fetch",
-        "group_by",
-        "groupby",
-        "join",
-        "pivot",
-        "rolling",
-        "sort",
-        "unique",
-        "upsample",
-    }
-)
 # ---------------------------------------------------------------------------
 # Chunk-local user-code whitelist (PATH_TO_HIGHEST_STANDARD §A3).
 #
@@ -439,57 +417,23 @@ _GLOBAL_METHOD_NAMES = frozenset(
 # not whitelisted; rejected code fails chunk planning loudly and callers route
 # to the existing full (non-chunked) executor, which is always correct.
 # ---------------------------------------------------------------------------
-_ROW_LOCAL_DF_METHOD_NAMES = frozenset(
-    {
-        "cast",  # proof: df_cast
-        "drop",  # proof: df_drop
-        "drop_nulls",  # proof: df_drop_nulls
-        "filter",  # proof: df_filter
-        "fill_nan",  # proof: df_fill_nan (value-only signature in polars)
-        "fill_null",  # proof: df_fill_null_value (value form only; see shape validator)
-        "rename",  # proof: df_rename
-        "select",  # proof: df_select
-        "with_columns",  # proof: df_with_columns
-        "with_columns_seq",  # proof: df_with_columns_seq
-    }
+_ROW_LOCAL_DF_METHOD_NAMES = chunk_admitted_names(OperationReceiver.FRAME)
+_ROW_LOCAL_EXPR_METHOD_NAMES = chunk_admitted_names(OperationReceiver.EXPR)
+_ROW_LOCAL_POLARS_FUNCTIONS = chunk_admitted_names(OperationReceiver.POLARS_FUNCTION)
+# Attribute namespaces that polars exposes on an expression.  Recognising all of
+# them (not just the admitted ones) keeps ``expr.<ns>.<method>()`` classified as
+# ``unsupported_namespace_method`` instead of falling into the generic
+# "unsupported expression" bucket.
+_ROW_LOCAL_NAMESPACE_NAMES = frozenset(
+    {"str", "dt", "list", "arr", "struct", "cat", "bin", "name", "meta"}
 )
-_ROW_LOCAL_EXPR_METHOD_NAMES = frozenset(
+# Per-namespace admitted methods.  Each entry cites a proof case in
+# tests/test_chunk_whitelist_proofs.py (tag ``("expr.<ns>", "<method>")``) in
+# its registry ``note``.
+_ROW_LOCAL_NAMESPACE_METHOD_NAMES: Mapping[str, frozenset[str]] = MappingProxyType(
     {
-        "abs",  # proof: expr_abs
-        "alias",  # proof: expr_alias
-        "cast",  # proof: expr_cast
-        "ceil",  # proof: expr_ceil
-        "clip",  # proof: expr_clip
-        "exp",  # proof: expr_exp
-        "fill_nan",  # proof: expr_fill_nan (value-only signature in polars)
-        "fill_null",  # proof: expr_fill_null_value (value form only; see shape validator)
-        "floor",  # proof: expr_floor
-        "is_between",  # proof: expr_is_between
-        "is_finite",  # proof: expr_is_finite
-        "is_in",  # proof: expr_is_in_literal (literal collections only; see shape validator)
-        "is_infinite",  # proof: expr_is_infinite
-        "is_nan",  # proof: expr_is_nan
-        "is_not_nan",  # proof: expr_is_not_nan
-        "is_not_null",  # proof: expr_is_not_null
-        "is_null",  # proof: expr_is_null
-        "log",  # proof: expr_log
-        "not_",  # proof: expr_not
-        "otherwise",  # proof: expr_when_then_otherwise
-        "round",  # proof: expr_round
-        "sqrt",  # proof: expr_sqrt
-        "then",  # proof: expr_when_then_otherwise
-    }
-)
-_ROW_LOCAL_POLARS_FUNCTIONS = frozenset(
-    {
-        "all_horizontal",  # proof: fn_all_horizontal
-        "any_horizontal",  # proof: fn_any_horizontal
-        "coalesce",  # proof: fn_coalesce
-        "col",  # proof: fn_col
-        "concat_str",  # proof: fn_concat_str
-        "lit",  # proof: fn_lit
-        "max_horizontal",  # proof: fn_max_horizontal
-        "when",  # proof: expr_when_then_otherwise
+        namespace: chunk_admitted_names(OperationReceiver.NAMESPACE, namespace)
+        for namespace in ("str", "dt")
     }
 )
 
@@ -550,6 +494,115 @@ def _is_in_call_is_chunk_local(call: ast.Call) -> bool:
     return all(_is_literal_scalar(element) for element in collection.elts)
 
 
+def _is_literal_collection(node: ast.expr) -> bool:
+    return isinstance(node, ast.List | ast.Tuple) and all(
+        _is_literal_scalar(element) for element in node.elts
+    )
+
+
+def _replace_call_is_chunk_local(call: ast.Call) -> bool:
+    """Admit only a literal mapping: ``replace({old: new})`` or ``replace(old=[...], new=[...])``.
+
+    A non-literal mapping (an expression or column) would let the replacement
+    table depend on data outside the current chunk, so only constants are
+    admitted.  The deprecated ``default=`` form is rejected: the pinned Polars
+    only tolerates it with a deprecation warning, and an upgrade would remove
+    it silently from under a proof.
+    """
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords if keyword.arg is not None}
+    if len(keywords) != len(call.keywords):
+        return False
+    if call.args:
+        if len(call.args) != 1 or keywords:
+            return False
+        mapping = call.args[0]
+        return isinstance(mapping, ast.Dict) and all(
+            key is not None and _is_literal_scalar(key) and _is_literal_scalar(value)
+            for key, value in zip(mapping.keys, mapping.values, strict=True)
+        )
+    if set(keywords) != {"old", "new"}:
+        return False
+    old, new = keywords["old"], keywords["new"]
+    if not _is_literal_collection(old) or not _is_literal_collection(new):
+        return False
+    return len(old.elts) == len(new.elts)  # type: ignore[attr-defined]
+
+
+def _is_pl_dtype_reference(node: ast.expr) -> bool:
+    """``pl.Date`` and friends: a module-level dtype constant, not row data."""
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "pl"
+    )
+
+
+def _namespace_call_args_are_literal(call: ast.Call) -> bool:
+    """Namespace methods accept only constants, literal collections, or ``pl`` dtypes.
+
+    Anything else (an expression, a frame, or a bare name) could smuggle a
+    column reference into the argument, which is not provably chunk-local.
+    """
+    for argument in (*call.args, *(keyword.value for keyword in call.keywords)):
+        if _is_literal_scalar(argument) or _is_literal_collection(argument):
+            continue
+        if _is_pl_dtype_reference(argument):
+            continue
+        return False
+    return True
+
+
+# ``str`` parsing methods whose format polars INFERS from the data when it is
+# omitted.  Inference is per-frame, so two chunks can infer two different
+# formats: with ``strict=False`` a chunk parses values the full frame nulls, and
+# with ``strict=True`` chunked execution can succeed where full execution raises.
+# The value is the positional index the ``format`` argument occupies.
+_TEMPORAL_PARSE_FORMAT_POSITIONS: Mapping[str, int] = MappingProxyType(
+    {
+        "to_date": 0,
+        "to_datetime": 0,
+        "to_time": 0,
+        "strptime": 1,
+    }
+)
+
+
+def _temporal_parse_call_has_literal_format(call: ast.Call, *, position: int) -> bool:
+    """Require an explicit, non-empty literal string ``format`` for data-parsed temporals."""
+    if len(call.args) > position:
+        candidate: ast.expr | None = call.args[position]
+    else:
+        candidate = next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "format"),
+            None,
+        )
+    return (
+        isinstance(candidate, ast.Constant)
+        and isinstance(candidate.value, str)
+        and bool(candidate.value)
+    )
+
+
+# The closed set of materially distinct call SHAPES each shape-validated method
+# admits.  ``tests/test_chunk_whitelist_proofs.py`` requires one chunked==full
+# proof per declared shape, so a validator cannot widen what it admits without
+# a proof for the newly admitted shape.  Keys are ``"<proof kind>.<method>"``.
+_ADMITTED_CALL_SHAPES: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "df.cast": frozenset({"non_categorical"}),
+        "expr.cast": frozenset({"non_categorical"}),
+        "df.fill_null": frozenset({"value"}),
+        "expr.fill_null": frozenset({"value"}),
+        "expr.is_in": frozenset({"literal_collection"}),
+        "expr.replace": frozenset({"mapping", "old_new"}),
+        **{
+            f"expr.str.{method}": frozenset({"explicit_format_lenient", "explicit_format_strict"})
+            for method in _TEMPORAL_PARSE_FORMAT_POSITIONS
+        },
+    }
+)
+
+
 # Methods whose bare name is not enough to prove chunk-locality: the call
 # SHAPE must also be constrained before the generic argument walk runs.
 _CHUNK_LOCAL_CALL_SHAPE_VALIDATORS: Mapping[str, Callable[[ast.Call], bool]] = MappingProxyType(
@@ -557,8 +610,60 @@ _CHUNK_LOCAL_CALL_SHAPE_VALIDATORS: Mapping[str, Callable[[ast.Call], bool]] = M
         "cast": _cast_call_is_chunk_local,
         "fill_null": _fill_null_call_is_chunk_local,
         "is_in": _is_in_call_is_chunk_local,
+        "replace": _replace_call_is_chunk_local,
     }
 )
+
+
+@dataclass(slots=True)
+class _ChunkLocalTrace:
+    """Records the FIRST classifier failure in source order and never overwrites it."""
+
+    reason: str | None = None
+    blocking_operator: str | None = None
+    line: int | None = None
+    column: int | None = None
+
+    def record(self, reason: str, blocking_operator: str | None, node: ast.AST) -> None:
+        if self.reason is not None:
+            return
+        self.reason = reason
+        self.blocking_operator = blocking_operator
+        line = getattr(node, "lineno", None)
+        column = getattr(node, "col_offset", None)
+        self.line = line
+        self.column = None if column is None else column + 1
+
+
+def _embedded_frame_name(
+    value: ast.expr,
+    *,
+    allowed_frames: set[str],
+    local_frames: set[str],
+) -> str | None:
+    for sub in ast.walk(value):
+        if isinstance(sub, ast.Name) and (sub.id in allowed_frames or sub.id in local_frames):
+            return sub.id
+    return None
+
+
+def _source_ordered(values: Iterable[ast.expr | None]) -> tuple[ast.expr, ...]:
+    """Order sibling child expressions by source position, not by AST field order.
+
+    ``ast`` field order is not source order: an ``IfExp`` stores ``test`` before
+    the textually earlier ``body``, and a ``Dict`` stores every key before any
+    value.  Walking in field order would make the trace report a later blocker
+    as "the first blocking construct in source order".  Nodes without positions
+    keep their field order.
+    """
+    present = [value for value in values if value is not None]
+    if not all(
+        getattr(value, "lineno", None) is not None
+        and getattr(value, "col_offset", None) is not None
+        for value in present
+    ):
+        return tuple(present)
+    return tuple(sorted(present, key=lambda value: (value.lineno, value.col_offset)))
 
 
 def _row_local_subexprs_are_supported(
@@ -566,6 +671,7 @@ def _row_local_subexprs_are_supported(
     *,
     allowed_frames: set[str],
     local_frames: set[str],
+    trace: _ChunkLocalTrace,
 ) -> bool:
     """Return whether every sub-expression is row-local and frame-free.
 
@@ -574,17 +680,86 @@ def _row_local_subexprs_are_supported(
     read the FULL frame under full execution but only the chunk under chunked
     execution, so they are rejected here.
     """
-    for value in values:
-        if value is None:
-            continue
+    for value in _source_ordered(values):
         supported, derived_from_frame = _row_local_expr_is_supported(
             value,
             allowed_frames=allowed_frames,
             local_frames=local_frames,
+            trace=trace,
         )
-        if not supported or derived_from_frame:
+        if not supported:
+            return False
+        if derived_from_frame:
+            trace.record(
+                "frame_embedded_in_expression",
+                _embedded_frame_name(
+                    value, allowed_frames=allowed_frames, local_frames=local_frames
+                ),
+                value,
+            )
             return False
     return True
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkLocalDecision:
+    """Structured chunk-eligibility decision for one block of user code.
+
+    ``reason`` is a closed vocabulary (see the execution-engine specification);
+    ``blocking_operator`` names the method, function, frame, or AST node that
+    stopped the walk, and ``line``/``column`` are its 1-based source location.
+    """
+
+    eligible: bool
+    reason: str
+    blocking_operator: str | None = None
+    line: int | None = None
+    column: int | None = None
+
+
+def classify_chunk_local_polars_code(
+    code: object,
+    *,
+    frame_names: Iterable[str] | None = None,
+) -> ChunkLocalDecision:
+    """Classify user Polars code for independent per-chunk application.
+
+    The closed AST allowlists are the sole authority: there is no textual
+    prefilter, so a construct is admitted only if the receiver-aware walk
+    recognises it, and every rejection carries a closed reason, the blocking
+    operator, and a 1-based source location.
+    """
+    if not isinstance(code, str) or not code.strip():
+        return ChunkLocalDecision(eligible=True, reason="empty_code")
+    allowed_frames = {name for name in (frame_names or ()) if name}
+    if not allowed_frames:
+        return ChunkLocalDecision(eligible=False, reason="no_frame_names")
+    try:
+        module = ast.parse(code)
+    except SyntaxError as exc:
+        return ChunkLocalDecision(
+            eligible=False,
+            reason="syntax_error",
+            line=exc.lineno,
+            column=exc.offset,
+        )
+    trace = _ChunkLocalTrace()
+    local_frames: set[str] = set()
+    for stmt in module.body:
+        if not _row_local_stmt_is_supported(
+            stmt,
+            allowed_frames=allowed_frames,
+            local_frames=local_frames,
+            trace=trace,
+        ):
+            return ChunkLocalDecision(
+                eligible=False,
+                reason=trace.reason or "unsupported_expression",
+                blocking_operator=trace.blocking_operator,
+                line=trace.line,
+                column=trace.column,
+            )
+    return ChunkLocalDecision(eligible=True, reason="eligible")
 
 
 def is_chunk_local_polars_code(
@@ -594,27 +769,7 @@ def is_chunk_local_polars_code(
 ) -> bool:
     """Return whether user Polars code is safe to apply independently per chunk."""
 
-    if not isinstance(code, str) or not code.strip():
-        return True
-    allowed_frames = {name for name in (frame_names or ()) if name}
-    if not allowed_frames:
-        return False
-    compact = re.sub(r"\s+", "", code).lower()
-    if any(marker in compact for marker in _GLOBAL_CODE_MARKERS):
-        return False
-    try:
-        module = ast.parse(code)
-    except SyntaxError:
-        return False
-    local_frames: set[str] = set()
-    return all(
-        _row_local_stmt_is_supported(
-            stmt,
-            allowed_frames=allowed_frames,
-            local_frames=local_frames,
-        )
-        for stmt in module.body
-    )
+    return classify_chunk_local_polars_code(code, frame_names=frame_names).eligible
 
 
 def _validate_positive_int(value: object, *, field_name: str) -> None:
@@ -630,13 +785,30 @@ def _plan_chunk_sizes(
     row_expansion_factor: int,
     projection: Any,
 ) -> tuple[int, int, int | None, int | None]:
+    from haute._builders import resolve_instance_node
+
     expansion = max(1, row_expansion_factor)
     if request.chunk_size is not None:
         chunk_size = request.chunk_size
         return chunk_size, max(1, chunk_size // expansion), None, None
 
     assert request.target_chunk_bytes is not None
-    target_row_bytes = _estimate_target_row_bytes(request, projection)
+    target_row_bytes = _estimate_target_row_bytes(
+        request,
+        projection,
+        has_group_by=bool(
+            materialising_operators_by_node(
+                prepared.order,
+                prepared.node_map,
+                relevant_edges=prepared.relevant_edges,
+                submodels=prepared.submodels,
+            )
+        ),
+        target_node=resolve_instance_node(
+            prepared.node_map[request.target_node_id], prepared.node_map
+        ),
+        target_parent_ids=list(prepared.parents_of.get(request.target_node_id, [])),
+    )
     source_columns = projection.needed_by_node.get(chunk_start_node_id)
     source_row_bytes = (
         None
@@ -670,7 +842,14 @@ def _plan_chunk_sizes(
     return chunk_size, source_chunk_size, source_row_bytes, target_row_bytes
 
 
-def _estimate_target_row_bytes(request: ChunkPlanRequest, projection: Any) -> int:
+def _estimate_target_row_bytes(
+    request: ChunkPlanRequest,
+    projection: Any,
+    *,
+    has_group_by: bool,
+    target_node: GraphNode,
+    target_parent_ids: list[str],
+) -> int:
     """Cost one target row from the TARGET node's projected OUTPUT schema.
 
     Sizing the byte budget off the *source* schema silently undercounts any
@@ -679,10 +858,23 @@ def _estimate_target_row_bytes(request: ChunkPlanRequest, projection: Any) -> in
     back to ~64 bytes, so the byte budget picks a chunk size many times larger
     than the real per-chunk footprint and the runner can OOM.
 
-    The target frame is built lazily through the production engine (no eager
-    materialisation of the full input); fixed-width dtypes are costed exactly and
-    variable-width columns (``String``/``Binary``/nested/…) are sampled.  Any
-    failure to derive the schema fails loudly rather than guessing a width.
+    The target frame is built lazily through the production engine under the
+    schema-only declaration (no eager materialisation of the full input);
+    fixed-width dtypes are costed exactly and variable-width columns
+    (``String``/``Binary``/nested/…) are sampled through a bounded ``limit`` of
+    the lazy target plan.  An OUTPUT target has no lazy plan to sample: under
+    the declaration its document is described from its schema and never
+    assembled (EXEC-P08).  A flat document column (``$[:].name``) is the
+    renamed source column of the target's single parent, so it is sampled from
+    that parent's lazy plan instead — but only when no materialising operator
+    sits upstream, because a sample through one would execute it at plan time.
+    A nested document column aggregates child rows and has no bounded sample, a
+    multi-frame document has no single parent plan, and a variable-width
+    document column under a materialising operator has no safe sample, so all
+    three are ``ChunkPlanUnsupportedError`` (the caller falls back to the full
+    executor) rather than the nominal width the planner still uses for other
+    targets under a materialising operator.  Any failure to derive the schema
+    fails loudly rather than guessing a width.
     """
     projected_columns = projection.needed_by_node.get(request.target_node_id)
     if projected_columns is None:
@@ -693,7 +885,11 @@ def _estimate_target_row_bytes(request: ChunkPlanRequest, projection: Any) -> in
     if not projected_columns:
         return 1
 
-    target_lf = _target_output_lazyframe(request)
+    is_output_target = target_node.data.nodeType == NodeType.OUTPUT
+    target_lf, preserved = _target_output_frames(
+        request,
+        preserve_node_ids=frozenset(target_parent_ids) if is_output_target else frozenset(),
+    )
     schema = target_lf.collect_schema()
     schema_by_name = dict(schema.items())
     missing = set(projected_columns) - set(schema_by_name)
@@ -713,7 +909,28 @@ def _estimate_target_row_bytes(request: ChunkPlanRequest, projection: Any) -> in
             variable_columns.append(column)
         else:
             widths[column] = fixed_width
-    if variable_columns:
+    if variable_columns and is_output_target:
+        if has_group_by:
+            raise ChunkPlanUnsupportedError(
+                "Byte-budgeted chunk planning cannot sample an OUTPUT document's "
+                "variable-width columns through a materialising operator: the sample "
+                "would execute the operator at plan time, and the document is never "
+                "assembled there.",
+                target_node_id=request.target_node_id,
+                columns=sorted(variable_columns),
+            )
+        widths.update(
+            _sample_output_document_widths(
+                target_node,
+                target_parent_ids,
+                preserved,
+                variable_columns,
+                target_node_id=request.target_node_id,
+            )
+        )
+    elif variable_columns and has_group_by:
+        widths.update({column: _DEFAULT_PROJECTED_COLUMN_BYTES for column in variable_columns})
+    elif variable_columns:
         widths.update(
             _sample_variable_column_widths(
                 target_lf,
@@ -727,6 +944,25 @@ def _estimate_target_row_bytes(request: ChunkPlanRequest, projection: Any) -> in
 
 def _target_output_lazyframe(request: ChunkPlanRequest) -> pl.LazyFrame:
     """Build the projected target-node output frame through the shared engine."""
+    target_lf, _preserved = _target_output_frames(request)
+    return target_lf
+
+
+def _target_output_frames(
+    request: ChunkPlanRequest,
+    *,
+    preserve_node_ids: frozenset[str] = frozenset(),
+) -> tuple[pl.LazyFrame, dict[str, pl.LazyFrame]]:
+    """Build the projected target-node output frame (and preserved parents).
+
+    The build declares ``schema_only=True``: it resolves the target schema
+    without the materialisation-admission gate and, since EXEC-P08, without an
+    OUTPUT node assembling its document.  The frame is therefore a real lazy
+    plan for every node type except OUTPUT, whose frame is empty under its
+    derived document schema; ``_estimate_target_row_bytes`` samples only the
+    former, and samples an OUTPUT document's flat columns from the parent frame
+    preserved through *preserve_node_ids*.
+    """
     from haute.execution import execute_lazy_graph
     from haute.executor import _build_node_fn
 
@@ -735,8 +971,10 @@ def _target_output_lazyframe(request: ChunkPlanRequest) -> pl.LazyFrame:
             request.graph,
             _build_node_fn,
             target_node_id=request.target_node_id,
+            preserve_node_ids=set(preserve_node_ids),
             source=request.source,
             required_columns_by_node=request.required_columns_by_node,
+            schema_only=True,
         )
     except Exception as exc:
         # ``execute_lazy_graph`` is the full production engine, so a failure here
@@ -763,7 +1001,79 @@ def _target_output_lazyframe(request: ChunkPlanRequest) -> pl.LazyFrame:
             "Byte-budgeted chunk planning target output frame is unavailable.",
             target_node_id=request.target_node_id,
         )
-    return _normalise_lazy_frame(frame)
+    preserved = {
+        node_id: _normalise_lazy_frame(frames[node_id])
+        for node_id in preserve_node_ids
+        if node_id in frames
+    }
+    return _normalise_lazy_frame(frame), preserved
+
+
+def _sample_output_document_widths(
+    target_node: GraphNode,
+    parent_ids: list[str],
+    preserved: Mapping[str, pl.LazyFrame],
+    variable_columns: list[str],
+    *,
+    target_node_id: str,
+) -> dict[str, int]:
+    """Measure an OUTPUT target's flat variable-width document columns.
+
+    A flat document column ``$[:].name`` is its source column renamed, so its
+    width is sampled from the target's single parent plan through the same
+    bounded ``limit`` as any other target.  Nested document columns and
+    multi-frame documents are typed rejections: neither has a bounded sample,
+    and the document is never assembled at plan time (EXEC-P08).
+    """
+    from haute._output_assembler import (
+        _array_prefix,
+        _own_subpath,
+        _parse_output_path,
+        is_active_mapping_entry,
+    )
+
+    if len(parent_ids) != 1:
+        raise ChunkPlanUnsupportedError(
+            "Byte-budgeted chunk planning samples an OUTPUT document's variable-width "
+            "columns from its single parent plan; a multi-frame document has no such "
+            "plan and is never assembled at plan time.",
+            target_node_id=target_node_id,
+            parent_ids=sorted(parent_ids),
+            columns=sorted(variable_columns),
+        )
+    mapping = target_node.data.config.get("outputMapping") or []
+    source_by_column: dict[str, str] = {}
+    for entry in mapping:
+        if not is_active_mapping_entry(entry):
+            continue
+        parsed = _parse_output_path(entry["output_path"])
+        own = _own_subpath(parsed)
+        if _array_prefix(parsed) == () and len(own) == 1:
+            source_by_column.setdefault(own[0], entry["source_column"])
+    nested = [column for column in variable_columns if column not in source_by_column]
+    if nested:
+        raise ChunkPlanUnsupportedError(
+            "Byte-budgeted chunk planning cannot sample nested OUTPUT document columns: "
+            "the document is described from its schema at plan time, never assembled.",
+            target_node_id=target_node_id,
+            columns=sorted(nested),
+        )
+    parent_lf = preserved.get(parent_ids[0])
+    if parent_lf is None:
+        raise ChunkPlanUnsupportedError(
+            "Byte-budgeted chunk planning parent output frame is unavailable.",
+            target_node_id=target_node_id,
+            parent_ids=sorted(parent_ids),
+        )
+    mapped = parent_lf.select(
+        [pl.col(source_by_column[column]).alias(column) for column in variable_columns]
+    )
+    return _sample_variable_column_widths(
+        mapped,
+        mapped.collect_schema(),
+        variable_columns,
+        target_node_id=target_node_id,
+    )
 
 
 def _sample_variable_column_widths(
@@ -884,15 +1194,17 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
         request.target_node_id,
         source=request.source,
     )
-    # Strategy policy is authoritative and runs before capability-specific
-    # chunk planning.  In particular, every group-by receives the stable
-    # profile rejection and can never be mistaken for generic reducer support.
+    # Strategy planning remains authoritative for graph/projection validation,
+    # while schema-only mode leaves physical chunk eligibility to the suffix
+    # checks below. A group-by is valid at an explicitly materialised chunk
+    # boundary, but never as a row-local operation inside the chunk suffix.
     projection = plan_prepared_execution_strategy(
         prepared.order,
         _children_of(prepared.order, prepared.parents_of),
         prepared.node_map,
         profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
         required_columns_by_node=request.required_columns_by_node,
+        schema_only=True,
     )
     source_node_ids: list[str] = []
     for node_id in prepared.order:
@@ -1357,14 +1669,19 @@ def _capability_for_node(
                 node_type=node_type.value,
                 parent_ids=parent_ids,
             )
-        if not is_chunk_local_polars_code(
+        decision = classify_chunk_local_polars_code(
             node.data.config.get("code"),
             frame_names=frame_names,
-        ):
-            raise ChunkPlanUnsupportedError(
+        )
+        if not decision.eligible:
+            raise ChunkUserCodeUnsupportedError(
                 "Chunked polars user code must be row-local in V1.",
                 node_id=node.id,
                 node_type=node_type.value,
+                reason=decision.reason,
+                blocking_operator=decision.blocking_operator,
+                line=decision.line,
+                column=decision.column,
             )
         return ChunkCapability(
             kind=ChunkCapabilityKind.MAP_ONLY,
@@ -1376,11 +1693,18 @@ def _capability_for_node(
             preserves_row_order=True,
         )
     if node_type == NodeType.SCENARIO_EXPANDER:
-        if not is_chunk_local_polars_code(node.data.config.get("code"), frame_names=("df",)):
-            raise ChunkPlanUnsupportedError(
+        decision = classify_chunk_local_polars_code(
+            node.data.config.get("code"), frame_names=("df",)
+        )
+        if not decision.eligible:
+            raise ChunkUserCodeUnsupportedError(
                 "Chunked scenarioExpander post-processing code must be row-local in V1.",
                 node_id=node.id,
                 node_type=node_type.value,
+                reason=decision.reason,
+                blocking_operator=decision.blocking_operator,
+                line=decision.line,
+                column=decision.column,
             )
         row_multiplier = _scenario_row_multiplier(node)
         return ChunkCapability(
@@ -1445,43 +1769,98 @@ def _row_local_call_is_supported(
     *,
     allowed_frames: set[str],
     local_frames: set[str],
+    trace: _ChunkLocalTrace,
 ) -> tuple[bool, bool]:
     func = call.func
-    if isinstance(func, ast.Attribute):
-        method_name = func.attr
-        if method_name in _GLOBAL_METHOD_NAMES:
-            return False, False
-        shape_validator = _CHUNK_LOCAL_CALL_SHAPE_VALIDATORS.get(method_name)
-        if shape_validator is not None and not shape_validator(call):
-            return False, False
-        if isinstance(func.value, ast.Name) and func.value.id == "pl":
-            if method_name not in _ROW_LOCAL_POLARS_FUNCTIONS:
-                return False, False
-            args_supported = _row_local_subexprs_are_supported(
-                (*call.args, *(keyword.value for keyword in call.keywords)),
-                allowed_frames=allowed_frames,
-                local_frames=local_frames,
-            )
-            return args_supported, False
-        receiver_supported, receiver_derived = _row_local_expr_is_supported(
-            func.value,
-            allowed_frames=allowed_frames,
-            local_frames=local_frames,
-        )
-        if not receiver_supported:
-            return False, False
-        if receiver_derived:
-            if method_name not in _ROW_LOCAL_DF_METHOD_NAMES:
-                return False, False
-        elif method_name not in _ROW_LOCAL_EXPR_METHOD_NAMES:
+    if not isinstance(func, ast.Attribute):
+        trace.record("unsupported_expression", type(call).__name__, call)
+        return False, False
+    method_name = func.attr
+    if isinstance(func.value, ast.Name) and func.value.id == "pl":
+        if method_name not in _ROW_LOCAL_POLARS_FUNCTIONS:
+            trace.record("unsupported_polars_function", f"pl.{method_name}", func)
             return False, False
         args_supported = _row_local_subexprs_are_supported(
             (*call.args, *(keyword.value for keyword in call.keywords)),
             allowed_frames=allowed_frames,
             local_frames=local_frames,
+            trace=trace,
         )
-        return args_supported, receiver_derived
-    return False, False
+        return args_supported, False
+    if isinstance(func.value, ast.Attribute) and func.value.attr in _ROW_LOCAL_NAMESPACE_NAMES:
+        return _row_local_namespace_call_is_supported(
+            call,
+            namespace=func.value,
+            allowed_frames=allowed_frames,
+            local_frames=local_frames,
+            trace=trace,
+        )
+    receiver_supported, receiver_derived = _row_local_expr_is_supported(
+        func.value,
+        allowed_frames=allowed_frames,
+        local_frames=local_frames,
+        trace=trace,
+    )
+    if not receiver_supported:
+        return False, False
+    if receiver_derived:
+        if method_name not in _ROW_LOCAL_DF_METHOD_NAMES:
+            trace.record("unsupported_frame_method", method_name, func)
+            return False, False
+    elif method_name not in _ROW_LOCAL_EXPR_METHOD_NAMES:
+        trace.record("unsupported_expression_method", method_name, func)
+        return False, False
+    shape_validator = _CHUNK_LOCAL_CALL_SHAPE_VALIDATORS.get(method_name)
+    if shape_validator is not None and not shape_validator(call):
+        trace.record("unsupported_call_shape", method_name, call)
+        return False, False
+    args_supported = _row_local_subexprs_are_supported(
+        (*call.args, *(keyword.value for keyword in call.keywords)),
+        allowed_frames=allowed_frames,
+        local_frames=local_frames,
+        trace=trace,
+    )
+    return args_supported, receiver_derived
+
+
+def _row_local_namespace_call_is_supported(
+    call: ast.Call,
+    *,
+    namespace: ast.Attribute,
+    allowed_frames: set[str],
+    local_frames: set[str],
+    trace: _ChunkLocalTrace,
+) -> tuple[bool, bool]:
+    """Classify ``<expr>.<namespace>.<method>(...)`` against the namespace allowlist."""
+    method_name = call.func.attr if isinstance(call.func, ast.Attribute) else ""
+    qualified = f"{namespace.attr}.{method_name}"
+    receiver_supported, receiver_derived = _row_local_expr_is_supported(
+        namespace.value,
+        allowed_frames=allowed_frames,
+        local_frames=local_frames,
+        trace=trace,
+    )
+    if not receiver_supported:
+        return False, False
+    if receiver_derived:
+        # A frame exposes no expression namespaces: treat it as unadmitted.
+        trace.record("unsupported_namespace_method", qualified, namespace)
+        return False, False
+    if method_name not in _ROW_LOCAL_NAMESPACE_METHOD_NAMES.get(namespace.attr, frozenset()):
+        trace.record("unsupported_namespace_method", qualified, namespace)
+        return False, False
+    if not _namespace_call_args_are_literal(call):
+        trace.record("unsupported_call_shape", method_name, call)
+        return False, False
+    format_position = (
+        _TEMPORAL_PARSE_FORMAT_POSITIONS.get(method_name) if namespace.attr == "str" else None
+    )
+    if format_position is not None and not _temporal_parse_call_has_literal_format(
+        call, position=format_position
+    ):
+        trace.record("unsupported_call_shape", method_name, call)
+        return False, False
+    return True, False
 
 
 def _row_local_expr_is_supported(
@@ -1489,27 +1868,32 @@ def _row_local_expr_is_supported(
     *,
     allowed_frames: set[str],
     local_frames: set[str],
+    trace: _ChunkLocalTrace,
 ) -> tuple[bool, bool]:
     if isinstance(node, ast.Call):
         return _row_local_call_is_supported(
             node,
             allowed_frames=allowed_frames,
             local_frames=local_frames,
+            trace=trace,
         )
     if isinstance(node, ast.Attribute):
         if isinstance(node.value, ast.Name) and node.value.id == "pl":
             return True, False
+        trace.record("unsupported_expression", type(node).__name__, node)
         return False, False
-    if isinstance(node, ast.Name | ast.Constant):
-        if isinstance(node, ast.Name):
-            is_frame = node.id in allowed_frames or node.id in local_frames
-            return is_frame, is_frame
+    if isinstance(node, ast.Name):
+        is_frame = node.id in allowed_frames or node.id in local_frames
+        if not is_frame:
+            trace.record("unsupported_expression", type(node).__name__, node)
+        return is_frame, is_frame
+    if isinstance(node, ast.Constant):
         return True, False
     # Composite expressions must be row-local AND frame-free.  A frame name is
     # only chunk-safe as a method-chain receiver; embedded in a subscript
     # (``frame["col"]``), operand, or collection it reads the full frame under
     # full execution but only the current chunk under chunked execution, which
-    # silently diverges — so _row_local_subexprs_are_supported rejects it.
+    # silently diverges - so _row_local_subexprs_are_supported rejects it.
     if isinstance(node, ast.BinOp):
         children: tuple[ast.expr | None, ...] = (node.left, node.right)
     elif isinstance(node, ast.UnaryOp):
@@ -1529,11 +1913,13 @@ def _row_local_expr_is_supported(
     elif isinstance(node, ast.Slice):
         children = (node.lower, node.upper, node.step)
     else:
+        trace.record("unsupported_expression", type(node).__name__, node)
         return False, False
     return _row_local_subexprs_are_supported(
         children,
         allowed_frames=allowed_frames,
         local_frames=local_frames,
+        trace=trace,
     ), False
 
 
@@ -1542,38 +1928,46 @@ def _row_local_stmt_is_supported(
     *,
     allowed_frames: set[str],
     local_frames: set[str],
+    trace: _ChunkLocalTrace,
 ) -> bool:
-    if isinstance(stmt, ast.Assign):
-        if not all(isinstance(target, ast.Name) for target in stmt.targets):
+    if isinstance(stmt, ast.Assign | ast.AnnAssign):
+        targets: list[ast.expr] = (
+            list(stmt.targets) if isinstance(stmt, ast.Assign) else [stmt.target]
+        )
+        if not all(isinstance(target, ast.Name) for target in targets):
+            trace.record("assignment_not_frame_derived", ast.unparse(targets[0]), stmt)
+            return False
+        names = [target.id for target in targets if isinstance(target, ast.Name)]
+        if stmt.value is None:
+            trace.record("assignment_not_frame_derived", names[0], stmt)
             return False
         supported, derived_from_frame = _row_local_expr_is_supported(
             stmt.value,
             allowed_frames=allowed_frames,
             local_frames=local_frames,
+            trace=trace,
         )
-        if supported and derived_from_frame:
-            local_frames.update(
-                target.id for target in stmt.targets if isinstance(target, ast.Name)
-            )
-        return supported and derived_from_frame
-    if isinstance(stmt, ast.AnnAssign):
-        if not isinstance(stmt.target, ast.Name) or stmt.value is None:
+        if not supported:
             return False
-        supported, derived_from_frame = _row_local_expr_is_supported(
-            stmt.value,
-            allowed_frames=allowed_frames,
-            local_frames=local_frames,
-        )
-        if supported and derived_from_frame:
-            local_frames.add(stmt.target.id)
-        return supported and derived_from_frame
+        if not derived_from_frame:
+            trace.record("assignment_not_frame_derived", names[0], stmt)
+            return False
+        local_frames.update(names)
+        return True
     if isinstance(stmt, ast.Expr):
         supported, derived_from_frame = _row_local_expr_is_supported(
             stmt.value,
             allowed_frames=allowed_frames,
             local_frames=local_frames,
+            trace=trace,
         )
-        return supported and derived_from_frame
+        if not supported:
+            return False
+        if not derived_from_frame:
+            trace.record("unsupported_statement", type(stmt).__name__, stmt)
+            return False
+        return True
+    trace.record("unsupported_statement", type(stmt).__name__, stmt)
     return False
 
 
@@ -1586,12 +1980,18 @@ def _validate_chunkable_input(node: GraphNode) -> None:
     try:
         validate_data_input_config(node.data.config)
         code = _data_input_code(node)
-        if code and not is_chunk_local_polars_code(code, frame_names=("df",)):
-            raise ChunkPlanUnsupportedError(
-                "Chunked Data Input editor code must be row-local.",
-                node_id=node.id,
-                node_type=node.data.nodeType.value,
-            )
+        if code:
+            decision = classify_chunk_local_polars_code(code, frame_names=("df",))
+            if not decision.eligible:
+                raise ChunkUserCodeUnsupportedError(
+                    "Chunked Data Input editor code must be row-local.",
+                    node_id=node.id,
+                    node_type=node.data.nodeType.value,
+                    reason=decision.reason,
+                    blocking_operator=decision.blocking_operator,
+                    line=decision.line,
+                    column=decision.column,
+                )
 
         # Both canonical forms are bounded Parquet scans: either the configured
         # direct file or an immutable published snapshot.

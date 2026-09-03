@@ -407,6 +407,7 @@ def test_lakehouse_freshness_is_unknown_without_a_provider_version_token(
 
 def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute._execution_context import ExecutionContext
 
@@ -418,6 +419,9 @@ def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
         "mode": "scan",
         "path": "input.ndjson",
     }
+    # This test proves the lease, not the reader grace: every store handle,
+    # including the reader's own, retires at once on release.
+    monkeypatch.setattr(SourceCacheStore, "_retire_grace_elapsed", lambda self, identity: True)
     store = SourceCacheStore(tmp_path)
     first = build_input_snapshot(config, store=store, base_dir=tmp_path)
     context = ExecutionContext(
@@ -444,6 +448,7 @@ def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
 
 def test_derived_snapshot_plan_retains_lease_without_execution_context(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "input.ndjson"
     pl.DataFrame({"id": [1]}).write_ndjson(source)
@@ -453,6 +458,9 @@ def test_derived_snapshot_plan_retains_lease_without_execution_context(
         "mode": "scan",
         "path": "input.ndjson",
     }
+    # This test proves the lease, not the reader grace: every store handle,
+    # including the reader's own, retires at once on release.
+    monkeypatch.setattr(SourceCacheStore, "_retire_grace_elapsed", lambda self, identity: True)
     store = SourceCacheStore(tmp_path)
     first = build_input_snapshot(config, store=store, base_dir=tmp_path)
 

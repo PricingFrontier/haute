@@ -1050,8 +1050,28 @@ describe("NodePanel", () => {
     expect(fetchExplorePivotMembers).toHaveBeenCalledWith({
       graph: {
         nodes: [
-          { id: "source_1", type: "dataInput", data: sourceNode.data, position: { x: 0, y: 0 } },
-          { id: "explore_1", type: "explore", data: exploreNode.data, position: { x: 0, y: 0 } },
+          {
+            id: "source_1",
+            type: "dataInput",
+            data: {
+              label: "Claims Source",
+              description: "",
+              nodeType: "dataInput",
+              config: {},
+            },
+            position: { x: 0, y: 0 },
+          },
+          {
+            id: "explore_1",
+            type: "explore",
+            data: {
+              label: "Explore Claims",
+              description: "",
+              nodeType: "explore",
+              config: { code: "df = df.filter(pl.col('premium') > 0)" },
+            },
+            position: { x: 0, y: 0 },
+          },
         ],
         edges: [sourceEdge],
         submodels: undefined,
@@ -1724,7 +1744,7 @@ describe("NodePanel", () => {
       expect(props.onDeleteEdge).toHaveBeenNthCalledWith(2, "edge_drivers")
     })
 
-    it("derives a submodel-fed input name from the occurrence alias and public port id", () => {
+    it("uses the authoritative public label for a submodel-fed input", () => {
       const target = makeNode({
         id: "target",
         data: { label: "Target", description: "", nodeType: "polars", config: {} },
@@ -1737,7 +1757,7 @@ describe("NodePanel", () => {
           nodeType: "submodel",
           config: { definitionId: "pricing", alias: "pricing" },
           _defaultInputName: null,
-          _sourceHandleInputNames: { "out__premium": "pricing__premium" },
+          _sourceHandleInputNames: { "out__premium": "Written_premium" },
         },
       })
       const child = makeNode({
@@ -1777,7 +1797,7 @@ describe("NodePanel", () => {
       expect(latestTransformInputSources()).toEqual([
         expect.objectContaining({
           edgeId: "edge_child",
-          name: "pricing__premium",
+          name: "Written_premium",
           sourceLabel: "Pricing Module",
         }),
       ])

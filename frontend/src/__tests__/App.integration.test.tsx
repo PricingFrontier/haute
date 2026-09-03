@@ -67,12 +67,13 @@ vi.mock("../api/client", async () => {
         node_id: string
         label: string
         node_type: string
-        submodel_alias: string | null
         source_handles: string[]
+        source_handle_labels: Record<string, string>
       }>
     }) => ({
       identities: payload.nodes.map((node) => {
-        const functionName = node.label.trim().replaceAll(" ", "_").replaceAll("-", "_")
+        const identityName = (label: string) => label.trim().replaceAll(" ", "_").replaceAll("-", "_")
+        const functionName = identityName(node.label)
         const special = node.node_type === "apiInput"
           || node.node_type === "submodel"
           || node.node_type === "submodelPort"
@@ -85,9 +86,9 @@ vi.mock("../api/client", async () => {
           default_input_name: special ? null : functionName,
           source_handle_input_names: Object.fromEntries(node.source_handles.map((handle) => [
             handle,
-            node.node_type === "submodel"
-              ? `${node.submodel_alias}__${handle.slice("out__".length)}`
-              : handle,
+            node.source_handle_labels[handle] === undefined
+              ? handle
+              : identityName(node.source_handle_labels[handle]),
           ])),
         }
       }),

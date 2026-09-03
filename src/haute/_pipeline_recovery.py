@@ -36,7 +36,7 @@ from haute._graph_builders import (
     _extract_decorated_node_skeletons,
     _resolve_node_skeleton,
 )
-from haute._graph_utils import executable_input_name
+from haute._graph_utils import edge_input_name, executable_input_name
 from haute._hashing import content_hash_bytes
 from haute._io import read_user_bytes_and_text, read_user_text
 from haute._logging import get_logger
@@ -127,6 +127,7 @@ class _RecoveredCandidate:
     endpoint_ids: tuple[str, ...] = ()
     submodel_input_ports: tuple[str, ...] = ()
     submodel_output_ports: tuple[str, ...] = ()
+    submodel_output_labels: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1015,24 +1016,25 @@ def _build_recovery_graph(
         resolved_identity = None
         if candidate.node_type is not None:
             try:
-                alias = (
-                    candidate.config.get("alias")
-                    if isinstance(candidate.config, dict)
-                    and isinstance(candidate.config.get("alias"), str)
-                    else None
-                )
                 source_handles = handles_by_source.get(candidate.recovery_id, [])
+                source_handle_labels: dict[str, str] = {}
                 if candidate.node_type == NodeType.API_INPUT and isinstance(candidate.config, dict):
                     source_handles = list(recoverable_api_input_source_handles(candidate.config))
                 elif candidate.node_type == NodeType.SUBMODEL:
                     source_handles = [
                         f"out__{port_id}" for port_id in candidate.submodel_output_ports
                     ]
+                    output_labels = dict(candidate.submodel_output_labels)
+                    source_handle_labels = {
+                        f"out__{port_id}": output_labels[port_id]
+                        for port_id in candidate.submodel_output_ports
+                        if port_id in output_labels
+                    }
                 resolved_identity = resolve_editor_identity(
                     node_type=candidate.node_type,
                     label=candidate.authored_id,
                     source_handles=source_handles,
-                    submodel_alias=alias,
+                    source_handle_labels=source_handle_labels,
                     config_reference_override=candidate.config_reference,
                 )
             except (HauteError, ValueError):
@@ -1075,18 +1077,16 @@ def _build_recovery_graph(
         input_name: str | None = None
         source_candidate = candidate_by_id[edge.source.recovery_id]
         if edge_availability == "ready" and source_candidate.node_type is not None:
-            alias = (
-                source_candidate.config.get("alias")
-                if isinstance(source_candidate.config, dict)
-                and isinstance(source_candidate.config.get("alias"), str)
-                else None
-            )
             try:
+                source_handle_label = None
+                if source_candidate.node_type == NodeType.SUBMODEL:
+                    port_id = (edge.source_handle or "").removeprefix("out__")
+                    source_handle_label = dict(source_candidate.submodel_output_labels).get(port_id)
                 input_name = executable_input_name(
                     node_type=source_candidate.node_type,
                     label=source_candidate.authored_id,
                     source_handle=edge.source_handle,
-                    submodel_alias=alias,
+                    source_handle_label=source_handle_label,
                 )
             except ValueError:
                 input_name = None
@@ -1171,9 +1171,9 @@ def _canonical_snapshot(
             if edge.sourceHandle not in handles:
                 handles.append(edge.sourceHandle)
 
-    def source_handles_for(node: GraphNode) -> list[str]:
+    def source_identity_inputs_for(node: GraphNode) -> tuple[list[str], dict[str, str]]:
         if node.data.nodeType == NodeType.API_INPUT:
-            return list(recoverable_api_input_source_handles(node.data.config))
+            return list(recoverable_api_input_source_handles(node.data.config)), {}
         if node.data.nodeType == NodeType.SUBMODEL:
             definition_id = node.data.config.get("definitionId")
             definition = (
@@ -1183,23 +1183,29 @@ def _canonical_snapshot(
             )
             if definition is None:
                 raise ValueError(f"Submodel node {node.id!r} references a missing definition.")
-            return [f"out__{port.port_id}" for port in definition.output_ports]
+            labels = {f"out__{port.port_id}": port.label for port in definition.output_ports}
+            return list(labels), labels
         if node.data.nodeType == NodeType.SUBMODEL_PORT:
-            return connected_handles_by_source.get(node.id, [])
-        return []
+            handles = connected_handles_by_source.get(node.id, [])
+            raw_ports = node.data.config.get("ports")
+            labels = {
+                str(port.get("id")): str(port.get("label"))
+                for port in (raw_ports if isinstance(raw_ports, list) else [])
+                if isinstance(port, dict)
+                and isinstance(port.get("id"), str)
+                and isinstance(port.get("label"), str)
+            }
+            return handles, labels
+        return [], {}
 
     nodes: list[RecoveryPipelineNode] = []
     for node in graph.nodes:
-        alias = (
-            node.data.config.get("alias")
-            if isinstance(node.data.config.get("alias"), str)
-            else None
-        )
+        source_handles, source_handle_labels = source_identity_inputs_for(node)
         identity = resolve_editor_identity(
             node_type=node.data.nodeType,
             label=node.data.label,
-            source_handles=source_handles_for(node),
-            submodel_alias=alias,
+            source_handles=source_handles,
+            source_handle_labels=source_handle_labels,
         )
         nodes.append(
             RecoveryPipelineNode(
@@ -1231,15 +1237,10 @@ def _canonical_snapshot(
             target_handle=edge.targetHandle,
             source_port=edge.sourcePort,
             target_port=edge.targetPort,
-            input_name=executable_input_name(
-                node_type=source_nodes[edge.source].data.nodeType,
-                label=source_nodes[edge.source].data.label,
-                source_handle=edge.sourceHandle,
-                submodel_alias=(
-                    source_nodes[edge.source].data.config.get("alias")
-                    if isinstance(source_nodes[edge.source].data.config.get("alias"), str)
-                    else None
-                ),
+            input_name=edge_input_name(
+                edge,
+                source_nodes[edge.source],
+                submodels=graph.submodels,
             ),
             availability="ready",
         )
@@ -1267,7 +1268,10 @@ def _canonical_snapshot(
             ],
             input_port_input_names={
                 port.port_id: executable_input_name(
-                    node_type=NodeType.SUBMODEL_PORT, label="", source_handle=port.port_id
+                    node_type=NodeType.SUBMODEL_PORT,
+                    label="",
+                    source_handle=port.port_id,
+                    source_handle_label=port.label,
                 )
                 for port in definition.input_ports
             },
@@ -1288,6 +1292,17 @@ def _port_ids(ports: list[dict[str, Any]]) -> tuple[str, ...]:
         for port in ports
         if isinstance(port.get("portId"), str) and port.get("portId")
     )
+
+
+def _port_labels(ports: list[dict[str, Any]]) -> dict[str, str]:
+    return {
+        str(port["portId"]): str(port["label"])
+        for port in ports
+        if isinstance(port.get("portId"), str)
+        and port.get("portId")
+        and isinstance(port.get("label"), str)
+        and port.get("label")
+    }
 
 
 def _recover_submodel_snapshot(
@@ -1384,9 +1399,12 @@ def _unavailable_submodel_definition(
         input_ports=list(input_ports or []),
         input_port_input_names={
             port_id: executable_input_name(
-                node_type=NodeType.SUBMODEL_PORT, label="", source_handle=port_id
+                node_type=NodeType.SUBMODEL_PORT,
+                label="",
+                source_handle=port_id,
+                source_handle_label=label,
             )
-            for port_id in _port_ids(list(input_ports or []))
+            for port_id, label in _port_labels(list(input_ports or [])).items()
         },
         output_ports=list(output_ports or []),
     )
@@ -1626,9 +1644,12 @@ def _recover_registered_submodels(
             input_ports=input_ports,
             input_port_input_names={
                 port_id: executable_input_name(
-                    node_type=NodeType.SUBMODEL_PORT, label="", source_handle=port_id
+                    node_type=NodeType.SUBMODEL_PORT,
+                    label="",
+                    source_handle=port_id,
+                    source_handle_label=label,
                 )
-                for port_id in _port_ids(input_ports)
+                for port_id, label in _port_labels(input_ports).items()
             },
             output_ports=output_ports,
         )
@@ -1682,6 +1703,7 @@ def _recover_registered_submodels(
                 endpoint_ids=(registration.instance_id, registration.alias),
                 submodel_input_ports=_port_ids(definition.input_ports),
                 submodel_output_ports=_port_ids(definition.output_ports),
+                submodel_output_labels=tuple(_port_labels(definition.output_ports).items()),
             )
         )
     return definitions, occurrences

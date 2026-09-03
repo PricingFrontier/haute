@@ -325,6 +325,10 @@ truncated to `_MAX_PROFILE_VALUE_CHARS`. The operation's egress class is its own
 `restricted-value-profile`, so a policy review
 can see the one data-reading capability plainly.
 
+The operation owns one admitted `PREVIEW_EAGER` execution context through frame
+preparation and bounded collection, including any upstream group-by materialisation
+boundary, and releases it in `finally`.
+
 Every branch is selected by dtype *before* its aggregation runs, through the shared
 predicates in `haute/_column_summary.py` that Explore's frame statistics also use — the
 one place these Polars facts are recorded, so a second summariser cannot rediscover them

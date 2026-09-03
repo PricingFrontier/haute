@@ -897,6 +897,7 @@ class ExecutionContext:
     _cache_proof_hits: int = field(default=0, init=False)
     _cache_proof_misses: int = field(default=0, init=False)
     _cache_direct_fallbacks: int = field(default=0, init=False)
+    _input_preparation: list[Any] = field(default_factory=list, init=False)
     _cache_proof_miss_reason_counts: dict[ExecutionCacheProofMissReason, int] = field(
         default_factory=lambda: {reason: 0 for reason in ExecutionCacheProofMissReason},
         init=False,
@@ -1204,6 +1205,11 @@ class ExecutionContext:
         with self._evidence_lock:
             self._cache_direct_fallbacks += 1
 
+    def record_input_preparation(self, record: Any) -> None:
+        """Append one automatic input-preparation record to the diagnostics."""
+        with self._evidence_lock:
+            self._input_preparation.append(record)
+
     def metrics_summary(
         self,
         *,
@@ -1236,6 +1242,8 @@ class ExecutionContext:
         payload["memory_baseline_bytes"] = self.memory_baseline_bytes
         payload["rss_limit_bytes"] = self._effective_rss_limit_bytes()
         payload["admission"] = self.admission.to_dict() if self.admission is not None else None
+        with self._evidence_lock:
+            payload["input_preparation"] = [record.to_dict() for record in self._input_preparation]
         projection_plan = self.projection_plan
         diagnostic = getattr(projection_plan, "diagnostic", None)
         payload["execution_strategy"] = (
@@ -1426,6 +1434,9 @@ class ExecutionContext:
         elif strategy_value in {
             "full-width-admitted-eager",
             "materialisation-boundary",
+            # A conservative run still materialises at its group-by boundary;
+            # only the estimate that would have sized it is missing.
+            "full-width-conservative",
         }:
             streamability = "materialising"
         else:

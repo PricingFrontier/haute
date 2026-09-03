@@ -1,8 +1,9 @@
 import { AlertCircle, AlertTriangle } from "lucide-react"
 import type { ExecutionMetrics } from "../api/types"
 import {
-  buildExecutionDiagnostic,
+  buildMemoryPressureDiagnostic,
   executionProjectionWarning,
+  executionStrategyLocation,
 } from "../utils/executionDiagnostics"
 
 type ExecutionDiagnosticsIndicatorProps = {
@@ -18,14 +19,25 @@ type IndicatorContent = {
 
 function strategyIndicator(metrics: ExecutionMetrics): IndicatorContent | null {
   const strategy = metrics.execution_strategy
-  if (!strategy || (strategy.status !== "boundary" && strategy.status !== "rejected")) {
+  if (
+    !strategy
+    || (strategy.status !== "boundary" && strategy.status !== "rejected" && strategy.status !== "warned")
+  ) {
     return null
   }
 
+  if (strategy.status === "warned") {
+    const location = executionStrategyLocation(strategy)
+    return {
+      severity: "warning",
+      title: "Execution ran without a memory estimate",
+      explanation: `Haute could not estimate the memory needed${location}, so it ran that step under the run's full reserved memory envelope inside a hard-capped worker. The result is correct, but the run may use more memory and time than an estimated plan.`,
+      remediation: strategy.remediation ?? undefined,
+    }
+  }
+
   if (strategy.status === "rejected") {
-    const location = strategy.blocking_node_id
-      ? ` at '${strategy.blocking_node_id}'${strategy.blocking_operator ? ` (${strategy.blocking_operator})` : ""}`
-      : ""
+    const location = executionStrategyLocation(strategy)
     return {
       severity: "error",
       title: "Execution could not use a safe strategy",
@@ -52,12 +64,15 @@ function strategyIndicator(metrics: ExecutionMetrics): IndicatorContent | null {
 export default function ExecutionDiagnosticsIndicator({ metrics }: ExecutionDiagnosticsIndicatorProps) {
   if (!metrics) return null
   const strategy = strategyIndicator(metrics)
-  const pressure = buildExecutionDiagnostic(metrics)
+  const pressure = buildMemoryPressureDiagnostic(metrics)
   const content: IndicatorContent | null = strategy?.severity === "error"
     ? strategy
     : strategy && pressure
       ? {
           ...strategy,
+          // The memory-pressure finding is the terminal one: it names the
+          // indicator even when a warned strategy is also rendered.
+          title: "Preview memory pressure",
           explanation: `${strategy.explanation} ${pressure.message}`,
           remediation: [strategy.remediation, ...pressure.details].filter(Boolean).join("; "),
         }

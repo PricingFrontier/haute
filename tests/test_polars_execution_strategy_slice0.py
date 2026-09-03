@@ -253,6 +253,54 @@ def _make_optimiser_estimate_graph(
     return graph.model_dump()
 
 
+def _make_grouped_optimiser_estimate_graph(optimiser_input_path: str) -> dict:
+    config = _optimiser_config("online")
+    config["data_input"] = "grouped_input"
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "optimiser_input",
+                    "data": {
+                        "label": "optimiser_input",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(optimiser_input_path),
+                    },
+                },
+                {
+                    "id": "grouped_input",
+                    "data": {
+                        "label": "grouped_input",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = optimiser_input.group_by("
+                                "['quote_id', 'scenario_index', 'premium_multiplier']"
+                                ").agg("
+                                "pl.col('expected_margin').sum().alias('expected_margin'), "
+                                "pl.col('conversion_prediction').sum().alias("
+                                "'conversion_prediction'))"
+                            )
+                        },
+                    },
+                },
+                {
+                    "id": "online_optimiser",
+                    "data": {
+                        "label": "online_optimiser",
+                        "nodeType": "optimiser",
+                        "config": config,
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("optimiser_input", "grouped_input").model_dump(),
+                make_edge("grouped_input", "online_optimiser").model_dump(),
+            ],
+        }
+    ).model_dump()
+
+
 @pytest.mark.parametrize(
     ("mode", "node_id"),
     [("online", "online_optimiser"), ("ratebook", "ratebook_optimiser")],
@@ -261,9 +309,14 @@ def _make_optimiser_estimate_graph(
 def test_optimiser_estimate_setup_allows_opaque_data_source_projection(
     client,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     mode: str,
     node_id: str,
 ) -> None:
+    # This test proves projection, not admission sizing: pin the optimiser budget
+    # so a heavy adaptive reservation lingering from earlier background work in
+    # the same process cannot turn the estimate into a 507 under load.
+    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "512")
     optimiser_input_path = _write_optimiser_input(tmp_path)
     banding_path = _write_ratebook_banding_input(tmp_path) if mode == "ratebook" else None
     graph = _make_optimiser_estimate_graph(
@@ -284,3 +337,24 @@ def test_optimiser_estimate_setup_allows_opaque_data_source_projection(
     assert data["quote_count"] == 2
     assert data["scenarios_per_quote_min"] == 2
     assert data["scenarios_per_quote_max"] == 2
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root", "_route_job_store_snapshots")
+def test_optimiser_estimate_accepts_upstream_group_by(
+    client,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "512")
+    optimiser_input_path = _write_optimiser_input(tmp_path)
+    graph = _make_grouped_optimiser_estimate_graph(optimiser_input_path)
+
+    resp = client.post(
+        "/api/optimiser/estimate",
+        json={"graph": graph, "node_id": "online_optimiser"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["expanded_row_count"] == 4
+    assert data["quote_count"] == 2

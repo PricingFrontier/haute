@@ -401,22 +401,32 @@ class TestOptimiserExecutePipelineChunkSize:
 # ---------------------------------------------------------------------------
 
 
-class TestTrainExecuteAndSinkChunkSize:
-    """``TrainService._execute_and_sink`` forwards ``body.streaming_chunk_size``."""
+def _training_prep_context():
+    """Admit a TRAINING_PREP context for a direct preparation-core call."""
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._execution_context import ExecutionProfile
 
-    def _run(self, *, streaming_chunk_size: int | None) -> dict:
-        from haute.routes._job_store import JobStore
-        from haute.routes._train_service import TrainService
+    return create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+    )
+
+
+class TestTrainPreparationChunkSize:
+    """``prepare_training_data`` forwards the request's ``streaming_chunk_size``."""
+
+    def _run(self, tmp_path, *, streaming_chunk_size: int | None) -> dict:
+        from haute.routes._training_preparation import (
+            TrainingPreparationRequest,
+            prepare_training_data,
+        )
         from haute.schemas import TrainRequest
 
-        store = JobStore()
-        service = TrainService(store)
         graph = _make_modelling_graph().model_dump()
         body_kwargs: dict = {"graph": graph, "node_id": "train"}
         if streaming_chunk_size is not None:
             body_kwargs["streaming_chunk_size"] = streaming_chunk_size
         body = TrainRequest(**body_kwargs)
-        job_id = store.create_job({"status": "running"})
 
         captured: dict[str, object] = {}
 
@@ -432,34 +442,48 @@ class TestTrainExecuteAndSinkChunkSize:
                 {},
             )
 
-        with (
-            patch(
-                "haute.routes._training_lifecycle.execute_lazy_graph",
-                side_effect=fake_execute_lazy,
-            ),
-            patch("haute.executor._build_node_fn", return_value=None),
-            patch("haute.modelling._algorithms._mem_checkpoint"),
-            patch(
-                "haute.modelling._algorithms._MEM_LOG",
-                MagicMock(write_text=MagicMock()),
-            ),
-            patch(
-                "haute._polars_utils.bounded_sink",
-                side_effect=fake_bounded_sink,
-            ),
-        ):
-            tmp_parquet = service._execute_and_sink(
-                body, preamble_ns=None, row_limit=None, job_id=job_id
-            )
+        tmp_parquet = str(tmp_path / "prepared.parquet")
+        request = TrainingPreparationRequest(
+            graph=body.graph,
+            node_id="train",
+            job_id="job",
+            source=body.source,
+            parquet_path=tmp_parquet,
+            config=dict(body.graph.node_map["train"].data.config),
+            project_root=str(tmp_path),
+            streaming_chunk_size=body.streaming_chunk_size,
+        )
+        context = _training_prep_context()
+        try:
+            with (
+                patch(
+                    "haute.routes._training_preparation.execute_lazy_graph",
+                    side_effect=fake_execute_lazy,
+                ),
+                patch("haute.executor._build_node_fn", return_value=None),
+                patch("haute.modelling._algorithms._mem_checkpoint"),
+                patch(
+                    "haute.modelling._algorithms._MEM_LOG",
+                    MagicMock(write_text=MagicMock()),
+                ),
+                patch(
+                    "haute._polars_utils.bounded_sink",
+                    side_effect=fake_bounded_sink,
+                ),
+            ):
+                outcome = prepare_training_data(request, execution_context=context)
+        finally:
+            context.release_admission(preserve_primary_error=True)
+        assert outcome.failure is None
         Path(tmp_parquet).unlink(missing_ok=True)
         return captured
 
-    def test_uses_request_value(self):
-        captured = self._run(streaming_chunk_size=12345)
+    def test_uses_request_value(self, tmp_path):
+        captured = self._run(tmp_path, streaming_chunk_size=12345)
         assert captured.get("streaming_chunk_size") == 12345
 
-    def test_default_when_missing(self):
-        captured = self._run(streaming_chunk_size=None)
+    def test_default_when_missing(self, tmp_path):
+        captured = self._run(tmp_path, streaming_chunk_size=None)
         assert captured.get("streaming_chunk_size") == DEFAULT_STREAMING_CHUNK_SIZE
 
 
