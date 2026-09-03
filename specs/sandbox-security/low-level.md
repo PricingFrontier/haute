@@ -165,19 +165,35 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
    `commonpath` (different drives / mixed absolute-relative roots) is caught and
    treated as "not contained," not re-raised — both paths converge on the same
    `ValueError("... outside the project root ...")`.
-3. `safe_unpickle` opens the file and drives `_RestrictedUnpickler(f).load()`.
+3. `safe_unpickle` opens the file and drives `_RestrictedUnpickler(f).load()`
+   inside `_estimator_version_mismatch_is_an_error()`. That context manager
+   promotes scikit-learn's `InconsistentVersionWarning` — which
+   `BaseEstimator.__setstate__` emits, and only emits, when the pickled
+   `_sklearn_version` differs from the installed one — to
+   `ArtifactVersionMismatchError`, carrying scikit-learn's own message with both
+   versions. The filter is scoped to the load by `warnings.catch_warnings`, so
+   process-wide filter state is untouched. A missing `sklearn` package means no
+   promotion; any other failure importing it propagates.
    `_RestrictedUnpickler.find_class(module, name)` calls
    `_resolve_allowed_global(super().find_class, module, name)`.
 4. `_resolve_allowed_global(resolver, module, name)`: if `(module, name)` is in
-   `_ALLOWED_PICKLE_GLOBALS`, call `resolver(module, name)` and return it as-is.
-   Else if `(module, name)` is in `_ALLOWED_PICKLE_CLASSES`, call `resolver(...)`
-   and return it only if `isinstance(obj, type)`; otherwise raise
+   `_ALLOWED_PICKLE_GLOBALS`, resolve it through `_resolve_installed` and return
+   it as-is. Else if `(module, name)` is in `_ALLOWED_PICKLE_CLASSES`, resolve it
+   the same way and return it only if `isinstance(obj, type)`; otherwise raise
    `_blocked_pickle_error(...)` with an "expected an allowlisted class" reason.
    Else raise `_blocked_pickle_error(..., "not in the allowlist")`.
+   `_resolve_installed` calls `resolver(module, name)`; a `ModuleNotFoundError`
+   whose `.name` is the entry's own top-level package (LightGBM and XGBoost are
+   allowlisted but not installed everywhere) becomes
+   `_blocked_pickle_error(..., "allowlisted, but `<package>` is not installed in
+   this environment")`, and a `ModuleNotFoundError` deeper in the tree — a
+   broken install — propagates unchanged.
 5. `safe_joblib_load` defines a private `NumpyUnpickler` subclass whose
    `find_class` routes through `_resolve_allowed_global`, then uses joblib's
    file-object validation/decompression context and instantiates that subclass
-   directly. It never mutates `NumpyUnpickler.find_class` process-wide. Haute
+   directly, driving its `load()` inside the same
+   `_estimator_version_mismatch_is_an_error()` promotion as `safe_unpickle`. It
+   never mutates `NumpyUnpickler.find_class` process-wide. Haute
    declares `joblib>=1.5,<2` directly because this restricted path requires the
    private file-object validator and native-byte-order constructor contract
    introduced in joblib 1.5. A missing `joblib` package logs a warning and falls

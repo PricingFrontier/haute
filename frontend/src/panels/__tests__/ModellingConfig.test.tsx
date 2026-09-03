@@ -1057,7 +1057,7 @@ describe("ModellingConfig", () => {
       renderConfig()
       await waitFor(() => {
         expect(screen.getByText("Will downsample")).toBeTruthy()
-        expect(screen.getByText("1,000,000")).toBeTruthy()
+        expect(screen.getByText((1000000).toLocaleString())).toBeTruthy()
       })
     })
 

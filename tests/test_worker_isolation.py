@@ -1673,3 +1673,24 @@ def test_isolated_entrypoint_exposes_no_backend_when_best_effort_apply_fails(
     )
 
     assert pickle.loads(results.get_nowait()) == ("ok", None)
+
+
+def test_running_interpreter_resource_tracker_has_the_private_shape_recovery_needs() -> None:
+    """``_reset_resource_tracker`` reads ``_lock``, ``_fd`` and ``_pid``.
+
+    They are private CPython state with no supported replacement, and the
+    recovery path degrades to no recovery (with a warning) if they move. This
+    asks the running interpreter directly so the compatibility matrix shows
+    the shape on every Python, instead of the degraded branch being reached
+    silently in production first.
+    """
+    from multiprocessing import resource_tracker
+
+    tracker = resource_tracker._resource_tracker
+    missing = [name for name in ("_lock", "_fd", "_pid") if not hasattr(tracker, name)]
+    assert not missing, (
+        f"multiprocessing.resource_tracker._resource_tracker on Python "
+        f"{sys.version.split()[0]} lacks {missing}: dead-tracker recovery in "
+        "haute._worker_isolation._reset_resource_tracker is now a no-op on this "
+        "interpreter. Find the new layout before relying on the recovery path."
+    )

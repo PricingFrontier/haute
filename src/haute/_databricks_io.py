@@ -220,6 +220,7 @@ def _iter_databricks_batches(
             context.checkpoint()
             cursor.execute(sql_query)
             fetch_was_retried = False
+            rows_consumed_previously: object = None
             while True:
                 context.checkpoint()
                 batch = None
@@ -239,11 +240,14 @@ def _iter_databricks_batches(
                 if batch is None:
                     raise RuntimeError("fetchmany_arrow returned None after all retries")
                 if fetch_was_retried:
+                    rows_consumed = cursor.rownumber
                     _assert_no_rows_lost_after_retry(
                         table=table,
                         rows_received=row_count + batch.num_rows,
-                        rows_consumed=cursor.rownumber,
+                        rows_consumed=rows_consumed,
+                        rows_consumed_previously=rows_consumed_previously,
                     )
+                    rows_consumed_previously = rows_consumed
                 if batch.num_rows == 0:
                     if row_count == 0:
                         if batch.num_columns == 0:
@@ -262,6 +266,7 @@ def _assert_no_rows_lost_after_retry(
     table: str,
     rows_received: int,
     rows_consumed: object,
+    rows_consumed_previously: object,
 ) -> None:
     """Fail loudly when a retried batch fetch lost rows.
 
@@ -273,7 +278,27 @@ def _assert_no_rows_lost_after_retry(
     dropped.  Once any retry has happened, every batch boundary must
     therefore prove that the rows received locally still match the rows the
     cursor consumed.
+
+    ``rows_consumed_previously`` is the position read at the previous
+    post-retry boundary (``None`` at the first).  The equality check trusts
+    that ``rownumber`` still means "rows consumed"; a counter that goes
+    backwards between two boundaries has changed meaning, and is reported
+    as that rather than letting a coincidental match pass or misreporting it
+    as lost rows.  A missing or ``None`` counter still fails closed through
+    the equality check.
     """
+    if (
+        rows_consumed_previously is not None
+        and isinstance(rows_consumed, int)
+        and isinstance(rows_consumed_previously, int)
+        and rows_consumed < rows_consumed_previously
+    ):
+        raise FetchIntegrityError(
+            f'Databricks fetch of "{table}" cannot verify a retry: the cursor row '
+            f"counter went backwards from {rows_consumed_previously} to {rows_consumed}, "
+            "so cursor.rownumber no longer counts consumed rows and the received rows "
+            "cannot be proved complete. The cache was not written; re-run the fetch."
+        )
     if rows_consumed != rows_received:
         raise FetchIntegrityError(
             f'Databricks fetch of "{table}" lost rows during a retry: the cursor '

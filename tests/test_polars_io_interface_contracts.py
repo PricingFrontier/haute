@@ -51,6 +51,7 @@ from haute._polars_io_registry import (
     validate_arguments,
 )
 from haute._polars_io_schema import (
+    _installed_callable,
     argument_names,
     installed_argument_names,
     installed_provides_callable,
@@ -110,6 +111,33 @@ _LITERAL_KEYWORDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     ("DataFrame", "write_parquet", ("compression",)),
     ("LazyFrame", "sink_parquet", ("compression",)),
+)
+
+# Polars defaults haute RELIES ON by leaving an argument unset. The plain CSV
+# scan in ``haute._io.read_source()`` -- ``pl.scan_csv(path_string)`` when no
+# schema is declared -- takes every inference default polars ships, so a column
+# inferred as String on one hundred rows and Int64 on a thousand is a pricing
+# input changing type with no error. A changed default is invisible to both
+# the config-argument intersection (the name still exists) and
+# ``_LITERAL_KEYWORDS`` (haute never passes it). Expected values are in the
+# extractor's own ``default_repr`` form, the same string the committed schema
+# stores. Keep in step with the bare call in ``haute._io.read_source()``; an
+# argument that call site starts passing literally moves to
+# ``_LITERAL_KEYWORDS`` instead.
+_RELIED_ON_DEFAULTS: tuple[tuple[str, str, str, str], ...] = (
+    ("polars", "scan_csv", "infer_schema_length", "100"),
+    ("polars", "scan_csv", "try_parse_dates", "False"),
+    ("polars", "scan_csv", "has_header", "True"),
+    ("polars", "scan_csv", "separator", "','"),
+    ("polars", "scan_csv", "ignore_errors", "False"),
+    ("polars", "scan_csv", "null_values", "None"),
+    ("polars", "scan_csv", "encoding", "'utf8'"),
+    ("polars", "scan_csv", "missing_utf8_is_empty_string", "False"),
+    ("polars", "scan_csv", "quote_char", "'\"'"),
+    ("polars", "scan_csv", "decimal_comma", "False"),
+    ("polars", "scan_csv", "truncate_ragged_lines", "False"),
+    ("polars", "scan_csv", "skip_rows", "0"),
+    ("polars", "scan_csv", "raise_if_empty", "True"),
 )
 
 
@@ -214,6 +242,35 @@ class TestNoBreakingDriftAcrossTheCap:
             f"The installed polars {polars.__version__} no longer accepts keyword argument(s) "
             f"haute passes literally: {problems}. Those call sites will raise TypeError; fix "
             "them, and keep _LITERAL_KEYWORDS in step with the call sites it names."
+        )
+
+    def test_defaults_the_bare_csv_scan_relies_on_still_hold(self) -> None:
+        """A cap-range contract on the INSTALLED signature, not the committed JSON.
+
+        The dependencies workflow reports changed defaults to a run summary
+        rather than asserting them, because in general a default is a
+        behaviour change without a broken call. For the bare
+        ``pl.scan_csv(path)`` in ``read_source`` that is exactly the silent
+        failure: the inference defaults decide the dtype of every undeclared
+        CSV column. Reading the live signature keeps this meaningful on the
+        ``HAUTE_POLARS_UNPINNED=1`` lanes too.
+        """
+        problems: list[str] = []
+        for owner, name, argument, expected in _RELIED_ON_DEFAULTS:
+            func = _installed_callable(owner, name)
+            assert func is not None, f"{owner}.{name} is missing from the installed polars"
+            parameter = inspect.signature(func).parameters[argument]
+            assert parameter.default is not inspect.Parameter.empty, (
+                f"{owner}.{name}({argument}) no longer has a default"
+            )
+            actual = extract_polars_io.default_repr(parameter.default)
+            if actual != expected:
+                problems.append(f"{owner}.{name}({argument}) default {expected} -> {actual}")
+        assert not problems, (
+            f"The installed polars {polars.__version__} changed a default that the bare CSV "
+            f"scan in haute._io.read_source() relies on: {problems}. Undeclared CSV columns "
+            "will now be inferred differently with no error; decide whether haute pins the "
+            "old value literally or adopts the new one, then update _RELIED_ON_DEFAULTS."
         )
 
     def test_every_registry_callable_keeps_a_usable_argument_surface(self) -> None:

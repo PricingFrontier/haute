@@ -34,8 +34,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # uv is pinned exactly, like the rest of the development tooling; this
+      # value is repeated in every workflow and must move together (grep
+      # `setup-uv` across .github/workflows/).
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.12"
 
       - run: uv sync --group dev --locked
@@ -74,6 +78,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.12"
 
       - uses: actions/setup-node@v4
@@ -102,6 +107,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.11"
 
       - name: Re-resolve at published floors (lowest-direct)
@@ -141,6 +147,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.12"
 
       - run: uv sync --group dev --locked
@@ -180,6 +187,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.12"
 
       - run: uv sync --group dev --locked
@@ -210,6 +218,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.12"
 
       - run: uv sync --group dev --locked
@@ -260,6 +269,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: ${{ matrix.python-version }}
 
       - run: uv sync --group dev --locked
@@ -300,6 +310,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.14"
 
       - name: Dependency sync (fails fast if a dep lacks cp314 wheels)
@@ -324,6 +335,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.12"
 
       - run: uv sync --group dev --locked
@@ -345,6 +357,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.12"
 
       - run: uv sync --locked --no-group dev
@@ -360,6 +373,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.12"
 
       - run: uv sync --group dev --locked
@@ -374,6 +388,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.12"
 
       - uses: actions/setup-node@v4
@@ -408,6 +423,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.12"
 
       - run: uv sync --group dev --locked
@@ -438,6 +454,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.12"
 
       - run: uv sync --group dev --locked
@@ -472,6 +489,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          version: "0.8.22"
           python-version: "3.12"
 
       - uses: actions/setup-node@v4

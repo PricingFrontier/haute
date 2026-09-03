@@ -556,6 +556,12 @@ def _reset_resource_tracker() -> None:
     tracker: Any = resource_tracker._resource_tracker
     lock = getattr(tracker, "_lock", None)
     if lock is None:  # pragma: no cover - shape guard for a future CPython
+        logger.warning(
+            "resource_tracker_reset_unsupported",
+            missing_attribute="_lock",
+            python=sys.version.split()[0],
+            msg="dead resource tracker cannot be reset on this interpreter; no recovery",
+        )
         return
     with lock:
         fd = getattr(tracker, "_fd", None)

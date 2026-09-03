@@ -500,6 +500,31 @@ class TestCredentialHandling:
         assert ask("Username for 'https://github.com': ") == "x-access-token"
         assert ask("Password for 'https://x@github.com': ") == "super-secret-token"
 
+    def test_helper_refuses_an_unrecognised_prompt_without_the_token(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only git's two credential prompts get an answer.
+
+        Under the forced C locale git asks ``Username for '<url>': `` and
+        ``Password for '<url>': ``. Anything else is not a credential prompt,
+        and the helper must not hand the token to it: it prints nothing and
+        exits non-zero, which makes git fail the credential fetch loudly.
+        """
+        monkeypatch.setenv(GIT_TOKEN_ENV, "super-secret-token")
+        helper = _project_storage.configure_git_credentials(tmp_path / "runtime")
+        assert helper is not None
+
+        result = subprocess.run(
+            [str(helper), "Passphrase for key '/root/.ssh/id_ed25519': "],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        assert result.stdout == ""
+        assert "super-secret-token" not in result.stderr
+
 
 # ---------------------------------------------------------------------------
 # Push queue state machine

@@ -207,6 +207,33 @@ class TestSplitMask:
         m2 = split_mask(500, cfg)
         assert m1.to_list() == m2.to_list()
 
+    # Golden vector: the exact partition mask for 50 rows, seed 42,
+    # validation 0.2, holdout 0.1 (0 = train, 1 = validation, 2 = holdout).
+    # It pins the ``np.random.default_rng(seed).permutation`` stream that every
+    # random split rests on. NumPy freezes ``RandomState`` but reserves the
+    # right to change ``Generator`` streams in a feature release, and the
+    # deterministic test above compares two draws in one process, so it passes
+    # under any stream. Generated on numpy 2.4.2 and verified identical on the
+    # 2.0.2 floor. If this moves, every project's train/validation/holdout
+    # membership moves with it: that is a deliberate decision to record (and
+    # to tell users about), not a literal to regenerate.
+    _GOLDEN_MASK_50_ROWS_SEED_42 = [
+        1, 2, 1, 0, 0, 0, 1, 0, 2, 0,
+        0, 1, 1, 2, 1, 0, 0, 0, 0, 1,
+        0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 2, 0, 1, 2, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 0,
+    ]  # fmt: skip
+
+    def test_random_mask_golden_vector_pins_numpy_generator_stream(self):
+        mask = split_mask(50, SplitConfig(validation_size=0.2, holdout_size=0.1, seed=42))
+
+        assert mask.to_list() == self._GOLDEN_MASK_50_ROWS_SEED_42, (
+            "NumPy Generator stream changed: random split membership no longer matches "
+            "the golden vector, so existing train/validation/holdout partitions move. "
+            "Decide and record the NumPy bump deliberately; do not just regenerate."
+        )
+
     def test_random_mask_different_seed(self):
         m1 = split_mask(500, SplitConfig(validation_size=0.2, seed=42))
         m2 = split_mask(500, SplitConfig(validation_size=0.2, seed=99))

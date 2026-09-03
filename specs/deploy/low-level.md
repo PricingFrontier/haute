@@ -211,8 +211,13 @@ directory is removed (`except BaseException: shutil.rmtree(...); raise`). Steps:
 manifest via `_utils.build_manifest`, remap artefact paths to `artifacts/<name>`
 container-relative paths, write `deploy_manifest.json`, copy every artefact file into
 `artifacts/`, generate `app.py` from an f-string template, generate `Dockerfile` (base
-image + pinned core deps + auto-detected extra deps from artefact file extensions, with
-`HAUTE_EXECUTION_MEMORY_POLICY=strict_server`), pick
+image + core deps + the model-runtime deps auto-detected from artefact file extensions,
+every one pinned through `importlib.metadata` to the version installed in the deploying
+environment — the container unpickles the model, so a runtime resolved fresh at
+image-build time could load it under a different version than wrote it; a runtime the
+artefacts need that is not installed raises `DeployError` naming the artefact and the
+package — with `HAUTE_EXECUTION_MEMORY_POLICY=strict_server`), record the full pinned
+`pip install` list in the manifest as `container_dependencies`, pick
 an image tag (`<registry>/<model_name>:<git_sha>` or `<model_name>:<git_sha>`, falling
 back to `"local"` if not in a git repo), `docker build`, then `docker push` only if a
 registry is configured.

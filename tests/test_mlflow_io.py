@@ -1421,6 +1421,15 @@ class TestScoringModelDirect:
 class TestExtractPyfuncFeatures:
     """Tests for _extract_pyfunc_features edge cases."""
 
+    def test_missing_metadata_attribute_fails_loudly(self):
+        from haute._mlflow_io import _extract_pyfunc_features
+
+        class ModelWithoutMetadata:
+            pass
+
+        with pytest.raises(AttributeError, match="metadata"):
+            _extract_pyfunc_features(ModelWithoutMetadata())
+
     def test_no_signature(self):
         """Returns empty list when model has no signature."""
         from haute._mlflow_io import _extract_pyfunc_features

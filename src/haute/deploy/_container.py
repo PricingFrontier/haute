@@ -112,6 +112,9 @@ def build_and_push_image(
             container_artifacts[artifact_name] = f"artifacts/{artifact_name}"
 
         manifest["artifacts"] = container_artifacts
+        # The exact ``pip install`` pins the image is built against, so a
+        # reader of the container knows which model runtime it carries.
+        manifest["container_dependencies"] = _pinned_dockerfile_deps(resolved)
 
         manifest_path = build_dir / "deploy_manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2))
@@ -750,9 +753,7 @@ def _generate_dockerfile(
     resolved: ResolvedDeploy,
 ) -> str:
     """Generate a Dockerfile for the scoring container."""
-    # Detect model-specific dependencies from artifacts
-    extra_deps = _detect_extra_deps(resolved)
-    deps_line = " ".join([*_pinned_core_dockerfile_deps(), *extra_deps])
+    deps_line = " ".join(_pinned_dockerfile_deps(resolved))
 
     return f"""\
 FROM {base_image}
@@ -777,6 +778,17 @@ CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "{port}"]
 """
 
 
+def _pinned_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:
+    """Every ``pip install`` requirement of the scoring container, pinned.
+
+    Core runtime and model runtime alike are pinned to the version installed
+    in the deploying environment: the container unpickles the model, and a
+    model loaded under a different scikit-learn (or LightGBM, ...) than the
+    one that wrote it is silently wrong premiums, not an error.
+    """
+    return [*_pinned_core_dockerfile_deps(), *_pinned_extra_dockerfile_deps(resolved)]
+
+
 def _pinned_core_dockerfile_deps() -> list[str]:
     return [
         _pinned_dockerfile_dependency(distribution_name, install_name)
@@ -784,17 +796,37 @@ def _pinned_core_dockerfile_deps() -> list[str]:
     ]
 
 
-def _pinned_dockerfile_dependency(distribution_name: str, install_name: str) -> str:
+def _pinned_extra_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:
+    """Pin the model-runtime packages the artifacts need (sorted by package)."""
+    return [
+        _pinned_dockerfile_dependency(dependency, dependency, required_by=artifact_names)
+        for dependency, artifact_names in _extra_deps_by_artifact(resolved).items()
+    ]
+
+
+def _pinned_dockerfile_dependency(
+    distribution_name: str,
+    install_name: str,
+    *,
+    required_by: list[str] | None = None,
+) -> str:
     try:
         package_version = metadata_version(distribution_name)
     except PackageNotFoundError as exc:
+        needed_by = f" (needed by artifact {', '.join(required_by)})" if required_by else ""
         raise DeployError(
-            f"Cannot pin Dockerfile dependency {install_name!r}: "
-            f"installed distribution {distribution_name!r} was not found."
+            f"Cannot pin Dockerfile dependency {install_name!r}{needed_by}: "
+            f"installed distribution {distribution_name!r} was not found. The "
+            f"container is pinned to the versions installed in the deploying "
+            f"environment, so install {distribution_name!r} here and re-run."
         ) from exc
     return f"{install_name}=={package_version}"
 
 
+# Artifact extension -> distribution name of the runtime that loads it.  Every
+# entry is also the ``pip install`` name, and every entry is pinned through
+# ``_pinned_dockerfile_dependency`` -- catboost included, even though haute's
+# own ``catboost<2`` cap would happen to constrain a bare name.
 _ARTIFACT_EXT_TO_DEP: dict[str, str] = {
     ".cbm": "catboost",
     ".pkl": "scikit-learn",
@@ -805,19 +837,25 @@ _ARTIFACT_EXT_TO_DEP: dict[str, str] = {
 }
 
 
-def _detect_extra_deps(resolved: ResolvedDeploy) -> list[str]:
-    """Detect extra Python packages needed based on artifact file extensions.
+def _extra_deps_by_artifact(resolved: ResolvedDeploy) -> dict[str, list[str]]:
+    """Map each model-runtime package to the artifact names that need it.
 
     Only unambiguous model extensions are matched.  Generic extensions
     like ``.txt`` and ``.json`` are deliberately excluded because they
-    would cause false positives (e.g. ``deploy_manifest.json``).
+    would cause false positives (e.g. ``deploy_manifest.json``).  Both
+    levels are sorted so the generated Dockerfile is byte-stable.
     """
-    deps: set[str] = set()
-    for artifact_name in resolved.artifacts:
+    needed: dict[str, list[str]] = {}
+    for artifact_name in sorted(resolved.artifacts):
         suffix = Path(artifact_name).suffix.lower()
         if suffix in _ARTIFACT_EXT_TO_DEP:
-            deps.add(_ARTIFACT_EXT_TO_DEP[suffix])
-    return sorted(deps)
+            needed.setdefault(_ARTIFACT_EXT_TO_DEP[suffix], []).append(artifact_name)
+    return dict(sorted(needed.items()))
+
+
+def _detect_extra_deps(resolved: ResolvedDeploy) -> list[str]:
+    """Detect extra Python packages needed based on artifact file extensions."""
+    return list(_extra_deps_by_artifact(resolved))
 
 
 # ── Docker build / push ─────────────────────────────────────────────
