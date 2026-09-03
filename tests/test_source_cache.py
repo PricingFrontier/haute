@@ -703,7 +703,7 @@ def test_a_parent_chosen_pair_names_the_staging_directory_and_the_generation(
 
 @pytest.mark.parametrize(
     ("generation_id", "staging_token"),
-    [(str(uuid.uuid4()), None), (None, "0123abcd")],
+    [("00000000-0000-4000-8000-000000000001", None), (None, "0123abcd")],
 )
 def test_a_build_context_carrying_only_one_of_the_pair_is_rejected(
     generation_id: str | None,
