@@ -2415,3 +2415,42 @@ def test_a_nested_boundary_argument_is_blamed_first_and_costed_at_the_maximum(
     )
     assert unfactored.estimated_peak_bytes is not None
     assert raw == (unfactored.estimated_peak_bytes * factor + 99) // 100
+
+
+def test_prepared_planner_reports_an_estimate_that_was_never_requested() -> None:
+    """The prepared planner has no estimator of its own, so a missing estimate is a proof gap."""
+    graph = _receiver_graph(
+        "df = claims.group_by('segment').agg(pl.col('premium').sum().alias('premium'))"
+    )
+    prepared = prepare_graph(graph, "out", source="live")
+    children: dict[str, list[str]] = {node_id: [] for node_id in prepared.order}
+    for child_id, parents in prepared.parents_of.items():
+        for parent_id in parents:
+            children[parent_id].append(child_id)
+    detail = "no materialisation estimate was requested"
+
+    with native_memory_backend_scope("rlimit"):
+        warned = plan_prepared_execution_strategy(
+            prepared.order,
+            children,
+            prepared.node_map,
+            profile=ExecutionProfile.LAZY_SINK,
+            execution_context=_context(ExecutionProfile.LAZY_SINK),
+            materialisation_estimate=None,
+            relevant_edges=prepared.relevant_edges,
+        )
+    assert warned.strategy is ExecutionStrategy.FULL_WIDTH_CONSERVATIVE
+    assert f"proof_gap={detail}" in warned.diagnostic.assumptions
+
+    with pytest.raises(GroupByExecutionUnsupportedError) as rejected:
+        plan_prepared_execution_strategy(
+            prepared.order,
+            children,
+            prepared.node_map,
+            profile=ExecutionProfile.LAZY_SINK,
+            execution_context=_context(ExecutionProfile.LAZY_SINK),
+            materialisation_estimate=None,
+            relevant_edges=prepared.relevant_edges,
+        )
+    assert rejected.value.reason_code == "materialisation_estimate_unavailable"
+    assert detail in rejected.value.remediation

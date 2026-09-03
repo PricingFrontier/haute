@@ -1130,6 +1130,24 @@ def _is_literal_none(node: ast.AST) -> bool:
     return isinstance(node, ast.Constant) and node.value is None
 
 
+_COLUMN_SELECTOR_POLARS_CALLS = frozenset({"all", "exclude"})
+
+
+def _is_column_selector_call(node: ast.AST) -> bool:
+    """``pl.all()`` / ``pl.exclude(<literals>)`` select existing columns.
+
+    Column lineage cannot name what they expand to, but for a row count that
+    is irrelevant: a selector emits exactly the rows it reads. Only the
+    literal forms qualify; a computed exclusion list is not admitted.
+    """
+    return (
+        isinstance(node, ast.Call)
+        and _polars_call_name(node) in _COLUMN_SELECTOR_POLARS_CALLS
+        and not node.keywords
+        and all(_literal_columns(argument) is not None for argument in node.args)
+    )
+
+
 def _is_polars_dtype(node: ast.AST) -> bool:
     """Return whether ``node`` is a ``pl.<Name>`` dtype or a literal dtype call.
 
@@ -1408,6 +1426,7 @@ def _parse_call_sequence(
                 # through) is rejected on both paths.
                 readable = cardinality_only and all(
                     _referenced_columns(expression) is not None
+                    or _is_column_selector_call(expression)
                     for expression in [
                         *call.args,
                         *(keyword.value for keyword in call.keywords),

@@ -2179,9 +2179,11 @@ def test_a_root_demand_consumed_by_drops_still_carries_the_rows() -> None:
             "t": [1.0, 2.0, 3.0],
         }
     )
-    result = analyze_polars_lineage(code, {"rows": frozenset(frame.columns)})
+    # Only the generated column is wanted downstream, so the backward demand is
+    # exactly the dropped columns and nothing survives to carry the rows.
+    result = analyze_polars_lineage(code, {"rows": frozenset(frame.columns)}, {"index_0"})
     assert result.supported, result
-    assert "s" in result.demands_by_input["rows"]
+    assert result.demands_by_input["rows"] == frozenset({"a", "b", "c", "d", "s"})
 
     full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
     projected = _exec_user_code(
@@ -2192,3 +2194,147 @@ def test_a_root_demand_consumed_by_drops_still_carries_the_rows() -> None:
     assert full.height == 2
     assert projected.height == full.height
     assert projected.get_column("index_0").to_list() == full.get_column("index_0").to_list()
+
+
+def test_an_empty_root_demand_carries_the_first_column() -> None:
+    """``select(pl.len())`` reads no column values but still needs every row."""
+    result = analyze_polars_lineage(
+        "df = rows.select(pl.len())",
+        {"rows": frozenset({"b", "a"})},
+        {"len"},
+    )
+    assert result.supported, result
+    assert result.demands_by_input["rows"] == frozenset({"a"})
+
+
+def test_a_projected_program_that_cannot_be_evaluated_is_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The carrier rule fails closed when the projected program has no evaluation."""
+    import haute._column_lineage as lineage
+
+    real = lineage._evaluate_program
+    calls: list[int] = []
+
+    def failing_projection(program: object, schemas: object) -> object:
+        calls.append(len(calls))
+        if len(calls) == 1:
+            return real(program, schemas)  # type: ignore[arg-type]
+        return lineage._ParseFailure("evaluation_unavailable", "select")
+
+    monkeypatch.setattr(lineage, "_evaluate_program", failing_projection)
+    result = analyze_polars_lineage("df = rows.select('a')", {"rows": frozenset({"a", "b"})})
+
+    assert not result.supported
+    assert result.reason == "carrier_unresolvable"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = rows.cast()",
+        "df = rows.cast(pl.Float64, strict=flag)",
+        "df = rows.cast(pl.Float64, other=1)",
+        "df = rows.cast({**mapping})",
+        "df = rows.cast({'a': dtype})",
+        "df = rows.cast({})",
+        "df = rows.cast({'a': pl.Datetime(unit)})",
+        "df = rows.cast({'a': pl.Datetime(time_unit=unit)})",
+        "df = rows.cast(dtype)",
+    ],
+)
+def test_cast_rejects_every_shape_the_analyser_cannot_prove(code: str) -> None:
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "b"})})
+
+    assert not result.supported
+    assert result.reason == "dynamic_cast"
+    assert result.unsupported_operation == "cast"
+
+
+def test_cast_accepts_a_literal_dtype_call() -> None:
+    frame = pl.DataFrame({"a": [1, 2], "b": [3, 4]})
+    code = "df = rows.cast({'a': pl.Int64()}).select('a')"
+    result = analyze_polars_lineage(code, {"rows": frozenset(frame.columns)})
+
+    assert result.supported, result
+    assert result.demands_by_input["rows"] == frozenset({"a"})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code, ["rows"], (frame.select(sorted(result.demands_by_input["rows"])).lazy(),)
+    ).collect()
+    assert_frame_equal(projected, full)
+
+
+def test_cardinality_rejects_a_select_the_analyser_cannot_read() -> None:
+    """A selection through a call the analyser cannot see through is not row-bounded."""
+    analysis = analyze_polars_cardinality(
+        "df = rows.select(helper(pl.col('a')))",
+        {"rows": 3},
+    )
+
+    assert not analysis.supported
+    assert analysis.unsupported_operation == "select"
+    assert analysis.reason == "dynamic_select"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = rows.shift()",
+        "df = rows.shift(1, 2)",
+        "df = rows.shift(n)",
+        "df = rows.shift(1, other=2)",
+        "df = rows.shift(1, fill_value=x)",
+        "df = rows.shift(True)",
+    ],
+)
+def test_shift_rejects_every_shape_the_analyser_cannot_prove(code: str) -> None:
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "b"})})
+
+    assert not result.supported
+    assert result.reason == "dynamic_shift"
+    assert result.unsupported_operation == "shift"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = rows.shift(n=1).select('a')",
+        "df = rows.shift(1, fill_value=0).select('a')",
+        "df = rows.cast({'a': pl.Int64}, strict=False).select('a')",
+    ],
+)
+def test_shift_and_cast_keyword_forms_project_identically_to_full_inputs(code: str) -> None:
+    frame = pl.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+    result = analyze_polars_lineage(code, {"rows": frozenset(frame.columns)})
+
+    assert result.supported, result
+    assert result.demands_by_input["rows"] == frozenset({"a"})
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    projected = _exec_user_code(
+        code, ["rows"], (frame.select(sorted(result.demands_by_input["rows"])).lazy(),)
+    ).collect()
+    assert_frame_equal(projected, full)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = rows.select(pl.all())",
+        "df = rows.select(pl.exclude('a'))",
+        "df = rows.select(pl.exclude(['a', 'b']))",
+    ],
+)
+def test_cardinality_proves_a_column_selector_it_cannot_name(code: str) -> None:
+    """A selector names no output column, but every row it emits is an input row."""
+    analysis = analyze_polars_cardinality(code, {"rows": 3})
+
+    assert analysis.supported, analysis
+    assert analysis.output_upper_bound == 3
+
+
+def test_cardinality_rejects_a_computed_column_selector() -> None:
+    analysis = analyze_polars_cardinality("df = rows.select(pl.exclude(names))", {"rows": 3})
+
+    assert not analysis.supported
+    assert analysis.reason == "dynamic_select"

@@ -1229,7 +1229,7 @@
       }
     },
     {
-      "cardinality": "dynamic_select",
+      "cardinality": "cardinality_proven",
       "chunk": {
         "blocking_operator": "pl.all",
         "eligible": false,
@@ -1245,12 +1245,14 @@
       "policy": "opaque",
       "receiver": "polars_function",
       "strategy": {
-        "rejected": "materialisation_estimate_unavailable"
+        "reason_code": "materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
       },
       "strategy_under_cap": {
-        "reason_code": "materialisation_estimate_unavailable_conservative",
-        "status": "warned",
-        "strategy": "full-width-conservative"
+        "reason_code": "materialisation_admitted",
+        "status": "boundary",
+        "strategy": "materialisation-boundary"
       }
     },
     {
