@@ -81,7 +81,14 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // hook runs on the mounted canvas, so the fingerprint and the settle callbacks
 // cannot be lazy. The merged initial bundle is 279.0 KiB; 281 KiB retains ~2 KiB
 // headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 281
+// The collapsed submodel input socket adds ~2.1 KiB of deliberate eager core:
+// resolving an incoming frame to a canonical public port, retiring one across
+// every occurrence, and projecting the parent bindings and their order so
+// history can restore them all run on the mounted canvas. That consumed the
+// whole 2 KiB allowance, leaving the ceiling no room to catch the accidental
+// eager import it exists for. The merged initial bundle is 281.1 KiB; 283 KiB
+// restores about 2 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 283
 
 // Chunks that should only be fetched after a user opens a code/editor-heavy
 // surface. If one appears as a startup modulepreload, the app has likely

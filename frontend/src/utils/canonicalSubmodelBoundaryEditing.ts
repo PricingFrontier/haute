@@ -102,16 +102,11 @@ function parentEdgesForInputProjection(
   if (!Array.isArray(data.ports)) {
     throw new Error("Canonical submodel Input boundary has malformed public ports")
   }
-  if (
-    !Array.isArray(data._parentEdgeOrder)
-    || data._parentEdgeOrder.some((id) => typeof id !== "string" || id.length === 0)
-  ) {
+  if (!Array.isArray(data._parentEdgeOrder)) {
     throw new Error("Canonical submodel Input boundary has no authoritative parent edge order")
   }
-  const projectedRank = new Map<string, number>()
-  data._parentEdgeOrder.forEach((id, index) => {
-    if (!projectedRank.has(id)) projectedRank.set(id, index)
-  })
+  const ranks = new Map(data._parentEdgeOrder.map((id, index) => [id, index]))
+  const rank = (edge: PipelineEdge) => ranks.get(edge.id) ?? Infinity
 
   const occurrenceIds = new Set([state.instanceId, ...state.parentNodes.flatMap((node) => {
     const config = node.data.config
@@ -179,17 +174,12 @@ function parentEdgesForInputProjection(
   }
   // Whatever is still outstanding was restored by history rather than retained,
   // so it has no position in `state.parentEdges`. Reinstate each one ahead of
-  // the first retained edge the recorded order puts after it.
-  const restored = projected
-    .filter((edge) => remaining.delete(edge.id))
-    .sort((a, b) => (projectedRank.get(a.id) ?? Infinity) - (projectedRank.get(b.id) ?? Infinity))
-  for (const edge of restored) {
+  // the first edge the recorded order puts after it.
+  for (const edge of projected) {
+    if (!remaining.delete(edge.id)) continue
     claim(edge)
-    const rank = projectedRank.get(edge.id) ?? Infinity
-    const successor = merged.findIndex(
-      (other) => (projectedRank.get(other.id) ?? -Infinity) > rank,
-    )
-    merged.splice(successor === -1 ? merged.length : successor, 0, edge)
+    const at = merged.findIndex((other) => rank(other) > rank(edge))
+    merged.splice(at === -1 ? merged.length : at, 0, edge)
   }
 
   return merged.length === state.parentEdges.length
