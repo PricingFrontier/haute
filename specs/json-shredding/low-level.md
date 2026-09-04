@@ -855,3 +855,130 @@ current cache layouts and staging names. They contain no discovery or deletion
 code for cache files, temporary directories, backups, or manifests emitted by
 an earlier Haute implementation. Current transactional cleanup remains
 covered; there are no migration-only cleanup tests.
+
+## Path grammar (array-outer JSON)
+
+### What a path is, and what "valid" means
+
+A haute path is an **instruction to a parser/assembler**: it maps a path string
+to a position in a tree-structured document. It is always read against a
+**transport formalism** — array-outer JSON, JSON Lines, JSON-seq, object-outer
+JSON, XML.
+
+The path determines behaviour, **but only relative to the chosen formalism.**
+The same path is a different instruction under array-outer JSON than under JSON
+Lines, so "what does this path do" and "is this path valid" are not properties
+of the string alone — they are properties of (path × formalism). The long-term
+mechanism is a *switchable* parser/assembler, not one overloaded parser and not
+format sniffing.
+
+This section fixes the formalism to **array-outer JSON** — a document whose root
+is an array of records — and pins the *preferred form* of path for it. It is
+deliberately **not** a catalogue of everything the parser accepts: the parser is
+wider than the grammar. Validity is a property of the **assembler**, which
+imposes a model of what is correct even where it does not strictly enforce it.
+
+### JSON invariants (transport-agnostic)
+
+These hold for every JSON formalism, independent of the parser/assembler in
+use:
+
+- **No array of arrays** — the only things permissible *inside an array* are
+  objects.
+- **No array of primitives** — the same rule, stated for primitives.
+- **No bare outer primitive** — a bare primitive is not acceptable even where it
+  is formally valid JSON.
+
+XML does not share these; it would be a ground-up rebuild.
+
+### Two grammars — the preferred form, not the parser's reach
+
+Both share one key property: **any piece of data in a haute-compatible document
+has exactly one canonical path.**
+
+**Canonical — one spelling per feature**
+
+```
+canonical_path ::= "$[:]" ( "." name [ "[:]" ] )*
+name           ::= [A-Za-z_][A-Za-z0-9_]*          ; identifier only
+```
+
+- **Array selector `[:]`** — full-array selection, the only array selector.
+- **Object selector `.name`** — a dotted identifier, the only object selector.
+- **Root `$[:]`** — array-outer JSON is entered only through the root array, so
+  `$[:]` is the canonical root prefix. `$` alone names the root container, not a
+  piece of data.
+- **Depth is the count of `[:]` hops.** Object hops are relationally
+  transparent: `$[:].a.b` sits at the same relational level as `$[:]` — they add
+  meaning, not structure.
+
+The contract a reader learns once: **`[:]` means "every row of this list"; a dot
+means "step into this object."** Two glyphs, two meanings — no brackets, no
+quotes, no whitespace.
+
+Input and output paths differ only at the endpoint: an input **table path** ends
+at an array; an input **column path** and an **output path** end at a leaf.
+An input column path may live in an *enclosing* record rather than inside its
+table's array — `$[:].policy_id` can be a column of the table `$[:].claims[:]`,
+an inherited key from the parent record.
+
+**Full-width — wider, accepted for interoperability**
+
+Real APIs carry keys the canonical identifier set cannot spell (`"a.b.c"`,
+`"2024"`, `"a key"`). These are accepted rather than refused — **valid but
+non-canonical**; they assemble identically and round-trip.
+
+- **Bracket object selector** `['name']` or `["name"]`, either quote style. The
+  bracket interior is any run of non-quote characters — identifier or not.
+- The canonical equivalent of a bracket name is `.name` **only when it is a
+  bare identifier**. A non-identifier bracket name has **no safe dot form** and
+  is left exactly as written — never split, never re-keyed.
+
+### The validity gate
+
+Two distinct kinds of wrong, handled differently:
+
+**(a) Won't reliably assemble into array-outer JSON.** Object-outer roots,
+stream roots, a mix of root forms in one mapping, a root naming no leaf, and the
+structural constructs that do not statically locate data — wildcards, indices,
+ranges, filters, descendants. The assembler is clever enough that it would
+probably *produce something* for the root cases, but with no guarantee it glues
+into correct array-outer JSON. → **Rejected**, to keep assembler behaviour
+defined.
+
+**(b) Assembles fine but isn't in normal form.** The full-width interop
+spellings. → **Accepted; warn, never rewrite.**
+
+**The one rule worth enforcing: every path must start `$[:]`.** That single gate
+rules out the whole level-(a) root family without deciding admissibility schema
+by schema — and whether a path starts `$[:]` is a property of the whole schema
+rather than the individual path, which is exactly why it is pinned rather than
+reasoned about. Everything *past* the prefix is accept-widely: enforcing more
+would either break interoperability or override a form the user explicitly
+specified.
+
+### Non-canonical pragmatics — warn, highlight, never rewrite
+
+The canonical form is **preferred, not enforced**. A valid non-canonical path
+commits and assembles identically. **Never silently rewrite** — a rewrite can
+change meaning, the same reason a wildcard is rejected rather than normalised to
+a full-array selector.
+
+- **Surface it non-modally.** When schema inference introduces non-canonical
+  fields, warn without interrupting, and highlight those fields persistently in
+  the UI so the user can see what and where. There is no single fix, so there is
+  no call to action — the value is informational, and it often signals something
+  to fix upstream.
+- **Bulk normalise-on-import** is deferred. There is no per-path rewrite button.
+
+### The code is the grammar
+
+The grammar's truth is in the software: `src/haute/_jsonpath.py`, mirrored by
+`frontend/src/panels/editors/jsonpath.ts`. Input and output parsing are thin
+wrappers that both route through it, each injecting its own error class and
+enforcing the `$[:]` root on top of the neutral core. The neutral parser records
+whether the root is an array but leaves the decision to each side, which is why
+the gate is a one-line check in each wrapper rather than baked into the core.
+
+**On drift between this section and that module, the code wins** — and the
+drift is a bug in this section.

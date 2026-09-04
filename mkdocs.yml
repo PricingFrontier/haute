@@ -58,11 +58,16 @@ extra_css:
 # part of the public site. Component specs and engineering roadmaps live in
 # root-level specs/, outside the site source tree.
 exclude_docs: |
+  CHANGE_DISCIPLINE.md
   CI_MIRROR.md
   COMMIT_STANDARDS.md
+  DEFECT_CLASSES.md
   ENGINEERING_QUALITY_AUDIT_2026_08.md
   ENGINEERING_QUALITY_AUDIT_2026_08_COVERAGE.toml
+  GLOSSARY.md
   PERFORMANCE_CHECKS.md
+  PLATFORM_DIVERGENCE.md
+  VERIFICATION.md
 
 dev_addr: 127.0.0.1:8001
 

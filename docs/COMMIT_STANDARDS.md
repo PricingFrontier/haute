@@ -294,6 +294,36 @@ background-jobs, and server-api specs for the isolation and publication contract
 
 When a file contains an aligned lookup table (e.g. `NODE_TYPE_META` in `nodeTypes.ts`), new entries must match the column alignment of existing entries. Misaligned entries make diffs noisy and the table harder to scan.
 
+## 28. Name-to-Artefact Mapping
+
+Haute maps user-controlled names onto artefacts: node labels onto config files and generated Python functions, submodel names onto module files, table labels onto cache files, data paths onto cache keys, table references onto remote tables.
+
+**Every such mapping must respect the artefact side's own identity relation, not string equality on the name side.** For a map from names to artefacts:
+
+1. **No silent collision.** If two names in play denote the same artefact under the artefact's identity relation — the same file on a case-insensitive filesystem, the same remote table under case-insensitive identifier resolution, the same file under Unicode normalisation — then code that writes, dedupes, or diffs by the raw name string will let one artefact silently clobber or shadow another. Collision guards, stale-cleanup diffs, and cache keys must compare in the artefact's relation.
+
+2. **No false collision.** Comparing names in a relation *coarser* than the artefact's rejects valid input or splits one artefact across two keys. A guard that buckets identifiers across separate modules rejects a legal graph; a cache key that fails to canonicalise path spelling loads one file twice.
+
+3. **Right scope.** Apply the relation over the namespace the artefact actually lives in — per emitted module for Python identifiers, per directory for files, per node for input table labels, and *across saves* for anything diffed against a previous state.
+
+4. **One derivation.** Where the same mapping is needed in two places (backend and frontend sanitizer, dependency-map build and file-watcher lookup, editor preview and server write), it comes from one generated contract or one owning runtime, per standard 1 — never from two handwritten implementations. A legacy twin that still exists must be mechanically pinned to its counterpart until it is retired; drift between them is a violation even when each side is internally consistent.
+
+**The relation follows the lookup stack, not the operating system.** "macOS and Windows are case-insensitive, Linux is case-sensitive" is itself a simplification: haute inside WSL is a Linux process on a Linux filesystem even though the machine runs Windows; a Windows process reading through the WSL share gets the Linux side's byte-exact resolution; network mounts resolve by the server's rules; NTFS supports per-directory case sensitivity. The consequence for guards is that **platform-independent rejection is right** — not merely for checkout portability, but because the platform cannot be inferred from the process's own view in the first place.
+
+**Why this keeps biting.** The relation is invisible on a development machine where it happens to match. Every instance found so far passed all tests on the leg where the relation does not hold. The counter-measures are therefore structural: characterisation tests run on the `platform-smoke` lane (Windows and macOS), and guards reject on *every* platform so a pipeline saved on one OS stays loadable on another.
+
+### Standing checklist for new code
+
+When adding any surface that derives an artefact name or key from user input:
+
+1. Route names through the shared sanitizer — `_sanitize_func_name` in `src/haute/_graph_utils.py`, with its frontend counterpart pinned to it by the parity fixture — never a local regex.
+2. Compare artefact paths case-folded; canonicalise cache keys through normalised resolution.
+3. Ask which namespace the artefact lives in, and guard exactly that scope — including across saves if anything diffs against previous state.
+4. If the mapping is needed on both sides of the wire, derive it from one generated contract or one owning runtime (standard 1). Do not add a new handwritten twin; an existing one stays in the parity fixture — the checked-in vectors both sides are pinned to, regenerated together so that divergence fails both suites — until it is retired.
+5. Put the platform-relation test in a file the `platform-smoke` lane runs.
+
+The user-facing consequences of this invariant are documented in [Filesystem Portability](building-models/filesystem-portability.md); the wider failure family is [Defect Classes](DEFECT_CLASSES.md).
+
 ---
 
 ## LLM-Generated Code: Watch For These
@@ -414,6 +444,32 @@ This is a brand new application. Prefer one clean API shape over transition laye
 - **No warning-based migration periods** - if something is wrong, remove it. Do not add `warnings.warn` with a future removal date.
 
 The only exception is the public PyPI package interface (`haute` CLI and core APIs). Prioritize clean, simple code over transitional indirection.
+
+---
+
+## Security Principles for Development
+
+These principles are compulsory for code written for haute.
+
+**1. Minimise data egress.** Data does not leave the host except via deliberate, user-specified destinations. No telemetry, no analytics, no phone-home, no auto-update checks, no error-reporting beacons. If a feature or dependency would introduce egress, surface it explicitly and discuss before adding.
+
+**2. Minimise tooling dependencies.** Default to *not* taking a new dependency. The bar for adding one is low — real code simplification or substantial functionality is enough — but the bar for *keeping* one with no clear value is zero. Smaller dependency trees mean less supply-chain surface and less to keep updated. When you find an unused or marginal dependency, remove it.
+
+**3. Resolve through the lock file.** All Python dependency resolution produces a committed lock file that is the source of truth for what gets installed in CI and every environment. Do not bypass it with raw installs or unmanaged virtualenvs.
+
+**4. Pin dependencies precisely, and invoke them via the lock file.** Two halves of one supply-chain rule.
+
+*Pinning — three layers, because the right posture differs by who resolves the manifest.*
+
+- **Lock files** are the actual supply-chain and reproducibility control. They pin every package in the graph to an exact version *and* record its hash, so a tampered or re-uploaded artifact at a given version fails at install time. A bare version pin is **not** this control: a version string is a label, and the bytes behind it can change on the index — only the recorded hash detects that. This layer defends against both a malicious re-upload and a merely-buggy release that changes behaviour silently.
+- **Development and tooling dependencies** are exact-pinned in the manifest as well. They never reach an end user; they are the toolchain the repository runs on, so manifest exactness reinforces the lock file and stops a stray install from quietly relaxing one.
+- **Published runtime dependencies** use a floor with a compatibility cap — for packages at 1.0 or above, cap below the next major; for 0.x packages, cap below the next minor — and **not** an exact pin. Exact-pinning them is counterproductive: it gives end users no integrity protection (a version number is not a hash, dependency specifiers cannot carry hashes, and the wheel does not ship our lock file), and it can render the package uninstallable when a transitive dependency is yanked. The floor keeps the published artifact installable and composable downstream; the cap bounds an unattended fresh install to non-breaking releases.
+
+*Invocation.* Prefer invocation paths that resolve through the project's lock file rather than a global tool of the same name — the project runner and local binary directory over a resolver that falls back to the registry. The motivating incident: a globally installed test runner shadowed the locally pinned version and broke DOM environment setup silently. The lock file pin was correct; the invocation walked past it.
+
+**5. Lazy-load anything that expands the trust boundary.** Imports, code execution, external service connections — load them when their function is invoked, not at module import. A server at idle should expose as little as possible. Lazy loading also makes dependency vulnerabilities harder to reach even when present.
+
+**6. Don't break auditability.** It must remain possible to answer: what data entered the system, what left it, what code executed, what external services were contacted. Do not introduce code paths that make these questions unanswerable. Prefer designs that preserve or improve audit-trail clarity.
 
 ---
 
