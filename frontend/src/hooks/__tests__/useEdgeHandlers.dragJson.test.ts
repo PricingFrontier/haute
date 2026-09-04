@@ -16,7 +16,7 @@ import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useEdgeHandlers from "../useEdgeHandlers"
 import useToastStore from "../../stores/useToastStore"
-import { NODE_TYPES } from "../../utils/nodeTypes"
+import { NODE_TYPES, type NodeTypeValue } from "../../utils/nodeTypes"
 
 vi.mock("@xyflow/react", async () => {
   const actual = await vi.importActual("@xyflow/react")
@@ -47,6 +47,7 @@ function makeParams() {
     clearTrace: vi.fn(),
     screenToFlowPosition: vi.fn((pos: { x: number; y: number }) => pos),
     graphRefreshingRef: { current: 0 },
+    existingSingletonTypes: new Set<NodeTypeValue>(),
     resolveGraphIdentities: vi.fn(async (nodes: readonly Node[], edges: readonly Edge[]) => ({ nodes: [...nodes], edges: [...edges] })),
   }
 }

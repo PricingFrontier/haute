@@ -21,6 +21,7 @@ function makeParams() {
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
     fitView: vi.fn(),
+    submodels: {} as Record<string, unknown>,
     resolveNodeIdentities: vi.fn(async (nodes: readonly Node[]) => [...nodes]),
   }
 }
@@ -516,6 +517,45 @@ describe("useNodeHandlers", () => {
     expect(created.data.config).not.toHaveProperty("graph")
     expect(created.data.config).not.toHaveProperty("file")
     expect(created.data.config).not.toHaveProperty("childNodeIds")
+  })
+
+  it("refuses to instance a submodel definition containing a singleton", async () => {
+    const params = makeParams()
+    const source = makeNode("submodel_inputs", "submodel", {
+      data: {
+        label: "Inputs",
+        nodeType: "submodel",
+        config: { definitionId: "definition_inputs", alias: "inputs" },
+      },
+    })
+    params.graphRef.current = { nodes: [source], edges: [] }
+    params.submodels = {
+      definition_inputs: {
+        definitionId: "definition_inputs",
+        file: "modules/inputs.py",
+        graph: {
+          nodes: [makeNode("quote_input", "apiInput", {
+            data: { label: "Quote Input", nodeType: "apiInput", config: {} },
+          })],
+          edges: [],
+        },
+        inputPorts: [],
+        outputPorts: [],
+      },
+    }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    await act(async () => {
+      await result.current.handleCreateInstance(source.id)
+    })
+
+    expect(params.resolveNodeIdentities).not.toHaveBeenCalled()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "info",
+      text: expect.stringMatching(/contains.*Quote Input.*only one/i),
+    })
   })
 
   it("continues copy numbering past nine instead of nesting suffixes", async () => {

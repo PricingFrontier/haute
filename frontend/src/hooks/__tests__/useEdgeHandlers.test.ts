@@ -3,7 +3,7 @@ import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge, Connection } from "@xyflow/react"
 import useEdgeHandlers from "../useEdgeHandlers"
 import useToastStore from "../../stores/useToastStore"
-import { NODE_TYPES } from "../../utils/nodeTypes"
+import { NODE_TYPES, type NodeTypeValue } from "../../utils/nodeTypes"
 import { DEFAULT_TARGET_HANDLE, SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
 import { validatePipelineConnection } from "../../utils/connectionValidation"
 import type { SimpleNode } from "../../panels/editors/_shared"
@@ -28,6 +28,7 @@ function makeParams() {
     clearTrace: vi.fn(),
     screenToFlowPosition: vi.fn((pos: { x: number; y: number }) => pos),
     graphRefreshingRef: { current: 0 },
+    existingSingletonTypes: new Set<NodeTypeValue>(),
     resolveGraphIdentities: vi.fn(async (
       nodes: readonly Node[],
       edges: readonly Edge[],

@@ -17,7 +17,13 @@ import {
   type OnSelectionChangeFunc,
 } from "@xyflow/react"
 import { effectiveNodeType, isSubmodelInstanceConfig, nodeData } from "../types/node"
-import { NODE_TYPES, NODE_TYPE_META, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
+import {
+  NODE_TYPES,
+  NODE_TYPE_META,
+  isSingletonType,
+  singletonTypesInSubmodelDefinition,
+  type NodeTypeValue,
+} from "../utils/nodeTypes"
 import {
   finalizeResolvedEdgeJoinInsertion,
   insertEdgeJoinNode,
@@ -117,6 +123,7 @@ type UseEdgeHandlersParams = {
   clearTrace: () => void
   screenToFlowPosition: (pos: { x: number; y: number }) => { x: number; y: number }
   graphRefreshingRef: MutableRefObject<number>
+  existingSingletonTypes: ReadonlySet<NodeTypeValue>
   resolveGraphIdentities: (nodes: readonly Node[], edges: readonly Edge[]) => Promise<{ nodes: Node[]; edges: Edge[] }>
   findEdgeIdAtPoint?: (point: { x: number; y: number }) => string | null
   validateConnection?: (connection: Connection) => ConnectionValidationResult
@@ -153,6 +160,7 @@ export default function useEdgeHandlers({
   clearTrace,
   screenToFlowPosition,
   graphRefreshingRef,
+  existingSingletonTypes,
   resolveGraphIdentities,
   findEdgeIdAtPoint = () => null,
   validateConnection,
@@ -498,6 +506,9 @@ export default function useEdgeHandlers({
     event.preventDefault()
     const data = nodeData(node)
     const nt = data.nodeType
+    const containedSingletons = nt === NODE_TYPES.SUBMODEL && isSubmodelInstanceConfig(data.config)
+      ? singletonTypesInSubmodelDefinition(data.config.definitionId, submodels)
+      : new Set<NodeTypeValue>()
     setContextMenu({
       x: event.clientX,
       y: event.clientY,
@@ -507,9 +518,9 @@ export default function useEdgeHandlers({
       isSubmodelCopy: nt === NODE_TYPES.SUBMODEL
         && isSubmodelInstanceConfig(data.config)
         && data.config.instanceOf !== undefined,
-      isSingleton: isSingletonType(nt),
+      isSingleton: isSingletonType(nt) || containedSingletons.size > 0,
     })
-  }, [setContextMenu])
+  }, [setContextMenu, submodels])
 
   const onDragOver = useCallback((event: DragEvent) => {
     event.preventDefault()
@@ -521,6 +532,18 @@ export default function useEdgeHandlers({
       event.preventDefault()
       const type = event.dataTransfer.getData("application/reactflow-type")
       if (!type) return
+
+      if (
+        isSingletonType(type)
+        && (
+          existingSingletonTypes.has(type as NodeTypeValue)
+          || graphRef.current.nodes.some((node) => nodeData(node).nodeType === type)
+        )
+      ) {
+        const name = NODE_TYPE_META[type as NodeTypeValue]?.name ?? type
+        addToast("info", `Only one ${name} node is allowed per pipeline`)
+        return
+      }
 
       // Parse the drag-config JSON. Malformed payloads must fail loudly
       // (Issue #35) — silently swallowing the error would create a node
@@ -573,7 +596,7 @@ export default function useEdgeHandlers({
         }
       })()
     },
-    [screenToFlowPosition, nodeIdCounterRef, graphRef, setNodes, setSelectedNode, setLastSelectedId, addToast, resolveGraphIdentities],
+    [screenToFlowPosition, nodeIdCounterRef, graphRef, setNodes, setSelectedNode, setLastSelectedId, addToast, existingSingletonTypes, resolveGraphIdentities],
   )
 
   return {

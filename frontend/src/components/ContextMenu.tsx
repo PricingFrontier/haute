@@ -9,6 +9,7 @@ interface ContextMenuProps {
   isSubmodel?: boolean
   /** A created instance copy: deletable directly, unlike its definition owner. */
   isSubmodelCopy?: boolean
+  /** Direct singleton, or a submodel whose definition contains one. */
   isSingleton?: boolean
   onClose: () => void
   onDelete: (id: string) => void
@@ -44,7 +45,7 @@ export default function ContextMenu({
     if (!isSingleton && !isSubmodel) {
       list.push({ label: "Duplicate", icon: Copy, action: () => onDuplicate(nodeId) })
     }
-    if (isSubmodel && onCreateInstance) {
+    if (isSubmodel && onCreateInstance && !isSingleton) {
       list.push({ label: "Create Instance", icon: Link2, action: () => onCreateInstance(nodeId) })
     }
     if (isSubmodel && onDissolveSubmodel) {

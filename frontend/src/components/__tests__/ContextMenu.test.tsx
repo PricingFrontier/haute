@@ -43,6 +43,11 @@ describe("ContextMenu", () => {
     expect(screen.queryByText("Duplicate")).not.toBeInTheDocument()
   })
 
+  it("hides Create Instance when a submodel contains a singleton", () => {
+    render(<ContextMenu {...makeProps({ onCreateInstance: vi.fn(), isSubmodel: true, isSingleton: true })} />)
+    expect(screen.queryByText("Create Instance")).not.toBeInTheDocument()
+  })
+
   it("shows Dissolve Submodel but no Delete for a definition owner", () => {
     render(<ContextMenu {...makeProps({ isSubmodel: true, nodeId: "instance_pricing", onDissolveSubmodel: vi.fn() })} />)
     expect(screen.getByText("Dissolve Submodel")).toBeInTheDocument()

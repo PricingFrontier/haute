@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import NodePalette from "../NodePalette"
-import type { Node } from "@xyflow/react"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 
 describe("NodePalette", () => {
@@ -37,10 +36,7 @@ describe("NodePalette", () => {
   })
 
   it("disables singleton types already present in graph", () => {
-    const nodes: Node[] = [
-      { id: "ai1", data: { label: "Quote Input", nodeType: NODE_TYPES.API_INPUT } } as unknown as Node,
-    ]
-    render(<NodePalette nodes={nodes} />)
+    render(<NodePalette existingSingletonTypes={new Set([NODE_TYPES.API_INPUT])} />)
     // The Quote Input item should have a "Only one" title indicating it's disabled
     const apiInputItem = screen.getByTitle(/Only one Quote Input/i)
     expect(apiInputItem).toBeInTheDocument()
@@ -48,14 +44,14 @@ describe("NodePalette", () => {
   })
 
   it("non-singleton items are draggable", () => {
-    render(<NodePalette nodes={[]} />)
+    render(<NodePalette />)
     // Data Input is not a singleton and should be draggable
     const item = screen.getByText("Data Input").closest("[draggable]")
     expect(item).toHaveAttribute("draggable", "true")
   })
 
   it("sets drag data on drag start for non-disabled items", () => {
-    render(<NodePalette nodes={[]} />)
+    render(<NodePalette />)
     const transformItem = screen.getByText("Polars").closest("[draggable]")!
     const setData = vi.fn()
     fireEvent.dragStart(transformItem, {
@@ -85,10 +81,7 @@ describe("NodePalette", () => {
   })
 
   it("disabled singleton shows visual disabled state", () => {
-    const nodes: Node[] = [
-      { id: "ai1", data: { label: "Quote Input", nodeType: NODE_TYPES.API_INPUT } } as unknown as Node,
-    ]
-    render(<NodePalette nodes={nodes} />)
+    render(<NodePalette existingSingletonTypes={new Set([NODE_TYPES.API_INPUT])} />)
     const item = screen.getByTitle(/Only one Quote Input/i)
     // Class assertion kept intentionally: opacity is the visible indicator of disabled state,
     // and there is no ARIA attribute or other behavioral signal to assert on here.
@@ -96,19 +89,13 @@ describe("NodePalette", () => {
   })
 
   it("disabled singleton item is not draggable", () => {
-    const nodes: Node[] = [
-      { id: "ai1", data: { label: "Quote Input", nodeType: NODE_TYPES.API_INPUT } } as unknown as Node,
-    ]
-    render(<NodePalette nodes={nodes} />)
+    render(<NodePalette existingSingletonTypes={new Set([NODE_TYPES.API_INPUT])} />)
     const item = screen.getByTitle(/Only one Quote Input/i)
     expect(item).not.toHaveAttribute("draggable", "true")
   })
 
   it("drag start does not set data for disabled items", () => {
-    const nodes: Node[] = [
-      { id: "ai1", data: { label: "Quote Input", nodeType: NODE_TYPES.API_INPUT } } as unknown as Node,
-    ]
-    render(<NodePalette nodes={nodes} />)
+    render(<NodePalette existingSingletonTypes={new Set([NODE_TYPES.API_INPUT])} />)
     const item = screen.getByTitle(/Only one Quote Input/i)
     const setData = vi.fn()
     fireEvent.dragStart(item, {
@@ -118,7 +105,7 @@ describe("NodePalette", () => {
   })
 
   it("sets effectAllowed to move on drag start", () => {
-    render(<NodePalette nodes={[]} />)
+    render(<NodePalette />)
     const transformItem = screen.getByText("Polars").closest("[draggable]")!
     const dataTransfer = { setData: vi.fn(), effectAllowed: "" }
     fireEvent.dragStart(transformItem, { dataTransfer })

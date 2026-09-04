@@ -1,7 +1,9 @@
 import { Database, Brain, TableProperties, CircleDot, HardDriveDownload, FileArchive, Package, ArrowRight, Radio, ToggleLeft, SlidersHorizontal, FlaskConical, Target, Crosshair, Rows3, Hash, Search, GitMerge } from "lucide-react"
+import type { Node } from "@xyflow/react"
 import PolarsIcon from "../components/PolarsIcon"
 import { NODE_GROUP_COLORS } from "../theme/colors"
 import {
+  isSubmodelDefinition,
   PIPELINE_NODE_TYPES,
   type NodeTypeValue,
 } from "../types/node"
@@ -69,6 +71,53 @@ export const SINGLETON_TYPES = new Set<NodeTypeValue>([
 /** Whether a node type allows only one instance per pipeline. */
 export function isSingletonType(nodeType: string | undefined): boolean {
   return Boolean(nodeType && SINGLETON_TYPES.has(nodeType as NodeTypeValue))
+}
+
+type NodeTypeCarrier = Pick<Node, "data">
+
+function collectSingletonTypes(
+  nodes: readonly NodeTypeCarrier[],
+  submodels: Record<string, unknown> | null | undefined,
+  result: Set<NodeTypeValue>,
+  visitedDefinitions: Set<string>,
+): void {
+  for (const node of nodes) {
+    const nodeType = node.data.nodeType
+    if (typeof nodeType === "string" && isSingletonType(nodeType)) {
+      result.add(nodeType as NodeTypeValue)
+    }
+  }
+  for (const [definitionId, candidate] of Object.entries(submodels ?? {})) {
+    if (visitedDefinitions.has(definitionId)) continue
+    if (!isSubmodelDefinition(candidate, definitionId)) continue
+    visitedDefinitions.add(definitionId)
+    collectSingletonTypes(
+      candidate.graph.nodes,
+      candidate.graph.submodels,
+      result,
+      visitedDefinitions,
+    )
+  }
+}
+
+/** Singleton types occupied anywhere in one canonical pipeline document. */
+export function singletonTypesInDocument(
+  rootNodes: readonly NodeTypeCarrier[],
+  submodels?: Record<string, unknown> | null,
+): Set<NodeTypeValue> {
+  const result = new Set<NodeTypeValue>()
+  collectSingletonTypes(rootNodes, submodels, result, new Set<string>())
+  return result
+}
+
+/** Singleton types that would be cloned by another occurrence of a definition. */
+export function singletonTypesInSubmodelDefinition(
+  definitionId: string,
+  submodels?: Record<string, unknown> | null,
+): Set<NodeTypeValue> {
+  const definition = submodels?.[definitionId]
+  if (!isSubmodelDefinition(definition, definitionId)) return new Set<NodeTypeValue>()
+  return singletonTypesInDocument(definition.graph.nodes, definition.graph.submodels)
 }
 
 /** Nodes that only produce data — no input handle. */

@@ -4,7 +4,7 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { isProtectedSubmodelNodeData, nodeData } from "../types/node"
-import { isSingletonType } from "../utils/nodeTypes"
+import { isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
 import { requestSubmodelCreation } from "../utils/submodelCreation"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 
@@ -29,6 +29,7 @@ interface KeyboardShortcutsParams {
   closePanel: () => void
   isInsideSubmodel: boolean
   readOnly: boolean
+  existingSingletonTypes: ReadonlySet<NodeTypeValue>
   resolveGraphIdentities: (
     nodes: readonly Node[],
     edges: readonly Edge[],
@@ -72,7 +73,7 @@ export default function useKeyboardShortcuts({
   handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
   graphRef, clipboard, nodeIdCounter,
   setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
-  isInsideSubmodel, readOnly,
+  isInsideSubmodel, readOnly, existingSingletonTypes,
   resolveGraphIdentities,
   commitSharedNodeDeletion,
 }: KeyboardShortcutsParams) {
@@ -138,15 +139,19 @@ export default function useKeyboardShortcuts({
         if (copiedNodes.length === 0) return
         e.preventDefault()
         const capturedGraph = graphRef.current
-        // Filter out singleton types that already exist in the graph
-        const existingSingletonTypes = new Set<string>()
+        // Submodel boundaries do not create a second singleton scope. Include
+        // the immediate graph too in case it changed before React re-rendered.
+        const occupiedSingletonTypes = new Set<string>(existingSingletonTypes)
         for (const n of capturedGraph.nodes) {
           const nt = nodeData(n).nodeType
-          if (isSingletonType(nt)) existingSingletonTypes.add(nt!)
+          if (isSingletonType(nt)) occupiedSingletonTypes.add(nt!)
         }
         const pasteable = copiedNodes.filter((n) => {
           const nt = nodeData(n).nodeType
-          return !(isSingletonType(nt) && existingSingletonTypes.has(nt!))
+          if (!isSingletonType(nt)) return true
+          if (occupiedSingletonTypes.has(nt!)) return false
+          occupiedSingletonTypes.add(nt!)
+          return true
         })
         if (pasteable.length === 0) return
         const idMap = new Map<string, string>()
@@ -330,6 +335,7 @@ export default function useKeyboardShortcuts({
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
     addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel, readOnly,
+    existingSingletonTypes,
     resolveGraphIdentities, commitSharedNodeDeletion,
   ])
 }

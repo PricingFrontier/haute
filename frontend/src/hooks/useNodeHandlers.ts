@@ -15,7 +15,12 @@ import {
   isSubmodelInstanceConfig,
   nodeData,
 } from "../types/node"
-import { NODE_TYPES, isSingletonType } from "../utils/nodeTypes"
+import {
+  NODE_TYPES,
+  NODE_TYPE_META,
+  isSingletonType,
+  singletonTypesInSubmodelDefinition,
+} from "../utils/nodeTypes"
 import { getLayoutedElements } from "../utils/layout"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
@@ -33,6 +38,7 @@ type UseNodeHandlersParams = {
   setLastSelectedId?: (id: string | null) => void
   setPreviewData: (updater: React.SetStateAction<PreviewData | null>) => void
   fitView: (opts?: { padding?: number }) => void
+  submodels: Record<string, unknown>
   resolveNodeIdentities: (nodes: readonly Node[]) => Promise<Node[]>
   commitSharedNodeDeletion?: (
     nodeIds: ReadonlySet<string>,
@@ -68,6 +74,7 @@ export default function useNodeHandlers({
   setLastSelectedId,
   setPreviewData,
   fitView,
+  submodels,
   resolveNodeIdentities,
   commitSharedNodeDeletion,
 }: UseNodeHandlersParams) {
@@ -213,6 +220,20 @@ export default function useNodeHandlers({
         addToast("error", `Cannot create instance of "${origData.label}": missing submodel definition identity`)
         return
       }
+      const containedSingletons = singletonTypesInSubmodelDefinition(
+        config.definitionId,
+        submodels,
+      )
+      if (containedSingletons.size > 0) {
+        const names = [...containedSingletons]
+          .map((nodeType) => NODE_TYPE_META[nodeType].name)
+          .join(", ")
+        addToast(
+          "info",
+          `Cannot create instance of "${origData.label}": its definition contains ${names}, and only one node of each singleton type is allowed per pipeline`,
+        )
+        return
+      }
       const ownerId = config.instanceOf ?? original.id
       const owner = n.find((node) => node.id === ownerId)
       const ownerConfig = owner ? nodeData(owner).config : undefined
@@ -304,7 +325,7 @@ export default function useNodeHandlers({
     } catch (err: unknown) {
       addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, resolveNodeIdentities])
+  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, submodels, resolveNodeIdentities])
 
   const handleRenameNode = useCallback((id: string) => {
     const { nodes: n } = graphRef.current

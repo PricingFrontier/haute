@@ -98,10 +98,13 @@ by one shared **definition** and any number of parent-graph **instances**:
 Creating another instance is a pure parent-graph mutation performed by the
 canvas: it adds a new occurrence with a fresh immutable id and stable alias
 whose `instanceOf` points at the definition owner, and does not create or copy
-a file. Removing an instance copy removes only that occurrence and its parent
-bindings, and is permitted from every canvas delete surface. The definition
-owner is never raw-deleted from any surface — it anchors the shared
-definition, so retiring it means dissolving the submodel (after its copies are
+a file. A definition containing a document-wide singleton node (`apiInput`,
+`output`, or `liveSwitch`) cannot be instantiated because flattening would
+create another executable occurrence of that singleton. Removing an instance
+copy removes only that occurrence and its parent bindings, and is permitted
+from every canvas delete surface. The definition owner is never raw-deleted
+from any surface — it anchors the shared definition, so retiring it means
+dissolving the submodel (after its copies are
 removed or dissolved); blocked attempts say so visibly. The owner cannot be
 dissolved while instances still reference it. Renaming an occurrence changes
 presentation only. Drilling into the owner opens the shared definition editor and states

@@ -969,6 +969,66 @@ describe("App integration — add a node via drag-and-drop from the palette", ()
       expect(useGraphStore.getState().nodes.length).toBe(before + 1)
     })
   })
+
+  it("keeps a Quote Input inside a submodel singleton across the whole document", async () => {
+    const occurrence = makeNode("inputs", "Inputs", "submodel")
+    occurrence.data.config = { definitionId: "definition_inputs", alias: "inputs" }
+    const nestedApiInput = makeNode("quote_input", "Nested Quote Input", "apiInput")
+
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+      nodes: [occurrence],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-nested-singleton",
+      submodels: {
+        definition_inputs: {
+          definitionId: "definition_inputs",
+          file: "modules/inputs.py",
+          graph: { nodes: [nestedApiInput], edges: [] },
+          inputPorts: [],
+          outputPorts: [],
+        },
+      },
+    }))
+    render(<App />)
+    await waitForAppReady()
+
+    const paletteItem = screen.getByTestId("node-palette-item-apiInput")
+    expect(paletteItem).toHaveAttribute("draggable", "false")
+    expect(paletteItem).toHaveAttribute("title", expect.stringMatching(/only one Quote Input/i))
+    const identityCallsBeforeDrop = vi.mocked(api.resolveEditorNodeIdentities).mock.calls.length
+
+    // The drop handler is an independent commit-time guard: a stale drag that
+    // began before navigation, or a synthetic payload, must not bypass the
+    // palette's presentation state.
+    const canvas = document.querySelector(".react-flow") as HTMLElement | null
+    expect(canvas, "ReactFlow canvas container rendered").not.toBeNull()
+    const data = new Map<string, string>([
+      ["application/reactflow-type", "apiInput"],
+      ["application/reactflow-config", JSON.stringify({ path: "" })],
+    ])
+    const dataTransfer = {
+      dropEffect: "none",
+      effectAllowed: "move",
+      getData: (type: string): string => data.get(type) ?? "",
+      setData: (type: string, value: string): void => { data.set(type, value) },
+      clearData: (): void => { data.clear() },
+      types: [] as ReadonlyArray<string>,
+      files: [] as unknown as FileList,
+      items: [] as unknown as DataTransferItemList,
+    }
+
+    fireEvent.dragOver(canvas!, { dataTransfer })
+    fireEvent.drop(canvas!, { dataTransfer })
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/only one Quote Input/i)
+    })
+    expect(useGraphStore.getState().nodes).toHaveLength(1)
+    expect(api.resolveEditorNodeIdentities).toHaveBeenCalledTimes(identityCallsBeforeDrop)
+  })
 })
 
 describe("App integration — save pipeline", () => {

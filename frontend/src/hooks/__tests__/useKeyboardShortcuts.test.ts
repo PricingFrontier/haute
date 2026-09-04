@@ -5,6 +5,7 @@ import useKeyboardShortcuts from "../useKeyboardShortcuts"
 import useUIStore from "../../stores/useUIStore"
 import useToastStore from "../../stores/useToastStore"
 import { makeNode } from "../../test-utils/factories"
+import type { NodeTypeValue } from "../../utils/nodeTypes"
 
 function resolvedIdentityGraph(
   nodes: readonly Node[],
@@ -45,6 +46,7 @@ function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0
     closePanel: vi.fn(),
     isInsideSubmodel: false,
     readOnly: false,
+    existingSingletonTypes: new Set<NodeTypeValue>(),
     resolveGraphIdentities: vi.fn(async (
       nodes: readonly Node[],
       edges: readonly Edge[],
@@ -356,6 +358,22 @@ describe("useKeyboardShortcuts", () => {
       edges: [],
     }
     fireKey("v", { ctrlKey: true })
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+  })
+
+  it("Ctrl+V treats a singleton inside another document graph as occupied", () => {
+    const occupiedSingletonTypes = params.existingSingletonTypes as Set<NodeTypeValue>
+    occupiedSingletonTypes.add("apiInput")
+    params.clipboard.current = {
+      nodes: [
+        { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" }, type: "pipelineNode" } as unknown as Node,
+      ],
+      edges: [],
+    }
+
+    fireKey("v", { ctrlKey: true })
+
+    expect(params.resolveGraphIdentities).not.toHaveBeenCalled()
     expect(params.setNodesAndEdges).not.toHaveBeenCalled()
   })
 

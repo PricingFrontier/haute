@@ -68,7 +68,12 @@ import useNodeResultsStore from "./stores/useNodeResultsStore"
 import useDocumentStatusStore from "./stores/useDocumentStatusStore"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
-import { NODE_TYPES, isSingletonType } from "./utils/nodeTypes"
+import {
+  NODE_TYPES,
+  isSingletonType,
+  singletonTypesInDocument,
+  singletonTypesInSubmodelDefinition,
+} from "./utils/nodeTypes"
 import { previewForActiveNode } from "./utils/activePreview"
 import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./utils/edgeJoinGraph"
 import { validatePipelineConnection, type ConnectionValidationResult } from "./utils/connectionValidation"
@@ -849,6 +854,17 @@ function FlowEditor() {
     reservedApiInputFrameLabels,
   })
 
+  // Drilling replaces the visible graph in the store. The reactive navigation
+  // snapshot retains the root graph while a definition is on screen, so the
+  // document-wide singleton policy does not depend on the current view.
+  const documentRootNodes = viewStack.length > 1
+    ? (viewStack[0]._savedNodes ?? nodes)
+    : nodes
+  const existingSingletonTypes = useMemo(
+    () => singletonTypesInDocument(documentRootNodes, submodels),
+    [documentRootNodes, submodels],
+  )
+
   const handleRepairApplied = useCallback((
     document: import("./types/pipelineDocument").PipelineEditorDocument,
   ) => {
@@ -1037,6 +1053,7 @@ function FlowEditor() {
     closePanel,
     isInsideSubmodel: viewStack.length > 1,
     readOnly: editingReadOnly,
+    existingSingletonTypes,
     resolveGraphIdentities: resolveCandidateGraphIdentities,
     commitSharedNodeDeletion,
   })
@@ -1049,6 +1066,7 @@ function FlowEditor() {
     setNodes, setNodesAndEdges, setSelectedNode,
     setLastSelectedId,
     setPreviewData, fitView,
+    submodels,
     resolveNodeIdentities,
     commitSharedNodeDeletion,
   })
@@ -1063,12 +1081,21 @@ function FlowEditor() {
     [nodes],
   )
   const selectedNodeIds = useMemo(() => selectedNodes.map((n) => n.id), [selectedNodes])
+  const selectedSubmodelHasSingleton = useMemo(() => {
+    if (selectedNodes.length !== 1) return false
+    const data = nodeData(selectedNodes[0])
+    if (data.nodeType !== NODE_TYPES.SUBMODEL || !isSubmodelInstanceConfig(data.config)) {
+      return false
+    }
+    return singletonTypesInSubmodelDefinition(data.config.definitionId, submodels).size > 0
+  }, [selectedNodes, submodels])
   const canCreateSubmodel = !editingReadOnly
     && viewStack.length <= 1
     && selectedNodeIds.length >= 2
   const canCreateInstance = !editingReadOnly
     && selectedNodes.length === 1
     && !isSingletonType(nodeData(selectedNodes[0]).nodeType)
+    && !selectedSubmodelHasSingleton
   // The `can*` flags above drive presentation only. The request paths below
   // enforce policy AND say why they refused, exactly as Ctrl+G does — a
   // toolbar button that swallows the click in silence is the one case where the
@@ -1167,6 +1194,7 @@ function FlowEditor() {
     clearTrace,
     screenToFlowPosition,
     graphRefreshingRef,
+    existingSingletonTypes,
     resolveGraphIdentities: resolveCandidateGraphIdentities,
     findEdgeIdAtPoint,
     validateConnection,
@@ -1385,7 +1413,10 @@ function FlowEditor() {
         >
           {paletteOpen ? (
             <ErrorBoundary name="NodePalette">
-              <NodePalette onCollapse={() => setPaletteOpen(false)} nodes={nodes} />
+              <NodePalette
+                onCollapse={() => setPaletteOpen(false)}
+                existingSingletonTypes={existingSingletonTypes}
+              />
             </ErrorBoundary>
           ) : (
             <button

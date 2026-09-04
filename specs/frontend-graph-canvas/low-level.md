@@ -886,13 +886,18 @@ newer overlapping transform.
   rejected, and a third incoming edge of any role is rejected — independent
   of the generic `maxInputs` check, which edge-join nodes bypass entirely.
 - **`handleDuplicateNode`, singleton types, and reusable submodels.**
-  Duplicating a node whose type is in `SINGLETON_TYPES` (`apiInput`, `output`,
-  or `liveSwitch`) is a silent no-op because the palette already prevents a
-  second one. Generic duplication of a `SUBMODEL` is absent from its context
-  menu and rejected visibly by the handler with direction to use Create
-  Instance; that path allocates a fresh occurrence id and alias. Duplication,
-  paste, and context-menu creation consume the same singleton metadata that
-  mirrors the backend save invariant.
+  Singleton occupancy is document-wide, not limited to the graph currently
+  visible on the canvas: root nodes and every embedded submodel definition are
+  considered together. The palette disables an occupied `SINGLETON_TYPES`
+  entry (`apiInput`, `output`, or `liveSwitch`), while the drop handler repeats
+  the check at commit time so stale or synthetic drag data cannot bypass it.
+  Duplicating a singleton remains a silent no-op and paste filters occupied
+  singleton types against the same document-wide set. Generic duplication of
+  a `SUBMODEL` is absent from its context menu and rejected visibly by the
+  handler with direction to use Create Instance; a definition that contains a
+  singleton cannot be instantiated because that would create a second
+  executable occurrence. These creation paths consume the same singleton
+  metadata and mirror the backend save invariant.
 - **`onDrop`'s config JSON never falls back to `{}` on a parse failure** — a
   malformed or non-object payload aborts node creation entirely (toast,
   return) rather than creating a node with an empty config that would then

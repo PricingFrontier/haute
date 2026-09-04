@@ -317,9 +317,12 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
 **Pipeline save (`SavePipelineService.save`)**, run inside the process-wide `save_lock` (an
 `asyncio.Lock`, so it serialises against concurrent submodel create/dissolve as well as
 concurrent plain saves, but does not coordinate another worker process):
-1. Validate singleton node types (at most one `apiInput`/`output`/`liveSwitch`), unique
-   sanitized node names (per-graph, then cross-module against every embedded submodel graph),
-   and that no node carries a `_load_error` marker.
+1. Flatten submodel occurrences and validate singleton node types (at most one
+   `apiInput`/`output`/`liveSwitch`) across the resulting executable pipeline, then validate
+   unique sanitized node names (per-graph, then cross-module against every embedded submodel
+   graph) and that no node carries a `_load_error` marker. A submodel boundary cannot hide a
+   second singleton, and creating another occurrence of a definition that contains one counts
+   as another executable singleton.
 2. Resolve and validate `source_file` against the active pipeline root.
    Before the remaining preflights, parse the current persisted parent and
    diff its canonical definition registry against the submitted graph. Every
