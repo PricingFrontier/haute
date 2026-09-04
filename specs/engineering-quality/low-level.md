@@ -144,8 +144,11 @@
   `pytest.mark.flaky` in its exact fingerprint budget (zero at present). The
   generated Markdown groups live site counts by signal and lists each mutation
   target separately, so a reviewer can act without reading the scanner's
-  implementation. The Playwright CI retry allowance is pinned to exactly 2 by a
-  direct assertion against `frontend/playwright.config.ts`.
+  implementation. Its full-corpus regeneration assertion has a 180-second
+  per-test ceiling so the sharded coverage lane retains bounded failure while
+  allowing for instrumentation and runner contention. The Playwright CI retry
+  allowance is pinned to exactly 2 by a direct assertion against
+  `frontend/playwright.config.ts`.
 - **Performance report schema 4** contains top-level `environment`, `workload`,
   `resources`, and `wall_time` records plus per-test bounded evidence.
   Unavailable numeric counters are JSON `null`; reported pytest phase time plus

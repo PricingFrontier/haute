@@ -17,6 +17,8 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 TESTS_DIR = Path(__file__).parent
 REPO_ROOT = TESTS_DIR.parent
 
@@ -1190,7 +1192,11 @@ def test_playwright_ci_retry_budget_is_pinned() -> None:
     assert f"retries: process.env.CI ? {_PLAYWRIGHT_CI_RETRY_BUDGET} : 0," in source
 
 
+@pytest.mark.timeout(180)
 def test_test_health_summary_matches_regeneration() -> None:
+    # This regenerates from full backend/frontend source scans. Coverage
+    # tracing plus four-way shard contention can legitimately exceed the
+    # suite's 60-second default, so keep a larger but still bounded ceiling.
     checked_in = _TEST_HEALTH_SUMMARY_PATH.read_text(encoding="utf-8")
     regenerated = _test_health_summary()
     assert checked_in == regenerated, (
