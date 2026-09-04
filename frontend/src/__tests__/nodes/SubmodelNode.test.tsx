@@ -1,8 +1,8 @@
 /**
  * Tests for SubmodelNode component.
  *
- * Tests: SUBMODEL identity and name badge, frame-only body,
- * output port labels, per-port handles, opacity when dimmed,
+ * Tests: SUBMODEL identity and name badge, single collapsed input socket,
+ * output port labels, canonical edge anchors, opacity when dimmed,
  * border style (dashed vs solid).
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
@@ -10,7 +10,10 @@ import { render, screen, cleanup } from "@testing-library/react"
 import { ReactFlowProvider, type NodeProps } from "@xyflow/react"
 import SubmodelNode from "../../nodes/SubmodelNode"
 import type { SubmodelDefinition, SubmodelFlowNode, SubmodelNodeData } from "../../types/node"
-import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
+import {
+  DEFAULT_TARGET_HANDLE,
+  SUBMODEL_INPUT_HANDLE,
+} from "../../utils/flowHandles"
 import useGraphStore from "../../stores/useGraphStore"
 
 const DEFINITION_ID = "definition_pricing"
@@ -45,7 +48,7 @@ afterEach(() => {
 
 function makeProps(
   data: Partial<Omit<SubmodelNodeData, "config">> & { label: string; config?: Record<string, unknown> },
-  overrides: { selected?: boolean } = {},
+  overrides: { selected?: boolean; isConnectable?: boolean } = {},
 ) {
   const fullData = {
     description: "",
@@ -60,7 +63,7 @@ function makeProps(
     type: "submodel",
     data: fullData,
     selected: overrides.selected ?? false,
-    isConnectable: true,
+    isConnectable: overrides.isConnectable ?? true,
     positionAbsoluteX: 0,
     positionAbsoluteY: 0,
     zIndex: 0,
@@ -76,7 +79,7 @@ function makeProps(
 
 function renderNode(
   data: Partial<Omit<SubmodelNodeData, "config">> & { label: string; config?: Record<string, unknown> },
-  opts: { selected?: boolean } = {},
+  opts: { selected?: boolean; isConnectable?: boolean } = {},
 ) {
   const props = makeProps(data, opts)
   return render(
@@ -111,9 +114,32 @@ describe("SubmodelNode", () => {
     renderNode({ label: "Test" })
     expect(screen.queryByText("submodels/pricing.py")).toBeNull()
   })
-  it("does not render a body when there are no exported frames", () => {
-    renderNode({ label: "Test" })
-    expect(screen.queryByTestId("submodel-body")).toBeNull()
+  it("renders one generic input socket when its interface is empty", () => {
+    const { container } = renderNode({ label: "Test" })
+    const row = screen.getByTestId("submodel-input-row")
+    const handle = screen.getByTestId("submodel-input-handle")
+
+    expect(screen.getByTestId("submodel-body")).toContainElement(row)
+    expect(row).toHaveTextContent("inputs")
+    expect(handle).toHaveClass("react-flow__handle-left", "input-origin-handle")
+    expect(handle).toHaveAttribute("data-handleid", SUBMODEL_INPUT_HANDLE)
+    expect(container.querySelector(".react-flow__handle-right")).toBeNull()
+  })
+
+  it("keeps the one structural input socket on copies and read-only cards", () => {
+    const { unmount } = renderNode({
+      label: "Copy",
+      config: {
+        definitionId: DEFINITION_ID,
+        alias: "copy",
+        instanceOf: "owner",
+      },
+    })
+    expect(screen.getByTestId("submodel-input-handle")).toBeTruthy()
+    unmount()
+
+    renderNode({ label: "Owner" }, { isConnectable: false })
+    expect(screen.getByTestId("submodel-input-handle")).toBeTruthy()
   })
 
   it("renders definition-owned output port labels", () => {
@@ -137,7 +163,7 @@ describe("SubmodelNode", () => {
     expect(screen.getByText("Premium")).toBeTruthy()
     expect(screen.getByText("Discount")).toBeTruthy()
   })
-  it("renders per-port input handles from the definition contract", () => {
+  it("co-locates canonical input anchors under one visible socket", () => {
     setDefinition({
       graph: { nodes: [graphNode("base_rate"), graphNode("claims")], edges: [] },
       inputPorts: [
@@ -156,8 +182,23 @@ describe("SubmodelNode", () => {
     const { container } = renderNode({ label: "Test" })
     const handle1 = container.querySelector('[data-handleid="in__base_rate"]')
     const handle2 = container.querySelector('[data-handleid="in__claims"]')
+    const genericHandle = screen.getByTestId("submodel-input-handle")
     expect(handle1).toBeTruthy()
     expect(handle2).toBeTruthy()
+    expect(handle1).toHaveClass("submodel-input-edge-anchor")
+    expect(handle2).toHaveClass("submodel-input-edge-anchor")
+    expect(handle1).not.toHaveClass("input-origin-handle")
+    expect(handle2).not.toHaveClass("input-origin-handle")
+    expect(handle1).toHaveStyle({ pointerEvents: "none", top: "50%" })
+    expect(handle2).toHaveStyle({ pointerEvents: "none", top: "50%" })
+    expect(handle1?.parentElement).toBe(genericHandle.parentElement)
+    expect(handle2?.parentElement).toBe(genericHandle.parentElement)
+    expect(container.querySelectorAll(".input-origin-handle")).toHaveLength(1)
+    // React Flow breaks equal-distance overlap ties by measured DOM order.
+    // The interactive generic socket must win over its canonical edge anchors.
+    expect(container.querySelectorAll(".react-flow__handle.target")[0]).toBe(genericHandle)
+    expect(screen.queryByText("Base rate")).toBeNull()
+    expect(screen.queryByText("Claims")).toBeNull()
     expect(container.querySelector(
       '[data-handleid="' + DEFAULT_TARGET_HANDLE + '"]',
     )).toBeNull()
@@ -232,7 +273,10 @@ describe("SubmodelNode", () => {
       expect(container.querySelector(
         `[data-handleid="${DEFAULT_TARGET_HANDLE}"]`,
       )).toBeNull()
-      expect(screen.getByText("Policy data")).toBeTruthy()
+      expect(container.querySelector(
+        `[data-handleid="${SUBMODEL_INPUT_HANDLE}"]`,
+      )).toBeTruthy()
+      expect(screen.queryByText("Policy data")).toBeNull()
       expect(screen.getByText("Written premium")).toBeTruthy()
       expect(screen.getByRole("button")).toHaveAccessibleName(/2 child nodes/)
       expect(container.querySelector('[data-handleid*="internal_input_17"]')).toBeNull()
@@ -258,6 +302,9 @@ describe("SubmodelNode", () => {
       expect(screen.getByRole("alert")).toHaveTextContent("Definition unavailable or invalid")
       expect(container.querySelector(
         `[data-handleid="${DEFAULT_TARGET_HANDLE}"]`,
+      )).toBeNull()
+      expect(container.querySelector(
+        `[data-handleid="${SUBMODEL_INPUT_HANDLE}"]`,
       )).toBeNull()
     } finally {
       useGraphStore.setState({ submodels: previousSubmodels })
@@ -348,8 +395,13 @@ describe("SubmodelNode", () => {
     const secondRow = screen.getByTestId(
       "submodel-output-frame-row-out__polars_13",
     )
+    const inputHandle = screen.getByTestId("submodel-input-handle")
     expect(firstRow).toHaveTextContent("add_drivers")
+    expect(firstRow).toHaveTextContent("inputs")
+    expect(firstRow).toContainElement(inputHandle)
     expect(secondRow).toHaveTextContent("claims")
+    expect(secondRow).not.toHaveTextContent("inputs")
+    expect(screen.queryByTestId("submodel-input-row")).toBeNull()
 
     const firstLabel = screen.getByTestId(
       "submodel-output-body-label-out__polars_12",

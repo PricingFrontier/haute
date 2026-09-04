@@ -184,7 +184,6 @@ export function isSubmodelInputPort(value: unknown): value is SubmodelInputPort 
   return isNonBlankText(port.portId)
     && isNonBlankText(port.label)
     && Array.isArray(port.targets)
-    && port.targets.length > 0
     && port.targets.every(isSubmodelEndpoint)
 }
 

@@ -10,8 +10,17 @@ import {
   type SubmodelOutputPort,
   type SubmodelPortData,
 } from "../types/node"
-import { normalizeDefaultTargetHandle } from "./flowHandles"
+import {
+  normalizeDefaultTargetHandle,
+  SUBMODEL_INPUT_HANDLE,
+} from "./flowHandles"
 import { attachEditorEdgeIdentities } from "./editorIdentities"
+import {
+  edgeInputName,
+  submodelInputPortIdForName,
+  UNRESOLVED_INPUT_NAME,
+} from "./apiInputPorts"
+import { appEdge } from "./flowElements"
 import { buildSubmodelViewGraph } from "./submodelViewGraph"
 import type {
   SubmodelBoundaryEditResult,
@@ -91,7 +100,10 @@ function deriveInputPorts(
         targets.push(endpoint)
       }
     }
-    if (targets.length === 0) continue
+    // A parent-created port is intentionally visible before it has an
+    // internal route. Preserve that draft declaration; a previously routed
+    // and now unbound port retains the established delete-last-edge behavior.
+    if (targets.length === 0 && existing.targets.length > 0) continue
     result.push({
       ...existing,
       label: labels.get(existing.portId) ?? existing.label,
@@ -359,6 +371,16 @@ function nextEdgeId(base: string, edges: readonly Edge[]): string {
   return candidate
 }
 
+function nextInputPortId(definition: SubmodelDefinition): string {
+  const occupied = new Set([
+    ...definition.inputPorts.map((port) => port.portId),
+    ...definition.outputPorts.map((port) => port.portId),
+  ])
+  let index = 1
+  while (occupied.has(`input_${index}`)) index += 1
+  return `input_${index}`
+}
+
 function nextOutputPortId(definition: SubmodelDefinition): string {
   const occupied = new Set([
     ...definition.inputPorts.map((port) => port.portId),
@@ -367,6 +389,116 @@ function nextOutputPortId(definition: SubmodelDefinition): string {
   let index = 1
   while (occupied.has(`output_${index}`)) index += 1
   return `output_${index}`
+}
+
+export interface CanonicalSubmodelInputConnectionState {
+  nodes: Node[]
+  edges: PipelineEdge[]
+  submodels: Record<string, unknown>
+}
+
+export interface CanonicalSubmodelInputConnectionResult
+  extends CanonicalSubmodelInputConnectionState {
+  portId: string
+}
+
+/**
+ * Bind a parent frame through a submodel's one visible input socket.
+ * Existing frame identities reuse their stable public port on any occurrence;
+ * only the owner may extend the definition with a genuinely new identity. The
+ * committed edge always uses the canonical named handle, so the interaction-
+ * only generic id never enters graph state.
+ */
+export function connectCanonicalSubmodelInputFromParentConnection(
+  state: CanonicalSubmodelInputConnectionState,
+  connection: Connection,
+): CanonicalSubmodelInputConnectionResult | null {
+  if (connection.targetHandle !== SUBMODEL_INPUT_HANDLE) return null
+  if (!connection.source || !connection.target) {
+    throw new Error("Submodel input connection requires complete endpoints")
+  }
+
+  const target = state.nodes.find((node) => node.id === connection.target)
+  if (!target || target.data.nodeType !== "submodel") {
+    throw new Error("The generic submodel input handle must target a submodel")
+  }
+  const config = target.data.config
+  if (!isSubmodelInstanceConfig(config)) {
+    throw new Error(`Submodel instance ${target.id} has malformed canonical identity`)
+  }
+  const definitionValue = state.submodels[config.definitionId]
+  if (!isSubmodelDefinition(definitionValue, config.definitionId)) {
+    throw new Error(`Submodel definition ${config.definitionId} is missing or malformed`)
+  }
+  const source = state.nodes.find((node) => node.id === connection.source)
+  if (!source) throw new Error(`Input source ${connection.source} is missing`)
+  const probe = appEdge({
+    source: connection.source,
+    sourceHandle: connection.sourceHandle ?? null,
+    target: connection.target,
+    targetHandle: null,
+  })
+  const inputName = edgeInputName(
+    probe,
+    source as unknown as Parameters<typeof edgeInputName>[1],
+    state.submodels,
+  )
+  if (inputName === UNRESOLVED_INPUT_NAME) {
+    throw new Error("The incoming frame has no authoritative identity")
+  }
+  const definition = definitionValue
+  let portId = submodelInputPortIdForName(definition, inputName)
+  let nextSubmodels = state.submodels
+  if (portId === null) {
+    if (config.instanceOf !== undefined) {
+      throw new Error("New public inputs can only be added through the definition owner")
+    }
+    portId = nextInputPortId(definition)
+    const nextDefinition: SubmodelDefinition = {
+      ...definition,
+      inputPorts: [
+        ...definition.inputPorts,
+        {
+          portId,
+          label: inputName,
+          targets: [],
+        },
+      ],
+      _inputPortInputNames: {
+        ...definition._inputPortInputNames,
+        [portId]: inputName,
+      },
+    }
+    nextSubmodels = {
+      ...state.submodels,
+      [config.definitionId]: nextDefinition,
+    }
+  }
+
+  const canonicalTargetHandle = `in__${portId}`
+  if (state.edges.some(
+    (candidate) => candidate.target === target.id
+      && candidate.targetHandle === canonicalTargetHandle,
+  )) {
+    throw new Error(`Public input "${inputName}" is already bound on ${target.id}`)
+  }
+  const edge = attachEditorEdgeIdentities([
+    appEdge({
+      source: connection.source,
+      sourceHandle: connection.sourceHandle ?? null,
+      target: connection.target,
+      targetHandle: canonicalTargetHandle,
+    }),
+  ], state.nodes)[0]
+  if (!edge || edge.data?._inputName !== inputName) {
+    throw new Error(`Public input ${portId} could not retain its authoritative frame identity`)
+  }
+  return {
+    portId,
+    nodes: state.nodes,
+    edges: [...state.edges, edge],
+    submodels: nextSubmodels,
+  }
 }
 
 export function applyCanonicalSubmodelBoundaryConnection(

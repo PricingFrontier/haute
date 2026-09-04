@@ -34,7 +34,7 @@ occurrence-owned state:
 ```text
 SubmodelEndpoint { nodeId: NodeId, handleId: HandleId | null }
 SubmodelInputPort { portId: PortId, label: string,
-                    targets: non-empty ordered list[SubmodelEndpoint] }
+                    targets: ordered list[SubmodelEndpoint] }
 SubmodelOutputPort { portId: PortId, label: string,
                      source: SubmodelEndpoint }
 SubmodelDefinition { definitionId, file, graph,
@@ -46,6 +46,13 @@ PipelineGraph { nodes[], edges[], submodels: map[definitionId, definition] }
 `PipelineGraph` is consumed through typed attributes and validated model-copy
 operations only. It deliberately has no legacy dictionary `[]`, `get`, or
 in-place `update` surface.
+
+An empty `SubmodelInputPort.targets` list represents a declared public frame
+that has not yet been routed inside the definition. The declaration remains
+serialisable when unbound. When an occurrence binds that port, the canonical
+Save validation and execution expansion both raise a contextual `ParseError`
+instead of silently dropping the incoming edge; the normal parent-first flow
+routes it in the drilled view before Save.
 
 Each `SUBMODEL` node is one occurrence and its node id is its immutable
 `instanceId`. Its config is validated as `SubmodelInstanceConfig`; node label
@@ -344,8 +351,9 @@ Acquires `save_lock` and runs the body in a threadpool:
   the bindings.
 - **Flatten validates before dropping anything.** Every occurrence must resolve
   a definition, every boundary handle must name a declared port with the right
-  direction, and every public endpoint must exist. Missing, wrong-prefixed, or
-  stale bindings raise contextual `ParseError` before output construction.
+  direction, every bound input port must have at least one internal target, and
+  every public endpoint must exist. Missing, wrong-prefixed, unrouted, or stale
+  bindings raise contextual `ParseError` before output construction.
 - **Flatten is identity-preserving when the graph has no occurrences.** An
   explicit unknown `target_instance_id` is an error rather than a no-op.
 - **Inbound edge-join roles survive flattening.** A public input port targeting

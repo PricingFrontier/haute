@@ -21,7 +21,7 @@ type PortPropsData = Partial<SubmodelPortData> & {
   portName?: string
 }
 
-function makeProps(data: PortPropsData) {
+function makeProps(data: PortPropsData, isConnectable = true) {
   const { portName, ...typedData } = data
   const fallbackFrameLabel = portName || data.label || "frame"
   const fullData: SubmodelPortData = {
@@ -42,7 +42,7 @@ function makeProps(data: PortPropsData) {
     type: "submodelPort",
     data: fullData,
     selected: false,
-    isConnectable: true,
+    isConnectable,
     positionAbsoluteX: 0,
     positionAbsoluteY: 0,
     zIndex: 0,
@@ -56,8 +56,8 @@ function makeProps(data: PortPropsData) {
   }
 }
 
-function renderPortNode(data: PortPropsData) {
-  const props = makeProps(data)
+function renderPortNode(data: PortPropsData, isConnectable = true) {
+  const props = makeProps(data, isConnectable)
   return render(
     <ReactFlowProvider>
       <SubmodelPortNode {...(props as unknown as NodeProps<SubmodelPortFlowNode>)} />
@@ -114,6 +114,8 @@ describe("SubmodelPortNode", () => {
     })
     const targetHandle = container.querySelector(".react-flow__handle-left")
     expect(targetHandle).toBeTruthy()
+    expect(targetHandle).toHaveClass("input-origin-handle")
+    expect(screen.getByText("inputs")).toHaveStyle({ color: "var(--text-muted)" })
   })
 
   it("does NOT render target handle for input port direction", () => {
@@ -218,7 +220,7 @@ describe("SubmodelPortNode", () => {
     })
 
     expect(screen.getByText("OUTPUT")).toBeTruthy()
-    expect(screen.getByText("Connect frames to export")).toBeTruthy()
+    expect(screen.getByText("inputs")).toBeTruthy()
     expect(screen.queryByText("claims")).toBeNull()
     expect(screen.queryByText("quote")).toBeNull()
     const targets = container.querySelectorAll(".react-flow__handle-left")
@@ -226,15 +228,28 @@ describe("SubmodelPortNode", () => {
     expect(targets[0]).toHaveAttribute("data-handleid", DEFAULT_TARGET_HANDLE)
   })
 
-  it("renders the Input empty state without a handle row", () => {
-    renderPortNode({ portDirection: "input", ports: [] })
-    expect(screen.getByText("No input frames")).toBeTruthy()
-    expect(screen.queryByRole("button", { name: /frame/i })).toBeNull()
+  it("shows an empty state without a drilled-in creation handle", () => {
+    const { container } = renderPortNode({ portDirection: "input", ports: [] })
+    expect(screen.getByText("No input frames")).toHaveStyle({ color: "var(--text-muted)" })
+    expect(screen.queryByText("new input")).toBeNull()
+    expect(container.querySelector(".react-flow__handle-right")).toBeNull()
+  })
+
+  it("renders only declared named inputs in editable and read-only views", () => {
+    const data: PortPropsData = { portDirection: "input", portName: "existing" }
+    const { unmount } = renderPortNode(data)
+    expect(screen.getByText("existing")).toBeTruthy()
+    expect(screen.queryByText("new input")).toBeNull()
+    unmount()
+
+    renderPortNode(data, false)
+    expect(screen.getByText("existing")).toBeTruthy()
+    expect(screen.queryByText("new input")).toBeNull()
   })
 
   it("keeps the shared Output target when no frame is exported", () => {
     const { container } = renderPortNode({ portDirection: "output", ports: [] })
-    expect(screen.getByText("Connect frames to export")).toBeTruthy()
+    expect(screen.getByText("inputs")).toBeTruthy()
     expect(container.querySelectorAll(".react-flow__handle-left")).toHaveLength(1)
   })
 

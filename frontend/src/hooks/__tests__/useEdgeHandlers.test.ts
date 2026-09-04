@@ -4,7 +4,7 @@ import type { Node, Edge, Connection } from "@xyflow/react"
 import useEdgeHandlers from "../useEdgeHandlers"
 import useToastStore from "../../stores/useToastStore"
 import { NODE_TYPES } from "../../utils/nodeTypes"
-import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
+import { DEFAULT_TARGET_HANDLE, SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
 import { validatePipelineConnection } from "../../utils/connectionValidation"
 import type { SimpleNode } from "../../panels/editors/_shared"
 
@@ -630,6 +630,45 @@ describe("useEdgeHandlers", () => {
     })
     expect(useToastStore.getState().toasts).toEqual([
       expect.objectContaining({ type: "error", text: expect.stringMatching(/quotes.*already connected/i) }),
+    ])
+    expect(params.setEdges).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd reports the domain reason for an invalid targeted connection", () => {
+    const params = makeParams()
+    params.validateConnection = vi.fn(() => ({
+      ok: false,
+      reason: {
+        kind: "invalid-connection" as const,
+        message: "New public inputs can only be added through the definition owner",
+      },
+    }))
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({
+          from: "source",
+          to: "target",
+          fromHandleId: "out",
+          toHandleId: SUBMODEL_INPUT_HANDLE,
+          isValid: false,
+        }),
+      )
+    })
+
+    expect(params.validateConnection).toHaveBeenCalledWith({
+      source: "source",
+      sourceHandle: "out",
+      target: "target",
+      targetHandle: SUBMODEL_INPUT_HANDLE,
+    })
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        type: "error",
+        text: "Connection rejected: New public inputs can only be added through the definition owner",
+      }),
     ])
     expect(params.setEdges).not.toHaveBeenCalled()
   })

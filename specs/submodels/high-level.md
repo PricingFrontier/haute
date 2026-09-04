@@ -79,7 +79,7 @@ by one shared **definition** and any number of parent-graph **instances**:
   explicitly. Missing definition, instance, alias, or port identity is an
   invalid document and fails during parsing; identity is never inferred from a
   file name, node id, display label, registry key, or internal child id.
-- A public input port has an immutable `portId`, label, and one or more ordered
+- A public input port has an immutable `portId`, label, and zero or more ordered
   internal targets `{nodeId, handleId}`. Each occurrence may bind that public
   input from at most one parent edge; the single binding fans out to every
   declared target. A public output port has an immutable
@@ -112,12 +112,24 @@ paste/delete/undo/redo, palette drops, imports, and auto-layout. Preview, trace,
 selection, copy, pan, and zoom remain available. In v1, an owner edit that
 removes or changes a public port in
 use is blocked atomically and lists every affected instance/port; per-instance
-internal overrides and nested submodels remain unsupported. The public input
-interface is derived once at grouping time: v1 offers no GUI affordance for
-adding a new public *input* port afterwards — existing input ports can be
-rebound, relabelled, or removed (subject to the in-use guard), and adding one
-means editing the definition source. New public *output* ports can be added in
-the drilled view by wiring a child output to the Output boundary.
+internal overrides and nested submodels remain unsupported. Every collapsed
+occurrence presents one generic `inputs` socket rather than one socket per
+public frame. Multiple parent edges may share that socket. Each drop uses the
+upstream frame's authoritative executable name to select a declared public port;
+an owner atomically allocates the first unused `input_N` id when that identity is
+new, while a copy may bind only identities already present in the shared
+definition. The stored edge targets the canonical named `in__<portId>` handle,
+but every such handle is visually co-located at the one generic socket. The
+named frames are exposed only after drill-in, where the Input boundary renders
+them as a multi-frame output and each may be routed to one or more child targets.
+The Input boundary itself has no `new input` affordance. A public
+input with no child targets is a valid authored-but-unrouted interface state.
+An unbound declaration can be serialised, but a parent edge bound to that port
+blocks Save and execution clearly until the input is routed. Existing input
+ports can be fanned out, relabelled, or removed subject to the same in-use
+guard. New public output ports
+are added in the drilled view by wiring a child output to the Output boundary.
+Instance copies retain the generic parent socket and read-only drill-down.
 
 Flattening expands each occurrence independently. Runtime node ids are
 qualified from immutable `(instanceId, localNodeId)` values and retain a
@@ -184,7 +196,7 @@ must resolve the original pipeline-owned sidecars.
   (`submodel_instance_<uuid>`); the initial definition id and alias are the
   sanitised name, and the occurrence config is exactly
   `{definitionId, alias}`. Cross-boundary edges are grouped into stable public
-  ports: each logical input records one or more ordered internal targets and
+  ports: each logical input created by extraction records one or more ordered
   each output records one internal source. Parent handles are
   `in__<portId>`/`out__<portId>`, never internal node ids, and each logical
   input produces exactly one parent binding even when it fans out internally.

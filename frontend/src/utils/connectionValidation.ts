@@ -1,11 +1,13 @@
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../types/node"
 import { NODE_TYPES } from "./nodeTypes"
+import { SUBMODEL_INPUT_HANDLE } from "./flowHandles"
 import {
   edgeInputName,
   incomingEdgeInputNames,
   resolveSubmodelBoundaryNode,
   resolveSubmodelBoundaryNodes,
+  submodelInputPortIdForName,
 } from "./apiInputPorts"
 
 type ConnectionLike = {
@@ -54,7 +56,8 @@ function actualEdge(
     (targetNode?.data.nodeType === NODE_TYPES.API_INPUT
       && sourceNode?.data.nodeType !== NODE_TYPES.API_INPUT)
     || (sourceNode?.data.nodeType === NODE_TYPES.SUBMODEL
-      && connection.sourceHandle?.startsWith("in__"))
+      && (connection.sourceHandle?.startsWith("in__")
+        || connection.sourceHandle === SUBMODEL_INPUT_HANDLE))
     || (connection.sourceHandleType === "target"
       && connection.targetHandleType === "source")
   ) {
@@ -163,6 +166,29 @@ export function validatePipelineConnection(
       targetNode.data.nodeType === NODE_TYPES.SUBMODEL
       && isSubmodelInstanceConfig(targetNode.data.config)
     ) {
+      if (candidate.targetHandle === SUBMODEL_INPUT_HANDLE) {
+        const definition = submodels?.[targetNode.data.config.definitionId]
+        if (!isSubmodelDefinition(definition, targetNode.data.config.definitionId)) {
+          throw new Error("Canonical submodel definition is unavailable")
+        }
+        const portId = submodelInputPortIdForName(definition, candidateName)
+        if (portId === null) {
+          if (targetNode.data.config.instanceOf !== undefined) {
+            throw new Error("New public inputs can only be added through the definition owner")
+          }
+          return { ok: true }
+        }
+        if (edges.some(
+          (edge) => edge.target === candidate.target
+            && edge.targetHandle === `in__${portId}`,
+        )) {
+          return {
+            ok: false,
+            reason: { kind: "duplicate-input-name", inputName: candidateName },
+          }
+        }
+        return { ok: true }
+      }
       const targets = resolveSubmodelBoundaryNodes(
         targetNode,
         candidate.targetHandle,

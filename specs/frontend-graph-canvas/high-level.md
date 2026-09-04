@@ -110,7 +110,10 @@ candidate, with the error toast.
   edge-join nodes. Reduced zoom-dependent renderings were removed: they hid an
   API input's emitted frames and narrowed other nodes into a truncating label
   precisely when the whole graph was in view, which is when that structure is
-  most worth seeing.
+  most worth seeing. An ordinary card's body name is right-aligned on the card,
+  matching the placement of API-input and submodel output-frame names; this
+  alignment also applies when that body name is the node identity rather than a
+  labelled output handle.
 - **Canonical data-I/O nodes.** The 19-type frontend vocabulary matches the
   backend enum and includes `dataInput` and `dataOutput`, never historical
   Data Source/Data Sink aliases. Data Input is source-only; Data Output is a
@@ -134,7 +137,35 @@ candidate, with the error toast.
   source that emits nothing cannot be wired and every persisted API-input
   edge names a frame. The labelled handles are
   mounted on the body's frame rows, so each dot sits at the vertical centre of
-  the row naming its frame, and they stay there at every zoom level.
+  the row naming its frame, and they stay there at every zoom level. Every
+  ordinary source handle and labelled frame-row source handle permanently exposes
+  the muted-pastel inside half of its outlined full hover circle, derived from
+  that node's own accent. One marker is centred on and clipped at the real edge
+  origin at rest, then unclipped and strengthened on hover; the hover state is
+  not drawn by a separate shape that can drift from the resting marker. An ordinary
+  single-output handle is mounted in
+  the body-name row rather than centred on the whole card, so its marker and
+  edge origin sit directly beside that output name just as every multi-frame
+  handle sits beside its frame name. The marker is decorative and
+  pointer-transparent; the underlying React Flow handle retains connection
+  geometry and its larger invisible hit target. Edge-join markers keep their
+  specialised quiet-handle treatment. Input-capable ordinary cards mirror this
+  structure on the left side of the same body slot used by their single output:
+  the real default target handle and muted-grey lowercase `inputs` text share one
+  horizontal row with the right-aligned output name and source handle. A
+  pale-accent right-facing inside half of the connector's outlined hover circle
+  extends into the card from the target edge origin;
+  source-only cards simply omit that left-side content rather than adding another
+  row. A collapsed submodel occurrence likewise exposes exactly one visible
+  muted `inputs` target in its first output-frame row, or a standalone row when
+  it has no outputs. Every incoming frame uses that shared socket; public input
+  names and per-frame handles are deliberately absent from the collapsed card.
+  The edge is stored against its canonical named port at the same visual origin.
+  On an owner, a previously unseen authoritative frame identity creates that
+  public port; on any occurrence, an identity already declared by the definition
+  binds the existing port. A copy rejects identities that would change the
+  shared interface. After drill-in, the Input boundary is the multi-frame output:
+  it lists every named public input as its own source row for internal routing.
 - **API-input body.** An API-input node with at least one
   eligible emitted frame uses its body as the frame list: each visible
   frame name is a full-width row paired with its output handle, and the
@@ -164,9 +195,12 @@ candidate, with the error toast.
   alias in its right-hand badge. The body does not expose the backing file or
   repeat the name. A canonical occurrence resolves `config.definitionId`
   against the typed definition registry, derives its accessible child count
-  from the definition graph, and renders every public input/output row with
-  `in__<portId>`/`out__<portId>` handles and the definition's label. Submodel
-  cards have no default target handle: every binding must name a declared port.
+  from the definition graph, renders one generic left-side `inputs` socket, and
+  renders every public output row with its `out__<portId>` handle and definition
+  label. Public `in__<portId>` targets are co-located invisibly at the generic
+  socket so stored bindings stay canonical without becoming multiple visible
+  inputs. Submodel cards have no default persisted target handle: every stored
+  binding names a declared port.
   A missing or invalid referenced definition is a visible `role="alert"` state,
   never an empty-looking card. A submodel with no exported ports renders no
   source handle.
@@ -481,6 +515,12 @@ candidate, with the error toast.
   backend's save-time `ParseError`. The
   alternative — accepting the edge and letting codegen suffix a parameter —
   is the hidden-rename behaviour this design exists to eliminate.
+- **A rejected targeted connection explains why on release.** Hover validation
+  remains side-effect free, but releasing over a concrete source/target handle
+  reports the shared validator's actionable domain message without changing the
+  graph. Duplicate-name failures retain their purpose-written wording; other
+  invalid-connection failures surface their supplied reason instead of silently
+  discarding the gesture.
 - **API-input frame rows own both the name and the handle.** The earlier
   layout computed the body's label column and the handle positions in two
   unrelated coordinate systems — a stacked list inside the body vs.

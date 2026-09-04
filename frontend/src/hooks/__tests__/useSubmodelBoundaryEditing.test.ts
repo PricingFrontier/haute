@@ -6,6 +6,7 @@ import useToastStore from "../../stores/useToastStore"
 import { makeEdge, makeNode } from "../../test-utils/factories"
 import type { PipelineEdge, SubmodelPortData } from "../../types/node"
 import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
+import { SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
 
 const SUBMODEL_NAME = "Pricing"
 const PLACEHOLDER_ID = "instance_primary"
@@ -13,6 +14,7 @@ const DEFINITION_ID = "definition_pricing"
 
 type FixtureOptions = {
   bindInput?: boolean
+  includeInputPort?: boolean
   outputPorts?: string[]
   includeInternalEdge?: boolean
   bindOutputConsumers?: boolean
@@ -25,6 +27,7 @@ type GraphIdentityRequest = {
 }
 function makeFixture({
   bindInput = false,
+  includeInputPort = true,
   outputPorts = [],
   includeInternalEdge = false,
   bindOutputConsumers = true,
@@ -61,7 +64,7 @@ function makeFixture({
     placeholder,
   ]
   const parentEdges: PipelineEdge[] = []
-  if (bindInput) parentEdges.push({
+  if (bindInput && includeInputPort) parentEdges.push({
     ...makeEdge("external", PLACEHOLDER_ID, { id: "incoming" }),
     targetHandle: "in__incoming",
     data: { _inputName: "external_input" },
@@ -78,21 +81,24 @@ function makeFixture({
       data: { _inputName: `Public_${childId}` },
     },
   )
+  const inputPortInputNames: Record<string, string> = includeInputPort
+    ? { incoming: "Incoming_policy_data" }
+    : {}
   const definition = {
     definitionId: DEFINITION_ID,
     file: "modules/pricing.py",
     graph: { nodes: childNodes, edges: childEdges },
-    inputPorts: [{
+    inputPorts: includeInputPort ? [{
       portId: "incoming",
       label: "Incoming policy data",
       targets: [{ nodeId: "child_a", handleId: null }],
-    }],
+    }] : [],
     outputPorts: outputPorts.map((portId) => ({
       portId,
       label: `Public ${portId}`,
       source: { nodeId: portId, handleId: null },
     })),
-    _inputPortInputNames: { incoming: "Incoming_policy_data" },
+    _inputPortInputNames: inputPortInputNames,
   }
   const submodels = { [DEFINITION_ID]: definition }
   const view = buildSubmodelViewGraph({ submodelName: SUBMODEL_NAME, instanceId: PLACEHOLDER_ID, definition, childNodes, childEdges, parentNodes, parentEdges })
@@ -107,7 +113,9 @@ function makeFixture({
         ...node.data,
         _functionName: input ? "input_boundary" : "output_boundary",
         _defaultInputName: null,
-        _sourceHandleInputNames: input ? { incoming: "Incoming_policy_data" } : {},
+        _sourceHandleInputNames: input && includeInputPort
+          ? { incoming: "Incoming_policy_data" }
+          : {},
       },
     }
   })
@@ -146,6 +154,48 @@ function hookParams(fixture: ReturnType<typeof makeFixture>) {
 }
 describe("useSubmodelBoundaryEditing", () => {
   beforeEach(() => useToastStore.setState({ toasts: [] }))
+
+  it("atomically commits a parent-created public input and canonical edge", () => {
+    const fixture = makeFixture({ includeInputPort: false })
+    fixture.graphRef.current = {
+      nodes: fixture.parentNodes,
+      edges: fixture.parentEdges,
+    }
+    const parentGraphRef = { current: null }
+    const { result } = renderHook(() => useSubmodelBoundaryEditing({
+      ...hookParams(fixture),
+      activeSubmodelName: null,
+      activeSubmodelInstanceId: null,
+      activeSubmodelDefinitionId: null,
+      nodes: fixture.parentNodes,
+      edges: fixture.parentEdges,
+      graphRef: fixture.graphRef,
+      parentGraphRef,
+    }))
+    act(() => {
+      expect(result.current.commitBoundaryConnection({
+        source: "external",
+        sourceHandle: null,
+        target: PLACEHOLDER_ID,
+        targetHandle: SUBMODEL_INPUT_HANDLE,
+      })).toBe(true)
+    })
+    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+    expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
+      inputPorts: [{
+        portId: "input_1",
+        label: "external_input",
+        targets: [],
+      }],
+      _inputPortInputNames: { input_1: "external_input" },
+    })
+    expect(fixture.graphRef.current.edges).toEqual([expect.objectContaining({
+      source: "external",
+      target: PLACEHOLDER_ID,
+      targetHandle: "in__input_1",
+      data: { _inputName: "external_input" },
+    })])
+  })
 
   it("adds a second internal target to a declared public input", () => {
     const fixture = makeFixture({ bindInput: true })

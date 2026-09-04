@@ -6,7 +6,10 @@ import {
   filterIncomingEdges,
   normalizeEdges,
 } from "../graphHelpers"
-import { DEFAULT_TARGET_HANDLE } from "../flowHandles"
+import {
+  DEFAULT_TARGET_HANDLE,
+  SUBMODEL_INPUT_HANDLE,
+} from "../flowHandles"
 import { NODE_TYPES } from "../nodeTypes"
 
 function graphNode(
@@ -268,6 +271,13 @@ describe("filterIncomingEdges", () => {
       [
         graphEdge("submodel-in", "source", "submodel", null, "in__features"),
         graphEdge("submodel-out", "submodel", "target", "out__priced"),
+        graphEdge(
+          "submodel-create-transient",
+          "source",
+          "submodel",
+          null,
+          SUBMODEL_INPUT_HANDLE,
+        ),
         graphEdge("submodel-default-in", "source", "submodel"),
         graphEdge("stale-submodel-in", "source", "submodel", null, "in__gone"),
         graphEdge("stale-submodel-out", "submodel", "target", "out__gone"),
@@ -321,6 +331,7 @@ describe("filterIncomingEdges", () => {
       "output-port-target-live",
     ])
     expect(result.rejectedEdges.map(({ edge }) => edge.id)).toEqual([
+      "submodel-create-transient",
       "submodel-default-in",
       "stale-submodel-in",
       "stale-submodel-out",

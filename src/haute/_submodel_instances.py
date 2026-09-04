@@ -870,6 +870,14 @@ def expand_submodel_instances(
                     instance_id=edge.target,
                 )
             input_port = _input_port(target_instance, edge)
+            if not input_port.targets:
+                raise ParseError(
+                    "Submodel input port bound by a parent edge has no internal targets.",
+                    edge_id=edge.id,
+                    instance_id=target_instance.node.id,
+                    definition_id=target_instance.config.definition_id,
+                    port_id=input_port.port_id,
+                )
             target_variants = [
                 (
                     id_maps[edge.target][target.node_id],

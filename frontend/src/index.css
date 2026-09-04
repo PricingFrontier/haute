@@ -467,11 +467,49 @@ html, body, #root {
   transform: translate(-50%, -50%);
   border-radius: 50%;
 }
-.react-flow__handle:hover {
+/* One shared circle primitive serves both the standard hover marker and the
+   persistent origin marker, so their size, outline, and radius cannot drift. */
+.react-flow__handle:hover,
+.react-flow__handle.output-origin-handle::before,
+.react-flow__handle.input-origin-handle::before {
   width: 10px !important;
   height: 10px !important;
-  background: var(--accent) !important;
+  box-sizing: border-box;
   border: 2px solid var(--bg-elevated) !important;
+  border-radius: 50%;
+}
+/* Visible port origins without changing React Flow's 2px geometry. The same
+   marker is clipped to its node-facing half at rest and opened on hover. */
+.react-flow__handle.output-origin-handle::before,
+.react-flow__handle.input-origin-handle::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: color-mix(in srgb, currentColor 70%, var(--text-primary));
+  pointer-events: none;
+}
+.react-flow__handle.output-origin-handle::before {
+  clip-path: inset(0 50% 0 0);
+}
+.react-flow__handle.input-origin-handle::before {
+  clip-path: inset(0 0 0 50%);
+}
+.react-flow__handle:hover {
+  background: var(--accent) !important;
+}
+.react-flow__handle.output-origin-handle:hover,
+.react-flow__handle.input-origin-handle:hover {
+  width: 2px !important;
+  height: 2px !important;
+  background: transparent !important;
+  border: none !important;
+}
+.react-flow__handle.output-origin-handle:hover::before,
+.react-flow__handle.input-origin-handle:hover::before {
+  clip-path: inset(0);
+  background: currentColor;
 }
 .react-flow__handle.edge-join-handle--suppress-hover::after {
   width: 2px;

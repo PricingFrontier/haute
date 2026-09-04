@@ -15,6 +15,7 @@ from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._parser_submodels import extract_submodel_registrations, parse_submodel_source
 from haute._polars_io_registry import validate_data_input_config
 from haute._submodel_instances import (
+    expand_submodel_instances,
     qualified_runtime_node_id,
     rewrite_boundary_input_names,
     validate_submodel_instances,
@@ -152,6 +153,54 @@ def test_definition_rejects_missing_internal_endpoint() -> None:
                 )
             ]
         )
+
+
+def test_unrouted_input_port_round_trips_and_is_legal_when_unbound() -> None:
+    port = SubmodelInputPort(port_id="policy", label="Policy", targets=[])
+    definition = _definition(input_ports=[port])
+
+    restored = SubmodelDefinition.model_validate(definition.model_dump(by_alias=True))
+
+    assert restored.input_ports == [port]
+    expanded = expand_submodel_instances(
+        PipelineGraph(
+            nodes=[_instance("instance_a", "scoring")],
+            edges=[],
+            submodels={"definition_scoring": definition},
+        )
+    )
+    assert [node.id for node in expanded.nodes] == [
+        qualified_runtime_node_id("instance_a", "local_input"),
+        qualified_runtime_node_id("instance_a", "local_output"),
+    ]
+
+
+def test_expand_rejects_parent_binding_to_unrouted_input_port() -> None:
+    definition = _definition(
+        input_ports=[SubmodelInputPort(port_id="policy", label="Policy", targets=[])]
+    )
+    graph = PipelineGraph(
+        nodes=[_node("source"), _instance("instance_a", "scoring")],
+        edges=[
+            GraphEdge(
+                id="source_to_scoring",
+                source="source",
+                target="instance_a",
+                targetHandle="in__policy",
+            )
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+    with pytest.raises(ParseError, match="no internal targets") as exc_info:
+        expand_submodel_instances(graph)
+
+    assert exc_info.value.context == {
+        "edge_id": "source_to_scoring",
+        "instance_id": "instance_a",
+        "definition_id": "definition_scoring",
+        "port_id": "policy",
+    }
 
 
 def test_instance_validation_rejects_unknown_definition_and_duplicate_alias() -> None:

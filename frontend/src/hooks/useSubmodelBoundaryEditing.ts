@@ -17,6 +17,7 @@ import {
 } from "../types/node"
 import {
   applySubmodelBoundaryConnection,
+  connectSubmodelInputFromParentConnection,
   reconcileSubmodelBoundaryState,
   removeSubmodelBoundaryEdges,
   type SubmodelBoundaryEditResult,
@@ -317,7 +318,23 @@ export default function useSubmodelBoundaryEditing({
   const commitBoundaryConnection = useCallback((connection: Connection): boolean => {
     try {
       const current = state()
-      if (!current) return false
+      if (!current) {
+        if (parentGraphRef.current) return false
+        const created = connectSubmodelInputFromParentConnection({
+          nodes: graphRef.current.nodes,
+          edges: graphRef.current.edges as PipelineEdge[],
+          submodels: submodelsRef.current,
+        }, connection)
+        if (!created) return false
+        graphRef.current = { nodes: created.nodes, edges: created.edges }
+        submodelsRef.current = created.submodels
+        setNodesAndEdgesAndSubmodels(
+          created.nodes,
+          created.edges,
+          created.submodels,
+        )
+        return true
+      }
       const source = nodes.find((node) => node.id === connection.source)
       const target = nodes.find((node) => node.id === connection.target)
       if (!isBoundaryNode(source) && !isBoundaryNode(target)) return false
@@ -328,7 +345,16 @@ export default function useSubmodelBoundaryEditing({
       reportBoundaryError(error)
       return true
     }
-  }, [state, nodes, commitWithParentIdentities, reportBoundaryError])
+  }, [
+    state,
+    nodes,
+    commitWithParentIdentities,
+    graphRef,
+    parentGraphRef,
+    reportBoundaryError,
+    setNodesAndEdgesAndSubmodels,
+    submodelsRef,
+  ])
 
   const deleteBoundaryEdge = useCallback((id: string): boolean => {
     try {

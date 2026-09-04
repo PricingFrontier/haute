@@ -1,5 +1,5 @@
 /**
- * Real-browser acceptance evidence for API-input frame identity.
+ * Real-browser acceptance evidence for port-row geometry and API-input frame identity.
  *
  * JSDOM can prove that a row contains its Handle, but only a browser can
  * prove their rendered centres coincide.  These tests therefore measure the
@@ -518,7 +518,7 @@ async function expectEdgesAttachedToFrameHandles(
 
 test.describe.configure({ mode: "serial" })
 
-test.describe("apiInput frame-row alignment and identity", () => {
+test.describe("port-row alignment and API-input identity", () => {
   test.beforeEach(() => {
     resetE2eProject()
   })
@@ -535,6 +535,58 @@ test.describe("apiInput frame-row alignment and identity", () => {
       await expectFrameRowsAligned(page, labels)
     })
   }
+
+  test("an ordinary node shares one aligned input/output slot", async ({
+    page,
+  }) => {
+    seedFrames(["frame_1"])
+    await openCanvas(page)
+
+    const node = page.getByTestId(`node-${DOWNSTREAM_NODE_ID}`)
+    const inputLabel = node.getByText("inputs", { exact: true })
+    const name = node.getByText(DOWNSTREAM_NODE_ID, { exact: true })
+    const inputHandle = node.getByTestId(`input-connector[0]:${DOWNSTREAM_NODE_ID}`)
+    const handle = node.getByTestId(`output-connector[0]:${DOWNSTREAM_NODE_ID}`)
+    const [inputLabelBox, inputHandleBox, nameBox, handleBox] = await Promise.all([
+      inputLabel.boundingBox(),
+      inputHandle.boundingBox(),
+      name.boundingBox(),
+      handle.boundingBox(),
+    ])
+
+    expect(inputLabelBox, "ordinary input label has measurable geometry").not.toBeNull()
+    expect(inputHandleBox, "ordinary target handle has measurable geometry").not.toBeNull()
+    expect(nameBox, "ordinary output name has measurable geometry").not.toBeNull()
+    expect(handleBox, "ordinary source handle has measurable geometry").not.toBeNull()
+    if (
+      inputLabelBox === null
+      || inputHandleBox === null
+      || nameBox === null
+      || handleBox === null
+    ) {
+      throw new Error("Could not measure ordinary input/output row geometry")
+    }
+
+    expect(
+      Math.abs(
+        inputLabelBox.y + inputLabelBox.height / 2 - (nameBox.y + nameBox.height / 2),
+      ),
+      "ordinary input and output labels share a vertical centre",
+    ).toBeLessThanOrEqual(MAX_CENTRE_DELTA_PX)
+    expect(
+      Math.abs(
+        inputLabelBox.y + inputLabelBox.height / 2
+        - (inputHandleBox.y + inputHandleBox.height / 2),
+      ),
+      "ordinary input label and handle vertical centres",
+    ).toBeLessThanOrEqual(MAX_CENTRE_DELTA_PX)
+    expect(
+      Math.abs(
+        nameBox.y + nameBox.height / 2 - (handleBox.y + handleBox.height / 2),
+      ),
+      "ordinary output name and handle vertical centres",
+    ).toBeLessThanOrEqual(MAX_CENTRE_DELTA_PX)
+  })
 
   test("warning-complete dot stays clear of the frame handles", async ({
     page,

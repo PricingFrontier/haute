@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process"
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-import { expect, test } from "@playwright/test"
+import { expect, test, type Locator, type Page } from "@playwright/test"
 
 import { dispatchAppShortcut, dispatchNodeDoubleClick } from "./browserInteractions"
 import { e2eProjectRoot, resetE2eProject, unsetWorkingBranch } from "./projectIsolation"
@@ -13,6 +13,46 @@ const utilityModulePath = resolve(ratingDir, "utility", "browser_helpers.py")
 const gitMainPath = resolve(ratingDir, "main.py")
 const browserSubmodelPath = resolve(e2eProjectRoot, "rating", "modules", "browser_group.py")
 const selectAll = process.platform === "darwin" ? "Meta+A" : "Control+A"
+
+async function connectHandles(page: Page, source: Locator, target: Locator): Promise<void> {
+  await page.getByTestId("toolbar-centre").click()
+  const zoomIn = page.getByRole("button", { name: "Zoom in", exact: true })
+  for (let step = 0; step < 4; step += 1) await zoomIn.click()
+  await expect(source).toBeVisible()
+  await expect(target).toBeVisible()
+  const [sourceBox, targetBox] = await Promise.all([
+    source.boundingBox(),
+    target.boundingBox(),
+  ])
+  if (sourceBox === null || targetBox === null) {
+    throw new Error("Could not measure the handles for a graph connection")
+  }
+  await page.mouse.move(
+    sourceBox.x + sourceBox.width / 2,
+    sourceBox.y + sourceBox.height / 2,
+  )
+  await page.mouse.down()
+  await page.mouse.move(
+    targetBox.x + targetBox.width / 2,
+    targetBox.y + targetBox.height / 2,
+    { steps: 12 },
+  )
+  const expectedTargetHandle = await target.getAttribute("data-handleid")
+  const hitTargetHandle = await page.evaluate(({ x, y }) => (
+    document.elementFromPoint(x, y)
+      ?.closest(".react-flow__handle")
+      ?.getAttribute("data-handleid") ?? null
+  ), {
+    x: targetBox.x + targetBox.width / 2,
+    y: targetBox.y + targetBox.height / 2,
+  })
+  if (hitTargetHandle !== expectedTargetHandle) {
+    throw new Error(
+      `Connection drop missed handle ${String(expectedTargetHandle)}; hit ${String(hitTargetHandle)}`,
+    )
+  }
+  await page.mouse.up()
+}
 
 test.describe.configure({ mode: "serial" })
 
@@ -272,13 +312,17 @@ test.describe("core browser flows", () => {
     await expect(page.getByTestId("git-panel-pending")).toBeVisible()
   })
 
-  test("creates a submodel, reloads it, and drills in through breadcrumbs", async ({ page }) => {
+  test("creates a submodel, adds a parent-side input, and persists it", async ({ page }) => {
     await page.goto("/")
 
-    const rawRowsNode = page.getByRole("button", { name: /raw_rows/i })
-    await expect(rawRowsNode).toBeVisible()
-    await rawRowsNode.click()
-    await dispatchAppShortcut(page, "a")
+    const bandingNode = page.getByRole("button", { name: /browser_mixed_banding/i })
+    const ratingNode = page.getByRole("button", { name: /browser_rating/i })
+    await expect(bandingNode).toBeVisible()
+    await expect(ratingNode).toBeVisible()
+    await bandingNode.click()
+    await ratingNode.click({
+      modifiers: [process.platform === "darwin" ? "Meta" : "Control"],
+    })
     await dispatchAppShortcut(page, "g")
 
     await expect(page.getByText("Create Submodel")).toBeVisible()
@@ -299,12 +343,54 @@ test.describe("core browser flows", () => {
     await page.reload()
     await expect(submodelNode).toBeVisible()
 
+    const sourceNode = page.getByTestId("rf__node-raw_rows")
+    const sourceHandle = sourceNode.getByTestId("output-connector[0]:raw_rows")
+    const newInputHandle = submodelNode.getByTestId("submodel-input-handle")
+    await expect(sourceHandle).toBeVisible()
+    await expect(newInputHandle).toBeVisible()
+    await expect(newInputHandle).toHaveClass(/connectableend/)
+    const collapsedTargets = submodelNode.locator(".react-flow__handle.target")
+    await expect(collapsedTargets).toHaveCount(2)
+    await expect(collapsedTargets.first()).toHaveAttribute(
+      "data-handleid",
+      "__submodel_inputs__",
+    )
+    await expect(submodelNode.getByTestId(/^submodel-input-frame-row-/)).toHaveCount(0)
+    await expect(submodelNode.getByText("enriched", { exact: true })).toHaveCount(0)
+    const frameName = "raw_rows"
+    await connectHandles(page, sourceHandle, newInputHandle)
+    await expect(submodelNode.locator('[data-handleid="in__input_2"]')).toBeAttached()
+    await expect(collapsedTargets).toHaveCount(3)
+    await expect(newInputHandle).toBeVisible()
+    await expect(submodelNode.getByTestId(/^submodel-input-frame-row-/)).toHaveCount(0)
+    await expect(submodelNode.getByText(frameName, { exact: true })).toHaveCount(0)
+
     await dispatchNodeDoubleClick(page, "browser_group")
     await expect(page.getByRole("button", { name: "main", exact: true })).toBeVisible()
     await expect(page.getByRole("button", { name: "browser_group", exact: true })).toBeVisible()
-    await expect(page.getByRole("button", { name: /raw_rows/i })).toBeVisible()
+    await expect(page.getByRole("button", { name: /browser_mixed_banding/i })).toBeVisible()
+
+    const inputRows = page.getByTestId(/^submodel-input-frame-row-/)
+    await expect(inputRows).toHaveCount(2)
+    await expect(inputRows.filter({ hasText: "enriched" })).toBeVisible()
+    const newInputRow = inputRows.filter({ hasText: frameName })
+    await expect(newInputRow).toBeVisible()
+    await expect(page.getByText("new input", { exact: true })).toHaveCount(0)
+    const drilledInputHandle = newInputRow.locator(".react-flow__handle-right")
+    const childInputHandle = page.getByTestId("input-connector[0]:browser_mixed_banding")
+    await expect(drilledInputHandle).toBeVisible()
+    await expect(childInputHandle).toBeVisible()
+    await connectHandles(page, drilledInputHandle, childInputHandle)
 
     await page.getByRole("button", { name: "main", exact: true }).click()
     await expect(submodelNode).toBeVisible()
+    await expect(submodelNode.getByTestId("submodel-input-handle")).toBeVisible()
+    await expect(submodelNode.getByText(frameName, { exact: true })).toHaveCount(0)
+    await expect(submodelNode.getByText("enriched", { exact: true })).toHaveCount(0)
+
+    await page.getByRole("button", { name: "Save", exact: true }).click()
+    await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
+    await expect.poll(() => readFileSync(browserSubmodelPath, "utf8"))
+      .toContain(`'label': '${frameName}'`)
   })
 })

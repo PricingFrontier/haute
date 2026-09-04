@@ -227,9 +227,9 @@ describe("PipelineNode", () => {
 
   // ── Render per node type ───────────────────────────────────────────
 
-  it("renders a transform node with label and type badge", () => {
+  it("renders a transform node with its body name aligned on the right", () => {
     renderNode({ label: "Clean Data", nodeType: NODE_TYPES.POLARS })
-    expect(screen.getByText("Clean Data")).toBeInTheDocument()
+    expect(screen.getByText("Clean Data")).toHaveClass("text-right")
     expect(screen.getByText(nodeTypeLabels[NODE_TYPES.POLARS])).toBeInTheDocument()
   })
 
@@ -548,6 +548,7 @@ describe("PipelineNode", () => {
     // Should have a source handle on the right
     const sourceHandle = container.querySelector(".react-flow__handle-right")
     expect(sourceHandle).not.toBeNull()
+    expect(screen.queryByText("inputs")).not.toBeInTheDocument()
   })
 
   it("sink-only types do NOT render a source handle", () => {
@@ -571,10 +572,52 @@ describe("PipelineNode", () => {
     expect(container.querySelector(".react-flow__handle-left")).not.toBeNull()
   })
 
-  it("transform nodes render both source and target handles", () => {
+  it("shares one port row between the default input and single output", () => {
+    renderNode({ label: "Transform", nodeType: NODE_TYPES.POLARS })
+    const inputLabel = screen.getByText("inputs")
+    const inputRow = inputLabel.parentElement
+    const outputRow = screen.getByText("Transform").parentElement
+    const targetHandle = screen.getByTestId("input-connector[0]:Transform")
+
+    expect(inputRow).toBe(outputRow)
+    expect(inputRow).toContainElement(targetHandle)
+    expect(inputRow).toHaveClass(
+      "relative",
+      "flex",
+      "items-center",
+      "justify-start",
+      "py-0.5",
+      "pl-3",
+      "pr-3",
+    )
+    expect(inputRow).toHaveStyle({
+      marginLeft: "-12px",
+      marginRight: "-12px",
+    })
+    expect(inputLabel).toHaveClass("text-left", "text-[11px]")
+    expect(inputLabel).toHaveStyle({ color: "var(--text-muted)" })
+    expect(targetHandle).toHaveClass("react-flow__handle-left", "input-origin-handle")
+    expect(targetHandle).toHaveStyle({
+      top: "50%",
+      color: nodeTypeColors[NODE_TYPES.POLARS],
+    })
+  })
+
+  it("row-mounts a transform source handle beside its right-aligned output name", () => {
     const { container } = renderNode({ label: "Transform", nodeType: NODE_TYPES.POLARS })
     expect(container.querySelector(".react-flow__handle-left")).not.toBeNull()
-    expect(container.querySelector(".react-flow__handle-right")).not.toBeNull()
+    const sourceHandle = screen.getByTestId("output-connector[0]:Transform")
+    const outputName = screen.getByText("Transform")
+    const outputRow = outputName.parentElement
+
+    expect(outputRow).toContainElement(sourceHandle)
+    expect(outputRow).toHaveClass("relative", "flex", "items-center", "justify-start", "pr-3")
+    expect(outputRow).toHaveStyle({ marginLeft: "-12px", marginRight: "-12px" })
+    expect(sourceHandle).toHaveClass("react-flow__handle-right", "output-origin-handle")
+    expect(sourceHandle).toHaveStyle({
+      top: "50%",
+      color: nodeTypeColors[NODE_TYPES.POLARS],
+    })
   })
 
   it("gives the normal input handle a stable id so loose-mode hit testing does not resolve to the output handle", () => {
