@@ -64,6 +64,11 @@ describe("buildSubmodelViewGraph", () => {
     const input = boundary(graph.nodes, "input").data as SubmodelPortData
     expect(input.ports[0].parentEdges).toEqual(parentEdges)
     expect(input._parentBindingScope).toBe("definition")
+    // Parent edge order is persisted state, so the projection records it and a
+    // binding restored by history returns to its own position.
+    expect(input._parentEdgeOrder).toEqual(["feed-owner", "feed-copy"])
+    expect((boundary(graph.nodes, "output").data as SubmodelPortData)._parentEdgeOrder)
+      .toBeUndefined()
     expect(input.externalNodeIds).toEqual(["api-owner"])
     expect(graph.edges.find((edge) => edge.sourceHandle === "policy")?.data)
       .toMatchObject({ submodelBoundary: { parentEdges: [parentEdges[0]] } })

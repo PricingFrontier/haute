@@ -50,9 +50,12 @@ in-place `update` surface.
 An empty `SubmodelInputPort.targets` list represents a declared public frame
 that has not yet been routed inside the definition. The declaration remains
 serialisable when unbound. When an occurrence binds that port, the canonical
-Save validation and execution expansion both raise a contextual `ParseError`
-instead of silently dropping the incoming edge; the normal parent-first flow
-routes it in the drilled view before Save.
+Save validation, hierarchical codegen, and execution expansion all raise a
+contextual `ParseError` instead of silently dropping the incoming edge or
+emitting a `connect` call that binds nothing; the normal parent-first flow
+routes it in the drilled view before Save. `POST /api/pipeline/save` reports
+that rejection, and every other structural save-time `ParseError`, as a 400
+carrying the error's own context, never as an opaque 500.
 
 Each `SUBMODEL` node is one occurrence and its node id is its immutable
 `instanceId`. Its config is validated as `SubmodelInstanceConfig`; node label
@@ -141,8 +144,11 @@ every `in__<portId>` parent binding targeting an occurrence of the definition
 in one history transaction. This operation is intentionally distinct from
 ordinary boundary-edge deletion, which retains the shared in-use guard.
 Input boundary history projections retain that definition-wide parent-binding
-slice so Undo and Redo restore the interface and its parent connections
-together.
+slice, and the parent edge order it was projected from, so Undo and Redo
+restore the interface, its parent connections, and their original positions
+together. Parent edge order is persisted state — the dirty fingerprint
+compares it and codegen emits `connect` calls in it — so a restored binding
+returns to its own position rather than to the end of the parent edge list.
 
 Required regression coverage is added before implementation and includes:
 
@@ -158,7 +164,10 @@ Required regression coverage is added before implementation and includes:
   warning, read-only instance mutation guards, public-handle rendering, and
   interface-breaking edit preflight;
 - explicit Input-inspector removal of routed and unrouted public inputs,
-  including all-occurrence parent-binding cleanup and one atomic undo snapshot.
+  including all-occurrence parent-binding cleanup, one atomic undo snapshot,
+  and parent edge order preserved across that undo;
+- codegen and save-route rejection of a parent edge bound to an unrouted
+  public input, including the 400 status and message the client receives.
 
 ### Route request and response models
 

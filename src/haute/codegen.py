@@ -40,7 +40,7 @@ from haute._graph_utils import (
 from haute._logging import get_logger
 from haute._python_syntax import inject_decorator_keyword
 from haute._registry import NODE_REGISTRY
-from haute._submodel_instances import resolve_submodel_instances
+from haute._submodel_instances import ResolvedSubmodelInstance, resolve_submodel_instances
 from haute._topo import topo_sort_ids
 from haute._types import (
     NODE_TYPE_TO_DECORATOR,
@@ -957,6 +957,28 @@ def _canonical_definition_source_metadata(
     return node_sources, node_source_ids
 
 
+def _require_routed_input_port(
+    instance: ResolvedSubmodelInstance,
+    edge: GraphEdge,
+    port_id: str,
+) -> None:
+    """Reject a parent binding whose public input has no internal route.
+
+    ``flatten_graph`` raises the same contextual error at expansion time, but
+    codegen must not emit a parseable file for a graph that cannot execute:
+    the connect call would name a port that binds nothing.
+    """
+    for port in instance.definition.input_ports:
+        if port.port_id == port_id and not port.targets:
+            raise ParseError(
+                "Submodel input port bound by a parent edge has no internal targets.",
+                edge_id=edge.id,
+                instance_id=instance.node.id,
+                definition_id=instance.config.definition_id,
+                port_id=port_id,
+            )
+
+
 def _graph_to_code_multi_instances(
     graph: PipelineGraph,
     *,
@@ -1160,6 +1182,8 @@ def _graph_to_code_multi_instances(
             if target_instance is not None
             else edge.targetHandle or None
         )
+        if target_instance is not None and target_port is not None:
+            _require_routed_input_port(target_instance, edge, target_port)
         connect_pairs.append((source_func, target_func, source_port, target_port))
 
     submodel_imports = [

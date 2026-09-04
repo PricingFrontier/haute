@@ -699,6 +699,76 @@ def test_graph_to_code_multi_refuses_unparseable_submodel_file() -> None:
     assert excinfo.value.context["node_id"] == "t"
 
 
+def test_graph_to_code_multi_refuses_parent_binding_to_unrouted_input_port() -> None:
+    """A declared-but-unrouted public input may be serialised; a binding to it may not.
+
+    Emitting the parent ``connect`` would produce a parseable file whose
+    submodel call binds nothing, deferring the failure to a later flatten.
+    """
+    graph = _g(
+        {
+            "nodes": [
+                {
+                    "id": "src",
+                    "data": {
+                        "label": "Src",
+                        "nodeType": "dataInput",
+                        "config": {"path": "d.parquet"},
+                    },
+                },
+                {
+                    "id": "sm-instance",
+                    "type": "submodel",
+                    "data": {
+                        "label": "sm",
+                        "nodeType": "submodel",
+                        "config": {"definitionId": "sm", "alias": "sm"},
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "bind",
+                    "source": "src",
+                    "target": "sm-instance",
+                    "targetHandle": "in__policy",
+                }
+            ],
+            "submodels": {
+                "sm": {
+                    "definitionId": "sm",
+                    "file": "modules/sm.py",
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "child",
+                                "data": {
+                                    "label": "Child",
+                                    "nodeType": "polars",
+                                    "config": {"code": "df = df"},
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    },
+                    "inputPorts": [{"portId": "policy", "label": "policy", "targets": []}],
+                    "outputPorts": [],
+                },
+            },
+        }
+    )
+
+    with pytest.raises(ParseError, match="no internal targets") as excinfo:
+        graph_to_code_multi(graph, pipeline_name="main")
+
+    assert excinfo.value.context == {
+        "edge_id": "bind",
+        "instance_id": "sm-instance",
+        "definition_id": "sm",
+        "port_id": "policy",
+    }
+
+
 def test_inject_contract_kwarg_raises_when_no_pipeline_decorator_exists() -> None:
     code = """def Step(df: pl.LazyFrame) -> pl.LazyFrame:
     return df

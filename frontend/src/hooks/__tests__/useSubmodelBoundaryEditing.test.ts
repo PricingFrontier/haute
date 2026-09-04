@@ -301,6 +301,52 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(fixture.parentGraphRef.current?.edges).toEqual([])
   })
 
+  it("restores a parent binding to its own position, not the end of the list", () => {
+    // Parent edge order is persisted: the dirty fingerprint compares it and
+    // codegen emits `connect` calls in it. Appending a restored binding would
+    // report unsaved changes after undoing back to the saved graph.
+    const fixture = makeFixture({ bindInput: true, outputPorts: ["child_b"] })
+    const before = fixture.parentEdges.map((edge) => edge.id)
+    expect(before[0]).toBe("incoming")
+    const originalSnapshot = cloneGraphSnapshot({
+      nodes: fixture.view.nodes,
+      edges: fixture.view.edges as PipelineEdge[],
+      preamble: "",
+      submodels: fixture.submodels,
+    })
+    const { result, rerender } = renderHook(
+      (params: ReturnType<typeof hookParams>) => useSubmodelBoundaryEditing(params),
+      { initialProps: hookParams(fixture) },
+    )
+
+    act(() => {
+      expect(result.current.deleteBoundaryInputPort("incoming")).toBe(true)
+    })
+    const removedSnapshot = cloneGraphSnapshot({
+      nodes: fixture.graphRef.current.nodes,
+      edges: fixture.graphRef.current.edges as PipelineEdge[],
+      preamble: "",
+      submodels: fixture.submodelsRef.current,
+    })
+    expect(fixture.parentGraphRef.current?.edges.map((edge) => edge.id))
+      .toEqual(before.filter((id) => id !== "incoming"))
+
+    rerender({
+      ...hookParams(fixture),
+      nodes: removedSnapshot.nodes,
+      edges: removedSnapshot.edges,
+      submodels: removedSnapshot.submodels,
+    })
+    rerender({
+      ...hookParams(fixture),
+      nodes: originalSnapshot.nodes,
+      edges: originalSnapshot.edges,
+      submodels: originalSnapshot.submodels,
+    })
+
+    expect(fixture.parentGraphRef.current?.edges.map((edge) => edge.id)).toEqual(before)
+  })
+
   it("resolves changed parent occurrence handles before committing a new public output", async () => {
     const fixture = makeFixture()
     const output = fixture.view.nodes.find(

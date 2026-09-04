@@ -136,7 +136,11 @@ blocks Save and execution clearly until the input is routed. Existing input
 ports can be fanned out or relabelled subject to the in-use guard. Selecting the
 owner's drilled Input boundary opens the standard Inputs chip list; removing a
 chip performs the explicit cascading removal above, including for an unrouted
-port. A read-only occurrence shows the same list without removal controls. New
+port. Because that reaches past the one connection an Inputs chip ordinarily
+drops, its control names the public input and the internal routes and
+occurrence connections it retires rather than reusing the shared
+remove-connection wording. A read-only occurrence shows the same list without
+removal controls. New
 public output ports are added in the drilled view by wiring a child output to
 the Output boundary. Instance copies retain the generic parent socket and
 read-only drill-down.
@@ -207,7 +211,7 @@ must resolve the original pipeline-owned sidecars.
   sanitised name, and the occurrence config is exactly
   `{definitionId, alias}`. Cross-boundary edges are grouped into stable public
   ports: each logical input created by extraction records one or more ordered
-  each output records one internal source. Parent handles are
+  internal targets and each output records one internal source. Parent handles are
   `in__<portId>`/`out__<portId>`, never internal node ids, and each logical
   input produces exactly one parent binding even when it fans out internally.
   Each public label preserves the executable name that crossed that boundary

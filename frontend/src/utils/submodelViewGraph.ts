@@ -173,6 +173,7 @@ function buildCanonicalSubmodelViewGraph(
         inputExternalIds,
         instanceId,
         definition.definitionId,
+        (parentEdges as PipelineEdge[]).map((edge) => edge.id),
       ),
       boundaryNode(
         outputId,
@@ -197,6 +198,7 @@ function boundaryNode(
   externalNodeIds: string[],
   instanceId: string,
   definitionId: string,
+  parentEdgeOrder: string[] = [],
 ): Node<BoundaryData> {
   return {
     id,
@@ -209,7 +211,12 @@ function boundaryNode(
       definitionId,
       portDirection: direction,
       ports,
-      ...(direction === "input" ? { _parentBindingScope: "definition" as const } : {}),
+      ...(direction === "input"
+        ? {
+            _parentBindingScope: "definition" as const,
+            _parentEdgeOrder: parentEdgeOrder,
+          }
+        : {}),
       externalNodeIds,
     },
   }

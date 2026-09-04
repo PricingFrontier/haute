@@ -53,6 +53,8 @@ export default function SubmodelPortEditor({
         <InputSourcesBar
           inputSources={inputSources}
           onDeleteInput={onDeleteInputPort}
+          deleteTitle={(name) =>
+            `Remove public input "${name}" from this submodel, including its internal routes and every occurrence's connection`}
         />
       ) : (
         <div

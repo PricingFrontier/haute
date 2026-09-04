@@ -84,6 +84,11 @@ const isPipelineEdge = (value: unknown): value is PipelineEdge => isRecord(value
  * Input boundary rows retain every binding for their shared definition. This
  * lets a restored history projection authoritatively restore just that slice
  * of the parent graph without disturbing unrelated parent edges.
+ *
+ * Parent edge order is persisted state: `serializeSnapshot` keeps array order,
+ * so the dirty flag compares it, and codegen emits `connect` calls in it. The
+ * boundary therefore also records the parent edge order it was projected from,
+ * and a restored binding returns to its own position rather than the end.
  */
 function parentEdgesForInputProjection(
   state: CanonicalSubmodelBoundaryEditState,
@@ -97,6 +102,16 @@ function parentEdgesForInputProjection(
   if (!Array.isArray(data.ports)) {
     throw new Error("Canonical submodel Input boundary has malformed public ports")
   }
+  if (
+    !Array.isArray(data._parentEdgeOrder)
+    || data._parentEdgeOrder.some((id) => typeof id !== "string" || id.length === 0)
+  ) {
+    throw new Error("Canonical submodel Input boundary has no authoritative parent edge order")
+  }
+  const projectedRank = new Map<string, number>()
+  data._parentEdgeOrder.forEach((id, index) => {
+    if (!projectedRank.has(id)) projectedRank.set(id, index)
+  })
 
   const occurrenceIds = new Set([state.instanceId, ...state.parentNodes.flatMap((node) => {
     const config = node.data.config
@@ -138,12 +153,15 @@ function parentEdgesForInputProjection(
   const remaining = new Map(projectedById)
   const merged: PipelineEdge[] = []
   const mergedIds = new Set<string>()
-  const append = (edge: PipelineEdge) => {
+  const claim = (edge: PipelineEdge) => {
     if (mergedIds.has(edge.id)) {
       throw new Error(`Canonical parent graph contains duplicate edge ${edge.id}`)
     }
-    merged.push(edge)
     mergedIds.add(edge.id)
+  }
+  const append = (edge: PipelineEdge) => {
+    claim(edge)
+    merged.push(edge)
   }
   for (const edge of state.parentEdges) {
     const governedInput = occurrenceIds.has(edge.target)
@@ -159,9 +177,19 @@ function parentEdgesForInputProjection(
       remaining.delete(edge.id)
     }
   }
-  for (const edge of projected) {
-    if (!remaining.delete(edge.id)) continue
-    append(edge)
+  // Whatever is still outstanding was restored by history rather than retained,
+  // so it has no position in `state.parentEdges`. Reinstate each one ahead of
+  // the first retained edge the recorded order puts after it.
+  const restored = projected
+    .filter((edge) => remaining.delete(edge.id))
+    .sort((a, b) => (projectedRank.get(a.id) ?? Infinity) - (projectedRank.get(b.id) ?? Infinity))
+  for (const edge of restored) {
+    claim(edge)
+    const rank = projectedRank.get(edge.id) ?? Infinity
+    const successor = merged.findIndex(
+      (other) => (projectedRank.get(other.id) ?? -Infinity) > rank,
+    )
+    merged.splice(successor === -1 ? merged.length : successor, 0, edge)
   }
 
   return merged.length === state.parentEdges.length

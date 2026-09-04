@@ -40,7 +40,17 @@ describe("SubmodelPortEditor", () => {
     expect(screen.getByTestId("input-source-policy")).toHaveTextContent("Policy data")
     expect(screen.getByTestId("input-source-claims")).toHaveTextContent("Claims history")
 
-    fireEvent.click(screen.getByTitle("Remove connection from Policy data"))
+    // The chip retires the shared public input across every occurrence, so it
+    // must not reuse the ordinary "remove one connection" wording.
+    const remove = screen.getByTitle(/^Remove public input "Policy data"/)
+    expect(remove).toHaveAttribute(
+      "title",
+      'Remove public input "Policy data" from this submodel, including its '
+      + "internal routes and every occurrence's connection",
+    )
+    expect(screen.queryByTitle(/^Remove connection from /)).not.toBeInTheDocument()
+
+    fireEvent.click(remove)
     expect(onDeleteInputPort).toHaveBeenCalledOnce()
     expect(onDeleteInputPort).toHaveBeenCalledWith("policy")
   })
@@ -49,7 +59,7 @@ describe("SubmodelPortEditor", () => {
     render(<SubmodelPortEditor node={inputBoundary()} />)
 
     expect(screen.getByTestId("input-source-policy")).toBeInTheDocument()
-    expect(screen.queryByTitle(/^Remove connection from /)).not.toBeInTheDocument()
+    expect(screen.queryByTitle(/^Remove public input /)).not.toBeInTheDocument()
   })
 
   it("shows an intentional empty state for an input boundary with no frames", () => {
