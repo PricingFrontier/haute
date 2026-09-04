@@ -6,6 +6,7 @@ import {
   filterIncomingEdges,
   normalizeEdges,
 } from "../graphHelpers"
+import { DEFAULT_TARGET_HANDLE } from "../flowHandles"
 import { NODE_TYPES } from "../nodeTypes"
 
 function graphNode(
@@ -168,7 +169,7 @@ describe("filterIncomingEdges", () => {
       graphEdge("valid", "source", "target"),
       graphEdge("missing-source", "gone", "target"),
       graphEdge("missing-target", "source", "gone"),
-    ])
+    ], {})
 
     expect(result.validEdges.map(edge => edge.id)).toEqual(["valid"])
     expect(result.rejectedEdges.map(({ edge }) => edge.id)).toEqual([
@@ -208,7 +209,7 @@ describe("filterIncomingEdges", () => {
       graphEdge("valid-frame", "api", "target", "quotes"),
       graphEdge("stale-frame", "api", "target", "not_emitted"),
       graphEdge("missing-frame", "api", "target"),
-    ])
+    ], {})
 
     expect(result.validEdges.map(edge => edge.id)).toEqual(["valid-frame"])
     expect(result.rejectedEdges.map(({ edge }) => edge.id)).toEqual([
@@ -228,7 +229,7 @@ describe("filterIncomingEdges", () => {
       graphEdge("join-bottom", "source", "join", null, "join-bottom"),
       graphEdge("default", "source", "join"),
       graphEdge("stale", "source", "join", null, "lookup"),
-    ])
+    ], {})
 
     expect(result.validEdges.map(edge => edge.id)).toEqual([
       "base",
@@ -241,16 +242,17 @@ describe("filterIncomingEdges", () => {
     ])
   })
 
-  it("checks configured submodel ports and composite boundary row handles", () => {
+  it("checks registry-backed submodel ports and composite boundary row handles", () => {
     const nodes = [
       graphNode("source", NODE_TYPES.POLARS),
       graphNode("target", NODE_TYPES.POLARS),
       graphNode("submodel", NODE_TYPES.SUBMODEL, {
-        inputPorts: ["features"],
-        outputPorts: ["priced"],
+        definitionId: "pricing",
+        alias: "pricing",
       }),
       graphNode("empty-submodel", NODE_TYPES.SUBMODEL, {
-        outputPorts: [],
+        definitionId: "empty",
+        alias: "empty",
       }),
       graphNode("input-port", NODE_TYPES.SUBMODEL_PORT, {}, {
         portDirection: "input",
@@ -258,35 +260,72 @@ describe("filterIncomingEdges", () => {
       }),
       graphNode("output-port", NODE_TYPES.SUBMODEL_PORT, {}, {
         portDirection: "output",
-        ports: [{ id: "out__priced", label: "priced" }],
+        ports: [],
       }),
     ]
-    const result = filterIncomingEdges(nodes, [
-      graphEdge("submodel-in", "source", "submodel", null, "in__features"),
-      graphEdge("submodel-out", "submodel", "target", "out__priced"),
-      graphEdge("submodel-visible-default-in", "source", "submodel"),
-      graphEdge("stale-submodel-in", "source", "submodel", null, "in__gone"),
-      graphEdge("stale-submodel-out", "submodel", "target", "out__gone"),
-      graphEdge("empty-submodel-out", "empty-submodel", "target"),
-      graphEdge("input-port-source", "input-port", "target", "incoming-frame"),
-      graphEdge("output-port-target", "source", "output-port", null, "out__priced"),
-      graphEdge("stale-input-port-handle", "input-port", "target", "gone"),
-      graphEdge("stale-output-port-handle", "source", "output-port", null, "gone"),
-      graphEdge("wrong-input-port-direction", "source", "input-port"),
-      graphEdge("wrong-output-port-direction", "output-port", "target"),
-    ])
+    const result = filterIncomingEdges(
+      nodes,
+      [
+        graphEdge("submodel-in", "source", "submodel", null, "in__features"),
+        graphEdge("submodel-out", "submodel", "target", "out__priced"),
+        graphEdge("submodel-default-in", "source", "submodel"),
+        graphEdge("stale-submodel-in", "source", "submodel", null, "in__gone"),
+        graphEdge("stale-submodel-out", "submodel", "target", "out__gone"),
+        graphEdge("empty-submodel-out", "empty-submodel", "target"),
+        graphEdge("input-port-source", "input-port", "target", "incoming-frame"),
+        graphEdge("output-port-target-canonical", "source", "output-port"),
+        graphEdge(
+          "output-port-target-live",
+          "source",
+          "output-port",
+          null,
+          DEFAULT_TARGET_HANDLE,
+        ),
+        graphEdge("output-port-per-port-target", "source", "output-port", null, "out__priced"),
+        graphEdge("stale-input-port-handle", "input-port", "target", "gone"),
+        graphEdge("stale-output-port-handle", "source", "output-port", null, "gone"),
+        graphEdge("wrong-input-port-direction", "source", "input-port"),
+        graphEdge("wrong-output-port-direction", "output-port", "target"),
+      ],
+      {
+        pricing: {
+          definitionId: "pricing",
+          file: "pricing.py",
+          graph: { nodes: [], edges: [] },
+          inputPorts: [{
+            portId: "features",
+            label: "features",
+            targets: [{ nodeId: "child", handleId: null }],
+          }],
+          outputPorts: [{
+            portId: "priced",
+            label: "priced",
+            source: { nodeId: "child", handleId: null },
+          }],
+        },
+        empty: {
+          definitionId: "empty",
+          file: "empty.py",
+          graph: { nodes: [], edges: [] },
+          inputPorts: [],
+          outputPorts: [],
+        },
+      },
+    )
 
     expect(result.validEdges.map(edge => edge.id)).toEqual([
       "submodel-in",
       "submodel-out",
-      "submodel-visible-default-in",
       "input-port-source",
-      "output-port-target",
+      "output-port-target-canonical",
+      "output-port-target-live",
     ])
     expect(result.rejectedEdges.map(({ edge }) => edge.id)).toEqual([
+      "submodel-default-in",
       "stale-submodel-in",
       "stale-submodel-out",
       "empty-submodel-out",
+      "output-port-per-port-target",
       "stale-input-port-handle",
       "stale-output-port-handle",
       "wrong-input-port-direction",
@@ -305,7 +344,7 @@ describe("filterIncomingEdges", () => {
       graphEdge("into-source-only", "transform", "source"),
       graphEdge("out-of-sink-only", "sink", "transform"),
       graphEdge("valid-source-to-sink", "source", "sink"),
-    ])
+    ], {})
 
     expect(result.validEdges.map(edge => edge.id)).toEqual(["valid-source-to-sink"])
     expect(result.rejectedEdges.map(({ edge }) => edge.id)).toEqual([

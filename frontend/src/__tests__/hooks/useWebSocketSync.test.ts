@@ -506,6 +506,62 @@ describe("useWebSocketSync", () => {
       )
     })
 
+    it("accepts synced submodel output handles from the canonical definition registry", async () => {
+      const params = makeHookParams("rating/main.py")
+      const sourceNode: Node = {
+        id: "submodel_instance_inputs",
+        type: "submodel",
+        position: { x: 0, y: 0 },
+        data: {
+          label: "Inputs",
+          nodeType: "submodel",
+          config: { definitionId: "Inputs", alias: "Inputs" },
+        },
+      }
+      const targetNode: Node = {
+        ...readyNode,
+        id: "Polars_3",
+        data: { label: "Polars 3", nodeType: "polars", config: {} },
+      }
+      const document = makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        nodes: [sourceNode, targetNode],
+        edges: [{
+          id: "submodel-output",
+          source: sourceNode.id,
+          target: targetNode.id,
+          sourceHandle: "out__output_1",
+        }],
+        submodels: {
+          Inputs: {
+            definitionId: "Inputs",
+            file: "modules/Inputs.py",
+            graph: { nodes: [], edges: [] },
+            inputPorts: [],
+            outputPorts: [{
+              portId: "output_1",
+              label: "live_switch",
+              source: { nodeId: "live_switch", handleId: null },
+            }],
+          },
+        },
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(document)),
+        }))
+      })
+
+      expect(useGraphStore.getState().edges).toHaveLength(1)
+      expect(useToastStore.getState().addToast).not.toHaveBeenCalledWith(
+        "warning",
+        expect.stringContaining("unresolved synced edge"),
+      )
+    })
+
     it("rolls request mirrors back when the graph snapshot cannot be applied", async () => {
       const params = makeHookParams("rating/main.py")
       params.preservedBlocksRef.current = ["old block"]

@@ -361,9 +361,10 @@ candidate, with the error toast.
   same file; one-sided or foreign updates are ignored. Each accepted
   update advances a generation before asynchronous layout, so a later graph
   update or parse error permanently supersedes older work. Incoming edges
-  are checked against the live node/handle set: unresolved edges remain in
-  graph state and the save snapshot, a bounded warning names representative
-  problems, and only the valid partition guides layout. Finite incoming
+  are checked against the live node/handle set, including submodel boundary
+  handles resolved from the canonical definition registry: unresolved edges
+  remain in graph state and the save snapshot, a bounded warning names
+  representative problems, and only the valid partition guides layout. Finite incoming
   positions, including `{x: 0, y: 0}`, remain authoritative; layout fills
   only missing/non-finite positions. Nodes, edges, preamble, and the required
   `submodels` value are applied as one guarded update, with the backend's

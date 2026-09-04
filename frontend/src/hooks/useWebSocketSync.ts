@@ -373,7 +373,11 @@ export default function useWebSocketSync({
             const newEdges = normalizeEdges(adapted.edges)
             // Every validated document node carries a finite display position,
             // so external sync never generates layout and applies synchronously.
-            const { rejectedEdges } = filterIncomingEdges(newNodes, newEdges)
+            const { rejectedEdges } = filterIncomingEdges(
+              newNodes,
+              newEdges,
+              adapted.submodels,
+            )
             const nodesToApply = newNodes
 
             const previousPreservedBlocks = preservedBlocksRef.current
