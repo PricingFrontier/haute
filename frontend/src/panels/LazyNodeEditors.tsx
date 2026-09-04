@@ -19,6 +19,7 @@ export const ScenarioExpanderEditor = lazy(() => import("./editors/ScenarioExpan
 export const OptimiserApplyEditor = lazy(() => import("./editors/OptimiserApplyEditor"))
 export const ConstantEditor = lazy(() => import("./editors/ConstantEditor"))
 export const SubmodelEditor = lazy(() => import("./editors/SubmodelEditor"))
+export const SubmodelPortEditor = lazy(() => import("./editors/SubmodelPortEditor"))
 export const ColumnsTab = lazy(() => import("./editors/ColumnsTab"))
 export const PolarsCodePanel = lazy(() => import("./editors/shared/PolarsCodePanel"))
 export const ModellingConfig = lazy(() => import("./ModellingConfig"))

@@ -12,7 +12,7 @@ import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { apiInputFrameLabels } from "../../utils/apiInputPorts"
 
-const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
+const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, submodelPortEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
   edgeJoinEditorProps: [] as Record<string, unknown>[],
   exploreCodeEditorProps: [] as Record<string, unknown>[],
@@ -20,6 +20,7 @@ const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, explo
   bandingEditorProps: [] as Record<string, unknown>[],
   dataInputEditorProps: [] as Record<string, unknown>[],
   dataOutputEditorProps: [] as Record<string, unknown>[],
+  submodelPortEditorProps: [] as Record<string, unknown>[],
   columnsTabProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
   optimiserConfigProps: [] as Record<string, unknown>[],
@@ -124,6 +125,10 @@ vi.mock("../LazyNodeEditors", async () => {
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
   ConstantEditor: () => <div data-testid="ConstantEditor" />,
   SubmodelEditor: () => <div data-testid="SubmodelEditor" />,
+  SubmodelPortEditor: (props: Record<string, unknown>) => {
+    submodelPortEditorProps.push(props)
+    return <div data-testid="SubmodelPortEditor" />
+  },
   ColumnsTab: (props: Record<string, unknown>) => {
     columnsTabProps.push(props)
     return <div data-testid="ColumnsTab" />
@@ -269,6 +274,7 @@ describe("NodePanel", () => {
     bandingEditorProps.length = 0
     dataInputEditorProps.length = 0
     dataOutputEditorProps.length = 0
+    submodelPortEditorProps.length = 0
     columnsTabProps.length = 0
     modellingConfigProps.length = 0
     optimiserConfigProps.length = 0
@@ -1820,23 +1826,57 @@ describe("NodePanel", () => {
     expect(screen.queryByTitle("Refresh preview")).not.toBeInTheDocument()
   })
 
-  it("hides preview refresh and columns for submodel ports typed by React Flow", () => {
-    renderPanel({
-      node: {
-        id: "port_in__source",
-        type: "submodelPort",
-        data: {
-          label: "Source Port",
-          description: "",
-          config: {},
-          portDirection: "input",
-          portName: "Source Port",
-        },
-      } as unknown as SimpleNode,
+  it("routes drilled Input boundaries to their editor without preview or columns", () => {
+    const onDeleteSubmodelInputPort = vi.fn()
+    const node = makeNode({
+      id: "port_in__source",
+      type: "submodelPort",
+      data: {
+        label: "INPUT",
+        description: "",
+        nodeType: "submodelPort",
+        config: {},
+        instanceId: "instance_pricing",
+        definitionId: "definition_pricing",
+        portDirection: "input",
+        ports: [{ id: "source", label: "Source", parentEdges: [] }],
+        externalNodeIds: [],
+      },
     })
+
+    renderPanel({ node, onDeleteSubmodelInputPort })
 
     expect(screen.queryByTitle("Refresh preview")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /^columns$/i })).not.toBeInTheDocument()
+    expect(screen.getByTestId("SubmodelPortEditor")).toBeInTheDocument()
+    expect(submodelPortEditorProps.at(-1)).toMatchObject({
+      node,
+      onDeleteInputPort: onDeleteSubmodelInputPort,
+    })
+  })
+
+  it("does not expose the Input-boundary remove control while read-only", () => {
+    renderPanel({
+      readOnly: true,
+      onDeleteSubmodelInputPort: vi.fn(),
+      node: makeNode({
+        id: "port_in__source",
+        type: "submodelPort",
+        data: {
+          label: "INPUT",
+          description: "",
+          nodeType: "submodelPort",
+          config: {},
+          instanceId: "instance_pricing",
+          definitionId: "definition_pricing",
+          portDirection: "input",
+          ports: [{ id: "source", label: "Source", parentEdges: [] }],
+          externalNodeIds: [],
+        },
+      }),
+    })
+
+    expect(submodelPortEditorProps.at(-1)?.onDeleteInputPort).toBeUndefined()
   })
 
   it("renders a fail-loud unknown-node-type banner with read-only diagnostic config", () => {

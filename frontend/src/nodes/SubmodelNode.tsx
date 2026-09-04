@@ -104,11 +104,11 @@ function SubmodelNode({
         <span
           data-testid="submodel-name-badge"
           title={nodeData.label}
-          className="ml-auto min-w-0 max-w-[110px] truncate rounded-full px-1.5 py-0.5 font-mono text-[9px]"
+          className="ml-auto min-w-0 max-w-[110px] truncate rounded-full px-1.5 py-0.5 text-[13px] font-semibold leading-tight"
           style={{
             background: `${accent}18`,
             border: `1px solid ${accent}30`,
-            color: accent,
+            color: "var(--text-primary)",
           }}
         >
           {nodeData.label}

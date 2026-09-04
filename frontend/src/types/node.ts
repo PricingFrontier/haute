@@ -274,6 +274,8 @@ export interface SubmodelPortData extends Record<string, unknown> {
   definitionId: string
   portDirection: "input" | "output"
   ports: SubmodelBoundaryPort[]
+  /** Input rows retain bindings for every shared occurrence so history can restore the parent graph. */
+  _parentBindingScope?: "definition"
   externalNodeIds: string[]
   _traceActive?: boolean
   _traceDimmed?: boolean

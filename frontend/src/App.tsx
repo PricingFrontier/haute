@@ -412,6 +412,7 @@ type NodePropertiesPanelProps = {
   onUpdateNode: NonNullable<ComponentProps<typeof NodePanel>["onUpdateNode"]>
   onRenameNode: NonNullable<ComponentProps<typeof NodePanel>["onRenameNode"]>
   onDeleteEdge?: ComponentProps<typeof NodePanel>["onDeleteEdge"]
+  onDeleteSubmodelInputPort?: ComponentProps<typeof NodePanel>["onDeleteSubmodelInputPort"]
   onSwapEdgeJoinInputs?: ComponentProps<typeof NodePanel>["onSwapEdgeJoinInputs"]
   editingReadOnly: boolean
   onRefreshPreview: () => void
@@ -449,6 +450,7 @@ function NodePropertiesPanel({
   onUpdateNode,
   onRenameNode,
   onDeleteEdge,
+  onDeleteSubmodelInputPort,
   onSwapEdgeJoinInputs,
   editingReadOnly,
   onRefreshPreview,
@@ -521,6 +523,7 @@ function NodePropertiesPanel({
           onUpdateNode={onUpdateNode}
           onRenameNode={onRenameNode}
           onDeleteEdge={onDeleteEdge}
+          onDeleteSubmodelInputPort={onDeleteSubmodelInputPort}
           onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
           readOnly={editingReadOnly}
           documentReadOnly={documentReadOnly}
@@ -870,6 +873,7 @@ function FlowEditor() {
   const {
     commitBoundaryConnection,
     deleteBoundaryEdge,
+    deleteBoundaryInputPort,
     onBoundaryEdgesChange,
     commitSharedNodeDeletion,
   } = useSubmodelBoundaryEditing({
@@ -1513,6 +1517,7 @@ function FlowEditor() {
           onUpdateNode={onUpdateNode}
           onRenameNode={onRenameNode}
           onDeleteEdge={editingReadOnly ? undefined : handleDeleteEdge}
+          onDeleteSubmodelInputPort={editingReadOnly ? undefined : deleteBoundaryInputPort}
           onSwapEdgeJoinInputs={editingReadOnly ? undefined : handleSwapEdgeJoinInputs}
           editingReadOnly={editingReadOnly}
           onRefreshPreview={handlePanelPreviewRefresh}

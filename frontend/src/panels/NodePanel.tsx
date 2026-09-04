@@ -41,6 +41,7 @@ type NodePanelProps = {
   onUpdateNode?: (id: string, data: Record<string, unknown>) => OnUpdateConfigResult
   onRenameNode?: (id: string, label: string) => Promise<OnUpdateConfigResult>
   onDeleteEdge?: (edgeId: string) => void
+  onDeleteSubmodelInputPort?: (portId: string) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
   onRefreshPreview?: () => void
   /** True when showing last-selected node while nothing is actively selected */
@@ -1103,6 +1104,7 @@ function NodePanelContent({
   onUpdateNode,
   onRenameNode,
   onDeleteEdge,
+  onDeleteSubmodelInputPort,
   onSwapEdgeJoinInputs,
   onRefreshPreview,
   dimmed,
@@ -1308,6 +1310,9 @@ function NodePanelContent({
       activeExplorePane={activeExplorePane}
       activeModellingPane={activeModellingPane}
       onDeleteEdge={onDeleteEdge}
+      onDeleteSubmodelInputPort={
+        readOnly || documentReadOnly ? undefined : onDeleteSubmodelInputPort
+      }
       onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
       onShowPivots={() => setExplorePane(node.id, "pivots")}
       errorLine={errorLine}

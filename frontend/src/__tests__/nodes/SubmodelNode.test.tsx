@@ -1,7 +1,7 @@
 /**
  * Tests for SubmodelNode component.
  *
- * Tests: SUBMODEL identity and name badge, single collapsed input socket,
+ * Tests: SUBMODEL identity and prominent name, single collapsed input socket,
  * output port labels, canonical edge anchors, opacity when dimmed,
  * border style (dashed vs solid).
  */
@@ -92,11 +92,27 @@ function renderNode(
 // ── Tests ───────────────────────────────────────────────────────
 
 describe("SubmodelNode", () => {
-  it("renders its identity and name once in the header", () => {
+  it("keeps the standard node type treatment and strengthens the header name", () => {
     renderNode({ label: "My Submodel" })
     const header = screen.getByTestId("submodel-header")
-    expect(header).toHaveTextContent("SUBMODEL")
-    expect(header).toHaveTextContent("My Submodel")
+    const body = screen.getByTestId("submodel-body")
+    const typeLabel = screen.getByText("SUBMODEL")
+    const name = screen.getByTestId("submodel-name-badge")
+
+    expect(header).toContainElement(typeLabel)
+    expect(header).toContainElement(name)
+    expect(body).not.toContainElement(name)
+    expect(typeLabel).toHaveClass("text-[10px]", "tracking-[0.1em]")
+    expect(typeLabel).not.toHaveClass("rounded-full")
+    expect(name).toHaveTextContent("My Submodel")
+    expect(name).toHaveClass(
+      "ml-auto",
+      "rounded-full",
+      "text-[13px]",
+      "font-semibold",
+      "leading-tight",
+    )
+    expect(name).toHaveStyle({ color: "var(--text-primary)" })
     expect(screen.getAllByText("My Submodel")).toHaveLength(1)
   })
   it("keeps the definition child count in accessibility text, not the body", () => {
@@ -451,13 +467,13 @@ describe("SubmodelNode", () => {
     expect(wrapper().style.border).not.toContain("dashed")
   })
 
-  it("truncates very long names in the header badge", () => {
+  it("truncates very long prominent header names without losing their full title", () => {
     const longName = "Pricing submodel with a deliberately very long display name"
     renderNode({ label: longName })
-    const badge = screen.getByTestId("submodel-name-badge")
-    expect(badge).toHaveTextContent(longName)
-    expect(badge).toHaveClass("truncate")
-    expect(badge).toHaveAttribute("title", longName)
+    const name = screen.getByTestId("submodel-name-badge")
+    expect(name).toHaveTextContent(longName)
+    expect(name).toHaveClass("max-w-[110px]", "truncate")
+    expect(name).toHaveAttribute("title", longName)
   })
 
   it("dims node when _hoverDimmed is true", () => {

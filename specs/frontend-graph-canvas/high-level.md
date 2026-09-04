@@ -80,10 +80,13 @@ Stale, missing, wrong-direction, or internal-child handles are blocked with an
 actionable error rather than repaired heuristically.
 
 Before saving a shared definition edit, the client and server validate every
-live occurrence against the proposed interface. In v1, removing or changing a
-bound public port hard-blocks the transaction and lists all affected
-instance/port pairs. Interface-preserving internal edits save once and become
-visible from all occurrences. Per-instance internal overrides are not offered.
+live occurrence against the proposed interface. Ordinary boundary rewiring that
+would remove or change a bound public port hard-blocks the transaction and lists
+all affected instance/port pairs. The explicit remove control in the owner's
+Input inspector instead retires the chosen public input, its internal routes,
+and every occurrence binding together as one undoable transaction.
+Interface-preserving internal edits save once and become visible from all
+occurrences. Per-instance internal overrides are not offered.
 
 Reload, WebSocket replacement, create/dissolve response hydration, undo/redo,
 breadcrumbs, comparison views, and dirty-state tracking preserve immutable
@@ -212,20 +215,26 @@ candidate, with the error toast.
   projection, Input lists one row per declared public input port and maps its
   immutable `portId` to one or more ordered internal target endpoints. Its
   child-side executable input name is the sanitised public input label; the
-  immutable port id remains handle identity only. Output keeps one target handle;
+  immutable port id remains handle identity only. Selecting the owner Input
+  boundary shows those same frames in the inspector using the standard Inputs
+  chips and remove affordance. Removing a frame explicitly deletes its routes,
+  identity-map entry, and all parent bindings to that port across occurrences;
+  the edit is atomic and undoable. A read-only drilled occurrence renders the
+  list without remove controls. Output keeps one target handle;
   every child-to-Output mapping carries an immutable public output `portId` and
   one internal source endpoint. A canonical occurrence contributes the
   sanitised public output label downstream. Parent bindings stay on
   `in__<portId>`/`out__<portId>`. Changing internal endpoints while retaining
-  a port id and direction is a compatible shared-definition edit; removing or
-  changing the direction of a bound port is rejected atomically across all
-  occurrences. Both composite nodes remain visible when empty and keep their
-  current canvas positions while structured endpoints change. Reconciliation
-  is definition-based and atomic: stale or malformed port bindings fail visibly
-  instead of becoming draft child-id edges. When history restores a non-drilled
-  snapshot while a drilled view is active, reconciliation is a no-op and the
-  parent refs keep their last synchronized state. Each composite records the
-  external parent node ids it represents, so flat-graph trace
+  a port id and direction is a compatible shared-definition edit. Incidental
+  removal or direction changes of a bound port are rejected atomically across
+  all occurrences; only the explicit Input-inspector action performs cascading
+  interface retirement. Both composite nodes remain visible when empty and
+  keep their current canvas positions while structured endpoints change.
+  Reconciliation is definition-based and atomic: stale or malformed port
+  bindings fail visibly instead of becoming draft child-id edges. When history
+  restores a non-drilled snapshot while a drilled view is active, reconciliation
+  is a no-op and the parent refs keep their last synchronized state. Each
+  composite records the external parent node ids it represents, so flat-graph trace
   steps still highlight the corresponding Input or Output card after the
   per-parent markers are collapsed. Input-to-child and child-to-Output edges
   use the same solid default edge rendering as ordinary main-canvas edges;

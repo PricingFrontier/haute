@@ -8,6 +8,7 @@ import {
   applySubmodelBoundaryConnection,
   connectSubmodelInputFromParentConnection,
   removeSubmodelBoundaryEdges,
+  removeSubmodelInputPort,
   type SubmodelBoundaryEditState,
 } from "../submodelBoundaryEditing"
 import { SUBMODEL_INPUT_HANDLE } from "../flowHandles"
@@ -351,6 +352,115 @@ describe("submodelBoundaryEditing", () => {
     expect(definition._inputPortInputNames).toEqual({})
     expect(boundary(result.viewNodes, "input").data._sourceHandleInputNames).toEqual({})
   })
+
+  it("explicitly retires a public input and every occurrence binding", () => {
+    const current = state()
+    const parentNodes = current.parentNodes.map((node) => node.id === "instance_secondary" ? {
+      ...node,
+      data: {
+        ...node.data,
+        config: {
+          ...(node.data.config as Record<string, unknown>),
+          instanceOf: "instance_primary",
+        },
+      },
+    } : node)
+    const primaryBinding: PipelineEdge = {
+      id: "primary-policy-binding",
+      source: "consumer",
+      target: "instance_primary",
+      targetHandle: "in__policy",
+      data: { _inputName: "policy_input" },
+    }
+    const secondaryBinding: PipelineEdge = {
+      id: "secondary-policy-binding",
+      source: "consumer",
+      target: "instance_secondary",
+      targetHandle: "in__policy",
+      data: { _inputName: "policy_input" },
+    }
+    const unrelatedOutput: PipelineEdge = {
+      id: "unrelated-output",
+      source: "instance_primary",
+      sourceHandle: "out__premium",
+      target: "consumer",
+      targetHandle: "in__policy",
+      data: { _inputName: "premium_input" },
+    }
+
+    const result = removeSubmodelInputPort({
+      ...current,
+      parentNodes,
+      parentEdges: [primaryBinding, secondaryBinding, unrelatedOutput],
+    }, "policy")!
+
+    const definition = result.submodels.definition_pricing as SubmodelDefinition
+    expect(definition.inputPorts).toEqual([])
+    expect(definition._inputPortInputNames).toEqual({})
+    expect(definition.graph).toEqual(
+      (current.submodels.definition_pricing as SubmodelDefinition).graph,
+    )
+    expect(definition.outputPorts).toEqual(
+      (current.submodels.definition_pricing as SubmodelDefinition).outputPorts,
+    )
+    expect(result.parentEdges).toEqual([unrelatedOutput])
+    expect((boundary(result.viewNodes, "input").data as SubmodelPortData).ports).toEqual([])
+    expect(result.viewEdges.some((edge) => {
+      const info = (edge.data as { submodelBoundary?: { direction?: string } } | undefined)
+        ?.submodelBoundary
+      return info?.direction === "input"
+    })).toBe(false)
+  })
+
+  it("explicitly retires an unrouted public input with no synthetic edge", () => {
+    const current = state()
+    const input = boundary(current.viewNodes, "input")
+    const definition = current.submodels.definition_pricing as SubmodelDefinition
+    const unroutedDefinition: SubmodelDefinition = {
+      ...definition,
+      inputPorts: definition.inputPorts.map((port) => ({ ...port, targets: [] })),
+    }
+
+    const result = removeSubmodelInputPort({
+      ...current,
+      viewEdges: current.viewEdges.filter((edge) => edge.source !== input.id),
+      submodels: { ...current.submodels, definition_pricing: unroutedDefinition },
+    }, "policy")!
+
+    expect((result.submodels.definition_pricing as SubmodelDefinition).inputPorts).toEqual([])
+    expect((boundary(result.viewNodes, "input").data as SubmodelPortData).ports).toEqual([])
+  })
+
+  it("keeps ordinary boundary deletion guarded when a public input is bound", () => {
+    const current = state()
+    const input = boundary(current.viewNodes, "input")
+    const route = current.viewEdges.find((edge) => edge.source === input.id)!
+    const binding: PipelineEdge = {
+      id: "policy-binding",
+      source: "consumer",
+      target: "instance_primary",
+      targetHandle: "in__policy",
+      data: { _inputName: "policy_input" },
+    }
+    const boundState: SubmodelBoundaryEditState = {
+      ...current,
+      viewNodes: current.viewNodes.map((node) => node.id === input.id ? {
+        ...node,
+        data: {
+          ...node.data,
+          ports: (node.data as unknown as SubmodelPortData).ports.map((port) => ({
+            ...port,
+            parentEdges: [binding],
+          })),
+        },
+      } : node),
+      parentEdges: [binding],
+    }
+
+    expect(() => removeSubmodelBoundaryEdges(boundState, [route.id]))
+      .toThrow(/Pricing.*Policy/s)
+  })
+
   it("blocks deletion of a used public output", () => { const current = state(true); const output = boundary(current.viewNodes, "output"); const declaration = current.viewEdges.find((edge) => edge.target === output.id)!; expect(() => removeSubmodelBoundaryEdges(current, [declaration.id])).toThrow(/Pricing.*Premium/s) })
   it("removes an unbound public output from the shared definition", () => { const current = state(); const output = boundary(current.viewNodes, "output"); const declaration = current.viewEdges.find((edge) => edge.target === output.id)!; expect(removeSubmodelBoundaryEdges(current, [declaration.id])?.submodels.definition_pricing).toMatchObject({ outputPorts: [] }) })
 })

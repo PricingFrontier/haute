@@ -20,6 +20,7 @@ import {
   connectSubmodelInputFromParentConnection,
   reconcileSubmodelBoundaryState,
   removeSubmodelBoundaryEdges,
+  removeSubmodelInputPort,
   type SubmodelBoundaryEditResult,
   type SubmodelBoundaryEditState,
 } from "../utils/submodelBoundaryEditing"
@@ -371,6 +372,20 @@ export default function useSubmodelBoundaryEditing({
     }
   }, [state, edges, commitWithParentIdentities, reportBoundaryError])
 
+  const deleteBoundaryInputPort = useCallback((portId: string): boolean => {
+    try {
+      const current = state()
+      if (!current) return false
+      const result = removeSubmodelInputPort(current, portId)
+      if (!result) return false
+      commitWithParentIdentities(result)
+      return true
+    } catch (error: unknown) {
+      reportBoundaryError(error)
+      return true
+    }
+  }, [state, commitWithParentIdentities, reportBoundaryError])
+
   const onBoundaryEdgesChange = useCallback((changes: EdgeChange[]): boolean => {
     const removedBoundaryIds = changes
       .filter((change): change is Extract<EdgeChange, { type: "remove" }> =>
@@ -433,6 +448,7 @@ export default function useSubmodelBoundaryEditing({
   return {
     commitBoundaryConnection,
     deleteBoundaryEdge,
+    deleteBoundaryInputPort,
     onBoundaryEdgesChange,
     commitSharedNodeDeletion,
     reconcileActiveSubmodel,

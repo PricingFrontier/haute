@@ -5,6 +5,7 @@ import {
   connectCanonicalSubmodelInputFromParentConnection,
   reconcileCanonicalSubmodelBoundaryState,
   removeCanonicalSubmodelBoundaryEdges,
+  removeCanonicalSubmodelInputPort,
   type CanonicalSubmodelInputConnectionState,
 } from "./canonicalSubmodelBoundaryEditing"
 
@@ -29,5 +30,7 @@ export const connectSubmodelInputFromParentConnection = (
 ) => connectCanonicalSubmodelInputFromParentConnection(state, connection)
 export const removeSubmodelBoundaryEdges = (state: SubmodelBoundaryEditState, edgeIds: string[]) =>
   removeCanonicalSubmodelBoundaryEdges(state, edgeIds)
+export const removeSubmodelInputPort = (state: SubmodelBoundaryEditState, portId: string) =>
+  removeCanonicalSubmodelInputPort(state, portId)
 export const reconcileSubmodelBoundaryState = (state: SubmodelBoundaryEditState) =>
   reconcileCanonicalSubmodelBoundaryState(state)

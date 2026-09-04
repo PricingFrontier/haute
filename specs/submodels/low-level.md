@@ -134,6 +134,15 @@ audit remains the sole deletion gate.
 Definition edits validate all live occurrences and their bindings as one
 transaction. Interface-breaking edits are rejected before any parent or child
 file is written and report every affected instance/port.
+The owner's drilled Input inspector is the explicit interface-retirement path.
+Removing one listed frame deletes its `SubmodelInputPort`, its
+`input_port_input_names` entry, every synthetic child route for that port, and
+every `in__<portId>` parent binding targeting an occurrence of the definition
+in one history transaction. This operation is intentionally distinct from
+ordinary boundary-edge deletion, which retains the shared in-use guard.
+Input boundary history projections retain that definition-wide parent-binding
+slice so Undo and Redo restore the interface and its parent connections
+together.
 
 Required regression coverage is added before implementation and includes:
 
@@ -147,7 +156,9 @@ Required regression coverage is added before implementation and includes:
   interface-breaking edit preflight.
 - frontend create-instance identity persistence, editable-owner/shared-edit
   warning, read-only instance mutation guards, public-handle rendering, and
-  interface-breaking edit preflight.
+  interface-breaking edit preflight;
+- explicit Input-inspector removal of routed and unrouted public inputs,
+  including all-occurrence parent-binding cleanup and one atomic undo snapshot.
 
 ### Route request and response models
 

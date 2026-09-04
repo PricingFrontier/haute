@@ -23,6 +23,51 @@ describe("buildSubmodelViewGraph", () => {
     expect(output).toMatchObject({ instanceId: "instance_primary", definitionId: "definition_pricing", externalNodeIds: ["output"] })
     expect(graph.edges).toEqual(expect.arrayContaining([expect.objectContaining({ sourceHandle: "policy", target: "prepare", data: { submodelBoundary: { direction: "input", portId: "policy", parentEdges: [parentEdges[0]] } } }), expect.objectContaining({ source: "score", sourceHandle: "out", data: { submodelBoundary: { direction: "output", portId: "premium", parentConsumerEdges: [parentEdges[1]] } } })]))
   })
+  it("retains input bindings from every occurrence in the shared frame projection", () => {
+    const children = [makeNode("prepare"), makeNode("score")]
+    const secondary = makeNode("instance_secondary", "submodel", {
+      data: {
+        label: "Pricing copy",
+        nodeType: "submodel",
+        config: {
+          definitionId: "definition_pricing",
+          alias: "pricing_copy",
+          instanceOf: "instance_primary",
+        },
+      },
+    })
+    const parentEdges: PipelineEdge[] = [
+      {
+        id: "feed-owner",
+        source: "api-owner",
+        target: "instance_primary",
+        targetHandle: "in__policy",
+      },
+      {
+        id: "feed-copy",
+        source: "api-copy",
+        target: "instance_secondary",
+        targetHandle: "in__policy",
+      },
+    ]
+
+    const graph = buildSubmodelViewGraph({
+      submodelName: "pricing",
+      instanceId: "instance_primary",
+      definition: makeDefinition(children),
+      childNodes: children,
+      childEdges: [],
+      parentNodes: [makeNode("api-owner"), makeNode("api-copy"), instance(), secondary],
+      parentEdges,
+    })
+
+    const input = boundary(graph.nodes, "input").data as SubmodelPortData
+    expect(input.ports[0].parentEdges).toEqual(parentEdges)
+    expect(input._parentBindingScope).toBe("definition")
+    expect(input.externalNodeIds).toEqual(["api-owner"])
+    expect(graph.edges.find((edge) => edge.sourceHandle === "policy")?.data)
+      .toMatchObject({ submodelBoundary: { parentEdges: [parentEdges[0]] } })
+  })
   it("rejects undeclared parent handles", () => {
     const children = [makeNode("prepare"), makeNode("score")]
     expect(() => buildSubmodelViewGraph({ submodelName: "pricing", instanceId: "instance_primary", definition: makeDefinition(children), childNodes: children, childEdges: [], parentNodes: [instance()], parentEdges: [{ id: "bad", source: "api", target: "instance_primary", targetHandle: "in__unknown" }] })).toThrow(/undeclared input handle/)
