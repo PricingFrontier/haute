@@ -22,6 +22,7 @@ import {
   RatingStepEditor,
   ScenarioExpanderEditor,
   SubmodelEditor,
+  SubmodelPortEditor,
   TransformEditor,
 } from "./LazyNodeEditors"
 import type { LoadPivotFilterMembers } from "./editors/ExplorePivotsConfig"
@@ -50,6 +51,7 @@ export type NodeConfigEditorProps = {
   activeExplorePane: ExplorePane
   activeModellingPane: ModellingPane
   onDeleteEdge?: (edgeId: string) => void
+  onDeleteSubmodelInputPort?: (portId: string) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
   onShowPivots: () => void
   errorLine?: number | null
@@ -75,6 +77,7 @@ export function NodeConfigEditor({
   activeExplorePane,
   activeModellingPane,
   onDeleteEdge,
+  onDeleteSubmodelInputPort,
   onSwapEdgeJoinInputs,
   onShowPivots,
   errorLine,
@@ -164,6 +167,14 @@ export function NodeConfigEditor({
 
     case NODE_TYPES.SUBMODEL:
       return <SubmodelEditor config={config} accentColor={accentColor} />
+
+    case NODE_TYPES.SUBMODEL_PORT:
+      return (
+        <SubmodelPortEditor
+          node={node}
+          onDeleteInputPort={onDeleteSubmodelInputPort}
+        />
+      )
 
     default:
       return null

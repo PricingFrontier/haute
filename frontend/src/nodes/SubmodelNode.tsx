@@ -7,10 +7,10 @@ import {
   isSubmodelDefinition,
   isSubmodelInstanceConfig,
   type SubmodelFlowNode,
-  type SubmodelInputPort,
   type SubmodelOutputPort,
 } from "../types/node"
-import FramePortRows from "./FramePortRows"
+import { SUBMODEL_INPUT_HANDLE } from "../utils/flowHandles"
+import FramePortRows, { DefaultInputPortRow } from "./FramePortRows"
 import useGraphStore from "../stores/useGraphStore"
 
 const accent = nodeTypeColors.submodel || STRUCTURE_COLORS.fallbackAccent
@@ -31,6 +31,7 @@ function SubmodelNode({
   id,
   data: nodeData,
   selected,
+  isConnectable,
 }: NodeProps<SubmodelFlowNode>) {
   const config = nodeData.config
   const canonicalIdentityValid = isSubmodelInstanceConfig(config)
@@ -40,18 +41,25 @@ function SubmodelNode({
     ? definition
     : undefined
   const definitionInvalid = canonicalDefinition === undefined
-  const inputFrames = canonicalDefinition?.inputPorts.map(toInputFrame) ?? []
+  const hasInputSocket = canonicalDefinition !== undefined
+  const inputAnchorIds = canonicalDefinition?.inputPorts.map(
+    (port) => `in__${port.portId}`,
+  ) ?? []
   const outputFrames = canonicalDefinition?.outputPorts.map(toOutputFrame) ?? []
   const childCount = canonicalDefinition?.graph.nodes.length ?? 0
-  const hasBody = inputFrames.length > 0 || outputFrames.length > 0 || definitionInvalid
+  const hasBody = hasInputSocket
+    || outputFrames.length > 0
+    || definitionInvalid
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
   const traceMotionDisabled = !!nodeData._traceMotionDisabled
   const updateNodeInternals = useUpdateNodeInternals()
   const portSignature = JSON.stringify([
-    inputFrames.map((frame) => frame.id),
+    inputAnchorIds,
     outputFrames.map((frame) => frame.id),
+    hasInputSocket,
+    isConnectable,
   ])
 
   useEffect(() => {
@@ -96,11 +104,11 @@ function SubmodelNode({
         <span
           data-testid="submodel-name-badge"
           title={nodeData.label}
-          className="ml-auto min-w-0 max-w-[110px] truncate rounded-full px-1.5 py-0.5 font-mono text-[9px]"
+          className="ml-auto min-w-0 max-w-[110px] truncate rounded-full px-1.5 py-0.5 text-[13px] font-semibold leading-tight"
           style={{
             background: `${accent}18`,
             border: `1px solid ${accent}30`,
-            color: accent,
+            color: "var(--text-primary)",
           }}
         >
           {nodeData.label}
@@ -119,12 +127,14 @@ function SubmodelNode({
               Definition unavailable or invalid
             </div>
           )}
-          {inputFrames.length > 0 && (
-            <FramePortRows
-              ports={inputFrames}
-              direction="target"
+          {hasInputSocket && outputFrames.length === 0 && (
+            <DefaultInputPortRow
               accent={accent}
-              testIdPrefix="submodel-input"
+              handleId={SUBMODEL_INPUT_HANDLE}
+              rowTestId="submodel-input-row"
+              handleTestId="submodel-input-handle"
+              edgeAnchorIds={inputAnchorIds}
+              isConnectable={isConnectable}
             />
           )}
           {outputFrames.length > 0 && (
@@ -133,16 +143,20 @@ function SubmodelNode({
               direction="source"
               accent={accent}
               testIdPrefix="submodel-output"
+              firstRowInput={hasInputSocket
+                ? {
+                    handleId: SUBMODEL_INPUT_HANDLE,
+                    handleTestId: "submodel-input-handle",
+                    edgeAnchorIds: inputAnchorIds,
+                    isConnectable,
+                  }
+                : undefined}
             />
           )}
         </div>
       )}
     </div>
   )
-}
-
-function toInputFrame(port: SubmodelInputPort) {
-  return { id: `in__${port.portId}`, label: port.label, parentEdges: [] }
 }
 
 function toOutputFrame(port: SubmodelOutputPort) {

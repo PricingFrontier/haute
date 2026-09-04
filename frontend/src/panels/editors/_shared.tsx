@@ -395,9 +395,16 @@ export function SchemaPreview({ schema }: { schema: SchemaInfo }) {
 export function InputSourcesBar({
   inputSources,
   onDeleteInput,
+  deleteTitle = (name) => `Remove connection from ${name}`,
 }: {
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
+  /**
+   * Wording for the remove control. Ordinary nodes drop one incoming edge, but
+   * the submodel Input boundary retires a shared public port, so a caller whose
+   * removal reaches further than this chip must say so.
+   */
+  deleteTitle?: (name: string) => string
 }) {
   if (inputSources.length === 0) return null
   return (
@@ -435,7 +442,7 @@ export function InputSourcesBar({
                 <button
                   onClick={() => onDeleteInput(src.edgeId)}
                   className="icon-danger-btn p-0 rounded"
-                  title={`Remove connection from ${src.name}`}
+                  title={deleteTitle(src.name)}
                 >
                   <X size={10} />
                 </button>

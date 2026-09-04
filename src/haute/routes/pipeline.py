@@ -794,6 +794,14 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
     except ConfigError as exc:
         logger.warning("save_pipeline_config_invalid", error=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    except ParseError as exc:
+        # Structural rejections raised by the save-time flatten and codegen
+        # (undeclared handles, an unrouted public input bound by a parent edge,
+        # …) describe a client graph the user can repair. Without this the
+        # actionable context only reaches the server log and the client shows
+        # an opaque 500.
+        logger.warning("save_pipeline_graph_invalid", error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 @router.post("/pipeline/read-json", response_model=ReadJsonResponse)

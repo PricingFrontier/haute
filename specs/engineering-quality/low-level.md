@@ -144,8 +144,11 @@
   `pytest.mark.flaky` in its exact fingerprint budget (zero at present). The
   generated Markdown groups live site counts by signal and lists each mutation
   target separately, so a reviewer can act without reading the scanner's
-  implementation. The Playwright CI retry allowance is pinned to exactly 2 by a
-  direct assertion against `frontend/playwright.config.ts`.
+  implementation. Its full-corpus regeneration assertion has a 180-second
+  per-test ceiling so the sharded coverage lane retains bounded failure while
+  allowing for instrumentation and runner contention. The Playwright CI retry
+  allowance is pinned to exactly 2 by a direct assertion against
+  `frontend/playwright.config.ts`.
 - **Performance report schema 4** contains top-level `environment`, `workload`,
   `resources`, and `wall_time` records plus per-test bounded evidence.
   Unavailable numeric counters are JSON `null`; reported pytest phase time plus
@@ -219,11 +222,15 @@
    developer already has Haute running; the harness and Playwright config
    validate and share those values.
    `frontend/scripts/check-bundle-size.mjs` counts the production entry and
-   modulepreload chunks against default ceilings of 279 KiB initial and
+   modulepreload chunks against default ceilings of 283 KiB initial and
    1,333 KiB total JavaScript gzip. The measured bundle is approximately
-   276.7 KiB initial and 1,322.8 KiB total with the eager execution-diagnostic
+   281.1 KiB initial and 1,328.3 KiB total with the eager execution-diagnostic
    validator, server-owned editor identities, extracted graph/job controllers,
-   and existing recovery/live-sync boundaries. The Explore chart
+   the collapsed submodel input socket's canonical port resolution and
+   parent-binding projection, and existing recovery/live-sync boundaries. Each
+   ceiling raise names the eager core it admits and restores roughly 2 KiB of
+   headroom, so the ratchet keeps catching an accidental eager import rather
+   than only the change that happens to cross it. The Explore chart
    validator is a separate lazy artifact in the chart-config chunk rather than
    an entry modulepreload.
    Modelling training response parsers remain in a dynamically imported

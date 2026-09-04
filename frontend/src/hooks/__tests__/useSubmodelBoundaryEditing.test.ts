@@ -6,6 +6,8 @@ import useToastStore from "../../stores/useToastStore"
 import { makeEdge, makeNode } from "../../test-utils/factories"
 import type { PipelineEdge, SubmodelPortData } from "../../types/node"
 import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
+import { SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
+import { cloneGraphSnapshot } from "../../utils/graphSnapshot"
 
 const SUBMODEL_NAME = "Pricing"
 const PLACEHOLDER_ID = "instance_primary"
@@ -13,6 +15,7 @@ const DEFINITION_ID = "definition_pricing"
 
 type FixtureOptions = {
   bindInput?: boolean
+  includeInputPort?: boolean
   outputPorts?: string[]
   includeInternalEdge?: boolean
   bindOutputConsumers?: boolean
@@ -25,6 +28,7 @@ type GraphIdentityRequest = {
 }
 function makeFixture({
   bindInput = false,
+  includeInputPort = true,
   outputPorts = [],
   includeInternalEdge = false,
   bindOutputConsumers = true,
@@ -61,7 +65,7 @@ function makeFixture({
     placeholder,
   ]
   const parentEdges: PipelineEdge[] = []
-  if (bindInput) parentEdges.push({
+  if (bindInput && includeInputPort) parentEdges.push({
     ...makeEdge("external", PLACEHOLDER_ID, { id: "incoming" }),
     targetHandle: "in__incoming",
     data: { _inputName: "external_input" },
@@ -78,21 +82,24 @@ function makeFixture({
       data: { _inputName: `Public_${childId}` },
     },
   )
+  const inputPortInputNames: Record<string, string> = includeInputPort
+    ? { incoming: "Incoming_policy_data" }
+    : {}
   const definition = {
     definitionId: DEFINITION_ID,
     file: "modules/pricing.py",
     graph: { nodes: childNodes, edges: childEdges },
-    inputPorts: [{
+    inputPorts: includeInputPort ? [{
       portId: "incoming",
       label: "Incoming policy data",
       targets: [{ nodeId: "child_a", handleId: null }],
-    }],
+    }] : [],
     outputPorts: outputPorts.map((portId) => ({
       portId,
       label: `Public ${portId}`,
       source: { nodeId: portId, handleId: null },
     })),
-    _inputPortInputNames: { incoming: "Incoming_policy_data" },
+    _inputPortInputNames: inputPortInputNames,
   }
   const submodels = { [DEFINITION_ID]: definition }
   const view = buildSubmodelViewGraph({ submodelName: SUBMODEL_NAME, instanceId: PLACEHOLDER_ID, definition, childNodes, childEdges, parentNodes, parentEdges })
@@ -107,7 +114,9 @@ function makeFixture({
         ...node.data,
         _functionName: input ? "input_boundary" : "output_boundary",
         _defaultInputName: null,
-        _sourceHandleInputNames: input ? { incoming: "Incoming_policy_data" } : {},
+        _sourceHandleInputNames: input && includeInputPort
+          ? { incoming: "Incoming_policy_data" }
+          : {},
       },
     }
   })
@@ -147,6 +156,48 @@ function hookParams(fixture: ReturnType<typeof makeFixture>) {
 describe("useSubmodelBoundaryEditing", () => {
   beforeEach(() => useToastStore.setState({ toasts: [] }))
 
+  it("atomically commits a parent-created public input and canonical edge", () => {
+    const fixture = makeFixture({ includeInputPort: false })
+    fixture.graphRef.current = {
+      nodes: fixture.parentNodes,
+      edges: fixture.parentEdges,
+    }
+    const parentGraphRef = { current: null }
+    const { result } = renderHook(() => useSubmodelBoundaryEditing({
+      ...hookParams(fixture),
+      activeSubmodelName: null,
+      activeSubmodelInstanceId: null,
+      activeSubmodelDefinitionId: null,
+      nodes: fixture.parentNodes,
+      edges: fixture.parentEdges,
+      graphRef: fixture.graphRef,
+      parentGraphRef,
+    }))
+    act(() => {
+      expect(result.current.commitBoundaryConnection({
+        source: "external",
+        sourceHandle: null,
+        target: PLACEHOLDER_ID,
+        targetHandle: SUBMODEL_INPUT_HANDLE,
+      })).toBe(true)
+    })
+    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+    expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
+      inputPorts: [{
+        portId: "input_1",
+        label: "external_input",
+        targets: [],
+      }],
+      _inputPortInputNames: { input_1: "external_input" },
+    })
+    expect(fixture.graphRef.current.edges).toEqual([expect.objectContaining({
+      source: "external",
+      target: PLACEHOLDER_ID,
+      targetHandle: "in__input_1",
+      data: { _inputName: "external_input" },
+    })])
+  })
+
   it("adds a second internal target to a declared public input", () => {
     const fixture = makeFixture({ bindInput: true })
     const input = fixture.view.nodes.find(
@@ -180,6 +231,120 @@ describe("useSubmodelBoundaryEditing", () => {
       "child_a",
       "child_b",
     ])
+  })
+
+  it("explicitly removes a bound public input in one atomic commit", () => {
+    const fixture = makeFixture({ bindInput: true })
+    const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
+
+    act(() => {
+      expect(result.current.deleteBoundaryInputPort("incoming")).toBe(true)
+    })
+
+    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+    expect(fixture.parentGraphRef.current?.edges).toEqual([])
+    expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
+      inputPorts: [],
+      _inputPortInputNames: {},
+    })
+    const input = fixture.graphRef.current.nodes.find(
+      (node) => (node.data as unknown as SubmodelPortData).portDirection === "input",
+    )!
+    expect((input.data as unknown as SubmodelPortData).ports).toEqual([])
+    expect(fixture.graphRef.current.edges.some((edge) => edge.source === input.id)).toBe(false)
+  })
+
+  it("restores parent input bindings when undo and redo restore drilled snapshots", () => {
+    const fixture = makeFixture({ bindInput: true })
+    const originalSnapshot = cloneGraphSnapshot({
+      nodes: fixture.view.nodes,
+      edges: fixture.view.edges as PipelineEdge[],
+      preamble: "",
+      submodels: fixture.submodels,
+    })
+    const { result, rerender } = renderHook(
+      (params: ReturnType<typeof hookParams>) => useSubmodelBoundaryEditing(params),
+      { initialProps: hookParams(fixture) },
+    )
+
+    act(() => {
+      expect(result.current.deleteBoundaryInputPort("incoming")).toBe(true)
+    })
+    const removedSnapshot = cloneGraphSnapshot({
+      nodes: fixture.graphRef.current.nodes,
+      edges: fixture.graphRef.current.edges as PipelineEdge[],
+      preamble: "",
+      submodels: fixture.submodelsRef.current,
+    })
+    expect(fixture.parentGraphRef.current?.edges).toEqual([])
+
+    rerender({
+      ...hookParams(fixture),
+      nodes: removedSnapshot.nodes,
+      edges: removedSnapshot.edges,
+      submodels: removedSnapshot.submodels,
+    })
+    rerender({
+      ...hookParams(fixture),
+      nodes: originalSnapshot.nodes,
+      edges: originalSnapshot.edges,
+      submodels: originalSnapshot.submodels,
+    })
+    expect(fixture.parentGraphRef.current?.edges).toEqual(fixture.parentEdges)
+
+    rerender({
+      ...hookParams(fixture),
+      nodes: removedSnapshot.nodes,
+      edges: removedSnapshot.edges,
+      submodels: removedSnapshot.submodels,
+    })
+    expect(fixture.parentGraphRef.current?.edges).toEqual([])
+  })
+
+  it("restores a parent binding to its own position, not the end of the list", () => {
+    // Parent edge order is persisted: the dirty fingerprint compares it and
+    // codegen emits `connect` calls in it. Appending a restored binding would
+    // report unsaved changes after undoing back to the saved graph.
+    const fixture = makeFixture({ bindInput: true, outputPorts: ["child_b"] })
+    const before = fixture.parentEdges.map((edge) => edge.id)
+    expect(before[0]).toBe("incoming")
+    const originalSnapshot = cloneGraphSnapshot({
+      nodes: fixture.view.nodes,
+      edges: fixture.view.edges as PipelineEdge[],
+      preamble: "",
+      submodels: fixture.submodels,
+    })
+    const { result, rerender } = renderHook(
+      (params: ReturnType<typeof hookParams>) => useSubmodelBoundaryEditing(params),
+      { initialProps: hookParams(fixture) },
+    )
+
+    act(() => {
+      expect(result.current.deleteBoundaryInputPort("incoming")).toBe(true)
+    })
+    const removedSnapshot = cloneGraphSnapshot({
+      nodes: fixture.graphRef.current.nodes,
+      edges: fixture.graphRef.current.edges as PipelineEdge[],
+      preamble: "",
+      submodels: fixture.submodelsRef.current,
+    })
+    expect(fixture.parentGraphRef.current?.edges.map((edge) => edge.id))
+      .toEqual(before.filter((id) => id !== "incoming"))
+
+    rerender({
+      ...hookParams(fixture),
+      nodes: removedSnapshot.nodes,
+      edges: removedSnapshot.edges,
+      submodels: removedSnapshot.submodels,
+    })
+    rerender({
+      ...hookParams(fixture),
+      nodes: originalSnapshot.nodes,
+      edges: originalSnapshot.edges,
+      submodels: originalSnapshot.submodels,
+    })
+
+    expect(fixture.parentGraphRef.current?.edges.map((edge) => edge.id)).toEqual(before)
   })
 
   it("resolves changed parent occurrence handles before committing a new public output", async () => {

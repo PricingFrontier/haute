@@ -34,7 +34,7 @@ occurrence-owned state:
 ```text
 SubmodelEndpoint { nodeId: NodeId, handleId: HandleId | null }
 SubmodelInputPort { portId: PortId, label: string,
-                    targets: non-empty ordered list[SubmodelEndpoint] }
+                    targets: ordered list[SubmodelEndpoint] }
 SubmodelOutputPort { portId: PortId, label: string,
                      source: SubmodelEndpoint }
 SubmodelDefinition { definitionId, file, graph,
@@ -46,6 +46,16 @@ PipelineGraph { nodes[], edges[], submodels: map[definitionId, definition] }
 `PipelineGraph` is consumed through typed attributes and validated model-copy
 operations only. It deliberately has no legacy dictionary `[]`, `get`, or
 in-place `update` surface.
+
+An empty `SubmodelInputPort.targets` list represents a declared public frame
+that has not yet been routed inside the definition. The declaration remains
+serialisable when unbound. When an occurrence binds that port, the canonical
+Save validation, hierarchical codegen, and execution expansion all raise a
+contextual `ParseError` instead of silently dropping the incoming edge or
+emitting a `connect` call that binds nothing; the normal parent-first flow
+routes it in the drilled view before Save. `POST /api/pipeline/save` reports
+that rejection, and every other structural save-time `ParseError`, as a 400
+carrying the error's own context, never as an opaque 500.
 
 Each `SUBMODEL` node is one occurrence and its node id is its immutable
 `instanceId`. Its config is validated as `SubmodelInstanceConfig`; node label
@@ -127,6 +137,18 @@ audit remains the sole deletion gate.
 Definition edits validate all live occurrences and their bindings as one
 transaction. Interface-breaking edits are rejected before any parent or child
 file is written and report every affected instance/port.
+The owner's drilled Input inspector is the explicit interface-retirement path.
+Removing one listed frame deletes its `SubmodelInputPort`, its
+`input_port_input_names` entry, every synthetic child route for that port, and
+every `in__<portId>` parent binding targeting an occurrence of the definition
+in one history transaction. This operation is intentionally distinct from
+ordinary boundary-edge deletion, which retains the shared in-use guard.
+Input boundary history projections retain that definition-wide parent-binding
+slice, and the parent edge order it was projected from, so Undo and Redo
+restore the interface, its parent connections, and their original positions
+together. Parent edge order is persisted state — the dirty fingerprint
+compares it and codegen emits `connect` calls in it — so a restored binding
+returns to its own position rather than to the end of the parent edge list.
 
 Required regression coverage is added before implementation and includes:
 
@@ -140,7 +162,12 @@ Required regression coverage is added before implementation and includes:
   interface-breaking edit preflight.
 - frontend create-instance identity persistence, editable-owner/shared-edit
   warning, read-only instance mutation guards, public-handle rendering, and
-  interface-breaking edit preflight.
+  interface-breaking edit preflight;
+- explicit Input-inspector removal of routed and unrouted public inputs,
+  including all-occurrence parent-binding cleanup, one atomic undo snapshot,
+  and parent edge order preserved across that undo;
+- codegen and save-route rejection of a parent edge bound to an unrouted
+  public input, including the 400 status and message the client receives.
 
 ### Route request and response models
 
@@ -344,8 +371,9 @@ Acquires `save_lock` and runs the body in a threadpool:
   the bindings.
 - **Flatten validates before dropping anything.** Every occurrence must resolve
   a definition, every boundary handle must name a declared port with the right
-  direction, and every public endpoint must exist. Missing, wrong-prefixed, or
-  stale bindings raise contextual `ParseError` before output construction.
+  direction, every bound input port must have at least one internal target, and
+  every public endpoint must exist. Missing, wrong-prefixed, unrouted, or stale
+  bindings raise contextual `ParseError` before output construction.
 - **Flatten is identity-preserving when the graph has no occurrences.** An
   explicit unknown `target_instance_id` is an error rather than a no-op.
 - **Inbound edge-join roles survive flattening.** A public input port targeting

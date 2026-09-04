@@ -13,6 +13,7 @@ export { default as ScenarioExpanderEditor } from "./ScenarioExpanderEditor"
 export { default as OptimiserApplyEditor } from "./OptimiserApplyEditor"
 export { default as ConstantEditor } from "./ConstantEditor"
 export { default as SubmodelEditor } from "./SubmodelEditor"
+export { default as SubmodelPortEditor } from "./SubmodelPortEditor"
 
 // Re-export shared types so NodePanel can use them
 export type {

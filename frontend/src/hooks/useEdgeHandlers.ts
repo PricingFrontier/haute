@@ -204,8 +204,11 @@ export default function useEdgeHandlers({
   )
 
   const reportConnectionValidationFailure = useCallback((result: ConnectionValidationResult) => {
-    if (result.ok || result.reason.kind !== "duplicate-input-name") return
-    addToast("error", `Connection rejected: input name "${result.reason.inputName}" is already connected`)
+    if (result.ok) return
+    const message = result.reason.kind === "duplicate-input-name"
+      ? `input name "${result.reason.inputName}" is already connected`
+      : result.reason.message
+    addToast("error", `Connection rejected: ${message}`)
   }, [addToast])
 
   const commitConnection = useCallback(

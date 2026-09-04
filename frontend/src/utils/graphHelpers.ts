@@ -1,4 +1,8 @@
 import type { Node, Edge } from "@xyflow/react"
+import {
+  isSubmodelDefinition,
+  isSubmodelInstanceConfig,
+} from "../types/node"
 import { authoritativeSourceHandles } from "./apiInputPorts"
 import {
   NODE_TYPES,
@@ -68,14 +72,6 @@ function nodeConfig(node: Node): Record<string, unknown> {
     : {}
 }
 
-function configuredPortNames(config: Record<string, unknown>, field: string): string[] {
-  const value = config[field]
-  if (!Array.isArray(value)) return []
-  return value.filter(
-    (port): port is string => typeof port === "string" && port.length > 0,
-  )
-}
-
 function normalizedHandle(handle: string | null | undefined): string | null {
   return handle ?? null
 }
@@ -86,7 +82,11 @@ function normalizedHandle(handle: string | null | undefined): string | null {
  * An empty set means the node does not render a handle in that direction.
  * `null` represents React Flow's default id-less handle.
  */
-function liveHandles(node: Node, direction: HandleDirection): Set<string | null> {
+function liveHandles(
+  node: Node,
+  direction: HandleDirection,
+  submodels: Readonly<Record<string, unknown>>,
+): Set<string | null> {
   const type = nodeType(node)
 
   if (type === NODE_TYPES.API_INPUT) {
@@ -104,33 +104,33 @@ function liveHandles(node: Node, direction: HandleDirection): Set<string | null>
 
   if (type === NODE_TYPES.SUBMODEL) {
     const config = nodeConfig(node)
+    if (!isSubmodelInstanceConfig(config)) return new Set()
+    const definition = submodels[config.definitionId]
+    if (!isSubmodelDefinition(definition, config.definitionId)) return new Set()
     if (direction === "target") {
-      return new Set<string | null>([
-        null,
-        ...configuredPortNames(config, "inputPorts").map(port => `in__${port}`),
-      ])
+      return new Set(definition.inputPorts.map(port => `in__${port.portId}`))
     }
-    const outputPorts = configuredPortNames(config, "outputPorts")
+    const outputPorts = definition.outputPorts
     return outputPorts.length > 0
-      ? new Set(outputPorts.map(port => `out__${port}`))
+      ? new Set(outputPorts.map(port => `out__${port.portId}`))
       : new Set()
   }
 
   if (type === NODE_TYPES.SUBMODEL_PORT) {
     const data = nodeData(node)
-    const portIds = Array.isArray(data.ports)
-      ? data.ports.flatMap((port) => {
-          if (!port || typeof port !== "object" || Array.isArray(port)) return []
-          const id = (port as Record<string, unknown>).id
-          return typeof id === "string" && id.length > 0 ? [id] : []
-        })
-      : []
-    const handles = new Set<string | null>(portIds)
+    if (!Array.isArray(data.ports)) return new Set()
     if (data.portDirection === "input") {
-      return direction === "source" ? handles : new Set()
+      const portIds = data.ports.flatMap((port) => {
+        if (!port || typeof port !== "object" || Array.isArray(port)) return []
+        const id = (port as Record<string, unknown>).id
+        return typeof id === "string" && id.length > 0 ? [id] : []
+      })
+      return direction === "source" ? new Set(portIds) : new Set()
     }
     if (data.portDirection === "output") {
-      return direction === "target" ? handles : new Set()
+      return direction === "target"
+        ? new Set([null, DEFAULT_TARGET_HANDLE])
+        : new Set()
     }
     return new Set()
   }
@@ -148,8 +148,9 @@ function unavailableHandleReason(
   node: Node,
   direction: HandleDirection,
   handle: string | null,
+  submodels: Readonly<Record<string, unknown>>,
 ): string {
-  const rendered = liveHandles(node, direction)
+  const rendered = liveHandles(node, direction, submodels)
   if (rendered.size === 0) {
     return `${direction} node "${node.id}" has no ${direction} handle`
   }
@@ -159,11 +160,14 @@ function unavailableHandleReason(
 
 /**
  * Partition imported edges by whether both endpoint nodes and both endpoint
- * handles exist in the incoming graph's live node configuration.
+ * handles exist in the incoming graph's live node configuration. Submodel
+ * occurrence handles are resolved from the canonical definition registry,
+ * matching the handles rendered by SubmodelNode.
  */
 export function filterIncomingEdges(
   nodes: Node[],
   edges: Edge[],
+  submodels: Readonly<Record<string, unknown>>,
 ): FilterIncomingEdgesResult {
   const nodesById = new Map(nodes.map(node => [node.id, node]))
   const validEdges: Edge[] = []
@@ -188,19 +192,19 @@ export function filterIncomingEdges(
     }
 
     const sourceHandle = normalizedHandle(edge.sourceHandle)
-    if (!liveHandles(sourceNode, "source").has(sourceHandle)) {
+    if (!liveHandles(sourceNode, "source", submodels).has(sourceHandle)) {
       rejectedEdges.push({
         edge,
-        reason: unavailableHandleReason(sourceNode, "source", sourceHandle),
+        reason: unavailableHandleReason(sourceNode, "source", sourceHandle, submodels),
       })
       continue
     }
 
     const targetHandle = normalizedHandle(edge.targetHandle)
-    if (!liveHandles(targetNode, "target").has(targetHandle)) {
+    if (!liveHandles(targetNode, "target", submodels).has(targetHandle)) {
       rejectedEdges.push({
         edge,
-        reason: unavailableHandleReason(targetNode, "target", targetHandle),
+        reason: unavailableHandleReason(targetNode, "target", targetHandle, submodels),
       })
       continue
     }

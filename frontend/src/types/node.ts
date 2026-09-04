@@ -184,7 +184,6 @@ export function isSubmodelInputPort(value: unknown): value is SubmodelInputPort 
   return isNonBlankText(port.portId)
     && isNonBlankText(port.label)
     && Array.isArray(port.targets)
-    && port.targets.length > 0
     && port.targets.every(isSubmodelEndpoint)
 }
 
@@ -275,6 +274,10 @@ export interface SubmodelPortData extends Record<string, unknown> {
   definitionId: string
   portDirection: "input" | "output"
   ports: SubmodelBoundaryPort[]
+  /** Input rows retain bindings for every shared occurrence so history can restore the parent graph. */
+  _parentBindingScope?: "definition"
+  /** Parent edge ids in their authoritative order, so a restored binding returns to its own position. */
+  _parentEdgeOrder?: string[]
   externalNodeIds: string[]
   _traceActive?: boolean
   _traceDimmed?: boolean

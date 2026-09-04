@@ -235,6 +235,43 @@ function canonicalSubmodelBoundary(
 }
 
 /**
+ * Resolve an authoritative public input identity to its stable port id.
+ *
+ * The identity map is part of the persisted submodel contract, so consumers
+ * must fail closed when it is incomplete or ambiguous rather than guessing
+ * from display labels. A null result means the identity is genuinely new.
+ */
+export function submodelInputPortIdForName(
+  definition: SubmodelDefinition,
+  inputName: string,
+): string | null {
+  const mapping = definition._inputPortInputNames
+  const portIds = new Set(definition.inputPorts.map((port) => port.portId))
+  if (
+    typeof mapping !== "object"
+    || mapping === null
+    || Array.isArray(mapping)
+    || Object.keys(mapping).length !== portIds.size
+    || Object.keys(mapping).some((id) => !portIds.has(id))
+    || [...portIds].some((id) => (
+      typeof mapping[id] !== "string" || mapping[id].length === 0
+    ))
+  ) {
+    throw new Error(
+      `Submodel definition ${definition.definitionId} has incomplete input identities`,
+    )
+  }
+
+  const entries = Object.entries(mapping) as Array<[string, string]>
+  if (new Set(entries.map(([, name]) => name)).size !== entries.length) {
+    throw new Error(
+      `Submodel definition ${definition.definitionId} has ambiguous input identities`,
+    )
+  }
+  return entries.find(([, name]) => name === inputName)?.[0] ?? null
+}
+
+/**
  * Resolve a synthetic submodel boundary handle to every declared child
  * endpoint. Canonical input ports may fan out.
  */

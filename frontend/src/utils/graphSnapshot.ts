@@ -34,11 +34,13 @@ const REACT_FLOW_NODE_UI_FIELDS = [
 
 const REACT_FLOW_EDGE_UI_FIELDS = ["selected"] as const
 
-const LIVE_HISTORY_NODE_IDENTITY_FIELDS = new Set([
+const LIVE_HISTORY_NODE_METADATA_FIELDS = new Set([
   "_functionName",
   "_defaultInputName",
   "_sourceHandleInputNames",
   "_configReference",
+  "_parentBindingScope",
+  "_parentEdgeOrder",
 ])
 
 const LIVE_HISTORY_EDGE_IDENTITY_FIELDS = new Set(["_inputName"])
@@ -78,7 +80,7 @@ function stripNodeHistoryFields(n: Node): Record<string, unknown> {
   for (const [key, value] of Object.entries(n as unknown as Record<string, unknown>)) {
     if ((REACT_FLOW_NODE_UI_FIELDS as readonly string[]).includes(key)) continue
     out[key] = key === "data"
-      ? stripNodeDataMetadataFields(value, LIVE_HISTORY_NODE_IDENTITY_FIELDS)
+      ? stripNodeDataMetadataFields(value, LIVE_HISTORY_NODE_METADATA_FIELDS)
       : value
   }
   return out

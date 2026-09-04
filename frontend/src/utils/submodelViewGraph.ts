@@ -59,21 +59,29 @@ function buildCanonicalSubmodelViewGraph(
 
   const inputHandles = new Set(definition.inputPorts.map((port) => `in__${port.portId}`))
   const outputHandles = new Set(definition.outputPorts.map((port) => `out__${port.portId}`))
+  const occurrenceIds = new Set([instanceId, ...parentNodes.flatMap((node) => {
+    const candidateConfig = node.data.config
+    return node.data.nodeType === "submodel"
+      && isSubmodelInstanceConfig(candidateConfig)
+      && candidateConfig.definitionId === definition.definitionId
+      ? [node.id]
+      : []
+  })])
   for (const edge of parentEdges as PipelineEdge[]) {
     if (
-      edge.target === instanceId
+      occurrenceIds.has(edge.target)
       && (typeof edge.targetHandle !== "string" || !inputHandles.has(edge.targetHandle))
     ) {
       throw new Error(
-        `Submodel instance ${instanceId} has undeclared input handle ${String(edge.targetHandle)}`,
+        `Submodel instance ${edge.target} has undeclared input handle ${String(edge.targetHandle)}`,
       )
     }
     if (
-      edge.source === instanceId
+      occurrenceIds.has(edge.source)
       && (typeof edge.sourceHandle !== "string" || !outputHandles.has(edge.sourceHandle))
     ) {
       throw new Error(
-        `Submodel instance ${instanceId} has undeclared output handle ${String(edge.sourceHandle)}`,
+        `Submodel instance ${edge.source} has undeclared output handle ${String(edge.sourceHandle)}`,
       )
     }
   }
@@ -86,15 +94,18 @@ function buildCanonicalSubmodelViewGraph(
 
   for (const port of definition.inputPorts) {
     const handle = `in__${port.portId}`
-    const consumers = (parentEdges as PipelineEdge[]).filter(
-      (edge) => edge.target === instanceId && edge.targetHandle === handle,
+    const definitionConsumers = (parentEdges as PipelineEdge[]).filter(
+      (edge) => occurrenceIds.has(edge.target) && edge.targetHandle === handle,
+    )
+    const activeConsumers = definitionConsumers.filter(
+      (edge) => edge.target === instanceId,
     )
     inputPorts.push({
       id: port.portId,
       label: port.label,
-      parentEdges: consumers,
+      parentEdges: definitionConsumers,
     })
-    for (const consumer of consumers) {
+    for (const consumer of activeConsumers) {
       if (!inputExternalIds.includes(consumer.source)) inputExternalIds.push(consumer.source)
     }
     for (const [index, target] of port.targets.entries()) {
@@ -116,7 +127,7 @@ function buildCanonicalSubmodelViewGraph(
           submodelBoundary: {
             direction: "input",
             portId: port.portId,
-            parentEdges: consumers,
+            parentEdges: activeConsumers,
           },
         } satisfies SubmodelBoundaryEdgeData,
       })
@@ -162,6 +173,7 @@ function buildCanonicalSubmodelViewGraph(
         inputExternalIds,
         instanceId,
         definition.definitionId,
+        (parentEdges as PipelineEdge[]).map((edge) => edge.id),
       ),
       boundaryNode(
         outputId,
@@ -186,6 +198,7 @@ function boundaryNode(
   externalNodeIds: string[],
   instanceId: string,
   definitionId: string,
+  parentEdgeOrder: string[] = [],
 ): Node<BoundaryData> {
   return {
     id,
@@ -198,6 +211,12 @@ function boundaryNode(
       definitionId,
       portDirection: direction,
       ports,
+      ...(direction === "input"
+        ? {
+            _parentBindingScope: "definition" as const,
+            _parentEdgeOrder: parentEdgeOrder,
+          }
+        : {}),
       externalNodeIds,
     },
   }

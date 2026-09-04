@@ -147,8 +147,10 @@ Out of scope:
   skipped/focused/expected-failure sites remain exact fingerprint ratchets.
   The same summary includes the pinned Playwright retry budget and every
   mutation target's survivor threshold. A stale generated summary fails
-  ordinary tests; review is event-driven through the ratchet, with no
-  calendar-expiry gate (ruled 2026-07-27).
+  ordinary tests. Because regenerating it scans the full backend and frontend
+  test corpus, that assertion has an explicit bounded timeout with headroom for
+  coverage tracing and parallel-runner contention; review is event-driven
+  through the ratchet, with no calendar-expiry gate (ruled 2026-07-27).
 - Point-in-time reproduction material is non-normative evidence. Treating it as
   a current product contract would create misleading claims.
 - Component roadmaps preserve only the actionable conclusion and current

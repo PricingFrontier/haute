@@ -8,9 +8,9 @@ import useSettingsStore from "../stores/useSettingsStore"
 import { STATUS_COLORS } from "../theme/colors"
 import type { PipelineFlowNode } from "../types/node"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_BOTTOM_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "../utils/edgeJoinRoles"
-import { DEFAULT_TARGET_HANDLE } from "../utils/flowHandles"
+import { OUTPUT_ORIGIN_HANDLE_CLASS } from "../utils/flowHandles"
 import { authoritativeSourceHandles } from "../utils/apiInputPorts"
-import FramePortRows from "./FramePortRows"
+import FramePortRows, { DefaultInputPort } from "./FramePortRows"
 
 const statusColors: Record<string, string> = {
   ok: "var(--success)",
@@ -72,15 +72,13 @@ function _isDraggingFromEdgeJoinOutput(state: ReactFlowState): boolean {
   return sourceNode?.internals.userNode.data.nodeType === NODE_TYPES.EDGE_JOIN
 }
 
-/** The ordinary single source Handle on the right edge of the node.
+/** The ordinary single source Handle on the right edge of the output-name row.
  *
- * An apiInput never takes one from here. With at least one eligible frame its
- * body's frame rows mount the labelled Handles themselves, so a row's name and
- * its output dot share one layout coordinate system; with no eligible frame it
- * deliberately has no source handle at all, because a source that emits nothing
- * cannot be wired. (Before nodes rendered at one detail level, this component
- * also carried an evenly-spaced labelled set for the zoom levels that hid the
- * frame rows — there are none now, so there is one place handles come from.)
+ * PipelineNode mounts this component inside the relative row containing the
+ * right-aligned node/output name. API inputs never take one from here: their
+ * eligible frame rows mount their own labelled Handles, while a zero-frame API
+ * input deliberately has no source handle because a source that emits nothing
+ * cannot be wired.
  *
  * Test id is positional, not semantic: `output-connector[0]:<node label>`,
  * matching the frame rows' own `output-connector[<idx>]` ids. Ids derive from
@@ -88,50 +86,35 @@ function _isDraggingFromEdgeJoinOutput(state: ReactFlowState): boolean {
  * the live DOM, as long as the harness isn't itself mutating emit topology
  * mid-assertion.
  */
-function _SourceHandles({
-  isApiInput,
+function _SourceHandle({
   isConnectableEnd,
   nodeLabel,
+  accent,
 }: {
-  isApiInput: boolean
   isConnectableEnd: boolean
   nodeLabel: string
+  accent: string
 }) {
-  if (isApiInput) {
-    return null
-  }
   return (
     <Handle
+      className={OUTPUT_ORIGIN_HANDLE_CLASS}
       type="source"
       position={Position.Right}
       isConnectableEnd={isConnectableEnd}
+      style={{ top: "50%", color: accent }}
       data-testid={`output-connector[0]:${nodeLabel}`}
     />
   )
 }
 
 
-function _TargetHandles({
-  nodeType,
+function _EdgeJoinTargetHandles({
   accent,
   edgeJoinJoinHandlePosition,
-  nodeLabel,
 }: {
-  nodeType: string
   accent: string
   edgeJoinJoinHandlePosition: EdgeJoinJoinHandlePosition
-  nodeLabel: string
 }) {
-  if (nodeType !== NODE_TYPES.EDGE_JOIN) {
-    return (
-      <Handle
-        id={DEFAULT_TARGET_HANDLE}
-        type="target"
-        position={Position.Left}
-        data-testid={`input-connector[0]:${nodeLabel}`}
-      />
-    )
-  }
   const topJoinHandleStyle = { left: "50%", top: `${EDGE_JOIN_MARKER_HANDLE_OFFSET_Y}px`, background: accent }
   const bottomJoinHandleStyle = { left: "50%", bottom: `${EDGE_JOIN_MARKER_HANDLE_OFFSET_Y}px`, background: accent }
   const renderJoinHandle = (
@@ -211,23 +194,24 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
     updateNodeInternals,
   ])
 
-  const sourceHandles = !isSinkOnly ? (
-    <_SourceHandles
-      isApiInput={isDeployInput}
+  const sourceHandle = !isSinkOnly
+    && !isDeployInput
+    && nodeType !== NODE_TYPES.EDGE_JOIN ? (
+    <_SourceHandle
       isConnectableEnd={sourceHandlesCanEnd}
       nodeLabel={nodeData.label}
-    />
-  ) : null
-  const targetHandles = !isSourceOnly ? (
-    <_TargetHandles
-      nodeType={nodeType}
       accent={accent}
-      edgeJoinJoinHandlePosition={edgeJoinJoinHandlePosition}
-      nodeLabel={nodeData.label}
     />
   ) : null
-  // Visible frame rows own the API-input source Handles. `_SourceHandles`
-  // covers every other node, and an API input with no emitted frame.
+  const defaultInputPort = !isSourceOnly
+    && nodeType !== NODE_TYPES.EDGE_JOIN ? (
+    <DefaultInputPort
+      accent={accent}
+      handleTestId={`input-connector[0]:${nodeData.label}`}
+    />
+  ) : null
+  // Visible frame rows own the API-input source Handles. `_SourceHandle`
+  // covers output-producing ordinary nodes; a zero-frame API input has none.
   const showApiInputFrameRows = isDeployInput && frameLabels.length > 0
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
@@ -323,7 +307,10 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
             style={{ color: loadAccent }}
           />
         )}
-        {targetHandles}
+        <_EdgeJoinTargetHandles
+          accent={accent}
+          edgeJoinJoinHandlePosition={edgeJoinJoinHandlePosition}
+        />
         {!isSinkOnly && (
           <Handle
             className={EDGE_JOIN_OUTPUT_HANDLE_CLASS_NAME}
@@ -390,8 +377,6 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       className={`relative ${isCompactNode ? "w-[128px]" : "w-[240px]"} cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
       style={containerStyle}
     >
-      {targetHandles}
-
       {/* Header bar */}
       <div
         className="flex items-center gap-2 px-3 py-1.5"
@@ -455,9 +440,9 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       {/* Body — Bundle 3c: when this is a multi-frame apiInput, the frame rows
           own the right-edge Handles and display each visible frame in
           top-to-bottom order. A zero-frame apiInput renders none at all. All
-          non-apiInput types retain their existing body. `bodyStyle` keeps the
-          opaque face the card's border and header are composited over
-          (VC S38 opaque-face redesign). */}
+          other input-capable types place the shared default input and output
+          content in one row. `bodyStyle` keeps the opaque face the card's
+          border and header are composited over (VC S38 opaque-face redesign). */}
       <div className="px-3 py-2" style={bodyStyle}>
         {showApiInputFrameRows ? (
           <>
@@ -487,8 +472,18 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
           </>
         ) : (
           <>
-            <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
-              {nodeData.label}
+            <div
+              className={`relative flex min-w-0 items-center ${defaultInputPort ? "justify-start py-0.5 pl-3" : "justify-end"}${sourceHandle ? " pr-3" : ""}`}
+              style={{
+                ...(defaultInputPort ? { marginLeft: "-12px" } : {}),
+                ...(sourceHandle ? { marginRight: "-12px" } : {}),
+              }}
+            >
+              {defaultInputPort}
+              <div className="min-w-0 flex-1 truncate text-right text-[13px] font-semibold leading-tight" style={{ color: "var(--text-primary)" }}>
+                {nodeData.label}
+              </div>
+              {sourceHandle}
             </div>
             {isDeployInput && (
               <div className="mt-1 text-[11px] leading-tight truncate" style={{ color: "var(--text-muted)" }}>
@@ -511,8 +506,6 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
           </>
         )}
       </div>
-
-      {sourceHandles}
     </div>
   )
 }

@@ -1079,6 +1079,88 @@ class TestSaveEndpointIntegration:
         assert resp.status_code == 400
         assert "API Input" in resp.json()["detail"]
 
+    def test_save_parent_binding_to_unrouted_input_returns_actionable_400(
+        self,
+        client: TestClient,
+    ) -> None:
+        """A structural ParseError must reach the client, not become an opaque 500.
+
+        Dropping onto an owner's generic input socket declares the public port
+        before it is routed, so this is a state the editor reaches by an
+        ordinary gesture; the message has to name the edge, occurrence and port.
+        """
+        graph = {
+            "nodes": [
+                {
+                    "id": "src",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "Source",
+                        "nodeType": "dataInput",
+                        "config": _file_input_config("data.parquet"),
+                    },
+                },
+                {
+                    "id": "instance_a",
+                    "type": "pipelineNode",
+                    "position": {"x": 200, "y": 0},
+                    "data": {
+                        "label": "Scoring",
+                        "nodeType": "submodel",
+                        "config": {
+                            "definitionId": "definition_scoring",
+                            "alias": "scoring",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "bind",
+                    "source": "src",
+                    "target": "instance_a",
+                    "targetHandle": "in__policy",
+                }
+            ],
+            "submodels": {
+                "definition_scoring": {
+                    "definitionId": "definition_scoring",
+                    "file": "modules/scoring.py",
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "child",
+                                "data": {
+                                    "label": "Child",
+                                    "nodeType": "polars",
+                                    "config": {"code": "df = df"},
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    },
+                    "inputPorts": [{"portId": "policy", "label": "policy", "targets": []}],
+                    "outputPorts": [],
+                },
+            },
+        }
+        resp = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "unrouted_pipe",
+                "description": "",
+                "graph": graph,
+                "source_file": "unrouted_pipe.py",
+            },
+        )
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "no internal targets" in detail
+        assert "edge_id=bind" in detail
+        assert "instance_id=instance_a" in detail
+        assert "port_id=policy" in detail
+
     def test_save_empty_source_file_returns_400(self, client: TestClient) -> None:
         """Empty source_file should return 400."""
         graph = {

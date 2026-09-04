@@ -17,8 +17,10 @@ import {
 } from "../types/node"
 import {
   applySubmodelBoundaryConnection,
+  connectSubmodelInputFromParentConnection,
   reconcileSubmodelBoundaryState,
   removeSubmodelBoundaryEdges,
+  removeSubmodelInputPort,
   type SubmodelBoundaryEditResult,
   type SubmodelBoundaryEditState,
 } from "../utils/submodelBoundaryEditing"
@@ -317,7 +319,23 @@ export default function useSubmodelBoundaryEditing({
   const commitBoundaryConnection = useCallback((connection: Connection): boolean => {
     try {
       const current = state()
-      if (!current) return false
+      if (!current) {
+        if (parentGraphRef.current) return false
+        const created = connectSubmodelInputFromParentConnection({
+          nodes: graphRef.current.nodes,
+          edges: graphRef.current.edges as PipelineEdge[],
+          submodels: submodelsRef.current,
+        }, connection)
+        if (!created) return false
+        graphRef.current = { nodes: created.nodes, edges: created.edges }
+        submodelsRef.current = created.submodels
+        setNodesAndEdgesAndSubmodels(
+          created.nodes,
+          created.edges,
+          created.submodels,
+        )
+        return true
+      }
       const source = nodes.find((node) => node.id === connection.source)
       const target = nodes.find((node) => node.id === connection.target)
       if (!isBoundaryNode(source) && !isBoundaryNode(target)) return false
@@ -328,7 +346,16 @@ export default function useSubmodelBoundaryEditing({
       reportBoundaryError(error)
       return true
     }
-  }, [state, nodes, commitWithParentIdentities, reportBoundaryError])
+  }, [
+    state,
+    nodes,
+    commitWithParentIdentities,
+    graphRef,
+    parentGraphRef,
+    reportBoundaryError,
+    setNodesAndEdgesAndSubmodels,
+    submodelsRef,
+  ])
 
   const deleteBoundaryEdge = useCallback((id: string): boolean => {
     try {
@@ -344,6 +371,20 @@ export default function useSubmodelBoundaryEditing({
       return true
     }
   }, [state, edges, commitWithParentIdentities, reportBoundaryError])
+
+  const deleteBoundaryInputPort = useCallback((portId: string): boolean => {
+    try {
+      const current = state()
+      if (!current) return false
+      const result = removeSubmodelInputPort(current, portId)
+      if (!result) return false
+      commitWithParentIdentities(result)
+      return true
+    } catch (error: unknown) {
+      reportBoundaryError(error)
+      return true
+    }
+  }, [state, commitWithParentIdentities, reportBoundaryError])
 
   const onBoundaryEdgesChange = useCallback((changes: EdgeChange[]): boolean => {
     const removedBoundaryIds = changes
@@ -407,6 +448,7 @@ export default function useSubmodelBoundaryEditing({
   return {
     commitBoundaryConnection,
     deleteBoundaryEdge,
+    deleteBoundaryInputPort,
     onBoundaryEdgesChange,
     commitSharedNodeDeletion,
     reconcileActiveSubmodel,

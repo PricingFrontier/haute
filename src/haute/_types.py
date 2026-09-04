@@ -919,13 +919,13 @@ class SubmodelEndpoint(BaseModel):
 
 
 class SubmodelInputPort(BaseModel):
-    """A public input with one or more ordered internal targets."""
+    """A public input with ordered internal targets, or none while unrouted."""
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     port_id: str = Field(alias="portId")
     label: str
-    targets: list[SubmodelEndpoint] = Field(min_length=1)
+    targets: list[SubmodelEndpoint]
 
     @field_validator("port_id", "label")
     @classmethod
