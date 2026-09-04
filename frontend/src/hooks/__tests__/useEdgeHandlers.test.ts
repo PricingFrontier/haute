@@ -3,7 +3,7 @@ import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge, Connection } from "@xyflow/react"
 import useEdgeHandlers from "../useEdgeHandlers"
 import useToastStore from "../../stores/useToastStore"
-import { NODE_TYPES } from "../../utils/nodeTypes"
+import { NODE_TYPES, type NodeTypeValue } from "../../utils/nodeTypes"
 import { DEFAULT_TARGET_HANDLE, SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
 import { validatePipelineConnection } from "../../utils/connectionValidation"
 import type { SimpleNode } from "../../panels/editors/_shared"
@@ -28,6 +28,7 @@ function makeParams() {
     clearTrace: vi.fn(),
     screenToFlowPosition: vi.fn((pos: { x: number; y: number }) => pos),
     graphRefreshingRef: { current: 0 },
+    existingSingletonTypes: new Set<NodeTypeValue>(),
     resolveGraphIdentities: vi.fn(async (
       nodes: readonly Node[],
       edges: readonly Edge[],
@@ -115,14 +116,14 @@ function makeEdgeJoinInsertionParams() {
   return params
 }
 
-function droppedPolarsEvent(): React.DragEvent {
+function droppedNodeEvent(type: NodeTypeValue = NODE_TYPES.POLARS): React.DragEvent {
   return {
     preventDefault: vi.fn(),
     clientX: 300,
     clientY: 400,
     dataTransfer: {
       getData: vi.fn((key: string) => {
-        if (key === "application/reactflow-type") return NODE_TYPES.POLARS
+        if (key === "application/reactflow-type") return type
         if (key === "application/reactflow-config") return "{}"
         return ""
       }),
@@ -176,7 +177,7 @@ describe("useEdgeHandlers", () => {
     })
     const { result } = renderHook(() => useEdgeHandlers(params))
 
-    act(() => result.current.onDrop(droppedPolarsEvent()))
+    act(() => result.current.onDrop(droppedNodeEvent()))
     await flushIdentityCommit()
 
     expect(useToastStore.getState().toasts.at(-1)?.text).toContain(
@@ -1697,6 +1698,40 @@ describe("useEdgeHandlers", () => {
     )
   })
 
+  it("onNodeContextMenu marks a submodel containing a singleton as singleton", () => {
+    const params = makeParams()
+    const node = {
+      id: "inputs",
+      data: {
+        label: "Inputs",
+        nodeType: NODE_TYPES.SUBMODEL,
+        config: { definitionId: "definition_inputs", alias: "inputs" },
+      },
+    } as unknown as Node
+    const submodels = {
+      definition_inputs: {
+        definitionId: "definition_inputs",
+        file: "modules/inputs.py",
+        graph: {
+          nodes: [identifiedNode("quote_input", NODE_TYPES.API_INPUT)],
+          edges: [],
+        },
+        inputPorts: [],
+        outputPorts: [],
+      },
+    }
+    const { result } = renderHook(() => useEdgeHandlers({ ...params, submodels }))
+    const event = { preventDefault: vi.fn(), clientX: 50, clientY: 60 } as unknown as React.MouseEvent
+
+    act(() => {
+      result.current.onNodeContextMenu(event, node)
+    })
+
+    expect(params.setContextMenu).toHaveBeenCalledWith(
+      expect.objectContaining({ isSubmodel: true, isSingleton: true }),
+    )
+  })
+
   it("onDragOver enables dropping by preventing default and signalling a move", () => {
     const params = makeParams()
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -1766,6 +1801,39 @@ describe("useEdgeHandlers", () => {
     )
   })
 
+  it("onDrop rejects a singleton already present elsewhere in the document", () => {
+    const params = makeParams()
+    params.existingSingletonTypes = new Set([NODE_TYPES.API_INPUT])
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onDrop(droppedNodeEvent(NODE_TYPES.API_INPUT))
+    })
+
+    expect(params.resolveGraphIdentities).not.toHaveBeenCalled()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "info",
+      text: "Only one Quote Input node is allowed per pipeline",
+    })
+  })
+
+  it("onDrop rechecks the current graph before accepting a stale singleton drag", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [identifiedNode("quote_input", NODE_TYPES.API_INPUT)]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onDrop(droppedNodeEvent(NODE_TYPES.API_INPUT))
+    })
+
+    expect(params.resolveGraphIdentities).not.toHaveBeenCalled()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toBe(
+      "Only one Quote Input node is allowed per pipeline",
+    )
+  })
+
   it("keeps a dropped-node creation atomic when identity resolution rejects", async () => {
     const params = makeParams()
     params.resolveGraphIdentities = vi.fn(async () => {
@@ -1773,7 +1841,7 @@ describe("useEdgeHandlers", () => {
     })
     const { result } = renderHook(() => useEdgeHandlers(params))
 
-    act(() => result.current.onDrop(droppedPolarsEvent()))
+    act(() => result.current.onDrop(droppedNodeEvent()))
     await flushIdentityCommit()
 
     expect(params.setNodes).not.toHaveBeenCalled()
@@ -1788,7 +1856,7 @@ describe("useEdgeHandlers", () => {
     params.resolveGraphIdentities = vi.fn(async () => ({ nodes: [], edges: [] }))
     const { result } = renderHook(() => useEdgeHandlers(params))
 
-    act(() => result.current.onDrop(droppedPolarsEvent()))
+    act(() => result.current.onDrop(droppedNodeEvent()))
     await flushIdentityCommit()
 
     expect(params.setNodes).not.toHaveBeenCalled()
@@ -1806,7 +1874,7 @@ describe("useEdgeHandlers", () => {
     })
     const { result } = renderHook(() => useEdgeHandlers(params))
 
-    act(() => result.current.onDrop(droppedPolarsEvent()))
+    act(() => result.current.onDrop(droppedNodeEvent()))
     await vi.waitFor(() => expect(params.resolveGraphIdentities).toHaveBeenCalledOnce())
     params.graphRef.current = { nodes: [], edges: [] }
     await act(async () => {

@@ -718,7 +718,7 @@ describe("modelling subpanels and hoverHandlers teardown", () => {
         const { default: NodePalette } = await import(
           "../../panels/NodePalette"
         )
-        const { container } = render(<NodePalette nodes={[]} />)
+        const { container } = render(<NodePalette />)
 
         // The palette should render at least one row (there are
         // 15 PALETTE_TYPES entries today; any positive count proves

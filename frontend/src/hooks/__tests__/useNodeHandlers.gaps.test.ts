@@ -24,6 +24,7 @@ function makeParams() {
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
     fitView: vi.fn(),
+    submodels: {},
     resolveNodeIdentities: vi.fn(async (nodes: readonly Node[]) => [...nodes]),
   }
 }

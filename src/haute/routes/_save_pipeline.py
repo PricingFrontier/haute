@@ -409,8 +409,8 @@ class SavePipelineService:
         drift onto separate structural validators.
         """
 
-        self._validate_singletons(graph)
         flattened = flatten_graph(graph)
+        self._validate_singletons(flattened)
         self._validate_edge_join_configs(flattened)
         self._validate_optimiser_input_selectors(flattened)
         self._validate_strict_node_configs(graph)
@@ -628,7 +628,7 @@ class SavePipelineService:
 
     @staticmethod
     def _validate_singletons(graph: PipelineGraph) -> None:
-        """Ensure singleton node types appear at most once."""
+        """Ensure singleton node types appear at most once in an executable graph."""
         for singleton_type, label in _SINGLETON_NODE_TYPES:
             count = sum(1 for n in graph.nodes if n.data.nodeType == singleton_type)
             if count > 1:

@@ -15,43 +15,28 @@ const browserSubmodelPath = resolve(e2eProjectRoot, "rating", "modules", "browse
 const selectAll = process.platform === "darwin" ? "Meta+A" : "Control+A"
 
 async function connectHandles(page: Page, source: Locator, target: Locator): Promise<void> {
+  const collapsePalette = page.getByTitle("Collapse palette")
+  if (await collapsePalette.isVisible()) await collapsePalette.click()
   await page.getByTestId("toolbar-centre").click()
   const zoomIn = page.getByRole("button", { name: "Zoom in", exact: true })
   for (let step = 0; step < 4; step += 1) await zoomIn.click()
   await expect(source).toBeVisible()
   await expect(target).toBeVisible()
-  const [sourceBox, targetBox] = await Promise.all([
-    source.boundingBox(),
-    target.boundingBox(),
-  ])
-  if (sourceBox === null || targetBox === null) {
-    throw new Error("Could not measure the handles for a graph connection")
-  }
-  await page.mouse.move(
-    sourceBox.x + sourceBox.width / 2,
-    sourceBox.y + sourceBox.height / 2,
-  )
+  // Locator actions wait for fit-view animation to settle before resolving
+  // the live handle position. Cached bounding boxes can become stale here;
+  // collapsing the palette keeps both endpoints in view after zooming.
+  await source.hover()
   await page.mouse.down()
-  await page.mouse.move(
-    targetBox.x + targetBox.width / 2,
-    targetBox.y + targetBox.height / 2,
-    { steps: 12 },
-  )
-  const expectedTargetHandle = await target.getAttribute("data-handleid")
-  const hitTargetHandle = await page.evaluate(({ x, y }) => (
-    document.elementFromPoint(x, y)
-      ?.closest(".react-flow__handle")
-      ?.getAttribute("data-handleid") ?? null
-  ), {
-    x: targetBox.x + targetBox.width / 2,
-    y: targetBox.y + targetBox.height / 2,
-  })
-  if (hitTargetHandle !== expectedTargetHandle) {
-    throw new Error(
-      `Connection drop missed handle ${String(expectedTargetHandle)}; hit ${String(hitTargetHandle)}`,
-    )
+  try {
+    await target.hover()
+    // Releasing before React Flow processes the move makes the connection a
+    // no-op, even when the browser has geometrically reached the target.
+    await expect(source).toHaveClass(/(^|\s)connectingfrom(\s|$)/)
+    await expect(target).toHaveClass(/(^|\s)connectingto(\s|$)/)
+    await expect(target).toHaveClass(/(^|\s)valid(\s|$)/)
+  } finally {
+    await page.mouse.up()
   }
-  await page.mouse.up()
 }
 
 test.describe.configure({ mode: "serial" })
@@ -343,8 +328,8 @@ test.describe("core browser flows", () => {
     await page.reload()
     await expect(submodelNode).toBeVisible()
 
-    const sourceNode = page.getByTestId("rf__node-raw_rows")
-    const sourceHandle = sourceNode.getByTestId("output-connector[0]:raw_rows")
+    const sourceNode = page.getByTestId("rf__node-browser_optimiser_rows")
+    const sourceHandle = sourceNode.getByTestId("output-connector[0]:browser_optimiser_rows")
     const newInputHandle = submodelNode.getByTestId("submodel-input-handle")
     await expect(sourceHandle).toBeVisible()
     await expect(newInputHandle).toBeVisible()
@@ -357,7 +342,7 @@ test.describe("core browser flows", () => {
     )
     await expect(submodelNode.getByTestId(/^submodel-input-frame-row-/)).toHaveCount(0)
     await expect(submodelNode.getByText("enriched", { exact: true })).toHaveCount(0)
-    const frameName = "raw_rows"
+    const frameName = "browser_optimiser_rows"
     await connectHandles(page, sourceHandle, newInputHandle)
     await expect(submodelNode.locator('[data-handleid="in__input_2"]')).toBeAttached()
     await expect(collapsedTargets).toHaveCount(3)

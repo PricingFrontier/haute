@@ -1,6 +1,5 @@
 import { PanelLeftClose } from "lucide-react"
 import type { DragEvent } from "react"
-import type { Node } from "@xyflow/react"
 import { NODE_TYPE_META, PALETTE_TYPES, SINGLETON_TYPES } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 
@@ -11,16 +10,13 @@ function onDragStart(event: DragEvent, type: NodeTypeValue) {
   event.dataTransfer.effectAllowed = "move"
 }
 
-export default function NodePalette({ onCollapse, nodes }: { onCollapse?: () => void; nodes?: Node[] }) {
-  // Build set of singleton types already present in the graph
-  const existingSingletons = new Set<string>()
-  if (nodes) {
-    for (const n of nodes) {
-      const nt = n.data.nodeType as string
-      if (nt && SINGLETON_TYPES.has(nt as NodeTypeValue)) existingSingletons.add(nt)
-    }
-  }
-
+export default function NodePalette({
+  onCollapse,
+  existingSingletonTypes = new Set<NodeTypeValue>(),
+}: {
+  onCollapse?: () => void
+  existingSingletonTypes?: ReadonlySet<NodeTypeValue>
+}) {
   return (
     <div className="w-[180px] h-full overflow-y-auto shrink-0 flex flex-col" style={{ background: "var(--chrome)", borderRight: "1px solid var(--chrome-border)" }}>
       <div className="px-4 py-3 flex items-center justify-between">
@@ -41,7 +37,7 @@ export default function NodePalette({ onCollapse, nodes }: { onCollapse?: () => 
         {PALETTE_TYPES.map((type) => {
           const meta = NODE_TYPE_META[type]
           const Icon = meta.icon
-          const disabled = SINGLETON_TYPES.has(type) && existingSingletons.has(type)
+          const disabled = SINGLETON_TYPES.has(type) && existingSingletonTypes.has(type)
           return (
             <div
               key={type}

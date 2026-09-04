@@ -112,6 +112,42 @@ class TestValidateSingletons:
         assert "API Input" in exc_info.value.detail
         assert "found 2" in exc_info.value.detail
 
+    def test_api_input_in_root_and_submodel_raises_400(self, tmp_path: Path) -> None:
+        """Singletons are unique across the flattened executable pipeline."""
+        graph = _make_submodel_graph(
+            _make_node("child_api", "Child API", "apiInput", {"path": "child.parquet"}),
+            root_nodes=(_make_node("root_api", "Root API", "apiInput", {"path": "root.parquet"}),),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
+        assert exc_info.value.status_code == 400
+        assert "API Input" in exc_info.value.detail
+        assert "found 2" in exc_info.value.detail
+
+    def test_api_input_in_repeated_submodel_raises_400(self, tmp_path: Path) -> None:
+        """Each occurrence contributes its singleton nodes to execution."""
+        graph = _make_submodel_graph(
+            _make_node("child_api", "Child API", "apiInput", {"path": "child.parquet"}),
+        )
+        owner_id = "submodel_instance__pricing"
+        graph.nodes.append(
+            _make_node(
+                "submodel_instance__pricing_copy",
+                "pricing copy",
+                "submodel",
+                {
+                    "definitionId": "pricing",
+                    "alias": "pricing_copy",
+                    "instanceOf": owner_id,
+                },
+            )
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
+        assert exc_info.value.status_code == 400
+        assert "API Input" in exc_info.value.detail
+        assert "found 2" in exc_info.value.detail
+
     def test_duplicate_output_raises_400(self) -> None:
         """Two Output nodes should raise 400."""
         graph = _make_graph(
