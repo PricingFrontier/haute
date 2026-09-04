@@ -540,7 +540,7 @@ export default function useEdgeHandlers({
           || graphRef.current.nodes.some((node) => nodeData(node).nodeType === type)
         )
       ) {
-        const name = NODE_TYPE_META[type as NodeTypeValue]?.name ?? type
+        const name = NODE_TYPE_META[type as NodeTypeValue].name
         addToast("info", `Only one ${name} node is allowed per pipeline`)
         return
       }
