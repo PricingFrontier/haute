@@ -139,8 +139,13 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
+    "engineering-quality",
     "explore-eda",
     "optimiser",
+)
+_ROADMAP_SUPPORTING_REPORTS = (
+    "bug-findings-2026-09-05.md",
+    "test-gap-findings-2026-09-05.md",
 )
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
@@ -342,20 +347,46 @@ def test_readme_is_the_single_temporary_contract_lifecycle_owner() -> None:
 
 
 def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> None:
-    expected_markdown = {"README.md"} | {
-        f"{component}.md" for component in _EXPECTED_ACTIVE_COMPONENT_ROADMAPS
-    }
+    expected_markdown = (
+        {"README.md"}
+        | {f"{component}.md" for component in _EXPECTED_ACTIVE_COMPONENT_ROADMAPS}
+        | set(_ROADMAP_SUPPORTING_REPORTS)
+    )
     roadmap_markdown = {
         path.relative_to(ROADMAP_ROOT).as_posix() for path in ROADMAP_ROOT.rglob("*.md")
     }
     assert roadmap_markdown == expected_markdown
 
     component_files = {
-        path.stem: path for path in ROADMAP_ROOT.glob("*.md") if path.name != ROADMAP_INDEX.name
+        path.stem: path
+        for path in ROADMAP_ROOT.glob("*.md")
+        if path.name != ROADMAP_INDEX.name and path.name not in _ROADMAP_SUPPORTING_REPORTS
     }
     assert tuple(sorted(component_files)) == _EXPECTED_ACTIVE_COMPONENT_ROADMAPS
 
     index = ROADMAP_INDEX.read_text(encoding="utf-8")
+    for name in _ROADMAP_SUPPORTING_REPORTS:
+        assert f"({name})" in index
+        report = (ROADMAP_ROOT / name).read_text(encoding="utf-8")
+        assert not _COMPONENT_PACKAGE_HEADING.findall(report), (
+            f"supporting report {name} must not own work packages"
+        )
+
+    for name in sorted(roadmap_markdown):
+        path = ROADMAP_ROOT / name
+        for target in _MARKDOWN_LINK.findall(path.read_text(encoding="utf-8")):
+            if target.startswith(("#", "http://", "https://", "mailto:")):
+                continue
+            local_target = target.split("#", maxsplit=1)[0]
+            assert not Path(local_target).is_absolute() and not re.match(
+                r"^[A-Za-z]:", local_target
+            ), f"{path.relative_to(ROOT)} needs a repository-relative link: {local_target}"
+            resolved = (path.parent / local_target).resolve()
+            assert resolved.is_relative_to(ROOT) and resolved.exists(), (
+                f"{path.relative_to(ROOT)} links outside the repository "
+                f"or to missing {local_target}"
+            )
+
     start_with: dict[str, str] = {}
     for line in index.splitlines():
         match = re.match(
@@ -441,14 +472,6 @@ def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> Non
                 assert field in package_text, (
                     f"{path.relative_to(ROOT)} package {package_id} is missing {field}"
                 )
-
-        for target in _MARKDOWN_LINK.findall(text):
-            if target.startswith(("#", "http://", "https://", "mailto:")):
-                continue
-            local_target = target.split("#", maxsplit=1)[0]
-            assert (path.parent / local_target).resolve().exists(), (
-                f"{path.relative_to(ROOT)} links to missing {local_target}"
-            )
 
     for retired_root in (
         ROOT / "docs" / "fable-Review",

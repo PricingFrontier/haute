@@ -11,13 +11,31 @@ reproduced against `HEAD` before implementation. `Decision` packages require
 an explicit product or architecture choice. Remove a package when its outcome
 is covered by current specifications and ordinary regression tests.
 `Start with` names a non-deferred package; it is `—` when a component has no
-currently startable package.
+currently startable package. Priority `P1` marks a package that threatens
+persisted work, computed results, or security; `P2` a material correctness, UX,
+or maintenance issue; `P3` opportunistic work.
 
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
+| [Test coverage and workflow assurance](engineering-quality.md) | Behavioural witnesses, edge cases, lifecycle workflows, regression sensitivity | `ENG-T01` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
+
+## Supporting findings
+
+- [Bug and specification findings — 5 September 2026](bug-findings-2026-09-05.md)
+- [Test-gap findings — 5 September 2026](test-gap-findings-2026-09-05.md)
+
+The dated reports preserve the reviewed snapshot and its evidence; they are not
+additional work queues or claims about current behaviour. Delivery status lives
+in the [test coverage roadmap](engineering-quality.md). Supporting reports are
+explicitly enumerated by the documentation checks, included in the corpus
+inventory, and use repository-relative links. When the last package a report
+supports is retired, the report is removed in the same change and the
+enumeration is updated; durable evidence lives in the owning component Testing
+sections. Historical probe programs and raw execution logs are not bundled with
+these reports; their recorded results are identified as historical evidence.
 
 ## Working protocol
 

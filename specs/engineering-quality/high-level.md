@@ -111,6 +111,14 @@ Out of scope:
   specified, and regression-tested before implementation. The index points to
   a non-deferred package only; it shows no starting package when every
   remaining package is explicitly deferred.
+- Dated supporting findings may sit beside the component roadmaps when explicitly
+  enumerated by the documentation checks and linked from the index. These reports
+  preserve snapshot evidence, use repository-relative links, and do not own work
+  packages or substitute for current verification. They remain part of the corpus
+  inventory; the component roadmap retains delivery status. When the last package
+  a report supports is retired, the report is removed in the same change and the
+  documentation-check enumeration is updated; durable evidence lives in the
+  owning component Testing sections.
 - Each roadmap package has exactly one priority row and one package heading.
   Delivered package/history sections and review-outcome narratives are folded
   into current component specs or removed. A temporary approved-change section

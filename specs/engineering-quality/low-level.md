@@ -95,6 +95,7 @@
 | `frontend/src/stores/__tests__/`, `frontend/src/test-utils/__tests__/`, `frontend/src/trace/__tests__/`, `frontend/src/types/__tests__/`, and `frontend/src/utils/__tests__/` | Frontend store, test-helper, trace, type, and utility test groups. |
 | `specs/roadmap/README.md` | Entry point for the internal component improvement catalogue and its working/retirement protocol. |
 | `specs/roadmap/<component>.md` | One self-contained, non-normative improvement queue per component. Each package defines its problem, plan, acceptance criteria, dependencies, and current code/test evidence. |
+| `specs/roadmap/bug-findings-2026-09-05.md`, `specs/roadmap/test-gap-findings-2026-09-05.md` | Dated supporting findings for the test expansion programme; preserve the review snapshot and recorded evidence without creating another delivery queue. |
 | `repro/` | Point-in-time benchmark/reproduction programs and metadata; not an automatically current product-behaviour contract. |
 | `mlflow.db` | Checked-in SQLite MLflow tracking-store snapshot (experiments, runs, metrics, parameters, tags, and model-version metadata). It is repository data/local state, not an installed-package input or a runtime prerequisite; MLflow may instead use the configured tracking store. |
 
@@ -352,6 +353,11 @@
 - Every component roadmap has `Scope`, `Priorities`, and `Planned improvements`
   sections. Every package supplies `Why`, `Plan`, `Acceptance`, `Dependencies`,
   and `Evidence`; a package appears in exactly one owning component.
+- Dated supporting reports are explicitly listed separately from active component
+  roadmaps in `tests/test_docs_accuracy.py`. The exact file inventory and local
+  link checks include both categories. Reports link from the roadmap index and
+  contain no package headings; only component queues have package lifecycle rules.
+  The enumeration changes in the same commit that adds or retires a report.
 - The normal Ruff configuration excludes `rating/`, `modules/`, `outputs/`, and
   generated pytest basetemp families (`.codex-pytest-*`, `.ops-pytest-temp`,
   `.providers-pytest-temp`, `.pytest-tmp*`). The former are lint-target

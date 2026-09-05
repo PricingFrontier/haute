@@ -63,6 +63,21 @@ Do not delegate planning, open-ended investigation, architecture, test design, a
 
 Use the fewest workers that materially reduce wall-clock time. Prefer direct tool use for a quick check, batch related grunt work into one worker, never assign duplicate work, normally use one worker, and never exceed two concurrent subagents. Do not create mandatory developer/reviewer pairs or review teams. This policy supersedes older repository plans that prescribe agent pairs or review teams unless the current user explicitly re-enables them.
 
+# Gemini grunt work through the Antigravity CLI
+
+When the user directs grunt work to Gemini, run it as bounded batches through
+the Antigravity CLI instead of a Codex or Claude worker:
+`agy -p "<prompt>" --model gemini-3.8-flash-high --effort high --mode plan
+--print-timeout 10m`, or the Gemini 3.8 variant the user names. Inventories,
+reference verification, and predefined command batches use read-only plan
+mode; an implementation assignment runs with `--mode accept-edits`, names the
+files it owns, and must preserve other contributors' changes. Each prompt is
+self-contained: exact files, expected output format, constraints, and the
+verification command. Workers do not spawn workers or decide architecture, test
+oracles, acceptance criteria, or completion. The root reviews the actual source,
+diffs, and execution evidence and spot-checks decisive claims itself. If Gemini
+is unavailable, report it; do not fall back to another model silently.
+
 # Fix and tweak workflow
 
 1. Establish a narrow scope and preserve unrelated user changes. The root inspects the relevant code and defines expected behaviour, risks, acceptance criteria, and a verification strategy before delegating or editing.
