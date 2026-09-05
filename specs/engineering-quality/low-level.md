@@ -96,6 +96,9 @@
 | `specs/roadmap/README.md` | Entry point for the internal component improvement catalogue and its working/retirement protocol. |
 | `specs/roadmap/<component>.md` | One self-contained, non-normative improvement queue per component. Each package defines its problem, plan, acceptance criteria, dependencies, and current code/test evidence. |
 | `specs/roadmap/bug-findings-2026-09-05.md`, `specs/roadmap/test-gap-findings-2026-09-05.md` | Dated supporting findings for the test expansion programme; preserve the review snapshot and recorded evidence without creating another delivery queue. |
+| `tests/workflow_coverage.toml` | Versioned workflow coverage ledger: workflow families, node types, and scenario records with coverage state, owning package, test references, and execution evidence. |
+| `tests/test_workflow_coverage.py` | Ledger validator (`load_ledger`, `roadmap_package_ids`, `ledger_violations`) and its malformed-ledger cases; a meta-marked repository-health module. |
+| `tests/_test_debt_scanner.py` | Test-debt scanning primitives (backend AST visitor, frontend source scanner, frontend test-file predicate) shared by `tests/test_test_debt.py` and `tests/test_workflow_coverage.py`; a support module, not a test. |
 | `repro/` | Point-in-time benchmark/reproduction programs and metadata; not an automatically current product-behaviour contract. |
 | `mlflow.db` | Checked-in SQLite MLflow tracking-store snapshot (experiments, runs, metrics, parameters, tags, and model-version metadata). It is repository data/local state, not an installed-package input or a runtime prerequisite; MLflow may instead use the configured tracking store. |
 
@@ -180,6 +183,23 @@
   component file owns whether the package is queued, blocked, or retired. Its
   priority row and heading are a checked one-to-one pair; delivered package
   histories and review-outcome narratives do not remain in the active queue.
+- **Workflow coverage ledger** in `tests/workflow_coverage.toml` (`version = 1`)
+  has `workflows` (an id in the form W01, title, component directories, the
+  specification `documents` it exercises, entry points), `node_types` (every
+  node type value with its workflows), and `scenarios` (an id in the form
+  W01-S01, workflow, a `contract` of the form
+  `specs/<component>/<file>.md#<heading-slug>` naming the section that states
+  the invariant, invariant, optional finding id, state, entry point, tier, lane,
+  real and stubbed dependency names, and test references). A `covered`
+  scenario carries an `evidence` table with the tested commit, exact command,
+  and result; a `not-applicable` scenario carries a reason; `gap` and
+  `decision` scenarios name the owning roadmap package. Test references are
+  pytest node ids
+  (`tests/<file>.py::[Class::]test`) or frontend titles
+  (`frontend/<file>.test.ts::<title>`, also `.test.tsx` and Playwright
+  `.spec.ts`). Entry points are file, cli, http, browser, hosted, scoring, and
+  library; tiers are unit, route, workflow, browser, property, and process;
+  lanes are backend, frontend, browser, platform, package, perf, and mutation.
 
 ## Control flow
 
@@ -363,6 +383,35 @@
   `.providers-pytest-temp`, `.pytest-tmp*`). The former are lint-target
   boundaries; the latter may contain intentionally unreadable test fixtures and
   are never source inputs.
+- The workflow coverage ledger must name every `specs/` component directory in
+  at least one workflow, every node type exactly once, and every supplemental
+  document from `specs/corpus.toml` in at least one workflow's `documents`;
+  every document and contract path must be repository-relative, free of
+  traversal, and an existing Markdown file under `specs/`; a contract's file
+  must be one of its workflow's documents and its anchor must equal the
+  GitHub-style slug of a heading in that file. A `gap` or
+  `decision` scenario must name a package heading that is currently active in
+  `specs/roadmap/`; a `not-applicable` scenario must give a reason; a `covered`
+  scenario must reference at least one test and carry evidence with a commit
+  hash, command, and result, each omission reported separately. A Python test
+  reference must be a `test_*.py` file under `tests/` naming a `test*` function
+  (inside a `Test*` class when qualified); a frontend reference must match the
+  Vitest include globs or the Playwright `e2e/**/*.spec.ts` pattern and equal the
+  complete first argument, one string literal (never an interpolated template)
+  compared by its decoded runtime value, with comments allowed around it, of an
+  `it()` or `test()` call, optionally
+  through the property
+  modifiers only, skip, fixme, fail, fails, todo, concurrent, sequential, and
+  serial, or the called factories each, for, skipIf, runIf, and extend whose
+  argument list is consumed before the title-bearing call (never a `describe`
+  suite, a hook, or a fixture-only `extend`, and never inside a comment). The
+  validator reuses the test-debt scanning
+  primitives from `tests/_test_debt_scanner.py`: a Python reference whose
+  module, class, or function carries a skip or expected-failure mark, and a
+  frontend file containing any skip, fixme, fail, todo, or focus site, fail
+  closed. The validator establishes existence and scheduling under static
+  discovery rules, not assertion quality; a green result recorded at another
+  snapshot is a review finding, not a validation failure.
 
 ## Error handling
 
@@ -429,6 +478,14 @@ are never retained in the report artifact.
   contracts for backend/frontend skip/xfail/fixme markers, plus the zero
   backend-flaky budget, the Playwright retry budget, and exact regeneration of
   `tests/test-health-summary.md`.
+- `tests/test_workflow_coverage.py` — workflow coverage ledger validator: the
+  real ledger is valid and complete, plus malformed cases (duplicate ids,
+  unknown component, missing owning package, each covered-state omission and
+  malformed evidence field reported exactly, unresolvable, helper, production,
+  traversal, absolute, out-of-root, skipped, or focused references, contract
+  paths that are empty, directories, traversal, missing, or missing their
+  heading, not-applicable without reason, undeclared supplemental documents,
+  unmapped component or node type).
 
 - Active backend test groups live in `tests/`: unit, property-based,
   regression, API/contract, end-to-end, security/sandbox, and repository

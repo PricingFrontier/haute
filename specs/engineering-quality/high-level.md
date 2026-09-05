@@ -56,6 +56,23 @@ Out of scope:
   xfails/config/markers strictly, and turns most runtime warnings into errors.
   Performance tests run through dedicated scripts/workflows with explicit time
   budgets instead.
+- A versioned workflow coverage ledger, `tests/workflow_coverage.toml`, records
+  every supported workflow family, node type, and component with the scenarios
+  that carry its executable witnesses. Each scenario is `covered`, `gap`,
+  `decision`, or `not-applicable`, and every scenario anchors the specification
+  heading that states its invariant; every workflow names the specification
+  documents it exercises, including the supplemental documents declared in
+  `specs/corpus.toml`. The validator in `tests/test_workflow_coverage.py` fails
+  on an unknown component, an unmapped component, node type, or supplemental
+  document, a contract whose file or heading does not exist, a `gap` or
+  `decision` without an active roadmap package, a `not-applicable` without a
+  reason, a test reference that is not a collectable test under the repository's
+  pytest, Vitest, or Playwright discovery rules, a referenced test the test-debt
+  scanners classify as skipped, expected-failure, or focused, and a `covered`
+  record without commit-stamped execution evidence. Static discovery rules and
+  evidence establish existence and scheduling; assertion quality stays in
+  review, and a green result from another snapshot is never carried forward
+  silently.
 - Frontend commands use TypeScript build-mode type checking, ESLint, Vitest,
   critical coverage validation, and Playwright. Browser E2E serialises workers,
   retries only in CI, and starts the repository's E2E server with readiness

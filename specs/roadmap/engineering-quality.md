@@ -60,7 +60,6 @@ and file-name inventories do not establish semantic completeness.
 
 | Package | State | Priority | Outcome |
 |---|---|---|---|
-| ENG-T01 | Planned | P1 | Define the workflow inventory, evidence records, and minimal shared fixtures. |
 | ENG-T02 | Reverify | P1 | Protect edit/save/reload and external-change workflows; detect F9 and F10. |
 | ENG-T03 | Reverify | P1 | Keep computation and cache identity consistent across operations; detect F12. |
 | ENG-T04 | Decision | P1 | Make the node execution boundary testable and truthful; detect F1. |
@@ -74,57 +73,6 @@ and file-name inventories do not establish semantic completeness.
 | ENG-T12 | Planned | P2 | Enforce collection, regression sensitivity, and sustainable CI cost. |
 
 ## Planned improvements
-
-### ENG-T01 — Establish the executable coverage inventory
-
-**Why:** The existing suite is substantial, but a test near an implementation
-does not prove the composed workflow. The review probes are outside pytest
-discovery, and existing tests sometimes replace precisely the boundary at risk.
-
-**Plan:**
-
-1. Start a versioned `tests/workflow_coverage.toml` and a small validator in an
-   existing repository-health test module, or a focused new module if that is
-   clearer. Define the format in engineering-quality specs first. Use stable
-   workflow/invariant IDs, component/spec anchors, applicable entry points,
-   scenario IDs, exact pytest node IDs or Playwright/Vitest titles, test tier,
-   real/stubbed boundaries, CI lane, and evidence state. Execution evidence names
-   the tested commit, exact command, result and negative control where applicable;
-   a green result from another snapshot is not silently carried forward. Store no duplicate prose
-   defect registry and no time-based expiry rule.
-2. Evidence states are `covered`, `gap`, `decision`, and `not-applicable`.
-   `covered` requires a reviewed outcome assertion and collected executable
-   test reference; `gap`/`decision` require an owning active package;
-   `not-applicable` requires the reason and contract reference. Collection can
-   establish existence and scheduling, not assertion quality. Validate unknown
-   components, missing IDs, duplicate scenario IDs, stale links and references,
-   and silently skipped/focused tests. Keep the semantic judgment in review.
-3. Bootstrap all components and workflow families below, then implement the P1
-   witnesses immediately. Completing the whole semantic inventory must not block
-   a small regression. Read each component's high/low behaviour and invariants
-   when populating its records; an extracted Testing section alone is insufficient.
-4. Reuse `tests/conftest.py`, the storage test transport and temporary Git fixtures,
-   and `frontend/e2e/projectIsolation.ts`. Extract a shared helper only after a
-   second genuine consumer needs it. Add helpers for snapshots of owned file
-   bytes, controlled event interleavings, and fresh-process restore only where
-   existing utilities cannot express the test clearly.
-5. Remove absolute local paths and sibling-test-module imports when promoting
-   review probes. F11 must execute the current frontend update path during the
-   test; a frozen `rename-result.json` from the review cannot prove the current UI.
-
-**Acceptance:** Every component and node type has a coverage disposition; no
-workflow is called covered solely because its test file exists. The eight defect
-IDs map to the packages below. The ledger is runnable from a fresh checkout and
-new unmapped supported actions require a reviewed coverage record. The validator
-has small malformed/missing/duplicate-reference tests. This is an index and gate,
-not a new generic workflow execution framework.
-
-**Dependencies:** None. Add the owning test-system specification contract before
-implementing the ledger. Product decisions are owned by the corresponding package.
-
-**Evidence:** `specs/README.md`; `specs/corpus.toml`; `tests/test_docs_accuracy.py`;
-`tests/test_test_debt.py`; `tests/conftest.py`; `frontend/e2e/projectIsolation.ts`;
-`scripts/spec_corpus_inventory.py`.
 
 ### ENG-T02 — Edit, save, observe external changes, and recover
 
@@ -186,7 +134,7 @@ self-write, and conflict-recovery controls pass. HTTP contracts, generated
 frontend types/validators, request builder, persistence and UI agree. No broad
 exception assertion can pass merely because a fixture or import is broken.
 
-**Dependencies:** ENG-T01 seed; root defines the revision/creation/transaction
+**Dependencies:** The coverage ledger; root defines the revision/creation/transaction
 contract before code. Generated API contract changes are atomic across stacks.
 
 **Evidence:** `src/haute/schemas.py::SavePipelineRequest`;
@@ -243,7 +191,7 @@ baseline and passes after correction. Reuse controls remain effective. Every
 no-refresh call site has evidence for the lifetime it assumes. One small real
 solver integration subsequently checks that the changed input reaches the result.
 
-**Dependencies:** ENG-T01 seed; root-owned snapshot semantics. No dependency on
+**Dependencies:** The coverage ledger; root-owned snapshot semantics. No dependency on
 the optimiser extraction or process-isolation roadmaps.
 
 **Evidence:** `src/haute/executor.py::_compile_preamble`;
@@ -297,7 +245,7 @@ regressions, and hosted mode records its own enforcement decision and lane.
 Any platform qualification required by the design has an explicit CI lane;
 unsupported enforcement cannot count as a skipped passing capability.
 
-**Dependencies:** ENG-T01 seed; a recorded execution-boundary design in
+**Dependencies:** The coverage ledger; a recorded execution-boundary design in
 sandbox-security and execution-engine. The initial reproductions can run before
 the decision; implementation and completion depend on it.
 
@@ -340,7 +288,7 @@ surface an explicit conflict under the chosen contract. Local saves and retry
 state remain usable; no success message is inferred only from bundle existence.
 Unit evidence and provider capability evidence are reported separately.
 
-**Dependencies:** ENG-T01 seed; root-owned storage capability/design decision.
+**Dependencies:** The coverage ledger; root-owned storage capability/design decision.
 The deterministic regression does not wait for remote credentials; provider
 qualification is required to claim the production atomicity guarantee.
 
@@ -370,7 +318,7 @@ Git cases restore B and the correct save posture. No process-global binding cach
 or leftover `.haute` state makes a supposed restart pass. A browser test verifies
 the branch/recovery indication while backend tests own process replacement.
 
-**Dependencies:** ENG-T01 seed; ENG-T05 for concurrent publication guarantees.
+**Dependencies:** The coverage ledger; ENG-T05 for concurrent publication guarantees.
 The ordinary branch-restart regression can be implemented independently.
 
 **Evidence:** `src/haute/_project_storage.py`; `tests/test_project_storage.py`;
@@ -402,7 +350,7 @@ on corrected code and are silently absent on baseline, making the regression
 red there. Legal public interfaces and repeated definition occurrences continue
 to execute. Recovery UI retains the invalid source and exposes the diagnostic.
 
-**Dependencies:** ENG-T01 seed; root resolves the contradictory endpoint prose
+**Dependencies:** The coverage ledger; root resolves the contradictory endpoint prose
 before tests. No private-endpoint compatibility or repair fallback is added.
 
 **Evidence:** `src/haute/_parser_conservation.py`;
@@ -439,7 +387,7 @@ the baseline and succeeds with equal rows after the correction. Invalid/collidin
 renames preserve the old graph and undo history. All supported rename entry points
 map to a collected test, including frame labels and submodel interfaces.
 
-**Dependencies:** ENG-T01 seed; root-owned rename contract. ENG-T07 supplies the
+**Dependencies:** The coverage ledger; root-owned rename contract. ENG-T07 supplies the
 submodel interface invariant; ENG-T02 supplies conflict-safe persistence.
 
 **Evidence:** `frontend/src/utils/nodeUpdatePlan.ts`;
@@ -474,7 +422,7 @@ implemented contracts. Existing correct tests remain green; any added test close
 a demonstrated assertion gap. JSON lock evidence uses separate processes, and
 error tests use synthetic data with exact public/private outcome assertions.
 
-**Dependencies:** ENG-T01 seed. Root semantic review of the actual current
+**Dependencies:** The coverage ledger. Root semantic review of the actual current
 behaviour; no dependency on changing assistant verification or worker architecture.
 
 **Evidence:** `tests/test_assistant_application.py`;
@@ -488,7 +436,7 @@ behaviour; no dependency on changing assistant verification or worker architectu
 ### ENG-T10 — Complete the supported workflow families
 
 **Why:** Fixing eight examples alone leaves similar gaps in other user journeys.
-The seed below covers every component; ENG-T01 expands each row into the actions
+The seed below covers every component; each slice expands its row into the actions
 and modes explicitly supported by its current specifications and maps existing
 tests before creating more.
 
@@ -563,7 +511,7 @@ new tests have an identified missing outcome. Required decisions/gaps remain
 visible and prevent a claim of complete coverage. No new EDA, hosted, deployment
 adapter or solver feature is implemented merely to satisfy an invented test.
 
-**Dependencies:** ENG-T01 inventory; corresponding ENG-T02–09 contracts where
+**Dependencies:** The coverage ledger; corresponding ENG-T02–09 contracts where
 workflows overlap. Unrelated W slices can proceed independently after root scoping.
 
 **Evidence:** `frontend/e2e/core-flows.spec.ts`; `frontend/e2e/data-io-nodes.spec.ts`;
@@ -672,7 +620,7 @@ claiming the programme complete. Relevant CI checks are green without weakening
 existing gates, and runtime/platform/provider limitations are stated explicitly.
 
 **Dependencies:** Incremental after each package; final completion requires
-ENG-T01–11. Mutation expansion follows measured value, not a blanket target count.
+ENG-T02–11. Mutation expansion follows measured value, not a blanket target count.
 
 **Evidence:** `.github/workflows/ci.yml`; `.github/workflows/mutation.yml`;
 `frontend/package.json`; `frontend/playwright.config.ts`; `pyproject.toml`;
@@ -681,7 +629,7 @@ ENG-T01–11. Mutation expansion follows measured value, not a blanket target co
 
 ## Delivery order and verification
 
-Start with the small ENG-T01 schema/fixture seed, then ENG-T02 and ENG-T03 to
+Start with ENG-T02 and ENG-T03 to
 cover ordinary data-loss and stale-result workflows. Reproduce ENG-T04/05 and
 resolve their enforcement/provider decisions promptly; those decisions must not
 block ENG-T07 parser conservation. Follow with ENG-T06 and ENG-T08 lifecycle

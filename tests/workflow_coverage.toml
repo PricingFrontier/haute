@@ -1,0 +1,685 @@
+# Workflow coverage ledger. Contract: specs/engineering-quality/low-level.md,
+# section "Workflow coverage ledger". Validated by tests/test_workflow_coverage.py.
+version = 1
+
+[[workflows]]
+id = "W01"
+title = "Install and start"
+components = ["build-and-distribution", "cli", "hosted-databricks-app"]
+documents = [
+  "specs/build-and-distribution/high-level.md",
+  "specs/build-and-distribution/low-level.md",
+  "specs/cli/high-level.md",
+  "specs/cli/low-level.md",
+  "specs/hosted-databricks-app/high-level.md",
+  "specs/hosted-databricks-app/low-level.md",
+]
+entry_points = ["cli", "hosted"]
+
+[[workflows]]
+id = "W02"
+title = "Author and recover"
+components = ["pipeline-config", "server-api", "frontend-shared"]
+documents = [
+  "specs/pipeline-config/high-level.md",
+  "specs/pipeline-config/low-level.md",
+  "specs/server-api/high-level.md",
+  "specs/server-api/low-level.md",
+  "specs/frontend-shared/high-level.md",
+  "specs/frontend-shared/low-level.md",
+]
+entry_points = ["file", "http", "browser"]
+
+[[workflows]]
+id = "W03"
+title = "Build a graph"
+components = ["frontend-graph-canvas", "frontend-node-editors", "submodels", "codegen"]
+documents = [
+  "specs/frontend-graph-canvas/high-level.md",
+  "specs/frontend-graph-canvas/low-level.md",
+  "specs/frontend-node-editors/high-level.md",
+  "specs/frontend-node-editors/low-level.md",
+  "specs/submodels/high-level.md",
+  "specs/submodels/low-level.md",
+  "specs/codegen/high-level.md",
+  "specs/codegen/low-level.md",
+  "specs/codegen/structured-syntax-boundary.md",
+]
+entry_points = ["browser", "file"]
+
+[[workflows]]
+id = "W04"
+title = "Obtain and persist data"
+components = ["io-layer", "databricks-io"]
+documents = [
+  "specs/io-layer/high-level.md",
+  "specs/io-layer/low-level.md",
+  "specs/databricks-io/high-level.md",
+  "specs/databricks-io/low-level.md",
+]
+entry_points = ["http", "browser", "file"]
+
+[[workflows]]
+id = "W05"
+title = "Structured request to response"
+components = ["json-shredding"]
+documents = [
+  "specs/json-shredding/high-level.md",
+  "specs/json-shredding/low-level.md",
+  "specs/server-api/high-level.md",
+  "specs/server-api/low-level.md",
+]
+entry_points = ["http", "browser", "scoring"]
+
+[[workflows]]
+id = "W06"
+title = "Execute and inspect"
+components = ["execution-engine", "caching", "tracing", "frontend-trace-ui"]
+documents = [
+  "specs/execution-engine/high-level.md",
+  "specs/execution-engine/low-level.md",
+  "specs/caching/high-level.md",
+  "specs/caching/low-level.md",
+  "specs/tracing/high-level.md",
+  "specs/tracing/low-level.md",
+  "specs/frontend-trace-ui/high-level.md",
+  "specs/frontend-trace-ui/low-level.md",
+]
+entry_points = ["http", "browser"]
+
+[[workflows]]
+id = "W07"
+title = "Rate and explain"
+components = ["rating", "expression-parsing"]
+documents = [
+  "specs/rating/high-level.md",
+  "specs/rating/low-level.md",
+  "specs/expression-parsing/high-level.md",
+  "specs/expression-parsing/low-level.md",
+]
+entry_points = ["http", "browser", "library"]
+
+[[workflows]]
+id = "W08"
+title = "Train, retain and score"
+components = ["modelling", "mlflow-model-registry", "frontend-modelling-optimiser-ui"]
+documents = [
+  "specs/modelling/high-level.md",
+  "specs/modelling/low-level.md",
+  "specs/mlflow-model-registry/high-level.md",
+  "specs/mlflow-model-registry/low-level.md",
+  "specs/frontend-modelling-optimiser-ui/high-level.md",
+  "specs/frontend-modelling-optimiser-ui/low-level.md",
+]
+entry_points = ["http", "browser"]
+
+[[workflows]]
+id = "W09"
+title = "Optimise, choose and apply"
+components = ["optimiser"]
+documents = [
+  "specs/optimiser/high-level.md",
+  "specs/optimiser/low-level.md",
+  "specs/optimiser/error-detail-policy.md",
+  "specs/execution-engine/high-level.md",
+  "specs/execution-engine/low-level.md",
+]
+entry_points = ["http", "browser"]
+
+[[workflows]]
+id = "W10"
+title = "Explore and present"
+components = ["explore-eda", "frontend-preview-explore"]
+documents = [
+  "specs/explore-eda/high-level.md",
+  "specs/explore-eda/low-level.md",
+  "specs/frontend-preview-explore/high-level.md",
+  "specs/frontend-preview-explore/low-level.md",
+]
+entry_points = ["http", "browser"]
+
+[[workflows]]
+id = "W11"
+title = "Version and restore"
+components = ["git-integration", "hosted-project-storage", "frontend-git-ui"]
+documents = [
+  "specs/git-integration/high-level.md",
+  "specs/git-integration/low-level.md",
+  "specs/hosted-project-storage/high-level.md",
+  "specs/hosted-project-storage/low-level.md",
+  "specs/frontend-git-ui/high-level.md",
+  "specs/frontend-git-ui/low-level.md",
+]
+entry_points = ["http", "browser", "hosted"]
+
+[[workflows]]
+id = "W12"
+title = "Assistant edit lifecycle"
+components = ["assistant", "frontend-assistant-ui"]
+documents = [
+  "specs/assistant/high-level.md",
+  "specs/assistant/low-level.md",
+  "specs/frontend-assistant-ui/high-level.md",
+  "specs/frontend-assistant-ui/low-level.md",
+]
+entry_points = ["http", "browser"]
+
+[[workflows]]
+id = "W13"
+title = "Deploy and score"
+components = ["deploy"]
+documents = [
+  "specs/deploy/high-level.md",
+  "specs/deploy/low-level.md",
+]
+entry_points = ["cli", "scoring"]
+
+[[workflows]]
+id = "W14"
+title = "Admission and lifecycle"
+components = ["background-jobs"]
+documents = [
+  "specs/background-jobs/high-level.md",
+  "specs/background-jobs/low-level.md",
+]
+entry_points = ["http"]
+
+[[workflows]]
+id = "W15"
+title = "Containment and assurance"
+components = ["sandbox-security", "engineering-quality", "reference-pipeline"]
+documents = [
+  "specs/sandbox-security/high-level.md",
+  "specs/sandbox-security/low-level.md",
+  "specs/engineering-quality/high-level.md",
+  "specs/engineering-quality/low-level.md",
+  "specs/reference-pipeline/high-level.md",
+  "specs/reference-pipeline/low-level.md",
+]
+entry_points = ["library", "http"]
+
+[[node_types]]
+id = "apiInput"
+workflows = ["W05", "W13"]
+
+[[node_types]]
+id = "dataInput"
+workflows = ["W04", "W06"]
+
+[[node_types]]
+id = "dataOutput"
+workflows = ["W04"]
+
+[[node_types]]
+id = "polars"
+workflows = ["W03", "W06"]
+
+[[node_types]]
+id = "edgeJoin"
+workflows = ["W05"]
+
+[[node_types]]
+id = "modelScore"
+workflows = ["W08"]
+
+[[node_types]]
+id = "banding"
+workflows = ["W07"]
+
+[[node_types]]
+id = "ratingStep"
+workflows = ["W07"]
+
+[[node_types]]
+id = "output"
+workflows = ["W05", "W13"]
+
+[[node_types]]
+id = "explore"
+workflows = ["W10"]
+
+[[node_types]]
+id = "externalFile"
+workflows = ["W04"]
+
+[[node_types]]
+id = "liveSwitch"
+workflows = ["W04", "W06"]
+
+[[node_types]]
+id = "modelling"
+workflows = ["W08"]
+
+[[node_types]]
+id = "optimiser"
+workflows = ["W09"]
+
+[[node_types]]
+id = "scenarioExpander"
+workflows = ["W09"]
+
+[[node_types]]
+id = "optimiserApply"
+workflows = ["W09"]
+
+[[node_types]]
+id = "constant"
+workflows = ["W03"]
+
+[[node_types]]
+id = "submodel"
+workflows = ["W03"]
+
+[[node_types]]
+id = "submodelPort"
+workflows = ["W03"]
+
+[[scenarios]]
+id = "W01-S01"
+workflow = "W01"
+contract = "specs/build-and-distribution/high-level.md#behaviour"
+state = "gap"
+package = "ENG-T10"
+entry_point = "cli"
+tier = "process"
+lane = "package"
+real = ["cli-process"]
+stubbed = []
+tests = []
+invariant = "Fresh install, init, open, and run operations complete cleanly, and invalid configuration or missing optional dependencies yield useful errors without leaving a partial project."
+
+[[scenarios]]
+id = "W01-S02"
+workflow = "W01"
+contract = "specs/cli/high-level.md#scope"
+state = "not-applicable"
+entry_point = "cli"
+tier = "browser"
+lane = "browser"
+real = []
+stubbed = []
+tests = []
+reason = "the CLI lifecycle has no browser UI"
+invariant = "Browser coverage of CLI signal handling is not applicable because the CLI lifecycle has no browser UI."
+
+[[scenarios]]
+id = "W02-S01"
+workflow = "W02"
+contract = "specs/server-api/high-level.md#failure-model"
+finding = "F9"
+state = "gap"
+package = "ENG-T02"
+entry_point = "http"
+tier = "route"
+lane = "backend"
+real = ["filesystem", "save-service"]
+stubbed = []
+tests = []
+invariant = "A Save based on a stale document revision is rejected with a conflict and the newer on-disk bytes of every owned artifact survive."
+
+[[scenarios]]
+id = "W02-S02"
+workflow = "W02"
+contract = "specs/server-api/high-level.md#design-rationale"
+finding = "F10"
+state = "gap"
+package = "ENG-T02"
+entry_point = "file"
+tier = "workflow"
+lane = "backend"
+real = ["watcher-classification", "filesystem"]
+stubbed = ["event-delivery"]
+tests = []
+invariant = "A server write followed by an external write to the same path before the coalesced event is processed is broadcast as the external content."
+
+[[scenarios]]
+id = "W02-S03"
+workflow = "W02"
+contract = "specs/server-api/low-level.md#control-flow"
+state = "gap"
+package = "ENG-T02"
+entry_point = "file"
+tier = "workflow"
+lane = "backend"
+real = ["watcher-classification", "filesystem"]
+stubbed = ["event-delivery"]
+tests = []
+invariant = "An unrelated external edit in the same watcher batch as a server write is broadcast with the edited file's actual document content and fingerprint."
+
+[[scenarios]]
+id = "W03-S01"
+workflow = "W03"
+contract = "specs/codegen/low-level.md#error-handling"
+finding = "F3"
+state = "gap"
+package = "ENG-T07"
+entry_point = "file"
+tier = "unit"
+lane = "backend"
+real = ["parser"]
+stubbed = []
+tests = []
+invariant = "A parent connection naming a private submodel child is rejected with a contextual ParseError before any save can drop it."
+
+[[scenarios]]
+id = "W03-S02"
+workflow = "W03"
+contract = "specs/frontend-graph-canvas/low-level.md#edge-cases-and-invariants"
+finding = "F11"
+state = "gap"
+package = "ENG-T08"
+entry_point = "browser"
+tier = "workflow"
+lane = "frontend"
+real = ["frontend-rename", "executor"]
+stubbed = []
+tests = []
+invariant = "Renaming an upstream node keeps downstream Python executable and preview rows equal before and after the rename, save and reload."
+
+[[scenarios]]
+id = "W03-S03"
+workflow = "W03"
+contract = "specs/frontend-graph-canvas/high-level.md#behaviour"
+state = "gap"
+package = "ENG-T10"
+entry_point = "browser"
+tier = "browser"
+lane = "browser"
+real = ["backend", "browser"]
+stubbed = []
+tests = []
+invariant = "The graph editing sequence in the W03 row conserves graph structure and computed meaning after save and reopen."
+
+[[scenarios]]
+id = "W04-S01"
+workflow = "W04"
+contract = "specs/io-layer/low-level.md#data-output"
+state = "gap"
+package = "ENG-T10"
+entry_point = "http"
+tier = "route"
+lane = "backend"
+real = ["registry", "filesystem"]
+stubbed = []
+tests = []
+invariant = "The W04 row outcomes for supported IO operations, cancellation and failed output hold."
+
+[[scenarios]]
+id = "W05-S01"
+workflow = "W05"
+contract = "specs/server-api/low-level.md#control-flow"
+finding = "F6"
+state = "gap"
+package = "ENG-T09"
+entry_point = "http"
+tier = "process"
+lane = "backend"
+real = ["cross-process-lock", "filesystem"]
+stubbed = []
+tests = []
+invariant = "Cancellation or timeout of an HTTP JSON cache build cannot release admission or the publication lock before child exit and staging cleanup."
+
+[[scenarios]]
+id = "W05-S02"
+workflow = "W05"
+contract = "specs/json-shredding/high-level.md#behaviour"
+state = "gap"
+package = "ENG-T10"
+entry_point = "http"
+tier = "route"
+lane = "backend"
+real = ["shredder"]
+stubbed = []
+tests = []
+invariant = "The W05 row per-request exact responses and strict schema errors hold."
+
+[[scenarios]]
+id = "W06-S01"
+workflow = "W06"
+contract = "specs/execution-engine/high-level.md#design-rationale"
+state = "gap"
+package = "ENG-T10"
+entry_point = "http"
+tier = "route"
+lane = "backend"
+real = ["executor", "cache"]
+stubbed = []
+tests = []
+invariant = "The W06 row value and trace identity outcomes across cold and warm caches hold."
+
+[[scenarios]]
+id = "W07-S01"
+workflow = "W07"
+contract = "specs/rating/high-level.md#behaviour"
+state = "gap"
+package = "ENG-T10"
+entry_point = "library"
+tier = "unit"
+lane = "backend"
+real = ["rating-engine"]
+stubbed = []
+tests = []
+invariant = "The W07 row hand-calculated band and rating values at thresholds, ties and nulls hold."
+
+[[scenarios]]
+id = "W08-S01"
+workflow = "W08"
+contract = "specs/modelling/low-level.md#error-handling"
+finding = "F8"
+state = "gap"
+package = "ENG-T09"
+entry_point = "http"
+tier = "process"
+lane = "backend"
+real = ["training-worker"]
+stubbed = []
+tests = []
+invariant = "A dependency's plain ValueError is classified as an unexpected error with a safe public message, distinct from HauteValidationError contract errors."
+
+[[scenarios]]
+id = "W08-S02"
+workflow = "W08"
+contract = "specs/modelling/high-level.md#behaviour"
+state = "gap"
+package = "ENG-T10"
+entry_point = "http"
+tier = "workflow"
+lane = "backend"
+real = ["training-worker", "registry"]
+stubbed = []
+tests = []
+invariant = "The W08 row train, retain, score outcomes hold."
+
+[[scenarios]]
+id = "W09-S01"
+workflow = "W09"
+contract = "specs/execution-engine/low-level.md#edge-cases-and-invariants"
+finding = "F12"
+state = "gap"
+package = "ENG-T03"
+entry_point = "http"
+tier = "workflow"
+lane = "backend"
+real = ["preamble-compiler", "dataframe-cache", "builders"]
+stubbed = []
+tests = []
+invariant = "A second optimiser setup after a helper edit computes with the new helper value while the first keeps the old one."
+
+[[scenarios]]
+id = "W09-S02"
+workflow = "W09"
+contract = "specs/optimiser/high-level.md#behaviour"
+state = "gap"
+package = "ENG-T10"
+entry_point = "http"
+tier = "workflow"
+lane = "backend"
+real = ["optimiser"]
+stubbed = []
+tests = []
+invariant = "The W09 row agreement between selected result, saved artifact, applied prices and trace holds."
+
+[[scenarios]]
+id = "W10-S01"
+workflow = "W10"
+contract = "specs/explore-eda/low-level.md#runjob-parent-supervisor-thread"
+finding = "F7"
+state = "gap"
+package = "ENG-T09"
+entry_point = "http"
+tier = "route"
+lane = "backend"
+real = ["explore-service"]
+stubbed = []
+tests = []
+invariant = "Unexpected exception text from materialisation or summarisation never reaches status or result payloads."
+
+[[scenarios]]
+id = "W10-S02"
+workflow = "W10"
+contract = "specs/explore-eda/high-level.md#behaviour"
+state = "gap"
+package = "ENG-T10"
+entry_point = "browser"
+tier = "browser"
+lane = "browser"
+real = ["backend", "browser"]
+stubbed = []
+tests = []
+invariant = "The W10 row explore and present outcomes hold."
+
+[[scenarios]]
+id = "W11-S01"
+workflow = "W11"
+contract = "specs/hosted-project-storage/low-level.md#edge-cases-and-invariants"
+finding = "F2"
+state = "decision"
+package = "ENG-T05"
+entry_point = "hosted"
+tier = "unit"
+lane = "backend"
+real = ["publisher"]
+stubbed = ["files-api"]
+tests = []
+invariant = "A competing pointer arriving after the final read and before the pointer write is never silently overwritten."
+
+[[scenarios]]
+id = "W11-S02"
+workflow = "W11"
+contract = "specs/hosted-project-storage/high-level.md#behaviour"
+finding = "F4"
+state = "gap"
+package = "ENG-T06"
+entry_point = "hosted"
+tier = "workflow"
+lane = "backend"
+real = ["storage-binding", "git"]
+stubbed = ["files-api"]
+tests = []
+invariant = "Restore after publishing on a newly selected branch resumes that branch with its contents and save ledger."
+
+[[scenarios]]
+id = "W11-S03"
+workflow = "W11"
+contract = "specs/hosted-project-storage/low-level.md#edge-cases-and-invariants"
+state = "covered"
+entry_point = "hosted"
+tier = "unit"
+lane = "backend"
+real = ["publisher"]
+stubbed = ["files-api"]
+tests = [
+  "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_a_mid_flight_publish_by_another_writer_stops_before_the_pointer",
+]
+invariant = "A competing pointer arriving before the final read stops publication loudly."
+
+[scenarios.evidence]
+commit = "33e755eb"
+command = 'uv run pytest "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_a_mid_flight_publish_by_another_writer_stops_before_the_pointer" -q -p no:warnings'
+result = "1 passed"
+
+[[scenarios]]
+id = "W12-S01"
+workflow = "W12"
+contract = "specs/assistant/high-level.md#application-services-and-mutation-authority"
+finding = "F5"
+state = "gap"
+package = "ENG-T09"
+entry_point = "http"
+tier = "workflow"
+lane = "backend"
+real = ["assistant-application"]
+stubbed = ["provider"]
+tests = []
+invariant = "An executable-flow assistant edit requires schema evidence and a schema failure is never reported as successful verification."
+
+[[scenarios]]
+id = "W12-S02"
+workflow = "W12"
+contract = "specs/assistant/high-level.md#behaviour"
+state = "gap"
+package = "ENG-T10"
+entry_point = "http"
+tier = "workflow"
+lane = "backend"
+real = ["assistant-application"]
+stubbed = ["provider"]
+tests = []
+invariant = "The W12 row assistant edit lifecycle outcomes hold."
+
+[[scenarios]]
+id = "W13-S01"
+workflow = "W13"
+contract = "specs/deploy/high-level.md#behaviour"
+state = "gap"
+package = "ENG-T10"
+entry_point = "scoring"
+tier = "process"
+lane = "package"
+real = ["bundle", "scorer"]
+stubbed = ["upload-sdk"]
+tests = []
+invariant = "The W13 row validate, bundle, load, score outcomes hold."
+
+[[scenarios]]
+id = "W14-S01"
+workflow = "W14"
+contract = "specs/background-jobs/high-level.md#behaviour"
+state = "gap"
+package = "ENG-T10"
+entry_point = "http"
+tier = "unit"
+lane = "backend"
+real = ["job-store"]
+stubbed = []
+tests = []
+invariant = "The W14 row admission and lifecycle transitions hold."
+
+[[scenarios]]
+id = "W15-S01"
+workflow = "W15"
+contract = "specs/sandbox-security/high-level.md#behaviour"
+finding = "F1"
+state = "decision"
+package = "ENG-T04"
+entry_point = "library"
+tier = "unit"
+lane = "backend"
+real = ["user-exec", "polars"]
+stubbed = []
+tests = []
+invariant = "Node text cannot read an injected environment marker or write outside the project through the injected Polars object while permitted transforms still run."
+
+[[scenarios]]
+id = "W15-S02"
+workflow = "W15"
+contract = "specs/reference-pipeline/high-level.md#purpose"
+state = "not-applicable"
+entry_point = "library"
+tier = "workflow"
+lane = "backend"
+real = []
+stubbed = []
+tests = []
+reason = "the checked-in rating project is a documented non-runnable snapshot"
+invariant = "A runnable end-to-end fixture from the checked-in rating project is not applicable because the project is a documented non-runnable snapshot."
