@@ -56,13 +56,21 @@ The session lifecycle, from the user's chair:
    locally, the commit is pushed to `origin` asynchronously. Saves never
    wait on the network; the UI carries a small sync state — synced /
    *n* saves pending / sync failed — beside the branch indicator.
+   A publish that succeeds also refreshes the binding's *restart
+   target* to the working branch it just carried, so a later container
+   resumes the branch the user last published on.
 4. **Close**: nothing. Anything committed-and-pushed is durable;
    anything mid-edit is lost with the container, the same connection-loss
    exposure a laptop session does not have. The persistent volatile-state
    indicator makes that exposure explicit while the session is open.
 5. **Reopen (new container)**: a recorded binding restores the project
    automatically before the server accepts traffic — clone from
-   `origin`, resume on the recorded working branch.
+   `origin`, resume on the restart target: the working branch in
+   effect at the most recent successful publication. A branch
+   selected, forked, archived or deleted without a later publish is
+   clone-local and does not move the target; a target the stored
+   project no longer contains serves the project and reopens the
+   branch chooser.
 
 Invariants:
 
@@ -88,6 +96,11 @@ Invariants:
 - A restored session is USABLE, not merely present: the working branch
   and its ledger exist as local refs and the session can publish again
   without the user re-adopting a branch.
+- The restart target is only ever a published branch: it is written
+  after the transport succeeds and left untouched by a failed publish,
+  so a restore never advertises a branch the stored project lacks.
+  Binding a populated location records no target; the first successful
+  publish after the restart records the branch the user chose.
 - Local mode is untouched: every behaviour above is gated on the hosted
   environment contract.
 

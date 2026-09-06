@@ -706,21 +706,53 @@ def enqueue_push() -> None:
 
 
 def publish_bound_project(project_root: Path) -> None:
-    """Publish current history to the bound location, per its transport.
+    """Publish current history to the bound location, then record the restart target.
 
     The transport is selected from the active binding's URL scheme: a
     ``uc://`` binding publishes a bundle generation, anything else — a git
     binding, or no recorded binding at all — is the pre-existing push to
     ``origin``. The no-binding default keeps a queue started without a
     binding (harnesses, tests) behaving exactly as before.
+
+    A successful publish then points the durable binding at the working
+    branch it published (see :func:`_record_restart_target`), so a
+    replacement container resumes the branch the user last published on,
+    not the one recorded when the project was bound.
     """
     binding = _session.binding
     if binding is not None and is_uc_url(binding.remote_url):
         publish_to_uc(binding.remote_url, project_root)
-        return
-    from haute import _git
+    else:
+        from haute import _git
 
-    _git.push_working_pair(REMOTE_NAME, project_root, cwd=project_root)
+        _git.push_working_pair(REMOTE_NAME, project_root, cwd=project_root)
+    _record_restart_target(binding, project_root)
+
+
+def _record_restart_target(binding: StorageBinding | None, project_root: Path) -> None:
+    """Point the durable binding at the branch a publish just carried.
+
+    The restart target is the working branch in effect at the most recent
+    SUCCESSFUL publication: it is refreshed only after the transport
+    succeeded, so it never names a branch the stored project lacks, and a
+    failed publish leaves the previous (published) target advertised. A
+    branch selected, forked, archived or deleted without a later publish is
+    clone-local and moves nothing durable. The record write is part of the
+    publication — its :class:`StorageUnavailableError` propagates, so the
+    queue reports a transport failure and retries instead of showing
+    ``synced`` over a restart target the volume never received.
+    """
+    if binding is None:
+        return
+    from haute._git_state import read_working_branch
+
+    working = read_working_branch(project_root)
+    if working is None or working == binding.branch:
+        return
+    refreshed = replace(binding, branch=working)
+    write_binding(refreshed)
+    _session.binding = refreshed
+    logger.info("restart_target_recorded", branch=working)
 
 
 # ---------------------------------------------------------------------------

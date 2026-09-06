@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,7 @@ from haute._project_storage import (
 from haute.schemas import GitPushRejection, GitRemoteLeg
 
 WORKING = "pricing-dev"
+ALT = "pricing-alt"
 
 
 def _run_git(repo: Path, *args: str) -> str:
@@ -64,6 +66,17 @@ def _configure_identity(repo: Path) -> None:
     """
     _run_git(repo, "config", "user.name", "Restored Actuary")
     _run_git(repo, "config", "user.email", "restored@example.com")
+
+
+def _assert_resumed_on(root: Path, branch: str, content: str, sha: str) -> None:
+    """The restored clone is USABLE on *branch*: recorded, checked out on its
+    ledger, carrying the published save, and showing that save's bytes."""
+    from haute._git_state import read_working_branch
+
+    assert read_working_branch(root) == branch
+    assert _run_git(root, "rev-parse", "--abbrev-ref", "HEAD").strip() == f"{branch}-save"
+    assert sha in _run_git(root, "log", "--format=%H", f"{branch}-save").splitlines()
+    assert (root / "rating.py").read_text(encoding="utf-8") == content
 
 
 @pytest.fixture(autouse=True)
@@ -898,6 +911,176 @@ class TestContainerDeathSurvival:
         with pytest.raises(StorageConfigError, match=STATE_VOLUME_ENV):
             _project_storage.bind_remote(f"file://{bare_remote}", project)
 
+    def test_restore_resumes_the_branch_published_last(
+        self,
+        project: Path,
+        bare_remote: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The restart target is the working branch published last, not bound first."""
+        outcome = _project_storage.bind_remote(f"file://{bare_remote}", project)
+        assert outcome == "adopted"
+
+        _git.set_working_branch(ALT, project, cwd=project, create=True)
+        (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=project)
+        assert sha is not None
+        _project_storage.publish_bound_project(project)
+
+        remote_branches = _run_git(bare_remote, "branch", "--list")
+        assert ALT in remote_branches
+        assert f"{ALT}-save" in remote_branches
+
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == ALT
+
+        _replace_container(monkeypatch)
+        restored = tmp_path / "new-container"
+        assert _project_storage.restore_if_bound(restored) == "restored"
+        _assert_resumed_on(restored, ALT, "# alt priced\n", sha)
+
+        _replace_container(monkeypatch)
+        assert _project_storage.restore_if_bound(restored) == "present"
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(restored) == ALT
+
+    def test_populated_bind_then_selected_branch_becomes_the_restart_target(
+        self,
+        project: Path,
+        bare_remote: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A project lifted into a populated git remote records a restart target
+        once the user selects and publishes a working branch."""
+        other = tmp_path / "other"
+        other.mkdir()
+        _run_git(other, "init", "-b", "main")
+        _run_git(other, "config", "user.name", "Other")
+        _run_git(other, "config", "user.email", "other@example.com")
+        (other / "rating.py").write_text("# other project\n", encoding="utf-8")
+        _run_git(other, "add", "-A")
+        _run_git(other, "commit", "-m", "other project")
+        _run_git(other, "push", f"file://{bare_remote}", "main")
+        _run_git(bare_remote, "symbolic-ref", "HEAD", "refs/heads/main")
+
+        assert _project_storage.bind_remote(f"file://{bare_remote}", project) == "restart-required"
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch is None
+
+        _replace_container(monkeypatch)
+        c1 = tmp_path / "c1"
+        assert _project_storage.restore_if_bound(c1) == "restored"
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(c1) is None
+
+        _git.set_working_branch(ALT, c1, cwd=c1, create=True)
+        _configure_identity(c1)
+        (c1 / "rating.py").write_text("# chosen\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=c1)
+        assert sha is not None
+        _project_storage.publish_bound_project(c1)
+
+        refreshed = _project_storage.read_binding()
+        assert refreshed is not None
+        assert refreshed.branch == ALT
+        assert ALT in _run_git(bare_remote, "branch", "--list")
+
+        _replace_container(monkeypatch)
+        c2 = tmp_path / "c2"
+        assert _project_storage.restore_if_bound(c2) == "restored"
+        _assert_resumed_on(c2, ALT, "# chosen\n", sha)
+
+    def test_failed_publish_keeps_the_previous_restart_target_until_a_publish_succeeds(
+        self,
+        project: Path,
+        bare_remote: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed publish leaves the previous restart target advertised until
+        a publish succeeds."""
+        assert _project_storage.bind_remote(f"file://{bare_remote}", project) == "adopted"
+        _git.set_working_branch(ALT, project, cwd=project, create=True)
+        (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=project)
+        assert sha is not None
+
+        real_push = _git.push_working_pair
+        monkeypatch.setattr(_git, "push_working_pair", _RecordingPush(_git.GitError("remote down")))
+        with pytest.raises(_git.GitError):
+            _project_storage.publish_bound_project(project)
+
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == WORKING
+        active = _project_storage.active_binding()
+        assert active is not None
+        assert active.branch == WORKING
+
+        monkeypatch.setattr(_git, "push_working_pair", real_push)
+        _project_storage.publish_bound_project(project)
+
+        refreshed = _project_storage.read_binding()
+        assert refreshed is not None
+        assert refreshed.branch == ALT
+
+        _replace_container(monkeypatch)
+        c1 = tmp_path / "c1"
+        assert _project_storage.restore_if_bound(c1) == "restored"
+        _assert_resumed_on(c1, ALT, "# alt priced\n", sha)
+
+    def test_restart_target_write_failure_is_a_transport_failure_after_the_push_landed(
+        self,
+        project: Path,
+        bare_remote: Path,
+        files_api: _FakeFiles,
+    ) -> None:
+        """A restart target write failure leaves the history durable but surfaces
+        as retryable transport so the queue does not report synced over an outdated target."""
+        assert _project_storage.bind_remote(f"file://{bare_remote}", project) == "adopted"
+        _git.set_working_branch(ALT, project, cwd=project, create=True)
+        (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=project)
+        assert sha is not None
+
+        files_api.fail_with = RuntimeError("volume down")
+        with pytest.raises(StorageUnavailableError):
+            _project_storage.publish_bound_project(project)
+
+        assert sha in _run_git(bare_remote, "log", "--format=%H", f"{ALT}-save").splitlines()
+        active = _project_storage.active_binding()
+        assert active is not None
+        assert active.branch == WORKING
+
+        files_api.fail_with = None
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == WORKING
+
+        queue = _project_storage.push_queue()
+        files_api.fail_with = RuntimeError("volume down")
+        queue.enqueue()
+        _wait_until(lambda: queue.status().state == "failed")
+        assert queue.status().failure == "transport"
+
+        files_api.fail_with = None
+        queue.retry_now()
+        _wait_until(lambda: queue.status().state == "synced")
+
+        refreshed = _project_storage.read_binding()
+        assert refreshed is not None
+        assert refreshed.branch == ALT
+        queue.stop()
+
 
 # ---------------------------------------------------------------------------
 # Unity Catalog bundle transport
@@ -1443,6 +1626,272 @@ class TestUcContainerDeathSurvival:
         )
         with pytest.raises(StorageUnavailableError, match="Generation 9"):
             _project_storage.restore_if_bound(tmp_path / "fresh")
+
+    def test_restore_resumes_the_branch_published_last(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The restart target is the working branch published last, not bound first."""
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        outcome = _project_storage.bind_remote(UC_URL, project)
+        assert outcome == "adopted"
+        bind_record = _project_storage.read_binding()
+        assert bind_record is not None
+        assert bind_record.branch == WORKING
+
+        _git.set_working_branch(ALT, project, cwd=project, create=True)
+        (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=project)
+        assert sha is not None
+        _project_storage.publish_bound_project(project)
+        assert _stored_head(files_api).generation == 2
+
+        durable = _project_storage.read_binding()
+        cached = _project_storage.active_binding()
+        assert durable is not None
+        assert cached is not None
+        assert durable.branch == ALT
+        assert cached.branch == ALT
+        assert durable.remote_url == bind_record.remote_url
+        assert durable.bound_by == bind_record.bound_by
+        assert durable.bound_at == bind_record.bound_at
+
+        _replace_container(monkeypatch)
+        restored = tmp_path / "new-container"
+        assert _project_storage.restore_if_bound(restored) == "restored"
+        _assert_resumed_on(restored, ALT, "# alt priced\n", sha)
+
+        # Restore twice: (a) a second boot over the same directory
+        _replace_container(monkeypatch)
+        assert _project_storage.restore_if_bound(restored) == "present"
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(restored) == ALT
+        active = _project_storage.active_binding()
+        assert active is not None
+        assert active.branch == ALT
+
+        # (b) another replacement into a different fresh directory
+        _replace_container(monkeypatch)
+        third = tmp_path / "third-container"
+        assert _project_storage.restore_if_bound(third) == "restored"
+        _assert_resumed_on(third, ALT, "# alt priced\n", sha)
+
+        # Publishing from the restored clone still works
+        _configure_identity(restored)
+        (restored / "rating.py").write_text("# alt repriced\n", encoding="utf-8")
+        next_sha = _git.commit_save(["rating.py"], ALT, cwd=restored)
+        assert next_sha is not None
+        _project_storage.publish_bound_project(restored)
+        assert _stored_head(files_api).generation == 3
+        refreshed = _project_storage.read_binding()
+        assert refreshed is not None
+        assert refreshed.branch == ALT
+
+    def test_populated_bind_then_selected_branch_becomes_the_restart_target(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A project lifted into a populated UC location records a restart target
+        once the user selects and publishes a working branch."""
+        other = tmp_path / "other"
+        other.mkdir()
+        _run_git(other, "init", "-b", "main")
+        _run_git(other, "config", "user.name", "Other Actuary")
+        _run_git(other, "config", "user.email", "other@example.com")
+        (other / "rating.py").write_text("# other project\n", encoding="utf-8")
+        _run_git(other, "add", "rating.py")
+        _run_git(other, "commit", "-m", "other project")
+        _uc_transport.publish_to_uc(UC_URL, other)
+        assert _stored_head(files_api).generation == 1
+        _replace_container(monkeypatch)
+
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "restart-required"
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch is None
+
+        _replace_container(monkeypatch)
+        c1 = tmp_path / "c1"
+        assert _project_storage.restore_if_bound(c1) == "restored"
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(c1) is None
+
+        _git.set_working_branch(ALT, c1, cwd=c1, create=True)
+        _configure_identity(c1)
+        (c1 / "rating.py").write_text("# chosen\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=c1)
+        assert sha is not None
+        _project_storage.publish_bound_project(c1)
+
+        refreshed = _project_storage.read_binding()
+        assert refreshed is not None
+        assert refreshed.branch == ALT
+
+        _replace_container(monkeypatch)
+        c2 = tmp_path / "c2"
+        assert _project_storage.restore_if_bound(c2) == "restored"
+        _assert_resumed_on(c2, ALT, "# chosen\n", sha)
+
+    def test_failed_publish_keeps_the_previous_restart_target(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed publish leaves the previous restart target advertised."""
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        captured = _project_storage.read_binding()
+        assert captured is not None
+        assert captured.branch == WORKING
+
+        _git.set_working_branch(ALT, project, cwd=project, create=True)
+        (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=project)
+        assert sha is not None
+
+        files_api.fail_with = RuntimeError("volume down")
+        with pytest.raises(StorageUnavailableError):
+            _project_storage.publish_bound_project(project)
+
+        active = _project_storage.active_binding()
+        assert active is not None
+        assert active.branch == WORKING
+
+        files_api.fail_with = None
+        assert _project_storage.read_binding() == captured
+        _replace_container(monkeypatch)
+        c1 = tmp_path / "c1"
+        assert _project_storage.restore_if_bound(c1) == "restored"
+
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(c1) == WORKING
+        assert (c1 / "rating.py").read_text(encoding="utf-8") == "# pipeline\n"
+        assert ALT not in _run_git(c1, "branch", "--format=%(refname:short)").splitlines()
+
+    def test_record_naming_a_branch_the_stored_project_lacks_still_serves(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A phantom branch in the binding record falls back to an unselected chooser state."""
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        _project_storage.publish_bound_project(project)
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        _project_storage.write_binding(replace(binding, branch="pricing-gone"))
+
+        _replace_container(monkeypatch)
+        restored = tmp_path / "phantom-container"
+        assert _project_storage.restore_if_bound(restored) == "restored"
+
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(restored) is None
+        assert _project_storage.active_binding() is not None
+        remote_refs = _run_git(restored, "branch", "-r").splitlines()
+        assert any(f"origin/{WORKING}" in ref.strip() for ref in remote_refs)
+
+    def test_missing_identity_then_setup_then_save_retry(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Commit fails cleanly without identity and succeeds once configured."""
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        _replace_container(monkeypatch)
+        c1 = tmp_path / "c1"
+        assert _project_storage.restore_if_bound(c1) == "restored"
+
+        global_cfg = tmp_path / "gitconfig"
+        global_cfg.write_text("[user]\n\tuseConfigOnly = true\n", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_cfg))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        for name in (
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+            "EMAIL",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        tip_before = _run_git(c1, "rev-parse", f"{WORKING}-save")
+        commits_before = _run_git(c1, "log", "--format=%H", f"{WORKING}-save").splitlines()
+
+        (c1 / "rating.py").write_text("# repriced\n", encoding="utf-8")
+        with pytest.raises(_git.GitError):
+            _git.commit_save(["rating.py"], WORKING, cwd=c1)
+
+        assert _run_git(c1, "rev-parse", f"{WORKING}-save") == tip_before
+        assert _stored_head(files_api).generation == 1
+        assert _run_git(c1, "log", "--format=%H", f"{WORKING}-save").splitlines() == commits_before
+
+        _configure_identity(c1)
+        sha = _git.commit_save(["rating.py"], WORKING, cwd=c1)
+        assert sha is not None
+        _project_storage.publish_bound_project(c1)
+        assert _stored_head(files_api).generation == 2
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == WORKING
+
+    def test_deleting_the_published_branch_then_reselecting_moves_the_target(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Deleting a published branch clears the working branch; re-selecting
+        another branch and publishing moves the restart target."""
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+
+        _git.set_working_branch(ALT, project, cwd=project, create=True)
+        (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], ALT, cwd=project) is not None
+        _project_storage.publish_bound_project(project)
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == ALT
+
+        _git.delete_working_pair(ALT, project, confirm=True, cwd=project)
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(project) is None
+
+        _git.set_working_branch(WORKING, project, cwd=project, create=False)
+        (project / "rating.py").write_text("# back on dev\n", encoding="utf-8")
+        sha2 = _git.commit_save(["rating.py"], WORKING, cwd=project)
+        assert sha2 is not None
+        _project_storage.publish_bound_project(project)
+
+        refreshed = _project_storage.read_binding()
+        assert refreshed is not None
+        assert refreshed.branch == WORKING
+
+        _replace_container(monkeypatch)
+        restored = tmp_path / "fresh-container"
+        assert _project_storage.restore_if_bound(restored) == "restored"
+        _assert_resumed_on(restored, WORKING, "# back on dev\n", sha2)
 
 
 class TestBindTask:
