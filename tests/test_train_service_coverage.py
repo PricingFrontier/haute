@@ -2404,11 +2404,17 @@ class TestTrainServiceLifecycles:
                 raise RuntimeError("injected worker failure")
 
         current_model_bytes = b"generation-1-model"
+        model_path = output_dir / "quoted.cbm"
+        contract_path = output_dir / model_contract_filename("quoted")
 
         class VersionedTrainingJob(_SuccessfulTrainingJob):
             def run(self, progress, on_iteration, **kwargs):
                 result = super().run(progress, on_iteration, **kwargs)
-                Path(result.model_path).write_bytes(current_model_bytes)
+                # Stamp each generation's bytes into the job's model file so a
+                # later run is distinguishable; the path is re-derived from the
+                # fixture root, which also proves the worker stayed inside it.
+                staged = tmp_path / Path(result.model_path).relative_to(tmp_path)
+                staged.write_bytes(current_model_bytes)
                 return result
 
         def assert_registry_free(prior_job_id: str | None = None) -> None:
@@ -2424,9 +2430,6 @@ class TestTrainServiceLifecycles:
                     service._training_jobs._latest_by_key.get((_TRAINING_JOB_TYPE, prior_job_id))
                     is None
                 )
-
-        model_path = output_dir / "quoted.cbm"
-        contract_path = output_dir / model_contract_filename("quoted")
 
         # 1. Start a training job that FAILS in the worker
         assert_registry_free()
