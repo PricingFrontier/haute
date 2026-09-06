@@ -29,6 +29,7 @@ from haute.schemas import (
     TrainEstimateRequest,
     TrainRequest,
 )
+from tests.conftest import current_source_revision
 
 
 @pytest.fixture(autouse=True)
@@ -624,12 +625,20 @@ def test_case_only_rename_single_surviving_inode_holds_new_bytes(
         assert old.read_text(encoding="utf-8") == '{"path": "old.csv"}'
 
 
-def _submodel_save_request(graph: PipelineGraph) -> SavePipelineRequest:
+def _submodel_save_request(
+    graph: PipelineGraph,
+    *,
+    project_root: Path | None = None,
+    base_revision: str | None = None,
+) -> SavePipelineRequest:
+    if base_revision is None and project_root is not None:
+        base_revision = current_source_revision(project_root / "main.py", project_root)
     return SavePipelineRequest(
         name="main",
         description="",
         graph=graph,
         source_file="main.py",
+        base_revision=base_revision,
     )
 
 
@@ -691,7 +700,7 @@ def _run_submodel_save(
         ),
         patch("haute.discovery.discover_pipelines", return_value=[parent]),
     ):
-        svc.save(_submodel_save_request(submitted_graph))
+        svc.save(_submodel_save_request(submitted_graph, project_root=tmp_path))
 
 
 def test_case_only_module_rename_preserves_newly_written_module(tmp_path: Path) -> None:

@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
-from tests.conftest import make_graph
+from tests.conftest import current_source_revision, make_graph
 
 
 def _flat_graph():
@@ -90,16 +90,26 @@ def _service(tmp_path: Path) -> SavePipelineService:
     return SavePipelineService(project_root=tmp_path, pipeline_root=tmp_path)
 
 
-def _save_request(graph) -> SavePipelineRequest:
+def _save_request(
+    graph,
+    *,
+    project_root: Path | None = None,
+    source_file: str = "main.py",
+    base_revision: str | None = None,
+) -> SavePipelineRequest:
+    root = project_root or Path.cwd()
+    if base_revision is None:
+        base_revision = current_source_revision(root / source_file, root)
     return SavePipelineRequest(
         name="main",
         description="",
         graph=graph,
         preamble="",
-        source_file="main.py",
+        source_file=source_file,
         sources=["live"],
         active_source="live",
         preserved_blocks=[],
+        base_revision=base_revision,
     )
 
 
@@ -111,6 +121,7 @@ def test_create_no_clobber_is_case_insensitive_and_precedes_writes(tmp_path: Pat
         description="",
         preamble="",
         source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
     )
     parent = tmp_path / "main.py"
     parent_sidecar = tmp_path / "main.haute.json"
@@ -131,6 +142,7 @@ def test_create_no_clobber_is_case_insensitive_and_precedes_writes(tmp_path: Pat
             description="",
             preamble="",
             source_file="main.py",
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
         )
 
     assert exc_info.value.status_code == 409
@@ -148,6 +160,7 @@ def test_create_no_clobber_rejects_orphan_child_sidecar(tmp_path: Path) -> None:
         description="",
         preamble="",
         source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
     )
     parent = tmp_path / "main.py"
     parent_sidecar = tmp_path / "main.haute.json"
@@ -166,6 +179,7 @@ def test_create_no_clobber_rejects_orphan_child_sidecar(tmp_path: Path) -> None:
             description="",
             preamble="",
             source_file="main.py",
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
         )
 
     assert exc_info.value.status_code == 409
@@ -182,6 +196,7 @@ def test_managed_child_gets_owner_and_position_sidecar(tmp_path: Path) -> None:
         description="",
         preamble="",
         source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
     )
 
     sidecar_path = tmp_path / "modules" / "child.haute.json"
@@ -199,6 +214,7 @@ def test_new_definition_cannot_claim_hand_authored_child(tmp_path: Path) -> None
         description="",
         preamble="",
         source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
     )
     parent = tmp_path / "main.py"
     parent_sidecar = tmp_path / "main.haute.json"
@@ -217,6 +233,7 @@ def test_new_definition_cannot_claim_hand_authored_child(tmp_path: Path) -> None
             description="",
             preamble="",
             source_file="main.py",
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
         )
 
     assert exc_info.value.status_code == 409
@@ -234,6 +251,7 @@ def test_authorised_module_delete_removes_source_and_sidecar(tmp_path: Path) -> 
         description="",
         preamble="",
         source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
     )
     service.save_graph_transactionally(
         graph=_managed_graph(),
@@ -241,6 +259,7 @@ def test_authorised_module_delete_removes_source_and_sidecar(tmp_path: Path) -> 
         description="",
         preamble="",
         source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
     )
     child = tmp_path / "modules" / "child.py"
     child_sidecar = child.with_suffix(".haute.json")
@@ -250,6 +269,7 @@ def test_authorised_module_delete_removes_source_and_sidecar(tmp_path: Path) -> 
         description="",
         preamble="",
         source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
     )
 
     assert not child.exists()
@@ -266,6 +286,7 @@ def test_post_commit_parse_failure_restores_deleted_source_and_sidecar(tmp_path:
         description="",
         preamble="",
         source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
     )
     service.save_graph_transactionally(
         graph=_managed_graph(),
@@ -273,6 +294,7 @@ def test_post_commit_parse_failure_restores_deleted_source_and_sidecar(tmp_path:
         description="",
         preamble="",
         source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
     )
     parent = tmp_path / "main.py"
     parent_sidecar = tmp_path / "main.haute.json"
@@ -300,6 +322,7 @@ def test_post_commit_parse_failure_restores_deleted_source_and_sidecar(tmp_path:
             description="",
             preamble="",
             source_file="main.py",
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
         )
 
     assert {path: path.read_bytes() for path in tracked} == originals
@@ -313,6 +336,7 @@ def test_definition_id_cannot_be_replaced_for_the_same_module_path(tmp_path: Pat
         description="",
         preamble="",
         source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
     )
     service.save_graph_transactionally(
         graph=_managed_graph(),
@@ -320,6 +344,7 @@ def test_definition_id_cannot_be_replaced_for_the_same_module_path(tmp_path: Pat
         description="",
         preamble="",
         source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
     )
     parent = tmp_path / "main.py"
     tracked = [
@@ -337,6 +362,7 @@ def test_definition_id_cannot_be_replaced_for_the_same_module_path(tmp_path: Pat
             description="",
             preamble="",
             source_file="main.py",
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
         )
 
     assert exc_info.value.status_code == 409
@@ -355,6 +381,7 @@ def test_submitted_definitions_cannot_share_a_canonical_module_path(tmp_path: Pa
         description="",
         preamble="",
         source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
     )
     parent = tmp_path / "main.py"
     parent_sidecar = tmp_path / "main.haute.json"
@@ -387,6 +414,7 @@ def test_submitted_definitions_cannot_share_a_canonical_module_path(tmp_path: Pa
             description="",
             preamble="",
             source_file="main.py",
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
         )
 
     assert exc_info.value.status_code == 409

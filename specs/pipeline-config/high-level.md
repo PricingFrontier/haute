@@ -73,6 +73,9 @@ Only a valid sidecar supplies source selection. Corrupt or unreadable content le
 bytes untouched, uses presentation-only default positions, degrades the document, and blocks
 preview because active-source state is untrusted. Recovery revisions hash raw dependency
 bytes and explicit missing sentinels rather than requiring a valid `PipelineGraph`.
+Every mutation of a persisted document, including Save, names the `source_revision` it was
+based on and fails closed when the on-disk document has moved; initial creation names no
+revision and succeeds only while the target file is absent.
 
 **Wiring.** In the statically parsed source graph, edges come from exactly two declared
 sources: explicit `connect()` calls and function parameter names matching other node names.

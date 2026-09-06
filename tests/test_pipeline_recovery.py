@@ -1306,6 +1306,7 @@ def test_recovery_revision_tracks_child_config_from_parent_config_base(
             {
                 "name": "replacement",
                 "source_file": "main.py",
+                "base_revision": "posted-ready-revision",
                 "graph": {"nodes": [], "edges": []},
             },
         ),

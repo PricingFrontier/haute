@@ -21,7 +21,7 @@
 
 This repository uses one high-capability decision-maker and two cheaper execution tiers.
 
-The root agent is expected to run on `gpt-5.6-sol` at `ultra`. Keep all work that requires judgment in the root thread, including:
+The root agent is expected to run on `gpt-6-astra` at `ultra`. Keep all work that requires judgment in the root thread, including:
 
 - interpreting requirements and resolving ambiguity;
 - planning, decomposition, architecture, and API design;
@@ -46,7 +46,7 @@ Give each worker a self-contained prompt with exact scope, inputs, constraints, 
 
 Agent creation has a fixed context cost. Do not spawn a worker for a task the root can finish with one or a few direct tool calls. Batch related deterministic operations into one Luna assignment, and spawn only when that batch removes a meaningful block of execution time. If there is no meaningful batch, keep the work in the root thread.
 
-Never allow a subagent to inherit the root model or reasoning effort. Do not use Sol, `high`, `xhigh`, `max`, or `ultra` for a subagent unless the user explicitly requests that exception. If `luna_worker` is unavailable or its Luna model cannot be verified, report that limitation and use an explicitly configured Terra/low worker; never claim that an inherited or unknown model is Luna. If the runtime cannot apply either worker configuration, keep the work in the root thread instead of spawning.
+Never allow a subagent to inherit the root model or reasoning effort. Do not use Astra, `high`, `xhigh`, `max`, or `ultra` for a subagent unless the user explicitly requests that exception. If `luna_worker` is unavailable or its Luna model cannot be verified, report that limitation and use an explicitly configured Terra/low worker; never claim that an inherited or unknown model is Luna. If the runtime cannot apply either worker configuration, keep the work in the root thread instead of spawning.
 
 Do not enable Fast mode for routine repository work. Use it only when the user explicitly prioritises latency over credit consumption.
 

@@ -41,6 +41,7 @@ from haute.routes._helpers import (
 )
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
+from tests.conftest import current_source_revision
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -65,12 +66,20 @@ def _simple_graph() -> PipelineGraph:
     )
 
 
-def _make_save_request(source_file: str = "pipeline.py") -> SavePipelineRequest:
+def _make_save_request(
+    source_file: str = "pipeline.py",
+    *,
+    project_root: Path | None = None,
+    base_revision: str | None = None,
+) -> SavePipelineRequest:
+    if base_revision is None and project_root is not None:
+        base_revision = current_source_revision(project_root / source_file, project_root)
     return SavePipelineRequest(
         name="test_pipe",
         description="test",
         graph=_simple_graph(),
         source_file=source_file,
+        base_revision=base_revision,
     )
 
 
@@ -94,7 +103,7 @@ class TestDiskFullDuringSave:
         leaving an inconsistent pipeline on disk.
         """
         svc = SavePipelineService(tmp_path)
-        req = _make_save_request("pipeline.py")
+        req = _make_save_request("pipeline.py", project_root=tmp_path)
 
         with patch("haute.routes._save_pipeline.SavePipelineService._write_code") as mock_write:
             mock_write.side_effect = OSError(28, "No space left on device")
@@ -112,7 +121,7 @@ class TestDiskFullDuringSave:
         positions and scenarios are reset to defaults.
         """
         svc = SavePipelineService(tmp_path)
-        req = _make_save_request("pipeline.py")
+        req = _make_save_request("pipeline.py", project_root=tmp_path)
 
         with (
             patch("haute.routes._save_pipeline.SavePipelineService._write_code"),
@@ -134,7 +143,7 @@ class TestDiskFullDuringSave:
         config drift where half the nodes have stale configs.
         """
         svc = SavePipelineService(tmp_path)
-        req = _make_save_request("pipeline.py")
+        req = _make_save_request("pipeline.py", project_root=tmp_path)
 
         with (
             patch("haute.routes._save_pipeline.SavePipelineService._write_code"),
@@ -169,7 +178,7 @@ class TestFileLocked:
         or worse, a half-written .py file that fails to import.
         """
         svc = SavePipelineService(tmp_path)
-        req = _make_save_request("pipeline.py")
+        req = _make_save_request("pipeline.py", project_root=tmp_path)
 
         with patch("haute.routes._save_pipeline.SavePipelineService._write_code") as m:
             m.side_effect = PermissionError(13, "The process cannot access the file")
@@ -183,7 +192,7 @@ class TestFileLocked:
         'saved' while the sidecar is actually stale.
         """
         svc = SavePipelineService(tmp_path)
-        req = _make_save_request("pipeline.py")
+        req = _make_save_request("pipeline.py", project_root=tmp_path)
 
         with (
             patch("haute.routes._save_pipeline.SavePipelineService._write_code"),
@@ -223,11 +232,11 @@ class TestPermissionDenied:
         # Create a pipeline file so path validation passes
         py_file = read_only_dir / "pipeline.py"
         py_file.write_text("# placeholder")
+        req = _make_save_request("pipeline.py", project_root=read_only_dir)
 
         read_only_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)
         try:
             svc = SavePipelineService(read_only_dir)
-            req = _make_save_request("pipeline.py")
             with pytest.raises((OSError, PermissionError)):
                 svc.save(req)
         finally:
@@ -696,68 +705,118 @@ class TestCorruptSidecar:
 # ===================================================================
 
 
-class TestConcurrentSaveAndPreview:
-    """Simulate overlapping save and preview operations."""
+class TestStaleSaveUnderLock:
+    def test_concurrent_saves_under_lock_only_one_succeeds(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two concurrent saves with the same base revision race under lock; exactly one wins."""
+        from fastapi.testclient import TestClient
 
-    def test_save_during_preview_does_not_corrupt_files(self, tmp_path: Path) -> None:
-        """Two concurrent saves to the same file produce valid output.
+        from haute.server import app
 
-        Catches: interleaved writes producing a file that is half old-code
-        and half new-code, failing to import.
-        """
-        py_path = tmp_path / "pipeline.py"
-        py_path.write_text("# initial")
+        monkeypatch.chdir(tmp_path)
+        with TestClient(app) as client:
+            base_graph = {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "type": "pipelineNode",
+                        "position": {"x": 0, "y": 0},
+                        "data": {
+                            "label": "Source",
+                            "nodeType": "dataInput",
+                            "config": {
+                                "inputType": "file",
+                                "format": "parquet",
+                                "mode": "scan",
+                                "path": "data.parquet",
+                                "arguments": {},
+                            },
+                        },
+                    },
+                ],
+                "edges": [],
+            }
 
-        results = []
-        errors = []
+            res0 = client.post(
+                "/api/pipeline/save",
+                json={
+                    "name": "main",
+                    "source_file": "main.py",
+                    "graph": base_graph,
+                    "base_revision": None,
+                },
+            )
+            assert res0.status_code == 200
+            base_rev = res0.json()["source_revision"]
 
-        def writer(content: str) -> None:
-            try:
-                py_path.write_text(content)
-                results.append(content)
-            except Exception as e:
-                errors.append(e)
+            graph_a = {
+                "nodes": [
+                    *base_graph["nodes"],
+                    {
+                        "id": "node_a",
+                        "type": "pipelineNode",
+                        "position": {"x": 100, "y": 0},
+                        "data": {
+                            "label": "worker_a",
+                            "nodeType": "polars",
+                            "config": {"code": ""},
+                        },
+                    },
+                ],
+                "edges": [],
+            }
 
-        t1 = threading.Thread(target=writer, args=("# version A\n" * 100,))
-        t2 = threading.Thread(target=writer, args=("# version B\n" * 100,))
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
+            graph_b = {
+                "nodes": [
+                    *base_graph["nodes"],
+                    {
+                        "id": "node_b",
+                        "type": "pipelineNode",
+                        "position": {"x": 200, "y": 0},
+                        "data": {
+                            "label": "worker_b",
+                            "nodeType": "polars",
+                            "config": {"code": ""},
+                        },
+                    },
+                ],
+                "edges": [],
+            }
 
-        assert not errors, f"Write errors: {errors}"
-        # File should contain one complete version, not a mix
-        content = py_path.read_text()
-        assert content in ("# version A\n" * 100, "# version B\n" * 100), (
-            "File contains mixed content from concurrent writes"
-        )
+            responses: list = []
 
-    def test_save_service_is_not_thread_safe_by_design(self, tmp_path: Path) -> None:
-        """Document that SavePipelineService has no internal locking.
+            def _post_edit(graph_payload: dict) -> None:
+                r = client.post(
+                    "/api/pipeline/save",
+                    json={
+                        "name": "main",
+                        "source_file": "main.py",
+                        "graph": graph_payload,
+                        "base_revision": base_rev,
+                    },
+                )
+                responses.append(r)
 
-        Catches: false assumption of thread safety. The service is called
-        from FastAPI's async handler (single-threaded by default), so
-        concurrent saves require external synchronization.
-        """
-        svc = SavePipelineService(tmp_path)
-        # Verify there's no threading.Lock on the instance
-        assert not hasattr(svc, "_lock"), (
-            "SavePipelineService added a lock — update this test to verify it"
-        )
+            t1 = threading.Thread(target=_post_edit, args=(graph_a,))
+            t2 = threading.Thread(target=_post_edit, args=(graph_b,))
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
 
-    def test_preview_cache_invalidation_after_save(self) -> None:
-        """Preview cache is invalidated so stale results aren't served.
+            status_codes = [r.status_code for r in responses]
+            assert sorted(status_codes) == [200, 409]
 
-        Catches: user saves a code change to a polars node, but preview
-        still returns the old output because the cache wasn't cleared.
-        """
-        from haute.routes._helpers import mark_self_write
+            stale_resp = next(r for r in responses if r.status_code == 409)
+            assert stale_resp.json()["detail"].startswith("stale_document_revision:")
 
-        # After save, the self-write flag should be set
-        mark_self_write()
-        from haute.routes._helpers import is_self_write
-
-        assert is_self_write()
+            on_disk = (tmp_path / "main.py").read_text(encoding="utf-8")
+            has_a = "worker_a" in on_disk
+            has_b = "worker_b" in on_disk
+            assert has_a ^ has_b, "on-disk pipeline must contain only the winner's node"
 
 
 # ===================================================================
@@ -847,7 +906,7 @@ class TestSavePipelinePartialFailureIntegration:
         from haute.routes._save_pipeline import _TouchedFile
 
         svc = SavePipelineService(tmp_path)
-        req = _make_save_request("pipeline.py")
+        req = _make_save_request("pipeline.py", project_root=tmp_path)
         py_path = tmp_path / "pipeline.py"
 
         def fake_write_code(body, graph, path, touched=None):
@@ -880,9 +939,9 @@ class TestSavePipelinePartialFailureIntegration:
         from haute.routes._save_pipeline import _TouchedFile
 
         svc = SavePipelineService(tmp_path)
-        req = _make_save_request("pipeline.py")
         py_path = tmp_path / "pipeline.py"
         py_path.write_text("# ORIGINAL")
+        req = _make_save_request("pipeline.py", project_root=tmp_path)
 
         def fake_write_code(body, graph, path, touched=None):
             if touched is not None:

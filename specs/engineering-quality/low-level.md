@@ -31,6 +31,7 @@
 | `frontend/e2e/data-preview-scroll.benchmark.spec.ts` | `@benchmark` Playwright coverage for data-preview scrolling. |
 | `frontend/e2e/git-graph.spec.ts` | Playwright coverage for the Git graph. |
 | `frontend/e2e/git-sidebar-regression.spec.ts` | Playwright regression coverage for the Git sidebar. |
+| `frontend/e2e/save-conflict.spec.ts` | Two-page Playwright witness for the Save base-revision conflict: with live sync cut off, a stale save is rejected while the local edit survives, and a fresh save succeeds after an explicit reload. |
 | `frontend/e2e/job-progress-render.benchmark.spec.ts` | `@benchmark` Playwright coverage for job-progress rendering. |
 | `frontend/e2e/large-graph-drag.benchmark.spec.ts` | `@benchmark` Playwright coverage for dragging large graphs. |
 | `frontend/e2e/trace-render.benchmark.spec.ts` | `@benchmark` Playwright coverage for linear and multi-frame trace rendering latency. |

@@ -174,9 +174,11 @@ class TestSelfWriteTracking:
         fake_time = [100.0]
         monkeypatch.setattr(time, "monotonic", lambda: fake_time[0])
         path = tmp_path / "pipeline.py"
+        content = b"print('hello')"
+        path.write_bytes(content)
 
         try:
-            mark_self_write(path)
+            mark_self_write(path, content=content)
             fake_time[0] += _SELF_WRITE_COOLDOWN + 5.0
 
             assert is_self_write() is False
@@ -189,9 +191,11 @@ class TestSelfWriteTracking:
 
         helpers._self_write_paths.clear()
         path = tmp_path / "pipeline.py"
+        content = b"print('hello')"
+        path.write_bytes(content)
 
         try:
-            mark_self_write(path)
+            mark_self_write(path, content=content)
             assert is_self_write(path, consume=True) is True
             assert is_self_write(path) is False
         finally:
@@ -210,16 +214,88 @@ class TestSelfWriteTracking:
         monkeypatch.setattr(time, "monotonic", lambda: fake_time[0])
         stale_path = tmp_path / "stale.py"
         fresh_path = tmp_path / "fresh.py"
+        stale_content = b"stale"
+        fresh_content = b"fresh"
+        stale_path.write_bytes(stale_content)
+        fresh_path.write_bytes(fresh_content)
 
         try:
-            mark_self_write(stale_path)
+            mark_self_write(stale_path, content=stale_content)
             fake_time[0] += helpers._SELF_WRITE_RETENTION + 1.0
-            mark_self_write(fresh_path)
+            mark_self_write(fresh_path, content=fresh_content)
 
             assert is_self_write(stale_path) is False
             assert is_self_write(fresh_path) is True
         finally:
             helpers._self_write_paths.clear()
+
+    def test_content_mismatch_returns_false_and_discards_marker(self, tmp_path: Path) -> None:
+        """(a) mismatch: mark content X, write Y externally to same path, False and marker gone."""
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        path = tmp_path / "pipeline.py"
+        path.write_bytes(b"content_y")
+        try:
+            mark_self_write(path, content=b"content_x")
+            assert is_self_write(path) is False
+            key = helpers._self_write_key(path)
+            assert key not in helpers._self_write_paths
+        finally:
+            helpers._self_write_paths.clear()
+
+    def test_deletion_marker_matches_unlinked_file(self, tmp_path: Path) -> None:
+        """(b) deletion: mark deleted=True, unlink, is_self_write(path, consume=True) is True."""
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        path = tmp_path / "deleted.py"
+        path.write_bytes(b"to be deleted")
+        try:
+            mark_self_write(path, deleted=True)
+            path.unlink()
+            assert is_self_write(path, consume=True) is True
+            assert is_self_write(path) is False
+        finally:
+            helpers._self_write_paths.clear()
+
+    def test_deletion_marker_returns_false_when_file_exists(self, tmp_path: Path) -> None:
+        """(c) deletion marker but the file exists again: False."""
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        path = tmp_path / "recreated.py"
+        try:
+            mark_self_write(path, deleted=True)
+            path.write_bytes(b"recreated externally")
+            assert is_self_write(path) is False
+        finally:
+            helpers._self_write_paths.clear()
+
+    def test_failed_write_returns_false_when_file_holds_old_bytes(self, tmp_path: Path) -> None:
+        """(d) failed write: marker X while file still holds old bytes O: False."""
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        path = tmp_path / "old.py"
+        path.write_bytes(b"old bytes")
+        try:
+            mark_self_write(path, content=b"new bytes")
+            assert is_self_write(path) is False
+        finally:
+            helpers._self_write_paths.clear()
+
+    def test_mark_self_write_argument_validation(self, tmp_path: Path) -> None:
+        """(e) argument validation on mark_self_write."""
+        path = tmp_path / "test.py"
+        with pytest.raises(ValueError, match="exactly one of content or deleted"):
+            mark_self_write(path)
+        with pytest.raises(ValueError, match="exactly one of content or deleted"):
+            mark_self_write(path, content=b"x", deleted=True)
+        with pytest.raises(ValueError, match="content and deleted require a path"):
+            mark_self_write(content=b"x")
+        with pytest.raises(ValueError, match="content and deleted require a path"):
+            mark_self_write(deleted=True)
 
 
 # ===========================================================================

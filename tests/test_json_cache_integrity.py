@@ -590,6 +590,7 @@ class TestCommittedMirrorOnProductionBuild:
                 "description": "",
                 "graph": graph,
                 "source_file": "cache_mirror_pipe.py",
+                "base_revision": None,
             },
         )
         assert save.status_code == 200, save.text

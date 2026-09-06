@@ -91,9 +91,10 @@ preview, each rejecting a mismatch with 409 before any mutation. Amend
 server-api, pipeline-config and frontend-shared contracts so `SavePipelineRequest`,
 the inline request type in `frontend/src/api/client.ts` and the payload built in
 `frontend/src/hooks/usePipelineAPI.ts` carry that token, and the route checks it
-inside the save transaction before mutation, returning
-the structured 409 conflict that recovery preview already uses (code, message,
-expected and provided revision). Specify initial creation separately, UI
+inside the save transaction before mutation, returning a `409` whose flat
+`detail` begins with the stable code `stale_document_revision:` (the
+repository's error-shape standard; the revisions go to the server log).
+Specify initial creation separately, UI
 recovery, and whether recovery artifacts, which feed the separate recovery
 revision, join the Save precondition. Specify how external writes during
 a multi-file commit are detected and handled; an application lock alone cannot

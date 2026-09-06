@@ -635,6 +635,7 @@ describe("endpoint contracts", () => {
       graph: dummyGraph,
       preamble: "",
       source_file: "pipe.py",
+      base_revision: "rev-1",
       preserved_blocks: [],
     }
     await savePipeline(payload)
@@ -644,12 +645,13 @@ describe("endpoint contracts", () => {
     const body = JSON.parse(opts.body)
     expect(body.name).toBe("test")
     expect(body.source_file).toBe("pipe.py")
+    expect(body.base_revision).toBe("rev-1")
   })
 
   it("sends source-preservation concurrency metadata for pipeline and submodel writes", async () => {
     await savePipeline({
       name: "test", description: "desc", graph: dummyGraph, preamble: "",
-      source_file: "pipe.py", preserved_blocks: ["import polars as pl"],
+      source_file: "pipe.py", base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
     })
     await createSubmodel({
       name: "pricing", node_ids: ["n1"], graph: dummyGraph, preamble: "",
@@ -662,7 +664,7 @@ describe("endpoint contracts", () => {
     })
 
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
-      preserved_blocks: ["import polars as pl"],
+      base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
     })
     expect(JSON.parse(String(mockFetch.mock.calls[1][1]?.body))).toMatchObject({
       base_revision: "rev-1", preserved_blocks: ["import polars as pl"],

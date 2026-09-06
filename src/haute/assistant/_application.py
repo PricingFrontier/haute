@@ -10,6 +10,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._types import PipelineGraph
 from haute.assistant._ops import (
     AssistantOperationError,
@@ -490,12 +491,22 @@ class PipelineApplicationService:
         source_file: str,
         after: PipelineGraph,
     ) -> Any:
+        # Plan freshness was proven against the assistant snapshot under
+        # ``save_lock``; the save precondition wants the editor protocol's
+        # document revision, so read it now, still under that lock.
+        source = self._source_path(source_file)
+        base_revision = (
+            load_pipeline_editor_document(source, project_root=self._project_root).source_revision
+            if source.is_file()
+            else None
+        )
         return self._save_service().save_graph_transactionally(
             graph=after,
             name=after.pipeline_name or "",
             description=after.pipeline_description or "",
             preamble=after.preamble,
             source_file=source_file,
+            base_revision=base_revision,
         )
 
     def _verify_commit(

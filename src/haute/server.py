@@ -784,6 +784,11 @@ async def _file_watcher() -> None:
                 key = str(p.resolve())
                 if key in self_write_keys or is_self_write(p, consume=True):
                     self_write_keys.add(key)
+                    # The server's own write changed the bytes the last
+                    # broadcast described; forget that fingerprint so an
+                    # external restore of previously broadcast content is
+                    # broadcast again instead of being deduplicated.
+                    _last_broadcast_fp.pop(key, None)
                     logger.debug("file_watcher_skipped_self_write", file=str(p))
                     continue
                 if change_type not in (Change.modified, Change.added, Change.deleted):

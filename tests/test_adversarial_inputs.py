@@ -89,6 +89,7 @@ class TestEmptyStrings:
         body = {
             "name": "",
             "graph": _minimal_graph_dict(),
+            "base_revision": None,
         }
         resp = client.post("/api/pipeline/save", json=body)
         assert resp.status_code == 400
@@ -232,6 +233,7 @@ class TestNullValues:
         body = {
             "name": None,
             "graph": _minimal_graph_dict(),
+            "base_revision": None,
         }
         resp = client.post("/api/pipeline/save", json=body)
         assert resp.status_code == 422
@@ -382,7 +384,9 @@ class TestUnicodeEdgeCases:
 
         Real failure: Windows filesystem rejects certain Unicode in filenames.
         """
-        req = SavePipelineRequest(name="test_\U0001f680_pipeline", graph=Graph())
+        req = SavePipelineRequest(
+            name="test_\U0001f680_pipeline", graph=Graph(), base_revision=None
+        )
         assert "\U0001f680" in req.name
 
     def test_null_char_in_node_label(self):
@@ -747,7 +751,10 @@ class TestDuplicateKeys:
         server silently saves under 'test'.
         """
         # Manually construct JSON with duplicate keys
-        raw = '{"name": "first", "name": "second", "graph": {"nodes": [], "edges": []}}'
+        raw = (
+            '{"name": "first", "name": "second", '
+            '"graph": {"nodes": [], "edges": []}, "base_revision": null}'
+        )
         resp = client.post(
             "/api/pipeline/save",
             content=raw,
@@ -812,6 +819,7 @@ class TestBinaryDataInStrings:
         body = {
             "name": "test\x00evil",
             "graph": _minimal_graph_dict(),
+            "base_revision": None,
         }
         resp = client.post("/api/pipeline/save", json=body)
         assert resp.status_code == 400
@@ -910,6 +918,7 @@ class TestPathTraversalInPayloads:
             "name": "evil",
             "graph": _minimal_graph_dict(),
             "source_file": "../../etc/passwd",
+            "base_revision": None,
         }
         resp = client.post("/api/pipeline/save", json=body)
         assert resp.status_code == 403
@@ -968,6 +977,7 @@ class TestPathTraversalInPayloads:
             "name": "evil",
             "graph": _minimal_graph_dict(),
             "source_file": "/etc/passwd",
+            "base_revision": None,
         }
         resp = client.post("/api/pipeline/save", json=body)
         assert resp.status_code == 403

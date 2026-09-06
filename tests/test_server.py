@@ -19,6 +19,7 @@ from watchfiles import Change
 from haute._sandbox import set_project_root
 from tests.conftest import (
     build_test_input_snapshot,
+    current_source_revision,
     make_ready_file_input_config,
     write_data_input_config,
 )
@@ -645,6 +646,9 @@ class TestSavePipeline:
                 "description": "Test save",
                 "graph": graph,
                 "source_file": "saved_pipe.py",
+                "base_revision": current_source_revision(
+                    pipeline_dir / "saved_pipe.py", pipeline_dir
+                ),
             },
         )
         assert resp.status_code == 200
@@ -1079,6 +1083,9 @@ class TestGetSubmodel:
                 "description": three_node_graph.get("pipeline_description") or "",
                 "graph": created["graph"],
                 "source_file": "test_pipeline.py",
+                "base_revision": current_source_revision(
+                    pipeline_dir / "test_pipeline.py", pipeline_dir
+                ),
             },
         )
         assert save_resp.status_code == 200
@@ -1224,6 +1231,9 @@ class TestWebSocket:
                     "description": "",
                     "graph": graph,
                     "source_file": "ws_test.py",
+                    "base_revision": current_source_revision(
+                        pipeline_dir / "ws_test.py", pipeline_dir
+                    ),
                 },
             )
             assert resp.status_code == 200
@@ -2271,8 +2281,9 @@ class TestFileWatcher:
 
         self_written = pipeline_dir / "server_saved.py"
         user_edited = pipeline_dir / "test_pipeline.py"
-        self_written.write_text("import haute\n\npipeline = haute.Pipeline('server_saved')\n")
-        mark_self_write(self_written)
+        content = b"import haute\n\npipeline = haute.Pipeline('server_saved')\n"
+        self_written.write_bytes(content)
+        mark_self_write(self_written, content=content)
 
         fake_changes = [
             (Change.modified, str(self_written)),
@@ -2305,6 +2316,369 @@ class TestFileWatcher:
         assert [call["source_file"] for call in broadcast_calls] == [
             "test_pipeline.py",
         ]
+
+    def test_external_write_to_self_written_path_before_flush_is_broadcast(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A path marked for self-write that receives external modifications
+        before flush must broadcast.
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.routes._helpers import mark_self_write
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+        content_x = b"""\
+import haute
+
+pipeline = haute.Pipeline("test_pipeline", description="Pipeline X")
+
+
+@pipeline.polars
+def node_x():
+    pass
+"""
+        pipeline_file.write_bytes(content_x)
+        mark_self_write(pipeline_file, content=content_x)
+
+        content_y = b"""\
+import haute
+
+pipeline = haute.Pipeline("test_pipeline", description="Pipeline Y")
+
+
+@pipeline.polars
+def unique_node_y():
+    pass
+"""
+        pipeline_file.write_bytes(content_y)
+
+        fake_changes = [(Change.modified, str(pipeline_file))]
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert len(broadcast_calls) == 1
+        call = broadcast_calls[0]
+        assert call["source_file"] == "test_pipeline.py"
+        assert call["document"]["pipeline_description"] == "Pipeline Y"
+        assert any(n["authored_id"] == "unique_node_y" for n in call["document"]["nodes"])
+
+    def test_unchanged_self_write_to_same_path_is_suppressed(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A self-written file whose contents match the recorded mark is suppressed."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.routes._helpers import mark_self_write
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+        content_x = b"""\
+import haute
+
+pipeline = haute.Pipeline("test_pipeline", description="Pipeline X")
+
+
+@pipeline.polars
+def node_x():
+    pass
+"""
+        mark_self_write(pipeline_file, content=content_x)
+        pipeline_file.write_bytes(content_x)
+
+        fake_changes = [(Change.modified, str(pipeline_file))]
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert len(broadcast_calls) == 0
+
+    def test_self_delete_is_suppressed_but_external_recreate_is_broadcast(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Self-deletion of a sidecar is suppressed.
+
+        External deletion and recreation broadcast.
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.routes._helpers import mark_self_write
+
+        monkeypatch.chdir(pipeline_dir)
+
+        sidecar = pipeline_dir / "test_pipeline.haute.json"
+        sidecar_content = json.dumps(
+            {"positions": {"source": {"x": 100, "y": 200}, "transform": {"x": 300, "y": 400}}}
+        ).encode("utf-8")
+        sidecar.write_bytes(sidecar_content)
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        def _run_watcher(changes: list[tuple[Change, str]]) -> None:
+            async def _fake_awatch(*dirs, **kw):
+                yield changes
+
+            with (
+                patch("watchfiles.awatch", _fake_awatch),
+                patch("haute.server.broadcast", _capture_broadcast),
+                patch("haute.server._DEBOUNCE_SECONDS", 0),
+            ):
+
+                async def _run() -> None:
+                    await _run_file_watcher_and_drain()
+
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(_run())
+                finally:
+                    loop.close()
+
+        # 1. Unmarked control: delete the sidecar without a marker,
+        # inject Change.deleted, assert one broadcast
+        sidecar.unlink()
+        _run_watcher([(Change.deleted, str(sidecar))])
+        assert len(broadcast_calls) == 1
+        assert broadcast_calls[0]["source_file"] == "test_pipeline.py"
+
+        # 2. Recreate the sidecar, mark mark_self_write(sidecar, deleted=True),
+        # delete it, inject Change.deleted, assert no additional broadcast
+        sidecar.write_bytes(sidecar_content)
+        mark_self_write(sidecar, deleted=True)
+        sidecar.unlink()
+        _run_watcher([(Change.deleted, str(sidecar))])
+        assert len(broadcast_calls) == 1
+
+        # 3. Recreate it externally (no marker), inject Change.added,
+        # assert one more broadcast
+        sidecar.write_bytes(sidecar_content)
+        _run_watcher([(Change.added, str(sidecar))])
+        assert len(broadcast_calls) == 2
+        assert broadcast_calls[1]["source_file"] == "test_pipeline.py"
+
+    def test_external_restore_of_previously_broadcast_content_is_broadcast_after_a_self_write(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Restoring previously-broadcast content after a self-write triggers broadcast."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.routes._helpers import mark_self_write
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+
+        content_a = b"""\
+import haute
+
+pipeline = haute.Pipeline("test_pipeline", description="Pipeline A")
+
+
+@pipeline.polars
+def node_a():
+    pass
+"""
+        content_b = b"""\
+import haute
+
+pipeline = haute.Pipeline("test_pipeline", description="Pipeline B")
+
+
+@pipeline.polars
+def node_b():
+    pass
+"""
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        async def _fake_awatch(*dirs, **kw):
+            # Batch 1: external write of valid pipeline A (no marker) -> expect a broadcast
+            pipeline_file.write_bytes(content_a)
+            yield [(Change.modified, str(pipeline_file))]
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert len(broadcast_calls) == 1
+
+            # Batch 2: server writes valid pipeline B and marks with content=
+            # B's bytes before event -> expect no new broadcast
+            pipeline_file.write_bytes(content_b)
+            mark_self_write(pipeline_file, content=content_b)
+            yield [(Change.modified, str(pipeline_file))]
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert len(broadcast_calls) == 1
+
+            # Batch 3: external restore of A's exact bytes (no marker) ->
+            # expect a broadcast whose document reflects A
+            pipeline_file.write_bytes(content_a)
+            yield [(Change.modified, str(pipeline_file))]
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert len(broadcast_calls) == 2
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert len(broadcast_calls) == 2
+        assert broadcast_calls[0]["document"]["pipeline_description"] == "Pipeline A"
+        assert any(n["authored_id"] == "node_a" for n in broadcast_calls[0]["document"]["nodes"])
+        assert broadcast_calls[1]["document"]["pipeline_description"] == "Pipeline A"
+        assert any(n["authored_id"] == "node_a" for n in broadcast_calls[1]["document"]["nodes"])
+
+    def test_unrelated_external_edit_in_same_batch_is_broadcast_with_its_content(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """In a batch containing both a self-write and an external edit,
+        only the external edit broadcasts.
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.routes._helpers import mark_self_write
+
+        monkeypatch.chdir(pipeline_dir)
+
+        self_written = pipeline_dir / "server_saved.py"
+        user_edited = pipeline_dir / "test_pipeline.py"
+
+        server_content = b"import haute\n\npipeline = haute.Pipeline('server_saved')\n"
+        self_written.write_bytes(server_content)
+        mark_self_write(self_written, content=server_content)
+
+        user_content = b"""\
+import haute
+
+pipeline = haute.Pipeline("test_pipeline", description="External User Edit")
+
+
+@pipeline.polars
+def distinctive_node():
+    pass
+"""
+        user_edited.write_bytes(user_content)
+
+        fake_changes = [
+            (Change.modified, str(self_written)),
+            (Change.modified, str(user_edited)),
+        ]
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert len(broadcast_calls) == 1
+        call = broadcast_calls[0]
+        assert call["source_file"] == "test_pipeline.py"
+        assert (
+            isinstance(call.get("document_fingerprint"), str)
+            and len(call["document_fingerprint"]) > 0
+        )
+        assert call["document"]["pipeline_description"] == "External User Edit"
+        assert any(n["authored_id"] == "distinctive_node" for n in call["document"]["nodes"])
 
     def test_direct_non_discovered_python_files_are_not_parsed_or_broadcast(
         self,
@@ -4659,6 +5033,9 @@ class TestGetSubmodelSidecarPositions:
                 "description": three_node_graph.get("pipeline_description") or "",
                 "graph": created["graph"],
                 "source_file": "test_pipeline.py",
+                "base_revision": current_source_revision(
+                    pipeline_dir / "test_pipeline.py", pipeline_dir
+                ),
             },
         )
         assert save_resp.status_code == 200

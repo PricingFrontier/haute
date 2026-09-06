@@ -490,14 +490,14 @@ class TestWriterSelfWriteCallback:
     """Tests for the mark_self_write callback wiring."""
 
     def test_mark_self_write_called_with_target_path(self, tmp_path: Path) -> None:
-        """Callback is invoked exactly once with the target path."""
+        """Callback is invoked exactly once with the target path and committed payload."""
         target = tmp_path / "pipeline.py"
         mark = MagicMock()
 
         with Writer(target, mark_self_write=mark) as w:
             w.write_text("content")
 
-        mark.assert_called_once_with(target)
+        mark.assert_called_once_with(target, b"content")
 
     def test_mark_self_write_called_before_rename(self, tmp_path: Path) -> None:
         """Callback fires BEFORE the commit — the target does not yet show
@@ -513,17 +513,19 @@ class TestWriterSelfWriteCallback:
 
         observed_at_callback: dict[str, object] = {}
 
-        def _callback(p: Path) -> None:
+        def _callback(p: Path, payload: bytes) -> None:
             # At the moment this callback runs, the rename must not yet
             # have been executed. So the target on disk still shows the
             # old content.
             observed_at_callback["path"] = p
+            observed_at_callback["payload"] = payload
             observed_at_callback["content_at_callback"] = p.read_text(encoding="utf-8")
 
         with Writer(target, mark_self_write=_callback) as w:
             w.write_text("AFTER")
 
         assert observed_at_callback["path"] == target
+        assert observed_at_callback["payload"] == b"AFTER"
         # Ordering invariant: when the callback fired, the new content
         # was not yet visible through the target path.
         assert observed_at_callback["content_at_callback"] == "BEFORE"

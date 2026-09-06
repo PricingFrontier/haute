@@ -20,8 +20,9 @@ handlers see the real cause.
 
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -30,6 +31,7 @@ from fastapi import HTTPException
 from haute._api_input_schema import is_json_api_input_path
 from haute._file_ops import Writer, atomic_write_bytes
 from haute._logging import get_logger
+from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._submodel_paths import (
     MalformedSubmodelPathError,
     SubmodelPathOutsideProjectError,
@@ -55,6 +57,32 @@ from haute.schemas import SavePipelineRequest, SavePipelineResponse
 
 logger = get_logger(component="server.pipeline.save")
 
+
+class StaleDocumentRevisionError(Exception):
+    """The submitted ``base_revision`` does not match the on-disk document.
+
+    Raised before any artifact is written so the newer on-disk generation
+    survives untouched; the route reports it as a ``409`` conflict.
+    """
+
+    code = "stale_document_revision"
+
+    def __init__(
+        self,
+        *,
+        expected_revision: str | None,
+        provided_revision: str | None,
+        message: str | None = None,
+    ) -> None:
+        self.expected_revision = expected_revision
+        self.provided_revision = provided_revision
+        super().__init__(
+            message
+            or "The pipeline changed on disk after this document was loaded. "
+            "Reload it before saving."
+        )
+
+
 # Singleton node types: at most one of each is allowed per pipeline.
 _SINGLETON_NODE_TYPES: list[tuple[NodeType, str]] = [
     (NodeType.API_INPUT, "API Input"),
@@ -76,6 +104,10 @@ class _TouchedFile(NamedTuple):
 
     target: Path
     previous_bytes: bytes | None
+    # sha256 of the bytes this transaction committed, when the writer recorded it.
+    written_digest: str | None = None
+    # True for a staged delete: rollback restores only while the path is still absent.
+    deleted: bool = False
 
 
 class _ManagedChildSidecar(NamedTuple):
@@ -93,14 +125,21 @@ class _DefinitionFile(NamedTuple):
     definition_id: str
 
 
-def _mark_self_write_cb(_path: Path) -> None:
+def _artifact_digest(path: Path) -> str | None:
+    """sha256 of *path*'s bytes, or ``None`` when it does not exist as a file."""
+    if not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _mark_self_write_cb(path: Path, payload: bytes) -> None:
     """Writer callback — signals the file-watcher for each rename.
 
-    Writer passes the path it is about to rename; our self-write tracker
-    records that path, so the watcher can skip the exact event without
-    relying on the total save duration.
+    Writer passes the path it is about to rename and the exact bytes it
+    commits; the self-write tracker records that content identity, so the
+    watcher skips the event only while the file still holds those bytes.
     """
-    mark_self_write(_path)
+    mark_self_write(path, content=payload)
 
 
 def _stage_artifact_write_bytes(
@@ -110,7 +149,13 @@ def _stage_artifact_write_bytes(
 ) -> None:
     """Write one artifact atomically while recording exact rollback state."""
     previous_bytes = out_path.read_bytes() if out_path.exists() else None
-    touched.append(_TouchedFile(target=out_path, previous_bytes=previous_bytes))
+    touched.append(
+        _TouchedFile(
+            target=out_path,
+            previous_bytes=previous_bytes,
+            written_digest=hashlib.sha256(payload).hexdigest(),
+        )
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with Writer(out_path, mark_self_write=_mark_self_write_cb) as writer:
         writer.write_bytes(payload)
@@ -122,8 +167,8 @@ def _stage_artifact_delete(target: Path, touched: list[_TouchedFile]) -> None:
         return
     if not target.is_file():
         raise HTTPException(status_code=400, detail="Artifact delete target is not a file.")
-    touched.append(_TouchedFile(target=target, previous_bytes=target.read_bytes()))
-    mark_self_write(target)
+    touched.append(_TouchedFile(target=target, previous_bytes=target.read_bytes(), deleted=True))
+    mark_self_write(target, deleted=True)
     target.unlink()
 
 
@@ -133,11 +178,23 @@ def _rollback_artifacts(touched: list[_TouchedFile]) -> list[Path]:
     for entry in reversed(touched):
         target = entry.target
         try:
-            mark_self_write(target)
+            current = _artifact_digest(target)
+            if entry.deleted and current is not None:
+                # A staged delete whose path exists again was recreated by
+                # someone else; do not overwrite it with the old bytes.
+                logger.warning("rollback_skipped_external_change", file=str(target))
+                continue
+            if entry.written_digest is not None and current != entry.written_digest:
+                # An external writer replaced this transaction's bytes; restoring
+                # would destroy that work, so leave the file as it is.
+                logger.warning("rollback_skipped_external_change", file=str(target))
+                continue
             if entry.previous_bytes is None:
+                mark_self_write(target, deleted=True)
                 if target.is_file():
                     target.unlink()
             else:
+                mark_self_write(target, content=entry.previous_bytes)
                 atomic_write_bytes(target, entry.previous_bytes)
         except OSError as exc:
             failed.append(target)
@@ -167,6 +224,77 @@ class SavePipelineService:
         self._pipeline_root = (pipeline_root or project_root).resolve()
         if not self._pipeline_root.is_relative_to(self._root):
             raise ValueError("pipeline_root must resolve inside project_root")
+        self._precondition_identities: dict[str, str | None] | None = None
+        self._identity_roots: tuple[Path, ...] = ()
+
+    def _require_base_revision(self, py_path: Path, base_revision: str | None) -> None:
+        """Fail closed unless the client's base revision matches the on-disk document.
+
+        ``None`` is only valid while the target file does not exist (initial
+        creation). An existing file must be reloaded first: a document that
+        has no ready revision can never be overwritten through this path.
+        """
+        if py_path.is_file():
+            document = load_pipeline_editor_document(py_path, project_root=self._root)
+            expected = document.source_revision
+            if expected is None or expected != base_revision:
+                raise StaleDocumentRevisionError(
+                    expected_revision=expected,
+                    provided_revision=base_revision,
+                )
+        elif base_revision is not None:
+            raise StaleDocumentRevisionError(
+                expected_revision=None,
+                provided_revision=base_revision,
+            )
+        self._precondition_identities = self._capture_artifact_identities(py_path)
+
+    def _capture_artifact_identities(self, py_path: Path) -> dict[str, str | None]:
+        """Digest every owned artifact as the precondition observes it.
+
+        Covers the parent source and its sidecar, every module and module
+        sidecar under ``modules/``, and every JSON config under ``config/``
+        beneath the pipeline root. A missing parent file is recorded as
+        ``None``; anything that later appears under the covered directories
+        also counts as drift.
+        """
+        modules_dir = self._pipeline_root / "modules"
+        config_dir = self._pipeline_root / "config"
+        self._identity_roots = (modules_dir.resolve(), config_dir.resolve())
+        candidates = [py_path, py_path.with_suffix(".haute.json")]
+        if modules_dir.is_dir():
+            candidates.extend(sorted(modules_dir.rglob("*.py")))
+            candidates.extend(sorted(modules_dir.rglob("*.haute.json")))
+        if config_dir.is_dir():
+            candidates.extend(sorted(config_dir.rglob("*.json")))
+        return {str(path.resolve()): _artifact_digest(path) for path in candidates}
+
+    def _require_artifact_identity(self, target: Path) -> None:
+        """Stop the transaction if *target* drifted since the precondition.
+
+        Only artifacts the precondition could observe are governed: the two
+        parent files and anything under the modules and config directories.
+        """
+        identities = self._precondition_identities
+        if identities is None:
+            return
+        resolved = target.resolve()
+        key = str(resolved)
+        if key in identities:
+            expected = identities[key]
+        elif any(resolved.is_relative_to(root) for root in self._identity_roots):
+            expected = None
+        else:
+            return
+        if _artifact_digest(target) != expected:
+            raise StaleDocumentRevisionError(
+                expected_revision=None,
+                provided_revision=None,
+                message=(
+                    "The pipeline changed on disk while this save was committing "
+                    f"({target.name}). Reload it before saving."
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -189,6 +317,7 @@ class SavePipelineService:
 
         warnings = self.validate_graph(graph, source_file=body.source_file)
         py_path = self._resolve_source_file(body.source_file)
+        self._require_base_revision(py_path, body.base_revision)
         derived_new_files, derived_delete_files = self._derive_definition_file_lifecycle(
             parent_path=py_path,
             graph=graph,
@@ -225,7 +354,14 @@ class SavePipelineService:
             self._write_config_files(graph, touched)
             self._mirror_api_input_caches(graph)
             warnings.extend(
-                self._write_sidecar(py_path, graph, body.sources, body.active_source, touched)
+                self._write_sidecar(
+                    py_path,
+                    graph,
+                    body.sources,
+                    body.active_source,
+                    touched,
+                    identity_check=self._require_artifact_identity,
+                )
             )
             warnings.extend(
                 self._write_managed_submodel_sidecars(
@@ -373,6 +509,7 @@ class SavePipelineService:
         description: str,
         preamble: str | None,
         source_file: str,
+        base_revision: str | None,
     ) -> SavePipelineResponse:
         """Save an already-mutated graph through the normal save transaction.
 
@@ -394,6 +531,7 @@ class SavePipelineService:
                 sources=graph.sources,
                 active_source=graph.active_source,
                 preserved_blocks=graph.preserved_blocks,
+                base_revision=base_revision,
             ),
         )
 
@@ -1119,10 +1257,12 @@ class SavePipelineService:
         rename so the file-watcher sees a coherent self-write event for
         every file, not just the last one of a long save.
         """
+        self._require_artifact_identity(out_path)
         _stage_artifact_write_bytes(out_path, code.encode("utf-8"), touched)
 
     def _stage_delete(self, target: Path, touched: list[_TouchedFile]) -> None:
         """Delete one file after recording enough state to restore it."""
+        self._require_artifact_identity(target)
         _stage_artifact_delete(target, touched)
 
     # ------------------------------------------------------------------
@@ -1616,6 +1756,7 @@ class SavePipelineService:
         touched: list[_TouchedFile] | None = None,
         *,
         managed_parent: str | None = None,
+        identity_check: Callable[[Path], None] | None = None,
     ) -> list[str]:
         """Persist node positions and source state to ``.haute.json``.
 
@@ -1630,11 +1771,17 @@ class SavePipelineService:
         if touched is not None:
             # Snapshot for rollback: the transactional save needs to
             # restore the previous sidecar bytes if a later step fails.
+            if identity_check is not None:
+                identity_check(sidecar_path)
             previous_bytes: bytes | None = None
             if sidecar_path.exists():
                 previous_bytes = sidecar_path.read_bytes()
             touched.append(_TouchedFile(target=sidecar_path, previous_bytes=previous_bytes))
-        return save_sidecar(py_path, graph, managed_parent=managed_parent)
+        warnings = save_sidecar(py_path, graph, managed_parent=managed_parent)
+        if touched is not None:
+            # Record the committed identity so rollback restores only our bytes.
+            touched[-1] = touched[-1]._replace(written_digest=_artifact_digest(sidecar_path))
+        return warnings
 
     def _write_managed_submodel_sidecars(
         self,
@@ -1655,6 +1802,7 @@ class SavePipelineService:
                     child.graph.active_source,
                     touched,
                     managed_parent=parent_relative,
+                    identity_check=self._require_artifact_identity,
                 )
             )
         return warnings

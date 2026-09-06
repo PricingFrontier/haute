@@ -99,6 +99,15 @@ graph state. `parse_pipeline_to_graph` computes it from a versioned canonical
 graph/file manifest, and the revision algorithm excludes that field from its
 own input. Mutation preconditions and committed response revisions use a
 non-empty, whitespace-free `RevisionToken`.
+Every persisted-document mutation names the revision it was based on:
+submodel create/dissolve send `base_revision`, recovery preview sends
+`source_revision`, and `POST /api/pipeline/save` sends `base_revision` (`null`
+only when the client believes the target file does not exist). The save
+service compares it with the on-disk document's `source_revision` before any
+write and rejects a mismatch with a `409` whose flat `detail` string begins
+with the stable code `stale_document_revision:` (the expected and provided
+revisions go to the server log, keeping the standard error shape); there is
+no unconditional overwrite and no server-side retry.
 
 **Pipeline editor recovery models** (`schemas.py`) all use `extra="forbid"` and schema
 version 1. `PipelineEditorDocument` carries `document_kind`, `schema_version`,
@@ -173,7 +182,7 @@ when a path/query/body fails model validation):
 | `GET /api/pipeline` | No body | First discovered authored `PipelineEditorDocument`, irrespective of load status; a new empty ready document only when no authored document exists. Readable authored errors remain HTTP 200. |
 | `GET /api/pipeline/{name}` | Pipeline name path parameter | Named `PipelineEditorDocument`; a readable non-ready document is found by recovered metadata or file stem and remains HTTP 200. |
 | `POST /api/pipeline/editor-identities` | `EditorIdentitiesRequest {nodes:[{node_id,label,node_type,source_handles,source_handle_labels}]}` with exact public-port-label coverage for submodel and drilled Input handles | `EditorIdentitiesResponse {identities:[{node_id,function_name,config_reference,default_input_name,source_handle_input_names}]}` in exact request order; public labels are sanitised server-side and the operation has no project-state side effects. |
-| `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live"}` | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, warnings=[], git_sha=null}` |
+| `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live", base_revision}`; `base_revision` is a required `RevisionToken | null` | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, warnings=[], git_sha=null}`, or `409` with a flat `detail` beginning `stale_document_revision:` when `base_revision` does not equal the on-disk `source_revision` (`null` versus an existing file, or a token versus a missing file, are mismatches) |
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
 | `POST /api/pipeline/preview` | `PreviewNodeRequest {graph, node_id, row_limit=100 (1..10000), source="live", requested_preview_columns=null (non-empty when present), streaming_chunk_size=null (1..10000000, bool rejected), port_label=null}`; `node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child | `PreviewNodeResponse`, extending `NodeResult` with `node_id`, timings/memory, per-node schemas/statuses, and optional execution metrics |
 | `POST /api/pipeline/trace` | `TraceRequest {graph, row_index=0 (>=0), target_node_id=null, column=null, row_limit=100 (1..10000), source="live", row_values=null, streaming_chunk_size=null}`; a non-null `target_node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child | Explicit JSON `TraceResponse {status, trace}`. `trace` includes successful steps, typed omissions, correlation/waterfall evidence, UTC `generated_at`, source identity, and `execution_origin: fresh_execution|preview_cache|trace_cache`; the payload is serialized and `TraceResponse`-validated in the worker, then the returned `JSONResponse` skips a second event-loop validation pass |
@@ -290,8 +299,13 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
 1. Snapshots and clears `pending_changes` (so new events queue independently of the batch
    being processed).
 2. Bails out entirely if `watcher_is_paused()` (a haute-initiated git op holds the pause).
-3. Consumes self-write markers (`is_self_write(path, consume=True)`) — matched paths are
-   skipped and never reach the parse step.
+3. Consumes self-write markers (`is_self_write(path, consume=True)`) by content identity:
+   a marker matches only while the file's current bytes (or its absence, for a deletion
+   marker) equal what the server committed. Matched paths are skipped and never reach the
+   parse step; a marker whose content no longer matches is discarded and the event is
+   processed as an external change. A consumed marker also clears the path's
+   last-broadcast fingerprint, so an external restore of previously broadcast content is
+   broadcast rather than deduplicated.
 4. Classifies each remaining `.py`/`.json` change: `config/*.json` → re-parse every
    discovered pipeline; `modules/*.py` → re-parse only pipelines importing that module stem
    (case-insensitively, via `_module_dep_key`); any other `.py` (excluding `utility/` and
@@ -324,6 +338,17 @@ concurrent plain saves, but does not coordinate another worker process):
    second singleton, and creating another occurrence of a definition that contains one counts
    as another executable singleton.
 2. Resolve and validate `source_file` against the active pipeline root.
+   Then require `base_revision` to equal the on-disk document's `source_revision`
+   (`null` only when the target file does not exist); a mismatch raises
+   `StaleDocumentRevisionError`, which the route returns as a `409` whose flat `detail`
+   begins with `stale_document_revision:` before any write, cache mirror, or ledger commit.
+   The precondition also digests every owned artifact it can observe (the parent source
+   and sidecar, everything under `modules/` and `config/` beneath the pipeline root);
+   every staged write or delete in steps 5, 7, 9, and 10 first re-checks that the
+   artifact's current bytes, or absence, still equal that observation and raises the same
+   conflict before the artifact changes. An application lock cannot make the multi-file
+   commit atomic against external writers, so this is the guarantee: no owned artifact is
+   replaced after it moved, and the window is the single atomic rename of each file.
    Before the remaining preflights, parse the current persisted parent and
    diff its canonical definition registry against the submitted graph. Every
    added definition path becomes both a no-clobber target and a
@@ -360,7 +385,10 @@ concurrent plain saves, but does not coordinate another worker process):
     same save just wrote).
 11. Reparse the fully staged document, require its editor recovery state to be
     `ready`, and return that document's raw-artifact `source_revision`. On any propagated exception in steps 5–11, roll back every staged write (restore
-   snapshotted bytes, delete newly-created files) and re-raise unchanged.
+   snapshotted bytes, delete newly-created files) and re-raise unchanged. Rollback restores
+   an artifact only while it still holds this transaction's bytes (or is still absent, for a
+   staged delete); an external edit that landed mid-transaction is left in place and logged
+   as `rollback_skipped_external_change`.
 12. Only after every write commits: delete stale config files (the diff from step 4, minus
     what this save just wrote or protects), invalidate the pipeline index, and — if the
     project has a recorded git working branch — capture the save in the git ledger
@@ -469,11 +497,16 @@ generation; child code cannot write the `JobStore` or parent LRU caches.
 - **Windows `.js` MIME type.** The Windows registry commonly maps `.js` to `text/plain`,
   which browsers reject as a script; `mimetypes.add_type` is patched at module import, before
   any `StaticFiles`/`FileResponse` construction.
-- **Self-write cooldown vs. per-path tracking.** `is_self_write()` supports two modes: a
+- **Self-write cooldown vs. per-path content tracking.** `is_self_write()` supports two modes: a
   bare cooldown check (`now - _last_self_write < 2.0s`) for callers with no specific path, and
-  an exact per-path match (with `consume=True` removing the entry on match) for the file
-  watcher's per-event check. Per-path entries are pruned after 60 seconds of retention so a
-  crashed or never-consumed marker cannot leak memory indefinitely.
+  a per-path content match for the file watcher's per-event check. A path marker records the
+  SHA-256 of the bytes the server committed, or a deletion flag; it matches only while the
+  current file bytes (or absence) still equal that identity, and `consume=True` removes the
+  entry on match. A marker whose identity no longer matches is discarded so a later external
+  write to the same path is broadcast. Path-only marking is not supported: every `Writer`
+  callback, staged delete, and rollback write supplies the committed content. Per-path entries
+  are pruned after 60 seconds of retention so a crashed or never-consumed marker cannot leak
+  memory indefinitely.
 - **Watcher pause is reentrant and watchdog-bounded.** `pause_watcher()` depth-counts nested
   git operations sharing one pause; the outermost call sets a hard deadline (default 60s) that
   only extends, never shrinks, on a nested call. `watcher_is_paused()` force-resumes (returns
@@ -616,7 +649,10 @@ for route-level tests, and direct unit tests for the pure-function modules.
   middleware behaviour, static SPA serving (including the partial-build fail-fast case), the
   `/ws/sync` protocol (resync requests, fingerprint short-circuit, rejection reasons), and
   the file watcher end-to-end (debounce, module-dependency re-parse, config-triggered
-  full-reparse, self-write suppression).
+  full-reparse, content-identity self-write suppression: an external write to a
+  server-written path before the coalesced flush is broadcast, an unchanged self-write
+  and a self-deletion are suppressed, an external recreate and an unrelated same-batch
+  edit are broadcast with their actual document content).
 - **`test_pipeline_recovery.py`** — editor-document DTO separation, degraded/source-only
   recovery, authored-structure conservation, bounded diagnostics, raw-artifact revision safety,
   mutation fences, and server-owned ready-closure preview admission.
@@ -635,7 +671,15 @@ for route-level tests, and direct unit tests for the pure-function modules.
 - **`test_route_save_pipeline.py`** / **`test_save_pipeline_integrity.py`** — `SavePipelineService`
   unit and integration tests: singleton/name-collision validation, transactional rollback on
   a mid-save failure, stale-config diff-based cleanup, casefold-collision guards, reserved
-  Windows filenames.
+  Windows filenames. `TestStaleSavePrecondition` drives the `base_revision` precondition
+  against real disk state through the route: stale, fresh, two clients from one base in
+  both arrival orders, config-only external edit, creation with and without a token, and a
+  vanished target, asserting the `409` detail and byte-exact preservation of the newer
+  artifacts. `test_partial_failure.py::TestStaleSaveUnderLock` races two edits from one
+  base through the real `save_lock` and proves exactly one wins on disk.
+- **`test_route_helpers.py::TestSelfWriteTracking`** — content-identity markers: match,
+  mismatch discards the marker, deletion markers, a failed write that never landed, and
+  the exactly-one-of-content-or-deleted argument contract.
 - **`test_pipeline_route_supersession.py`** / **`test_request_supersession.py`** — supersession
   correctness under rapid repeated requests, including that a superseded waiter never runs
   its worker, cancellation propagates to the execution token, and a timeout carrying a

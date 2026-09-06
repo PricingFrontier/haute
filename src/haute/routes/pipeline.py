@@ -124,7 +124,7 @@ from haute.routes._isolated_worker_async import (
     run_cancellable_worker_transaction,
 )
 from haute.routes._runtime_path_errors import runtime_path_http_exception
-from haute.routes._save_pipeline import SavePipelineService
+from haute.routes._save_pipeline import SavePipelineService, StaleDocumentRevisionError
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
 from haute.routes._timeouts import (
     BlockingWorkTimeoutError,
@@ -791,6 +791,16 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
                 pipeline_root=pipeline_dir(),
             )
             return await run_in_threadpool(svc.save, body)
+    except StaleDocumentRevisionError as exc:
+        # The client's document is behind the disk; nothing was written.
+        # The detail keeps the repository's flat-string error shape and
+        # leads with a stable code the client can match on.
+        logger.warning(
+            "save_pipeline_stale_revision",
+            expected_revision=exc.expected_revision,
+            provided_revision=exc.provided_revision,
+        )
+        raise HTTPException(status_code=409, detail=f"{exc.code}: {exc}") from None
     except ConfigError as exc:
         logger.warning("save_pipeline_config_invalid", error=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from None

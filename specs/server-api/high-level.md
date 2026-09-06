@@ -318,11 +318,17 @@ become diagnostic-unavailable rather than a fabricated success.
   case-insensitive preflight returning `409` before any write.
 - **Self-write tracking instead of debounce-only.** The file watcher's 300ms debounce alone
   cannot distinguish a server-originated write from a user's IDE edit that happens to land in
-  the same window. Every write the server makes is registered by absolute path just before
-  the rename; the watcher consumes (and clears) that registration on the matching event. This
-  closes the feedback loop precisely, rather than by a timing heuristic that could either miss
-  a genuine external edit (window too wide) or re-broadcast the server's own write (window too
-  narrow).
+  the same window. Every write the server makes is registered by absolute path and committed content just
+  before the rename (deletions register a deletion marker); the watcher consumes (and clears)
+  that registration only while the file still holds the registered content, so an external
+  write that lands on the same path before the flush is broadcast rather than mistaken for
+  the server's own write. This closes the feedback loop precisely, rather than by a timing
+  heuristic that could either miss a genuine external edit (window too wide) or re-broadcast
+  the server's own write (window too narrow).
+- **Saves name the revision they were based on.** A save prepared against an older on-disk
+  document is rejected with a `409` `stale_document_revision` conflict before any artifact
+  changes; the client keeps its unsaved work and must reload before saving again. There is
+  no unconditional overwrite and no automatic retry.
 - **Path allowlisting at multiple layers.** `validate_safe_path` guards ad-hoc file/schema
   reads; `SavePipelineService._validate_output_rel_path` separately allowlists *codegen
   output* paths (only the declared main file or `modules/<name>.py`, no traversal, no

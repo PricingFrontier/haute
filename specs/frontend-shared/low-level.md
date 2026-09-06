@@ -449,6 +449,15 @@ same Vitest config.
   (asserts the component
   itself never re-renders its own subtree — it exists purely to host the
   hook's side effects).
+- **Save precondition**: `frontend/src/hooks/__tests__/usePipelineAPI.test.ts` proves the
+  save payload carries the loaded `source_revision` as `base_revision` (`null` for a
+  never-persisted document) and that a `409` whose detail starts with
+  `stale_document_revision` leaves the graph dirty, marks the document unsynchronised, sets
+  the sync banner, toasts the conflict, and keeps the request-facing revision ref unchanged,
+  while any other `409` still surfaces the generic failure toast.
+  `frontend/e2e/save-conflict.spec.ts` runs the two-page conflict against real routes: the
+  stale save is rejected, the local edit survives until an explicit reload, and a fresh save
+  succeeds afterwards.
 - **Generic hooks**: `frontend/src/__tests__/hooks/useClickOutside.test.ts` + `frontend/src/__tests__/hooks/useClickOutside.gaps.test.tsx`,
   `frontend/src/__tests__/hooks/useDragResize.test.ts`, `frontend/src/__tests__/hooks/useJobPolling.test.ts` (root-level, generic
   poller mechanics) plus the colocated dedup/progress-throttle variants,
@@ -648,6 +657,11 @@ genuinely non-mutable document blames unresolved load diagnostics. `systemFailur
 authored recovery diagnostics: setting it also marks the graph unsynchronised, while any newly
 validated document atomically clears it. Reset leaves the editor without authority until a new
 validated document arrives.
+`usePipelineAPI.handleSave` sends `sourceRevisionRef.current` as `base_revision`; the ref holds
+an empty string for a document that has never been persisted, which is sent as `null`. On a
+`409` whose `detail` string begins with
+`stale_document_revision:` it calls `setGraphSynchronized(false)`, sets the sync banner, toasts
+the conflict, leaves the saved baseline untouched, and returns `false`.
 
 `useWebSocketSync` validates version-1 editor-document frames with that same parser. It calls the
 document-status transition before considering graph dirtiness; validated document nodes always

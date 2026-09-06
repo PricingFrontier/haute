@@ -45,7 +45,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
-from tests.conftest import make_file_input_config
+from tests.conftest import current_source_revision, make_file_input_config
 
 
 def _submodel_occurrence(definition_id: str) -> GraphNode:
@@ -169,9 +169,14 @@ class TestWatcherLongSaveRace:
         mark_times: list[float] = []
         original_mark = helpers.mark_self_write
 
-        def tracked_mark(path: Path | None = None) -> None:
+        def tracked_mark(
+            path: Path | None = None,
+            *,
+            content: bytes | None = None,
+            deleted: bool = False,
+        ) -> None:
             mark_times.append(time.monotonic())
-            original_mark(path)
+            original_mark(path, content=content, deleted=deleted)
 
         monkeypatch.setattr(helpers, "mark_self_write", tracked_mark)
         monkeypatch.setattr("haute.routes._save_pipeline.mark_self_write", tracked_mark)
@@ -195,6 +200,7 @@ class TestWatcherLongSaveRace:
             description="",
             graph=graph,
             source_file="slow_save.py",
+            base_revision=current_source_revision(project_root / "slow_save.py", project_root),
         )
 
         # Patch the codegen to simulate slow generation (>2 s) so any
@@ -274,6 +280,7 @@ class TestWatcherLongSaveRace:
             description="",
             graph=graph,
             source_file="main.py",
+            base_revision=current_source_revision(project_root / "main.py", project_root),
         )
 
         atomic_calls: list[Path] = []
@@ -426,6 +433,7 @@ class TestGraphToCodeMultiPathTraversal:
             graph=graph,
             preamble="",
             source_file="main.py",
+            base_revision=current_source_revision(project_root / "main.py", project_root),
         )
 
         # Patch codegen to return the malicious path
@@ -477,6 +485,7 @@ class TestGraphToCodeMultiPathTraversal:
             graph=graph,
             preamble="",
             source_file="main.py",
+            base_revision=current_source_revision(project_root / "main.py", project_root),
         )
 
         good_files = {
@@ -529,6 +538,7 @@ class TestGraphToCodeMultiPathTraversal:
             graph=graph,
             preamble="",
             source_file="main.py",
+            base_revision=current_source_revision(project_root / "main.py", project_root),
         )
         bad_files = {
             "main.py": "import haute\npipeline = haute.Pipeline('main')\n",
@@ -583,7 +593,13 @@ class TestSaveServiceTransaction:
     orphan earlier writes.
     """
 
-    def _make_request(self, source: str, name: str = "main") -> object:
+    def _make_request(
+        self,
+        source: str,
+        name: str = "main",
+        *,
+        base_revision: str | None = None,
+    ) -> object:
         from haute._types import GraphNode, NodeData, PipelineGraph
         from haute.schemas import SavePipelineRequest
 
@@ -607,6 +623,7 @@ class TestSaveServiceTransaction:
             graph=graph,
             preamble="",
             source_file=source,
+            base_revision=base_revision,
         )
 
     def test_sidecar_failure_rolls_back_py_file(self, project_root: Path) -> None:
@@ -628,7 +645,10 @@ class TestSaveServiceTransaction:
         )
         py_path.write_text(original_contents)
 
-        req = self._make_request("pipeline.py")
+        req = self._make_request(
+            "pipeline.py",
+            base_revision=current_source_revision(py_path, project_root),
+        )
 
         with patch(
             "haute.routes._save_pipeline.save_sidecar",
@@ -652,7 +672,10 @@ class TestSaveServiceTransaction:
         py_path = project_root / "pipeline.py"
         py_path.write_text("# ORIGINAL\n")
 
-        req = self._make_request("pipeline.py")
+        req = self._make_request(
+            "pipeline.py",
+            base_revision=current_source_revision(py_path, project_root),
+        )
 
         with patch(
             "haute.routes._save_pipeline.SavePipelineService._write_config_files",
@@ -706,6 +729,7 @@ class TestSaveServiceTransaction:
             description="",
             graph=graph,
             source_file="pipeline.py",
+            base_revision=current_source_revision(py_path, project_root),
         )
 
         # Patch codegen to return a 2-file dict, then make sidecar fail
@@ -762,12 +786,20 @@ class TestRenameCollisionPositionWarning:
     of silently losing the node's graph location.
     """
 
-    def _payload(self, graph: dict, source: str = "collision.py", name: str = "main") -> dict:
+    def _payload(
+        self,
+        graph: dict,
+        source: str = "collision.py",
+        name: str = "main",
+        *,
+        base_revision: str | None = None,
+    ) -> dict:
         return {
             "name": name,
             "description": "",
             "graph": graph,
             "source_file": source,
+            "base_revision": base_revision,
         }
 
     def test_collision_rename_returns_warning_in_response(
@@ -832,7 +864,14 @@ class TestRenameCollisionPositionWarning:
             "edges": [],
         }
 
-        resp = client.post("/api/pipeline/save", json=self._payload(graph, "collision.py"))
+        resp = client.post(
+            "/api/pipeline/save",
+            json=self._payload(
+                graph,
+                "collision.py",
+                base_revision=current_source_revision(py, project_root),
+            ),
+        )
         # Two outcomes are acceptable:
         # 1) 400 with a clear collision message (current behavior preserved).
         # 2) 200 with ``warnings`` in the response payload explaining that
@@ -1079,6 +1118,7 @@ class TestTransactionalWrapperFieldForwarding:
             description=graph.pipeline_description or "",
             preamble=graph.preamble,
             source_file="main.py",
+            base_revision=current_source_revision(py_path, project_root),
         )
 
         saved = py_path.read_text()

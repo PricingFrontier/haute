@@ -21,8 +21,8 @@ from fastapi.testclient import TestClient
 from haute._types import GraphNode, NodeData, PipelineGraph, SubmodelDefinition
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
+from tests.conftest import current_source_revision, make_output_config
 from tests.conftest import make_edge as _make_edge
-from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -447,6 +447,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             description="",
             graph=graph,
             source_file="main.py",
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
         )
         with pytest.raises(HTTPException) as exc_info:
             svc.save(req)
@@ -503,6 +504,7 @@ class TestSaveSimpleGraph:
             source_file="my_pipeline.py",
             sources=["live"],
             active_source="live",
+            base_revision=current_source_revision(tmp_path / "my_pipeline.py", tmp_path),
         )
 
         with patch.object(svc, "_validate_api_inputs_have_schemas"):
@@ -566,6 +568,7 @@ class TestSaveSimpleGraph:
             description="",
             graph=graph,
             source_file="my_pipeline.py",
+            base_revision=current_source_revision(tmp_path / "my_pipeline.py", tmp_path),
         )
 
         with (
@@ -597,6 +600,7 @@ class TestSaveSimpleGraph:
             description="",
             graph=graph,
             source_file="test_pipe.py",
+            base_revision=current_source_revision(tmp_path / "test_pipe.py", tmp_path),
         )
 
         with patch.object(svc, "_validate_api_inputs_have_schemas"):
@@ -624,6 +628,7 @@ class TestSaveSimpleGraph:
             description="",
             graph=graph,
             source_file="broken.py",
+            base_revision=current_source_revision(tmp_path / "broken.py", tmp_path),
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -669,6 +674,7 @@ class TestWriteCodeMultiFile:
             description="",
             graph=graph,
             source_file="main.py",
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
         )
 
         with patch("haute.codegen.graph_to_code_multi", return_value=fake_files):
@@ -689,6 +695,7 @@ class TestWriteCodeMultiFile:
             description="",
             graph=graph,
             source_file="pipe.py",
+            base_revision=current_source_revision(tmp_path / "pipe.py", tmp_path),
         )
         py_path = tmp_path / "pipe.py"
 
@@ -723,6 +730,7 @@ class TestWriteCodeMultiFile:
             description="",
             graph=graph,
             source_file="main.py",
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
         )
 
         with patch("haute.codegen.graph_to_code_multi", return_value=fake_files):
@@ -1069,6 +1077,7 @@ class TestSaveEndpointIntegration:
                 "description": "Integration test",
                 "graph": graph,
                 "source_file": "saved_test.py",
+                "base_revision": current_source_revision(tmp_path / "saved_test.py", tmp_path),
             },
         )
         assert resp.status_code == 200
@@ -1110,6 +1119,7 @@ class TestSaveEndpointIntegration:
                 "description": "",
                 "graph": graph,
                 "source_file": "bad_pipe.py",
+                "base_revision": None,
             },
         )
         assert resp.status_code == 400
@@ -1188,6 +1198,7 @@ class TestSaveEndpointIntegration:
                 "description": "",
                 "graph": graph,
                 "source_file": "unrouted_pipe.py",
+                "base_revision": None,
             },
         )
         assert resp.status_code == 400
@@ -1221,6 +1232,7 @@ class TestSaveEndpointIntegration:
                 "description": "",
                 "graph": graph,
                 "source_file": "",
+                "base_revision": None,
             },
         )
         assert resp.status_code == 400
@@ -1289,6 +1301,7 @@ class TestSaveEndpointIntegration:
                 "description": "",
                 "graph": graph,
                 "source_file": "bad_edge_join.py",
+                "base_revision": current_source_revision(tmp_path / "bad_edge_join.py", tmp_path),
             },
         )
 
@@ -1344,6 +1357,7 @@ class TestSaveEndpointIntegration:
                 "source_file": "main.py",
                 "sources": ["live"],
                 "active_source": "live",
+                "base_revision": current_source_revision(tmp_path / "main.py", tmp_path),
             },
         )
         assert save.status_code == 200, save.text
@@ -1621,6 +1635,7 @@ class TestWriteCodeOptions:
             graph=graph,
             source_file="pipe.py",
             preamble="# Custom preamble\n",
+            base_revision=current_source_revision(tmp_path / "pipe.py", tmp_path),
         )
         py_path = tmp_path / "pipe.py"
 
@@ -1642,6 +1657,7 @@ class TestWriteCodeOptions:
             graph=graph,
             source_file="pipe.py",
             preamble=None,
+            base_revision=current_source_revision(tmp_path / "pipe.py", tmp_path),
         )
         py_path = tmp_path / "pipe.py"
 
@@ -1686,6 +1702,7 @@ class TestSaveWithPipelineRoot:
             description="",
             graph=graph,
             source_file="rating/main.py",
+            base_revision=current_source_revision(rating_root / "main.py", tmp_path),
         )
 
         with patch(
@@ -1735,6 +1752,7 @@ class TestSaveWithPipelineRoot:
             description="",
             graph=graph,
             source_file="other/main.py",
+            base_revision=current_source_revision(other_root / "main.py", tmp_path),
         )
 
         with patch(
@@ -1749,3 +1767,448 @@ class TestSaveWithPipelineRoot:
 
         assert exc_info.value.status_code == 400
         assert "source_file" in exc_info.value.detail
+
+
+# ---------------------------------------------------------------------------
+# Stale Save Preconditions (ENG-T02)
+# ---------------------------------------------------------------------------
+
+
+def _snapshot_files(root: Path) -> dict[str, bytes]:
+    """Capture every file under root excluding __pycache__."""
+    files: dict[str, bytes] = {}
+    for p in root.rglob("*"):
+        if p.is_file() and "__pycache__" not in p.parts:
+            files[p.relative_to(root).as_posix()] = p.read_bytes()
+    return files
+
+
+def _make_graph_payload(extra_node_label: str | None = None) -> dict:
+    """Build a valid graph payload with an optional extra polars node."""
+    nodes = [
+        {
+            "id": "base_node",
+            "type": "pipelineNode",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "base_node",
+                "nodeType": "polars",
+                "config": {"code": ""},
+            },
+        }
+    ]
+    if extra_node_label is not None:
+        nodes.append(
+            {
+                "id": f"node_{extra_node_label}",
+                "type": "pipelineNode",
+                "position": {"x": 100, "y": 0},
+                "data": {
+                    "label": extra_node_label,
+                    "nodeType": "polars",
+                    "config": {"code": ""},
+                },
+            }
+        )
+    return {"nodes": nodes, "edges": []}
+
+
+class TestStaleSavePrecondition:
+    @pytest.fixture()
+    def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+        monkeypatch.chdir(tmp_path)
+        from haute.server import app
+
+        return TestClient(app)
+
+    def test_stale_base_revision_is_rejected_and_newer_bytes_survive(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """A stale base revision is rejected and on-disk files are untouched."""
+        resp0 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "my_pipeline",
+                "description": "Initial",
+                "graph": _make_graph_payload(),
+                "source_file": "my_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp0.status_code == 200
+        r_a = resp0.json()["source_revision"]
+        assert r_a is not None
+
+        py_file = tmp_path / "my_pipeline.py"
+        py_file.write_text(
+            py_file.read_text(encoding="utf-8") + "\n# external edit\n",
+            encoding="utf-8",
+        )
+
+        before = _snapshot_files(tmp_path)
+
+        resp_stale = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "my_pipeline",
+                "description": "Stale edit",
+                "graph": _make_graph_payload("extra"),
+                "source_file": "my_pipeline.py",
+                "base_revision": r_a,
+            },
+        )
+        assert resp_stale.status_code == 409
+        assert resp_stale.json()["detail"].startswith("stale_document_revision:")
+
+        after = _snapshot_files(tmp_path)
+        assert after == before
+
+    def test_fresh_base_revision_saves_and_returns_new_revision(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """Saving with a fresh base revision succeeds and returns an updated revision."""
+        resp1 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "fresh_pipeline",
+                "description": "Initial",
+                "graph": _make_graph_payload(),
+                "source_file": "fresh_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp1.status_code == 200
+        r1 = resp1.json()["source_revision"]
+        assert r1 is not None
+
+        resp2 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "fresh_pipeline",
+                "description": "Updated",
+                "graph": _make_graph_payload("extra"),
+                "source_file": "fresh_pipeline.py",
+                "base_revision": r1,
+            },
+        )
+        assert resp2.status_code == 200
+        r2 = resp2.json()["source_revision"]
+        assert r2 is not None
+        assert r2 != r1
+
+    @pytest.mark.parametrize(
+        ("first_label", "second_label"),
+        [("b", "c"), ("c", "b")],
+    )
+    def test_two_clients_from_same_base_only_first_arrival_saves(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        first_label: str,
+        second_label: str,
+    ) -> None:
+        """When two edits share the same base revision, only the first arrival saves."""
+        resp0 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "shared_pipeline",
+                "description": "Base",
+                "graph": _make_graph_payload(),
+                "source_file": "shared_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp0.status_code == 200
+        r_a = resp0.json()["source_revision"]
+        assert r_a is not None
+
+        resp_first = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "shared_pipeline",
+                "description": f"Edit {first_label}",
+                "graph": _make_graph_payload(first_label),
+                "source_file": "shared_pipeline.py",
+                "base_revision": r_a,
+            },
+        )
+        assert resp_first.status_code == 200
+
+        resp_second = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "shared_pipeline",
+                "description": f"Edit {second_label}",
+                "graph": _make_graph_payload(second_label),
+                "source_file": "shared_pipeline.py",
+                "base_revision": r_a,
+            },
+        )
+        assert resp_second.status_code == 409
+        assert resp_second.json()["detail"].startswith("stale_document_revision:")
+
+        on_disk = (tmp_path / "shared_pipeline.py").read_text(encoding="utf-8")
+        assert f"def {first_label}(" in on_disk
+        assert f"def {second_label}(" not in on_disk
+
+    def test_config_only_external_edit_blocks_stale_save(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """External modification to a node's config sidecar invalidates base revision."""
+        graph = {
+            "nodes": [
+                {
+                    "id": "src",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": _file_input_config("data.parquet"),
+                    },
+                },
+            ],
+            "edges": [],
+        }
+        resp = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "cfg_pipeline",
+                "description": "Config pipeline",
+                "graph": graph,
+                "source_file": "cfg_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp.status_code == 200
+        r_a = resp.json()["source_revision"]
+        assert r_a is not None
+
+        config_file = tmp_path / "config" / "data_input" / "source.json"
+        assert config_file.exists()
+        cfg_data = json.loads(config_file.read_text(encoding="utf-8"))
+        cfg_data["path"] = "modified.parquet"
+        modified_bytes = json.dumps(cfg_data, indent=2).encode("utf-8")
+        config_file.write_bytes(modified_bytes)
+
+        assert current_source_revision(tmp_path / "cfg_pipeline.py", tmp_path) != r_a
+
+        resp_stale = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "cfg_pipeline",
+                "description": "Config pipeline edit",
+                "graph": graph,
+                "source_file": "cfg_pipeline.py",
+                "base_revision": r_a,
+            },
+        )
+        assert resp_stale.status_code == 409
+        assert resp_stale.json()["detail"].startswith("stale_document_revision:")
+        assert config_file.read_bytes() == modified_bytes
+
+    def test_creation_requires_null_base_revision(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """Creating a new file requires base_revision=None; existing requires a token."""
+        resp1 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "creation_pipeline",
+                "description": "Absent with token",
+                "graph": _make_graph_payload(),
+                "source_file": "creation_pipeline.py",
+                "base_revision": "stale_token_12345",
+            },
+        )
+        assert resp1.status_code == 409
+        assert resp1.json()["detail"].startswith("stale_document_revision:")
+
+        resp2 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "creation_pipeline",
+                "description": "Absent with None",
+                "graph": _make_graph_payload(),
+                "source_file": "creation_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp2.status_code == 200
+        assert (tmp_path / "creation_pipeline.py").exists()
+
+        resp3 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "creation_pipeline",
+                "description": "Existing with None",
+                "graph": _make_graph_payload("extra"),
+                "source_file": "creation_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp3.status_code == 409
+        assert resp3.json()["detail"].startswith("stale_document_revision:")
+
+    def test_deleted_target_conflicts_with_old_revision(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """Saving with an old revision against a deleted file is rejected."""
+        resp1 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "deleted_pipeline",
+                "description": "Initial",
+                "graph": _make_graph_payload(),
+                "source_file": "deleted_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp1.status_code == 200
+        old_rev = resp1.json()["source_revision"]
+        assert old_rev is not None
+
+        py_file = tmp_path / "deleted_pipeline.py"
+        assert py_file.exists()
+        py_file.unlink()
+
+        resp2 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "deleted_pipeline",
+                "description": "Save after delete",
+                "graph": _make_graph_payload(),
+                "source_file": "deleted_pipeline.py",
+                "base_revision": old_rev,
+            },
+        )
+        assert resp2.status_code == 409
+        assert resp2.json()["detail"].startswith("stale_document_revision:")
+
+    def test_external_edit_between_precondition_and_first_write_is_rejected(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """External edit between precondition and first write is rejected."""
+        resp0 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "mid_tx_pipeline",
+                "description": "Initial",
+                "graph": _make_graph_payload(),
+                "source_file": "mid_tx_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp0.status_code == 200
+        rev_r = resp0.json()["source_revision"]
+        assert rev_r is not None
+
+        py_file = tmp_path / "mid_tx_pipeline.py"
+        original_compute = SavePipelineService._compute_disk_prev_config_files
+
+        def _compute_wrapper(service_self: SavePipelineService, p_path: Path) -> dict[str, str]:
+            py_file.write_text(
+                py_file.read_text(encoding="utf-8") + "\n# external mid-transaction\n",
+                encoding="utf-8",
+            )
+            return original_compute(service_self, p_path)
+
+        monkeypatch.setattr(
+            SavePipelineService,
+            "_compute_disk_prev_config_files",
+            _compute_wrapper,
+        )
+
+        before = _snapshot_files(tmp_path)
+
+        resp_edit = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "mid_tx_pipeline",
+                "description": "Edit",
+                "graph": _make_graph_payload("extra"),
+                "source_file": "mid_tx_pipeline.py",
+                "base_revision": rev_r,
+            },
+        )
+        assert resp_edit.status_code == 409
+        detail = resp_edit.json()["detail"]
+        assert detail.startswith("stale_document_revision:")
+        assert "committing" in detail
+
+        assert py_file.read_text(encoding="utf-8").endswith("\n# external mid-transaction\n")
+
+        after = _snapshot_files(tmp_path)
+        expected = dict(before)
+        expected["mid_tx_pipeline.py"] = py_file.read_bytes()
+        assert after == expected
+
+    def test_rollback_leaves_an_external_edit_that_landed_mid_transaction(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Rollback does not clobber an external edit that landed mid-transaction."""
+        resp0 = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "rollback_pipeline",
+                "description": "Initial",
+                "graph": _make_graph_payload(),
+                "source_file": "rollback_pipeline.py",
+                "base_revision": None,
+            },
+        )
+        assert resp0.status_code == 200
+        rev_r = resp0.json()["source_revision"]
+        assert rev_r is not None
+
+        py_file = tmp_path / "rollback_pipeline.py"
+        distinctive_bytes = b"# distinctive external bytes mid-transaction\n"
+        original_write_sidecar = SavePipelineService._write_sidecar
+
+        def _sidecar_wrapper(*args, **kwargs):
+            touched = kwargs.get("touched")
+            if touched is None and len(args) >= 5:
+                touched = args[4]
+            if touched is not None:
+                py_file.write_bytes(distinctive_bytes)
+                raise RuntimeError("forced sidecar failure")
+            return original_write_sidecar(*args, **kwargs)
+
+        # Keep the static calling convention so args[4] really is ``touched``.
+        monkeypatch.setattr(SavePipelineService, "_write_sidecar", staticmethod(_sidecar_wrapper))
+
+        from haute.server import app
+
+        no_raise_client = TestClient(app, raise_server_exceptions=False)
+        resp_edit = no_raise_client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "rollback_pipeline",
+                "description": "Edit with polars node",
+                "graph": _make_graph_payload("extra_polars"),
+                "source_file": "rollback_pipeline.py",
+                "base_revision": rev_r,
+            },
+        )
+        assert resp_edit.status_code >= 500
+
+        assert py_file.read_bytes() == distinctive_bytes
+        assert not (tmp_path / "config" / "polars" / "extra_polars.json").exists()
+        assert not (tmp_path / "config" / "polars" / "node_extra_polars.json").exists()
+        assert not (tmp_path / "config").exists() or not list((tmp_path / "config").rglob("*.json"))

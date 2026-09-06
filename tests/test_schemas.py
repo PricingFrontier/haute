@@ -71,7 +71,7 @@ class TestValidation:
             WriteOutputRequest(graph=Graph())
 
     def test_save_pipeline_accepts_minimal(self):
-        r = SavePipelineRequest(graph=Graph())
+        r = SavePipelineRequest(graph=Graph(), base_revision=None)
         assert r.name == "main"
 
     def test_preview_node_requires_node_id(self):
@@ -166,18 +166,22 @@ class TestTraceRequestBoundaries:
 
 class TestSavePipelineRequestDefaults:
     def test_name_defaults_to_main(self):
-        r = SavePipelineRequest()
+        r = SavePipelineRequest(base_revision=None)
         assert r.name == "main"
 
     def test_graph_defaults_to_empty(self):
-        r = SavePipelineRequest()
+        r = SavePipelineRequest(base_revision=None)
         assert isinstance(r.graph, Graph)
         assert r.graph.nodes == []
         assert r.graph.edges == []
 
     def test_explicit_name_overrides_default(self):
-        r = SavePipelineRequest(name="custom")
+        r = SavePipelineRequest(name="custom", base_revision=None)
         assert r.name == "custom"
+
+    def test_omitting_base_revision_raises_validation_error(self):
+        with pytest.raises(ValidationError):
+            SavePipelineRequest()
 
 
 _SCHEMA_CASES_WITH_NODE_ID = [

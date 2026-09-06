@@ -13,10 +13,10 @@ export STATE_DIR
 mkdir -p "$STATE_DIR"
 
 # Model/effort (single source of truth for all codex skills): every flow —
-# plan review, code review, ask — runs on Sol (gpt-5.6-sol) at effort xhigh.
+# plan review, code review, ask — runs on Astra (gpt-6-astra) at effort xhigh.
 # Codex is review-only in this repo; implementation is done by Claude workers.
 # CODEX_MODEL / CODEX_EFFORT act as per-run overrides.
-CODEX_MODEL="${CODEX_MODEL:-gpt-5.6-sol}"
+CODEX_MODEL="${CODEX_MODEL:-gpt-6-astra}"
 CODEX_EFFORT="${CODEX_EFFORT:-xhigh}"
 export CODEX_MODEL CODEX_EFFORT
 

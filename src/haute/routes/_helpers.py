@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json as _json
 import shutil
 import tempfile
@@ -15,7 +16,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NamedTuple, NoReturn
 
 from fastapi import HTTPException, WebSocket
 
@@ -227,7 +228,16 @@ def find_typed_node(
 _last_self_write: float = 0.0
 _SELF_WRITE_COOLDOWN = 2.0  # seconds (must exceed save duration + watcher debounce)
 _SELF_WRITE_RETENTION = 60.0
-_self_write_paths: dict[str, float] = {}
+
+
+class _SelfWriteMark(NamedTuple):
+    """Identity of one server-originated write: committed bytes or a deletion."""
+
+    marked_at: float
+    digest: str | None  # sha256 of the committed bytes; None marks a deletion
+
+
+_self_write_paths: dict[str, _SelfWriteMark] = {}
 _self_write_lock = threading.Lock()
 
 
@@ -259,26 +269,65 @@ def _self_write_key(path: str | Path) -> str:
 def _prune_self_write_paths(now: float) -> None:
     stale = [
         key
-        for key, marked_at in _self_write_paths.items()
-        if now - marked_at > _SELF_WRITE_RETENTION
+        for key, mark in _self_write_paths.items()
+        if now - mark.marked_at > _SELF_WRITE_RETENTION
     ]
     for key in stale:
         _self_write_paths.pop(key, None)
 
 
-def mark_self_write(path: str | Path | None = None) -> None:
-    """Record that the server is about to write a pipeline-related file."""
+def _current_content_digest(path: Path) -> str | None:
+    """Identity of what is on disk now: a digest, or ``None`` when absent."""
+    try:
+        if not path.is_file():
+            return None
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        # A file that cannot be read right now is not provably the server's
+        # write; fail open to broadcasting so no external edit is hidden.
+        return "unreadable"
+
+
+def mark_self_write(
+    path: str | Path | None = None,
+    *,
+    content: bytes | None = None,
+    deleted: bool = False,
+) -> None:
+    """Record that the server is about to write or delete a pipeline-related file.
+
+    A path marker carries the identity of what the server commits: the
+    SHA-256 of ``content`` or a deletion marker, so the watcher can tell
+    the server's own write apart from a later external write to the same
+    path. A path needs exactly one of ``content`` and ``deleted``. The bare
+    form only refreshes the process-wide cooldown used by callers with no
+    specific path.
+    """
     global _last_self_write
+    digest: str | None = None
+    if path is not None:
+        if deleted == (content is not None):
+            raise ValueError("a self-write path marker needs exactly one of content or deleted")
+        if content is not None:
+            digest = hashlib.sha256(content).hexdigest()
+    elif content is not None or deleted:
+        raise ValueError("content and deleted require a path")
     now = time.monotonic()
     with _self_write_lock:
         _last_self_write = now
         if path is not None:
             _prune_self_write_paths(now)
-            _self_write_paths[_self_write_key(path)] = now
+            _self_write_paths[_self_write_key(path)] = _SelfWriteMark(now, digest)
 
 
 def is_self_write(path: str | Path | None = None, *, consume: bool = False) -> bool:
-    """Return True when a watcher event belongs to a server-originated write."""
+    """Return True when a watcher event belongs to a server-originated write.
+
+    A path matches only while the file's current bytes (or its absence, for
+    a deletion marker) still equal what the server committed. A marker that
+    no longer matches is discarded so the external write that superseded
+    it is broadcast rather than suppressed.
+    """
     now = time.monotonic()
     with _self_write_lock:
         if path is None:
@@ -286,8 +335,11 @@ def is_self_write(path: str | Path | None = None, *, consume: bool = False) -> b
 
         _prune_self_write_paths(now)
         key = _self_write_key(path)
-        matched = key in _self_write_paths
-        if matched and consume:
+        mark = _self_write_paths.get(key)
+        if mark is None:
+            return False
+        matched = mark.digest == _current_content_digest(Path(path))
+        if not matched or consume:
             _self_write_paths.pop(key, None)
         return matched
 

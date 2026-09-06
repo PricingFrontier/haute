@@ -381,6 +381,10 @@ Recovery wire objects are never passed to canonical graph request builders.
 `useDocumentStatusStore` atomically owns the authoritative load state, capabilities, diagnostics,
 raw revision, current readable source, source-selection trust, graph-synchronisation state, and any
 current system load failure. The request-facing revision ref is updated before graph publication.
+Save requests send that revision as `base_revision`. A `409` `stale_document_revision`
+response keeps the local graph dirty, marks the document unsynchronised, and shows the sync
+banner until the user reloads or discards local edits; the client never retries with an
+overwrite.
 Authored `degraded` and `source_only` responses are successful load states and do not emit the generic
 load-failure toast; transport, permission, unreadable-file, and malformed-response failures retain an
 explicit read-only failure surface and cannot leave a retained canvas looking current.

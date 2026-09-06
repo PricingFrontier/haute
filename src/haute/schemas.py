@@ -649,6 +649,12 @@ class SavePipelineRequest(BaseModel):
     source_file: str = ""
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
+    base_revision: RevisionToken | None = Field(
+        description=(
+            "The source_revision the client loaded; null only when creating a file "
+            "that does not exist yet."
+        ),
+    )
 
 
 class SavePipelineResponse(BaseModel):

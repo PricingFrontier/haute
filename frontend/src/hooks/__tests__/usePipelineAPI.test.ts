@@ -544,6 +544,126 @@ describe("usePipelineAPI", () => {
     expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-save")
   })
 
+  it("sends the loaded source revision as base_revision", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({
+      nodes: [],
+      edges: [],
+      source_revision: "revision-load",
+    }))
+    mockSave.mockResolvedValue({
+      file: "pricing.py",
+      pipeline_name: "pricing",
+      source_revision: "revision-save",
+    })
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
+    await act(async () => {
+      await result.current.handleSave()
+    })
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
+      base_revision: "revision-load",
+    }))
+  })
+
+  it("sends a null base_revision for a document that was never persisted", async () => {
+    mockLoad.mockResolvedValue({
+      ...makePipelineEditorDocument({
+        nodes: [],
+        edges: [],
+        source_file: "",
+        source_revision: null,
+      }),
+      source_revision: null,
+    })
+    mockSave.mockResolvedValue({
+      file: "pricing.py",
+      pipeline_name: "pricing",
+      source_revision: "revision-save",
+    })
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    const editedNode = makeNode("n1")
+    params.graphRef.current = { nodes: [editedNode], edges: [] }
+    useGraphStore.getState().setNodes([editedNode])
+    await act(async () => {
+      await result.current.handleSave()
+    })
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
+      base_revision: null,
+    }))
+  })
+
+  it("a stale_document_revision conflict keeps the edit dirty and blocks until reload", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({
+      nodes: [],
+      edges: [],
+      source_revision: "revision-load",
+    }))
+    mockSave.mockRejectedValue(
+      new ApiError(
+        "HTTP 409",
+        409,
+        "stale_document_revision: The pipeline changed on disk after this document was loaded. Reload it before saving.",
+      ),
+    )
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(params.sourceRevisionRef.current).toBe("revision-load")
+
+    // make the graph dirty first
+    const editedNode = makeNode("n1")
+    params.graphRef.current = { nodes: [editedNode], edges: [] }
+    useGraphStore.getState().setNodes([editedNode])
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+
+    let saveResult: boolean | undefined
+    await act(async () => {
+      saveResult = await result.current.handleSave()
+    })
+
+    expect(saveResult).toBe(false)
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+    expect(useDocumentStatusStore.getState().graphSynchronized).toBe(false)
+    expect(useUIStore.getState().syncBanner).toContain("changed on disk")
+    expect(params.sourceRevisionRef.current).toBe("revision-load")
+    const toasts = useToastStore.getState().toasts
+    expect(
+      toasts.some((t) => t.type === "error" && t.text.includes("Save rejected")),
+    ).toBe(true)
+  })
+
+  it("a non-stale 409 still surfaces the generic failure toast", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({
+      nodes: [],
+      edges: [],
+      source_revision: "revision-load",
+    }))
+    mockSave.mockRejectedValue(
+      new ApiError("HTTP 409", 409, "something else"),
+    )
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    let saveResult: boolean | undefined
+    await act(async () => {
+      saveResult = await result.current.handleSave()
+    })
+
+    expect(saveResult).toBe(false)
+    const toasts = useToastStore.getState().toasts
+    expect(
+      toasts.some((t) => t.type === "error" && t.text.includes("Failed to save pipeline")),
+    ).toBe(true)
+    expect(useDocumentStatusStore.getState().graphSynchronized).toBe(true)
+  })
+
   it("acknowledges its own watcher update when the save response arrives", async () => {
     mockLoad.mockResolvedValue(makePipelineEditorDocument({
       nodes: [],

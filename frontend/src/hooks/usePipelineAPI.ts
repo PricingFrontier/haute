@@ -1191,6 +1191,8 @@ export default function usePipelineAPI({
         },
         preamble: savePreamble,
         source_file: sourceFileRef.current,
+        // A never-persisted document keeps an empty revision ref; the server wants null.
+        base_revision: saveSourceRevision || null,
         sources: sc,
         active_source: as_,
         preserved_blocks: preservedBlocksRef.current,
@@ -1236,6 +1238,25 @@ export default function usePipelineAPI({
       }
       return true
     } catch (err: unknown) {
+      if (
+        err instanceof ApiError &&
+        err.status === 409 &&
+        typeof err.detail === "string" &&
+        err.detail.startsWith("stale_document_revision")
+      ) {
+        // The conflict is final until the user reloads (no implicit overwrite retry).
+        useDocumentStatusStore.getState().setGraphSynchronized(false)
+        useUIStore
+          .getState()
+          .setSyncBanner(
+            "Pipeline changed on disk while you have unsaved changes. Reload the file or discard local edits first.",
+          )
+        addToast(
+          "error",
+          "Save rejected: the pipeline changed on disk. Reload the file or discard local edits first.",
+        )
+        return false
+      }
       const detail = err instanceof ApiError && err.detail
         ? err.detail
         : err instanceof Error

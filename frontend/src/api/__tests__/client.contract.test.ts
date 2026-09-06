@@ -102,6 +102,7 @@ describe("client runtime contracts", () => {
         graph: dummyGraph,
         preamble: "",
         source_file: "pricing.py",
+        base_revision: null,
         preserved_blocks: [],
       }),
     ).rejects.toThrow(/parseSavePipelineResponse/i)

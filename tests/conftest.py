@@ -459,6 +459,16 @@ def make_output_node(nid: str, fields: list[str] | None = None) -> GraphNode:
     )
 
 
+def current_source_revision(path: str | Path, project_root: str | Path) -> str | None:
+    """Return the on-disk document revision a save must name, or None when the file is absent."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    target = Path(path)
+    if not target.is_file():
+        return None
+    return load_pipeline_editor_document(target, project_root=Path(project_root)).source_revision
+
+
 def make_edge(
     src: str,
     tgt: str,
