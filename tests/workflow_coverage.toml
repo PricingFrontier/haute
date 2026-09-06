@@ -503,6 +503,46 @@ command = 'cd frontend && npx playwright test e2e/graph-editing-sequence.spec.ts
 result = "e2e 12 passed (1.0m); vitest Tests  240 passed (240); pytest 69 passed in 1.88s"
 
 [[scenarios]]
+id = "W03-S04"
+workflow = "W03"
+contract = "specs/pipeline-config/low-level.md#edge-cases-and-invariants"
+finding = "F13"
+state = "covered"
+entry_point = "file"
+tier = "unit"
+lane = "backend"
+real = ["parser", "executor", "codegen", "editor-identities"]
+stubbed = []
+tests = [
+  "tests/test_parser_conservation.py::TestPolarsParameterBinding::test_positional_param_not_matching_incoming_edge_rejected",
+  "tests/test_parser_conservation.py::TestPolarsParameterBinding::test_incoming_edge_not_matching_any_parameter_rejected",
+  "tests/test_parser_conservation.py::TestPolarsParameterBinding::test_input_mapping_succeeds_executes_and_roundtrips",
+  "tests/test_parser_conservation.py::TestPolarsParameterBinding::test_occurrence_output_parameter_is_the_occurrence_name",
+  "tests/test_parser_conservation.py::TestPolarsParameterBinding::test_degraded_document_with_parameter_mismatch",
+  "tests/test_parser_conservation.py::TestPolarsParameterBinding::test_submodel_definition_input_port_binds_logical_name",
+  "tests/test_graph_utils.py::TestExecutableInputNameSubmodelOccurrence::test_single_output_occurrence_returns_alias",
+  "tests/test_graph_utils.py::TestExecutableInputNameSubmodelOccurrence::test_multi_output_occurrence_returns_alias_and_sanitized_port",
+  "tests/test_graph_utils.py::TestExecutableInputNameSubmodelOccurrence::test_missing_alias_raises_value_error_naming_node",
+  "tests/test_submodel_instances.py::test_flatten_preserves_public_output_label_for_ordinary_polars_code",
+  "tests/test_pipeline_recovery.py::test_ready_document_exposes_submodel_occurrence_alias_as_executable_name",
+  "tests/test_submodel_endpoint_properties.py::test_flatten_conserves_rows_through_public_ports",
+  "frontend/src/utils/__tests__/editorIdentities.test.ts::builds a strict batch with occurrence name and public submodel port labels",
+  "frontend/src/utils/__tests__/editorIdentities.test.ts::rejects a submodel node without alias",
+  "frontend/src/panels/__tests__/NodePanel.test.tsx::uses the authoritative occurrence name for a submodel-fed input",
+  "frontend/src/utils/__tests__/apiInputPorts.test.ts::resolves an arbitrary-id occurrence output through its occurrence name",
+  "frontend/src/utils/__tests__/edgeJoinGraph.test.ts::preserves a collapsed submodel occurrence name as the logical input",
+  "frontend/e2e/graph-editing-sequence.spec.ts::a graph editing sequence conserves structure and computed meaning through save and reopen",
+  "tests/test_submodel_ops.py::TestGroupingPreservesConsumerBindings::test_grouping_records_the_consumer_binding_through_input_mapping",
+  "tests/test_pipeline_recovery.py::test_editor_identity_route_requires_an_alias_for_submodel_nodes",
+]
+invariant = "A Polars node's positional parameters are exactly its connected inputs by name (an ordinary source's node name, an API frame handle, an occurrence's own name or name__port with several output ports, or a declared inputMapping): the parser infers nothing, an unbound parameter or unconsumed input is a ParseError carried into the editor as a degraded document that refuses Save, a mapped or occurrence-named consumer parses, executes and regenerates byte-identically, and the input chips show the same names the executor binds."
+
+[scenarios.evidence]
+commit = "dc586a50"
+command = 'uv run pytest tests/test_parser_conservation.py tests/test_graph_utils.py tests/test_submodel_instances.py tests/test_pipeline_recovery.py tests/test_submodel_endpoint_properties.py -q -p no:warnings'
+result = "259 passed in 24.32s; red before the fix on 2af17e3b: the ordinary and occurrence consumers fail at execution with NameError and the binding gate does not exist (probe 2026-09-06)"
+
+[[scenarios]]
 id = "W04-S01"
 workflow = "W04"
 contract = "specs/io-layer/low-level.md#data-output"
