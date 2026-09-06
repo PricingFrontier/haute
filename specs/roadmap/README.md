@@ -20,11 +20,9 @@ or maintenance issue; `P3` opportunistic work.
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
-| [Submodels](submodels.md) | Public port and occurrence identities, authoring surface | `SUB-L03` |
 
 ## Supporting findings
 
-- [Bug and specification findings — 5 September 2026](bug-findings-2026-09-05.md)
 - [Specification corpus review — 6 September 2026](fable5.1-review/report.md)
 
 The dated reports preserve the reviewed snapshot and its evidence; they are not
