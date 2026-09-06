@@ -183,7 +183,9 @@
   proving its API Input retains an authoritative rendered source handle.
 - **Pytest configuration** constrains collection to `tests/`, has strict
   markers/configuration/xfails, excludes `perf` by default, and recognises
-  `slow`, `perf`, and `sandbox_strict` markers.
+  `slow`, `perf`, `sandbox_strict`, and `meta` markers (meta-marked
+  repository-health modules are deselected from the Python compatibility
+  lanes in `.github/workflows/ci.yml`).
 - **Component improvement package** is a `### <package-id>` section in one
   flat `specs/roadmap/<component>.md` file. It has a stable ID, priority/order,
   problem, plan, acceptance criteria, dependencies, and current evidence. The

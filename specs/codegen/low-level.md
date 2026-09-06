@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`); instance-node handling; contract kwarg formatting/injection (`_format_contract_kwarg`, `_format_contract_source`, `_inject_contract_kwarg`); pipeline/submodel file assembly (`_generate_pipeline_lines`); the final parse gate (`_assert_emitted_files_parse`). |
-| `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`. String-safety helpers (`_safe_str`, `_safe_path`), shared field extraction (`_common_node_fields`, `_build_params` — parameters are the per-edge input names supplied by the orchestrator, with a loud duplicate-name guard replacing the former name-suffixing behaviour), docstring sanitization (`_sanitize_description`), and per-type templates such as `_MODEL_SCORE`, `_BANDING_SINGLE`, and `_RETAINED_EXTERNAL`. |
+| `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`. String-safety helpers (`_safe_str`, `_safe_path`), shared field extraction (`_common_node_fields`, `_build_params` — parameters are the per-edge input names supplied by the orchestrator, and duplicates are rejected by `src/haute/codegen.py::_validate_duplicate_node_inputs`), docstring sanitization (`_sanitize_description`), and per-type templates such as `_MODEL_SCORE`, `_BANDING_SINGLE`, and `_RETAINED_EXTERNAL`. |
 | `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: LibCST decorator-keyword injection, exact method-call discovery with source spans, and stable structured syntax failures. It never repairs invalid source or evaluates Python. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): codegen registers and reads per-node code builders through the canonical registry. |
 | `src/haute/_code_extraction.py` | Reverse direction of the codegen builders' body wrapping: strips generated boilerplate back out of a persisted function body so the user-facing code editor shows only what the user actually typed. Consolidated engine (`extract_user_code`) dispatches through `BOILERPLATE_MATCHERS`/`_FINALISERS` registries keyed by node "kind." |
@@ -37,7 +37,8 @@
 3. Resolve and validate canonical definitions and occurrences, reject
    unreferenced definitions and shared-file collisions, then run
    `_error_on_name_collisions` over root nodes, submodel occurrence aliases,
-   plus each referenced definition graph exactly once.4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
+   plus each referenced definition graph exactly once.
+4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
    each edge-join's two incoming edges in base-then-join order), topo-sort
    nodes (`_topo_sort` via strict `haute._topo.topo_sort_ids`, which raises
    `UnknownEdgeEndpointError` with dropped-edge evidence for any dangling endpoint), build
@@ -110,16 +111,17 @@ fresh markers.
 
 ### Canonical data I/O and retained sidecar builders
 
-- `_generate_pipeline_lines` emits the reserved `_HautePath` import before
-  the standard imports and the `_HAUTE_CONFIG_BASE` assignment immediately
-  after the `Pipeline`/`Submodel` constructor. A pipeline file assigns
-  `_HautePath(__file__).resolve().parent`; a submodel file assigns
+- For files containing at least one config-folder node, `_generate_pipeline_lines`
+  emits the reserved `_HautePath` import before the standard imports and the
+  `_HAUTE_CONFIG_BASE` assignment immediately after the `Pipeline`/`Submodel`
+  constructor (files with no config-folder nodes omit both). A pipeline file
+  assigns `_HautePath(__file__).resolve().parent`; a submodel file assigns
   `_HautePath(__file__).resolve().parents[N]` where `N` is the number of path
   separators in the recorded registration path — config paths always resolve
   against the parent pipeline directory, so the emitted base climbs exactly as
   many levels as the registration path descends (`modules/x.py` -> `parents[1]`,
-  `x.py` -> `parents[0]`, `a/b/x.py` -> `parents[2]`). Submodel codegen without
-  that depth is a `HauteError`. `_extract_preamble` excludes exactly those
+  `x.py` -> `parents[0]`, `a/b/x.py` -> `parents[2]`). Submodel codegen with a
+  config-folder node without that depth is a `HauteError`. `_extract_preamble` excludes exactly those
   reserved scaffold shapes (`.parent` and `.parents[N]`, matched structurally,
   plus the `_HautePath` import) so codegen -> parse -> codegen emits one
   config-base assignment and reaches a source-text fixpoint rather than
@@ -213,12 +215,8 @@ all — there is no implicit single-input passthrough; codegen emits the
 raising callable. Extraction is symmetric: the
 `polars` matcher strips only the exact unbound output declaration, while its
 finaliser treats a leading `df = <param>` line as authored code, never as
-strippable scaffold, and no longer collapses a lone `return <param>` body to
-empty code. Modules generated before this contract carry a codegen-prepended
-`df = <first input>` alias line (or a passthrough `return <input>` body); on
-reload these round-trip into the code box as visible, explicit user code
-(`df = <input>`) — which preserves the old behaviour exactly, since the code
-now performs the binding the runtime no longer injects.
+strippable scaffold, and does not collapse a lone `return <param>` body to
+empty code.
 
 `explore` is NOT part of this contract: its code box operates on the single
 implicit frame named `df` (like the `data_input` / `rating_step` /
@@ -311,17 +309,17 @@ preamble global, matching the generated function's local assignment.
   preserve roles for parser reconstruction. Retired `base_input`/`join_input` decorator arguments
   and `baseInput`/`joinInput` config are rejected rather than migrated.
 - **Cross-boundary edge-join role resolution at a submodel boundary** —
-  `build_edge_join_boundary_target_roles` (from `haute._edge_join`)
-  resolves which `target_port` an edge crossing INTO a submodel-hosted
-  edge-join should carry, since the join's base/join role isn't visible
-  from the root-graph edge alone.
+  `codegen._canonical_definition_source_metadata` collects each edge-join
+  target's bindings (public input-port targets plus internal edges) and orders
+  them base-then-join via `haute._edge_join.resolve_edge_join_role_indices`,
+  since the join's base/join role isn't visible from the root-graph edge alone.
 - **Windows-style paths in generated `path=` literals** — `_safe_path`
   normalizes backslashes to forward slashes before escaping, so a pipeline
   saved on Windows and read on Linux (or vice versa) still parses
-  correctly. Retained API Input and External File helpers additionally use
-  the generated file's resolved parent as their base-directory candidate;
-  other generated helpers retain their existing `Path(__file__).parent`
-  spelling.
+  correctly. Every config-driven generated helper resolves its `base_dir` from
+  `_HAUTE_CONFIG_BASE` (directly, or through a function-local
+  `base = str(_HAUTE_CONFIG_BASE)`); the only `__file__` expression in an emitted
+  module is the single `_HAUTE_CONFIG_BASE` assignment.
 - **External-file user imports directly after the generated load** —
   `_match_external` is position-aware: imports BEFORE the generated
   `load_external_object_from_config(...)` call are stripped as
@@ -365,6 +363,7 @@ preamble global, matching the generated function's local assignment.
 | `graph_to_code` called on a graph that actually produces >1 file | `ConfigError` | `codegen.graph_to_code` |
 | Any emitted file fails `ast.parse` | `ConfigError` | `codegen._assert_emitted_files_parse` |
 | `polars` transform has no code (any source count) | No error — emits a `NotImplementedError`-raising placeholder so the graph still saves; fails at run time, warned at save time | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
+| `polars` transform with executable code and an input named `df` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
 | `edgeJoin` codegen called with `!= 2` sources | `ConfigError` | `_codegen_builders._gen_edge_join` |
 | `Explore` node with `!= 1` incoming edge | `ParseError` | `_codegen_builders._gen_explore` |
 | Codegen dispatched on a `SUBMODEL`/`SUBMODEL_PORT` occurrence | `RuntimeError` | `_codegen_builders._gen_submodel_placeholder_unreachable` |

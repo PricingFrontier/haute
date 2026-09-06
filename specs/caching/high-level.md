@@ -51,8 +51,10 @@ cleaned by the materialization wrapper.
 Structured API-input cache build (implemented by the `json_cache` route module) accepts
 JSON, JSONL, NDJSON, and XML sources. It selects and validates schema before checking data-file existence, so an
 absent schema returns structured 422 before a missing-file 404. Builds expose progress,
-status, infer, build, and delete; there is no cancel endpoint because the underlying
-blocking shred is not cooperatively cancellable.
+status, infer, build, and delete (removing the `working/` layer only while leaving
+`committed/` intact); no cancel endpoint is exposed; the build is cancelled
+cooperatively by request cancellation through the isolated-worker cancellation gate,
+which stops the worker and discards staging.
 
 Source snapshot identities use the same canonical checked-input discipline. Their storage,
 lease, and publication behaviour is specified by the IO layer. A published
@@ -75,9 +77,10 @@ visible job, waits for completion, and only then sends the preview. The
 orchestrator tries the lazy-sink build profile first and retries once with the
 admitted eager profile only when the server reports
 `snapshot_build_unsupported`. A ready but stale snapshot is refreshed by the execution's
-automatic preparation before it runs — warned before and recorded in the terminal
-diagnostics, never silently — so Studio no longer prompts for it; the explicit refresh
-action remains available.
+automatic preparation before it runs, warned beforehand and recorded in the terminal
+diagnostics. A missing, corrupt, failed, or building snapshot is built (or its running
+build joined) before the run, announced by an info toast rather than a prompt, and the
+explicit refresh action remains available.
 File-backed Parquet inputs do not participate because they scan their Parquet
 source directly and expose no cache action. Snapshot execution contacts the
 provider only through automatic preparation under an admitted execution
@@ -118,4 +121,6 @@ reported as misses, while unexpected filesystem unlink failures propagate.
 
 Oversized dataframe artifacts raise `CacheArtifactTooLargeError` without disturbing a
 previous same-key entry. JSON schema and parse failures return structured 4xx responses;
-timeouts return 504; unexpected failures are logged and return a generic 500.
+source modification during build or stopped workers return 409; memory-limit exhaustion,
+unsupported caps, and admission rejections return 507; timeouts return 504; unexpected
+failures are logged and return a generic 500.

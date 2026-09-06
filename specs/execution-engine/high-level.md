@@ -60,9 +60,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   `scenarioExpander`, `optimiserApply`, and `OUTPUT` response-document assembly —
   the one implementation both the canvas executor and codegen-generated `.py`
   files call, so a saved pipeline's `pipeline.run()` behaves identically to the
-  GUI. Before `assemble_output_from_config` unified the two, a saved `OUTPUT`
-  node's generated code was a bare passthrough of the raw upstream frame instead
-  of the assembled document.
+  GUI.
 
 **Out of scope** (owned elsewhere, linked where relevant):
 - Static node schemas, sidecar validation, and registry configuration are owned by
@@ -397,10 +395,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
   same flattening, preamble compilation, active-source selection, node building,
   and contract enforcement as production lazy execution up to the requested
   top-level node, then calls `collect_schema()` on the preserved lazy result.
-  It never collects rows, and the declaration is now honoured end to end: an
-  OUTPUT terminal's document is *described* from its mapping and its source
-  schemas rather than assembled, so a schema-only execution never materialises a
-  document even when the requested lineage ends in an OUTPUT node.
+  It never collects rows: an OUTPUT terminal's document is *described* from its
+  mapping and its source schemas rather than assembled, so a schema-only
+  execution never materialises a document even when the requested lineage ends in
+  an OUTPUT node.
   Multi-frame results report one schema per output port.
   This is execution-plan evidence, not proof of row values or commercial
   correctness. The current assistant mutation service declares structural

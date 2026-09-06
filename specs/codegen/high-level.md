@@ -158,10 +158,11 @@ Out of scope (owned by neighbouring components):
   `Pipeline.run()`. Removed `dataSource`/`dataSink` forms are neither emitted
   nor accepted as codegen node types.
 - **Retained sidecar inputs stay live.** API Input and External File bodies
-  contain only their sidecar path and call the shared config-driven loaders
-  with `Path(__file__).resolve().parent` as the pipeline-directory candidate.
-  They do not bake the sidecar's current data path, schema, file type, or
-  model class into source. A sidecar-only edit therefore changes the next
+  contain only their sidecar path and call the shared config-driven loaders with
+  the module-level `_HAUTE_CONFIG_BASE` (the parent pipeline directory:
+  `.parent` in a pipeline file and `.parents[N]` in a submodel file) as the
+  base directory. They do not bake the sidecar's current data path, schema, file
+  type, or model class into source. A sidecar-only edit therefore changes the next
   generated-function execution, and malformed sidecars raise the same
   validation error as canvas execution.
 - **Contract kwarg injection.** Every ordinary node gets a `contract=...` decorator kwarg

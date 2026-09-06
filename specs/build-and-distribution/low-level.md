@@ -129,12 +129,12 @@ package input validated by `hatch_build.py`, not hand-edited source.
   The validator requires every named key to exist and validates every manifest
   entry's own output file, so the complete reachable and declared graph is
   checked without accepting an orphaned reference.
-- React/ReactFlow, ELK, CodeMirror, and Lucide dependencies are assigned
-  explicit vendor chunks; other dependencies retain Vite/Rollup's default
+- ECharts/zrender, React/ReactFlow, ELK, CodeMirror, and Lucide dependencies are
+  assigned explicit vendor chunks; other dependencies retain Vite/Rollup's default
   chunking behaviour.
-- The static marker is intentionally absent from source control in this
-  checkout. A validated wheel build must create or receive it; source code is
-  never used as a runtime fallback for a missing browser bundle.
+- The generated `src/haute/static/` tree is untracked in this checkout
+  (`.gitignore`). A validated wheel build must create or receive it; source code
+  is never used as a runtime fallback for a missing browser bundle.
 - The MkDocs exclusion is publishing policy, not repository access control:
   excluded files continue to exist in the checkout and can be read by
   maintainers.
@@ -148,7 +148,9 @@ package input validated by `hatch_build.py`, not hand-edited source.
   malformed, unreadable, or mismatched input manifest. It names the explicit
   rebuild opt-in where rebuilding can repair the state.
 - `_npm()` raises `RuntimeError` if npm is not on PATH and the known Windows
-  location is unavailable. `_run()` uses replacement decoding, applies the
+  location is unavailable. `_run()` supplies an environment from
+  `FrontendBuildHook._node_env()` (prepending the known Windows Node.js directory
+  when `node` is not on PATH), uses replacement decoding, applies the
   package-build timeout, prints subprocess stdout/stderr, and raises
   `RuntimeError` on a non-zero return code or timeout; the missing-output sanity
   check does the same.
@@ -192,8 +194,8 @@ package input validated by `hatch_build.py`, not hand-edited source.
   `scripts/package_smoke_check.py`, `scripts/init_smoke.py`, and CI's
   package/init-smoke jobs. The frontend's build/typecheck commands are likewise
   quality gates, not independent package-format tests.
-- CLI regression coverage invokes the package through a real
-  `python -m haute` subprocess and verifies success, nested-command argument
+- `tests/test_cli.py` — CLI regression coverage invokes the package through a
+  real `python -m haute` subprocess and verifies success, nested-command argument
   routing, Click usage failures, and exit-code parity with the console group.
 - `scripts/package_smoke_check.py` also calls the installed
   `haute.assistant._assets.validate_example_bundles(execute_fast=True)` entry

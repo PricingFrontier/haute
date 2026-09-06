@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_databricks_credentials.py` | Single environment-to-credentials boundary: redaction-safe `DatabricksCredentials`, `DatabricksConfigError`, host normalisation, completeness validation, and PAT-over-service-principal precedence. |
-| `src/haute/_databricks_io.py` | SQL-connector adaptation, table/projection validation, canonical table identity, bounded Arrow batch iteration, retries, and integrity checks. It re-exports `DatabricksConfigError` for compatibility. |
+| `src/haute/_databricks_io.py` | SQL-connector adaptation, table/projection validation, canonical table identity, bounded Arrow batch iteration, retries, and integrity checks. It raises `DatabricksConfigError` from `src/haute/_databricks_credentials.py`. |
 | `src/haute/routes/databricks.py` | `/api/databricks` Unity Catalog browsing endpoints. |
 
 `src/haute/_input_providers.py`, `src/haute/_source_cache.py`, and
@@ -20,7 +20,7 @@
   excluded from its representation.
 - `DatabricksConfigError(HauteError)` reports missing host/authentication/http-path
   configuration or an unavailable OAuth provider dependency. The class is owned
-  by `_databricks_credentials.py` and re-exported by `_databricks_io.py`.
+  by `src/haute/_databricks_credentials.py` and re-exported by `src/haute/_databricks_io.py`.
 - `FetchIntegrityError(HauteError)` reports an unprovable complete/schema-bearing result.
 - `DatabricksSnapshotBuilder` validates config once and exposes `build(context)`.
 - `_TABLE_NAME_RE` accepts three dot-separated, optionally backtick-quoted identifier parts.
@@ -39,8 +39,8 @@
 4. `build()` delegates to `_iter_databricks_batches()`.
 5. `_iter_databricks_batches()` resolves the host and selected authentication, builds the SQL statement, checkpoints,
    opens the connector, checkpoints again, and executes.
-6. Each fetch is preceded by a checkpoint. Transient exceptions retry at most three times
-   with exponential backoff.
+6. Each fetch is preceded by a checkpoint. A fetch is attempted at most three times
+   (two retries) with exponential backoff of 1s then 2s.
 7. After any retry, `_assert_no_rows_lost_after_retry()` compares received rows with
    `cursor.rownumber`.
 8. Arrow tables flow directly into `SourceCacheStore`, which owns Parquet writing and
@@ -67,7 +67,7 @@ secrets and providers stay in connector-call scope.
 
 ### Browsing
 
-`routes/databricks.py` creates a Databricks `WorkspaceClient` and maps SDK objects into the
+`src/haute/routes/databricks.py` creates a Databricks `WorkspaceClient` and maps SDK objects into the
 shared warehouse/catalog/schema/table response models. Browsing does not fetch table data
 or publish snapshots.
 

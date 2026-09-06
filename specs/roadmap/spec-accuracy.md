@@ -37,7 +37,6 @@ Non-goals:
 | Package | State | Priority | Outcome |
 |---|---|---|---|
 | SPEC-A02 | Planned | P2 | Server API, git, hosted app, hosted storage and sandbox specifications corrected. |
-| SPEC-A03 | Planned | P2 | Background jobs, build, caching, CLI, codegen, Databricks I/O, deploy, engineering-quality and execution-engine specifications corrected. |
 | SPEC-A04 | Planned | P2 | Expression parsing, explore, I/O layer, JSON shredding, MLflow, optimiser, rating, reference pipeline and tracing specifications corrected. |
 | SPEC-A05 | Planned | P2 | Assistant, modelling, pipeline-config and submodels specifications corrected. |
 | SPEC-A06 | Planned | P2 | Frontend graph canvas and node editor specifications corrected. |
@@ -82,32 +81,6 @@ test-reference rules the new rows and paths must satisfy.
 **Evidence:** `fable5.1-review/findings.json`; `specs/server-api/low-level.md`;
 `specs/git-integration/low-level.md`; `specs/hosted-project-storage/low-level.md`;
 `specs/hosted-databricks-app/low-level.md`; `specs/sandbox-security/high-level.md`.
-
-### SPEC-A03 — Background jobs, build, caching, CLI, codegen, Databricks I/O, deploy, engineering quality, execution engine
-
-**Why:** Forty-nine findings against nine backend components: symbols attributed
-to the wrong module, retry and ordering claims that contradict the code, missing
-manifest keys and error rows, a garbled numbered list, a missing pytest marker,
-and resolved-history or planned-behaviour phrasing (ADD01, F018, F019, F020,
-F021, F022, F024, F025, F026, F027, F028, F029, F030, F031, F033, F034, F035,
-F036, F037, F038, F039, F040, F041, F042, F043, F044, F045, F046, F047, F048,
-F152, F153, F154, F155, F156, F157, F158, F159, F162, F163, F164, F165, F166,
-F167, F169, F170, F171, F173, F174).
-
-**Plan:** One editing pass over the background-jobs, build-and-distribution,
-caching, cli, codegen, databricks-io, deploy, engineering-quality and
-execution-engine documents. F048 (a "future tier" sentence) is deleted rather
-than turned into a package: no such tier is planned. F021 drops the unrelated
-test file from the background-jobs Testing section.
-
-**Acceptance:** Every listed finding corrected or recorded as resolved at
-`HEAD`; the docs check stays green.
-
-**Dependencies:** None (its files are disjoint from SPEC-A02).
-
-**Evidence:** `fable5.1-review/findings.json`; `specs/background-jobs/low-level.md`;
-`specs/caching/low-level.md`; `specs/cli/low-level.md`; `specs/codegen/low-level.md`;
-`specs/deploy/low-level.md`; `specs/execution-engine/low-level.md`.
 
 ### SPEC-A04 — Expression parsing, explore, I/O layer, JSON shredding, MLflow, optimiser, rating, reference pipeline, tracing
 

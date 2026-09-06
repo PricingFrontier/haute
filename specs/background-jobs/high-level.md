@@ -269,7 +269,8 @@ Depended on:
   exception, timeout, memory limit, contract violation) is caught by
   `IsolatedJobSupervisor` and turned into a terminal transition with diagnostic
   fields (`worker_error_class`, `worker_error_type`/`worker_remote_traceback` for
-  remote exceptions, `worker_exitcode` for crashes, `error_code` for memory limits).
+  remote exceptions, `worker_exitcode` for crashes, `error_code` for memory limits,
+  `worker_diagnostic_notes` for exception `__notes__` when present).
   A child that curated a user-facing failure message marks it on the payload's
   `user_message` field, and the supervisor uses that curated wording as the job's
   terminal message; failures without one keep the typed wrapper text. When the

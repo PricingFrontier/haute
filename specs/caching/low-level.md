@@ -44,7 +44,7 @@ missing and unknown names before hashing:
 | `graph_execution` | 8 | `base_fingerprint`, `preamble_fingerprint`, `source_file`, `extra_keys` |
 | `preview_trace` | 3 | `preamble`, `source_file`, `nodes`, `edges`, `target_node_id`, `source`, `requested_columns`, `initial_column_limit`, `row_limit`, `port_label`, `contract_fingerprint`, `selected_live_switch_path`, `runtime_input_fingerprint`, `execution_semantics_version` |
 | `dataframe_execution` | 2 | `namespace`, `node_id`, `lineage_fingerprint`, `source`, `profile`, `input_fingerprint`, `required_columns`, `extra_keys`, `execution_policy` |
-| `runtime_graph_input` | 2 | `source`, `sources`, `json_cache_signature`, `preamble_fingerprint`, `extra` |
+| `runtime_graph_input` | 3 | `source`, `sources`, `json_cache_signature`, `preamble_fingerprint`, `extra` |
 | `deploy_schema` | 1 | `graph_fingerprint`, `runtime_input_fingerprint`, `artifact_fingerprint`, `output_node_id`, `input_node_ids`, `source`, `row_limit`, `execution_policy` |
 | `model_contract` | 1 | `feature_names`, `categorical_features`, `offset_column` |
 | `input_snapshot` | 1 | `schema_version`, `provider`, `descriptor` |
@@ -122,11 +122,12 @@ does not reap it; execution is the lifecycle owner.
    validation, cancellation, publication, and cleanup (the owning contract is the
    server-api JSON cache build transaction).
 5. Successful builds mark the working cache consulted so save-time promotion can occur.
-6. Status validates the same schema and storage metadata; delete clears the cache.
+6. Status validates the same schema and storage metadata; delete removes the
+   `working/` layer only and leaves `committed/` intact.
 
-There is no separate GUI cancel endpoint; the server's own cancellation and timeout
-handling of the child transaction is described by server-api and is distinct from
-that absence.
+There is no separate GUI cancel endpoint; the build is cancelled cooperatively
+by request cancellation through the isolated-worker cancellation gate, which
+stops the worker and discards staging.
 
 ### Source snapshots
 
@@ -156,12 +157,8 @@ and tested by the [IO layer](../io-layer/low-level.md).
 - JSON build/status use the same v2 schema validation.
 - Structured-input **status resolves `working/` then `committed/`** — the same
   order `load_v2_api_source` uses at run time, because the badge answers "will a
-  run read from cache?". Consulting only `working/` (the volatile layer)
-  reported `cached=False` whenever it was absent or stale-fingerprinted while
-  `committed/` — the durable layer that survives a restart — was valid and
-  still serving every run, inviting a rebuild of a cache already in use.
-  Precedence is unchanged: a valid `working/` still wins, since that is what the
-  next run reads. `cached=False` still requires BOTH layers to be invalid.
+  run read from cache?". A valid `working/` wins since that is what the next run
+  reads, and `cached=False` requires both layers to be invalid.
 - Dataframe cache artifacts are not part of persistent startup reaping.
 
 ## Error handling
@@ -173,8 +170,10 @@ stat and loader exceptions and raises `RuntimeError` after two moving gates.
 `CacheArtifactTooLargeError` rejects the new artifact while retaining any previous same-key
 entry. `DataFrameExecutionCacheError` reports impossible identity/store-window states.
 
-Structured-input cache routes preserve structured schema/parse/path errors, return 504 on response
-timeout, and log unexpected errors before a generic 500.
+Structured-input cache routes preserve structured schema/parse/path errors, return 409
+when the source changed during build or the worker stopped, return 507 on
+memory-limit exhaustion, unsupported caps, or admission rejection, return 504 on
+response timeout, and log unexpected errors before a generic 500.
 
 ### Boundary failure ordering
 

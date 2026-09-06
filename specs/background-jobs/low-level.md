@@ -44,19 +44,17 @@
   re-registering the identical callable object is a no-op (identity check, not `==`,
   specifically to reject two "equal" callables from different registration sites —
   see `TestJobStoreTTL::test_distinct_equal_artifact_cleaners_are_rejected`).
-- **Heavy-object keys** — `_HEAVY_OBJECT_KEYS = ("solver", "solve_result",
-  "quote_grid", "factors_df", "ratebook_factor_contexts")`. Only jobs with
-  `status == "completed"` are ever eligible to have these keys stripped.
-  `_HEAVY_OBJECT_EXPIRES_AT_KEY = "heavy_objects_expires_at"` is the stamped field
-  that pins when stripping becomes due; once set it is not recomputed on subsequent
-  updates (`_prepare_heavy_object_policy_locked` returns early if the key already
-  exists).
+- **Heavy-object keys** — `_DEFAULT_HEAVY_OBJECT_KEYS = ("solver", "solve_result",
+  "quote_grid")` and `_HEAVY_OBJECT_KEYS = (*_DEFAULT_HEAVY_OBJECT_KEYS, "factors_df",
+  "ratebook_factor_contexts")`. Only jobs with `status == "completed"` are ever
+  eligible to have these keys stripped; `_DEFAULT_HEAVY_OBJECT_KEYS` is the default
+  for `touch_heavy_objects`. `_HEAVY_OBJECT_EXPIRES_AT_KEY = "heavy_objects_expires_at"`
+  is the stamped field that pins when stripping becomes due; once set it is not
+  recomputed on subsequent updates (`_prepare_heavy_object_policy_locked` returns early
+  if the key already exists).
 - **`_KNOWN_PREFIXES: frozenset[str] = {"training", "optimiser", "explore", "input_cache"}`** — the
   closed allow-list behind `get_job_store`, a `functools.cache`d factory returning one
   `JobStore` singleton per prefix for the life of the process.
-
-### `_job_lifecycle.py`
-
 - **`TerminalReason`** — `Literal["completed", "superseded", "timed_out",
   "cancelled", "memory_limited", "contract_error", "error"]`.
 - **`TERMINAL_REASONS`** — the closed terminal-status set. A terminal reason is
@@ -66,8 +64,12 @@
   memory_limited=30 < cancelled=40 < timed_out=50 < superseded=60`. Higher wins a
   race between two *already-terminal* reasons; `completed` is not in this map because
   it is handled as a separate, non-precedence special case (see Control flow).
+
+### `_job_lifecycle.py`
+
 - **`JobLifecycle`** — a frozen, typed facade wrapping one `store: JobStore` and an
-  optional test-only transition fault injector. `transition()` delegates to the
+  optional test-only transition fault injector. The module re-exports
+  `TerminalReason` and `TERMINAL_REASONS` from `_job_store.py`. `transition()` delegates to the
   store's public terminal operation; `publish_completion()` delegates to the public
   compare-and-swap publication operation. It never acquires the store lock, reads
   backing state, calls a private merge helper, or schedules cleanup itself.
@@ -155,11 +157,11 @@
 
 ### `JobLifecycle.transition(job_id, *, to, message, fields, expected_status="running", elapsed_seconds, now)`
 
-1. Validate the destination, optimistic-lock state, and payload fields before
-   entering the store. `expected_status` may be only `"running"` or
-   `"completed"`; the latter is valid only with `to="error"`. Any other value or
-   destination raises `ValueError`, as does any attempt for `fields` to supply a
-   store-owned lifecycle key.
+1. Validate the destination and optimistic-lock state in the facade (`expected_status`
+   may be only `"running"` or `"completed"`; the latter is valid only with `to="error"`;
+   any other value or destination raises `ValueError`). Payload fields are validated by
+   the store before any record mutation; supplying a store-owned lifecycle key raises
+   `ValueError`.
 2. Delegate the whole operation to `JobStore.transition_terminal`. The store
    validates the current record, constructs `status=to`, `terminal_reason=to`,
    `ended_at=now`, optional message/elapsed time, and `completed_at` for a completed
@@ -190,9 +192,11 @@ while retaining the same lock, validates the returned job-specific fields, and
 commits those fields plus the completed lifecycle metadata in one copy-on-write
 swap. A cancellation or timeout therefore wins wholly before publication, or waits
 and observes the completed record after publication; no reader can observe durable
-artifacts paired with a still-running or cancelled in-memory result. Publisher
-exceptions propagate and leave the job record unchanged. Filesystem transaction and
-rollback semantics remain owned by the job-specific publisher.
+artifacts paired with a still-running or cancelled in-memory result. The caller-supplied
+publisher must not mutate its own job record (raises `RuntimeError`) and must return
+a mapping (raises `ValueError`). Publisher exceptions propagate and leave the job record
+unchanged. Filesystem transaction and rollback semantics remain owned by the job-specific
+publisher.
 
 `bind_running_execution_metrics_publisher(store, job_id, execution_context)` closes
 over a `weakref.ref` to the `ExecutionContext` (does not keep it alive) and installs
@@ -269,7 +273,7 @@ deliberate check-after-build pattern so a fast-moving sequence of updates betwee
    filesystem deletion never holds the global store lock. Missing cleaner
    registrations and cleaner exceptions are logged and isolated to their handle.
 
-`touch_heavy_objects(job_id, required_keys=...)` lets a consumer that just
+`touch_heavy_objects(job_id, required_keys=_DEFAULT_HEAVY_OBJECT_KEYS)` lets a consumer that just
 successfully read a completed job's heavy state extend its retention window: it
 evicts stale jobs first, returns `False` if the job doesn't exist, isn't completed,
 or is missing any `required_keys` (the caller is expected to keep raising its own
@@ -310,6 +314,10 @@ therefore cannot be bypassed by test or shutdown reset code.
   returns `None` unless `token.cancelled` is true, even if a `terminal_reason` was
   somehow set without the event (not reachable through the public API, since `cancel`
   always sets both together).
+- `latest_publication(job_id)` — context manager that yields whether the job is
+  still the uncancelled latest owner for its key while holding the registry `RLock`
+  across the caller's block, serialising the check and publication indivisibly
+  relative to concurrent `register_latest` and `cancel`.
 - `release(job_id)` — pops the token; if `_latest_by_key[token.key]` still points at
   this `job_id`, removes that mapping too (so a *stale* `job_id` being released after
   a newer one has already superseded it does not accidentally clear the newer job's
@@ -358,9 +366,9 @@ The thread executes one total outcome pipeline:
    the diagnostic `error` field, and a child-supplied `error` string it would
    overwrite moves to `worker_error` (only when non-empty and actually
    different from the wrapper). Any other `BaseException` becomes an `error`
-   outcome with a bounded generic message plus
-   `worker_error_class`/`supervisor_error_class`; the original exception is
-   retained as `exception_to_report`.
+   outcome with a bounded generic message plus `supervisor_error_class`
+   (no `worker_error_class`, which only typed worker failures carry); the
+   original exception is retained as `exception_to_report`.
 2. `_finish_outcome` runs the parent completion/cleanup callback. A cleanup failure
    is retained as `cleanup_error`/`cleanup_error_class` without changing the worker
    outcome, and is logged with its job ID and traceback for operator diagnosis. In
@@ -500,9 +508,9 @@ is only warranted for a concrete thread callable that can honour such a signal.
 
 | Exception | Raised by | Where it surfaces |
 | --- | --- | --- |
-| `ValueError` | `JobStore.__init__` (negative TTLs); `create_job` (unknown/non-running status, terminal metadata, or invalid timestamp); generic updates (lifecycle-owned fields or unknown expected status); terminal/publication operations (unknown or invalid transition); `get_job_store` (unknown prefix); `require_job_status` (invalid/missing status) | Construction/mutation/lookup call sites; propagates to caller, not converted to HTTP by this component. Validation happens before record mutation. |
+| `ValueError` | `JobStore.__init__` (negative TTLs); `create_job` (unknown/non-running status, terminal metadata, or invalid timestamp); generic updates (lifecycle-owned fields or unknown expected status); terminal/publication operations (unknown or invalid transition; `compare_and_publish_completion` publisher returned non-mapping); `get_job_store` (unknown prefix); `require_job_status` (invalid/missing status) | Construction/mutation/lookup call sites; propagates to caller, not converted to HTTP by this component. Validation happens before record mutation. |
 | `KeyError` | `JobStore.update_job` / `atomic_update` / `atomic_update_if_heavy_present` / terminal and publication operations (unknown job id) | Propagates; callers generally only reach these with ids they created themselves. |
-| `RuntimeError` | `register_artifact_cleaner` (duplicate distinct cleaner for a kind); `_schedule_heavy_object_cleanup_if_needed` (schedule requested without a numeric expiry) | Treated as internal-bug-level failures; not caught anywhere in this component. |
+| `RuntimeError` | `register_artifact_cleaner` (duplicate distinct cleaner for a kind); `_schedule_heavy_object_cleanup_if_needed` (schedule requested without a numeric expiry); `JobStore.compare_and_publish_completion` (publisher mutated its own job record) | Treated as internal-bug-level failures; not caught anywhere in this component. |
 | `HTTPException(404)` | `JobStore.require_job` | Standard FastAPI error response for missing/expired job ids. |
 | `HTTPException(400)` | `JobStore.require_completed_job` | When the job exists but isn't `completed`; message includes the actual status. |
 | `SingleFlightConflictError(RuntimeError)` | `SingleFlightCoordinator.acquire` | Not caught inside this component; optimiser route code (`_optimiser_service.py`) converts the equivalent caller-side conflict into `HTTPException(409)`. |
@@ -513,7 +521,6 @@ is only warranted for a concrete thread callable that can honour such a signal.
 
 ## Testing
 
-- `tests/test_partial_failure.py` — adversarial save/preview, filesystem, watcher, WebSocket, stale-index, sidecar-corruption, OOM, and resource-cleanup failure handling.
 - `tests/test_state_transitions.py` — JobStore rejects invalid/double-start operations, wrong-status actions, and protected/invalid/duplicate Git transitions.
 - `tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage` — the
   curated-message routing contract: `IsolatedJobSupervisor._produce_outcome`
