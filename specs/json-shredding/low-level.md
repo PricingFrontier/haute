@@ -630,8 +630,11 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   and the still-private verified snapshot; otherwise it is re-hashed. A
   footer-readable data-page corruption is therefore rejected rather than masked by
   size/mtime or by a stale retained snapshot.
-- **The build lock is process-local**, keyed by the normcased resolved cache-dir
-  path; concurrent builds of *different* caches never block each other.
+- **The build lock is a native cross-process file lock** (`fcntl.flock` on POSIX,
+  `msvcrt.locking` on Windows), keyed by the normcased resolved cache-dir path and
+  reentrant within one process; concurrent builds of *different* caches never block
+  each other, and a second process building the *same* cache waits for the first to
+  publish or release.
   `_BUILD_LOCKS` weakly retains inactive identities, while the caller strongly owns
   its lock throughout table-spec construction, source signing, validation, staging,
   and publish. Cache directories are resolved from the selected project process CWD,
@@ -789,7 +792,7 @@ Shred / inference / cache lifecycle (the `_json_shred/` package, `_json_flatten.
   ownership and failure-path coverage: inherited-PID isolation, reference and
   process-pin transitions, cleanup-registration rollback, partial-copy cleanup,
   missing-file release, and hard-link signature failure.
-- `tests/test_json_cache_cross_process.py` — spawn-process cache-build lock serialisation and crash-stage/backup recovery, including fail-closed non-plain paths.
+- `tests/test_json_cache_cross_process.py` — spawn-process cache-build lock serialisation and crash-stage/backup recovery, including fail-closed non-plain paths; and the HTTP build transaction's parent-owned lifecycle with a real spawned child — a request cancellation or a timeout terminates the live child, discards the staging generation, and only then releases the cross-process build lock, which a second process is shown to be blocked on throughout.
 - `tests/test_json_direct_spill.py` — uncached JSON/JSONL direct-spill streaming, validation, disk-budget, and cleanup regressions.
 - `tests/test_json_runtime_storage.py` — owned runtime-storage orphan recovery, symlink/reparse preservation, hard-link accounting, and budget-integrity safeguards.
 - `tests/test_json_cache_routes.py` — API integration tests for the build/status/

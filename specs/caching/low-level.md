@@ -116,11 +116,17 @@ does not reap it; execution is the lifecycle owner.
    (`.json`, `.jsonl`, `.ndjson`, or `.xml`), and volatile or persisted schema is
    selected and validated.
 3. Missing schema returns 422; only then does a missing data file return 404.
-4. Blocking shred work runs with a response timeout and updates process-local progress.
+4. The library path shreds in-process with a response timeout and process-local
+   progress; the HTTP route delegates to a one-shot child process that prepares the
+   staging directory while the parent, holding the cross-process build lock, owns
+   validation, cancellation, publication, and cleanup (the owning contract is the
+   server-api JSON cache build transaction).
 5. Successful builds mark the working cache consulted so save-time promotion can occur.
 6. Status validates the same schema and storage metadata; delete clears the cache.
 
-There is no backend cancel operation or advertised cancel response.
+There is no separate GUI cancel endpoint; the server's own cancellation and timeout
+handling of the child transaction is described by server-api and is distinct from
+that absence.
 
 ### Source snapshots
 

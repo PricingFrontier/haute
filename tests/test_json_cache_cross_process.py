@@ -14,6 +14,7 @@ import pytest
 
 from haute._json_shred import _publication
 from haute._json_shred._publication import JsonCacheRecoveryError, _build_lock_for, _cache_lock_path
+from haute._worker_isolation import IsolatedWorkerStoppedError, IsolatedWorkerTimeoutError
 
 
 def _hold_cache_lock(
@@ -33,6 +34,63 @@ def _finish_process(process: Any, release: Any) -> None:
     if process.is_alive():
         process.terminate()
         process.join(timeout=5)
+
+
+def _blocking_cache_worker(
+    data_path: str,
+    v2_config: dict[str, Any],
+    cache_dir: str,
+    staging_dir: str,
+    budget: Any,
+) -> Any:
+    """Stand-in child: prove it is alive through *data_path*, leave a partial
+    generation in the parent-chosen staging directory, then wait to be killed."""
+    del v2_config, cache_dir, budget
+    staging = Path(staging_dir)
+    staging.mkdir(parents=True, exist_ok=True)
+    (staging / "partial.parquet").write_bytes(b"partial")
+    Path(data_path).write_text(str(os.getpid()), encoding="utf-8")
+    time.sleep(120)
+    raise AssertionError("the worker outlived its parent's cancellation or timeout")
+
+
+def _probe_cache_lock(
+    cache_dir: str,
+    child_pid: int,
+    acquired: Any,
+    release: Any,
+) -> None:
+    """Contend for the build lock from a separate process and report what the
+    world looked like at the instant it was granted: whether the build child
+    was still alive, and which staging siblings were still on disk. Both must
+    already be settled — the transaction cleans up INSIDE the lock."""
+    cache = Path(cache_dir)
+    with _build_lock_for(cache):
+        leftover = sorted(p.name for p in cache.parent.glob(f"{cache.name}.build-tmp-*"))
+        acquired.put((os.getpid(), _pid_alive(child_pid), leftover))
+        if not release.wait(10):
+            raise TimeoutError("test did not release cache lock")
+
+
+def _pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) != 0  # WAIT_OBJECT_0 == exited
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def test_cache_build_lock_serializes_independent_processes(tmp_path: Path) -> None:
@@ -555,3 +613,140 @@ def test_cache_build_lock_passes_remaining_finite_timeout_and_detects_lost_handl
     lock._owner_thread_id = threading.get_ident()
     with pytest.raises(RuntimeError, match="lost"):
         lock.release()
+
+
+def _run_build_transaction_until(
+    tmp_path: Path,
+    *,
+    cancel: bool,
+    timeout_seconds: float | None,
+) -> tuple[BaseException | None, int, Path]:
+    """Run the real transaction with a real spawned child, interrupt it, and report
+    (raised exception, child pid, cache_dir) after the transaction thread finished.
+    Asserts, WHILE the child is alive, that a separate process cannot take the build lock."""
+    from unittest.mock import patch
+
+    from haute._execution_admission import IsolatedExecutionBudget
+    from haute._execution_context import ExecutionProfile
+    from haute.routes import json_cache
+    from haute.routes._isolated_worker_async import WorkerCancellationGate
+
+    cache_dir = tmp_path / "json_identity"
+    started = tmp_path / "child-started"
+    gate = WorkerCancellationGate()
+    budget = IsolatedExecutionBudget(
+        operation="test",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=8 * 1024**3,
+        config_key="test",
+        budget_policy="test",
+    )
+    result: list[BaseException | None] = []
+
+    def run() -> None:
+        try:
+            json_cache._json_cache_build_transaction(
+                str(started), {"type": "object", "fields": {}}, cache_dir, budget, gate
+            )
+        except BaseException as exc:  # noqa: BLE001 - the test inspects the exact type
+            result.append(exc)
+        else:
+            result.append(None)
+
+    patches = [patch.object(json_cache, "_prepare_json_cache_worker", _blocking_cache_worker)]
+    if timeout_seconds is not None:
+        patches.append(patch.object(json_cache, "_build_timeout", return_value=timeout_seconds))
+
+    for p in patches:
+        p.start()
+    patches_active = True
+    try:
+        thread = threading.Thread(target=run)
+        thread.start()
+
+        deadline = time.monotonic() + 60.0
+        child_pid: int | None = None
+        while time.monotonic() < deadline:
+            if started.exists():
+                try:
+                    text = started.read_text(encoding="utf-8").strip()
+                except OSError:
+                    text = ""
+                if text:
+                    child_pid = int(text)
+                    break
+            time.sleep(0.05)
+        assert child_pid is not None, "Child process did not report start"
+        assert _pid_alive(child_pid)
+
+        staging_matches = list(cache_dir.parent.glob(f"{cache_dir.name}.build-tmp-*"))
+        assert len(staging_matches) == 1
+        assert (staging_matches[0] / "partial.parquet").is_file()
+
+        ctx = mp.get_context("spawn")
+        acquired = ctx.Queue(maxsize=1)
+        release = ctx.Event()
+        probe = ctx.Process(
+            target=_probe_cache_lock,
+            args=(str(cache_dir), child_pid, acquired, release),
+        )
+        probe.start()
+        try:
+            with pytest.raises(queue.Empty):
+                acquired.get(timeout=1.0)
+
+            if cancel:
+                gate.request()
+
+            thread.join(timeout=60)
+            assert not thread.is_alive()
+            for p in reversed(patches):
+                p.stop()
+            patches_active = False
+
+            # Granted only once the transaction let go — and by then the child
+            # was already dead and its staging generation already discarded.
+            probe_pid, child_alive_at_grant, leftover_at_grant = acquired.get(timeout=10)
+            assert probe_pid == probe.pid
+            assert child_alive_at_grant is False
+            assert leftover_at_grant == []
+        finally:
+            _finish_process(probe, release)
+        assert probe.exitcode == 0
+    finally:
+        if patches_active:
+            for p in reversed(patches):
+                p.stop()
+
+    assert len(result) == 1
+    return (result[0], child_pid, cache_dir)
+
+
+def test_http_build_cancellation_terminates_the_child_and_cleans_staging_before_releasing_the_lock(
+    tmp_path: Path,
+) -> None:
+    exc, child_pid, cache_dir = _run_build_transaction_until(
+        tmp_path, cancel=True, timeout_seconds=None
+    )
+    assert isinstance(exc, IsolatedWorkerStoppedError) and exc.terminal_reason == "cancelled"
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline and _pid_alive(child_pid):
+        time.sleep(0.05)
+    assert not _pid_alive(child_pid)
+    assert list(cache_dir.parent.glob(f"{cache_dir.name}.build-tmp-*")) == []
+    assert not cache_dir.exists()
+
+
+def test_http_build_timeout_terminates_the_child_and_cleans_staging_before_releasing_the_lock(
+    tmp_path: Path,
+) -> None:
+    exc, child_pid, cache_dir = _run_build_transaction_until(
+        tmp_path, cancel=False, timeout_seconds=6.0
+    )
+    assert isinstance(exc, IsolatedWorkerTimeoutError) and exc.timeout_seconds == 6.0
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline and _pid_alive(child_pid):
+        time.sleep(0.05)
+    assert not _pid_alive(child_pid)
+    assert list(cache_dir.parent.glob(f"{cache_dir.name}.build-tmp-*")) == []
+    assert not cache_dir.exists()

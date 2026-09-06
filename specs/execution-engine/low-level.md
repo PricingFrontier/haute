@@ -1657,9 +1657,13 @@ and calls `execute_lazy_graph` with `target_node_id`, `preserve_node_ids`, and
 contract enforcement. It reads only lazy schemas; a dict-shaped multi-frame
 result is rendered per port and no frame is collected.
 
-The assistant application service's v1 post-save verification tier is
-`structural`: it reparses and validates the saved graph and evaluates closed
-structural postconditions. Execution-plan verification is an explicitly
-stronger future tier. This component does not own assistant project revisions,
-plan hashes or save authority, and no assistant tool may present a structural
-result as execution evidence.
+The assistant application service owns the post-save verification tiers (see
+[assistant high-level](../assistant/high-level.md)): a plan that affects
+executable flow declares `schema`, which reparses and validates the saved graph,
+evaluates the closed structural postconditions, and resolves exact lazy-schema
+evidence for the affected nodes through this component's lazy facade; only a
+mutation with no executable target may declare `structural`. Schema evidence is
+not row-level execution or model-quality proof, and a schema failure is never
+reported as successful verification. This component does not own assistant
+project revisions, plan hashes or save authority, and no assistant tool may
+present a structural or schema result as execution evidence.

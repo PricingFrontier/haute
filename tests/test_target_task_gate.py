@@ -782,6 +782,34 @@ class TestWorkerBoundaryUserMessage:
         assert "could not convert" not in message
         assert "ValueError" in message
 
+    def test_metric_stage_wrapper_rides_the_validation_channel(self) -> None:
+        """The metric-stage wrap is haute-authored, user-facing wording: it
+        carries the marker type, so the worker promotes it verbatim as a
+        ``contract_error`` instead of hiding it behind the type-only fallback."""
+        from types import SimpleNamespace
+
+        from haute.errors import HauteValidationError
+        from haute.modelling._training_job import TrainingJob
+        from haute.routes._train_service import _known_training_worker_failure
+
+        job = SimpleNamespace(
+            evaluation_plan=None, metrics=["auc"], target="sev", task="regression"
+        )
+        wrapped = TrainingJob._metric_stage_error(
+            job, ValueError("continuous format is not supported"), evaluation_set="validation"
+        )
+        assert isinstance(wrapped, HauteValidationError)
+        assert "Could not evaluate the trained model on the validation data" in str(wrapped)
+        assert "'sev'" in str(wrapped) and "'regression'" in str(wrapped) and "auc" in str(wrapped)
+
+        payload = _known_training_worker_failure(
+            wrapped, bounded_memory_prefix="Training cannot run in bounded streaming mode"
+        )
+        assert payload is not None
+        assert payload.terminal_reason == "contract_error"
+        assert payload.message == str(wrapped)
+        assert payload.fields[WORKER_USER_MESSAGE_FIELD] == payload.message
+
     def test_memory_error_keeps_the_typed_wrapper_surface(self) -> None:
         from haute.routes._train_service import _known_training_worker_failure
 

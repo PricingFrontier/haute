@@ -656,11 +656,14 @@ rows/features) and retry.
   inputs, a missing offset column at predict time, or GLM terms referencing absent
   columns. A metric failure (`ValueError`, `TypeError`, or an arithmetic error —
   never `MemoryError`, which keeps its memory taxonomy) in
-  `TrainingJob._compute_metrics` is re-raised as a `ValueError` naming the evaluation
-  set, target column, task, and requested metrics, chaining the original.
-  `_run_training_process_job` maps a bare `ValueError` from
-  `TrainingJob.run()` to a `contract_error` failure payload (distinct from the
-  catch-all `error`), and the parent supervisor persists that terminal reason.
+  `TrainingJob._compute_metrics` is re-raised as a `HauteValidationError` naming the
+  evaluation set, target column, task, and requested metrics, chaining the original.
+  `_run_training_process_job` maps a `HauteValidationError` from `TrainingJob.run()`
+  to a `contract_error` failure payload carrying its message verbatim (distinct from
+  the catch-all `error`); a bare `ValueError` — a dependency's, or a deliberately
+  plain result-shape check — is a system fault that takes `error` with
+  `_friendly_error`'s type-only public message, the raw text surviving only in the
+  diagnostic `error` field. The parent supervisor persists that terminal reason.
 - **Execution-engine exceptions** (`ExecutionCancelledError`,
   `ExecutionMemoryLimitExceededError`, `BoundedMemoryUnsupportedError`) — each maps to
   a distinct failure payload (`cancelled`, `memory_limited`, `contract_error`
@@ -741,17 +744,26 @@ rows/features) and retry.
 - **Dispersion estimation** — `_validate_dispersion_config` raises `HTTPException(400)`
   for an unknown parameter, a non-GLM node, a family/link mismatch, a parameter/family
   pairing mismatch, a missing target, or any other incomplete training objective;
-  raised before any job record is created. Inside `estimate_glm_dispersion`, `ValueError`
-  covers an unrecognised or mismatched `param` and "every candidate fit failed"; inside
-  the process worker, `ValueError` maps the job to `contract_error`,
-  `ExecutionCancelledError` maps to `cancelled`, and any other exception maps to
-  `error` via `_friendly_error` — the same taxonomy the training entrypoint uses.
+  raised before any job record is created. Inside `estimate_glm_dispersion`,
+  `HauteValidationError` covers an unrecognised or mismatched `param` and "every
+  candidate fit failed"; inside the process worker, `HauteValidationError` maps the job
+  to `contract_error` with its message verbatim, `ExecutionCancelledError` maps to
+  `cancelled`, `MemoryError` to `memory_limited`, and any other exception — a
+  dependency's plain `ValueError` included — maps to `error` via `_friendly_error`'s
+  type-only public message, the same taxonomy the training entrypoint uses.
 
 ## Testing
 
 - `tests/test_service_domain_boundaries.py` keeps the training facade explicit,
   the extracted service-module graph acyclic, and lifecycle state ownership out
   of preparation, evaluation, worker-protocol, and artifact leaves.
+- `tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage` pins the provenance
+  rule at the worker boundary: a `HauteValidationError` — the metric-stage wrapper
+  included — is promoted verbatim as a `contract_error`, while a dependency's plain
+  `ValueError` takes the type-only `error` fallback;
+  `tests/test_training_worker_protocol.py::test_dispersion_worker_maps_estimator_failures`
+  proves the dispersion worker applies the same taxonomy, keeping the dependency text
+  out of the public message and in the diagnostic `error` field.
 - `tests/test_training_preparation_worker.py` pins the hard-capped preparation
   worker: exactly one `haute-training-prep` launch per preparation with the budget's
   `memory_limit_bytes`, the remaining job timeout, and a `stop_reason` that reads the
