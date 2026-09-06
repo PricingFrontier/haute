@@ -331,6 +331,39 @@ def test_validation_rejects_absent_corrupt_or_mismatched_input_manifest(
         _hook(module, tmp_path).initialize("standard", {})
 
 
+def test_atomic_proof_publication_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_hatch_build(monkeypatch)
+    frontend = _seed_frontend_inputs(tmp_path)
+    static = tmp_path / "src" / "haute" / "static"
+    static.mkdir(parents=True, exist_ok=True)
+    index = static / "index.html"
+    index.write_text("<!doctype html>", encoding="utf-8")
+
+    destination = static / module._INPUT_MANIFEST_NAME
+    original_bytes = b'{"pre_existing": true}\n'
+    destination.write_bytes(original_bytes)
+    temporary = destination.with_name(f"{destination.name}.tmp")
+
+    real_replace = Path.replace
+
+    def failing_replace(self: Path, target: Path | str) -> Path:
+        if self == temporary or str(self) == str(temporary):
+            raise OSError("simulated disk failure on replace")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", failing_replace)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        module.FrontendBuildHook._write_input_manifest(frontend, index)
+
+    assert str(destination) in str(exc_info.value)
+    assert not temporary.exists()
+    assert destination.read_bytes() == original_bytes
+
+
 def test_explicit_build_skips_vite_only_for_the_same_complete_proof(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

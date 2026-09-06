@@ -143,6 +143,27 @@ class TestPlatformProxyBoundary:
         client.get("/", headers={"host": "localhost"})
         assert FORWARDED_USER_SCOPE_KEY not in captured["scope"]
 
+    def test_empty_forwarded_email_leaves_scope_key_absent(self) -> None:
+        captured: dict = {}
+        headers = {**_PROXY_HEADERS, "x-forwarded-email": ""}
+        client = TestClient(PlatformProxyBoundary(_capture_scope_app(captured)))
+        client.get("/", headers=headers)
+        assert FORWARDED_USER_SCOPE_KEY not in captured["scope"]
+
+    def test_whitespace_forwarded_email_leaves_scope_key_absent(self) -> None:
+        captured: dict = {}
+        headers = {**_PROXY_HEADERS, "x-forwarded-email": "   \t  "}
+        client = TestClient(PlatformProxyBoundary(_capture_scope_app(captured)))
+        client.get("/", headers=headers)
+        assert FORWARDED_USER_SCOPE_KEY not in captured["scope"]
+
+    def test_padded_forwarded_email_is_recorded_stripped(self) -> None:
+        captured: dict = {}
+        headers = {**_PROXY_HEADERS, "x-forwarded-email": "  someone@example.com  \t"}
+        client = TestClient(PlatformProxyBoundary(_capture_scope_app(captured)))
+        client.get("/", headers=headers)
+        assert captured["scope"][FORWARDED_USER_SCOPE_KEY] == "someone@example.com"
+
     def test_non_http_scopes_pass_through_untouched(self) -> None:
         seen: dict = {}
 

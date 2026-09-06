@@ -20,22 +20,6 @@ or maintenance issue; `P3` opportunistic work.
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
-| [Specification accuracy](spec-accuracy.md) | Corpus review findings of 6 September 2026: accuracy, stale symbols, writing rules, ownership ledger, structure | `SPEC-A09` |
-
-## Supporting findings
-
-- [Specification corpus review — 6 September 2026](fable5.1-review/report.md)
-
-The dated reports preserve the reviewed snapshot and its evidence; they are not
-additional work queues or claims about current behaviour. Delivery status lives
-in the owning component roadmap and, for workflow witnesses, in
-`tests/workflow_coverage.toml`. Supporting reports are
-explicitly enumerated by the documentation checks, included in the corpus
-inventory, and use repository-relative links. When the last package a report
-supports is retired, the report is removed in the same change and the
-enumeration is updated; durable evidence lives in the owning component Testing
-sections. Historical probe programs and raw execution logs are not bundled with
-these reports; their recorded results are identified as historical evidence.
 
 ## Working protocol
 

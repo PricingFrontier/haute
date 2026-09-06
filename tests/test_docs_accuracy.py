@@ -141,9 +141,8 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
     "explore-eda",
     "optimiser",
-    "spec-accuracy",
 )
-_ROADMAP_SUPPORTING_REPORTS = ("fable5.1-review/report.md",)
+_ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = ()
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
     flags=re.MULTILINE,

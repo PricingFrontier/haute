@@ -166,9 +166,9 @@ readiness/freshness/progress are separate typed values.
 optimiser solves, training runs, explore reports, and pivot matrices are kept
 once computed. Each result category (`previews`, `solveResults`, `trainResults`,
 `exploreResults`, `pivotResults`) is bounded to a fixed entry count and evicted
-by least-recently-touched. In the first four the currently pinned/open node's
-entry survives eviction pressure; the pivot trimmer orders the pinned node's
-entries last but evicts them once the unpinned entries are exhausted. A
+by least-recently-touched. In all five caches the currently pinned/open node's
+entries survive eviction pressure; the pivot trimmer excludes the pinned node's
+entries entirely from eviction candidates. A
 config-hash (`hashConfig`) lets panels detect
 "this result is stale relative to the current node config" without deleting
 the old result. Despite its historical name, `hashConfig` is the exact

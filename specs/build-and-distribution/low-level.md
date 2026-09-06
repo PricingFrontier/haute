@@ -182,9 +182,12 @@ package input validated by `hatch_build.py`, not hand-edited source.
   absent/corrupt/mismatched input manifests, direct and transitive/dynamic
   missing output assets, manifest-key/path/schema failures, path escapes,
   validation mode, explicit-build skip/rebuild behavior, unconditional locked
-  installation, safe subprocess decoding and timeout translation, atomic proof
-  publication failures, navigation-link exclusion, and coherent post-build
-  readiness.
+  installation, safe subprocess decoding and timeout translation, the atomic
+  input-manifest publication failure branch
+  (`tests/test_hatch_build.py::test_atomic_proof_publication_failure`: a failed
+  temporary-file replace raises `RuntimeError` naming the destination, leaves no
+  temporary file and leaves an existing manifest unchanged), navigation-link
+  exclusion, and coherent post-build readiness.
 - Package smoke jobs exercise the real sdist/wheel and clean-install paths;
   focused hook tests keep failure branches deterministic without invoking npm.
 - `tests/test_docs_accuracy.py` is a repository documentation consistency gate;

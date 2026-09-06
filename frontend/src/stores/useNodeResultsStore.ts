@@ -715,11 +715,9 @@ function trimExplorePivotCache(
   const evictCount = keys.length - MAX_CACHED_EXPLORE_PIVOT_RESULTS
   if (evictCount <= 0) return { records, evicted: [] }
   const byRecency = (a: string, b: string) => (explorePivotResultRecency.get(a) ?? 0) - (explorePivotResultRecency.get(b) ?? 0) || a.localeCompare(b)
-  const evictionOrder = [
-    ...keys.filter((key) => !protectedKeys.has(key)).sort(byRecency),
-    ...keys.filter((key) => protectedKeys.has(key)).sort(byRecency),
-  ]
-  const evicted = evictionOrder
+  const evicted = keys
+    .filter((key) => !protectedKeys.has(key))
+    .sort(byRecency)
     .slice(0, evictCount)
   const nextRecords = { ...records }
   for (const key of evicted) {

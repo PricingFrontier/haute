@@ -135,7 +135,8 @@
   `exploreResults` + `exploreJobs`, `pivotResults` + `pivotJobs`), `pivotStartClaims`,
   a `columnCache` keyed `"nodeId"` or `"nodeId:source"`, and a `pinnedPreviewNodeId`
   that is exempted from LRU eviction in the four caches trimmed by
-  `trimCacheByRecency`; `trimExplorePivotCache` only orders that node's entries last.
+  `trimCacheByRecency` and whose pivot entries are likewise exempted by
+  `trimExplorePivotCache`.
 - **`SettingsState.mlflow`**: `{status: "pending"|"connected"|"error",
   backend, host, installed, importable, trackingConfigured, detail}` —
   `useMlflowStatus()` (exported alongside the store) maps `"pending"` to
@@ -298,9 +299,10 @@ focus nor leaves stale callbacks.
 - **`trimCacheByRecency`** first prunes any recency-map entries whose key
   no longer exists in `records` (handles external deletion, e.g.
   `clearNode`), then evicts the least-recently-touched entries beyond
-  `maxEntries`, always excluding `pinnedKey` — if pinning would leave more
-  entries than `maxEntries`, the pinned entry is still never evicted (the
-  bound is soft in that one case).
+  `maxEntries`, always excluding `pinnedKey` (and `trimExplorePivotCache`
+  similarly excludes every pivot entry of `pinnedPreviewNodeId`) — if pinning
+  would leave more entries than `maxEntries`, the pinned entries are still never
+  evicted (the bound is soft in that one case).
 - **`addSource`** performs no state change for a blank/whitespace-only name
   (`{ok: false, reason: "empty"}`) or for a name whose sanitized key
   already exists in `sources` (`{ok: false, reason: "duplicate", key}`) —

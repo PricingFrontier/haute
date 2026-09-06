@@ -27,14 +27,14 @@
 
 `create_app()` requires a complete environment contract, then records the hosted trust decision by disabling the local session gate *before* importing `haute.server`, so the middleware stack initialises with that decision already in force — and, in a deployment that restores a bound project, after the working directory is already the restored clone. It returns the server application wrapped in `PlatformProxyBoundary`.
 
-For each HTTP or WebSocket scope, the boundary records `X-Forwarded-Email` (when present) on the scope, strips `Forwarded` and every `X-Forwarded-*` header, and replaces `Host` with the loopback authority of the bound server. Non-HTTP scopes (lifespan) pass through untouched.
+For each HTTP or WebSocket scope, the boundary records `X-Forwarded-Email` (when present and non-blank, stripped of surrounding whitespace; blank or whitespace-only values are treated as absent) on the scope, strips `Forwarded` and every `X-Forwarded-*` header, and replaces `Host` with the loopback authority of the bound server. Non-HTTP scopes (lifespan) pass through untouched.
 
 ## Edge cases and invariants
 
 - A partial environment contract raises at startup; hosted mode is never inferred from one variable.
 - `create_app()` outside a recognised hosted environment raises rather than silently degrading — hosting is an explicit deployment decision, and `haute serve` remains the local entry point.
 - Header rewriting alone grants nothing: with the local session gate active, a proxied request whose headers now look local is still refused. Only the explicit hosted trust decision opens the API.
-- The forwarded-user scope key is absent rather than empty when the proxy sends no identity, so consumers cannot mistake "no identity" for a blank user.
+- The forwarded-user scope key is absent rather than empty when the proxy sends no identity or a blank or whitespace-only `X-Forwarded-Email` header (and a non-blank value is stripped of surrounding whitespace), so consumers cannot mistake "no identity" for a blank user.
 - Local mode is byte-identical: every behaviour here is gated on the environment contract.
 
 ## Error handling
