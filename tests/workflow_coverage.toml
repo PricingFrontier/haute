@@ -505,15 +505,72 @@ invariant = "The W05 row per-request exact responses and strict schema errors ho
 id = "W06-S01"
 workflow = "W06"
 contract = "specs/execution-engine/high-level.md#design-rationale"
-state = "gap"
-package = "ENG-T10"
+state = "covered"
 entry_point = "http"
 tier = "route"
 lane = "backend"
-real = ["executor", "cache"]
+real = ["executor", "cache", "tracer"]
+stubbed = []
+tests = [
+  "tests/test_server.py::TestPreviewNode::test_preview_returns_node_data",
+  "tests/test_runtime_input_cache_invalidation.py::TestPreviewRuntimeFileInvalidation::test_external_file_change_recomputes_preview",
+  "tests/test_runtime_input_cache_invalidation.py::TestPreviewRuntimeFileInvalidation::test_direct_parquet_overwrite_recomputes_preview",
+  "tests/test_runtime_input_cache_invalidation.py::TestTraceRuntimeInputInvalidation::test_trace_recomputes_after_datasource_edit",
+  "tests/test_runtime_input_cache_invalidation.py::TestTraceRuntimeInputInvalidation::test_trace_reuses_preview_entry_with_file_signature_present",
+  "tests/test_runtime_input_cache_invalidation.py::test_graph_input_fingerprint_uses_canonical_json",
+  "tests/test_input_preparation.py::test_a_warm_preview_returns_the_new_rows_after_the_source_is_rewritten",
+  "tests/test_input_preparation.py::test_a_cold_trace_builds_a_missing_generation_and_traces_the_rows",
+  "tests/test_input_preparation.py::test_a_trace_over_a_stale_generation_shows_the_refreshed_rows",
+  "tests/test_executor.py::TestPreviewCacheInvalidation::test_utility_change_forces_re_execution",
+  "tests/test_executor.py::TestPreviewCachePartialHit::test_full_cache_hit_reuses_producing_strategy_without_replanning",
+  "tests/test_trace_matches_preview.py::TestPreviewMatchSimple::test_passthrough_trace_matches_preview",
+  "tests/test_trace_matches_preview.py::TestPreviewMatchFilter::test_filter_trace_matches_every_preview_row",
+  "tests/test_trace_matches_preview.py::TestPreviewMatchSort::test_sort_trace_matches_every_preview_row",
+  "tests/test_trace_matches_preview.py::TestPreviewMatchJoin::test_join_trace_matches_every_preview_row",
+  "tests/test_trace_multi_frame.py::test_trace_through_multi_frame_source_succeeds",
+  "tests/test_trace_api.py::TestRequestValidation::test_row_values_mismatch_returns_conflict_not_500",
+  "tests/test_trace_api.py::TestRequestValidation::test_source_parameter_is_accepted",
+  "tests/test_pipeline_route_supersession.py::test_trace_supersedes_obsolete_same_key_requests",
+  "tests/test_pipeline_route_supersession.py::test_preview_supersedes_obsolete_same_key_requests",
+  "frontend/src/hooks/__tests__/useTracing.test.ts::ignores stale trace responses when a newer click resolves first",
+  "frontend/src/trace/__tests__/traceExport.test.ts::preserves exact numeric, default and omission evidence in topological order",
+  "frontend/e2e/core-flows.spec.ts::loads the starter pipeline and supports preview plus trace",
+  "frontend/e2e/core-flows.spec.ts::manages sources and persists the active source through save",
+]
+invariant = "Preview, refresh and trace over the active source return the same rows and trace identity across cold and warm caches; a config, data or helper edit invalidates the cached result; filtered, reordered, joined and multi-frame rows trace to the correct source row; a mismatched clicked row is a 409 rather than a wrong trace; and a stale preview or trace result never replaces a newer selection."
+
+[scenarios.evidence]
+commit = "5057be3a"
+command = 'uv run pytest tests/test_trace_matches_preview.py tests/test_trace_multi_frame.py tests/test_pipeline_route_supersession.py tests/test_runtime_input_cache_invalidation.py "tests/test_executor.py::TestPreviewCacheInvalidation" "tests/test_executor.py::TestPreviewCachePartialHit" "tests/test_trace_api.py::TestRequestValidation" "tests/test_server.py::TestPreviewNode" tests/test_input_preparation.py -q -p no:warnings'
+result = "145 passed in 14.86s"
+
+[[scenarios]]
+id = "W06-S02"
+workflow = "W06"
+contract = "specs/tracing/low-level.md#testing"
+state = "not-applicable"
+entry_point = "http"
+tier = "route"
+lane = "backend"
+real = []
 stubbed = []
 tests = []
-invariant = "The W06 row value and trace identity outcomes across cold and warm caches hold."
+reason = "the HTTP preview route materialises the target node only, so a first trace recomputes lineage by the supported route; successful full-lineage preview-cache reuse needs a separate cache-scope change and is explicitly not an acceptance requirement of this programme"
+invariant = "Full-lineage preview-cache reuse by a first trace is not applicable: the documented tracing coverage gap is a scoped future change, not a missing witness of current behaviour."
+
+[[scenarios]]
+id = "W06-S03"
+workflow = "W06"
+contract = "specs/frontend-trace-ui/high-level.md#behaviour"
+state = "not-applicable"
+entry_point = "browser"
+tier = "unit"
+lane = "frontend"
+real = []
+stubbed = []
+tests = []
+reason = "the wire contract does not yet carry backend-authored branch structure, so the panel renders conditional branches as separate metadata rather than mapping backend branch indices onto client-parsed rows"
+invariant = "Backend-to-client conditional branch index mapping is not applicable until the trace wire contract carries branch structure; the documented rendering is the current behaviour."
 
 [[scenarios]]
 id = "W07-S01"
@@ -796,15 +853,65 @@ invariant = "The W13 row validate, bundle, load, score outcomes hold."
 id = "W14-S01"
 workflow = "W14"
 contract = "specs/background-jobs/high-level.md#behaviour"
-state = "gap"
-package = "ENG-T10"
+state = "covered"
 entry_point = "http"
 tier = "unit"
 lane = "backend"
-real = ["job-store"]
+real = ["job-store", "lifecycle", "isolated-worker"]
+stubbed = []
+tests = [
+  "tests/test_modelling_routes.py::TestTrainEndpoint::test_train_reports_progress",
+  "tests/test_modelling_routes.py::TestTrainBackgroundLaunchFailures::test_launch_background_start_failure_marks_job_error",
+  "tests/test_modelling_routes.py::TestTrainStatusTimeout::test_cancel_training_marks_job_cancelled",
+  "tests/test_modelling_routes.py::TestTrainStatusTimeout::test_timeout_sets_error_with_elapsed",
+  "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_start_maps_unexpected_exception_to_error",
+  "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_cancel_dispersion_running_then_terminal_noop",
+  "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_dispersion_timeout_marks_the_job_timed_out_and_late_completion_cannot_revive_it",
+  "tests/test_optimiser_routes.py::TestSolveBackgroundErrors::test_solve_generic_exception",
+  "tests/test_optimiser_routes.py::TestSolveStatusTimeout::test_cancel_solve_marks_job_cancelled",
+  "tests/test_optimiser_routes.py::TestSolveStatusTimeout::test_timeout_sets_error_with_elapsed",
+  "tests/test_optimiser_routes.py::TestFrontierRoute::test_frontier_cancel_stops_late_parent_publication",
+  "tests/test_optimiser_routes.py::TestFrontierRoute::test_frontier_timeout_stops_late_parent_publication",
+  "tests/test_optimiser_routes.py::TestEstimateRoute::test_frontier_auto_range_cancel_marks_job_terminal",
+  "tests/test_optimiser_routes.py::TestEstimateRoute::test_frontier_auto_range_status_returns_canonical_job_status",
+  "tests/test_optimiser_routes.py::TestLaunchBackground::test_late_completion_does_not_overwrite_timeout",
+  "tests/test_explore_routes.py::test_explore_cancel_stops_in_flight_job",
+  "tests/test_explore_routes.py::test_explore_supersedes_an_in_flight_job",
+  "tests/test_explore_routes.py::test_explore_worker_maps_failures_to_typed_terminal_statuses",
+  "tests/test_explore_routes.py::test_explore_timeout_marks_the_job_timed_out_and_late_completion_cannot_revive_it",
+  "tests/test_input_cache_route.py::test_same_identity_build_requests_join_one_active_job",
+  "tests/test_input_cache_route.py::test_cancel_requests_cooperative_stop",
+  "tests/test_input_cache_route.py::test_build_deadline_owns_timeout_status_and_error_code",
+  "tests/test_input_cache_route.py::test_clear_and_build_admission_are_linearized",
+  "tests/test_job_lifecycle.py::test_running_metrics_publisher_ignores_terminal_job",
+  "tests/test_job_lifecycle.py::test_lifecycle_stale_completed_cannot_overwrite_terminal_stop",
+  "tests/test_job_lifecycle.py::test_lifecycle_reason_precedence_pairwise_races",
+  "tests/test_job_lifecycle.py::test_singleflight_same_key_has_one_owner_and_releases_for_retry",
+  "tests/test_worker_protocol.py::test_timeout_and_cancel_clean_up_process",
+  "tests/test_worker_protocol.py::test_worker_crash_is_contained_and_runs_parent_cleanup",
+  "tests/test_artifact_housekeeping.py::test_reaper_removes_only_marked_owned_stale_direct_child",
+  "tests/test_optimiser_routes.py::TestSaveArtifactGate::test_save_failure_then_retry_succeeds_without_resolve",
+]
+invariant = "Every job family that owns a background lifecycle (training, dispersion, optimiser solve/frontier/auto-range, explore, input-cache build) reaches its running, completed, error, cancelled and timed-out terminal states through the shared lifecycle; a late completion or progress report never revives a terminal job; single-flight keys, child processes, cache admission and marker-owned artifacts release exactly once; and a retry after a failure succeeds."
+
+[scenarios.evidence]
+commit = "5057be3a"
+command = 'uv run pytest tests/test_job_lifecycle.py tests/test_job_store.py tests/test_worker_protocol.py tests/test_artifact_housekeeping.py tests/test_input_cache_route.py "tests/test_modelling_routes.py::TestTrainStatusTimeout" "tests/test_modelling_routes.py::TestDispersionErrorPaths" "tests/test_optimiser_routes.py::TestSolveStatusTimeout" "tests/test_optimiser_routes.py::TestFrontierRoute" "tests/test_optimiser_routes.py::TestLaunchBackground" "tests/test_explore_routes.py::test_explore_cancel_stops_in_flight_job" "tests/test_explore_routes.py::test_explore_supersedes_an_in_flight_job" "tests/test_explore_routes.py::test_explore_worker_maps_failures_to_typed_terminal_statuses" "tests/test_explore_routes.py::test_explore_timeout_marks_the_job_timed_out_and_late_completion_cannot_revive_it" -q -p no:warnings'
+result = "384 passed in 15.85s"
+
+[[scenarios]]
+id = "W14-S02"
+workflow = "W14"
+contract = "specs/background-jobs/high-level.md#behaviour"
+state = "not-applicable"
+entry_point = "http"
+tier = "unit"
+lane = "backend"
+real = []
 stubbed = []
 tests = []
-invariant = "The W14 row admission and lifecycle transitions hold."
+reason = "training, dispersion, optimiser solve/frontier and input-cache builds are single-flight keys that refuse a concurrent start with 409 or join the active job; supersession exists only for the latest-job-per-key families (explore, auto-range, preview/trace)"
+invariant = "A superseded terminal state is not applicable to the single-flight job families because a second start is refused or coalesced rather than superseding the first."
 
 [[scenarios]]
 id = "W15-S01"
