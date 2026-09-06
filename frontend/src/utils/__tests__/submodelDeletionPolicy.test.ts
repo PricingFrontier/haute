@@ -3,7 +3,7 @@ import type { Node } from "@xyflow/react"
 import { withNativeDeletePolicy } from "../submodelDeletionPolicy"
 
 const owner: Node = {
-  id: "instance_owner",
+  id: "scoring",
   position: { x: 0, y: 0 },
   data: {
     label: "scoring",
@@ -13,7 +13,7 @@ const owner: Node = {
 }
 
 const copy: Node = {
-  id: "instance_copy",
+  id: "scoring_2",
   position: { x: 0, y: 0 },
   data: {
     label: "scoring_2",
@@ -21,13 +21,13 @@ const copy: Node = {
     config: {
       definitionId: "definition_scoring",
       alias: "scoring_2",
-      instanceOf: "instance_owner",
+      instanceOf: "scoring",
     },
   },
 }
 
 const malformed: Node = {
-  id: "instance_broken",
+  id: "broken",
   position: { x: 0, y: 0 },
   data: { label: "Broken", nodeType: "submodel", config: {} },
 }

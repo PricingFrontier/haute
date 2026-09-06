@@ -408,9 +408,7 @@ class TestSyntaxRecoverySubmodels:
 
             pipeline.submodel(
                 "modules/scoring.py",
-                definition_id="scoring",
-                instance_id="submodel__scoring",
-                alias="scoring",
+                "scoring",
             )
 
             x = = 5
@@ -424,7 +422,7 @@ class TestSyntaxRecoverySubmodels:
         )
         assert "scoring" in (document.submodels or {})
         node_ids = {node.authored_id for node in document.nodes}
-        assert "submodel__scoring" in node_ids
+        assert "scoring" in node_ids
 
     def test_recovered_submodel_child_survives_syntax_error(self, tmp_path: Path) -> None:
         _write(
@@ -461,9 +459,7 @@ class TestSyntaxRecoverySubmodels:
 
             pipeline.submodel(
                 "modules/scoring.py",
-                definition_id="scoring",
-                instance_id="submodel__scoring",
-                alias="scoring",
+                "scoring",
             )
 
             x = = 5
@@ -517,9 +513,7 @@ class TestSubmodelResolutionRoot:
             pipeline = haute.Pipeline("main")
             pipeline.submodel(
                 "modules/scoring.py",
-                definition_id="scoring",
-                instance_id="submodel__scoring",
-                alias="scoring",
+                "scoring",
             )
             """
         )
@@ -617,9 +611,7 @@ class TestGraphStructureConservationGate:
 
             pipeline.submodel(
                 {child.name!r},
-                definition_id="child",
-                instance_id="submodel__child",
-                alias="child",
+                "child",
             )
             pipeline.connect("source", "child", target_port="source")
             pipeline.connect("child", "sink", source_port="result")
@@ -628,20 +620,16 @@ class TestGraphStructureConservationGate:
 
         hierarchical = parse_pipeline_file(parent)
         assert any(
-            edge.source == "source"
-            and edge.target == "submodel__child"
-            and edge.targetHandle == "in__source"
+            edge.source == "source" and edge.target == "child" and edge.targetHandle == "in__source"
             for edge in hierarchical.edges
         )
         assert any(
-            edge.source == "submodel__child"
-            and edge.target == "sink"
-            and edge.sourceHandle == "out__result"
+            edge.source == "child" and edge.target == "sink" and edge.sourceHandle == "out__result"
             for edge in hierarchical.edges
         )
 
         flattened = parse_pipeline_file(parent, flatten=True)
-        runtime_transform = qualified_runtime_node_id("submodel__child", "transform")
+        runtime_transform = qualified_runtime_node_id("child", "transform")
         assert any(
             edge.source == "source" and edge.target == runtime_transform for edge in flattened.edges
         )
@@ -713,9 +701,7 @@ class TestGraphStructureConservationGate:
 
             pipeline.submodel(
                 {child.name!r},
-                definition_id="ported_child",
-                instance_id="submodel__ported_child",
-                alias="ported_child",
+                "ported_child",
             )
             pipeline.connect("source", "ported_child", target_port="base")
             pipeline.connect("ported_child", "sink", source_port="quotes")
@@ -726,12 +712,12 @@ class TestGraphStructureConservationGate:
         inbound = next(
             edge
             for edge in hierarchical.edges
-            if edge.source == "source" and edge.target == "submodel__ported_child"
+            if edge.source == "source" and edge.target == "ported_child"
         )
         outbound = next(
             edge
             for edge in hierarchical.edges
-            if edge.source == "submodel__ported_child" and edge.target == "sink"
+            if edge.source == "ported_child" and edge.target == "sink"
         )
         assert inbound.targetHandle == "in__base"
         assert inbound.targetPort is None
@@ -739,8 +725,8 @@ class TestGraphStructureConservationGate:
         assert outbound.sourcePort is None
 
         flattened = parse_pipeline_file(parent, flatten=True)
-        runtime_in = qualified_runtime_node_id("submodel__ported_child", "child_in")
-        runtime_out = qualified_runtime_node_id("submodel__ported_child", "child_out")
+        runtime_in = qualified_runtime_node_id("ported_child", "child_in")
+        runtime_out = qualified_runtime_node_id("ported_child", "child_out")
         flat_inbound = next(
             edge
             for edge in flattened.edges
@@ -905,9 +891,7 @@ class TestPrivateChildEndpoints:
 
             pipeline.submodel(
                 {child.name!r},
-                definition_id="child",
-                instance_id="submodel__child",
-                alias="child",
+                "child",
             )
             pipeline.connect("source", "transform")
             pipeline.connect("transform", "sink")
@@ -986,9 +970,7 @@ class TestPrivateChildEndpoints:
 
             pipeline.submodel(
                 {child.name!r},
-                definition_id="child",
-                instance_id="submodel__child",
-                alias="child",
+                "child",
             )
             pipeline.connect("transform", "sink")
             """,
@@ -1064,9 +1046,7 @@ class TestPrivateChildEndpoints:
 
             pipeline.submodel(
                 {child.name!r},
-                definition_id="child",
-                instance_id="submodel__child",
-                alias="child",
+                "child",
             )
             pipeline.connect("transform", "other")
             """,
@@ -1142,16 +1122,12 @@ class TestPrivateChildEndpoints:
 
             pipeline.submodel(
                 {child.name!r},
-                definition_id="child",
-                instance_id="submodel__a",
-                alias="a",
+                "a",
             )
             pipeline.submodel(
                 {child.name!r},
-                definition_id="child",
-                instance_id="submodel__b",
-                alias="b",
-                instance_of="submodel__a",
+                "b",
+                instance_of="a",
             )
             pipeline.connect("source", "a", target_port="source")
             pipeline.connect("a", "sink_a", source_port="result")
@@ -1162,27 +1138,19 @@ class TestPrivateChildEndpoints:
 
         hierarchical = parse_pipeline_file(parent_valid)
         assert any(
-            edge.source == "source"
-            and edge.target == "submodel__a"
-            and edge.targetHandle == "in__source"
+            edge.source == "source" and edge.target == "a" and edge.targetHandle == "in__source"
             for edge in hierarchical.edges
         )
         assert any(
-            edge.source == "submodel__a"
-            and edge.target == "sink_a"
-            and edge.sourceHandle == "out__result"
+            edge.source == "a" and edge.target == "sink_a" and edge.sourceHandle == "out__result"
             for edge in hierarchical.edges
         )
         assert any(
-            edge.source == "source"
-            and edge.target == "submodel__b"
-            and edge.targetHandle == "in__source"
+            edge.source == "source" and edge.target == "b" and edge.targetHandle == "in__source"
             for edge in hierarchical.edges
         )
         assert any(
-            edge.source == "submodel__b"
-            and edge.target == "sink_b"
-            and edge.sourceHandle == "out__result"
+            edge.source == "b" and edge.target == "sink_b" and edge.sourceHandle == "out__result"
             for edge in hierarchical.edges
         )
 
@@ -1209,16 +1177,12 @@ class TestPrivateChildEndpoints:
 
             pipeline.submodel(
                 {child.name!r},
-                definition_id="child",
-                instance_id="submodel__a",
-                alias="a",
+                "a",
             )
             pipeline.submodel(
                 {child.name!r},
-                definition_id="child",
-                instance_id="submodel__b",
-                alias="b",
-                instance_of="submodel__a",
+                "b",
+                instance_of="a",
             )
             pipeline.connect("source", "a", target_port="source")
             pipeline.connect("a", "sink_a", source_port="result")
@@ -1294,9 +1258,7 @@ class TestPrivateChildEndpoints:
 
             pipeline.submodel(
                 {child.name!r},
-                definition_id="child",
-                instance_id="submodel__child",
-                alias="child",
+                "child",
             )
             pipeline.connect("source", "transform")
             pipeline.connect("transform", "sink")
@@ -1617,9 +1579,7 @@ class TestPolarsParameterBinding:
 
             pipeline.submodel(
                 {child.name!r},
-                definition_id="child",
-                instance_id="submodel__a",
-                alias="a",
+                "a",
             )
             pipeline.connect("source", "a", target_port="source")
             pipeline.connect("a", "sink", source_port="result")
@@ -1654,9 +1614,7 @@ class TestPolarsParameterBinding:
 
             pipeline.submodel(
                 {child.name!r},
-                definition_id="child",
-                instance_id="submodel__a",
-                alias="a",
+                "a",
             )
             pipeline.connect("source", "a", target_port="source")
             pipeline.connect("a", "sink", source_port="result")
@@ -1780,9 +1738,7 @@ class TestPolarsParameterBinding:
 
             pipeline.submodel(
                 {child_valid.name!r},
-                definition_id="child",
-                instance_id="submodel__a",
-                alias="a",
+                "a",
             )
             pipeline.connect("source", "a", target_port="source")
             pipeline.connect("a", "sink", source_port="result")
@@ -1839,9 +1795,7 @@ class TestPolarsParameterBinding:
 
             pipeline.submodel(
                 {child_invalid.name!r},
-                definition_id="child",
-                instance_id="submodel__a",
-                alias="a",
+                "a",
             )
             pipeline.connect("source", "a", target_port="source")
             pipeline.connect("a", "sink", source_port="result")

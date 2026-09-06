@@ -10,7 +10,7 @@ import { SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
 import { cloneGraphSnapshot } from "../../utils/graphSnapshot"
 
 const SUBMODEL_NAME = "pricing"
-const PLACEHOLDER_ID = "instance_primary"
+const PLACEHOLDER_ID = "pricing"
 const DEFINITION_ID = "definition_pricing"
 
 type FixtureOptions = {

@@ -478,9 +478,7 @@ def test_explicit_save_retains_removed_definition_referenced_by_another_pipeline
 pipeline = haute.Pipeline("other")
 pipeline.submodel(
     "modules/child.py",
-    definition_id="child",
-    instance_id="other-child-instance",
-    alias="other-child",
+    "other_child",
 )
 """,
         encoding="utf-8",
@@ -508,9 +506,7 @@ def test_explicit_save_retains_removed_definition_when_reference_audit_is_incomp
 pipeline = haute.Pipeline("broken")
 pipeline.submodel(
     "modules/missing.py",
-    definition_id="missing-definition",
-    instance_id="missing-instance",
-    alias="missing",
+    "missing",
 )
 """,
         encoding="utf-8",

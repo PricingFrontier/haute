@@ -23,11 +23,6 @@ def response(enriched: pl.LazyFrame) -> pl.LazyFrame:
     return enriched
 
 
-pipeline.submodel(
-    "modules/reusable_enrichment.py",
-    definition_id="definition_reusable_enrichment",
-    instance_id="instance_reusable_enrichment",
-    alias="enriched",
-)
+pipeline.submodel("modules/reusable_enrichment.py", "enriched")
 pipeline.connect("quotes", "enriched", target_port="quotes")
 pipeline.connect("enriched", "response", source_port="enriched")

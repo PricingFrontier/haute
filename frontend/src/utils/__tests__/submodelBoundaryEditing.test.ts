@@ -34,16 +34,16 @@ function state(bound = false): SubmodelBoundaryEditState {
     }],
   }
   const parentNodes = [
-    makeNode("instance_primary", "submodel", { data: { label: "pricing", nodeType: "submodel", config: { definitionId: definition.definitionId, alias: "pricing" } } }),
-    makeNode("instance_secondary", "submodel", { data: { label: "pricing_2", nodeType: "submodel", config: { definitionId: definition.definitionId, alias: "pricing_2" } } }),
+    makeNode("pricing", "submodel", { data: { label: "pricing", nodeType: "submodel", config: { definitionId: definition.definitionId, alias: "pricing" } } }),
+    makeNode("pricing_2", "submodel", { data: { label: "pricing_2", nodeType: "submodel", config: { definitionId: definition.definitionId, alias: "pricing_2" } } }),
     makeNode("consumer"),
   ]
   const parentEdges: PipelineEdge[] = bound
-    ? [{ id: "consumer", source: "instance_primary", sourceHandle: "out__premium", target: "consumer" }]
+    ? [{ id: "consumer", source: "pricing", sourceHandle: "out__premium", target: "consumer" }]
     : []
   const view = buildSubmodelViewGraph({
     submodelName: "pricing",
-    instanceId: "instance_primary",
+    instanceId: "pricing",
     definition,
     childNodes: children,
     childEdges: [],
@@ -75,7 +75,7 @@ function state(bound = false): SubmodelBoundaryEditState {
   })) as PipelineEdge[]
   return {
     submodelName: "pricing",
-    instanceId: "instance_primary",
+    instanceId: "pricing",
     definitionId: definition.definitionId,
     viewNodes,
     viewEdges,
@@ -107,7 +107,7 @@ describe("submodelBoundaryEditing", () => {
     const created = connectSubmodelInputFromParentConnection(root, {
       source: source.id,
       sourceHandle: null,
-      target: "instance_primary",
+      target: "pricing",
       targetHandle: SUBMODEL_INPUT_HANDLE,
     })
 
@@ -122,7 +122,7 @@ describe("submodelBoundaryEditing", () => {
     expect(created?.edges).toEqual([expect.objectContaining({
       source: source.id,
       sourceHandle: null,
-      target: "instance_primary",
+      target: "pricing",
       targetHandle: "in__incoming_frame",
       data: { _inputName: "incoming_frame" },
     })])
@@ -130,7 +130,7 @@ describe("submodelBoundaryEditing", () => {
     const createdDefinition = created!.submodels.definition_pricing as SubmodelDefinition
     const drilled = buildSubmodelViewGraph({
       submodelName: "pricing",
-      instanceId: "instance_primary",
+      instanceId: "pricing",
       definition: createdDefinition,
       childNodes: createdDefinition.graph.nodes,
       childEdges: createdDefinition.graph.edges,
@@ -160,7 +160,7 @@ describe("submodelBoundaryEditing", () => {
     }, {
       source: source.id,
       sourceHandle: null,
-      target: "instance_primary",
+      target: "pricing",
       targetHandle: SUBMODEL_INPUT_HANDLE,
     })
 
@@ -188,7 +188,7 @@ describe("submodelBoundaryEditing", () => {
     }, {
       source: source.id,
       sourceHandle: null,
-      target: "instance_primary",
+      target: "pricing",
       targetHandle: SUBMODEL_INPUT_HANDLE,
     })
 
@@ -200,13 +200,13 @@ describe("submodelBoundaryEditing", () => {
     const source = makeNode("upstream", "polars", {
       data: { _defaultInputName: "policy" },
     })
-    const parentNodes = current.parentNodes.map((node) => node.id === "instance_secondary" ? {
+    const parentNodes = current.parentNodes.map((node) => node.id === "pricing_2" ? {
       ...node,
       data: {
         ...node.data,
         config: {
           ...(node.data.config as Record<string, unknown>),
-          instanceOf: "instance_primary",
+          instanceOf: "pricing",
         },
       },
     } : node)
@@ -217,7 +217,7 @@ describe("submodelBoundaryEditing", () => {
     }, {
       source: source.id,
       sourceHandle: null,
-      target: "instance_secondary",
+      target: "pricing_2",
       targetHandle: SUBMODEL_INPUT_HANDLE,
     })
 
@@ -225,7 +225,7 @@ describe("submodelBoundaryEditing", () => {
     expect(result?.submodels).toBe(current.submodels)
     expect(result?.edges).toEqual([expect.objectContaining({
       source: source.id,
-      target: "instance_secondary",
+      target: "pricing_2",
       targetHandle: "in__policy",
       data: { _inputName: "policy" },
     })])
@@ -239,13 +239,13 @@ describe("submodelBoundaryEditing", () => {
     const matchingSource = makeNode("matching", "polars", {
       data: { _defaultInputName: "policy" },
     })
-    const parentNodes = current.parentNodes.map((node) => node.id === "instance_secondary" ? {
+    const parentNodes = current.parentNodes.map((node) => node.id === "pricing_2" ? {
       ...node,
       data: {
         ...node.data,
         config: {
           ...(node.data.config as Record<string, unknown>),
-          instanceOf: "instance_primary",
+          instanceOf: "pricing",
         },
       },
     } : node)
@@ -254,7 +254,7 @@ describe("submodelBoundaryEditing", () => {
       edges: [{
         id: "existing-policy-binding",
         source: matchingSource.id,
-        target: "instance_primary",
+        target: "pricing",
         targetHandle: "in__policy",
         data: { _inputName: "policy" },
       }] as PipelineEdge[],
@@ -263,13 +263,13 @@ describe("submodelBoundaryEditing", () => {
     expect(() => connectSubmodelInputFromParentConnection(root, {
       source: unseenSource.id,
       sourceHandle: null,
-      target: "instance_secondary",
+      target: "pricing_2",
       targetHandle: SUBMODEL_INPUT_HANDLE,
     })).toThrow(/owner/i)
     expect(() => connectSubmodelInputFromParentConnection(root, {
       source: matchingSource.id,
       sourceHandle: null,
-      target: "instance_primary",
+      target: "pricing",
       targetHandle: SUBMODEL_INPUT_HANDLE,
     })).toThrow(/policy.*already bound/i)
   })
@@ -343,33 +343,33 @@ describe("submodelBoundaryEditing", () => {
 
   it("explicitly retires a public input and every occurrence binding", () => {
     const current = state()
-    const parentNodes = current.parentNodes.map((node) => node.id === "instance_secondary" ? {
+    const parentNodes = current.parentNodes.map((node) => node.id === "pricing_2" ? {
       ...node,
       data: {
         ...node.data,
         config: {
           ...(node.data.config as Record<string, unknown>),
-          instanceOf: "instance_primary",
+          instanceOf: "pricing",
         },
       },
     } : node)
     const primaryBinding: PipelineEdge = {
       id: "primary-policy-binding",
       source: "consumer",
-      target: "instance_primary",
+      target: "pricing",
       targetHandle: "in__policy",
       data: { _inputName: "policy_input" },
     }
     const secondaryBinding: PipelineEdge = {
       id: "secondary-policy-binding",
       source: "consumer",
-      target: "instance_secondary",
+      target: "pricing_2",
       targetHandle: "in__policy",
       data: { _inputName: "policy_input" },
     }
     const unrelatedOutput: PipelineEdge = {
       id: "unrelated-output",
-      source: "instance_primary",
+      source: "pricing",
       sourceHandle: "out__premium",
       target: "consumer",
       targetHandle: "in__policy",
@@ -425,7 +425,7 @@ describe("submodelBoundaryEditing", () => {
     const binding: PipelineEdge = {
       id: "policy-binding",
       source: "consumer",
-      target: "instance_primary",
+      target: "pricing",
       targetHandle: "in__policy",
       data: { _inputName: "policy_input" },
     }

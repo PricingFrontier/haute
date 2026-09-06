@@ -490,7 +490,7 @@ describe("useTracing", () => {
       data: {
         label: "INPUT",
         nodeType: NODE_TYPES.SUBMODEL_PORT,
-        instanceId: "instance_primary",
+        instanceId: "pricing",
         definitionId: "definition_pricing",
         portDirection: "input",
         ports: [],
@@ -502,7 +502,7 @@ describe("useTracing", () => {
       data: {
         label: "OUTPUT",
         nodeType: NODE_TYPES.SUBMODEL_PORT,
-        instanceId: "instance_primary",
+        instanceId: "pricing",
         definitionId: "definition_pricing",
         portDirection: "output",
         ports: [],
@@ -519,7 +519,7 @@ describe("useTracing", () => {
       },
     }
     const params = makeParams({
-      activeSubmodelIdentity: { instanceId: "instance_primary", definitionId: "definition_pricing" },
+      activeSubmodelIdentity: { instanceId: "pricing", definitionId: "definition_pricing" },
       nodes: [inputBoundary, child, outputBoundary],
       submodels,
       submodelsRef: { current: submodels },
@@ -531,7 +531,7 @@ describe("useTracing", () => {
     })
     mockTraceCell.mockResolvedValue({
       status: "ok",
-      trace: makeTrace(["external-source-b", "submodel_runtime/instance_primary/child", "external-target"]),
+      trace: makeTrace(["external-source-b", "submodel_runtime/pricing/child", "external-target"]),
     })
 
     const { result } = renderHook(() => useTracing(params))
@@ -540,7 +540,7 @@ describe("useTracing", () => {
     })
     await waitFor(() => expect(result.current.traceResult).not.toBeNull())
     expect(mockTraceCell).toHaveBeenCalledWith(expect.objectContaining({
-      target_node_id: "submodel_runtime/instance_primary/child",
+      target_node_id: "submodel_runtime/pricing/child",
     }))
 
     const projectedData = Object.fromEntries(

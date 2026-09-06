@@ -20,7 +20,7 @@ vi.mock("../../utils/layout", () => ({
 import { loadSubmodel } from "../../api/client"
 const mockLoad = vi.mocked(loadSubmodel)
 
-const INSTANCE_ID = "instance_primary"
+const INSTANCE_ID = "pricing"
 const DEFINITION_ID = "definition_pricing"
 
 const definition: SubmodelDefinition = {

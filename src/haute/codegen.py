@@ -1185,22 +1185,32 @@ def _graph_to_code_multi_instances(
             _require_routed_input_port(target_instance, edge, target_port)
         connect_pairs.append((source_func, target_func, source_port, target_port))
 
-    submodel_imports = [
-        (
-            f"pipeline.submodel({_safe_path(instance.definition.file)}, "
-            f"definition_id={_safe_str(instance.config.definition_id)}, "
-            f"instance_id={_safe_str(instance.node.id)}, "
-            f"alias={_safe_str(instance.config.alias)}"
-            + (
-                f", instance_of={_safe_str(instance.config.instance_of)}"
-                if instance.config.instance_of is not None
-                else ""
+    submodel_imports: list[str] = []
+    for node in graph.nodes:
+        instance = instances.get(node.id)
+        if instance is None:
+            continue
+        name = instance.config.alias
+        if instance.config.instance_of is not None:
+            owner_ref = instance.config.instance_of
+            owner_instance = instances.get(owner_ref)
+            if owner_instance is None:
+                raise ParseError(
+                    "Submodel instance references an owner occurrence that does not exist.",
+                    instance_id=instance.node.id,
+                    definition_id=instance.config.definition_id,
+                    instance_of=owner_ref,
+                )
+            owner_name = owner_instance.config.alias
+            submodel_imports.append(
+                f"pipeline.submodel({_safe_path(instance.definition.file)}, "
+                f"{_safe_str(name)}, "
+                f"instance_of={_safe_str(owner_name)})"
             )
-            + ")"
-        )
-        for node in graph.nodes
-        if (instance := instances.get(node.id)) is not None
-    ]
+        else:
+            submodel_imports.append(
+                f"pipeline.submodel({_safe_path(instance.definition.file)}, {_safe_str(name)})"
+            )
     main_lines = _generate_pipeline_lines(
         kind="pipeline",
         name=pipeline_name,
@@ -1224,7 +1234,7 @@ def _graph_to_code_multi_instances(
         pipeline_name=pipeline_name,
         node_count=len(sorted_root_nodes),
         submodel_definition_count=len(definition_order),
-        submodel_instance_count=len(instances),
+        submodel_occurrence_count=len(instances),
     )
     return _assert_emitted_files_parse(files)
 

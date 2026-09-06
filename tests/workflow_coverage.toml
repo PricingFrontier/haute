@@ -529,7 +529,7 @@ tests = [
   "frontend/src/utils/__tests__/editorIdentities.test.ts::builds a strict batch with occurrence name and public submodel port handles",
   "frontend/src/utils/__tests__/editorIdentities.test.ts::rejects a submodel node without alias",
   "frontend/src/panels/__tests__/NodePanel.test.tsx::uses the authoritative occurrence name for a submodel-fed input",
-  "frontend/src/utils/__tests__/apiInputPorts.test.ts::resolves an arbitrary-id occurrence output through its occurrence name",
+  "frontend/src/utils/__tests__/apiInputPorts.test.ts::resolves a submodel occurrence output through its occurrence name",
   "frontend/src/utils/__tests__/edgeJoinGraph.test.ts::preserves a collapsed submodel occurrence name as the logical input",
   "frontend/e2e/graph-editing-sequence.spec.ts::a graph editing sequence conserves structure and computed meaning through save and reopen",
   "tests/test_submodel_ops.py::TestGroupingPreservesConsumerBindings::test_grouping_records_the_consumer_binding_through_input_mapping",

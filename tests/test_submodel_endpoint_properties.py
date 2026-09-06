@@ -99,9 +99,7 @@ def _build_parent_code(
         f"""
 pipeline.submodel(
     {child_filename!r},
-    definition_id="child",
-    instance_id="submodel__a",
-    alias="a",
+    "a",
 )
 """
     ]
@@ -127,10 +125,8 @@ def sink_a({sink_a_param}) -> pl.LazyFrame:
         submodel_registrations.append(f"""
 pipeline.submodel(
     {child_filename!r},
-    definition_id="child",
-    instance_id="submodel__b",
-    alias="b",
-    instance_of="submodel__a",
+    "b",
+    instance_of="a",
 )
 """)
         sinks.append(f"""
@@ -172,7 +168,7 @@ def _resolve_connection(raw: tuple, chain_nodes: list[str], occ_count: int) -> _
     tag = raw[0]
     if tag == "legal_in":
         alias = raw[1]
-        inst_id = f"submodel__{alias}"
+        inst_id = alias
         return _ConnInfo(
             connect_stmt=f'pipeline.connect("source", "{alias}", target_port="source")',
             identity=("source", alias, None, "source"),
@@ -182,7 +178,7 @@ def _resolve_connection(raw: tuple, chain_nodes: list[str], occ_count: int) -> _
         )
     if tag == "legal_out":
         alias = raw[1]
-        inst_id = f"submodel__{alias}"
+        inst_id = alias
         sink_name = f"sink_{alias}"
         return _ConnInfo(
             connect_stmt=f'pipeline.connect("{alias}", "{sink_name}", source_port="result")',

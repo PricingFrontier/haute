@@ -60,7 +60,7 @@ describe("computeNextNodeId", () => {
 
   it("ignores nodes with no numeric suffix", () => {
     const nodes = [
-      { id: "submodel_instance_main" },
+      { id: "pricing" },
       { id: "transform_2" },
     ] as Node[]
     expect(computeNextNodeId(nodes)).toBe(3)
@@ -68,7 +68,7 @@ describe("computeNextNodeId", () => {
 
   it("returns 0 when no node has a numeric suffix", () => {
     const nodes = [
-      { id: "submodel_instance_a" },
+      { id: "submodel_a" },
       { id: "port_in__x" },
     ] as Node[]
     expect(computeNextNodeId(nodes)).toBe(0)

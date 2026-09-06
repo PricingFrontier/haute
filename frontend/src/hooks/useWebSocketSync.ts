@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import type { Edge, Node } from "@xyflow/react"
 import {
   computeNextNodeId,
   filterIncomingEdges,
@@ -34,6 +35,7 @@ interface WebSocketSyncParams {
   nodeIdCounter: React.MutableRefObject<number>
   fitView: (options?: { padding?: number }) => void
   enabled?: boolean
+  onDocumentReload?: (reloaded: { nodes: Node[]; edges: Edge[] }) => void
 }
 
 const MAX_RETRIES = 50
@@ -179,7 +181,7 @@ function retainedCanvasFor(
 
 export default function useWebSocketSync({
   preambleRef, submodelsRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
-  graphRefreshingRef, nodeIdCounter, fitView, enabled = true,
+  graphRefreshingRef, nodeIdCounter, fitView, enabled = true, onDocumentReload,
 }: WebSocketSyncParams): WsStatus {
   const { setSyncBanner } = useUIStore()
   const { addToast } = useToastStore()
@@ -420,6 +422,7 @@ export default function useWebSocketSync({
             ) {
               ui.setSubmodelDialog(null)
             }
+            onDocumentReload?.({ nodes: newNodes, edges: newEdges })
 
             addToast(
               "info",

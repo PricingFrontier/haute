@@ -57,8 +57,7 @@
    output_ports=...)` file. Then omit occurrence nodes from the root function
    list, translate parent boundary handles only to declared public port names,
    derive child-boundary parameters from sanitised public input port names and downstream names from the occurrence alias (or <alias>__<port_name>), and emit one explicit
-   `pipeline.submodel(...)` registration per occurrence with its definition
-   id, instance id, and alias (no label). Parent `connect` calls refer to aliases
+   `pipeline.submodel(path, name)` registration per occurrence (with `instance_of=owner_name` for copies). Parent `connect` calls refer to aliases
    plus public port names; synthetic `in__`/`out__` handles never enter source.
    Finally `_assert_emitted_files_parse` validates every emitted file.
 

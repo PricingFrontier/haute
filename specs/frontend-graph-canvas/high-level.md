@@ -55,23 +55,27 @@ Out of scope (owned by neighbouring components, linked where they exist):
 The canvas treats a submodel definition as shared library state and each
 `SUBMODEL` node as an independent occurrence. A definition can be instantiated
 from an existing occurrence through **Create instance**. The action creates a
-new node with a fresh immutable instance id and stable source alias, copies no
-internal graph or file, starts with no bindings, and participates in the normal
+new node whose node id equals its minted alias (`node.id == data.label == config.alias`),
+copies no internal graph or file, starts with no bindings, and participates in the normal
 undo/redo snapshot. It is available only in the parent view; nesting remains
 unsupported.
 
 Each occurrence owns its label, position, selection, and incident edges.
-An occurrence's display name is its alias; renaming an occurrence renames its
-alias and rebinds downstream consumers without code edits, while never renaming
-its definition file or changing its node id. A proposed occurrence rename is
-refused early if the name is not a canonical identifier (error: `Occurrence names must be identifiers; use "<functionName>".`) or conflicts with an existing node id, label, or submodel alias (error: `"<name>" is already used by another node.`). Exactly one occurrence is the editable definition owner; created
-instances persist `instanceOf` pointing directly at it. Opening the owner
+One identity per submodel occurrence: the occurrence node id is its name
+(`node.id == data.label == config.alias`). Renaming an occurrence renames its
+alias and rebinds downstream consumers without code edits; as for an ordinary
+node, the React Flow node id stays until Save, when codegen emits the name and
+the reparse re-keys the id. It never renames the definition file. A proposed occurrence rename is refused early if
+the name is not a canonical identifier (error: `Occurrence names must be identifiers; use "<functionName>".`)
+or conflicts with an existing node id, label, or submodel alias (error: `"<name>" is already used by another node.`).
+Exactly one occurrence is the editable definition owner; created instances persist
+`instanceOf` pointing directly at the owner's occurrence name. Opening the owner
 navigates to the shared definition editor and shows that edits affect every
 occurrence. Opening an instance presents the same definition with an explicit
 read-only indicator. The panel and every canvas mutation path reject edits in
 that view while preview, trace, selection, copy, pan, and zoom remain usable.
-Removing or dissolving targets the clicked instance id, never a display name or
-definition id, and an owner cannot be dissolved while instances reference it.
+Removing or dissolving targets the clicked occurrence name, and an owner cannot
+be dissolved while instances reference it.
 
 Submodel cards render only declared public ports. Handles are
 `in__<name>`/`out__<name>` and labels come from the port name; internal
@@ -91,9 +95,14 @@ Interface-preserving internal edits save once and become visible from all
 occurrences. Per-instance internal overrides are not offered.
 
 Reload, WebSocket replacement, create/dissolve response hydration, undo/redo,
-breadcrumbs, comparison views, and dirty-state tracking preserve immutable
-definition/instance/port identities, the complete definition graph metadata,
-and occurrence-specific positions and bindings.
+breadcrumbs, comparison views, and dirty-state tracking preserve occurrence
+and port identities, the complete definition graph metadata, and occurrence-specific
+positions and bindings. The document invariant requires that every submodel occurrence
+node id strictly equals its alias (`node.id === config.alias`); parsing throws
+`${PARSER}: submodel node <id> id must equal its alias` if violated. When a reloaded
+document omits the currently drilled submodel occurrence, the reload fail-safe returns
+to root view, clears `activeSubmodelIdentity`, resets the view stack to the pipeline level,
+and displays the parent graph without throwing.
 
 An output-interface edit is published only with an exact authoritative handle
 identity map on every parent occurrence. While that identity is resolving,

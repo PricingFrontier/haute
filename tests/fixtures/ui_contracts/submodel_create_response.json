@@ -6,7 +6,7 @@
   "graph": {
     "nodes": [
       {
-        "id": "submodel_instance_pricing",
+        "id": "pricing",
         "type": "submodel",
         "position": {
           "x": 0,
@@ -50,13 +50,13 @@
       {
         "id": "e_source_pricing",
         "source": "source",
-        "target": "submodel_instance_pricing",
+        "target": "pricing",
         "targetHandle": "in__base",
         "targetPort": "base"
       },
       {
         "id": "e_pricing_sink",
-        "source": "submodel_instance_pricing",
+        "source": "pricing",
         "target": "sink",
         "sourceHandle": "out__quotes",
         "sourcePort": "quotes"

@@ -114,7 +114,8 @@ def resolve_submodel_instances(
         )
 
     parent_node_ids = set(node_ids)
-    alias_node_collisions = sorted(set(aliases) & parent_node_ids)
+    ordinary_node_ids = {node.id for node in graph.nodes if node.id not in resolved}
+    alias_node_collisions = sorted(set(aliases) & ordinary_node_ids)
     if alias_node_collisions:
         raise ParseError(
             "Submodel instance alias collides with a parent node id.",

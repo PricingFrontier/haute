@@ -845,23 +845,15 @@ def _recover_submodel_registrations(source: str) -> list[SubmodelRegistration]:
             unrecoverable_references=unrecoverable,
         )
 
-    aliases: dict[str, int | None] = {}
-    instance_ids: dict[str, int | None] = {}
+    names: dict[str, int | None] = {}
     for registration in registrations:
-        if registration.alias in aliases:
+        if registration.name in names:
             raise ParseError(
-                "Submodel instance alias is duplicated in the parent source.",
-                alias=registration.alias,
-                lines=[aliases[registration.alias], registration.line],
+                "Submodel instance name is duplicated in the parent source.",
+                name=registration.name,
+                lines=[names[registration.name], registration.line],
             )
-        if registration.instance_id in instance_ids:
-            raise ParseError(
-                "Submodel instance id is duplicated in the parent source.",
-                instance_id=registration.instance_id,
-                lines=[instance_ids[registration.instance_id], registration.line],
-            )
-        aliases[registration.alias] = registration.line
-        instance_ids[registration.instance_id] = registration.line
+        names[registration.name] = registration.line
     return registrations
 
 

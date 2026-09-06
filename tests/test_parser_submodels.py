@@ -17,16 +17,15 @@ from haute.errors import ParseError
 
 
 def _registration(
-    instance_id: str = "instance_primary",
-    alias: str = "pricing",
+    name: str = "pricing",
     *,
-    definition_id: str = "definition_pricing",
+    path: str = "modules/pricing.py",
+    instance_of: str | None = None,
 ) -> SubmodelRegistration:
     return SubmodelRegistration(
-        path="modules/pricing.py",
-        definition_id=definition_id,
-        instance_id=instance_id,
-        alias=alias,
+        path=path,
+        name=name,
+        instance_of=instance_of,
     )
 
 
@@ -71,69 +70,56 @@ submodel.connect("base_rate", "adjust")
 
 class TestExtractSubmodelRegistrations:
     def test_extracts_explicit_identity(self) -> None:
-        tree = ast.parse(
-            'pipeline.submodel("modules/pricing.py", '
-            'definition_id="definition_pricing", instance_id="instance_primary", '
-            'alias="pricing")'
-        )
+        tree = ast.parse('pipeline.submodel("modules/pricing.py", "pricing")')
 
         assert extract_submodel_registrations(tree) == [
             SubmodelRegistration(
                 path="modules/pricing.py",
-                definition_id="definition_pricing",
-                instance_id="instance_primary",
-                alias="pricing",
+                name="pricing",
                 line=1,
             )
         ]
 
     def test_preserves_chained_registration_order(self) -> None:
         tree = ast.parse(
-            'pipeline.submodel(file="modules/pricing.py", '
-            'definition_id="definition_pricing", instance_id="instance_primary", '
-            'alias="pricing").submodel("modules/pricing.py", '
-            'definition_id="definition_pricing", instance_id="instance_secondary", '
-            'alias="pricing_2")'
+            'pipeline.submodel("modules/pricing.py", "pricing")'
+            '.submodel("modules/pricing.py", "pricing_2", instance_of="pricing")'
         )
 
         registrations = extract_submodel_registrations(tree)
 
-        assert [item.instance_id for item in registrations] == [
-            "instance_primary",
-            "instance_secondary",
+        assert [item.name for item in registrations] == [
+            "pricing",
+            "pricing_2",
         ]
 
     def test_ignores_non_pipeline_receivers_and_non_expression_calls(self) -> None:
         tree = ast.parse(
-            'other.submodel("ignored.py", definition_id="ignored", '
-            'instance_id="ignored", alias="ignored")\n'
-            'value = pipeline.submodel("also_ignored.py", definition_id="ignored", '
-            'instance_id="ignored", alias="ignored")\n'
+            'other.submodel("ignored.py", "ignored")\n'
+            'value = pipeline.submodel("also_ignored.py", "ignored")\n'
         )
 
         assert extract_submodel_registrations(tree) == []
 
-    @pytest.mark.parametrize("missing", ["definition_id", "instance_id", "alias"])
-    def test_rejects_missing_identity_fields(self, missing: str) -> None:
-        fields = {
-            "definition_id": '"definition_pricing"',
-            "instance_id": '"instance_primary"',
-            "alias": '"pricing"',
-        }
-        fields.pop(missing)
-        arguments = ", ".join(f"{name}={value}" for name, value in fields.items())
-        tree = ast.parse(f'pipeline.submodel("modules/pricing.py", {arguments})')
+    @pytest.mark.parametrize("keyword", ["definition_id", "instance_id", "alias"])
+    def test_rejects_obsolete_keywords(self, keyword: str) -> None:
+        tree = ast.parse(f'pipeline.submodel("modules/pricing.py", "pricing", {keyword}="foo")')
 
-        with pytest.raises(ParseError, match="explicit stable identity fields") as exc_info:
+        with pytest.raises(ParseError, match="not accepted") as exc_info:
             extract_submodel_registrations(tree)
 
-        assert missing in exc_info.value.context["missing_fields"]
+        assert exc_info.value.context["keyword"] == keyword
+
+    def test_rejects_missing_name(self) -> None:
+        tree = ast.parse('pipeline.submodel("modules/pricing.py")')
+
+        with pytest.raises(ParseError, match="requires the occurrence name") as exc_info:
+            extract_submodel_registrations(tree)
+
+        assert exc_info.value.context["path"] == "modules/pricing.py"
 
     def test_rejects_dynamic_path(self) -> None:
-        tree = ast.parse(
-            'pipeline.submodel(path_value, definition_id="definition_pricing", '
-            'instance_id="instance_primary", alias="pricing")'
-        )
+        tree = ast.parse('pipeline.submodel(path_value, "pricing")')
 
         with pytest.raises(ParseError, match="string literal"):
             extract_submodel_registrations(tree)
@@ -142,27 +128,19 @@ class TestExtractSubmodelRegistrations:
         ("source", "message"),
         [
             (
-                'pipeline.submodel("modules/pricing.py", '
-                'definition_id="definition_pricing", definition_id="duplicate", '
-                'instance_id="instance_primary", alias="pricing")',
+                'pipeline.submodel("modules/pricing.py", "pricing", name="duplicate")',
                 "duplicate keyword",
             ),
             (
-                'pipeline.submodel("modules/pricing.py", '
-                'definition_id="definition_pricing", instance_id=instance_id, '
-                'alias="pricing")',
+                'pipeline.submodel("modules/pricing.py", pricing_var)',
                 "string literal",
             ),
             (
-                'pipeline.submodel("modules/pricing.py", '
-                'definition_id="definition_pricing", instance_id="instance_primary", '
-                'alias=" pricing")',
+                'pipeline.submodel("modules/pricing.py", " pricing")',
                 "non-empty and unpadded",
             ),
             (
-                'pipeline.submodel(" modules/pricing.py", '
-                'definition_id="definition_pricing", instance_id="instance_primary", '
-                'alias="pricing")',
+                'pipeline.submodel(" modules/pricing.py", "pricing")',
                 "path must be non-empty and unpadded",
             ),
         ],
@@ -171,24 +149,10 @@ class TestExtractSubmodelRegistrations:
         with pytest.raises(ParseError, match=message):
             extract_submodel_registrations(ast.parse(source))
 
-    @pytest.mark.parametrize("field", ["instance_id", "alias"])
-    def test_rejects_duplicate_occurrence_identity(self, field: str) -> None:
-        first = {
-            "definition_id": "definition_pricing",
-            "instance_id": "instance_primary",
-            "alias": "pricing",
-        }
-        second = {
-            "definition_id": "definition_pricing",
-            "instance_id": "instance_secondary",
-            "alias": "pricing_2",
-        }
-        second[field] = first[field]
-        source = "\n".join(
-            'pipeline.submodel("modules/pricing.py", '
-            + ", ".join(f'{name}="{value}"' for name, value in values.items())
-            + ")"
-            for values in (first, second)
+    def test_rejects_duplicate_occurrence_identity(self) -> None:
+        source = (
+            'pipeline.submodel("modules/pricing.py", "pricing")\n'
+            'pipeline.submodel("modules/pricing.py", "pricing")\n'
         )
 
         with pytest.raises(ParseError, match="duplicated"):
@@ -272,12 +236,7 @@ class TestParseSubmodelSource:
         nested = (
             _VALID_SUBMODEL
             + """\
-pipeline.submodel(
-    "modules/inner.py",
-    definition_id="definition_inner",
-    instance_id="instance_inner",
-    alias="inner",
-)
+pipeline.submodel("modules/inner.py", "inner")
 """
         )
 
@@ -342,7 +301,7 @@ class TestMergeSubmodels:
         definition = (result.submodels or {})["definition_pricing"]
         assert definition.definition_id == "definition_pricing"
         assert definition.file == "modules/pricing.py"
-        occurrence = result.node_map["instance_primary"]
+        occurrence = result.node_map["pricing"]
         assert occurrence.data.nodeType == NodeType.SUBMODEL
         assert occurrence.data.config == {
             "definitionId": "definition_pricing",
@@ -353,16 +312,15 @@ class TestMergeSubmodels:
         result = _merge(
             registrations=[
                 _registration(),
-                _registration("instance_secondary", "pricing_2"),
+                _registration("pricing_2", instance_of="pricing"),
             ]
         )
 
         assert set(result.submodels or {}) == {"definition_pricing"}
-        assert result.node_map["instance_primary"].data.label == "pricing"
-        assert result.node_map["instance_secondary"].data.label == "pricing_2"
-        assert result.node_map["instance_secondary"].data.config["definitionId"] == (
-            "definition_pricing"
-        )
+        assert result.node_map["pricing"].data.label == "pricing"
+        assert result.node_map["pricing_2"].data.label == "pricing_2"
+        assert result.node_map["pricing_2"].data.config["definitionId"] == ("definition_pricing")
+        assert result.node_map["pricing_2"].data.config["instanceOf"] == "pricing"
 
     def test_rewrites_alias_edges_to_public_port_handles(self) -> None:
         result = _merge(
@@ -376,8 +334,8 @@ class TestMergeSubmodels:
             (edge.source, edge.target, edge.sourceHandle, edge.targetHandle)
             for edge in result.edges
         }
-        assert ("load", "instance_primary", None, "in__records") in edges
-        assert ("instance_primary", "output", "out__priced", None) in edges
+        assert ("load", "pricing", None, "in__records") in edges
+        assert ("pricing", "output", "out__priced", None) in edges
 
     def test_flatten_qualifies_runtime_children_and_removes_definition(self) -> None:
         result = _merge(
@@ -388,17 +346,17 @@ class TestMergeSubmodels:
             flatten=True,
         )
 
-        assert "instance_primary" not in result.node_map
-        assert "submodel_runtime/instance_primary/base_rate" in result.node_map
-        assert "submodel_runtime/instance_primary/adjust" in result.node_map
+        assert "pricing" not in result.node_map
+        assert "submodel_runtime/pricing/base_rate" in result.node_map
+        assert "submodel_runtime/pricing/adjust" in result.node_map
         assert result.submodels is None
         edges = {(edge.source, edge.target) for edge in result.edges}
         assert (
             "load",
-            "submodel_runtime/instance_primary/base_rate",
+            "submodel_runtime/pricing/base_rate",
         ) in edges
         assert (
-            "submodel_runtime/instance_primary/adjust",
+            "submodel_runtime/pricing/adjust",
             "output",
         ) in edges
 
@@ -417,17 +375,17 @@ class TestMergeSubmodels:
         with pytest.raises(ParseError, match=message):
             _merge(parent_edges=[edge])
 
-    def test_rejects_parent_child_definition_identity_mismatch(self) -> None:
-        with pytest.raises(ParseError, match="do not match"):
-            _merge(definition_key="definition_other")
+    def test_uses_child_definition_identity(self) -> None:
+        result = _merge(definition_key="definition_other")
+        assert "definition_pricing" in (result.submodels or {})
 
     def test_rejects_unresolved_registration_definition(self) -> None:
         with pytest.raises(ParseError, match="unresolved definition"):
-            _merge(registrations=[_registration(definition_id="definition_missing")])
+            _merge(registrations=[_registration(path="modules/missing.py")])
 
     def test_rejects_occurrence_identity_collision_with_parent_node(self) -> None:
         with pytest.raises(ParseError, match="collides with a parent node id"):
-            _merge(registrations=[_registration("load", "pricing")])
+            _merge(registrations=[_registration("load")])
 
     def test_empty_registration_set_keeps_parent_without_definitions(self) -> None:
         result = merge_submodels(

@@ -1406,7 +1406,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     options: { collision?: boolean; internalCollision?: boolean } = {},
   ) {
     const base = makeApiInputGraph()
-    const boundary = makeNode("instance_pricing", "pricing", "submodel")
+    const boundary = makeNode("pricing", "pricing", "submodel")
     boundary.data.config = { definitionId: "definition_pricing", alias: "pricing" }
     const childRouter = makeNode("child_router", "Child Router", "liveSwitch")
     childRouter.data.config = {
@@ -2000,7 +2000,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   it("migrates a frame rename through an arbitrary canonical occurrence and every fan-out target", async () => {
     const base = makeApiInputGraph()
     const occurrence = makeNode(
-      "instance_pricing_secondary",
+      "pricing_secondary",
       "pricing_secondary",
       "submodel",
     )
@@ -2096,12 +2096,12 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
 
 describe("App integration — read-only submodel instance", () => {
   it("keeps the shared definition inspectable while disabling every exposed edit surface", async () => {
-    const owner = makeNode("instance_inputs_owner", "inputs", "submodel")
+    const owner = makeNode("inputs", "inputs", "submodel")
     owner.data.config = {
       definitionId: "definition_inputs",
       alias: "inputs",
     }
-    const copy = makeNode("instance_inputs_copy", "inputs_2", "submodel")
+    const copy = makeNode("inputs_2", "inputs_2", "submodel")
     copy.data.config = {
       definitionId: "definition_inputs",
       alias: "inputs_2",

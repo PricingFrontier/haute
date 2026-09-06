@@ -57,8 +57,8 @@ routes it in the drilled view before Save. `POST /api/pipeline/save` reports
 that rejection, and every other structural save-time `ParseError`, as a 400
 carrying the error's own context, never as an opaque 500.
 
-Each `SUBMODEL` node is one occurrence and its node id is its immutable
-`instanceId`. Its config is validated as `SubmodelInstanceConfig`; an occurrence's
+Each `SUBMODEL` node is one occurrence and its node id is its name (`node.id == label == alias == name`).
+Its config is validated as `SubmodelInstanceConfig`; an occurrence's
 display name is its alias (`node.data.label == config.alias` is enforced on
 validation, raising `ParseError` on mismatch), and its position remains an
 ordinary mutable node field. No parallel instance registry
@@ -86,23 +86,19 @@ The source form persists identity on both sides of the relationship:
 ```python
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="definition_...",
-    instance_id="instance_...",
-    alias="scoring_primary",
+    "scoring_primary",
 )
 
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="definition_...",
-    instance_id="instance_copy_...",
-    alias="scoring_secondary",
-    instance_of="instance_...",
+    "scoring_secondary",
+    instance_of="scoring_primary",
 )
 ```
 
 Generated and authored definition source must persist its `definition_id` and
 structured public port declarations. Every parent registration must persist
-`definition_id`, `instance_id`, and `alias`, plus `instance_of` for every
+its path and occurrence name, plus `instance_of` for every
 read-only instance. Missing identity is a parse error;
 the parser never derives it. Duplicate aliases in one parent, conflicting
 definition ids for one resolved path, and one definition id resolving to
@@ -264,9 +260,9 @@ document and returns the new revision.
    fewer than two children, or any selected `SUBMODEL` node without mutating
    the input graph.
 2. Derive `definitionId = alias = sm_name` and
-   `modules/<sm_name>.py`, and allocate a fresh opaque immutable occurrence id
-   `submodel_instance_<uuid4 hex>`. Reject definition-id, alias,
-   remaining-parent-node-id, and case-insensitive file collisions.
+   `modules/<sm_name>.py`, and set the occurrence id to `sm_name`.
+   Reject definition-id, alias, remaining-parent-node-id, and
+   case-insensitive file collisions.
 3. Partition edges into internal, cross-boundary, and external sets while
    preserving graph order.
 4. Build structured public ports. Incoming edges sharing one external logical
@@ -432,7 +428,7 @@ Acquires `save_lock` and runs the body in a threadpool:
 
 ## Testing
 
-Tests live in `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
+Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
 `tests/test_submodel_routes.py`, `tests/test_submodel_route_contracts.py`,
 `tests/test_submodel_outport_invariant.py`,
 `tests/test_submodel.py`, `tests/test_edge_join.py`, `tests/test_flatten.py`,
@@ -440,6 +436,15 @@ Tests live in `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
 `tests/test_submodel_persistence.py`, with related parser coverage in
 `tests/test_parser_submodels.py`.
 
+- `tests/test_submodel_identity.py` — the SUB-L03 contract: an owner and a copy
+  parse to occurrences whose node id, label and alias are the name and whose
+  `definitionId` is the child file's declaration; `definition_id=`,
+  `instance_id=` and `alias=` keywords, a missing name and a non-canonical
+  name fail to parse with the fix named; codegen emits
+  `pipeline.submodel(path, name[, instance_of=owner])` and round-trips
+  byte-identically; a stale editor node id never reaches generated code;
+  runtime ids read `submodel_runtime/<name>/<child>`; grouping mints the name
+  as the node id; sidecar positions are keyed by the alias.
 - `tests/test_submodel_ops.py` — unit tests of `create_submodel_graph` against
   hand-built graphs (via `tests/conftest.py::make_graph`): basic extraction,
   structured input/output port construction and parent boundary rewiring,

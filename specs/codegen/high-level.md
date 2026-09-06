@@ -113,8 +113,8 @@ Out of scope (owned by neighbouring components):
 - **Submodel-aware.** A graph with no submodel occurrences produces exactly
   one file. A hierarchical graph emits each referenced definition file once,
   in first-occurrence order, plus a main file with one explicit
-  `pipeline.submodel(path, definition_id=..., instance_id=..., alias=...)`
-  registration per occurrence. Distinct definitions may not share
+  `pipeline.submodel(path, name)` registration per occurrence
+  (with `instance_of=owner_name` for copies). Distinct definitions may not share
   a file, unused registry definitions are rejected, and occurrence ids and
   aliases are never inferred. Parent connections name declared public port
   names; `in__<name>`/`out__<name>` exist only in graph JSON and are not

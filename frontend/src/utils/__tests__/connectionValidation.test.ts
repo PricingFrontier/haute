@@ -58,7 +58,7 @@ const definition = (child: SimpleNode) => ({
 const occurrence = (copy = false) => {
   const alias = copy ? "pricing_copy" : "pricing"
   return {
-    ...node(copy ? "instance_copy" : "instance_primary", alias, NODE_TYPES.SUBMODEL),
+    ...node(alias, alias, NODE_TYPES.SUBMODEL),
     data: {
       label: alias,
       description: "",
@@ -66,7 +66,7 @@ const occurrence = (copy = false) => {
       config: {
         definitionId: "definition_pricing",
         alias,
-        ...(copy ? { instanceOf: "instance_primary" } : {}),
+        ...(copy ? { instanceOf: "pricing" } : {}),
       },
     },
   }

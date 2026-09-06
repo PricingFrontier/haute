@@ -87,11 +87,7 @@ def _make_definition() -> SubmodelDefinition:
 
 
 def test_parsing_parent_with_label_raises_parse_error() -> None:
-    tree = ast.parse(
-        'pipeline.submodel("modules/pricing.py", '
-        'definition_id="def_pricing", instance_id="inst_pricing", '
-        'alias="pricing", label="My Pricing")'
-    )
+    tree = ast.parse('pipeline.submodel("modules/pricing.py", "pricing", label="My Pricing")')
 
     with pytest.raises(ParseError) as exc_info:
         extract_submodel_registrations(tree)
@@ -107,27 +103,23 @@ def test_parsing_parent_with_label_raises_parse_error() -> None:
 
 
 @pytest.mark.parametrize(
-    ("raw_alias", "expected_sanitised"),
+    ("raw_name", "expected_sanitised"),
     [
         ("My Pricing", "My_Pricing"),
         ("class", "node_class"),
     ],
 )
 def test_parsing_non_canonical_alias_raises_parse_error(
-    raw_alias: str,
+    raw_name: str,
     expected_sanitised: str,
 ) -> None:
-    tree = ast.parse(
-        f'pipeline.submodel("modules/pricing.py", '
-        f'definition_id="def_pricing", instance_id="inst_pricing", '
-        f'alias="{raw_alias}")'
-    )
+    tree = ast.parse(f'pipeline.submodel("modules/pricing.py", "{raw_name}")')
 
     with pytest.raises(ParseError) as exc_info:
         extract_submodel_registrations(tree)
 
-    assert exc_info.value.message == ("Submodel instance alias must be a canonical identifier.")
-    assert exc_info.value.context["alias"] == raw_alias
+    assert exc_info.value.message == ("Submodel instance name must be a canonical identifier.")
+    assert exc_info.value.context["name"] == raw_name
     assert exc_info.value.context["expected"] == expected_sanitised
     assert exc_info.value.context["line"] == 1
 
@@ -145,15 +137,11 @@ pipeline = haute.Pipeline("main")
 
 pipeline.submodel(
     "modules/pricing.py",
-    definition_id="def_pricing",
-    instance_id="inst_primary",
-    alias="primary_pricing",
+    "primary_pricing",
 ).submodel(
     "modules/pricing.py",
-    definition_id="def_pricing",
-    instance_id="inst_secondary",
-    alias="secondary_pricing",
-    instance_of="inst_primary",
+    "secondary_pricing",
+    instance_of="primary_pricing",
 )
 
 @pipeline.polars
@@ -194,38 +182,32 @@ def test_pipeline_submodel_dsl_validation() -> None:
     with pytest.raises(TypeError):
         p.submodel(  # type: ignore[call-arg]
             "modules/pricing.py",
-            definition_id="def_pricing",
-            instance_id="inst_1",
-            alias="pricing_1",
+            "pricing_1",
             label="Pricing One",
         )
 
     with pytest.raises(
         ValueError,
         match=(
-            r"Submodel alias must be a canonical identifier "
+            r"Submodel name must be a canonical identifier "
             r"\(got 'My Pricing'; expected 'My_Pricing'\)\."
         ),
     ):
         p.submodel(
             "modules/pricing.py",
-            definition_id="def_pricing",
-            instance_id="inst_1",
-            alias="My Pricing",
+            "My Pricing",
         )
 
     with pytest.raises(
         ValueError,
         match=(
-            r"Submodel alias must be a canonical identifier "
+            r"Submodel name must be a canonical identifier "
             r"\(got 'class'; expected 'node_class'\)\."
         ),
     ):
         p.submodel(
             "modules/pricing.py",
-            definition_id="def_pricing",
-            instance_id="inst_1",
-            alias="class",
+            "class",
         )
 
 
@@ -242,15 +224,11 @@ pipeline = haute.Pipeline("main")
 
 pipeline.submodel(
     "modules/pricing.py",
-    definition_id="def_pricing",
-    instance_id="inst_a",
-    alias="pricing_a",
+    "pricing_a",
 ).submodel(
     "modules/pricing.py",
-    definition_id="def_pricing",
-    instance_id="inst_b",
-    alias="pricing_b",
-    instance_of="inst_a",
+    "pricing_b",
+    instance_of="pricing_a",
 )
 
 @pipeline.polars
@@ -282,8 +260,9 @@ pipeline.connect("pricing_b", "sink", source_port="premium")
     main_code = generated_files["main.py"]
 
     assert "label=" not in main_code
-    assert 'alias="pricing_a"' in main_code
-    assert 'alias="pricing_b"' in main_code
+    assert 'pipeline.submodel("modules/pricing.py", "pricing_a")' in main_code
+    expected_b = 'pipeline.submodel("modules/pricing.py", "pricing_b", instance_of="pricing_a")'
+    assert expected_b in main_code
 
     reparsed = parse_pipeline_source(
         main_code,
@@ -304,7 +283,7 @@ def test_validate_submodel_instances_invariant_label_differs_from_alias() -> Non
     graph = PipelineGraph(
         nodes=[
             GraphNode(
-                id="inst_1",
+                id="pricing",
                 type="submodel",
                 data=NodeData(
                     label="Different Label",
@@ -321,7 +300,7 @@ def test_validate_submodel_instances_invariant_label_differs_from_alias() -> Non
         validate_submodel_instances(graph)
 
     assert exc_info.value.message == "Submodel occurrence label must equal its alias."
-    assert exc_info.value.context["instance_id"] == "inst_1"
+    assert exc_info.value.context["instance_id"] == "pricing"
     assert exc_info.value.context["label"] == "Different Label"
     assert exc_info.value.context["alias"] == "pricing"
     assert exc_info.value.context["remediation"] == (

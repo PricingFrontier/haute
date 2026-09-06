@@ -663,7 +663,15 @@ newer overlapping transform.
     `source_revision` refs advance with that same accepted update. A thrown
     error restores the request-facing refs before re-throwing into the outer
     catch, which toasts, while the atomic store transition leaves no partial
-    graph to roll back.
+    graph to roll back. When adapting recovery graphs, `adaptRecoveryGraph`
+    enforces the document invariant that every submodel node's authored id
+    strictly equals its alias (`node.authored_id === config.alias`; a duplicate
+    name is the one case where the recovery id carries a line suffix), throwing
+    `${PARSER}: submodel node <recovery_id> id must equal its alias` if violated.
+    If a reloaded document omits the currently drilled submodel occurrence,
+    `useSubmodelNavigation.handleDocumentReload` returns to root view, clears
+    `activeSubmodelIdentity`, resets the view stack to the pipeline level, and
+    shows the parent graph without throwing.
     Reconnection backs off exponentially (`INITIAL_BACKOFF_MS` doubling to
     `MAX_BACKOFF_MS`, capped at `MAX_RETRIES` = 50). A `1008` close with a
     session-expired reason force-refreshes the HttpOnly cookie, then reconnects;
@@ -674,7 +682,7 @@ newer overlapping transform.
     `useSubmodelNavigation.handleDrillIntoSubmodel` resolves a canonical
     occurrence by node id and its embedded typed definition, then asks
     `buildSubmodelViewGraph` for one collision-safe Input and Output card keyed
-    by the immutable instance id. The complete projected graph is passed through
+    by the occurrence id (which strictly equals its name and alias). The complete projected graph is passed through
     `resolveEditorGraphIdentities` before layout or publication, so embedded
     children returned by an unsaved Create transform and both synthetic boundary
     nodes receive the same server-owned node/edge identities as a loaded root

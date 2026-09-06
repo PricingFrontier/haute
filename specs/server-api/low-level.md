@@ -538,7 +538,7 @@ generation; child code cannot write the `JobStore` or parent LRU caches.
   (macOS, Windows) those can differ in case and must still match, or live-sync silently goes
   stale for that module.
 - **Sidecar position keys use persisted node identity.** Submodel occurrences
-  use their explicit immutable `instance_id` and ordinary nodes use their
+  use their occurrence name (node.id == label == alias == name) and ordinary nodes use their
   parser ids; load and save use those exact keys without deriving identities
   from names or filenames.
 - **Every casefold-collision guard in `_save_pipeline.py`** (config sidecar paths, module

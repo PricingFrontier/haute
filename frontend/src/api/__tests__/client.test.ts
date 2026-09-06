@@ -261,7 +261,7 @@ function makeSubmodelGraphResponse(overrides: Record<string, unknown> = {}) {
 function makeDissolveSubmodelResponse(overrides: Record<string, unknown> = {}) {
   return {
     status: "ok",
-    instance_id: "instance_pricing",
+    instance_id: "pricing",
     definition_id: "definition_pricing",
     source_revision: "revision-dissolve",
     graph: {

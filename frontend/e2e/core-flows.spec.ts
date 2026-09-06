@@ -424,17 +424,28 @@ test.describe("core browser flows", () => {
     const previewTable = page.getByRole("table").first()
     await expect(previewTable).toBeVisible()
 
-    // (c) After Save, pipeline source contains alias="<new name>", connect("<new name>", and no label=
+    // (c) After Save, pipeline source contains pipeline.submodel("modules/browser_group.py", "<new name>"), connect("<new name>", and no instance_id=, definition_id=, alias=, or label=
     await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
 
     await expect
       .poll(() => readFileSync(gitMainPath, "utf8"))
-      .toContain(`alias="${renamedOccurrence}"`)
+      .toContain(`pipeline.submodel("modules/browser_group.py", "${renamedOccurrence}")`)
     await expect
       .poll(() => readFileSync(gitMainPath, "utf8"))
       .toContain(`connect("${renamedOccurrence}"`)
     const savedSource = readFileSync(gitMainPath, "utf8")
+    expect(savedSource).not.toMatch(/instance_id\s*=/)
+    expect(savedSource).not.toMatch(/definition_id\s*=/)
+    expect(savedSource).not.toMatch(/alias\s*=/)
     expect(savedSource).not.toMatch(/label\s*=/)
+
+    // (d) Reload fail-safe / reload persistence: reload page, verify occurrence is visible, drill into it, verify breadcrumbs and boundary cards
+    await page.reload()
+    const reloadedOccurrenceNode = page.getByRole("button", { name: new RegExp(renamedOccurrence, "i") })
+    await expect(reloadedOccurrenceNode).toBeVisible()
+    await dispatchNodeDoubleClick(page, renamedOccurrence)
+    await expect(page.getByRole("button", { name: renamedOccurrence, exact: true })).toBeVisible()
+    await expect(page.getByTestId("submodel-boundary-card").first()).toBeVisible()
   })
 })

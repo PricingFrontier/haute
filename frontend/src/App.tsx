@@ -797,10 +797,12 @@ function FlowEditor() {
     })
   }, [loadGitReadiness, addToast])
 
+  const handleDocumentReloadRef = useRef<((reloaded: { nodes: Node[]; edges: Edge[] }) => void) | null>(null)
   const wsStatus = useWebSocketSync({
     preambleRef, submodelsRef, graphRefreshingRef, sourceFileRef,
     sourceRevisionRef, preservedBlocksRef, nodeIdCounter, fitView,
     enabled: !loading && loadError === null,
+    onDocumentReload: (reloaded) => handleDocumentReloadRef.current?.(reloaded),
   })
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])
 
@@ -842,9 +844,10 @@ function FlowEditor() {
     viewStack,
     handleDrillIntoSubmodel, handleBreadcrumbNavigate,
     resetToAuthoritativeRoot,
+    handleDocumentReload,
     handleCreateSubmodel, handleDissolveSubmodel,
   } = useSubmodelNavigation({
-    graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef,
+    graphRef, parentGraphRef, activeSubmodelIdentity, setActiveSubmodelIdentity, submodelsRef,
     setNodesRaw, setEdgesRaw, setSubmodelsRaw,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     setLastSelectedId,
@@ -853,6 +856,9 @@ function FlowEditor() {
     fitView,
     reservedApiInputFrameLabels,
   })
+  useEffect(() => {
+    handleDocumentReloadRef.current = handleDocumentReload
+  }, [handleDocumentReload])
 
   // Drilling replaces the visible graph in the store. The reactive navigation
   // snapshot retains the root graph while a definition is on screen, so the

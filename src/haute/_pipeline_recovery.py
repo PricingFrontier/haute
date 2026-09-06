@@ -1366,13 +1366,15 @@ def _recover_submodel_snapshot(
 def _unavailable_submodel_definition(
     registration: SubmodelRegistration,
     *,
+    definition_id: str | None = None,
     graph: RecoveryGraphSnapshot | None = None,
     input_ports: list[dict[str, Any]] | None = None,
     output_ports: list[dict[str, Any]] | None = None,
     diagnostic_ids: list[str] | None = None,
 ) -> RecoverySubmodelDefinition:
+    def_id = definition_id or registration.path
     return RecoverySubmodelDefinition(
-        definition_id=registration.definition_id,
+        definition_id=def_id,
         file=registration.path,
         availability="unavailable",
         diagnostic_ids=list(diagnostic_ids or []),
@@ -1386,6 +1388,7 @@ def _recover_unavailable_submodel_definition(
     registration: SubmodelRegistration,
     child_path: Path,
     *,
+    definition_id: str | None = None,
     project_root: Path,
     config_base: Path,
     diagnostics: list[PipelineRecoveryDiagnostic],
@@ -1396,6 +1399,7 @@ def _recover_unavailable_submodel_definition(
     incident_id: str | None = None,
 ) -> RecoverySubmodelDefinition:
     """Recover a child snapshot while keeping its definition non-canonical."""
+    def_id = definition_id or registration.path
     before_count = len(diagnostics)
     graph, input_ports, output_ports = _recover_submodel_snapshot(
         child_path,
@@ -1409,13 +1413,14 @@ def _recover_unavailable_submodel_definition(
         scope="submodel",
         message=message,
         source_file=_wire_path(child_path, project_root),
-        element_id=registration.definition_id,
+        element_id=def_id,
         remediation=remediation,
         incident_id=incident_id,
     )
     diagnostics.insert(before_count, diagnostic)
     return _unavailable_submodel_definition(
         registration,
+        definition_id=def_id,
         graph=graph,
         input_ports=input_ports,
         output_ports=output_ports,
@@ -1437,30 +1442,16 @@ def _recover_registered_submodels(
         return None, []
 
     definitions: dict[str, RecoverySubmodelDefinition] = {}
-    aliases = Counter(registration.alias for registration in registrations)
-    definition_sources: dict[str, set[str]] = {}
-    for registration in registrations:
-        try:
-            child_path, _config_base = resolve_submodel_reference(
-                registration.path,
-                pipeline_dir=parent_path.parent,
-                project_root=project_root,
-            )
-        except ValueError:
-            normalised_path = registration.path.replace("\\", "/").casefold()
-            source_key = f"invalid:{normalised_path}"
-        else:
-            source_key = f"resolved:{str(child_path.resolve()).casefold()}"
-        definition_sources.setdefault(registration.definition_id, set()).add(source_key)
-    conflicting_definitions = {
-        definition_id for definition_id, sources in definition_sources.items() if len(sources) > 1
-    }
+    names = Counter(registration.name for registration in registrations)
     occurrence_ids = _candidate_ids(
-        [(registration.instance_id, registration.line or 1) for registration in registrations]
+        [(registration.name, registration.line or 1) for registration in registrations]
     )
 
+    path_to_def_id: dict[str, str] = {}
+    definition_sources: dict[str, str] = {}
+
     for registration in registrations:
-        if registration.definition_id in definitions:
+        if registration.path in path_to_def_id:
             continue
         span = _span(
             registration.line or 1,
@@ -1468,22 +1459,6 @@ def _recover_registered_submodels(
             registration.line or 1,
             0,
         )
-        if registration.definition_id in conflicting_definitions:
-            diagnostic = _diagnostic(
-                code="submodel_definition_duplicate",
-                scope="submodel",
-                message="One submodel definition id resolves to more than one file.",
-                source_file=source_file,
-                element_id=registration.definition_id,
-                source_span=span,
-                remediation="Give each submodel file a unique definition id.",
-            )
-            diagnostics.append(diagnostic)
-            definitions[registration.definition_id] = _unavailable_submodel_definition(
-                registration,
-                diagnostic_ids=[diagnostic.diagnostic_id],
-            )
-            continue
         try:
             child_path, config_base = resolve_submodel_reference(
                 registration.path,
@@ -1491,35 +1466,41 @@ def _recover_registered_submodels(
                 project_root=project_root,
             )
         except ValueError as exc:
+            def_id = registration.path
+            path_to_def_id[registration.path] = def_id
             diagnostic = _diagnostic(
                 code="submodel_path_invalid",
                 scope="submodel",
                 message=str(exc),
                 source_file=source_file,
-                element_id=registration.definition_id,
+                element_id=def_id,
                 source_span=span,
                 remediation="Use a project-contained relative submodel path.",
             )
             diagnostics.append(diagnostic)
-            definitions[registration.definition_id] = _unavailable_submodel_definition(
+            definitions[def_id] = _unavailable_submodel_definition(
                 registration,
+                definition_id=def_id,
                 diagnostic_ids=[diagnostic.diagnostic_id],
             )
             continue
 
         if not child_path.is_file():
+            def_id = registration.path
+            path_to_def_id[registration.path] = def_id
             diagnostic = _diagnostic(
                 code="submodel_file_missing",
                 scope="submodel",
                 message=f"Referenced submodel file {registration.path!r} does not exist.",
                 source_file=source_file,
-                element_id=registration.definition_id,
+                element_id=def_id,
                 source_span=span,
                 remediation="Restore the file or update the registration path.",
             )
             diagnostics.append(diagnostic)
-            definitions[registration.definition_id] = _unavailable_submodel_definition(
+            definitions[def_id] = _unavailable_submodel_definition(
                 registration,
+                definition_id=def_id,
                 diagnostic_ids=[diagnostic.diagnostic_id],
             )
             continue
@@ -1532,14 +1513,17 @@ def _recover_registered_submodels(
                 _base_dir=config_base,
             )
         except (HauteError, OSError, UnicodeError) as exc:
+            def_id = registration.path
+            path_to_def_id[registration.path] = def_id
             code = (
                 "submodel_syntax_invalid"
                 if isinstance(exc, ParseError) and isinstance(exc.__cause__, SyntaxError)
                 else "submodel_definition_invalid"
             )
-            definitions[registration.definition_id] = _recover_unavailable_submodel_definition(
+            definitions[def_id] = _recover_unavailable_submodel_definition(
                 registration,
                 child_path,
+                definition_id=def_id,
                 project_root=project_root,
                 config_base=config_base,
                 diagnostics=diagnostics,
@@ -1550,17 +1534,20 @@ def _recover_registered_submodels(
             )
             continue
         except Exception:  # noqa: BLE001 - named submodel recovery isolation boundary
+            def_id = registration.path
+            path_to_def_id[registration.path] = def_id
             incident_id = uuid4().hex
             logger.error(
                 "pipeline_recovery_submodel_unexpected",
                 source_file=_wire_path(child_path, project_root),
-                definition_id=registration.definition_id,
+                definition_id=def_id,
                 incident_id=incident_id,
                 exc_info=True,
             )
-            definitions[registration.definition_id] = _recover_unavailable_submodel_definition(
+            definitions[def_id] = _recover_unavailable_submodel_definition(
                 registration,
                 child_path,
+                definition_id=def_id,
                 project_root=project_root,
                 config_base=config_base,
                 diagnostics=diagnostics,
@@ -1572,6 +1559,29 @@ def _recover_registered_submodels(
             )
             continue
 
+        def_id = child_graph._parser_definition_id or registration.path
+        path_to_def_id[registration.path] = def_id
+        source_key = str(child_path.resolve()).casefold()
+
+        if def_id in definition_sources and definition_sources[def_id] != source_key:
+            diagnostic = _diagnostic(
+                code="submodel_definition_duplicate",
+                scope="submodel",
+                message="One submodel definition id resolves to more than one file.",
+                source_file=source_file,
+                element_id=def_id,
+                source_span=span,
+                remediation="Give each submodel file a unique definition id.",
+            )
+            diagnostics.append(diagnostic)
+            definitions[def_id] = _unavailable_submodel_definition(
+                registration,
+                definition_id=def_id,
+                diagnostic_ids=[diagnostic.diagnostic_id],
+            )
+            continue
+
+        definition_sources[def_id] = source_key
         input_ports = [
             port.model_dump(mode="json", by_alias=True)
             for port in (child_graph._parser_input_ports or [])
@@ -1580,31 +1590,8 @@ def _recover_registered_submodels(
             port.model_dump(mode="json", by_alias=True)
             for port in (child_graph._parser_output_ports or [])
         ]
-        if child_graph._parser_definition_id != registration.definition_id:
-            diagnostic = _diagnostic(
-                code="submodel_definition_id_mismatch",
-                scope="submodel",
-                message="The registration and submodel file declare different definition ids.",
-                source_file=_wire_path(child_path, project_root),
-                element_id=registration.definition_id,
-                remediation="Make the registered and authored definition ids match.",
-            )
-            diagnostics.append(diagnostic)
-            definitions[registration.definition_id] = _unavailable_submodel_definition(
-                registration,
-                graph=_canonical_snapshot(
-                    child_graph,
-                    source_path=child_path,
-                    project_root=project_root,
-                    diagnostics=diagnostics,
-                ),
-                input_ports=input_ports,
-                output_ports=output_ports,
-                diagnostic_ids=[diagnostic.diagnostic_id],
-            )
-            continue
-        definitions[registration.definition_id] = RecoverySubmodelDefinition(
-            definition_id=registration.definition_id,
+        definitions[def_id] = RecoverySubmodelDefinition(
+            definition_id=def_id,
             file=registration.path,
             availability="ready",
             graph=_canonical_snapshot(
@@ -1619,7 +1606,11 @@ def _recover_registered_submodels(
 
     occurrences: list[_RecoveredCandidate] = []
     for registration, recovery_id in zip(registrations, occurrence_ids, strict=True):
-        definition = definitions[registration.definition_id]
+        def_id = path_to_def_id.get(registration.path, registration.path)
+        definition = definitions.get(def_id)
+        if definition is None:
+            definition = _unavailable_submodel_definition(registration, definition_id=def_id)
+            definitions[def_id] = definition
         span = _span(
             registration.line or 1,
             0,
@@ -1628,29 +1619,29 @@ def _recover_registered_submodels(
         )
         diagnostic_ids = list(definition.diagnostic_ids)
         availability = definition.availability
-        if aliases[registration.alias] > 1:
+        if names[registration.name] > 1:
             diagnostic = _diagnostic(
                 code="submodel_alias_duplicate",
                 scope="submodel",
-                message=f"Submodel alias {registration.alias!r} is duplicated.",
+                message=f"Submodel name {registration.name!r} is duplicated.",
                 source_file=source_file,
                 element_id=recovery_id,
                 source_span=span,
-                remediation="Give every submodel occurrence a unique alias.",
+                remediation="Give every submodel occurrence a unique name.",
             )
             diagnostics.append(diagnostic)
             diagnostic_ids.append(diagnostic.diagnostic_id)
             availability = "unavailable"
         occurrences.append(
             _RecoveredCandidate(
-                authored_id=registration.instance_id,
+                authored_id=registration.name,
                 recovery_id=recovery_id,
                 decorator_name="submodel",
                 node_type=NodeType.SUBMODEL,
-                description=registration.alias,
+                description=registration.name,
                 config={
-                    "definitionId": registration.definition_id,
-                    "alias": registration.alias,
+                    "definitionId": def_id,
+                    "alias": registration.name,
                     **(
                         {"instanceOf": registration.instance_of}
                         if registration.instance_of is not None
@@ -1663,7 +1654,7 @@ def _recover_registered_submodels(
                 span=span,
                 availability=availability,
                 diagnostic_ids=diagnostic_ids,
-                endpoint_ids=(registration.instance_id, registration.alias),
+                endpoint_ids=(registration.name,),
                 submodel_input_ports=_port_names(definition.input_ports),
                 submodel_output_ports=_port_names(definition.output_ports),
             )

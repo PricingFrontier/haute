@@ -9,30 +9,30 @@ const makeDefinition = (nodes: Node[]): SubmodelDefinition => ({
   inputPorts: [{ name: "policy", targets: [{ nodeId: "prepare", handleId: null }] }],
   outputPorts: [{ name: "premium", source: { nodeId: "score", handleId: "out" } }],
 })
-const instance = () => makeNode("instance_primary", "submodel", { data: { label: "pricing", nodeType: "submodel", config: { definitionId: "definition_pricing", alias: "pricing" } } })
+const instance = () => makeNode("pricing", "submodel", { data: { label: "pricing", nodeType: "submodel", config: { definitionId: "definition_pricing", alias: "pricing" } } })
 const boundary = (nodes: Node[], direction: "input" | "output") => nodes.find((node) => node.type === "submodelPort" && (node.data as SubmodelPortData).portDirection === direction)!
 
 describe("buildSubmodelViewGraph", () => {
   it("projects canonical ports through declared endpoints", () => {
     const children = [makeNode("prepare"), makeNode("score")]
-    const parentEdges: PipelineEdge[] = [{ id: "feed", source: "api", sourceHandle: "quotes", target: "instance_primary", targetHandle: "in__policy" }, { id: "consume", source: "instance_primary", sourceHandle: "out__premium", target: "output" }]
-    const graph = buildSubmodelViewGraph({ submodelName: "pricing", instanceId: "instance_primary", definition: makeDefinition(children), childNodes: children, childEdges: [makeEdge("prepare", "score")], parentNodes: [makeNode("api"), instance(), makeNode("output")], parentEdges })
+    const parentEdges: PipelineEdge[] = [{ id: "feed", source: "api", sourceHandle: "quotes", target: "pricing", targetHandle: "in__policy" }, { id: "consume", source: "pricing", sourceHandle: "out__premium", target: "output" }]
+    const graph = buildSubmodelViewGraph({ submodelName: "pricing", instanceId: "pricing", definition: makeDefinition(children), childNodes: children, childEdges: [makeEdge("prepare", "score")], parentNodes: [makeNode("api"), instance(), makeNode("output")], parentEdges })
     const input = boundary(graph.nodes, "input").data as SubmodelPortData
     const output = boundary(graph.nodes, "output").data as SubmodelPortData
-    expect(input).toMatchObject({ instanceId: "instance_primary", definitionId: "definition_pricing", ports: [{ id: "policy", label: "policy", parentEdges: [parentEdges[0]] }] })
-    expect(output).toMatchObject({ instanceId: "instance_primary", definitionId: "definition_pricing", externalNodeIds: ["output"] })
+    expect(input).toMatchObject({ instanceId: "pricing", definitionId: "definition_pricing", ports: [{ id: "policy", label: "policy", parentEdges: [parentEdges[0]] }] })
+    expect(output).toMatchObject({ instanceId: "pricing", definitionId: "definition_pricing", externalNodeIds: ["output"] })
     expect(graph.edges).toEqual(expect.arrayContaining([expect.objectContaining({ sourceHandle: "policy", target: "prepare", data: { submodelBoundary: { direction: "input", name: "policy", parentEdges: [parentEdges[0]] } } }), expect.objectContaining({ source: "score", sourceHandle: "out", data: { submodelBoundary: { direction: "output", name: "premium", parentConsumerEdges: [parentEdges[1]] } } })]))
   })
   it("retains input bindings from every occurrence in the shared frame projection", () => {
     const children = [makeNode("prepare"), makeNode("score")]
-    const secondary = makeNode("instance_secondary", "submodel", {
+    const secondary = makeNode("pricing_copy", "submodel", {
       data: {
         label: "pricing_copy",
         nodeType: "submodel",
         config: {
           definitionId: "definition_pricing",
           alias: "pricing_copy",
-          instanceOf: "instance_primary",
+          instanceOf: "pricing",
         },
       },
     })
@@ -40,20 +40,20 @@ describe("buildSubmodelViewGraph", () => {
       {
         id: "feed-owner",
         source: "api-owner",
-        target: "instance_primary",
+        target: "pricing",
         targetHandle: "in__policy",
       },
       {
         id: "feed-copy",
         source: "api-copy",
-        target: "instance_secondary",
+        target: "pricing_copy",
         targetHandle: "in__policy",
       },
     ]
 
     const graph = buildSubmodelViewGraph({
       submodelName: "pricing",
-      instanceId: "instance_primary",
+      instanceId: "pricing",
       definition: makeDefinition(children),
       childNodes: children,
       childEdges: [],
@@ -75,6 +75,6 @@ describe("buildSubmodelViewGraph", () => {
   })
   it("rejects undeclared parent handles", () => {
     const children = [makeNode("prepare"), makeNode("score")]
-    expect(() => buildSubmodelViewGraph({ submodelName: "pricing", instanceId: "instance_primary", definition: makeDefinition(children), childNodes: children, childEdges: [], parentNodes: [instance()], parentEdges: [{ id: "bad", source: "api", target: "instance_primary", targetHandle: "in__unknown" }] })).toThrow(/undeclared input handle/)
+    expect(() => buildSubmodelViewGraph({ submodelName: "pricing", instanceId: "pricing", definition: makeDefinition(children), childNodes: children, childEdges: [], parentNodes: [instance()], parentEdges: [{ id: "bad", source: "api", target: "pricing", targetHandle: "in__unknown" }] })).toThrow(/undeclared input handle/)
   })
 })

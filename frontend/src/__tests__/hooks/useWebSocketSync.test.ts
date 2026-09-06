@@ -509,7 +509,7 @@ describe("useWebSocketSync", () => {
     it("accepts synced submodel output handles from the canonical definition registry", async () => {
       const params = makeHookParams("rating/main.py")
       const sourceNode: Node = {
-        id: "submodel_instance_inputs",
+        id: "Inputs",
         type: "submodel",
         position: { x: 0, y: 0 },
         data: {

@@ -202,8 +202,8 @@ describe("useGraphStore — undo atomicity", () => {
       })
     })
 
-    const nextNodes = [makeNode("submodel_instance")]
-    const nextEdges = [makeEdge("upstream", "submodel_instance")]
+    const nextNodes = [makeNode("pricing")]
+    const nextEdges = [makeEdge("upstream", "pricing")]
     const nextSubmodels = { pricing: { file: "modules/pricing.py" } }
     act(() => {
       useGraphStore.getState().setNodesAndEdgesAndSubmodels(

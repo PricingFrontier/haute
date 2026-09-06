@@ -76,7 +76,7 @@ class TestCreateSubmodelGraph:
         assert len(edges) == 1
         e = edges[0]
         assert e.source == "src"
-        assert e.target.startswith("submodel_instance_")
+        assert e.target == "grp"
         assert e.targetHandle == "in__src"
 
     def test_output_port_rewiring(self):
@@ -115,7 +115,7 @@ class TestCreateSubmodelGraph:
         edges = result.graph.edges
         assert len(edges) == 1
         e = edges[0]
-        assert e.source.startswith("submodel_instance_")
+        assert e.source == "inner"
         assert e.sourceHandle == "out__Priced_quotes"
         assert e.target == "out"
         definition = result.graph.submodels["inner"]
@@ -292,7 +292,7 @@ class TestCreateSubmodelGraph:
         result = create_submodel_graph(graph, ["src", "t1", "t2"], "all_in")
         # All 3 nodes become child nodes; parent has only the placeholder
         assert len(result.graph.nodes) == 1
-        assert result.graph.nodes[0].id.startswith("submodel_instance_")
+        assert result.graph.nodes[0].id == "all_in"
         # No external edges remain
         assert len(result.graph.edges) == 0
         assert result.graph.nodes[0].data.config == {"definitionId": "all_in", "alias": "all_in"}
@@ -517,7 +517,7 @@ class TestCreateSubmodelGraph:
                 "pipeline_name": "test",
                 "nodes": [
                     {
-                        "id": "instance_a",
+                        "id": "a",
                         "data": {
                             "label": "a",
                             "nodeType": "submodel",
@@ -525,7 +525,7 @@ class TestCreateSubmodelGraph:
                         },
                     },
                     {
-                        "id": "instance_b",
+                        "id": "b",
                         "data": {
                             "label": "b",
                             "nodeType": "submodel",
@@ -538,7 +538,7 @@ class TestCreateSubmodelGraph:
             }
         )
         with pytest.raises(ValueError, match="cannot be nested"):
-            create_submodel_graph(graph, ["instance_a", "instance_b"], "outer")
+            create_submodel_graph(graph, ["a", "b"], "outer")
 
     def test_single_submodel_node_raises_nesting_not_count(self):
         """A canonical occurrence reports nesting before selection count."""

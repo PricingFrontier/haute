@@ -96,7 +96,7 @@ def submodel_graph() -> PipelineGraph:
                     },
                 },
                 {
-                    "id": "instance_scoring",
+                    "id": "scoring",
                     "type": "submodel",
                     "position": {"x": 200, "y": 0},
                     "data": {
@@ -110,7 +110,7 @@ def submodel_graph() -> PipelineGraph:
                 {
                     "id": "e_src_submodel__scoring__tx",
                     "source": "src",
-                    "target": "instance_scoring",
+                    "target": "scoring",
                     "targetHandle": "in__source",
                 },
             ],
@@ -172,10 +172,10 @@ class TestFlattenGraph:
         result = flatten_graph(submodel_graph)
         node_ids = {n.id for n in result.nodes}
         # Submodel placeholder should be gone
-        assert "instance_scoring" not in node_ids
+        assert "scoring" not in node_ids
         # Child nodes should be present
-        assert "submodel_runtime/instance_scoring/tx" in node_ids
-        assert "submodel_runtime/instance_scoring/out" in node_ids
+        assert "submodel_runtime/scoring/tx" in node_ids
+        assert "submodel_runtime/scoring/out" in node_ids
         # Source should still be there
         assert "src" in node_ids
 
@@ -184,11 +184,11 @@ class TestFlattenGraph:
         result = flatten_graph(submodel_graph)
         edge_pairs = [(e.source, e.target) for e in result.edges]
         # Should have src→tx edge (rewired from src→submodel__scoring)
-        assert ("src", "submodel_runtime/instance_scoring/tx") in edge_pairs
+        assert ("src", "submodel_runtime/scoring/tx") in edge_pairs
         # Internal edge tx→out should be present
         assert (
-            "submodel_runtime/instance_scoring/tx",
-            "submodel_runtime/instance_scoring/out",
+            "submodel_runtime/scoring/tx",
+            "submodel_runtime/scoring/out",
         ) in edge_pairs
 
     def test_no_submodel_key_in_result(self, submodel_graph):
@@ -304,12 +304,7 @@ class TestParserSubmodel:
             def Source() -> pl.LazyFrame:
                 return pl.scan_parquet("data/in.parquet")
 
-            pipeline.submodel(
-                "modules/scoring.py",
-                definition_id="definition_scoring",
-                instance_id="instance_scoring",
-                alias="scoring",
-            )
+            pipeline.submodel("modules/scoring.py", "scoring")
 
             pipeline.connect("Source", "scoring", target_port="source")
         """,
@@ -390,16 +385,16 @@ class TestSchemas:
         from haute.schemas import DissolveSubmodelRequest
 
         req = DissolveSubmodelRequest(
-            instance_id="instance_scoring",
+            instance_id="scoring",
             graph={"nodes": [], "edges": []},
             preserved_blocks=["KEEP = 1"],
             base_revision="revision-1",
         )
-        assert req.instance_id == "instance_scoring"
+        assert req.instance_id == "scoring"
         assert req.preserved_blocks == ["KEEP = 1"]
         assert req.base_revision == "revision-1"
 
-    @pytest.mark.parametrize("instance_id", ["", " instance_scoring", "instance_scoring "])
+    @pytest.mark.parametrize("instance_id", ["", " scoring", "scoring "])
     def test_dissolve_submodel_request_rejects_invalid_identity(self, instance_id: str):
         from pydantic import ValidationError
 
@@ -438,7 +433,7 @@ class TestSchemas:
             if operation == "create":
                 CreateSubmodelRequest(name="scoring", node_ids=["tx", "out"], **common)
             else:
-                DissolveSubmodelRequest(instance_id="instance_scoring", **common)
+                DissolveSubmodelRequest(instance_id="scoring", **common)
 
     def test_dissolve_submodel_response(self):
         from haute.schemas import DissolveSubmodelResponse
@@ -447,10 +442,10 @@ class TestSchemas:
             status="ok",
             graph={"nodes": [], "edges": []},
             source_revision="revision-2",
-            instance_id="instance_scoring",
+            instance_id="scoring",
             definition_id="definition_scoring",
         )
-        assert resp.instance_id == "instance_scoring"
+        assert resp.instance_id == "scoring"
         assert resp.definition_id == "definition_scoring"
         assert resp.source_revision == "revision-2"
 
@@ -474,7 +469,7 @@ class TestSchemas:
             DissolveSubmodelResponse(
                 graph={"nodes": [], "edges": []},
                 source_revision="revision-2",
-                instance_id="instance_scoring",
+                instance_id="scoring",
                 definition_id="definition_scoring",
                 **{field: value},
             )

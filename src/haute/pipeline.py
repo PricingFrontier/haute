@@ -187,9 +187,7 @@ class RegisteredSubmodel:
     """One canonical file-backed submodel occurrence registered on a pipeline."""
 
     file: str
-    definition_id: str
-    instance_id: str
-    alias: str
+    name: str
     instance_of: str | None = None
 
 
@@ -232,7 +230,7 @@ class NodeRegistry:
                 (
                     registered
                     for registered in getattr(self, "_submodel_registrations", ())
-                    if f.__name__ in {registered.alias, registered.instance_id}
+                    if f.__name__ == registered.name
                 ),
                 None,
             )
@@ -385,8 +383,8 @@ class NodeRegistry:
 
         Can be chained: ``registry.connect("a", "b").connect("b", "c")``
         """
-        submodel_aliases = {registration.alias for registration in self._submodel_registrations}
-        known_endpoints = set(self._node_map) | submodel_aliases
+        submodel_names = {registration.name for registration in self._submodel_registrations}
+        known_endpoints = set(self._node_map) | submodel_names
         if source not in known_endpoints:
             raise ValueError(
                 f"Source node '{source}' not found in pipeline. "
@@ -717,29 +715,25 @@ class Pipeline(NodeRegistry):
     def submodel(
         self,
         file: str,
+        name: str,
         *,
-        definition_id: str,
-        instance_id: str,
-        alias: str,
         instance_of: str | None = None,
     ) -> Pipeline:
         """Register one occurrence of a file-backed submodel definition."""
         identities = {
             "file": file,
-            "definition_id": definition_id,
-            "instance_id": instance_id,
-            "alias": alias,
+            "name": name,
         }
         for field_name, value in identities.items():
             if not isinstance(value, str):
                 raise TypeError(f"Submodel {field_name} must be a string.")
             if not value or value != value.strip():
                 raise ValueError(f"Submodel {field_name} must be a non-empty unpadded string.")
-        sanitized_alias = _sanitize_func_name(alias)
-        if sanitized_alias != alias:
+        sanitized_name = _sanitize_func_name(name)
+        if sanitized_name != name:
             raise ValueError(
-                f"Submodel alias must be a canonical identifier "
-                f"(got '{alias}'; expected '{sanitized_alias}')."
+                f"Submodel name must be a canonical identifier "
+                f"(got '{name}'; expected '{sanitized_name}')."
             )
         if instance_of is not None:
             if not isinstance(instance_of, str):
@@ -747,26 +741,17 @@ class Pipeline(NodeRegistry):
             if not instance_of or instance_of != instance_of.strip():
                 raise ValueError("Submodel instance_of must be a non-empty unpadded string.")
 
-        for field_name, value in {"alias": alias, "instance_id": instance_id}.items():
-            if value in self._node_map:
-                raise ValueError(
-                    f"Submodel {field_name} {value!r} conflicts with a registered node name."
-                )
+        if name in self._node_map:
+            raise ValueError(f"Submodel name {name!r} conflicts with a registered node name.")
 
-        if any(
-            registered.instance_id == instance_id for registered in self._submodel_registrations
-        ):
-            raise ValueError(f"Duplicate submodel instance_id {instance_id!r}.")
-        if any(registered.alias == alias for registered in self._submodel_registrations):
-            raise ValueError(f"Duplicate submodel alias {alias!r}.")
+        if any(registered.name == name for registered in self._submodel_registrations):
+            raise ValueError(f"Duplicate submodel name {name!r}.")
 
         self._submodel_files.append(file)
         self._submodel_registrations.append(
             RegisteredSubmodel(
                 file=file,
-                definition_id=definition_id,
-                instance_id=instance_id,
-                alias=alias,
+                name=name,
                 instance_of=instance_of,
             )
         )

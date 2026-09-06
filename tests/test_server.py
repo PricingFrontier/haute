@@ -972,7 +972,7 @@ def _submodel_instance_node(graph: dict, definition_id: str) -> dict:
     ]
     assert len(matches) == 1
     instance = matches[0]
-    assert instance["id"].startswith("submodel_instance_")
+    assert instance["id"] == definition_id
     assert instance["data"]["config"]["alias"] == definition_id
     return instance
 
@@ -1149,10 +1149,8 @@ class TestDissolveSubmodel:
         assert data["status"] == "ok"
 
         # The flattened graph should have the original nodes back
-        from haute._submodel_instances import qualified_runtime_node_id
-
         flat_ids = {n["id"] for n in data["graph"]["nodes"]}
-        assert flat_ids == {qualified_runtime_node_id(instance_id, node_id) for node_id in node_ids}
+        assert flat_ids == {f"submodel_runtime/temp_group/{node_id}" for node_id in node_ids}
 
         # Dissolve is in-memory; persistence artifacts remain untouched.
         assert "submodel_file_deleted" not in data
@@ -3367,8 +3365,7 @@ class TestFileWatcherRecoverySidecars:
         owner = tmp_path / "owner.py"
         owner.write_text(
             'import haute\npipeline = haute.Pipeline("owner")\n'
-            'pipeline.submodel("modules/shared.py", definition_id="shared", '
-            'instance_id="shared__one", alias="shared_one")\n',
+            'pipeline.submodel("modules/shared.py", "shared_one")\n',
             encoding="utf-8",
         )
         unrelated = tmp_path / "unrelated.py"
@@ -4717,6 +4714,7 @@ pipeline.connect("middle", "final")
         assert resp.status_code == 200
         data = resp.json()
         instance_id = _submodel_instance_node(data["graph"], "inner")["id"]
+        assert instance_id == "inner"
 
         # Parent graph should have the immutable occurrence plus final.
         parent_ids = {n["id"] for n in data["graph"]["nodes"]}

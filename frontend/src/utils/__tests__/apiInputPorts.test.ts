@@ -299,7 +299,7 @@ describe("edgeInputName", () => {
         description: "",
         nodeType: "submodelPort",
         config: {},
-        instanceId: "instance_pricing",
+        instanceId: "pricing",
         definitionId: "definition_pricing",
         portDirection: "input",
         ports: [
@@ -339,7 +339,7 @@ describe("edgeInputName", () => {
         description: "",
         nodeType: "submodelPort",
         config: {},
-        instanceId: "instance_pricing",
+        instanceId: "pricing",
         definitionId: "definition_pricing",
         portDirection: "input",
         ports: [{ id: "row-quote", label: "quote_info" }],
@@ -829,7 +829,7 @@ describe("canonical submodel boundary resolution", () => {
         description: "",
         nodeType: "submodelPort",
         config: {},
-        instanceId: "instance_pricing",
+        instanceId: "pricing",
         definitionId: "definition_pricing",
         portDirection: "input",
         ports: [{ id: "policy_data", label: "Policy data" }],
@@ -847,7 +847,7 @@ describe("canonical submodel boundary resolution", () => {
     ).toBe("policy_data")
   })
 
-  it("resolves an arbitrary-id occurrence output through its occurrence name", () => {
+  it("resolves a submodel occurrence output through its occurrence name", () => {
     const child: SimpleNode = {
       ...sourceNode("polars"),
       id: "child_output",
@@ -858,7 +858,7 @@ describe("canonical submodel boundary resolution", () => {
     }
     const occurrence: SimpleNode = {
       ...sourceNode("submodel"),
-      id: "instance_pricing_secondary",
+      id: "pricing_secondary",
       data: {
         ...sourceNode("submodel").data,
         config: {
@@ -902,7 +902,7 @@ describe("canonical submodel boundary resolution", () => {
     const secondTarget: SimpleNode = { ...sourceNode("polars"), id: "child_b" }
     const occurrence: SimpleNode = {
       ...sourceNode("submodel"),
-      id: "instance_pricing_secondary",
+      id: "pricing_secondary",
       data: {
         ...sourceNode("submodel").data,
         config: {

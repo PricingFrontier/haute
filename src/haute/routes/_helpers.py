@@ -785,10 +785,13 @@ def _sidecar_position_key(node: GraphNode) -> str:
     """Return the node identity that the parser will restore on reload.
 
     Ordinary executable nodes are reconstructed from their sanitised label.
-    Submodel occurrences persist an explicit immutable ``instance_id``, so
-    their sidecar key is the occurrence node id itself.
+    Submodel occurrences return their alias (the id restored after a rename),
+    falling back to node.id only when the config has no alias.
     """
     if node.data.nodeType == NodeType.SUBMODEL:
+        alias = node.data.config.get("alias")
+        if isinstance(alias, str) and alias:
+            return alias
         return node.id
     return _sanitize_func_name(node.data.label)
 
@@ -802,7 +805,7 @@ def save_sidecar(
     """Write node positions + source state to the sidecar .haute.json file.
 
     Keys are the identities the parser restores on re-parse: the sanitised
-    function name for ordinary nodes and the explicit instance id for a
+    function name for ordinary nodes and the occurrence alias for a
     submodel occurrence.
 
     When two distinct labels collapse to the same key only one

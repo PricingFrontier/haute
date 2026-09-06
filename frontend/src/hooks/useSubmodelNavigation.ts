@@ -22,6 +22,7 @@ import type { DrilledOccurrenceIdentity } from "../utils/submodelRuntimeTarget"
 interface SubmodelNavParams {
   graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>
+  activeSubmodelIdentity?: DrilledOccurrenceIdentity | null
   setActiveSubmodelIdentity: (identity: DrilledOccurrenceIdentity | null) => void
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesRaw: (nodes: Node[]) => void
@@ -48,6 +49,7 @@ export interface SubmodelNavReturn {
   handleDrillIntoSubmodel: (nodeId: string) => Promise<void>
   handleBreadcrumbNavigate: (depth: number) => void
   resetToAuthoritativeRoot: (sourceFile: string, pipelineName: string) => void
+  handleDocumentReload: (reloaded: Node[] | { nodes: Node[]; edges?: Edge[] }) => void
   handleCreateSubmodel: (name: string, nodeIds: string[]) => Promise<void>
   handleDissolveSubmodel: (instanceId: string) => Promise<void>
 }
@@ -116,7 +118,7 @@ function instanceCount(nodes: Node[], definitionId: string): number {
 }
 
 export default function useSubmodelNavigation({
-  graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef,
+  graphRef, parentGraphRef, activeSubmodelIdentity, setActiveSubmodelIdentity, submodelsRef,
   setNodesRaw, setEdgesRaw, setSubmodelsRaw,
   setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData,
   preambleRef, sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef,
@@ -352,6 +354,57 @@ export default function useSubmodelNavigation({
     setViewStack(rootView)
   }, [parentGraphRef, setActiveSubmodelIdentity])
 
+  const handleDocumentReload = useCallback((
+    reloaded: Node[] | { nodes: Node[]; edges?: Edge[] },
+  ) => {
+    const reloadedNodes = Array.isArray(reloaded) ? reloaded : reloaded.nodes
+    const reloadedEdges = Array.isArray(reloaded) ? undefined : reloaded.edges
+    const activeView = viewStackRef.current[viewStackRef.current.length - 1]
+    const drilledInstanceId =
+      activeSubmodelIdentity?.instanceId ??
+      (activeView?.type === "submodel" ? activeView.instanceId : null)
+    if (!drilledInstanceId) return
+
+    const existsInReloaded = reloadedNodes.some((node) => node.id === drilledInstanceId)
+    if (!existsInReloaded) {
+      transformRequestSerialRef.current += 1
+      parentGraphRef.current = null
+      setActiveSubmodelIdentity(null)
+      const rootFile = viewStackRef.current[0]?.file || sourceFileRef.current
+      const rootName = viewStackRef.current[0]?.name || pipelineNameRef.current || "main"
+      sourceFileRef.current = rootFile
+      setCurrentSourceFile?.(rootFile || null)
+      const rootView: ViewLevel[] = [{
+        type: "pipeline",
+        name: rootName,
+        file: rootFile,
+      }]
+      viewStackRef.current = rootView
+      setViewStack(rootView)
+      setNodesRaw(reloadedNodes)
+      if (reloadedEdges) {
+        setEdgesRaw(normalizeEdges(reloadedEdges))
+      }
+      setSelectedNode(null)
+      setLastSelectedId?.(null)
+      setPreviewData(null)
+      setTimeout(() => fitView({ padding: 0.8 }), 100)
+    }
+  }, [
+    activeSubmodelIdentity,
+    parentGraphRef,
+    setActiveSubmodelIdentity,
+    sourceFileRef,
+    pipelineNameRef,
+    setCurrentSourceFile,
+    setNodesRaw,
+    setEdgesRaw,
+    setSelectedNode,
+    setLastSelectedId,
+    setPreviewData,
+    fitView,
+  ])
+
   const handleDissolveSubmodel = useCallback(async (instanceId: string) => {
     if (parentGraphRef.current) {
       addToast("error", "Return to the main pipeline before dissolving a submodel.")
@@ -418,6 +471,7 @@ export default function useSubmodelNavigation({
     handleDrillIntoSubmodel,
     handleBreadcrumbNavigate,
     resetToAuthoritativeRoot,
+    handleDocumentReload,
     handleCreateSubmodel,
     handleDissolveSubmodel,
   }

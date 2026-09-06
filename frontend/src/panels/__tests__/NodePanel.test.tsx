@@ -1427,7 +1427,7 @@ describe("NodePanel", () => {
           description: "",
           nodeType: "submodelPort",
           config: {},
-          instanceId: "instance_pricing",
+          instanceId: "pricing",
           definitionId: "pricing",
           portDirection: "input",
           ports: [
@@ -1756,7 +1756,7 @@ describe("NodePanel", () => {
         data: { label: "Target", description: "", nodeType: "polars", config: {} },
       })
       const occurrence = makeNode({
-        id: "instance_pricing",
+        id: "pricing",
         data: {
           label: "pricing",
           description: "",
@@ -1835,7 +1835,7 @@ describe("NodePanel", () => {
         description: "",
         nodeType: "submodelPort",
         config: {},
-        instanceId: "instance_pricing",
+        instanceId: "pricing",
         definitionId: "definition_pricing",
         portDirection: "input",
         ports: [{ id: "source", label: "Source", parentEdges: [] }],
@@ -1866,7 +1866,7 @@ describe("NodePanel", () => {
           description: "",
           nodeType: "submodelPort",
           config: {},
-          instanceId: "instance_pricing",
+          instanceId: "pricing",
           definitionId: "definition_pricing",
           portDirection: "input",
           ports: [{ id: "source", label: "Source", parentEdges: [] }],
@@ -2041,7 +2041,7 @@ describe("NodePanel", () => {
       data: { label: "premium", description: "", nodeType: "scenarioExpander", config: {} },
     })
     const submodelNode = makeNode({
-      id: "instance_model_stuff",
+      id: "model_stuff",
       data: {
         label: "model_stuff",
         description: "",
@@ -2062,7 +2062,7 @@ describe("NodePanel", () => {
       {
         id: "boundary-input",
         source: "sale_flag",
-        target: "instance_model_stuff",
+        target: "model_stuff",
         targetHandle: "in__competitor",
       },
       { id: "instance-input", source: "premium", target: "competitor_features_scenarios" },

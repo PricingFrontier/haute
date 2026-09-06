@@ -62,26 +62,34 @@ by one shared **definition** and any number of parent-graph **instances**:
   typed model only; it exposes no dictionary-style compatibility access or
   mutation API.
 - Every occurrence is represented solely by a `NodeType.SUBMODEL` node in the
-  parent graph. Its node id is the immutable `instanceId`; its typed config
-  contains `definitionId`, a canonical identifier `alias` (unique among the parent's node names, included in the codegen collision gate), and optional `instanceOf`.
+  parent graph. Its node id is the occurrence's canonical name (`node.id == label == alias == name`);
+  its typed config contains `definitionId`, the canonical identifier `alias`, and optional `instanceOf`.
   Exactly one occurrence for each definition omits `instanceOf` and is the
   editable definition owner. Every created instance points `instanceOf` at
   that owner; chains, self-references, missing owners, cross-definition owners,
-  and multiple owners are invalid. The node owns its mutable
-  occurrence name (the alias) and position, while its incident parent edges own its bindings.
-  `node.data.label == config.alias` is an invariant enforced on validation (raising `ParseError` if violated).
-  The registration signature `pipeline.submodel(...)` accepts `alias` and does not accept `label=`.
+  and multiple owners are invalid. The node owns its occurrence name
+  and position, while its incident parent edges own its bindings.
+  `node.id == node.data.label == config.alias` is an invariant enforced on validation (raising `ParseError` if violated).
+  The registration signature `pipeline.submodel(file, name, *, instance_of=None)` accepts `name` as positional argument and does not accept `definition_id=`, `instance_id=`, `alias=`, or `label=`.
   Recovery uses the alias only.
+- Renaming an occurrence changes its identity, exactly as renaming an ordinary
+  node does: in the editor the node id stays until Save (the alias and every
+  consumer binding change at once), codegen emits the name, and the reparse
+  re-keys the node id and the `submodel_runtime/<name>/...` runtime ids.
+  Accepted consequence: preview caches, trace snapshots and drilled targets
+  keyed on the old runtime id are invalidated by the rename, and a drilled
+  view whose occurrence no longer exists after a reload returns to the root
+  view.
   There is no second top-level instances map. Internal definition positions are
   occurrence-local: grouping subtracts the first occurrence's origin and each
   expansion adds the selected occurrence's position, so copies never inherit
   another occurrence's absolute canvas coordinates.
-- Definition ids, instance ids, and public port names are structural identity, not
-  executable frame names or presentation. Renaming a definition, instance, source alias, internal node,
-  or file must not change them. Authored and generated source persists these ids
-  explicitly. Missing definition, instance, alias, or port identity is an
+- Definition ids and public port names are structural identity, not
+  executable frame names or presentation. Renaming a definition, an occurrence, an
+  internal node, or a file must not change them. Authored and generated source persists these ids
+  explicitly. Missing definition, alias, or port identity is an
   invalid document and fails during parsing; identity is never inferred from a
-  file name, node id, occurrence name (the alias), registry key, or internal child id.
+  file name, occurrence name (the alias), registry key, or internal child id.
 - A public input port has an immutable `name` and zero or more ordered
   internal targets `{nodeId, handleId}`. Each occurrence may bind that public
   input from at most one parent edge; the single binding fans out to every
@@ -184,10 +192,10 @@ rendered boundary-port cards: definitions with no public ports (including a
 group made entirely from disconnected source nodes) must use the same qualified
 preview and trace targets.
 
-Code generation emits each definition file once and one aliased
+Code generation emits each definition file once and one
 `pipeline.submodel(...)` registration per occurrence. Parent connections use
 public ports and never name internal children. Parse -> codegen -> parse must
-preserve definition identity, instance ids, aliases, labels, positions, ports,
+preserve definition identity, occurrence names, labels, positions, ports,
 and independent bindings. Every generated config-backed node resolves its
 sidecar from the owning pipeline directory. A definition emitted under
 `modules/` must not reinterpret `config/...` relative to the module directory.
@@ -211,10 +219,8 @@ must resolve the original pipeline-owned sidecars.
   the parent graph and replaced with one `SUBMODEL` occurrence. The GUI reads
   `nodes`, `edges`, and `submodels` together from the canonical graph store at
   submission time; an effect-mirrored ref is never the source of a create
-  request. Creation
-  allocates a fresh opaque immutable instance id
-  (`submodel_instance_<uuid>`); the initial definition id and alias are the
-  sanitised name, and the occurrence config is exactly
+  request.  Creation sets the occurrence node id to the sanitised name (`node.id = sm_name`);
+  the initial definition id and alias are the sanitised name, and the occurrence config is exactly
   `{definitionId, alias}`. Cross-boundary edges are grouped into stable public
   ports: each logical input created by extraction records one or more ordered
   internal targets and each output records one internal source. Parent handles are

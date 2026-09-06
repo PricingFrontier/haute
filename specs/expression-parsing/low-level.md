@@ -70,12 +70,13 @@ No step resolves node configuration, builds canonical nodes/edges, merges submod
 fragments into editor-only recovery DTOs.
 
 **`merge_submodels`** (`_parser_submodels.py`): validate that every parsed
-child's declared `definition_id` matches its registration and that literal
-structured input/output ports are present. Build one `SubmodelDefinition` per
-definition id and one `SUBMODEL` occurrence per registration; each occurrence
-uses its explicit immutable `instance_id`, config `{definitionId, alias}`, and
-derives its node label directly from the alias (registrations do not accept `label=`).
-Parent connect endpoints use aliases and declared
+child file has literal structured input/output ports present and extract its
+declared `definition_id`. Build one `SubmodelDefinition` per definition id and
+one `SUBMODEL` occurrence per registration; each occurrence uses its name as
+node id (`node.id == label == alias == name`), config `{definitionId, alias}`, and
+derives its node label directly from the name (registrations accept `(path, name, *, instance_of=None)`
+and reject `definition_id=`, `instance_id=`, `alias=`, and `label=`).
+Parent connect endpoints use names and declared
 public port names, which become `in__<name>`/`out__<name>` graph handles;
 internal child ids are never accepted as parent endpoints. Only when
 `flatten=True` is the canonical hierarchical graph passed to
@@ -188,14 +189,13 @@ appended before the column that depends on it) → return the parsed expressions
   `unresolved_paths` instead of returning a root-only graph. Editor recovery resolves submodel
   fragments against the explicitly supplied project and parent-pipeline roots.
 - **Repeated definition files are intentional for reusable occurrences**:
-  registrations resolving to one file are grouped and parsed once. They must
-  agree on one explicit definition id.
+  registrations resolving to one file are grouped and parsed once.
 - **Definition/file identity is one-to-one**: one definition id resolving to
-  multiple files, conflicting definition ids for one file, or a child whose
-  declared id differs from the parent registration raises `ParseError`.
+  multiple files, conflicting definition ids for one file, or an unreadable
+  child raises `ParseError`.
 - **Occurrence identity is explicit**: missing/non-literal/blank
-  `definition_id`, `instance_id`, or `alias` fields, and duplicate instance ids
-  or aliases, fail before merge. No file/name/node-id inference is attempted.
+  `file` or `name` fields, rejected legacy keywords (`definition_id=`, `instance_id=`, `alias=`, `label=`),
+  and duplicate occurrence names fail before merge. No file/name/node-id inference is attempted.
 - **Public boundary connections are explicit**: a parent `connect` endpoint
   that names an occurrence alias must also name a declared public port id.
   Function-parameter inference remains inside its owning root or definition

@@ -129,10 +129,10 @@ class TestValidateSingletons:
         graph = _make_submodel_graph(
             _make_node("child_api", "Child API", "apiInput", {"path": "child.parquet"}),
         )
-        owner_id = "submodel_instance__pricing"
+        owner_id = "pricing"
         graph.nodes.append(
             _make_node(
-                "submodel_instance__pricing_copy",
+                "pricing_copy",
                 "pricing_copy",
                 "submodel",
                 {
@@ -304,7 +304,7 @@ def _make_submodel_graph(
     if include_placeholder:
         all_root.append(
             _make_node(
-                f"submodel_instance__{sm_name}",
+                sm_name,
                 sm_name,
                 "submodel",
                 {"definitionId": sm_name, "alias": sm_name},
@@ -1148,7 +1148,7 @@ class TestSaveEndpointIntegration:
                     },
                 },
                 {
-                    "id": "instance_a",
+                    "id": "scoring",
                     "type": "pipelineNode",
                     "position": {"x": 200, "y": 0},
                     "data": {
@@ -1165,7 +1165,7 @@ class TestSaveEndpointIntegration:
                 {
                     "id": "bind",
                     "source": "src",
-                    "target": "instance_a",
+                    "target": "scoring",
                     "targetHandle": "in__policy",
                 }
             ],
@@ -1205,7 +1205,7 @@ class TestSaveEndpointIntegration:
         detail = resp.json()["detail"]
         assert "no internal targets" in detail
         assert "edge_id=bind" in detail
-        assert "instance_id=instance_a" in detail
+        assert "instance_id=scoring" in detail
         assert "port_name=policy" in detail
 
     def test_save_empty_source_file_returns_400(self, client: TestClient) -> None:

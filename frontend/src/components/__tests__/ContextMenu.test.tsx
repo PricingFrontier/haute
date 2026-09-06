@@ -49,14 +49,14 @@ describe("ContextMenu", () => {
   })
 
   it("shows Dissolve Submodel but no Delete for a definition owner", () => {
-    render(<ContextMenu {...makeProps({ isSubmodel: true, nodeId: "instance_pricing", onDissolveSubmodel: vi.fn() })} />)
+    render(<ContextMenu {...makeProps({ isSubmodel: true, nodeId: "pricing", onDissolveSubmodel: vi.fn() })} />)
     expect(screen.getByText("Dissolve Submodel")).toBeInTheDocument()
     expect(screen.queryByText("Delete")).not.toBeInTheDocument()
   })
 
   it("never offers raw Delete for a submodel owner without a dissolve callback", () => {
     render(
-      <ContextMenu {...makeProps({ isSubmodel: true, nodeId: "instance_pricing" })} />,
+      <ContextMenu {...makeProps({ isSubmodel: true, nodeId: "pricing" })} />,
     )
 
     expect(screen.queryByText("Delete")).not.toBeInTheDocument()
@@ -69,7 +69,7 @@ describe("ContextMenu", () => {
         {...makeProps({
           isSubmodel: true,
           isSubmodelCopy: true,
-          nodeId: "instance_pricing_copy",
+          nodeId: "pricing_copy",
           onDelete,
           onDissolveSubmodel: vi.fn(),
         })}
@@ -78,7 +78,7 @@ describe("ContextMenu", () => {
 
     expect(screen.getByText("Dissolve Submodel")).toBeInTheDocument()
     fireEvent.click(screen.getByText("Delete"))
-    expect(onDelete).toHaveBeenCalledWith("instance_pricing_copy")
+    expect(onDelete).toHaveBeenCalledWith("pricing_copy")
   })
 
   it("clicking Rename calls onRename with nodeId and closes", () => {

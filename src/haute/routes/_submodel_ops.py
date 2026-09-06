@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -308,11 +307,10 @@ def create_submodel_graph(
                 detail=f"Submodel occurrence {node.id!r} has an invalid canonical config: {exc}",
             ) from exc
         existing_occurrence_aliases.add(occurrence.alias.casefold())
-    instance_id = f"submodel_instance_{uuid4().hex}"
+    instance_id = sm_name
     existing_submodel_names = {existing.casefold() for existing in existing_submodels}
     existing_parent_node_ids = {node.id.casefold() for node in parent_nodes}
-    existing_node_ids = {node_id.casefold() for node_id in graph_node_ids}
-    if sm_name.casefold() in existing_submodel_names or instance_id.casefold() in existing_node_ids:
+    if sm_name.casefold() in existing_submodel_names:
         raise SubmodelValidationError(
             code="submodel_exists",
             status_code=409,

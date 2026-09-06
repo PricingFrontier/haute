@@ -75,7 +75,7 @@ def _graph_with_submodel() -> dict:
                 },
             },
             {
-                "id": "submodel__pricing",
+                "id": "pricing",
                 "type": "submodel",
                 "data": {
                     "label": "pricing",
@@ -197,9 +197,7 @@ import haute
 pipeline = haute.Pipeline("main")
 pipeline.submodel(
     "modules/pricing.py",
-    definition_id="pricing",
-    instance_id="submodel__pricing",
-    alias="pricing",
+    "pricing",
 )
 """)
         resp = client.get("/api/submodel/pricing", params={"source_file": "pipeline.py"})
@@ -270,9 +268,7 @@ import haute
 pipeline = haute.Pipeline("main")
 pipeline.submodel(
     "modules/pricing.py",
-    definition_id="pricing",
-    instance_id="submodel__pricing",
-    alias="pricing",
+    "pricing",
 )
 """)
         revision = client.get("/api/pipeline").json()["source_revision"]
@@ -282,7 +278,7 @@ pipeline.submodel(
         with patch("haute._flatten.flatten_graph", return_value=flat_graph):
             with patch("haute.codegen.graph_to_code", return_value="# code\n"):
                 body = {
-                    "instance_id": "submodel__pricing",
+                    "instance_id": "pricing",
                     "graph": _graph_with_submodel(),
                     "source_file": "pipeline.py",
                     "pipeline_name": "main",
@@ -296,7 +292,7 @@ pipeline.submodel(
     def test_traversal_source_file_blocked(self, client, tmp_path):
         """source_file = '../../etc/cron.d/evil' must be rejected with 403."""
         body = {
-            "instance_id": "submodel__pricing",
+            "instance_id": "pricing",
             "graph": _graph_with_submodel(),
             "source_file": "../../etc/cron.d/evil",
             "pipeline_name": "main",
@@ -309,7 +305,7 @@ pipeline.submodel(
     def test_empty_source_file_returns_400(self, client, tmp_path):
         """An empty source_file should return 400 (existing validation)."""
         body = {
-            "instance_id": "submodel__pricing",
+            "instance_id": "pricing",
             "graph": _graph_with_submodel(),
             "source_file": "",
             "pipeline_name": "main",
@@ -569,7 +565,7 @@ pipeline = haute.Pipeline("main")
         with patch("haute._flatten.flatten_graph", return_value=flat_graph):
             with patch("haute.codegen.graph_to_code", return_value="# code\n"):
                 body = {
-                    "instance_id": "submodel__pricing",
+                    "instance_id": "pricing",
                     "graph": evil_graph,
                     "source_file": "pipeline.py",
                     "pipeline_name": "main",

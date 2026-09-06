@@ -61,9 +61,7 @@ def raw_rows() -> pl.LazyFrame:
 
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="scoring",
-    instance_id="submodel__scoring",
-    alias="scoring",
+    "scoring",
 )
 """,
     )
@@ -72,7 +70,7 @@ pipeline.submodel(
 
     node_ids = {node.id for node in graph.nodes}
     assert "raw_rows" in node_ids
-    assert "submodel__scoring" in node_ids
+    assert "scoring" in node_ids
     assert graph.submodels is not None
     assert graph.submodels["scoring"].file == "modules/scoring.py"
 
@@ -137,9 +135,7 @@ import haute
 pipeline = haute.Pipeline("nested_paths")
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="rating_scoring",
-    instance_id="submodel__rating_scoring",
-    alias="rating_scoring",
+    "rating_scoring",
 )
 """,
     )
@@ -164,9 +160,7 @@ import haute
 pipeline = haute.Pipeline("main")
 pipeline.submodel(
     "../outside.py",
-    definition_id="outside",
-    instance_id="submodel__outside",
-    alias="outside",
+    "outside",
 )
 """,
     )
@@ -190,19 +184,11 @@ pipeline = haute.Pipeline("main")
 pipeline.submodel(
     "shared.py",
     definition_id="definition_one",
-    instance_id="submodel__one",
-    alias="one",
-)
-pipeline.submodel(
-    "shared.py",
-    definition_id="definition_two",
-    instance_id="submodel__two",
-    alias="two",
 )
 """,
     )
 
-    with pytest.raises(ParseError, match="conflicting definition ids"):
+    with pytest.raises(ParseError, match="definition_id= is not accepted"):
         parse_pipeline_file(pipeline_file)
 
 
@@ -229,15 +215,11 @@ import haute
 pipeline = haute.Pipeline("main")
 pipeline.submodel(
     "first.py",
-    definition_id="shared",
-    instance_id="submodel__first",
-    alias="first",
+    "first",
 )
 pipeline.submodel(
     "second.py",
-    definition_id="shared",
-    instance_id="submodel__second",
-    alias="second",
+    "second",
 )
 """,
     )

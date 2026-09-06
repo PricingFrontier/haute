@@ -20,7 +20,7 @@ from haute.routes._helpers import invalidate_pipeline_index, pipeline_dir
 _CURRENT_REVISION = "revision-current"
 _SAVED_REVISION = "revision-saved"
 DEFINITION_ID = "pricing-definition"
-INSTANCE_ID = "pricing-instance"
+INSTANCE_ID = "pricing"
 ALIAS = "pricing"
 
 
@@ -222,10 +222,7 @@ def _write_parent_reference(path: Path, child_reference: str) -> None:
         f"""import haute
 
 pipeline = haute.Pipeline({path.stem!r})
-pipeline.submodel(
-    {child_reference!r}, definition_id="pricing-definition",
-    instance_id="pricing-instance", alias="pricing",
-)
+pipeline.submodel({child_reference!r}, "pricing")
 """,
         encoding="utf-8",
     )
@@ -544,12 +541,7 @@ def source() -> pl.LazyFrame:
         )
         (rating_root / "main.py").write_text(
             'import haute\npipeline = haute.Pipeline("main")\n'
-            "pipeline.submodel(\n"
-            '    "lib/pricing.py",\n'
-            '    definition_id="pricing-definition",\n'
-            '    instance_id="pricing-instance",\n'
-            '    alias="pricing",\n'
-            ")\n",
+            'pipeline.submodel("lib/pricing.py", "pricing")\n',
             encoding="utf-8",
         )
         response = client.get(
@@ -582,22 +574,12 @@ def source() -> pl.LazyFrame:
         )
         (tmp_path / "a_broken.py").write_text(
             'import haute\npipeline = haute.Pipeline("broken")\n'
-            "pipeline.submodel(\n"
-            '    "modules/missing.py",\n'
-            '    definition_id="missing-definition",\n'
-            '    instance_id="missing-instance",\n'
-            '    alias="missing",\n'
-            ")\n",
+            'pipeline.submodel("modules/missing.py", "missing")\n',
             encoding="utf-8",
         )
         (tmp_path / "z_owner.py").write_text(
             'import haute\npipeline = haute.Pipeline("owner")\n'
-            "pipeline.submodel(\n"
-            '    "modules/pricing.py",\n'
-            '    definition_id="pricing-definition",\n'
-            '    instance_id="pricing-instance",\n'
-            '    alias="pricing",\n'
-            ")\n",
+            'pipeline.submodel("modules/pricing.py", "pricing")\n',
             encoding="utf-8",
         )
 
@@ -662,7 +644,7 @@ class TestDissolveSubmodel:
 
     def test_submodel_not_in_graph(self, client: TestClient) -> None:
         body = _dissolve_body(graph=_simple_graph())
-        body["instance_id"] = "nonexistent-instance"
+        body["instance_id"] = "nonexistent_instance"
         resp = client.post("/api/submodel/dissolve", json=body)
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"]

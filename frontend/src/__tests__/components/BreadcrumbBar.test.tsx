@@ -22,8 +22,8 @@ const twoLevels: ViewLevel[] = [level("Main"), level("Sub")]
 
 const threeLevels: ViewLevel[] = [
   level("Root"),
-  { type: "submodel", name: "Child", file: "child.py", instanceId: "instance_child", definitionId: "definition_child", readOnly: false },
-  { type: "submodel", name: "Grandchild", file: "grandchild.py", instanceId: "instance_grandchild", definitionId: "definition_grandchild", readOnly: true },
+  { type: "submodel", name: "Child", file: "child.py", instanceId: "Child", definitionId: "definition_child", readOnly: false },
+  { type: "submodel", name: "Grandchild", file: "grandchild.py", instanceId: "Grandchild", definitionId: "definition_grandchild", readOnly: true },
 ]
 
 // ── Tests ────────────────────────────────────────────────────────

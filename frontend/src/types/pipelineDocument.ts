@@ -700,6 +700,11 @@ function adaptRecoveryGraph(
       if (node.label !== alias) {
         throw new Error(`${PARSER}: submodel node ${node.recovery_id} label must equal its alias`)
       }
+      // The parser keys an occurrence by its name; a duplicate name is the one
+      // case where the recovery id gains a line suffix, so compare the authored id.
+      if (node.authored_id !== alias) {
+        throw new Error(`${PARSER}: submodel node ${node.recovery_id} id must equal its alias`)
+      }
     }
     const knownNodeType = node.node_type !== null && supportedNodeTypes.has(node.node_type)
     const nodeType = knownNodeType ? node.node_type! : node.decorator_name

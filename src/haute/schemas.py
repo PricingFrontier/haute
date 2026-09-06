@@ -1523,7 +1523,12 @@ class CreateSubmodelResponse(BaseModel):
 
 
 class DissolveSubmodelRequest(BaseModel):
-    instance_id: str
+    """Request to dissolve a submodel occurrence back into parent nodes."""
+
+    # instance_id is the occurrence's node id, which is its name.
+    instance_id: str = Field(
+        description="The occurrence's node id, which is its name.",
+    )
 
     @field_validator("instance_id")
     @classmethod

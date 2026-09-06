@@ -981,9 +981,7 @@ def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child-definition",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1068,9 +1066,7 @@ def test_ready_document_exposes_submodel_occurrence_alias_as_executable_name(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child-definition",
-            instance_id="child-occurrence",
-            alias="unrelated_alias",
+            "unrelated_alias",
         )
         pipeline.connect("source", "unrelated_alias", target_port="input_1")
         pipeline.connect("unrelated_alias", "consumer", source_port="output_1")
@@ -1080,7 +1076,7 @@ def test_ready_document_exposes_submodel_occurrence_alias_as_executable_name(
     document = load_pipeline_editor_document(parent, project_root=tmp_path)
 
     assert document.load_status == "ready"
-    occurrence = next(node for node in document.nodes if node.authored_id == "child-occurrence")
+    occurrence = next(node for node in document.nodes if node.authored_id == "unrelated_alias")
     assert occurrence.source_handle_input_names == {"out__output_1": "unrelated_alias"}
     output_edge = next(
         edge for edge in document.edges if edge.source_recovery_id == occurrence.recovery_id
@@ -1130,9 +1126,7 @@ def test_recovery_revision_authenticates_child_bytes_the_document_presents(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child-definition",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1198,9 +1192,7 @@ def test_submodel_failure_codes_classify_by_exception_type_not_message(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child-definition",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1259,9 +1251,7 @@ def test_recovery_revision_tracks_child_config_from_parent_config_base(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1304,7 +1294,7 @@ def test_recovery_revision_tracks_child_config_from_parent_config_base(
         (
             "/api/submodel/dissolve",
             {
-                "instance_id": "submodel__group",
+                "instance_id": "group",
                 "source_file": "main.py",
                 "base_revision": "posted-ready-revision",
                 "graph": {"nodes": [], "edges": []},
@@ -1493,9 +1483,7 @@ def test_missing_submodel_preserves_occurrence_and_unrelated_root_nodes(
 
         pipeline.submodel(
             "models/missing.py",
-            definition_id="pricing",
-            instance_id="pricing__one",
-            alias="pricing_one",
+            "pricing_one",
         )
         pipeline.connect("healthy", "pricing_one", target_port="input")
         """,
@@ -1506,9 +1494,9 @@ def test_missing_submodel_preserves_occurrence_and_unrelated_root_nodes(
 
     assert document.load_status == "degraded"
     assert by_id["healthy"].availability == "ready"
-    assert by_id["pricing__one"].availability == "unavailable"
+    assert by_id["pricing_one"].availability == "unavailable"
     assert document.submodels is not None
-    assert document.submodels["pricing"].availability == "unavailable"
+    assert document.submodels["models/missing.py"].availability == "unavailable"
     assert any(diagnostic.code == "submodel_file_missing" for diagnostic in document.diagnostics)
     assert document.edges == []
     assert len(document.unresolved_connections) == 1
@@ -1547,9 +1535,7 @@ def test_unknown_submodel_decorator_is_rejected_strictly_and_conserved(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1561,7 +1547,7 @@ def test_unknown_submodel_decorator_is_rejected_strictly_and_conserved(
 
     assert document.load_status == "degraded"
     assert document.submodels is not None
-    definition = document.submodels["child"]
+    definition = document.submodels["modules/child.py"]
     assert definition.availability == "unavailable"
     assert [(node.authored_id, node.availability) for node in definition.graph.nodes] == [
         ("old_child", "unavailable")
@@ -1594,15 +1580,11 @@ def test_duplicate_submodel_definition_paths_mark_every_occurrence_unavailable(
 
         pipeline.submodel(
             "models/one.py",
-            definition_id="shared",
-            instance_id="shared__one",
-            alias="shared_one",
+            "shared_one",
         )
         pipeline.submodel(
             "models/two.py",
-            definition_id="shared",
-            instance_id="shared__two",
-            alias="shared_two",
+            "shared_two",
         )
         """,
     )
@@ -1611,8 +1593,8 @@ def test_duplicate_submodel_definition_paths_mark_every_occurrence_unavailable(
 
     assert document.load_status == "degraded"
     by_authored_id = {node.authored_id: node for node in document.nodes}
-    assert by_authored_id["shared__one"].availability == "unavailable"
-    assert by_authored_id["shared__two"].availability == "unavailable"
+    assert by_authored_id["shared_one"].availability == "unavailable"
+    assert by_authored_id["shared_two"].availability == "unavailable"
     assert document.submodels is not None
     assert document.submodels["shared"].availability == "unavailable"
     duplicate_diagnostics = [
@@ -1649,15 +1631,11 @@ def test_duplicate_submodel_alias_stays_degraded_while_revision_is_computed(
 
         pipeline.submodel(
             "models/shared.py",
-            definition_id="shared",
-            instance_id="shared__one",
-            alias="same_alias",
+            "same_alias",
         )
         pipeline.submodel(
             "models/shared.py",
-            definition_id="shared",
-            instance_id="shared__two",
-            alias="same_alias",
+            "same_alias",
         )
         """,
     )
@@ -2054,9 +2032,7 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
 
         pipeline.submodel(
             "models/shared.py",
-            definition_id="shared",
-            instance_id="shared__one",
-            alias="shared_one",
+            "shared_one",
         )
         """,
     )
@@ -2073,7 +2049,7 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
 
     assert document.load_status == "degraded"
     assert document.submodels is not None
-    assert document.submodels["shared"].availability == "unavailable"
+    assert document.submodels["models/shared.py"].availability == "unavailable"
     internal = [
         diagnostic
         for diagnostic in document.diagnostics
@@ -2433,9 +2409,7 @@ def test_remove_unavailable_node_repairs_a_child_submodel_source(
 
         pipeline.submodel(
             "modules/scoring.py",
-            definition_id="scoring",
-            instance_id="scoring__one",
-            alias="scoring",
+            "scoring",
         )
         """,
     )
@@ -2443,7 +2417,9 @@ def test_remove_unavailable_node_repairs_a_child_submodel_source(
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     assert document.submodels is not None
     target = next(
-        node for node in document.submodels["scoring"].graph.nodes if node.authored_id == "obsolete"
+        node
+        for node in document.submodels["modules/scoring.py"].graph.nodes
+        if node.authored_id == "obsolete"
     )
     request = {
         "source_file": document.source_file,

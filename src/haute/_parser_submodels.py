@@ -68,9 +68,7 @@ class SubmodelRegistration:
     """One canonical occurrence registration in a parent source file."""
 
     path: str
-    definition_id: str
-    instance_id: str
-    alias: str
+    name: str
     instance_of: str | None = None
     line: int | None = None
 
@@ -149,66 +147,88 @@ def extract_submodel_registrations(tree: ast.Module) -> list[SubmodelRegistratio
                     line=getattr(link, "lineno", None),
                     remediation="Remove label= and rename the occurrence by changing alias=.",
                 )
-            definition_id = _registration_keyword(link, "definition_id")
-            instance_id = _registration_keyword(link, "instance_id")
-            alias = _registration_keyword(link, "alias")
-            instance_of = _registration_keyword(link, "instance_of")
-            missing_fields = [
-                field
-                for field, value in {
-                    "definition_id": definition_id,
-                    "instance_id": instance_id,
-                    "alias": alias,
-                }.items()
-                if value is None
-            ]
-            if missing_fields:
+            for keyword in link.keywords:
+                if keyword.arg in {"definition_id", "instance_id", "alias"}:
+                    raise ParseError(
+                        f"pipeline.submodel() takes the file and the occurrence name; "
+                        f"{keyword.arg}= is not accepted.",
+                        path=path,
+                        keyword=keyword.arg,
+                        line=getattr(link, "lineno", None),
+                        remediation=(
+                            "Write pipeline.submodel(<path>, <name>) and let the child "
+                            "file declare its definition id."
+                        ),
+                    )
+
+            name_expression: ast.expr | None = None
+            if len(link.args) >= 2:
+                name_expression = link.args[1]
+                if any(kw.arg == "name" for kw in link.keywords):
+                    raise ParseError(
+                        "pipeline.submodel() contains a duplicate keyword.",
+                        field="name",
+                        line=getattr(link, "lineno", None),
+                    )
+            else:
+                name_kws = [kw for kw in link.keywords if kw.arg == "name"]
+                if len(name_kws) > 1:
+                    raise ParseError(
+                        "pipeline.submodel() contains a duplicate keyword.",
+                        field="name",
+                        line=getattr(link, "lineno", None),
+                    )
+                if name_kws:
+                    name_expression = name_kws[0].value
+
+            if name_expression is None:
                 raise ParseError(
-                    "pipeline.submodel() requires explicit stable identity fields: "
-                    "definition_id, instance_id, and alias.",
+                    "pipeline.submodel() requires the occurrence name as its second argument.",
                     path=path,
-                    missing_fields=missing_fields,
                     line=getattr(link, "lineno", None),
                 )
-            assert definition_id is not None
-            assert instance_id is not None
-            assert alias is not None
-            sanitized_alias = _sanitize_func_name(alias)
-            if sanitized_alias != alias:
+            if not isinstance(name_expression, ast.Constant) or not isinstance(
+                name_expression.value, str
+            ):
                 raise ParseError(
-                    "Submodel instance alias must be a canonical identifier.",
-                    alias=alias,
-                    expected=sanitized_alias,
+                    "pipeline.submodel() name must be a string literal.",
+                    field="name",
+                    line=getattr(name_expression, "lineno", None),
+                )
+            if not name_expression.value or name_expression.value != name_expression.value.strip():
+                raise ParseError(
+                    "pipeline.submodel() name must be non-empty and unpadded.",
+                    field="name",
+                    line=getattr(name_expression, "lineno", None),
+                )
+            name = name_expression.value
+            sanitized_name = _sanitize_func_name(name)
+            if sanitized_name != name:
+                raise ParseError(
+                    "Submodel instance name must be a canonical identifier.",
+                    name=name,
+                    expected=sanitized_name,
                     line=getattr(link, "lineno", None),
                 )
+            instance_of = _registration_keyword(link, "instance_of")
             registrations.append(
                 SubmodelRegistration(
                     path=path,
-                    definition_id=definition_id,
-                    instance_id=instance_id,
-                    alias=alias,
+                    name=name,
                     instance_of=instance_of,
                     line=getattr(link, "lineno", None),
                 )
             )
 
-    explicit_aliases: dict[str, int | None] = {}
-    explicit_instances: dict[str, int | None] = {}
+    explicit_names: dict[str, int | None] = {}
     for registration in registrations:
-        if registration.alias in explicit_aliases:
+        if registration.name in explicit_names:
             raise ParseError(
-                "Submodel instance alias is duplicated in the parent source.",
-                alias=registration.alias,
-                lines=[explicit_aliases[registration.alias], registration.line],
+                "Submodel instance name is duplicated in the parent source.",
+                name=registration.name,
+                lines=[explicit_names[registration.name], registration.line],
             )
-        if registration.instance_id in explicit_instances:
-            raise ParseError(
-                "Submodel instance id is duplicated in the parent source.",
-                instance_id=registration.instance_id,
-                lines=[explicit_instances[registration.instance_id], registration.line],
-            )
-        explicit_aliases[registration.alias] = registration.line
-        explicit_instances[registration.instance_id] = registration.line
+        explicit_names[registration.name] = registration.line
     return registrations
 
 
@@ -412,68 +432,61 @@ def _merge_registered_submodels(
 ) -> PipelineGraph:
     """Build one shared definition entry and one placeholder per registration."""
     definitions: dict[str, SubmodelDefinition] = {}
-    aliases: dict[str, tuple[str, SubmodelDefinition]] = {}
+    definitions_by_path: dict[str, SubmodelDefinition] = {}
+    occurrences: dict[str, SubmodelDefinition] = {}
     parent_nodes = list(parent_graph.nodes)
     root_node_ids = {node.id for node in parent_graph.nodes}
 
     for definition_id, child_graph in submodel_graphs.items():
-        if child_graph._parser_definition_id != definition_id:
-            raise ParseError(
-                "Parent and child submodel definition ids do not match.",
-                definition_id=definition_id,
-                child_definition_id=child_graph._parser_definition_id,
-                file=submodel_files.get(definition_id, ""),
-            )
         if child_graph._parser_input_ports is None or child_graph._parser_output_ports is None:
             raise ParseError(
                 "Reusable submodel definitions must declare input_ports and output_ports.",
                 definition_id=definition_id,
                 file=submodel_files.get(definition_id, ""),
             )
-        definitions[definition_id] = SubmodelDefinition(
-            definitionId=definition_id,
+        resolved_def_id = child_graph._parser_definition_id or definition_id
+        definition = SubmodelDefinition(
+            definitionId=resolved_def_id,
             file=submodel_files.get(definition_id, ""),
             graph=child_graph,
             inputPorts=child_graph._parser_input_ports,
             outputPorts=child_graph._parser_output_ports,
         )
+        definitions[resolved_def_id] = definition
+        if definition.file:
+            definitions_by_path[definition.file] = definition
 
     for registration in registrations:
-        definition = definitions.get(registration.definition_id)
-        if definition is None:
+        matched_definition = definitions_by_path.get(registration.path)
+        if matched_definition is None:
             raise ParseError(
                 "Submodel registration references an unresolved definition.",
                 path=registration.path,
-                definition_id=registration.definition_id,
                 known_definitions=sorted(definitions),
             )
-        if registration.alias in root_node_ids:
+        definition = matched_definition
+        if registration.name in root_node_ids:
             raise ParseError(
-                "Submodel instance alias collides with a parent node id.",
-                alias=registration.alias,
+                "Submodel instance name collides with a parent node id.",
+                name=registration.name,
             )
-        if registration.instance_id in root_node_ids:
+        if registration.name in occurrences:
             raise ParseError(
-                "Submodel instance id collides with a parent node id.",
-                instance_id=registration.instance_id,
+                "Submodel instance name is duplicated in the parent source.",
+                name=registration.name,
             )
-        if registration.alias in aliases:
-            raise ParseError(
-                "Submodel instance alias is duplicated in the parent source.",
-                alias=registration.alias,
-            )
-        aliases[registration.alias] = (registration.instance_id, definition)
+        occurrences[registration.name] = definition
         parent_nodes.append(
             GraphNode(
-                id=registration.instance_id,
+                id=registration.name,
                 type="submodel",
                 data=NodeData(
-                    label=registration.alias,
+                    label=registration.name,
                     description=definition.graph.pipeline_description or "",
                     nodeType=NodeType.SUBMODEL,
                     config={
-                        "definitionId": registration.definition_id,
-                        "alias": registration.alias,
+                        "definitionId": definition.definition_id,
+                        "alias": registration.name,
                         **(
                             {"instanceOf": registration.instance_of}
                             if registration.instance_of is not None
@@ -486,7 +499,7 @@ def _merge_registered_submodels(
 
     parent_nodes = rewrite_submodel_alias_references(
         parent_nodes,
-        {alias: instance_id for alias, (instance_id, _definition) in aliases.items()},
+        {name: name for name in occurrences},
     )
     merged_edges = list(parent_graph.edges)
     existing = {
@@ -501,9 +514,9 @@ def _merge_registered_submodels(
         for edge in merged_edges
     }
     for source, target, source_port, target_port in parent_edges:
-        source_registration = aliases.get(source)
-        target_registration = aliases.get(target)
-        if source_registration is None and target_registration is None:
+        source_definition = occurrences.get(source)
+        target_definition = occurrences.get(target)
+        if source_definition is None and target_definition is None:
             # Root-to-root connections already live in the parent graph; any
             # other endpoint is neither a parent node nor an occurrence alias
             # and is rejected as dangling by the conservation gate.
@@ -516,18 +529,18 @@ def _merge_registered_submodels(
         hidden_source_port: str | None = None
         hidden_target_port: str | None = None
 
-        if source_registration is not None:
-            instance_id, definition = source_registration
+        if source_definition is not None:
+            definition = source_definition
             known_outputs = {port.name for port in definition.output_ports}
             if source_port not in known_outputs:
                 raise ParseError(
                     "Connection from a submodel instance must name a declared output port.",
                     alias=source,
-                    instance_id=instance_id,
+                    instance_id=source,
                     port_name=source_port,
                     known_ports=sorted(known_outputs),
                 )
-            actual_source = instance_id
+            actual_source = source
             source_handle = f"out__{source_port}"
         elif source not in root_node_ids:
             raise ParseError(
@@ -535,18 +548,18 @@ def _merge_registered_submodels(
                 source=source,
             )
 
-        if target_registration is not None:
-            instance_id, definition = target_registration
+        if target_definition is not None:
+            definition = target_definition
             known_inputs = {port.name for port in definition.input_ports}
             if target_port not in known_inputs:
                 raise ParseError(
                     "Connection to a submodel instance must name a declared input port.",
                     alias=target,
-                    instance_id=instance_id,
+                    instance_id=target,
                     port_name=target_port,
                     known_ports=sorted(known_inputs),
                 )
-            actual_target = instance_id
+            actual_target = target
             target_handle = f"in__{target_port}"
         elif target not in root_node_ids:
             raise ParseError(

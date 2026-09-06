@@ -84,9 +84,7 @@ def _reusable_definition(
 def _registration(definition_id: str) -> SubmodelRegistration:
     return SubmodelRegistration(
         path=f"modules/{definition_id}.py",
-        definition_id=definition_id,
-        instance_id=f"instance_{definition_id}",
-        alias=definition_id,
+        name=definition_id,
     )
 
 
@@ -360,9 +358,7 @@ class TestParsePipelineFlattenRegression:
 
             pipeline.submodel(
                 "modules/scoring.py",
-                definition_id="scoring",
-                instance_id="submodel__scoring",
-                alias="scoring",
+                "scoring",
             )
 
             pipeline.connect("Source", "scoring", target_port="source")
@@ -374,10 +370,10 @@ class TestParsePipelineFlattenRegression:
 
         node_ids = _canonical_nodes(flat_graph)
         # Placeholder is gone in flattened mode
-        assert "submodel__scoring" not in node_ids
+        assert "scoring" not in node_ids
         # Child nodes are inlined
-        assert qualified_runtime_node_id("submodel__scoring", "Transform") in node_ids
-        assert qualified_runtime_node_id("submodel__scoring", "Finalise") in node_ids
+        assert qualified_runtime_node_id("scoring", "Transform") in node_ids
+        assert qualified_runtime_node_id("scoring", "Finalise") in node_ids
         # Source node survives
         assert "Source" in node_ids
         # No leftover submodels metadata in flat graph
@@ -429,9 +425,7 @@ class TestParsePipelineFlattenRegression:
 
             pipeline.submodel(
                 "modules/scoring.py",
-                definition_id="scoring",
-                instance_id="submodel__scoring",
-                alias="scoring",
+                "scoring",
             )
 
             pipeline.connect("Source", "scoring", target_port="source")

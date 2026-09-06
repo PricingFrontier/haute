@@ -24,7 +24,7 @@ const mockLoad = vi.mocked(loadSubmodel)
 const mockDissolve = vi.mocked(dissolveSubmodel)
 const mockLayout = vi.mocked(getLayoutedElements)
 
-const INSTANCE_ID = "instance_primary"
+const INSTANCE_ID = "pricing"
 const DEFINITION_ID = "definition_pricing"
 
 function makeDefinition(
@@ -41,13 +41,14 @@ function makeDefinition(
 }
 
 function makeOccurrence(instanceId = INSTANCE_ID, instanceOf?: string) {
+  const alias = instanceId === INSTANCE_ID ? "pricing" : "pricing_copy"
   return makeNode(instanceId, "submodel", {
     data: {
-      label: "pricing",
+      label: alias,
       nodeType: "submodel",
       config: {
         definitionId: DEFINITION_ID,
-        alias: instanceId === INSTANCE_ID ? "pricing" : "pricing_copy",
+        alias,
         ...(instanceOf ? { instanceOf } : {}),
       },
     },
@@ -643,7 +644,7 @@ describe("useSubmodelNavigation", () => {
   })
 
   it("marks a created instance drill-down as read-only", async () => {
-    const copyId = "instance_copy"
+    const copyId = "pricing_copy"
     const owner = makeOccurrence()
     const copy = makeOccurrence(copyId, owner.id)
     const params = makeParams({
@@ -783,6 +784,42 @@ describe("useSubmodelNavigation", () => {
     expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(params.setSelectedNode).not.toHaveBeenCalled()
+  })
+
+  it("returns to the root view and clears active identity when a reloaded document omits the drilled occurrence", async () => {
+    vi.useFakeTimers()
+    mockLoad.mockResolvedValue({
+      status: "ok",
+      definition_id: DEFINITION_ID,
+      submodel_name: "pricing",
+      submodel_file: "modules/pricing.py",
+      graph: {
+        nodes: [makeNode("child1")],
+        edges: [],
+      },
+    })
+    const params = makeParams()
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+    await act(async () => {
+      await result.current.handleDrillIntoSubmodel("pricing")
+    })
+    expect(result.current.viewStack).toHaveLength(2)
+    expect(params.setActiveSubmodelIdentity).toHaveBeenCalledWith({
+      instanceId: "pricing",
+      definitionId: DEFINITION_ID,
+    })
+
+    const reloadedNodes = [makeNode("other_node", "polars")]
+    act(() => {
+      result.current.handleDocumentReload(reloadedNodes)
+    })
+
+    expect(result.current.viewStack).toHaveLength(1)
+    expect(result.current.viewStack[0]).toMatchObject({ type: "pipeline" })
+    expect(params.setActiveSubmodelIdentity).toHaveBeenLastCalledWith(null)
+    expect(params.parentGraphRef.current).toBeNull()
+    expect(params.setNodesRaw).toHaveBeenLastCalledWith(reloadedNodes)
+    vi.useRealTimers()
   })
 
   it("handleBreadcrumbNavigate restores the reconciled parent graph and metadata", async () => {
@@ -1001,14 +1038,14 @@ describe("useSubmodelNavigation", () => {
       submodel_file: "modules/scoring.py",
       graph: { nodes: [makeNode("child")], edges: [] },
     })
-    const primary = makeNode("instance_primary", "submodel", {
+    const primary = makeNode("scoring_primary", "submodel", {
       data: {
         label: "scoring_primary",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring_primary" },
       },
     })
-    const secondary = makeNode("instance_secondary", "submodel", {
+    const secondary = makeNode("scoring_secondary", "submodel", {
       data: {
         label: "scoring_secondary",
         nodeType: "submodel",
@@ -1029,14 +1066,14 @@ describe("useSubmodelNavigation", () => {
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
-      await result.current.handleDrillIntoSubmodel("instance_primary")
+      await result.current.handleDrillIntoSubmodel("scoring_primary")
     })
 
     expect(mockLoad).not.toHaveBeenCalled()
     expect(result.current.viewStack[1]).toMatchObject({
       type: "submodel",
       name: "scoring_primary",
-      instanceId: "instance_primary",
+      instanceId: "scoring_primary",
       definitionId: "definition_scoring",
     })
     expect(useToastStore.getState().toasts).toEqual(
@@ -1080,7 +1117,7 @@ describe("useSubmodelNavigation", () => {
   })
 
   it("rejects a non-canonical occurrence instead of deriving a dissolve name", async () => {
-    const occurrence = makeNode("instance_broken", "submodel", {
+    const occurrence = makeNode("broken", "submodel", {
       data: {
         label: "pricing",
         nodeType: "submodel",
@@ -1095,7 +1132,7 @@ describe("useSubmodelNavigation", () => {
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
-      await result.current.handleDissolveSubmodel("instance_broken")
+      await result.current.handleDissolveSubmodel("broken")
     })
 
     expect(mockDissolve).not.toHaveBeenCalled()
@@ -1105,15 +1142,15 @@ describe("useSubmodelNavigation", () => {
     })
   })
 
-  it("dissolves a reusable occurrence by immutable instance id", async () => {
+  it("dissolves a reusable occurrence by occurrence name", async () => {
     mockDissolve.mockResolvedValue({
       status: "ok",
       source_revision: "parent-rev-2",
-      instance_id: "instance_primary",
+      instance_id: "scoring_primary",
       definition_id: "definition_scoring",
       graph: { nodes: [], edges: [], submodels: {} },
     })
-    const occurrence = makeNode("instance_primary", "submodel", {
+    const occurrence = makeNode("scoring_primary", "submodel", {
       data: {
         label: "scoring_primary",
         nodeType: "submodel",
@@ -1138,12 +1175,12 @@ describe("useSubmodelNavigation", () => {
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
-      await result.current.handleDissolveSubmodel("instance_primary")
+      await result.current.handleDissolveSubmodel("scoring_primary")
     })
 
     expect(mockDissolve).toHaveBeenCalledWith(
       expect.objectContaining({
-        instance_id: "instance_primary",
+        instance_id: "scoring_primary",
       }),
     )
   })

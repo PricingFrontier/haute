@@ -165,4 +165,19 @@ describe("pipeline editor document contract", () => {
       "parsePipelineEditorDocument: submodel node node:sub label must equal its alias",
     )
   })
+
+  it("rejects a submodel node whose id differs from its alias", () => {
+    const fixture = document()
+    fixture.nodes.push({
+      ...fixture.nodes[0],
+      recovery_id: "node:sub",
+      authored_id: "sub",
+      label: "sub_alias",
+      node_type: "submodel",
+      config: { definitionId: "def_sub", alias: "sub_alias" },
+    })
+    expect(() => adaptPipelineEditorDocument(parsePipelineEditorDocument(fixture))).toThrow(
+      "parsePipelineEditorDocument: submodel node node:sub id must equal its alias",
+    )
+  })
 })

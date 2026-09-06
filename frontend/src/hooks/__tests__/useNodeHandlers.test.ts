@@ -148,7 +148,7 @@ describe("useNodeHandlers", () => {
 
   it("refuses raw deletion of a submodel definition owner", () => {
     const params = makeParams()
-    const owner = makeNode("submodel_10", "submodel", {
+    const owner = makeNode("scoring", "submodel", {
       data: {
         label: "scoring",
         nodeType: "submodel",
@@ -168,7 +168,7 @@ describe("useNodeHandlers", () => {
 
   it("refuses raw deletion of a submodel occurrence with malformed identity", () => {
     const params = makeParams()
-    const malformed = makeNode("submodel_10", "submodel", {
+    const malformed = makeNode("broken", "submodel", {
       data: {
         label: "Scoring",
         nodeType: "submodel",
@@ -188,14 +188,14 @@ describe("useNodeHandlers", () => {
 
   it("deletes a submodel instance copy and its edges directly", () => {
     const params = makeParams()
-    const copy = makeNode("submodel_11", "submodel", {
+    const copy = makeNode("scoring_2", "submodel", {
       data: {
         label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
           alias: "scoring_2",
-          instanceOf: "submodel_10",
+          instanceOf: "scoring",
         },
       },
     })
@@ -312,7 +312,7 @@ describe("useNodeHandlers", () => {
 
   it("refuses generic duplication of a submodel occurrence", () => {
     const params = makeParams()
-    const submodel = makeNode("instance_a", "submodel", {
+    const submodel = makeNode("scoring", "submodel", {
       data: {
         label: "scoring",
         nodeType: "submodel",
@@ -470,7 +470,7 @@ describe("useNodeHandlers", () => {
 
   it("creates a SUBMODEL occurrence without copying its shared definition", async () => {
     const params = makeParams()
-    const source = makeNode("submodel_10", "submodel", {
+    const source = makeNode("scoring", "submodel", {
       position: { x: 100, y: 200 },
       data: {
         label: "scoring",
@@ -484,7 +484,7 @@ describe("useNodeHandlers", () => {
         },
       },
     })
-    const existing = makeNode("submodel_11", "submodel", {
+    const existing = makeNode("scoring_2", "submodel", {
       data: {
         label: "scoring_2",
         nodeType: "submodel",
@@ -506,6 +506,7 @@ describe("useNodeHandlers", () => {
     expect(params.setSelectedNode).toHaveBeenCalledOnce()
     const created = params.setSelectedNode.mock.calls[0][0] as Node
     expect([source.id, existing.id]).not.toContain(created.id)
+    expect(created.id).toBe("scoring_3")
     expect(created.type).toBe("submodel")
     expect(created.data.nodeType).toBe("submodel")
     expect(created.data.label).toBe("scoring_3")
@@ -522,7 +523,7 @@ describe("useNodeHandlers", () => {
 
   it("refuses to instance a submodel definition containing a singleton", async () => {
     const params = makeParams()
-    const source = makeNode("submodel_inputs", "submodel", {
+    const source = makeNode("inputs", "submodel", {
       data: {
         label: "inputs",
         nodeType: "submodel",
@@ -561,7 +562,7 @@ describe("useNodeHandlers", () => {
 
   it("continues copy numbering past nine instead of nesting suffixes", async () => {
     const params = makeParams()
-    const owner = makeNode("instance_owner", "submodel", {
+    const owner = makeNode("scoring", "submodel", {
       data: {
         label: "scoring",
         nodeType: "submodel",
@@ -569,14 +570,14 @@ describe("useNodeHandlers", () => {
       },
     })
     const copies = Array.from({ length: 9 }, (_, index) =>
-      makeNode(`instance_copy_${index + 2}`, "submodel", {
+      makeNode(`scoring_${index + 2}`, "submodel", {
         data: {
           label: `scoring_${index + 2}`,
           nodeType: "submodel",
           config: {
             definitionId: "definition_scoring",
             alias: `scoring_${index + 2}`,
-            instanceOf: "instance_owner",
+            instanceOf: "scoring",
           },
         },
       }))
@@ -584,7 +585,7 @@ describe("useNodeHandlers", () => {
     const { result } = renderHook(() => useNodeHandlers(params))
 
     await act(async () => {
-      await result.current.handleCreateInstance("instance_copy_10")
+      await result.current.handleCreateInstance("scoring_10")
     })
 
     const created = params.setNodes.mock.calls[0][0](params.graphRef.current.nodes)
@@ -594,18 +595,18 @@ describe("useNodeHandlers", () => {
 
   it("allocates occurrence ids and aliases across the combined identity namespace", async () => {
     const params = makeParams()
-    const source = makeNode("instance_source", "submodel", {
+    const source = makeNode("scoring", "submodel", {
       data: {
         label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
     })
-    const aliasOccupier = makeNode("instance_existing", "submodel", {
+    const aliasOccupier = makeNode("other_submodel", "submodel", {
       data: {
-        label: "submodel_11",
+        label: "other_submodel",
         nodeType: "submodel",
-        config: { definitionId: "definition_other", alias: "submodel_11" },
+        config: { definitionId: "definition_other", alias: "other_submodel" },
       },
     })
     const nodeIdOccupier = makeNode("scoring_2")
@@ -620,7 +621,7 @@ describe("useNodeHandlers", () => {
     })
 
     const created = params.setSelectedNode.mock.calls[0][0] as Node
-    expect(created.id).toBe("submodel_12")
+    expect(created.id).toBe("scoring_3")
     expect(created.data.config).toEqual({
       definitionId: "definition_scoring",
       alias: "scoring_3",
@@ -628,9 +629,36 @@ describe("useNodeHandlers", () => {
     })
   })
 
+  it("mints the node id equal to its alias and never a submodel_<n> id", async () => {
+    const params = makeParams()
+    const source = makeNode("scoring", "submodel", {
+      data: {
+        label: "scoring",
+        nodeType: "submodel",
+        config: { definitionId: "definition_scoring", alias: "scoring" },
+      },
+    })
+    params.graphRef.current = { nodes: [source], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    await act(async () => {
+      await result.current.handleCreateInstance(source.id)
+    })
+
+    const created = params.setSelectedNode.mock.calls[0][0] as Node
+    expect(created.id).toBe("scoring_2")
+    expect(created.id).not.toMatch(/^submodel_\d+$/)
+    expect(created.data.label).toBe("scoring_2")
+    expect(created.data.config).toEqual({
+      definitionId: "definition_scoring",
+      alias: "scoring_2",
+      instanceOf: "scoring",
+    })
+  })
+
   it("rejects a partial reusable-submodel identity", () => {
     const params = makeParams()
-    const source = makeNode("instance_source", "submodel", {
+    const source = makeNode("scoring", "submodel", {
       data: {
         label: "scoring",
         nodeType: "submodel",
@@ -650,7 +678,7 @@ describe("useNodeHandlers", () => {
 
   it("rejects an occurrence whose editable definition owner is missing", () => {
     const params = makeParams()
-    const source = makeNode("instance_copy", "submodel", {
+    const source = makeNode("scoring_2", "submodel", {
       data: {
         label: "scoring_2",
         nodeType: "submodel",
@@ -676,7 +704,7 @@ describe("useNodeHandlers", () => {
 
   it("normalises a suffixed source alias before choosing the next occurrence alias", async () => {
     const params = makeParams()
-    const base = makeNode("submodel_10", "submodel", {
+    const base = makeNode("scoring", "submodel", {
       data: {
         label: "scoring",
         nodeType: "submodel",
@@ -686,7 +714,7 @@ describe("useNodeHandlers", () => {
         },
       },
     })
-    const source = makeNode("submodel_11", "submodel", {
+    const source = makeNode("scoring_2", "submodel", {
       data: {
         label: "scoring_2",
         nodeType: "submodel",
@@ -705,6 +733,7 @@ describe("useNodeHandlers", () => {
     })
 
     const created = params.setSelectedNode.mock.calls[0][0] as Node
+    expect(created.id).toBe("scoring_3")
     expect(created.data.config).toEqual({
       definitionId: "definition_scoring",
       alias: "scoring_3",

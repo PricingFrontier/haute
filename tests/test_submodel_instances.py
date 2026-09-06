@@ -100,21 +100,22 @@ def _definition(
 
 def _instance(
     instance_id: str,
-    alias: str,
+    alias: str | None = None,
     *,
     instance_of: str | None = None,
     definition_id: str = "definition_scoring",
     x: float = 0,
     y: float = 0,
 ) -> GraphNode:
-    config: dict[str, object] = {"definitionId": definition_id, "alias": alias}
+    name = alias if alias is not None else instance_id
+    config: dict[str, object] = {"definitionId": definition_id, "alias": name}
     if instance_of is not None:
         config["instanceOf"] = instance_of
     return _node(
         instance_id,
         NodeType.SUBMODEL,
         config=config,
-        label=alias,
+        label=name,
         x=x,
         y=y,
     )
@@ -989,7 +990,7 @@ def test_stale_schema_declared_node_reference_fails_loudly() -> None:
     )
     definition = _definition(graph=child, input_ports=[], output_ports=[])
     graph = PipelineGraph(
-        nodes=[_instance("instance_a", "scoring")],
+        nodes=[_instance("scoring", "scoring")],
         edges=[],
         submodels={"definition_scoring": definition},
     )
@@ -997,7 +998,7 @@ def test_stale_schema_declared_node_reference_fails_loudly() -> None:
     with pytest.raises(ParseError, match="instanceOf") as exc_info:
         flatten_graph(graph)
 
-    assert exc_info.value.context["instance_id"] == "instance_a"
+    assert exc_info.value.context["instance_id"] == "scoring"
     assert exc_info.value.context["local_node_id"] == "consumer"
 
 
@@ -1050,27 +1051,20 @@ def test_registration_parser_preserves_explicit_identity_and_alias() -> None:
         """
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="definition_scoring",
-    instance_id="instance_a",
-    alias="scoring_a",
+    "scoring_a",
 ).submodel(
     "modules/scoring.py",
-    definition_id="definition_scoring",
-    instance_id="instance_b",
-    alias="scoring_b",
-    instance_of="instance_a",
+    "scoring_b",
+    instance_of="scoring_a",
 )
 """
     )
 
     registrations = extract_submodel_registrations(tree)
 
-    assert [
-        (item.path, item.definition_id, item.instance_id, item.alias, item.instance_of)
-        for item in registrations
-    ] == [
-        ("modules/scoring.py", "definition_scoring", "instance_a", "scoring_a", None),
-        ("modules/scoring.py", "definition_scoring", "instance_b", "scoring_b", "instance_a"),
+    assert [(item.path, item.name, item.instance_of) for item in registrations] == [
+        ("modules/scoring.py", "scoring_a", None),
+        ("modules/scoring.py", "scoring_b", "scoring_a"),
     ]
 
 
@@ -1082,7 +1076,7 @@ def test_parser_rejects_path_only_submodel_source(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ParseError, match="explicit stable identity|identity"):
+    with pytest.raises(ParseError, match="requires the occurrence name"):
         parse_pipeline_source(
             'import haute\npipeline = haute.Pipeline("main")\n'
             'pipeline.submodel("modules/scoring.py")\n',
@@ -1114,16 +1108,12 @@ import haute
 pipeline = haute.Pipeline("main")
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="definition_scoring",
-    instance_id="instance_a",
-    alias="scoring_a",
+    "scoring_a",
 )
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="definition_scoring",
-    instance_id="instance_b",
-    alias="scoring_b",
-    instance_of="instance_a",
+    "scoring_b",
+    instance_of="scoring_a",
 )
 """
 
@@ -1146,8 +1136,8 @@ pipeline.submodel(
     assert parse_child.call_count == 1
     assert set(graph.submodels or {}) == {"definition_scoring"}
     assert {node.id for node in graph.nodes if node.data.nodeType == NodeType.SUBMODEL} == {
-        "instance_a",
-        "instance_b",
+        "scoring_a",
+        "scoring_b",
     }
 
 
@@ -1178,12 +1168,8 @@ def test_codegen_emits_definition_once_and_two_stable_registrations() -> None:
     assert list(files).count("modules/scoring.py") == 1
     main = files["main.py"]
     assert main.count("pipeline.submodel(") == 2
-    assert 'definition_id="definition_scoring"' in main
-    assert 'instance_id="instance_a"' in main
-    assert 'instance_id="instance_b"' in main
-    assert 'alias="scoring_a"' in main
-    assert 'alias="scoring_b"' in main
-    assert 'instance_of="instance_a"' in main
+    assert 'pipeline.submodel("modules/scoring.py", "scoring_a")' in main
+    assert 'pipeline.submodel("modules/scoring.py", "scoring_b", instance_of="scoring_a")' in main
 
 
 def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Path) -> None:
@@ -1248,8 +1234,8 @@ def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Pat
 def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_bindings(
     tmp_path: Path,
 ) -> None:
-    primary = _instance("instance_a", "scoring_a")
-    secondary = _instance("instance_b", "scoring_b", instance_of="instance_a")
+    primary = _instance("scoring_a", "scoring_a")
+    secondary = _instance("scoring_b", "scoring_b", instance_of="scoring_a")
     graph = PipelineGraph(
         nodes=[
             _node("root_source", config={"code": "return pl.DataFrame()"}),
@@ -1261,19 +1247,19 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
             GraphEdge(
                 id="root_to_primary",
                 source="root_source",
-                target="instance_a",
+                target="scoring_a",
                 targetHandle="in__policy",
             ),
             GraphEdge(
                 id="primary_to_secondary",
-                source="instance_a",
-                target="instance_b",
+                source="scoring_a",
+                target="scoring_b",
                 sourceHandle="out__premium",
                 targetHandle="in__policy",
             ),
             GraphEdge(
                 id="secondary_to_sink",
-                source="instance_b",
+                source="scoring_b",
                 target="root_sink",
                 sourceHandle="out__premium",
             ),
@@ -1309,8 +1295,8 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
         )
         for instance_id, node in occurrences.items()
     } == {
-        "instance_a": ("definition_scoring", "scoring_a", "scoring_a", None),
-        "instance_b": ("definition_scoring", "scoring_b", "scoring_b", "instance_a"),
+        "scoring_a": ("definition_scoring", "scoring_a", "scoring_a", None),
+        "scoring_b": ("definition_scoring", "scoring_b", "scoring_b", "scoring_a"),
     }
     definition = (reparsed.submodels or {})["definition_scoring"]
     assert [port.name for port in definition.input_ports] == ["policy"]
@@ -1318,9 +1304,9 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
     assert {
         (edge.source, edge.target, edge.sourceHandle, edge.targetHandle) for edge in reparsed.edges
     } == {
-        ("root_source", "instance_a", None, "in__policy"),
-        ("instance_a", "instance_b", "out__premium", "in__policy"),
-        ("instance_b", "root_sink", "out__premium", None),
+        ("root_source", "scoring_a", None, "in__policy"),
+        ("scoring_a", "scoring_b", "out__premium", "in__policy"),
+        ("scoring_b", "root_sink", "out__premium", None),
     }
 
 
@@ -1541,19 +1527,19 @@ def test_canonical_input_port_rejects_more_than_one_parent_binding() -> None:
         nodes=[
             _node("upstream_a"),
             _node("upstream_b"),
-            _instance("instance_a", "scoring"),
+            _instance("scoring", "scoring"),
         ],
         edges=[
             GraphEdge(
                 id="binding_a",
                 source="upstream_a",
-                target="instance_a",
+                target="scoring",
                 targetHandle="in__policy",
             ),
             GraphEdge(
                 id="binding_b",
                 source="upstream_b",
-                target="instance_a",
+                target="scoring",
                 targetHandle="in__policy",
             ),
         ],
@@ -1563,7 +1549,7 @@ def test_canonical_input_port_rejects_more_than_one_parent_binding() -> None:
     with pytest.raises(ParseError, match="bound more than once") as exc_info:
         validate_submodel_instances(graph)
 
-    assert exc_info.value.context["instance_id"] == "instance_a"
+    assert exc_info.value.context["instance_id"] == "scoring"
     assert exc_info.value.context["port_name"] == "policy"
 
 
