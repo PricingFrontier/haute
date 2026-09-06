@@ -11,52 +11,22 @@ and execute them. Current behaviour is specified in
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SUB-L02 | Planned | P2 | One name per occurrence: the canvas shows the alias and renaming it renames the code. |
 | SUB-L03 | Planned | P2 | One identity per occurrence: the node id is the name, and a registration is `pipeline.submodel(path, name)`. |
 
 ## Planned improvements
 
-Delivery order is `SUB-L02` → `SUB-L03`. Both follow F13
+`SUB-L03` is the remaining package. It follows F13
 (`specs/roadmap/bug-findings-2026-09-05.md`), which made the parser bind every
 Polars parameter by name with no inference, named an occurrence's outputs after
-the occurrence, and bound a definition's port-fed nodes to the port name, and
+the occurrence, and bound a definition's port-fed nodes to the port name;
 SUB-L01 (delivered 6 September 2026), which gave every public port exactly one
-canonical name. The principle is the one ordinary nodes and API-input frames
-already follow: a thing has one name, that name is what you connect by, what the
-code reads, and what the canvas shows; labels are not a second identity.
+canonical name; and SUB-L02 (delivered 6 September 2026), which made an
+occurrence's display name its alias and an editor rename an alias rename. The
+principle is the one ordinary nodes and API-input frames already follow: a
+thing has one name, that name is what you connect by, what the code reads, and
+what the canvas shows; labels are not a second identity.
 
 ---
-
-### SUB-L02 — One name per occurrence
-
-**Why:** `pipeline.submodel(..., label=...)` and the occurrence node's
-`data.label` are display-only. Renaming an occurrence in the editor changes
-that label and nothing else, so the canvas shows a name the code never uses
-while every `connect` line and, since F13, every consumer parameter uses the
-alias.
-
-**Plan:** Remove the `label=` keyword (the parser rejects it, codegen stops
-emitting it) and make the occurrence node's display name the alias. Renaming
-an occurrence in the editor becomes an alias rename handled like an ordinary
-node rename: `nodeUpdatePlan` sees the outgoing edge names change from the old
-alias to the new, rebinds consumers through `inputMapping` without editing
-their code, and Save regenerates the registration and the `connect` lines with
-the new alias. The alias validator requires a canonical identifier unique among
-the parent's node names; grouping (`sm_name`) and Create Instance
-(`nextSubmodelAlias`) already mint aliases that way.
-
-**Acceptance:** Renaming an occurrence updates every `connect` line and keeps
-downstream code executing, proven by a backend round trip and a browser
-journey; a file carrying `label=` fails to parse loud; codegen never emits
-`label=`; the invariant `data.label == config.alias` holds for every
-occurrence at parse time and in the editor store.
-
-**Dependencies:** SUB-L01 (delivered).
-
-**Evidence:** `src/haute/_parser_submodels.py`; `src/haute/codegen.py`;
-`frontend/src/utils/nodeUpdatePlan.ts`; `frontend/src/hooks/useNodeHandlers.ts`;
-`tests/test_parser_submodels.py`;
-`frontend/src/utils/__tests__/nodeUpdatePlan.test.ts`.
 
 ### SUB-L03 — One identity per occurrence
 
@@ -105,7 +75,7 @@ dissolve, instance and rename journeys and the generated submodel-endpoint
 family are green; no `submodel_instance_` or `submodel_<n>` id is minted
 anywhere.
 
-**Dependencies:** SUB-L02.
+**Dependencies:** SUB-L02 (delivered).
 
 **Evidence:** `src/haute/_parser_submodels.py`; `src/haute/_submodel_instances.py`;
 `src/haute/routes/_submodel_ops.py`; `frontend/src/hooks/useNodeHandlers.ts`;
