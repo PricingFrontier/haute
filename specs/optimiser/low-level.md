@@ -726,12 +726,14 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   `/estimate`); the frontier-touching tests in these classes all go through
   `run_frontier_and_wait` and assert on the polled `result` payload rather than an immediate
   response body.
-- **`tests/test_optimiser_service_coverage.py`** — scenario-expander/optimiser-input streaming
-  contiguity, slim-projection column pruning, ratebook non-source-banding-input preservation
-  across a checkpoint, ratebook factor extraction under a low memory limit, non-finite/null
-  rejection in `_validate_and_project`, quote-block interleaving rejection in grid building, and
-  explicit-frontier-range rejection both at the schema layer and the route layer before the
-  solver is invoked.
+- **`tests/test_optimiser_service_coverage.py`** — apply-result and ratebook-factor artifact
+  handles: validation of kind, version, format, filename, directory containment and null bytes;
+  persistence returning `None` for non-dataframe inputs and cleaning its directory when a write
+  or lazy sink fails; loading and scanning that report a missing artifact and reject a corrupt
+  Parquet file; side-input identity for online versus ratebook modes; and orphan cleanup that
+  logs and swallows failures and dispatches to the ratebook-factor cleaner. (The streaming
+  contiguity, projection, checkpoint, memory-limit, non-finite, interleaving and frontier-range
+  contracts live in `tests/test_optimiser_contracts.py`, above.)
 - **`tests/test_optimiser_service_validation.py`** — focused unit tests for
   `_validate_and_project`'s non-finite/overflow/null-quote-id detection (including float64→
   float32 overflow rejection) and end-to-end single-/multi-quote real-solver lifecycle tests
