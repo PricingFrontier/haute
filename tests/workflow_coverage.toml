@@ -280,15 +280,47 @@ workflows = ["W03"]
 id = "W01-S01"
 workflow = "W01"
 contract = "specs/build-and-distribution/high-level.md#behaviour"
-state = "gap"
-package = "ENG-T10"
+state = "covered"
 entry_point = "cli"
 tier = "process"
 lane = "package"
-real = ["cli-process"]
-stubbed = []
-tests = []
-invariant = "Fresh install, init, open, and run operations complete cleanly, and invalid configuration or missing optional dependencies yield useful errors without leaving a partial project."
+real = ["cli-process", "bootstrap", "filesystem"]
+stubbed = ["vite", "uvicorn"]
+tests = [
+  "tests/test_cli.py::TestModuleEntrypoint::test_matches_the_console_cli",
+  "tests/test_cli.py::TestVersion::test_version_flag",
+  "tests/test_cli_init.py::TestInitCreatesProjectStructure::test_creates_haute_toml",
+  "tests/test_cli_init.py::TestInitCreatesProjectStructure::test_creates_rating_directory",
+  "tests/test_cli_init.py::TestInitCreatesProjectStructure::test_haute_toml_already_exists_exits_with_error",
+  "tests/test_cli_init.py::TestInitForceReinit::test_force_reinit_prunes_stale_github_ci_files",
+  "tests/test_starter_pipeline_e2e.py::test_scaffolded_starter_test_passes_for_blank_pipeline",
+  "tests/test_cli_serve.py::TestServe::test_plain_serve_uses_localhost_for_bind_and_browser",
+  "tests/test_cli_serve.py::TestServe::test_dev_mode_starts_vite_and_uvicorn",
+  "tests/test_cli_serve.py::TestServe::test_prod_mode_no_static_fails",
+  "tests/test_cli_serve.py::TestServe::test_dev_mode_cleanup_terminates_vite",
+  "tests/test_cli_serve.py::TestServe::test_registered_signal_handlers_terminate_the_vite_child_and_exit",
+  "tests/test_cli_serve.py::TestServe::test_serve_help_states_the_effective_host_and_port_defaults",
+  "tests/test_cli_fail_loudly.py::TestServePortConflictDetection::test_serve_fails_loudly_when_port_is_bound",
+  "tests/test_cli.py::TestRun::test_run_explicit_file",
+  "tests/test_cli.py::TestRun::test_run_file_not_found",
+  "tests/test_cli.py::TestRun::test_run_parse_error",
+  "tests/test_cli.py::TestRun::test_run_reports_node_errors",
+  "tests/test_cli_fail_loudly.py::TestStatusInstallInstructionIsCorrect::test_mlflow_missing_message_uses_uv_add_haute_databricks",
+  "tests/test_hatch_build.py::test_invalid_build_flag_fails_before_editable_early_return",
+  "tests/test_hosted.py::TestEnvironmentDetection::test_partial_contract_fails_loud",
+  "tests/test_hosted.py::TestCreateApp::test_refuses_to_run_outside_hosted_environment",
+  "tests/test_hosted.py::TestBoundaryDoesNotBypassLocalAuth::test_header_rewriting_alone_grants_nothing",
+  "tests/test_hosted.py::TestEnsureProject::test_unbound_boot_seeds_a_volatile_project_and_chdirs_into_it",
+  "tests/test_hosted.py::TestEnsureProject::test_a_restored_or_present_boot_never_reseeds",
+  "tests/test_hosted.py::TestEnsureProject::test_a_failed_restore_gates_the_boot_without_seeding",
+  "tests/test_databricks_routes_auth.py::test_missing_credentials_reports_both_auth_options",
+]
+invariant = "A fresh install answers through both entry points; init scaffolds a complete project and refuses to overwrite one without --force; serve binds localhost, refuses an occupied port, states its defaults in help, and its registered signal handlers terminate the child and exit; run reports missing files, parse errors and node failures with exit code 1; a missing optional dependency names the exact install command; and the hosted bootstrap seeds a volatile project only when unbound, never reseeds a restored or present project, and gates the boot when the restore fails. The real start/readiness/stop lifecycle is exercised by scripts/init_smoke.py in the init-smoke CI lane."
+
+[scenarios.evidence]
+commit = "10e94474"
+command = 'uv run pytest tests/test_cli.py tests/test_cli_init.py tests/test_cli_serve.py tests/test_cli_fail_loudly.py tests/test_starter_pipeline_e2e.py tests/test_optional_dependency_matrix.py tests/test_hatch_build.py tests/test_hosted.py tests/test_databricks_routes_auth.py -q -p no:warnings'
+result = "244 passed, 4 skipped in 11.18s"
 
 [[scenarios]]
 id = "W01-S02"
@@ -1049,15 +1081,55 @@ result = "522 passed, 1 skipped in 38.94s"
 id = "W13-S01"
 workflow = "W13"
 contract = "specs/deploy/high-level.md#behaviour"
-state = "gap"
-package = "ENG-T10"
+state = "covered"
 entry_point = "scoring"
 tier = "process"
 lane = "package"
-real = ["bundle", "scorer"]
-stubbed = ["upload-sdk"]
+real = ["bundle", "scorer", "generated-app"]
+stubbed = ["upload-sdk", "docker"]
+tests = [
+  "tests/test_deploy.py::TestValidators::test_validate_passes_for_good_config",
+  "tests/test_deploy_config.py::TestValidateDeploy::test_multiple_validation_errors_returned_together",
+  "tests/test_deploy_expected_output_validation.py::test_validate_deploy_blocks_expected_output_drift",
+  "tests/test_deploy.py::TestPruner::test_prune_drops_batch_branch_at_live_switch",
+  "tests/test_deploy.py::TestBundler::test_missing_artifact_raises",
+  "tests/test_deploy_config_and_bundle.py::TestArtifactContainmentAndModelContracts::test_local_artifact_escape_is_rejected",
+  "tests/test_deploy_config_and_bundle.py::TestSnapshotGenerationLease::test_inline_snapshot_is_packaged_with_its_leased_generation",
+  "tests/test_deploy_internals.py::TestHauteModelLoadContext::test_load_context_parses_manifest",
+  "tests/test_deploy.py::TestScorer::test_score_single_row",
+  "tests/test_deploy.py::TestScorer::test_score_multiple_rows",
+  "tests/test_deploy_batch_scoring.py::TestGeneratedAppBatchPath::test_single_row_request_never_launches_a_worker",
+  "tests/test_deploy_batch_scoring.py::TestRealSpawn::test_batch_scores_end_to_end_in_a_real_worker",
+  "tests/test_deploy_batch_scoring.py::TestInferDeployExecutionPolicy::test_in_process_runtime_refuses_an_unprovable_group_by",
+  "tests/test_deploy_identity_parity.py::TestEditorAndPackagedScoringAgree::test_dry_run_and_packaged_scoring_return_identical_rows_for_the_same_input",
+  "tests/test_deploy.py::TestPruner::test_prune_missing_output_raises",
+  "tests/test_deploy_dispatch.py::TestDeployDispatchPlanned::test_sagemaker_raises_not_implemented",
+  "tests/test_deploy_dispatch.py::TestDeployDispatchUnknown::test_unknown_target_raises_value_error",
+  "tests/test_container.py::TestGenerateAppSource::test_quote_rejects_malformed_json_and_non_record_payloads",
+  "tests/test_deploy.py::TestServingEndpoint::test_endpoint_creates_new_endpoint",
+  "tests/test_deploy_container.py::TestDockerBuild::test_success_when_returncode_zero",
+  "tests/test_deploy_container.py::TestUpdateService::test_raises_not_implemented_for_unsupported_platform",
+]
+invariant = "Validate, prune, bundle, load and score succeed for one and many requests and the editor dry-run, score_graph and the packaged pyfunc model return identical rows for the same synthetic input; missing artifacts, expected-output drift, non-finite values, malformed request bodies and unsupported or planned targets fail at their specified stage; and the upload and service SDKs are stubbed in ordinary CI while platform-container service updates stay loudly unimplemented."
+
+[scenarios.evidence]
+commit = "10e94474"
+command = 'uv run pytest tests/test_deploy.py tests/test_deploy_config.py tests/test_deploy_expected_output_validation.py tests/test_deploy_config_and_bundle.py tests/test_deploy_internals.py tests/test_deploy_batch_scoring.py tests/test_deploy_identity_parity.py tests/test_deploy_dispatch.py tests/test_container.py tests/test_deploy_container.py -q -p no:warnings'
+result = "548 passed, 2 skipped in 17.93s"
+
+[[scenarios]]
+id = "W13-S02"
+workflow = "W13"
+contract = "specs/deploy/low-level.md#testing"
+state = "decision"
+package = "ENG-T12"
+entry_point = "scoring"
+tier = "process"
+lane = "package"
+real = ["docker", "generated-app"]
+stubbed = []
 tests = []
-invariant = "The W13 row validate, bundle, load, score outcomes hold."
+invariant = "A built container image answers /health and /quote for local synthetic data; whether CI gains a Docker-capable lane for that smoke is the user's decision, and until then the generated app is proven only in-process."
 
 [[scenarios]]
 id = "W14-S01"
