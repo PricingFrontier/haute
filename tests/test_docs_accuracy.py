@@ -142,7 +142,9 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "explore-eda",
     "optimiser",
 )
-_ROADMAP_SUPPORTING_REPORTS = ()
+_ROADMAP_SUPPORTING_REPORTS = (
+    "fable5.1-review/report.md",
+)
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
     flags=re.MULTILINE,
