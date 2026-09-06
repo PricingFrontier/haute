@@ -86,8 +86,8 @@ Out of scope (owned by neighbouring components):
   deterministic unknown-node and dropped-edge evidence. It never silently removes a
   malformed connection from the generated pipeline.
 - **One function per node**, named by sanitizing the node's label
-  (`haute._graph_utils._sanitize_func_name`). Any two node labels that
-  produce the same identifier, including exact duplicate labels, are a hard error at codegen time
+  (`haute._graph_utils._sanitize_func_name`). Any two node labels or
+  submodel occurrence aliases that produce the same identifier, including exact duplicate labels, are a hard error at codegen time
   (`_error_on_name_collisions`), checked globally across the root graph and
   every submodel — not per file — because the flattened runtime graph is
   keyed by the sanitized name across module boundaries.
@@ -113,8 +113,8 @@ Out of scope (owned by neighbouring components):
 - **Submodel-aware.** A graph with no submodel occurrences produces exactly
   one file. A hierarchical graph emits each referenced definition file once,
   in first-occurrence order, plus a main file with one explicit
-  `pipeline.submodel(path, definition_id=..., instance_id=..., alias=...,
-  label=...)` registration per occurrence. Distinct definitions may not share
+  `pipeline.submodel(path, definition_id=..., instance_id=..., alias=...)`
+  registration per occurrence. Distinct definitions may not share
   a file, unused registry definitions are rejected, and occurrence ids and
   aliases are never inferred. Parent connections name declared public port
   names; `in__<name>`/`out__<name>` exist only in graph JSON and are not
@@ -332,7 +332,7 @@ execution time on a mis-wired pipeline). Concretely:
   emitted parent with different columns** → `ParseError` from
   `_format_contract_source`; ambiguous data is never silently resolved by
   "keep the last writer."
-- **Node label collisions** (two labels sanitizing to the same Python
+- **Node label collisions** (two node labels or submodel occurrence aliases sanitizing to the same Python
   identifier, including exact duplicates, anywhere in the root graph or any submodel) →
   `ParseError` enumerating every colliding bucket, from
   `_error_on_name_collisions`.

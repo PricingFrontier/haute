@@ -81,6 +81,16 @@ def resolve_submodel_instances(
         config = _parse_instance_config(node)
         if config is None:
             continue
+        if node.data.label != config.alias:
+            raise ParseError(
+                "Submodel occurrence label must equal its alias.",
+                instance_id=node.id,
+                label=node.data.label,
+                alias=config.alias,
+                remediation=(
+                    "An occurrence's display name is its alias; rename it by changing the alias."
+                ),
+            )
         definition = definitions.get(config.definition_id)
         if definition is None:
             raise ParseError(

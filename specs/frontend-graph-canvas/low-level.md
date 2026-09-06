@@ -92,9 +92,10 @@ capability. Inspection, selection, pan/zoom, and issue/source navigation remain 
 Frontend graph types mirror the backend contract: `submodels` is a registry of
 typed definitions keyed by `definitionId`, while each `SUBMODEL` React Flow
 node is an instance whose immutable id and typed config
-`{definitionId, alias}` are authoritative. Labels and positions remain on the
-node. Hooks and utilities must use `node.data.nodeType === 'submodel'` plus the
-typed config; parsing `submodel__*` ids or display labels is forbidden.
+`{definitionId, alias}` are authoritative. An occurrence's label is identical to
+its alias (`data.label === config.alias`). Hooks and utilities must use
+`node.data.nodeType === 'submodel'` plus the typed config; parsing `submodel__*`
+ids is forbidden.
 
 For ordinary pipeline nodes, Create Instance retains the established
 `config.instanceOf` behavior. Instancing an existing instance first validates
@@ -105,7 +106,8 @@ identity is rejected rather than traversed or repaired. For a canonical
 single-snapshot graph mutation that retains `definitionId`, allocates a fresh
 collision-free immutable node id and deterministic alias (copy numbering
 continues past nine: `scoring_10` clones to `scoring_11`, never
-`scoring_10_2`), copies only presentation defaults, and leaves all parent
+`scoring_10_2`), sets the new occurrence's `label` to the minted alias,
+copies only presentation defaults, and leaves all parent
 boundary bindings empty.
 
 Occurrence deletion is owner-aware and shares one predicate,
@@ -333,7 +335,18 @@ newer overlapping transform.
    records the binding `inputMapping[<old name>] = <new name>` (identity
    entries are dropped, an emptied mapping is removed): a rename never edits
    `config.code`, so the transform's parameter names and body stay exactly
-   as authored while the edge carries the new name. The pure preflight checks
+   as authored while the edge carries the new name. When renaming a submodel
+   occurrence, the candidate node sets both `data.label = name` and
+   `data.config.alias = name`. Identity resolution carries `alias: name`. The
+   controller refuses the rename without committing if the resolved
+   `_functionName` differs from `name` (error: `Occurrence names must be
+   identifiers; use "<functionName>".`) or if another node in the root graph
+   already uses `name` as an id, label, or submodel alias (error: `"<name>" is
+   already used by another node.`). Otherwise, `reconcileSourceEdges` re-attaches
+   outgoing edge identities from the refreshed source handles, and the update
+   planner rebinds downstream consumers (`inputMapping`, `input_scenario_map`,
+   `data_input`, `banding_source`, `ratebook_input`) from the old alias to the
+   new one without code changes. The pure preflight checks
    each affected executable target's post-commit input-name set — edge names
    and the logical names they resolve to — for duplicates. On a collision the commit
    returns `{ ok: false, error }` and **nothing mutates** — no snapshot, no

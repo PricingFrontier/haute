@@ -378,6 +378,63 @@ test.describe("core browser flows", () => {
     await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
     await expect.poll(() => readFileSync(browserSubmodelPath, "utf8"))
-      .toContain(`'label': '${frameName}'`)
+      .toContain(`'name': '${frameName}'`)
+  })
+
+  test("renames a submodel occurrence, updating its alias and downstream bindings across preview and save", async ({
+    page,
+  }) => {
+    await page.goto("/")
+
+    const rawRowsNode = page.getByRole("button", { name: /raw_rows/i })
+    const enrichedNode = page.getByRole("button", { name: /enriched/i })
+    await expect(rawRowsNode).toBeVisible()
+    await expect(enrichedNode).toBeVisible()
+    await rawRowsNode.click()
+    await enrichedNode.click({
+      modifiers: [process.platform === "darwin" ? "Meta" : "Control"],
+    })
+    await dispatchAppShortcut(page, "g")
+
+    await expect(page.getByText("Create Submodel")).toBeVisible()
+    const nameInput = page.getByPlaceholder("e.g. model_scoring")
+    await nameInput.fill("browser_group")
+    await page.getByRole("button", { name: "Create" }).click()
+
+    const submodelNode = page.getByRole("button", { name: /browser_group/i })
+    await expect(submodelNode).toBeVisible()
+
+    // Rename the occurrence using the node panel header input (matching the ordinary rename flow at ~111-124)
+    await submodelNode.click()
+    const labelInput = page.locator("input.node-label-input")
+    await expect(labelInput).toHaveValue("browser_group")
+    const renamedOccurrence = "renamed_group"
+    await labelInput.fill(renamedOccurrence)
+    await labelInput.blur()
+
+    // (a) Canvas reflects the new occurrence name
+    const renamedNode = page.getByRole("button", { name: new RegExp(renamedOccurrence, "i") })
+    await expect(renamedNode).toBeVisible()
+
+    // (b) Downstream node fed by the occurrence still previews successfully
+    const downstreamNode = page.getByRole("button", { name: /browser_mixed_banding/i })
+    await expect(downstreamNode).toBeVisible()
+    await downstreamNode.click()
+    await page.getByRole("button", { name: "Refresh" }).click()
+    const previewTable = page.getByRole("table").first()
+    await expect(previewTable).toBeVisible()
+
+    // (c) After Save, pipeline source contains alias="<new name>", connect("<new name>", and no label=
+    await page.getByRole("button", { name: "Save", exact: true }).click()
+    await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
+
+    await expect
+      .poll(() => readFileSync(gitMainPath, "utf8"))
+      .toContain(`alias="${renamedOccurrence}"`)
+    await expect
+      .poll(() => readFileSync(gitMainPath, "utf8"))
+      .toContain(`connect("${renamedOccurrence}"`)
+    const savedSource = readFileSync(gitMainPath, "utf8")
+    expect(savedSource).not.toMatch(/label\s*=/)
   })
 })

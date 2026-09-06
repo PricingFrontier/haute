@@ -9,7 +9,7 @@ const makeDefinition = (nodes: Node[]): SubmodelDefinition => ({
   inputPorts: [{ name: "policy", targets: [{ nodeId: "prepare", handleId: null }] }],
   outputPorts: [{ name: "premium", source: { nodeId: "score", handleId: "out" } }],
 })
-const instance = () => makeNode("instance_primary", "submodel", { data: { label: "Pricing", nodeType: "submodel", config: { definitionId: "definition_pricing", alias: "pricing" } } })
+const instance = () => makeNode("instance_primary", "submodel", { data: { label: "pricing", nodeType: "submodel", config: { definitionId: "definition_pricing", alias: "pricing" } } })
 const boundary = (nodes: Node[], direction: "input" | "output") => nodes.find((node) => node.type === "submodelPort" && (node.data as SubmodelPortData).portDirection === direction)!
 
 describe("buildSubmodelViewGraph", () => {
@@ -27,7 +27,7 @@ describe("buildSubmodelViewGraph", () => {
     const children = [makeNode("prepare"), makeNode("score")]
     const secondary = makeNode("instance_secondary", "submodel", {
       data: {
-        label: "Pricing copy",
+        label: "pricing_copy",
         nodeType: "submodel",
         config: {
           definitionId: "definition_pricing",

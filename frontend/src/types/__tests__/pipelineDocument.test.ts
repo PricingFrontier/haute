@@ -150,4 +150,19 @@ describe("pipeline editor document contract", () => {
     const badSubmodel = document(); badSubmodel.submodels = { registered: { definition_id: "different", file: "modules/child.py", availability: "ready", diagnostic_ids: [], graph: { nodes: [], edges: [], unresolved_connections: [], submodels: null }, input_ports: [], output_ports: [] } }
     expect(() => parsePipelineEditorDocument(badSubmodel)).toThrow(/registry key/)
   })
+
+  it("rejects a submodel node whose label differs from its alias", () => {
+    const fixture = document()
+    fixture.nodes.push({
+      ...fixture.nodes[0],
+      recovery_id: "node:sub",
+      authored_id: "sub",
+      label: "Different Label",
+      node_type: "submodel",
+      config: { definitionId: "def_sub", alias: "sub_alias" },
+    })
+    expect(() => adaptPipelineEditorDocument(parsePipelineEditorDocument(fixture))).toThrow(
+      "parsePipelineEditorDocument: submodel node node:sub label must equal its alias",
+    )
+  })
 })

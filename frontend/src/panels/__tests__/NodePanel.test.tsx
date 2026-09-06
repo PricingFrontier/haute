@@ -1758,7 +1758,7 @@ describe("NodePanel", () => {
       const occurrence = makeNode({
         id: "instance_pricing",
         data: {
-          label: "Pricing Module",
+          label: "pricing",
           description: "",
           nodeType: "submodel",
           config: { definitionId: "pricing", alias: "pricing" },
@@ -1803,7 +1803,7 @@ describe("NodePanel", () => {
         expect.objectContaining({
           edgeId: "edge_child",
           name: "pricing",
-          sourceLabel: "Pricing Module",
+          sourceLabel: "pricing",
         }),
       ])
     })

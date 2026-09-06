@@ -63,12 +63,15 @@ by one shared **definition** and any number of parent-graph **instances**:
   mutation API.
 - Every occurrence is represented solely by a `NodeType.SUBMODEL` node in the
   parent graph. Its node id is the immutable `instanceId`; its typed config
-  contains `definitionId`, a stable source alias, and optional `instanceOf`.
+  contains `definitionId`, a canonical identifier `alias` (unique among the parent's node names, included in the codegen collision gate), and optional `instanceOf`.
   Exactly one occurrence for each definition omits `instanceOf` and is the
   editable definition owner. Every created instance points `instanceOf` at
   that owner; chains, self-references, missing owners, cross-definition owners,
   and multiple owners are invalid. The node owns its mutable
-  display label and position, while its incident parent edges own its bindings.
+  occurrence name (the alias) and position, while its incident parent edges own its bindings.
+  `node.data.label == config.alias` is an invariant enforced on validation (raising `ParseError` if violated).
+  The registration signature `pipeline.submodel(...)` accepts `alias` and does not accept `label=`.
+  Recovery uses the alias only.
   There is no second top-level instances map. Internal definition positions are
   occurrence-local: grouping subtracts the first occurrence's origin and each
   expansion adds the selected occurrence's position, so copies never inherit
@@ -78,7 +81,7 @@ by one shared **definition** and any number of parent-graph **instances**:
   or file must not change them. Authored and generated source persists these ids
   explicitly. Missing definition, instance, alias, or port identity is an
   invalid document and fails during parsing; identity is never inferred from a
-  file name, node id, display label, registry key, or internal child id.
+  file name, node id, occurrence name (the alias), registry key, or internal child id.
 - A public input port has an immutable `name` and zero or more ordered
   internal targets `{nodeId, handleId}`. Each occurrence may bind that public
   input from at most one parent edge; the single binding fans out to every

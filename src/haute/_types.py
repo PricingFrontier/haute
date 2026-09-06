@@ -987,6 +987,17 @@ class SubmodelInstanceConfig(BaseModel):
             raise ValueError("Submodel definition ids and aliases must be non-empty and unpadded.")
         return value
 
+    @field_validator("alias")
+    @classmethod
+    def _validate_canonical_alias(cls, value: str) -> str:
+        sanitised = _sanitize_func_name(value)
+        if sanitised != value:
+            raise ValueError(
+                f"Submodel occurrence aliases must be canonical identifiers "
+                f"(got {value!r}; expected {sanitised!r})."
+            )
+        return value
+
 
 class SubmodelDefinition(BaseModel):
     """One shared, file-backed submodel definition and its public interface."""

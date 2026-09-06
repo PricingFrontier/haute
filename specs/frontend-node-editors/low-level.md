@@ -558,9 +558,9 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   boundary, or unknown row is an invariant violation and throws rather than falling back to the
   composite node's literal `INPUT` label.
 - `edgeInputName` treats only API-input sources' handles as frame names; a submodel
-  `out__` edge's input name is the occurrence's name (or `<name>__<port_name>` with several output
+  `out__` edge's input name is the occurrence's name (which equals its alias, or `<name>__<port_name>` with several output
   ports), resolved by the backend identity endpoint from the alias the request carries; and every other
-  node type derives the sanitised source label.
+  node type derives the sanitised source label. Renaming an occurrence renames its alias, validates identifier syntax (refusing with `Occurrence names must be identifiers; use "<functionName>".`) and uniqueness among parent nodes (refusing with `"<name>" is already used by another node.`), and rebinds downstream consumers identically via `inputMapping` without editing code.
 - The API-input editor rejects a frame label that fails backend invariant B4 (not an ASCII
   identifier, or a Python hard keyword) at commit time with the same inline validation used
   for blank/duplicate labels (`apiInputLabelIssue` — the exact ASCII mirror) — the label is

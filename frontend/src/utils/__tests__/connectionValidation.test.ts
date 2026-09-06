@@ -55,19 +55,22 @@ const definition = (child: SimpleNode) => ({
   outputPorts: [],
 })
 
-const occurrence = (copy = false) => ({
-  ...node(copy ? "instance_copy" : "instance_primary", "Pricing", NODE_TYPES.SUBMODEL),
-  data: {
-    label: "Pricing",
-    description: "",
-    nodeType: NODE_TYPES.SUBMODEL,
-    config: {
-      definitionId: "definition_pricing",
-      alias: copy ? "pricing_copy" : "pricing",
-      ...(copy ? { instanceOf: "instance_primary" } : {}),
+const occurrence = (copy = false) => {
+  const alias = copy ? "pricing_copy" : "pricing"
+  return {
+    ...node(copy ? "instance_copy" : "instance_primary", alias, NODE_TYPES.SUBMODEL),
+    data: {
+      label: alias,
+      description: "",
+      nodeType: NODE_TYPES.SUBMODEL,
+      config: {
+        definitionId: "definition_pricing",
+        alias,
+        ...(copy ? { instanceOf: "instance_primary" } : {}),
+      },
     },
-  },
-})
+  }
+}
 
 describe("connection validation", () => {
   it("rejects self loops", () => {

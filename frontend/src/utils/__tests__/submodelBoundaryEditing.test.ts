@@ -34,8 +34,8 @@ function state(bound = false): SubmodelBoundaryEditState {
     }],
   }
   const parentNodes = [
-    makeNode("instance_primary", "submodel", { data: { label: "Pricing", nodeType: "submodel", config: { definitionId: definition.definitionId, alias: "pricing" } } }),
-    makeNode("instance_secondary", "submodel", { data: { label: "Pricing 2", nodeType: "submodel", config: { definitionId: definition.definitionId, alias: "pricing_2" } } }),
+    makeNode("instance_primary", "submodel", { data: { label: "pricing", nodeType: "submodel", config: { definitionId: definition.definitionId, alias: "pricing" } } }),
+    makeNode("instance_secondary", "submodel", { data: { label: "pricing_2", nodeType: "submodel", config: { definitionId: definition.definitionId, alias: "pricing_2" } } }),
     makeNode("consumer"),
   ]
   const parentEdges: PipelineEdge[] = bound

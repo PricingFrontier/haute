@@ -1203,7 +1203,7 @@ def _canonical_snapshot(
             label=node.data.label,
             source_handles=source_handles,
             alias=(
-                (node.data.config or {}).get("alias") or node.data.label
+                (node.data.config or {}).get("alias")
                 if node.data.nodeType == NodeType.SUBMODEL
                 else None
             ),
@@ -1647,7 +1647,7 @@ def _recover_registered_submodels(
                 recovery_id=recovery_id,
                 decorator_name="submodel",
                 node_type=NodeType.SUBMODEL,
-                description=registration.label or registration.alias,
+                description=registration.alias,
                 config={
                     "definitionId": registration.definition_id,
                     "alias": registration.alias,

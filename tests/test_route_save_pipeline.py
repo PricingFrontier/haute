@@ -133,7 +133,7 @@ class TestValidateSingletons:
         graph.nodes.append(
             _make_node(
                 "submodel_instance__pricing_copy",
-                "pricing copy",
+                "pricing_copy",
                 "submodel",
                 {
                     "definitionId": "pricing",
@@ -1152,7 +1152,7 @@ class TestSaveEndpointIntegration:
                     "type": "pipelineNode",
                     "position": {"x": 200, "y": 0},
                     "data": {
-                        "label": "Scoring",
+                        "label": "scoring",
                         "nodeType": "submodel",
                         "config": {
                             "definitionId": "definition_scoring",

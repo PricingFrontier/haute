@@ -969,7 +969,7 @@ describe("App integration — add a node via drag-and-drop from the palette", ()
   })
 
   it("keeps a Quote Input inside a submodel singleton across the whole document", async () => {
-    const occurrence = makeNode("inputs", "Inputs", "submodel")
+    const occurrence = makeNode("inputs", "inputs", "submodel")
     occurrence.data.config = { definitionId: "definition_inputs", alias: "inputs" }
     const nestedApiInput = makeNode("quote_input", "Nested Quote Input", "apiInput")
 
@@ -1406,7 +1406,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     options: { collision?: boolean; internalCollision?: boolean } = {},
   ) {
     const base = makeApiInputGraph()
-    const boundary = makeNode("instance_pricing", "Pricing", "submodel")
+    const boundary = makeNode("instance_pricing", "pricing", "submodel")
     boundary.data.config = { definitionId: "definition_pricing", alias: "pricing" }
     const childRouter = makeNode("child_router", "Child Router", "liveSwitch")
     childRouter.data.config = {
@@ -2001,7 +2001,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     const base = makeApiInputGraph()
     const occurrence = makeNode(
       "instance_pricing_secondary",
-      "Pricing secondary",
+      "pricing_secondary",
       "submodel",
     )
     occurrence.data.config = {
@@ -2096,12 +2096,12 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
 
 describe("App integration — read-only submodel instance", () => {
   it("keeps the shared definition inspectable while disabling every exposed edit surface", async () => {
-    const owner = makeNode("instance_inputs_owner", "Inputs", "submodel")
+    const owner = makeNode("instance_inputs_owner", "inputs", "submodel")
     owner.data.config = {
       definitionId: "definition_inputs",
       alias: "inputs",
     }
-    const copy = makeNode("instance_inputs_copy", "Inputs instance", "submodel")
+    const copy = makeNode("instance_inputs_copy", "inputs_2", "submodel")
     copy.data.config = {
       definitionId: "definition_inputs",
       alias: "inputs_2",

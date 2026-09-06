@@ -39,7 +39,9 @@
 - **`Pipeline(NodeRegistry)`** — adds `run()`, `score()`, `to_graph()`, `submodel()`,
   `submodel_files`.
 - **`Submodel(NodeRegistry)`** — no `run`/`score`/`to_graph`. A live
-  `Pipeline.submodel(file)` call only records the path in `_submodel_files`; it does not import
+  `Pipeline.submodel(file, *, definition_id, instance_id, alias, instance_of=None)` call
+  validates that `alias` is a canonical identifier (no `label=` parameter accepted), records
+  the occurrence, and records the path in `_submodel_files`; it does not import
   the module or register the `Submodel` object's nodes onto the live `Pipeline`. Static parsing
   resolves those files into the hierarchical/flat graph used by the full executor.
 - **`NodeBuildContext`** (frozen dataclass, slots — `src/haute/_builders.py`, owned by

@@ -144,7 +144,7 @@ describe("SubmodelNode", () => {
 
   it("keeps the one structural input socket on copies and read-only cards", () => {
     const { unmount } = renderNode({
-      label: "Copy",
+      label: "copy",
       config: {
         definitionId: DEFINITION_ID,
         alias: "copy",
@@ -269,7 +269,7 @@ describe("SubmodelNode", () => {
 
     try {
       const { container } = renderNode({
-        label: "Scoring",
+        label: "scoring",
         config: {
           definitionId: "definition_scoring",
           alias: "scoring",
@@ -300,7 +300,7 @@ describe("SubmodelNode", () => {
 
     try {
       const { container } = renderNode({
-        label: "Broken scoring",
+        label: "scoring",
         config: {
           definitionId: "definition_missing",
           alias: "scoring",
@@ -322,7 +322,7 @@ describe("SubmodelNode", () => {
 
   it("treats a partial canonical identity as invalid instead of legacy", () => {
     const { container } = renderNode({
-      label: "Broken scoring",
+      label: "scoring",
       config: { alias: "scoring" },
     })
 

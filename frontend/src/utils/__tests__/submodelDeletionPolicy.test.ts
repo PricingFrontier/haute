@@ -6,7 +6,7 @@ const owner: Node = {
   id: "instance_owner",
   position: { x: 0, y: 0 },
   data: {
-    label: "Scoring",
+    label: "scoring",
     nodeType: "submodel",
     config: { definitionId: "definition_scoring", alias: "scoring" },
   },
@@ -16,7 +16,7 @@ const copy: Node = {
   id: "instance_copy",
   position: { x: 0, y: 0 },
   data: {
-    label: "Scoring instance",
+    label: "scoring_2",
     nodeType: "submodel",
     config: {
       definitionId: "definition_scoring",

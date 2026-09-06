@@ -21,14 +21,12 @@ def _registration(
     alias: str = "pricing",
     *,
     definition_id: str = "definition_pricing",
-    label: str | None = None,
 ) -> SubmodelRegistration:
     return SubmodelRegistration(
         path="modules/pricing.py",
         definition_id=definition_id,
         instance_id=instance_id,
         alias=alias,
-        label=label,
     )
 
 
@@ -76,7 +74,7 @@ class TestExtractSubmodelRegistrations:
         tree = ast.parse(
             'pipeline.submodel("modules/pricing.py", '
             'definition_id="definition_pricing", instance_id="instance_primary", '
-            'alias="pricing", label="Primary pricing")'
+            'alias="pricing")'
         )
 
         assert extract_submodel_registrations(tree) == [
@@ -85,7 +83,6 @@ class TestExtractSubmodelRegistrations:
                 definition_id="definition_pricing",
                 instance_id="instance_primary",
                 alias="pricing",
-                label="Primary pricing",
                 line=1,
             )
         ]
@@ -355,14 +352,14 @@ class TestMergeSubmodels:
     def test_reuses_one_definition_for_multiple_occurrences(self) -> None:
         result = _merge(
             registrations=[
-                _registration(label="Primary"),
-                _registration("instance_secondary", "pricing_2", label="Secondary"),
+                _registration(),
+                _registration("instance_secondary", "pricing_2"),
             ]
         )
 
         assert set(result.submodels or {}) == {"definition_pricing"}
-        assert result.node_map["instance_primary"].data.label == "Primary"
-        assert result.node_map["instance_secondary"].data.label == "Secondary"
+        assert result.node_map["instance_primary"].data.label == "pricing"
+        assert result.node_map["instance_secondary"].data.label == "pricing_2"
         assert result.node_map["instance_secondary"].data.config["definitionId"] == (
             "definition_pricing"
         )

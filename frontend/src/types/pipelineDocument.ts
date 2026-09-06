@@ -695,6 +695,12 @@ function adaptRecoveryGraph(
   receiver: "pipeline" | "submodel",
 ): AdaptedPipelineEditorDocument {
   const nodes = graph.nodes.map((node): Node => {
+    if (node.node_type === PIPELINE_NODE_TYPES.SUBMODEL) {
+      const alias = (node.config as { alias?: unknown } | null)?.alias
+      if (node.label !== alias) {
+        throw new Error(`${PARSER}: submodel node ${node.recovery_id} label must equal its alias`)
+      }
+    }
     const knownNodeType = node.node_type !== null && supportedNodeTypes.has(node.node_type)
     const nodeType = knownNodeType ? node.node_type! : node.decorator_name
     return {

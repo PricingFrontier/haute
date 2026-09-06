@@ -58,8 +58,10 @@ that rejection, and every other structural save-time `ParseError`, as a 400
 carrying the error's own context, never as an opaque 500.
 
 Each `SUBMODEL` node is one occurrence and its node id is its immutable
-`instanceId`. Its config is validated as `SubmodelInstanceConfig`; node label
-and position remain ordinary mutable node fields. No parallel instance registry
+`instanceId`. Its config is validated as `SubmodelInstanceConfig`; an occurrence's
+display name is its alias (`node.data.label == config.alias` is enforced on
+validation, raising `ParseError` on mismatch), and its position remains an
+ordinary mutable node field. No parallel instance registry
 is permitted. For each definition exactly one occurrence has no `instanceOf`
 and owns definition editing. Every other occurrence has a non-empty
 `instanceOf` that points directly to that owner. The resolver rejects owner
@@ -470,6 +472,12 @@ Tests live in `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
   key fails to parse (and the DSL raises) with the fix named, codegen emits
   `name` only, the identity request and recovery document carry no label or
   identity-map field, and no port-id or label token survives in `src/haute`.
+- `tests/test_submodel_occurrence_names.py` — the SUB-L02 contract: one name per
+  submodel occurrence (the alias), `node.data.label == config.alias` is enforced on
+  validation, non-canonical aliases are rejected at the DSL, parser, and config
+  levels, `pipeline.submodel()` rejects `label=`, codegen emits `alias=` without
+  `label=` and enforces the collision gate across occurrence aliases, recovery uses
+  the alias only, and graph merge derives node label directly from the alias.
 - `tests/test_submodel_instances.py` — canonical definition and occurrence
   validation, parse/codegen round trips, public-port expansion, targeted
   flattening, shared-definition retention, OUTPUT source-port migration across

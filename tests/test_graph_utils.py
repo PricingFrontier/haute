@@ -516,7 +516,7 @@ class TestExecutableInputNameSubmodelOccurrence:
 
         name = executable_input_name(
             node_type=NodeType.SUBMODEL,
-            label="Pricing Submodel",
+            label="pricing",
             source_handle="out__quotes",
             alias="pricing",
             output_port_count=1,
@@ -529,14 +529,14 @@ class TestExecutableInputNameSubmodelOccurrence:
 
         first = executable_input_name(
             node_type=NodeType.SUBMODEL,
-            label="Pricing Submodel",
+            label="pricing",
             source_handle="out__written_premium",
             alias="pricing",
             output_port_count=2,
         )
         second = executable_input_name(
             node_type=NodeType.SUBMODEL,
-            label="Pricing Submodel",
+            label="pricing",
             source_handle="out__loss_ratio",
             alias="pricing",
             output_port_count=2,
@@ -550,9 +550,9 @@ class TestExecutableInputNameSubmodelOccurrence:
 
         name = executable_input_name(
             node_type=NodeType.SUBMODEL,
-            label="My Submodel",
+            label="my_submodel_1",
             source_handle="out__quotes",
-            alias="my-submodel 1",
+            alias="my_submodel_1",
             output_port_count=1,
         )
         assert name == "my_submodel_1"

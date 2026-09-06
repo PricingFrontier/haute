@@ -36,8 +36,8 @@
    `haute._graph_shape`), run before any source is generated.
 3. Resolve and validate canonical definitions and occurrences, reject
    unreferenced definitions and shared-file collisions, then run
-   `_error_on_name_collisions` over root nodes plus each referenced
-   definition graph exactly once.4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
+   `_error_on_name_collisions` over root nodes, submodel occurrence aliases,
+   plus each referenced definition graph exactly once.4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
    each edge-join's two incoming edges in base-then-join order), topo-sort
    nodes (`_topo_sort` via strict `haute._topo.topo_sort_ids`, which raises
    `UnknownEdgeEndpointError` with dropped-edge evidence for any dangling endpoint), build
@@ -58,7 +58,7 @@
    list, translate parent boundary handles only to declared public port names,
    derive child-boundary parameters from sanitised public input port names and downstream names from the occurrence alias (or <alias>__<port_name>), and emit one explicit
    `pipeline.submodel(...)` registration per occurrence with its definition
-   id, instance id, alias, and label. Parent `connect` calls refer to aliases
+   id, instance id, and alias (no label). Parent `connect` calls refer to aliases
    plus public port names; synthetic `in__`/`out__` handles never enter source.
    Finally `_assert_emitted_files_parse` validates every emitted file.
 
@@ -357,7 +357,7 @@ preamble global, matching the generated function's local assignment.
 | Contract computation hits `ConfigError` | `ConfigError` (propagated) | `codegen._format_contract_kwarg` |
 | Contract computation hits a non-infra exception (`TypeError`, `KeyError`, `HauteError` incl. `ContractMismatchError`) | propagated unchanged | `codegen._format_contract_kwarg` |
 | `inputs_by_parent` ambiguous key collision | `ParseError` | `codegen._format_contract_source` |
-| Duplicate sanitized function names across root graph + submodels, including exact duplicate labels | `ParseError` (all colliding buckets listed) | `codegen._error_on_name_collisions` |
+| Duplicate sanitized function names or occurrence aliases across root graph + submodels, including exact duplicate labels | `ParseError` (all colliding buckets listed) | `codegen._error_on_name_collisions` |
 | Duplicate derived input names among one node's incoming edges | `ParseError` (target node + colliding input name) | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | An `apiInput` edge carrying no `source_port`/`sourceHandle` (only reachable via a hand-edited file — the editor cannot create one) | `ParseError` naming the edge and source node | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | `edgeJoin` incoming edges do not carry exactly one `base` and one `join` target handle | `ConfigError` | `codegen._order_edge_join_incoming_edges` |

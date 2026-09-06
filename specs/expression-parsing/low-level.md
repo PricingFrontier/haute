@@ -73,8 +73,9 @@ fragments into editor-only recovery DTOs.
 child's declared `definition_id` matches its registration and that literal
 structured input/output ports are present. Build one `SubmodelDefinition` per
 definition id and one `SUBMODEL` occurrence per registration; each occurrence
-uses its explicit immutable `instance_id`, alias, optional label, and config
-`{definitionId, alias}`. Parent connect endpoints use aliases and declared
+uses its explicit immutable `instance_id`, config `{definitionId, alias}`, and
+derives its node label directly from the alias (registrations do not accept `label=`).
+Parent connect endpoints use aliases and declared
 public port names, which become `in__<name>`/`out__<name>` graph handles;
 internal child ids are never accepted as parent endpoints. Only when
 `flatten=True` is the canonical hierarchical graph passed to

@@ -621,7 +621,8 @@ same node. Consumer ownership is recorded in `ownership.toml`.
 `haute.pipeline_editor_document`. Exact-key validation applies recursively to document,
 capabilities, diagnostics, spans, nodes, edges, unresolved connections, submodels, and ports;
 duplicate recovery ids, non-finite coordinates, invalid spans, and edges with missing visual
-endpoints throw at ingestion. Every node requires `function_name`, nullable
+endpoints throw at ingestion. When adapting recovery graphs, every submodel node's label must
+strictly equal its alias (`${PARSER}: submodel node <recovery_id> label must equal its alias`). Every node requires `function_name`, nullable
 `default_input_name`, `source_handle_input_names`, and nullable `config_reference`; every edge
 requires nullable `input_name` (ready executable edges are non-null); every submodel port
 carries exactly `name`; capabilities require the sorted reserved API-frame

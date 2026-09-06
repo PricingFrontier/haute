@@ -232,7 +232,7 @@ describe("insertEdgeJoinNode", () => {
       ...node("pricing_instance"),
       type: NODE_TYPES.SUBMODEL,
       data: {
-        label: "Pricing instance",
+        label: "pricing_secondary",
         nodeType: NODE_TYPES.SUBMODEL,
         config: {
           definitionId: "definition_pricing",

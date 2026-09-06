@@ -1641,7 +1641,7 @@ describe("useEdgeHandlers", () => {
     const owner = {
       id: "instance_owner",
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
@@ -1649,7 +1649,7 @@ describe("useEdgeHandlers", () => {
     const copy = {
       id: "instance_copy",
       data: {
-        label: "Scoring instance",
+        label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",

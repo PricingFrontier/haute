@@ -654,7 +654,7 @@ class TestCreateSubmodelGraph:
             {
                 "id": "copy",
                 "data": {
-                    "label": "pricing copy",
+                    "label": "Pricing_2",
                     "nodeType": "submodel",
                     "config": {"definitionId": "pricing", "alias": "Pricing_2"},
                 },

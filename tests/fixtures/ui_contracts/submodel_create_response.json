@@ -13,7 +13,7 @@
           "y": 0
         },
         "data": {
-          "label": "Pricing",
+          "label": "pricing",
           "nodeType": "submodel",
           "config": {
             "definitionId": "pricing",

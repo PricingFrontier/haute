@@ -134,7 +134,7 @@ def test_projection_resolves_collapsed_submodel_inputs_by_occurrence_name() -> N
                     "id": "occurrence",
                     "type": "submodel",
                     "data": {
-                        "label": "Occurrence presentation",
+                        "label": "unrelated_alias",
                         "nodeType": "submodel",
                         "config": {
                             "definitionId": "definition_public_output",
@@ -188,7 +188,7 @@ def test_live_switch_pruning_uses_collapsed_submodel_public_output_label() -> No
                     "id": "occurrence",
                     "type": "submodel",
                     "data": {
-                        "label": "Occurrence presentation",
+                        "label": "unrelated_alias",
                         "nodeType": "submodel",
                         "config": {
                             "definitionId": "definition_public_output",

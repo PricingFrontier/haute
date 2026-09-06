@@ -114,7 +114,7 @@ def _instance(
         instance_id,
         NodeType.SUBMODEL,
         config=config,
-        label=alias.replace("_", " ").title(),
+        label=alias,
         x=x,
         y=y,
     )
@@ -1249,9 +1249,7 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
     tmp_path: Path,
 ) -> None:
     primary = _instance("instance_a", "scoring_a")
-    primary.data.label = "Primary scoring"
     secondary = _instance("instance_b", "scoring_b", instance_of="instance_a")
-    secondary.data.label = "Secondary scoring"
     graph = PipelineGraph(
         nodes=[
             _node("root_source", config={"code": "return pl.DataFrame()"}),
@@ -1311,8 +1309,8 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
         )
         for instance_id, node in occurrences.items()
     } == {
-        "instance_a": ("definition_scoring", "scoring_a", "Primary scoring", None),
-        "instance_b": ("definition_scoring", "scoring_b", "Secondary scoring", "instance_a"),
+        "instance_a": ("definition_scoring", "scoring_a", "scoring_a", None),
+        "instance_b": ("definition_scoring", "scoring_b", "scoring_b", "instance_a"),
     }
     definition = (reparsed.submodels or {})["definition_scoring"]
     assert [port.name for port in definition.input_ports] == ["policy"]

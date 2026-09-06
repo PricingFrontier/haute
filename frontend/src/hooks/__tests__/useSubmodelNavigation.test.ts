@@ -1003,14 +1003,14 @@ describe("useSubmodelNavigation", () => {
     })
     const primary = makeNode("instance_primary", "submodel", {
       data: {
-        label: "Primary scoring",
+        label: "scoring_primary",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring_primary" },
       },
     })
     const secondary = makeNode("instance_secondary", "submodel", {
       data: {
-        label: "Secondary scoring",
+        label: "scoring_secondary",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring_secondary" },
       },
@@ -1035,7 +1035,7 @@ describe("useSubmodelNavigation", () => {
     expect(mockLoad).not.toHaveBeenCalled()
     expect(result.current.viewStack[1]).toMatchObject({
       type: "submodel",
-      name: "Primary scoring",
+      name: "scoring_primary",
       instanceId: "instance_primary",
       definitionId: "definition_scoring",
     })
@@ -1082,7 +1082,7 @@ describe("useSubmodelNavigation", () => {
   it("rejects a non-canonical occurrence instead of deriving a dissolve name", async () => {
     const occurrence = makeNode("instance_broken", "submodel", {
       data: {
-        label: "Pricing",
+        label: "pricing",
         nodeType: "submodel",
         config: { alias: "pricing" },
       },
@@ -1115,7 +1115,7 @@ describe("useSubmodelNavigation", () => {
     })
     const occurrence = makeNode("instance_primary", "submodel", {
       data: {
-        label: "Primary scoring",
+        label: "scoring_primary",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring_primary" },
       },

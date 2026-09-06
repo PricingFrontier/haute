@@ -14,7 +14,7 @@ from haute._edge_join import (
     normalise_edge_join_decorator_kwargs,
     resolve_edge_join_role_indices,
 )
-from haute._graph_utils import _edge_id
+from haute._graph_utils import _edge_id, _sanitize_func_name
 from haute._logging import get_logger
 from haute._types import (
     GraphEdge,
@@ -191,7 +191,6 @@ class RegisteredSubmodel:
     instance_id: str
     alias: str
     instance_of: str | None = None
-    label: str | None = None
 
 
 def _validate_port(value: str | None, name: str) -> None:
@@ -723,7 +722,6 @@ class Pipeline(NodeRegistry):
         instance_id: str,
         alias: str,
         instance_of: str | None = None,
-        label: str | None = None,
     ) -> Pipeline:
         """Register one occurrence of a file-backed submodel definition."""
         identities = {
@@ -737,16 +735,17 @@ class Pipeline(NodeRegistry):
                 raise TypeError(f"Submodel {field_name} must be a string.")
             if not value or value != value.strip():
                 raise ValueError(f"Submodel {field_name} must be a non-empty unpadded string.")
+        sanitized_alias = _sanitize_func_name(alias)
+        if sanitized_alias != alias:
+            raise ValueError(
+                f"Submodel alias must be a canonical identifier "
+                f"(got '{alias}'; expected '{sanitized_alias}')."
+            )
         if instance_of is not None:
             if not isinstance(instance_of, str):
                 raise TypeError("Submodel instance_of must be a string or None.")
             if not instance_of or instance_of != instance_of.strip():
                 raise ValueError("Submodel instance_of must be a non-empty unpadded string.")
-        if label is not None:
-            if not isinstance(label, str):
-                raise TypeError("Submodel label must be a string.")
-            if not label or label != label.strip():
-                raise ValueError("Submodel label must be a non-empty unpadded string.")
 
         for field_name, value in {"alias": alias, "instance_id": instance_id}.items():
             if value in self._node_map:
@@ -769,7 +768,6 @@ class Pipeline(NodeRegistry):
                 instance_id=instance_id,
                 alias=alias,
                 instance_of=instance_of,
-                label=label,
             )
         )
         return self

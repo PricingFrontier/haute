@@ -145,7 +145,7 @@ def test_submodel_edge_resolves_occurrence_name_from_definition() -> None:
     source = GraphNode(
         id="pricing_instance",
         data=NodeData(
-            label="Pricing",
+            label="pricing_secondary",
             nodeType=NodeType.SUBMODEL,
             config={"definitionId": "pricing_definition", "alias": "pricing_secondary"},
         ),
@@ -178,7 +178,7 @@ def test_submodel_edge_requires_its_definition_for_public_label_resolution() -> 
     source = GraphNode(
         id="pricing_instance",
         data=NodeData(
-            label="Pricing",
+            label="pricing_secondary",
             nodeType=NodeType.SUBMODEL,
             config={"definitionId": "pricing_definition", "alias": "pricing_secondary"},
         ),
@@ -194,7 +194,7 @@ def test_submodel_edge_requires_its_definition_for_public_label_resolution() -> 
 def test_editor_identity_resolver_for_boundary_handles() -> None:
     output = resolve_editor_identity(
         node_type=NodeType.SUBMODEL,
-        label="Pricing",
+        label="pricing_secondary",
         source_handles=("out__written_premium",),
         alias="pricing_secondary",
     )

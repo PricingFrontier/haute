@@ -150,7 +150,7 @@ describe("useNodeHandlers", () => {
     const params = makeParams()
     const owner = makeNode("submodel_10", "submodel", {
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
@@ -190,7 +190,7 @@ describe("useNodeHandlers", () => {
     const params = makeParams()
     const copy = makeNode("submodel_11", "submodel", {
       data: {
-        label: "Scoring instance",
+        label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
@@ -314,7 +314,7 @@ describe("useNodeHandlers", () => {
     const params = makeParams()
     const submodel = makeNode("instance_a", "submodel", {
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
@@ -473,7 +473,7 @@ describe("useNodeHandlers", () => {
     const source = makeNode("submodel_10", "submodel", {
       position: { x: 100, y: 200 },
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
@@ -486,7 +486,7 @@ describe("useNodeHandlers", () => {
     })
     const existing = makeNode("submodel_11", "submodel", {
       data: {
-        label: "Scoring 2",
+        label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
@@ -508,6 +508,7 @@ describe("useNodeHandlers", () => {
     expect([source.id, existing.id]).not.toContain(created.id)
     expect(created.type).toBe("submodel")
     expect(created.data.nodeType).toBe("submodel")
+    expect(created.data.label).toBe("scoring_3")
     expect(created.data.config).toEqual({
       definitionId: "definition_scoring",
       alias: "scoring_3",
@@ -523,7 +524,7 @@ describe("useNodeHandlers", () => {
     const params = makeParams()
     const source = makeNode("submodel_inputs", "submodel", {
       data: {
-        label: "Inputs",
+        label: "inputs",
         nodeType: "submodel",
         config: { definitionId: "definition_inputs", alias: "inputs" },
       },
@@ -562,7 +563,7 @@ describe("useNodeHandlers", () => {
     const params = makeParams()
     const owner = makeNode("instance_owner", "submodel", {
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
@@ -570,7 +571,7 @@ describe("useNodeHandlers", () => {
     const copies = Array.from({ length: 9 }, (_, index) =>
       makeNode(`instance_copy_${index + 2}`, "submodel", {
         data: {
-          label: `Scoring ${index + 2}`,
+          label: `scoring_${index + 2}`,
           nodeType: "submodel",
           config: {
             definitionId: "definition_scoring",
@@ -595,14 +596,14 @@ describe("useNodeHandlers", () => {
     const params = makeParams()
     const source = makeNode("instance_source", "submodel", {
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
     })
     const aliasOccupier = makeNode("instance_existing", "submodel", {
       data: {
-        label: "Existing",
+        label: "submodel_11",
         nodeType: "submodel",
         config: { definitionId: "definition_other", alias: "submodel_11" },
       },
@@ -631,7 +632,7 @@ describe("useNodeHandlers", () => {
     const params = makeParams()
     const source = makeNode("instance_source", "submodel", {
       data: {
-        label: "Broken scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { alias: "scoring" },
       },
@@ -651,7 +652,7 @@ describe("useNodeHandlers", () => {
     const params = makeParams()
     const source = makeNode("instance_copy", "submodel", {
       data: {
-        label: "Scoring copy",
+        label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
@@ -677,7 +678,7 @@ describe("useNodeHandlers", () => {
     const params = makeParams()
     const base = makeNode("submodel_10", "submodel", {
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
@@ -687,7 +688,7 @@ describe("useNodeHandlers", () => {
     })
     const source = makeNode("submodel_11", "submodel", {
       data: {
-        label: "Scoring 2",
+        label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",

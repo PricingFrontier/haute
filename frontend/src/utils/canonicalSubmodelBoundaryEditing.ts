@@ -303,9 +303,7 @@ function assertCompatibleSharedEdit(
       }
     }
     if (used.size === 0) continue
-    const label = typeof node.data.label === "string" && node.data.label.length > 0
-      ? node.data.label
-      : config.alias
+    const label = config.alias
     const bindings = [...used].map((name) => {
       const port = changed.get(name)!
       return `${port.direction} ${port.name}`

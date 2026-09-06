@@ -9,7 +9,7 @@ import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
 import { SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
 import { cloneGraphSnapshot } from "../../utils/graphSnapshot"
 
-const SUBMODEL_NAME = "Pricing"
+const SUBMODEL_NAME = "pricing"
 const PLACEHOLDER_ID = "instance_primary"
 const DEFINITION_ID = "definition_pricing"
 

@@ -416,8 +416,9 @@ class TestBugB7DissolveTargetOnly:
         )
 
         def node(node_id: str, node_type: NodeType, **config: str) -> GraphNode:
+            label = config.get("alias", node_id) if node_type == NodeType.SUBMODEL else node_id
             return GraphNode(
-                id=node_id, data=NodeData(label=node_id, nodeType=node_type, config=config)
+                id=node_id, data=NodeData(label=label, nodeType=node_type, config=config)
             )
 
         def definition(definition_id: str, first: str, second: str) -> SubmodelDefinition:

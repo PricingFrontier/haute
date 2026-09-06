@@ -2,6 +2,7 @@ import { useCallback, useRef, type Dispatch, type MutableRefObject, type SetStat
 import type { Edge, Node } from "@xyflow/react"
 
 import type { OnUpdateConfigResult } from "../panels/editors/_shared"
+import { isSubmodelInstanceConfig, type SubmodelInstanceConfig } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import {
   prepareNodeUpdate,
@@ -188,12 +189,26 @@ export default function useGraphCommitController({
     const currentNode = graphRef.current.nodes.find((node) => node.id === nodeId)
     if (!currentNode) return Promise.resolve({ ok: false, error: `Cannot rename missing node "${nodeId}".` })
     if (currentNode.data.label === label) return Promise.resolve({ ok: true })
+    const isSubmodel = currentNode.data?.nodeType === NODE_TYPES.SUBMODEL
+      && isSubmodelInstanceConfig(currentNode.data?.config)
+    const candidateData: Record<string, unknown> = isSubmodel
+      ? {
+          ...currentNode.data,
+          label,
+          config: {
+            ...(currentNode.data.config as SubmodelInstanceConfig),
+            alias: label,
+          },
+        }
+      : {
+          ...currentNode.data,
+          label,
+        }
+    const candidate = { ...currentNode, data: candidateData }
     const request = beginRequest(nodeId)
     const pending = (async (): Promise<OnUpdateConfigResult> => {
       try {
-        const resolved = await resolveNodeIdentities([
-        { ...currentNode, data: { ...currentNode.data, label } },
-        ])
+        const resolved = await resolveNodeIdentities([candidate])
         if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
           throw new Error("identity resolver returned an invalid node")
         }
@@ -201,6 +216,35 @@ export default function useGraphCommitController({
           return {
             ok: false,
             error: "Rename was not applied because the graph changed while identity resolution was running.",
+          }
+        }
+        if (isSubmodel) {
+          const resolvedFn = resolved[0].data?._functionName
+          if (resolvedFn !== label) {
+            return {
+              ok: false,
+              error: `Occurrence names must be identifiers; use "${resolvedFn ?? ""}".`,
+            }
+          }
+          const isUsed = graphRef.current.nodes.some((other) => {
+            if (other.id === nodeId) return false
+            if (other.id === label) return true
+            if (other.data?.label === label) return true
+            const otherConfig = other.data?.config
+            if (
+              other.data?.nodeType === NODE_TYPES.SUBMODEL
+              && isSubmodelInstanceConfig(otherConfig)
+              && otherConfig.alias === label
+            ) {
+              return true
+            }
+            return false
+          })
+          if (isUsed) {
+            return {
+              ok: false,
+              error: `"${label}" is already used by another node.`,
+            }
           }
         }
         const prepared = prepare(nodeId, resolved[0].data, true)

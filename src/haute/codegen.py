@@ -1030,6 +1030,7 @@ def _graph_to_code_multi_instances(
     validate_graph_shape_contracts(graph, graph_label=pipeline_name)
 
     collision_labels = [node.data.label for node in root_nodes]
+    collision_labels.extend(instance.config.alias for instance in instances.values())
     for definition_id in definition_order:
         collision_labels.extend(node.data.label for node in definitions[definition_id].graph.nodes)
     _error_on_name_collisions(collision_labels)
@@ -1189,13 +1190,13 @@ def _graph_to_code_multi_instances(
             f"pipeline.submodel({_safe_path(instance.definition.file)}, "
             f"definition_id={_safe_str(instance.config.definition_id)}, "
             f"instance_id={_safe_str(instance.node.id)}, "
-            f"alias={_safe_str(instance.config.alias)}, "
+            f"alias={_safe_str(instance.config.alias)}"
             + (
-                f"instance_of={_safe_str(instance.config.instance_of)}, "
+                f", instance_of={_safe_str(instance.config.instance_of)}"
                 if instance.config.instance_of is not None
                 else ""
             )
-            + f"label={_safe_str(instance.node.data.label)})"
+            + ")"
         )
         for node in graph.nodes
         if (instance := instances.get(node.id)) is not None

@@ -300,7 +300,7 @@ export default function useNodeHandlers({
       position: { x: original.position.x + 60, y: original.position.y + 80 },
       selected: true,
       data: {
-        label: `${origData.label} instance`,
+        label: isSubmodel ? String(instanceConfig.alias) : `${origData.label} instance`,
         description: `Instance of ${origData.label}`,
         nodeType: origNodeType,
         config: instanceConfig,

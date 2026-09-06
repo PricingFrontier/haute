@@ -92,10 +92,13 @@ def _occurrence(
     config: dict[str, object] = {"definitionId": "definition_pricing", "alias": alias}
     if instance_of is not None:
         config["instanceOf"] = instance_of
-    return _node(
-        instance_id,
-        node_type=NodeType.SUBMODEL,
-        config=config,
+    return GraphNode(
+        id=instance_id,
+        data=NodeData(
+            label=alias,
+            nodeType=NodeType.SUBMODEL,
+            config=config,
+        ),
     )
 
 

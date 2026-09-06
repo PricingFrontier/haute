@@ -61,8 +61,10 @@ undo/redo snapshot. It is available only in the parent view; nesting remains
 unsupported.
 
 Each occurrence owns its label, position, selection, and incident edges.
-Renaming an occurrence never renames its definition file or changes its id or
-alias. Exactly one occurrence is the editable definition owner; created
+An occurrence's display name is its alias; renaming an occurrence renames its
+alias and rebinds downstream consumers without code edits, while never renaming
+its definition file or changing its node id. A proposed occurrence rename is
+refused early if the name is not a canonical identifier (error: `Occurrence names must be identifiers; use "<functionName>".`) or conflicts with an existing node id, label, or submodel alias (error: `"<name>" is already used by another node.`). Exactly one occurrence is the editable definition owner; created
 instances persist `instanceOf` pointing directly at it. Opening the owner
 navigates to the shared definition editor and shows that edits affect every
 occurrence. Opening an instance presents the same definition with an explicit
@@ -292,6 +294,7 @@ candidate, with the error toast.
   not walk or repair invalid chains.
   Creating an instance of a canonical `SUBMODEL` instead retains only its
   `definitionId`, allocates a fresh immutable node id and collision-free alias,
+  labels the copy with its alias,
   copies presentation defaults, and starts with no boundary bindings as one undo
   step. Deleting a submodel occurrence is owner-aware: an instance copy (valid
   `instanceOf`) deletes exactly like an ordinary node — together with its

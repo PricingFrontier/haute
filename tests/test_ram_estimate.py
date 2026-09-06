@@ -1874,7 +1874,7 @@ def test_cardinality_binding_uses_collapsed_submodel_occurrence_name() -> None:
                     "id": "occurrence",
                     "type": "submodel",
                     "data": {
-                        "label": "Occurrence presentation",
+                        "label": "unrelated_alias",
                         "nodeType": "submodel",
                         "config": {
                             "definitionId": "definition_public_output",

@@ -29,7 +29,7 @@ from haute._graph_builders import (
     _build_rf_nodes,
     _extract_decorated_nodes,
 )
-from haute._graph_utils import _edge_id
+from haute._graph_utils import _edge_id, _sanitize_func_name
 from haute._parser_conservation import assert_parser_structure_conserved
 from haute._submodel_instances import rewrite_submodel_alias_references
 from haute._types import (
@@ -72,7 +72,6 @@ class SubmodelRegistration:
     instance_id: str
     alias: str
     instance_of: str | None = None
-    label: str | None = None
     line: int | None = None
 
 
@@ -140,11 +139,20 @@ def extract_submodel_registrations(tree: ast.Module) -> list[SubmodelRegistratio
                     "pipeline.submodel() path must be non-empty and unpadded.",
                     line=getattr(path_expression, "lineno", None),
                 )
+            if any(keyword.arg == "label" for keyword in link.keywords):
+                raise ParseError(
+                    (
+                        "pipeline.submodel() no longer accepts label=; "
+                        "an occurrence's name is its alias."
+                    ),
+                    path=path,
+                    line=getattr(link, "lineno", None),
+                    remediation="Remove label= and rename the occurrence by changing alias=.",
+                )
             definition_id = _registration_keyword(link, "definition_id")
             instance_id = _registration_keyword(link, "instance_id")
             alias = _registration_keyword(link, "alias")
             instance_of = _registration_keyword(link, "instance_of")
-            label = _registration_keyword(link, "label")
             missing_fields = [
                 field
                 for field, value in {
@@ -165,6 +173,14 @@ def extract_submodel_registrations(tree: ast.Module) -> list[SubmodelRegistratio
             assert definition_id is not None
             assert instance_id is not None
             assert alias is not None
+            sanitized_alias = _sanitize_func_name(alias)
+            if sanitized_alias != alias:
+                raise ParseError(
+                    "Submodel instance alias must be a canonical identifier.",
+                    alias=alias,
+                    expected=sanitized_alias,
+                    line=getattr(link, "lineno", None),
+                )
             registrations.append(
                 SubmodelRegistration(
                     path=path,
@@ -172,7 +188,6 @@ def extract_submodel_registrations(tree: ast.Module) -> list[SubmodelRegistratio
                     instance_id=instance_id,
                     alias=alias,
                     instance_of=instance_of,
-                    label=label,
                     line=getattr(link, "lineno", None),
                 )
             )
@@ -453,7 +468,7 @@ def _merge_registered_submodels(
                 id=registration.instance_id,
                 type="submodel",
                 data=NodeData(
-                    label=registration.label or registration.alias,
+                    label=registration.alias,
                     description=definition.graph.pipeline_description or "",
                     nodeType=NodeType.SUBMODEL,
                     config={

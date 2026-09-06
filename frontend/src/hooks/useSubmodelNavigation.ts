@@ -95,9 +95,7 @@ function canonicalOccurrence(
       `Submodel instance ${nodeId} references missing or malformed definition ${config.definitionId}`,
     )
   }
-  const label = typeof node.data.label === "string" && node.data.label.length > 0
-    ? node.data.label
-    : config.alias
+  const label = config.alias
   return {
     instanceId: nodeId,
     definitionId: config.definitionId,

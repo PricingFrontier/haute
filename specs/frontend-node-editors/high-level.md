@@ -26,7 +26,7 @@ backend API modules own validation and persistence.
   code**, 1:1 with the generated function signature: an API-input frame edge's chip shows the
   frame label carried on the edge (`quotes` is displayed as `quotes` and callable as `quotes`),
   an ordinary source's chip shows the sanitised node label, and a submodel `out__` edge's input name
-  is the occurrence's name (or `<name>__<port_name>` with several output ports), resolved by the backend identity endpoint from the alias the request carries. Inside a
+  is the occurrence's name (its alias, or `<name>__<port_name>` with several output ports), resolved by the backend identity endpoint from the alias the request carries. Renaming an occurrence renames its alias and rebinds downstream consumers without code edits. Inside a
   drilled submodel, an edge from the composite Input resolves its row handle to that public
   input port's name; the literal boundary-card label
   `INPUT` is never presented as the child's argument name. The source
