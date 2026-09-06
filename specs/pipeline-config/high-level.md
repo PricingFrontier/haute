@@ -81,12 +81,8 @@ revision and succeeds only while the target file is absent.
 sources: explicit `connect()` calls and function parameter names matching other node names.
 Explicit calls take precedence and
 implicit inference only fills in what wasn't already covered. Edges are never invented: a
-file that declares no wiring parses as a disconnected graph. (A definition-order chain
-fallback used to fabricate a linear chain for any multi-node file with zero declared edges;
-it was removed because it made deliberately disconnected graphs unrepresentable — deleting
-the last edge resurrected it on reparse, a GUI save then materialised the invented edge into
-source, and the fabricated chain disagreed with `run()`, which fails loudly on unwired
-transforms.)
+file that declares no wiring parses as a disconnected graph, keeping deliberately disconnected
+graphs representable and in agreement with `run()`, which fails loudly on unwired transforms.
 
 A static `connect()` whose source or target does not name a root node is retained as unresolved
 until referenced submodels have been loaded, because cross-boundary connections legitimately name

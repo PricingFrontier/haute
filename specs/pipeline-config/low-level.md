@@ -34,16 +34,28 @@
   the in-memory edge representation `NodeRegistry`/`Pipeline` operate on. Distinct from the
   Pydantic `GraphEdge` (`haute._types`) that `_graph_builders.py` produces for the parsed
   source graph.
+- **`RegisteredSubmodel`** (frozen dataclass, `src/haute/pipeline.py`) — `file`, `name`,
+  `instance_of: str | None`: one canonical file-backed submodel occurrence registered on a
+  pipeline.
 - **`NodeRegistry`** — base class for `Pipeline` and `Submodel`; holds `_nodes: list[Node]`,
-  `_node_map: dict[str, Node]`, `_edges: list[RegisteredEdge]`, `_submodel_files: list[str]`.
+  `_node_map: dict[str, Node]`, `_edges: list[RegisteredEdge]`, `_submodel_files: list[str]`,
+  `_submodel_registrations: list[RegisteredSubmodel]`.
 - **`Pipeline(NodeRegistry)`** — adds `run()`, `score()`, `to_graph()`, `submodel()`,
-  `submodel_files`.
-- **`Submodel(NodeRegistry)`** — no `run`/`score`/`to_graph`. A live
-  `Pipeline.submodel(file, name, *, instance_of=None)` call
-  validates that `name` is a canonical identifier (rejects `definition_id=`, `instance_id=`, `alias=`, `label=`),
-  records the occurrence, and records the path in `_submodel_files`; it does not import
-  the module or register the `Submodel` object's nodes onto the live `Pipeline`. Static parsing
-  resolves those files into the hierarchical/flat graph used by the full executor.
+  `submodel_files`, `submodel_registrations`. A live
+  `Pipeline.submodel(file, name, *, instance_of=None)` call validates that `file` and `name` are
+  non-empty unpadded strings, that `name` is a canonical identifier, that `name` does not conflict
+  with a registered node name or duplicate an existing registered submodel name, and that `instance_of`
+  (when provided) is a non-empty unpadded string (keywords `definition_id=`, `instance_id=`, `alias=`,
+  and `label=` fail to parse). It appends `file` to `_submodel_files` and `RegisteredSubmodel(file, name, instance_of)`
+  to `_submodel_registrations`; it does not import the module or register the `Submodel` object's nodes
+  onto the live `Pipeline`. Static parsing resolves those files into the hierarchical/flat graph used
+  by the full executor.
+- **`Submodel(NodeRegistry)`** — no `run`/`score`/`to_graph`. Its constructor requires keyword-only
+  arguments `definition_id: str`, `input_ports: list[dict | SubmodelInputPort]`, and
+  `output_ports: list[dict | SubmodelOutputPort]`. `definition_id` must be a non-empty unpadded string.
+  Ports are validated into `SubmodelInputPort` (`name`, `targets`) and `SubmodelOutputPort` (`name`, `source`)
+  models, exposed as `definition_id`, `input_ports`, and `output_ports` defensive-copy properties;
+  a port declaring `label` or `portId` raises `ValueError`.
 - **`NodeBuildContext`** (frozen dataclass, slots — `src/haute/_builders.py`, owned by
   execution-engine) — the parameter bundle
   shared by every per-type exec builder: `node`, `source_names`, `source_ids`,
@@ -114,9 +126,8 @@ DataFrames along declared edges — each edge's frame resolved port-aware throug
 through `_resolve_output_node`: an explicit `@pipeline.output` node wins if there is exactly one;
 otherwise the single node with no outgoing edge; otherwise raise, naming every candidate node.
 `Pipeline.to_graph()` converts the same live objects into a React-Flow-shaped plain `dict`,
-inferring each node's display type from `config["_node_type"]` if present, else `DATA_INPUT`
-for an input node, else `OUTPUT` for the last-registered node, else `POLARS`. It delegates
-node and edge construction to the same `_build_rf_nodes`/`_build_edges` path as static
+taking each node's display type from `config["_node_type"]` (defaulting to `POLARS` when absent).
+It delegates node and edge construction to the same `_build_rf_nodes`/`_build_edges` path as static
 parsing, so explicit connections and positional parameter-name inference are represented
 consistently; keyword-only parameters remain configuration rather than edges.
 
@@ -182,18 +193,19 @@ Malformed/unreadable TOML raises `ConfigError` before discovery. Deploy resolves
 project through this helper immediately before binding a pipeline. The plural GUI discovery API
 shares the configured-path checks but additionally lists valid sibling pipelines.
 
-**Scaffold generation (`_scaffold.py`, driven by `cli/_init_cmd.py::handle_init`).** Every
+**Scaffold generation (`src/haute/_scaffold.py`, driven by `src/haute/cli/_init_cmd.py::handle_init`).** Every
 template function is parameterised by `target`/`ci` and looks up per-target facts through
 `TARGETS`/`_get_target` rather than branching on the target string directly, so adding a
 target means adding one registry entry, not touching every template function.
 `starter_pipeline(name)` emits imports plus a named `haute.Pipeline` declaration and no decorated
 nodes. `starter_test(name)` parses that file and asserts only the configured pipeline name.
-`handle_init` creates empty config, data, model, and output placeholder subdirectories under
-`rating/`, but no node sidecars or `prompts/` directory, and removes any root `main.py` before
-writing `rating/main.py`.
+`handle_init` creates a populated `rating/utility/` package (with generated `rating/utility/__init__.py` and
+`rating/utility/features.py`) alongside empty `config`, `data`, `models`, and `outputs` placeholder
+subdirectories under `rating/`, but no node sidecars or `prompts/` directory, and removes
+any root `main.py` before writing `rating/main.py`.
 `haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
 (`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/
-`[ci.staging]`/`[server]` sections, splicing in `_target_section()`'s
+`[ci.staging]` sections, splicing in `_target_section()`'s
 `[deploy.<target>]` block. `[server].host` and the optional closed `[assistant]` plus
 `[assistant.egress]` tables are part of the shared TOML schema consumed by
 `DeployConfig.from_toml`, even though neither is a deploy setting. The assistant key sets are
@@ -204,9 +216,9 @@ list out of `TARGETS` through provider-specific formatters (`_github_secrets_env
 `_gitlab_secrets_env`, `_azure_devops_secrets_env`) so a target's credential list is defined
 once and rendered three ways. `handle_init` calls exactly the generator(s) for the chosen
 `ci` value (`"none"` calls none of them); on `--force` it first calls
-`_prune_stale_ci_files(project_dir, keep=ci)`, which deletes every other provider's known
-artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
-`.github/workflows/`/`.github` directories, before writing the new provider's files.
+`_prune_stale_ci_files(project_dir, keep=ci)` (defined in `src/haute/cli/_init_cmd.py`),
+which deletes every other provider's known artifact paths (from that module's `_CI_ARTIFACTS` map)
+and removes the resulting empty `.github/workflows/`/`.github` directories, before writing the new provider's files.
 Every generator result must parse as one complete YAML document for every
 `TARGETS` entry. Structural tests locate the actual validate, staging, smoke,
 impact, and production jobs/stages, assert their branch/manual conditions, and
@@ -353,7 +365,8 @@ forwards projection/profile fields; external-file resolution validates
   frame).
 - **`ValueError`** — empty live pipeline; an unwired non-source node or missing upstream result
   during `Pipeline.run()`/`score()`; unknown source or target node in `connect()`; empty-string
-  port name; duplicate key in a sidecar JSON object
+  port name; submodel identity errors (non-canonical submodel name, name conflicting with a registered
+  node name, duplicate submodel name, or a submodel port declaring `portId`/`label`); duplicate key in a sidecar JSON object
   (`reject_duplicate_keys_hook`); non-`dict` sidecar JSON content; a resolved config path
   escaping the `config/` directory (`config_path_for_node`); a node name containing path
   separators or `..`.
@@ -396,7 +409,7 @@ API and real JSON round-trips rather than mocks:
 - **`test_config_io.py`** + **`test_config_io_gaps.py`** — sidecar save/load
   round-trips, path conventions (`TestConfigPathForNode`), Windows-reserved-filename rejection
   (`TestIsWindowsReservedFilename`), `collect_node_configs` (including load-error protection
-  and id remapping), banding compaction, rating canonical-row validation/emission,
+  and filename sanitisation of the node label without node-id remapping), banding compaction, rating canonical-row validation/emission,
   and preservation of the prior sidecar when validation fails.
 - **`test_config_validation.py`** — `VALID_KEYS` registry completeness
   (`TestValidKeysRegistry`), `warn_unrecognized_config_keys` behaviour, and alignment between

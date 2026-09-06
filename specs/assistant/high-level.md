@@ -40,7 +40,7 @@ In scope:
   distribution smoke checks.
 - Chat sessions: process-local per-pipeline conversation state, bounded durable
   restart history, and separate provider-working/redacted persisted representations.
-- The assistant HTTP surface: session create, readiness/status, and the message endpoint that
+- The assistant HTTP surface: session list, session create, readiness/status, and the message endpoint that
   streams a turn as server-sent events.
 - Assistant configuration and readiness: the closed `[assistant]` table in
   `haute.toml` (provider, model, optional base URL, and required nested egress
@@ -72,9 +72,10 @@ validates it as a credential-free absolute HTTPS workspace-root URL and
 derives `<host>/serving-endpoints`. A Databricks `base_url` is rejected so
 workspace identity is never duplicated or allowed to drift from `.env`.
 The outer table is closed to `provider`, `model`, `base_url`, and `egress`;
-the nested table requires the exact trust/sensitivity/`allow_*` fields defined
-in the ASSIST-A07 contract below. An older table without `egress` is not ready
-and names `[assistant].egress` in its migration reason. An unknown key raises
+the nested `[assistant.egress]` table requires the exact fields `trust`,
+`max_sensitivity`, `allow_project_knowledge`, `allow_executable_source`, and
+`allow_row_samples`. A configuration without `egress` is not ready and names
+`[assistant].egress` in its not-ready reason. An unknown key raises
 `ConfigError` naming `[assistant].<key>`. An OpenAI
 `base_url`, when present, must be an absolute `http` or `https` URL with a
 hostname and no embedded user information; malformed, relative, unsupported-
@@ -180,11 +181,8 @@ that durable fact, in its original position after the mutation tool row.
   its wiring rules (singleton status, sidecar folder convention), and a usage note.
 - `list_datasets` / `get_dataset_schema` — the data files visible to the project
   and a file's column names and dtypes, with no preview collection or row values.
-  Listing names visible subdirectories and accepts a bounded recursive traversal. For a
-  routed Parquet showcase whose request explicitly names a safe relative folder, an omitted
-  listing root is bound to that folder and recursive discovery is enabled, so datasets below
-  folders such as `data/claims/` are not falsely reported as absent. Recursive results are
-  deterministically ordered and report truncation rather than silently omitting overflow.
+  Listing names visible subdirectories and accepts a bounded recursive traversal. Recursive
+  results are deterministically ordered and report truncation rather than silently omitting overflow.
   Both operations use the installed input-format registry; unavailable
   optional engines and unsupported extensions are not advertised. Hidden path components
   and explicitly denylisted credential/state names are rejected for both listing and
@@ -296,9 +294,8 @@ terminate the stream.
   `openai` SDKs maintain the streaming/tool-use wire formats we would otherwise hand-roll
   over httpx and chase forever. They ship in the core `haute` dependencies — the assistant
   is a first-class product feature, present in every install with no `haute[assistant]`
-  extra (a user decision, 2026-07-19: the earlier optional-extra packaging optimised for a
-  lean default install, but a feature the product leads with must not require a second
-  install step). The SDKs are still imported lazily at the adapter seam, so importing Haute
+  extra, because a feature the product leads with must not require a second
+  install step. The SDKs are still imported lazily at the adapter seam, so importing Haute
   never triggers provider-side behaviour, and a broken installation surfaces as a named
   readiness reason rather than an import crash. A Databricks serving endpoint speaks the
   OpenAI protocol, so the public `DatabricksProvider` reuses that wire implementation while
@@ -397,8 +394,7 @@ terminate the stream.
   the `get_pipeline` format the model works in.
 - **Sessions persist per clone, in `.haute/`.** Haute's server is a locally-run
   distribution vehicle, not a hosted service — users restart it constantly, so
-  process-local-only chat would lose every conversation at each restart (a user decision,
-  2026-07-19, reversing the earlier in-memory-only stance). Committed turns are written as
+  process-local-only chat would lose every conversation at each restart. Committed turns are written as
   one JSON file per session under `<project_root>/.haute/assistant/sessions/`, inside the
   per-clone `.haute/` state directory that is already gitignore-guarded: history is
   user-private, never committed, and shares the established posture of `.haute/` state —
@@ -590,12 +586,14 @@ An explicit request to build, create, author, or make a Parquet pipeline as a sh
 multiple node types suggests `parquet_showcase`. The showcase cue accepts `showcase`, the
 closed phrase `node types`, or `many … types`, so a harmless typo in the intervening noun
 does not discard an otherwise explicit authoring request. With two to eight discovered Parquet
-datasets, that showcase route inspects every schema and ranks coherent pairs deterministically:
-a shared `quote_id` outranks a pair with exactly one other shared column, then larger combined
-distinct schema width wins, then project-relative path order breaks a tie. Within the selected
-pair, the wider schema is the base with path order breaking equal widths. The deterministic recipe
-owns the safe connected transform and mapped output. It asks only when fewer than two or more than
-eight datasets are discovered, or when the bounded set has no coherent pair. When a routed turn ends with
+datasets, the route's advisory guidance asks the model to rank coherent pairs: a shared `quote_id`
+outranks a pair with exactly one other shared column, then larger combined distinct schema width
+wins, then project-relative path order breaks a tie. Within the selected pair, the model is guided
+to choose the wider schema as base, with path order breaking equal widths. When the request explicitly
+names a safe relative folder, advisory guidance directs the model to pass that folder as `project_root`
+and set `recursive=True` when calling `list_datasets`. The suggested recipe owns the safe connected
+transform and mapped output. Clarification is requested only when fewer than two or more than eight
+datasets are discovered, or when the bounded set has no coherent pair. When a routed turn ends with
 `NEEDS_INPUT:`, immediately following clarification turns retain that route while each
 intervening turn also ends with `NEEDS_INPUT:`. A normal answer, completed mutation, or
 unqualified assistant response closes the chain, so stale request guidance is never revived.
@@ -660,8 +658,8 @@ rounds streamed preparatory prose.
 (`local`, `organization`, or `external`), `max_sensitivity` (`public`,
 `internal`, or `restricted`), and the required booleans
 `allow_project_knowledge`, `allow_executable_source`, and
-`allow_row_samples`. A legacy `[assistant]` table without it is not ready and
-names `[assistant].egress` in its migration error. Local endpoints must be
+`allow_row_samples`. A configuration without `egress` is not ready and
+names `[assistant].egress` in its not-ready reason. Local endpoints must be
 loopback; organization and external endpoints must use HTTPS; external policy
 is public-only and cannot enable executable source or row samples. Project
 configuration may narrow but never widen these class ceilings.

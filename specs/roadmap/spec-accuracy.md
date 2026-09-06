@@ -36,7 +36,6 @@ Non-goals:
 
 | Package | State | Priority | Outcome |
 |---|---|---|---|
-| SPEC-A05 | Planned | P2 | Assistant, modelling, pipeline-config and submodels specifications corrected. |
 | SPEC-A06 | Planned | P2 | Frontend graph canvas and node editor specifications corrected. |
 | SPEC-A07 | Planned | P2 | Frontend shared, git, assistant, trace, modelling and preview UI specifications corrected. |
 | SPEC-A08 | Planned | P2 | Ownership ledger, document structure and governance statements match the corpus. |
@@ -52,34 +51,6 @@ editing pass: for every finding it re-reads the cited specification line and
 the cited code at `HEAD`, applies the recorded fix or a better one that obeys
 the writing rules, or records the finding as already resolved with the proof,
 and never edits a file outside its list.
-
-### SPEC-A05 — Assistant, modelling, pipeline-config, submodels
-
-**Why:** Thirty-four findings against four components: dead roadmap package
-references (ASSIST-A04/A05/A07), prompt guidance described as backend behaviour,
-wrong artifact names, wrong scaffold directory names, an obsolete `to_graph()`
-fallback description, a `Submodel` constructor contract and `RegisteredSubmodel`
-type missing from Key types, a planned test list inside a submodels invariant,
-a recovery-revision claim, and resolved-history phrasing (ADD13, ADD15, ADD19,
-F011, F012, F013, F014, F016, F017, F107, F108, F109, F110, F111, F112, F113,
-F114, F116, F117, F118, F119, F120, F136, F137, F139, F140, F150, F151, F210,
-F213, F216, F217, F218, F232).
-
-**Plan:** One editing pass over the assistant, modelling, pipeline-config and
-submodels documents. F117 and F216 are re-verified first: the registration is
-now `pipeline.submodel(path, name[, instance_of=...])` and `RegisteredSubmodel`
-carries `{file, name, instance_of}`, so the corrections describe that form.
-F139's to-build test list becomes present-tense coverage statements; anything it
-lists that does not exist is dropped, not filed.
-
-**Acceptance:** Every listed finding corrected or recorded as resolved at
-`HEAD`; the docs check stays green.
-
-**Dependencies:** SPEC-A01 (shares the submodels documents).
-
-**Evidence:** `fable5.1-review/findings.json`; `specs/assistant/low-level.md`;
-`specs/modelling/low-level.md`; `specs/pipeline-config/low-level.md`;
-`specs/submodels/low-level.md`.
 
 ### SPEC-A06 — Frontend graph canvas and node editors
 

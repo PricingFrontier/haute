@@ -140,7 +140,7 @@ compatibility facade and route own no duplicate state or worker implementation.
   still wins over a stale exclusion. After the final CatBoost feature selection or GLM-term
   narrowing is known, training rejects a non-object mapping, malformed names or
   directions, active constraints on absent/non-selected features, and constraints on
-  categorical, Boolean, temporal, or otherwise non-numeric features before splitting
+  features whose dtype is not `Int64` or `Float64` before splitting
   or fitting.
 
 Invariants that always hold:
@@ -159,19 +159,14 @@ Invariants that always hold:
   as class labels) under `task="classification"` is rejected with a message naming
   the target column and task and directing the user to choose a discrete target or
   switch the task to regression, instead of failing later inside a metrics library
-  with a context-free error. The gate originally keyed on the configured task only —
-  a classification-flavoured objective under a regression task (e.g. a binomial GLM
-  defaulting to AUC/log-loss metrics) was left to the metric-stage context wrap,
-  because a binomial target may legitimately be a continuous proportion. But that run
-  still dies once AUC/log loss are computed, only later and with less context, so the
-  gate now keys on the effective metric set as well: a fractional target whose
-  effective metrics (explicit config metrics, or the objective-implied defaults —
-  the same derivation the job builder uses) include AUC/log loss is rejected
-  pre-dispatch with the metrics named and the escape hatch stated. The legitimate
-  continuous-proportion binomial fit remains reachable by setting the reported
-  metrics explicitly to regression metrics, which removes every classification
-  metric from the effective set. On this metric-keyed branch, non-float target types
-  defer to the fit's own validation. Non-finite float values are deliberately
+  with a context-free error. The gate keys on the effective metric set as well
+  (explicit config metrics, or the objective-implied defaults — the same derivation
+  the job builder uses): a fractional target whose effective metrics include AUC or
+  log loss is rejected pre-dispatch with the metrics named and the escape hatch stated.
+  The legitimate continuous-proportion binomial fit remains reachable by setting
+  the reported metrics explicitly to regression metrics, which removes every
+  classification metric from the effective set. On this metric-keyed branch, non-float
+  target types defer to the fit's own validation. Non-finite float values are deliberately
   excluded from the fractional scan: NaN is treated as missing (null-target handling
   and the metric stage's non-finite filtering own it), so an all-NaN or
   infinite-valued target passes the gate and fails downstream inside the wrapped
@@ -516,7 +511,7 @@ created.
 ### Evaluation plan, fits, and results
 
 After null-target filtering, planning writes and strictly reloads one canonical
-digest-linked `evaluation_plan.json` for the exact prepared parquet. The artifact
+digest-linked `{model}.evaluation-plan.json` for the exact prepared parquet. The artifact
 contains the source digest, exact source positions, development/final-test
 membership, ordered validation-fit train/validation memberships, canonical strategy
 configuration, row counts, and bounded group/date summaries.
@@ -614,8 +609,8 @@ validation-row-weighted median of `best_iteration + 1`, capped by fixed
 fixed object, uses that explicit tree count, removes validation-only early-stop
 controls, trains on all development rows, and evaluates the final test once.
 
-The run persists canonical `tuning_plan.json`, `tuning_trials.json`, and
-`tuning_report.json` artifacts recording configs/digests, sampler/version/seed,
+The run persists canonical `{model}.tuning-plan.json`, `{model}.tuning-trials.json`, and
+`{model}.tuning-report.json` artifacts recording configs/digests, sampler/version/seed,
 ordered trials and fits, objectives, winner/baseline comparison, exact final
 parameters/tree count and fit bounds. Evaluation, tuning, model and feature-contract
 artifacts are one staged transactional publication set. Failure, cancellation, a

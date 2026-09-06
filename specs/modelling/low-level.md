@@ -157,8 +157,8 @@
   (job-based, like `/train`); the status response mirrors `TrainStatusResponse`'s
   progress/message/elapsed shape plus the resolved `param`/`value`/`llf`/`n_fits` once
   complete.
-- **`TrainService`** (`routes/_training_lifecycle.py`, re-exported by
-  `routes/_train_service.py`) — wraps a `JobStore`, `JobLifecycle`,
+- **`TrainService`** (`src/haute/routes/_training_lifecycle.py`, re-exported by
+  `src/haute/routes/_train_service.py`) — wraps a `JobStore`, `JobLifecycle`,
   and `CancellableJobRegistry`; owns the HTTP-facing training lifecycle
   (`start`/`cancel`/`timeout`) and the dispersion-estimation lifecycle
   (`start_dispersion_estimate`/`dispersion_job`/`cancel_dispersion`), distinguished in
@@ -185,7 +185,7 @@
 
 ### Live training (HTTP)
 
-1. `POST /api/modelling/train` → `routes/modelling.py:train_model` →
+1. `POST /api/modelling/train` → `src/haute/routes/modelling.py::train_model` →
    `TrainService.start(body)`.
 2. `TrainService.start`: locate the modelling node in the graph; merge declared
    `categorical_levels` from the node and its upstream ancestors
@@ -206,16 +206,16 @@
    compute required-column demand per node (`_training_required_columns_by_node`);
    create an admitted `ExecutionContext` with the already-registered cancellation token
    (RAM ceiling + cancellation) via
-   `create_admitted_execution_context`. `_training_lifecycle.py::TrainService._execute_and_sink`
+   `create_admitted_execution_context`. `src/haute/routes/_training_lifecycle.py::TrainService._execute_and_sink`
    is then a **parent supervisor only** — no training data is materialised in the server
    process:
-   - it takes the budget envelope with `_execution_admission.py::isolated_execution_budget`
+   - it takes the budget envelope with `src/haute/_execution_admission.py::isolated_execution_budget`
      (an admitted `execution_context` is required — `ValueError` otherwise), computes the
      remaining job timeout from `start_time`/`timeout` via `_worker_timing` (a non-positive
      remainder records `timeout()` and raises `ExecutionCancelledError` without launching), and
      builds the worker config — every fallible setup step runs **before** the temp parquet
      exists, so a setup failure cannot orphan one. Only then does it create the parent-owned
-     temp parquet (`_training_preparation.py::create_training_parquet_path`); from that point
+     temp parquet (`src/haute/routes/_training_preparation.py::create_training_parquet_path`); from that point
      supervision runs inside a `try` whose `except BaseException` backstop discards the path,
      so the only exit that keeps it is a successful hand-off;
    - it launches exactly one spawn worker,
@@ -275,7 +275,7 @@
    `IsolatedWorkerMemoryLimitExceededError`, `IsolatedWorkerMemoryLimitUnsupportedError`,
    a crash whose exit code reads memory-limited, and an `IsolatedWorkerRemoteError` whose
    `remote_type` is a memory type become `memory_limited`/507 with
-   `_worker_isolation.py::isolated_worker_memory_detail` labelled `budget.operation` — the
+   `src/haute/_worker_isolation.py::isolated_worker_memory_detail` labelled `budget.operation` — the
    admitted context's own operation, so the dispersion flow (which admits
    `operation="dispersion_estimate"` and reuses this supervisor) is never mislabelled as
    `training_pipeline`; the child's own memory payload already carries it, since its context is
@@ -328,7 +328,7 @@
 
 This pipeline is selected by the explicit canonical `evaluation` supplied by every
 live modelling-node and exported-script call. Direct/test callers that deliberately
-omit it retain the constructor-only legacy split/CV pipeline described above.
+omit it retain the constructor-only internal/test-seam split pipeline described above.
 
 1. **Prepare one eligible source** — `_prepare_data` reuses an already-sunk parquet or
    materialises a supplied frame, validates required columns and the
@@ -400,7 +400,7 @@ decides whether `variance_power` needs to be rendered (CatBoost `Tweedie` loss, 
 
 ### Dispersion estimation (HTTP)
 
-1. `POST /api/modelling/dispersion/estimate` → `routes/modelling.py:estimate_dispersion`
+1. `POST /api/modelling/dispersion/estimate` → `src/haute/routes/modelling.py::estimate_dispersion`
    → `TrainService.start_dispersion_estimate(body)`.
 2. `_validate_dispersion_config`: reject an unknown `param`, a non-GLM node, an
    invalid family/link combination, a `param` that doesn't belong to the request's GLM
@@ -459,18 +459,20 @@ place rather than being duplicated per route:
 - `resolve_experiment_name(*, explicit, config_value, node_label, backend)` — standard
   fallback chain (highest wins): an explicit override from the request body, then the node
   config's `mlflow_experiment` value, then a backend-aware default (`/Shared/haute/{label}`
-  for Databricks, bare `{label}` for local — the `/Shared/` prefix is Databricks-specific and
-  was previously applied to local MLflow too, where it is meaningless).
+  for Databricks, bare `{label}` for local — the `/Shared/` prefix is Databricks-specific;
+  the local default is the bare label).
 - `configure_mlflow_tracking()` — resolves the tracking backend, calls
   `mlflow.set_tracking_uri`, and conditionally `set_registry_uri("databricks-uc")` for
   Databricks; the single place connection setup happens.
 - `build_run_url(backend, experiment_name, run_id)` — builds a Databricks run URL via
-  `mlflow.get_experiment_by_name` to resolve the numeric `experiment_id` (Databricks URLs
-  require the ID, not the name — an earlier version built the URL from `experiment_name`
-  directly and produced broken links); returns `None` for local backends or on a failed
+  `mlflow.get_experiment_by_name` to resolve the numeric `experiment_id` (Databricks run
+  URLs require the numeric experiment id, so the name is resolved first);
+  returns `None` for local backends or on a failed
   experiment lookup (logged, not raised).
 
-`routes/modelling.py` and `routes/optimiser.py` both call all three; `TrainingJob._log_to_mlflow`
+`src/haute/routes/optimiser.py` calls all three, whereas `src/haute/routes/modelling.py` calls
+`resolve_experiment_name` (for the log-after-the-fact route) and `resolve_tracking_backend`
+(for `/mlflow/check`); `TrainingJob._log_to_mlflow`
 itself does not — it passes `mlflow_experiment` straight through to `log_experiment()`, since
 that is the programmatic-API path where the caller has already chosen the value. Rejected
 alternatives: routing the optimiser's MLflow logging through this component's `log_experiment()`
@@ -577,8 +579,8 @@ input preparation.
 - `_build_interactions` (`_rustystats.py`) filters unset factor slots (`""`) out of an
   interaction's `factors` list before checking the two-factor minimum. The config
   panel's "+ Add" control creates `{"factors": ["", ""]}` before the user has picked
-  both columns; without the filter, that phantom two-empty-string interaction passed
-  the length check and crashed the fit rather than being silently skipped as intended.
+  both columns; filtering unset slots before the minimum check makes such an unfilled
+  row a skip rather than a fit input.
 - A Negative Binomial GLM (`family="negbinomial"`) requires an explicit `theta` before
   training or export can proceed — `training_objective_issue` gates it identically to
   Tweedie's variance power, since RustyStats fits silently at `theta=1.0` if unset.
@@ -640,7 +642,7 @@ rows/features) and retry.
 - **`TrainingConfigError`** (`ValueError` subclass, `_train_config.py`) — an
   incomplete or invalid modelling-node config. Raised by `build_training_job_kwargs`
   and `training_objective_issue`; translated to HTTP 400 by
-  `routes/modelling.py:export_script` and by `TrainService._validate_config`.
+  `src/haute/routes/modelling.py::export_script` and by `TrainService._validate_config`.
 - **`FeatureMismatchError`** (`haute.errors.HauteError` subclass) — feature-contract
   structural problems: missing/unknown top-level fields, wrong field types, hash
   mismatch (edited/corrupted file), invalid `categorical_levels` declarations, and
@@ -708,11 +710,11 @@ rows/features) and retry.
   `contract_error`.
 - **Curated failure surfacing** — `_worker_failure_payload` takes an explicit
   `user_facing` decision from every call site and stamps the payload's
-  `user_message` field (`_worker_protocol.WORKER_USER_MESSAGE_FIELD`) only for
+  `user_message` field (`src/haute/_worker_protocol.py::WORKER_USER_MESSAGE_FIELD`) only for
   deliberately curated, haute-authored wording: the cancelled/memory-limit/
   contract-error/bounded-memory branches of `_known_training_worker_failure`
   (the memory-limit branch authors its message from the exception's structured
-  attributes via the shared `routes/_memory_messages.memory_limit_user_message`
+  attributes via the shared `src/haute/routes/_memory_messages.py::memory_limit_user_message`
   — human-readable used/allowed sizes plus a call to action, never the internal
   operation name, which stays in the diagnostic `error` field; the same shape
   serves the training 507 response, the auto-range job, and the input-snapshot
@@ -803,13 +805,13 @@ rows/features) and retry.
 
 Tests live in the flat `tests/` directory rather than mirroring the package layout:
 
-- `test_modelling.py` — the broad unit-test base for `TrainingJob`, algorithms,
+- `tests/test_modelling.py` — the broad unit-test base for `TrainingJob`, algorithms,
   metrics, and internal partition execution.
-- `test_modelling_routes.py` — HTTP-level integration tests for every route
-  in `routes/modelling.py`, including `TestDispersionEstimateEndpoint` (happy path,
+- `tests/test_modelling_routes.py` — HTTP-level integration tests for every route
+  in `src/haute/routes/modelling.py`, including `TestDispersionEstimateEndpoint` (happy path,
   status polling, completion payload) and `TestDispersionErrorPaths` (every 400
   validation branch, worker-side failure mapping, cancellation).
-- `test_modelling_export.py` — exhaustive coverage of
+- `tests/test_modelling_export.py` — exhaustive coverage of
   `generate_training_script` and its kwarg-rendering rules.
 - `tests/test_evaluation.py` and `tests/test_train_evaluation_config.py` — strict
   canonical config parsing, deterministic random/group/temporal plans,
@@ -908,7 +910,7 @@ The product contract and limits are defined in
 [the high-level specification](high-level.md#unified-evaluation-and-bounded-tuning).
 The implementation seams are:
 
-- `_train_config.py` is the only public node-config parser used by live training and
+- `src/haute/modelling/_train_config.py` is the only public node-config parser used by live training and
   script export. It requires `evaluation`, canonicalises optional `tuning`, and rejects
   the retired top-level `split` and `cross_validation` keys before job construction.
 - `src/haute/modelling/_evaluation.py` owns exact version-1 strategy/config parsing and immutable plan,
@@ -916,18 +918,18 @@ The implementation seams are:
   same-directory replacement. Planning enforces group/date semantics; readers reject
   unknown keys/versions and validate canonical source membership, ordinary-CV
   partitioning, temporal expanding membership, counts, digests and aggregate values.
-- `_tuning.py` owns exact explicit-choice search-space validation, metric direction,
+- `src/haute/modelling/_tuning.py` owns exact explicit-choice search-space validation, metric direction,
   conditional categorical sampling, fixed/sample merge, deterministic winner/tree-count
   rules, fit limits and the tuning plan/trials/report evidence. Trial artifacts revalidate fit metric names
   and validation-row-weighted aggregates rather than trusting submitted summaries.
   Their `elapsed_seconds` field is the canonical zero marker; wall-clock elapsed is
   job metadata so repeated evidence remains byte-identical.
-- `_training_job.py` prepares one source, persists/reloads one evaluation plan, and
+- `src/haute/modelling/_training_job.py` prepares one source, persists/reloads one evaluation plan, and
   drives all selection/trial fits through `run_evaluation_fit`. The final fit alone
   writes the model/contract, emits model loss history, and computes expensive
   diagnostics. Tuning uses pinned Optuna 4.x with one seeded sequential TPE sampler;
   no candidate is skipped after a fit failure.
-- `routes/_training_lifecycle.py` sends one versioned request to one supervised child for
+- `src/haute/routes/_training_lifecycle.py` sends one versioned request to one supervised child for
   the complete run. Progress carries planning, trial-fit, trial-complete, final-fit,
   publication and completed phases with bounded one-based trial/fold indices and exact
   fit counts. The parent remains authoritative for cancellation, timeout, admission,

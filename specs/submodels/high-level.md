@@ -334,9 +334,6 @@ must resolve the original pipeline-owned sidecars.
   validation, name sanitisation) can run as fast in-memory unit tests, and the
   route layer's only job is turning its `ValueError`s into HTTP responses and
   handing its output to the save transaction.
-- **Both mutating endpoints reuse the pipeline save transaction rather than
-  writing files directly.** This rule is replaced by the single persistence
-  boundary below.
 - **There is one persistence boundary.** Submodel endpoints only validate and
   transform graphs. `POST /api/pipeline/save` is the sole route that writes
   parent code, modules, configs, or sidecars and the sole route that deletes
@@ -416,10 +413,10 @@ must resolve the original pipeline-owned sidecars.
   actionable explanation. An id absent from the submitted graph, an existing
   canonical submodel name, or a changed `base_revision` returns `409`; no graph
   transform or write runs.
-- A submitted graph that cannot be generated because another node has invalid
-  configuration returns the same actionable `400` as ordinary pipeline save;
-  create never leaks that expected validation failure as `500`, and the save
-  transaction leaves every parent and child artifact unchanged.
+- Creation performs a read-only module no-clobber preflight (`validate_new_module_files`);
+  any configuration collision raises `ConfigError` mapped to `400`. Any other unexpected
+  `ValueError` during graph transformation is logged server-side and returned as a sanitised
+  `400` error, never leaking internal graph walk details or escaping as `500`.
 - If the new module path already exists under any casing, creation returns
   `409` before any file is touched.
 - A submodel name that would collide with a Windows reserved device name

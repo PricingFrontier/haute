@@ -121,8 +121,9 @@ Expansion is a pure transform per instance:
 4. Expand each input binding to the port's ordered targets and each output
    binding from the port's single source, preserving authored endpoint handles
    and regenerating deterministic edge ids.
-5. Assert that no occurrence or parent-to-internal-child endpoint remains and
-   deduplicate only truly identical expanded edges.
+5. By construction, every selected occurrence node is removed and each
+   incident boundary edge rewritten to internal endpoints; deduplicate only truly
+   identical expanded edges.
 
 Create-instance and remove-instance are I/O-free graph operations. Creation
 normalises the selected source to its owner and persists that id in
@@ -147,24 +148,19 @@ together. Parent edge order is persisted state — the dirty fingerprint
 compares it and codegen emits `connect` calls in it — so a restored binding
 returns to its own position rather than to the end of the parent edge list.
 
-Required regression coverage is added before implementation and includes:
+Existing test suites cover multi-instance occurrences across backend and frontend boundaries:
 
-- two instances of one definition with different positions and bindings;
-- definition parse-once and file emit-once behavior;
-- stable parse/codegen/parse ids and aliases;
-- collision-free qualified runtime ids and reversible origins;
-- schema-led rewrites for every declared node-id-bearing config field;
-- invalid definition, port, endpoint, alias, and stale-reference failures;
-- dissolve-one/remove-one preserving the sibling occurrence and definition;
-  interface-breaking edit preflight.
-- frontend create-instance identity persistence, editable-owner/shared-edit
-  warning, read-only instance mutation guards, public-handle rendering, and
-  interface-breaking edit preflight;
-- explicit Input-inspector removal of routed and unrouted public inputs,
-  including all-occurrence parent-binding cleanup, one atomic undo snapshot,
-  and parent edge order preserved across that undo;
-- codegen and save-route rejection of a parent edge bound to an unrouted
-  public input, including the 400 status and message the client receives.
+- two instances of one definition with distinct positions and bindings (`tests/test_submodel_instances.py`);
+- definition parse-once and file emit-once behaviour (`tests/test_submodel_identity.py`);
+- stable parse/codegen/parse ids and aliases (`tests/test_submodel_ops.py`);
+- collision-free qualified runtime ids and reversible origins (`tests/test_submodel_identity.py`);
+- schema-led rewrites for every declared node-id-bearing config field (`tests/test_submodel_instances.py`);
+- invalid definition, port, endpoint, alias, and stale-reference failures (`tests/test_submodel_ops.py`);
+- dissolve-one/remove-one preserving sibling occurrences and definitions (`tests/test_submodel_routes.py`);
+- frontend view projection, public-handle rendering, and multi-occurrence input bindings (`frontend/src/utils/__tests__/submodelViewGraph.test.ts`);
+- boundary connection editing, input-port removal, and parent-binding cleanup (`frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts`);
+- native deletion policy across definition owners and copies (`frontend/src/utils/__tests__/submodelDeletionPolicy.test.ts`);
+- save-route rejection of invalid or unrouted bindings (`tests/test_submodel_persistence.py`).
 
 ### Route request and response models
 
@@ -208,9 +204,20 @@ missing marker) for the parent source/sidecar and every resolved child
 source/sidecar. Canonical-JSON encode that payload and hash the bytes. Because
 the parsed graph includes resolved node config content and sidecar positions,
 dependency changes alter the revision even when the parent source text does
-not. `parse_pipeline_to_graph` attaches this revision to every live graph
-response and WebSocket refresh; a successful save reparses the committed
-document and returns the new revision.
+not.
+
+### `pipeline_recovery_revision(*, project_root, artifacts, known_bytes=None)`
+
+Hash raw, contained artifacts without requiring a canonical graph. Live editor
+documents (`load_pipeline_editor_document`) and WebSocket refreshes carry this
+recovery revision (`pipeline_recovery_revision`) as their `source_revision`, and
+mutating endpoints (including submodel creation, dissolution, and save) use it
+for compare-and-swap concurrency checks; a successful save reparses the
+committed document and returns the new revision. It constructs a role-qualified
+manifest from project-relative paths, recording explicit `present` (with content hash),
+`missing`, or `unreadable` (with error type) states. Repeated references to the
+same resolved path in the same role collapse to one manifest entry, and `known_bytes`
+supplies pre-read bytes to authenticate exact caller content against concurrent changes.
 
 ### `flatten_graph(graph, *, target_instance_id=None)`
 
@@ -244,8 +251,8 @@ document and returns the new revision.
    two entries share `output_path` and `source_port` with different
    `source_column`.
 5. Remove only selected occurrence nodes and their incident boundary edges.
-   Deduplicate exact six-field edge identities, assert that no selected
-   occurrence endpoint remains, and merge definition support code once. A
+   Deduplicate exact six-field edge identities (by construction, no selected
+   occurrence endpoint remains after rewriting incident edges), and merge definition support code once. A
    definition preamble is appended only when its stripped line block is not
    already contained (whole-line, contiguous) in the merged parent preamble —
    exact-blob identity would re-append after a staged dissolve, and substring
@@ -434,7 +441,10 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 `tests/test_submodel.py`, `tests/test_edge_join.py`, `tests/test_flatten.py`,
 `tests/test_flattening_dedup.py`, `tests/test_pipeline_revision.py`, and
 `tests/test_submodel_persistence.py`, with related parser coverage in
-`tests/test_parser_submodels.py`.
+`tests/test_parser_submodels.py`, and frontend coverage in
+`frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts`,
+`frontend/src/utils/__tests__/submodelDeletionPolicy.test.ts`, and
+`frontend/src/utils/__tests__/submodelViewGraph.test.ts`.
 
 - `tests/test_submodel_identity.py` — the SUB-L03 contract: an owner and a copy
   parse to occurrences whose node id, label and alias are the name and whose
@@ -504,6 +514,12 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 - `tests/test_parser_submodels.py` — expression parsing, recursive loading,
   canonical child metadata, cross-boundary port reconstruction, and
   hierarchical/flat parser behaviour.
+- `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts` — boundary
+  connection editing, input-port removal, and parent-binding cleanup.
+- `frontend/src/utils/__tests__/submodelDeletionPolicy.test.ts` — deletion
+  policy guarding definition owners and instance copies.
+- `frontend/src/utils/__tests__/submodelViewGraph.test.ts` — submodel view graph
+  projection, public port boundaries, and multi-occurrence input bindings.
 
 Canonical-only identities are pinned throughout these suites: submodel paths
 are project-relative, boundary edge ids include port identity, and recorded
