@@ -28,7 +28,7 @@
   one batched aggregation: `row_count`, `columns: list[ExploreColumnStat]`, and
   `overview_summary: ExploreOverviewSummary`.
 - **`ExploreColumnStat`** (`schemas.py`) — per-column stats. `distinct_count` is `None` exactly
-  when the dtype is unhashable (`pl.Object`, per `_UNHASHABLE_DTYPES`); otherwise it counts only
+  when the dtype is unhashable (`pl.Object`, per `UNHASHABLE_DTYPES`); otherwise it counts only
   valid (non-null, non-NaN) values — `n_unique()` counts the null bucket and the NaN bucket each as
   one distinct value, so column-stat assembly subtracts one for each bucket that is actually
   present before storing it. Numeric-only fields (`p25_value`, `median_value`, `mean_value`,
@@ -68,8 +68,9 @@
   axis, number-format, colour, stack (`stack_group` plus Boolean `stack_normalize`), marker, and
   label values. Unknown string-keyed fields are retained only when their values
   satisfy the finite recursive JSON grammar.
-- **`ExplorePivotPersistedConfig` / `ExplorePivotConfig`** (`_types.py`) — the version-1 persisted
-  card contains `id`, `name`, `enabled`, ordered Filter/Columns/Rows/Values placements, ordered
+- **`ExplorePivotPersistedConfig` / `ExplorePivotConfig`** (`src/haute/_types.py`, owned by
+  [server-api](../server-api/low-level.md)) — the version-1 persisted card contains `id`, `name`,
+  `enabled`, ordered Filter/Columns/Rows/Values placements, ordered
   selected shared-formula ids, a combined `value_order` of Value/formula ids, and grand-total
   options. The runtime form replaces those ids with resolved formula objects for calculation
   requests. `value_order` is required and must cover the exact Value/formula id union once.
@@ -100,12 +101,10 @@
   presentation config so rename-only reuse cannot surface stale labels.
 - **`EXPLORE_CACHE_VERSION = 5`** and **`EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16`** — module
   constants in `_explore_service.py`. The version is folded into `report_cache_key` so an
-  incompatible report schema never collides with old cached payloads; the LRU is capped at 16
-  entries (`LRUCache`, from `caching`). Bumped from 3 to 4 when categorical truncation began
-  following display-label groups rather than raw-value cardinality; v3 already added NaN counts and
-  `distinct_count` was changed to count valid values only — both change what a cached report
-  computes for an *unchanged* underlying dataframe, so a v2 report would otherwise be served with
-  stale distinct counts and no NaN data under an identical dataframe cache key.
+  incompatible report payload never collides with cached payloads across schema iterations; the LRU
+  is capped at 16 entries (`LRUCache`, from `caching`). A version-5 report includes NaN counts,
+  valid-values-only distinct counts, categorical truncation based on display-label groups, column
+  quality profiles, and exact duplicate-row statistics.
 
 ## Pivot calculation invariants
 
@@ -417,7 +416,7 @@ Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
    `pl.struct(all columns).n_unique().alias("unique_rows")` when the schema is non-empty and
    every dtype is hashable, then per column `name`/`dtype`:
    - `null_count().alias(f"null::{name}")` always.
-   - `n_unique().alias(f"unique::{name}")` unless `_is_unhashable_dtype(dtype)`.
+   - `n_unique().alias(f"unique::{name}")` unless `is_unhashable_dtype(dtype)`.
    - min/max (via `_min_max_column_expr`, casting text-like/boolean bases to `String`) when
      `_supports_min_max(dtype)` (numeric, temporal, boolean, or lexical text-like bases).
    - if `dtype.is_numeric()`: p25/median/mean/p75/std, plus `zero::{name}` and
@@ -468,19 +467,17 @@ condition appends at most one `ExploreDataQualityIssue` (so up to 7 issues total
    name; severity/label/detail follow the same `"danger"`-if-≥50%-else-`"warning"` pattern as
    missing values, with the label reading `"N numeric column(s) with NaN values"`. Computed and
    appended immediately after missing values, before the zero-heavy/constant checks below.
-3. **Constant/single-value columns** — `distinct_count == 1 and null_count == 0 and not
-   (nan_count or 0)`, excluding columns already flagged zero-heavy (see below) so a column is not
-   double-counted between the two issues. Tightened from a looser `distinct_count <= 1 and
-   null_count < row_count` rule (which allowed a column with some nulls alongside its one valid
-   value to still count as constant): "constant" now means every row holds the same valid value,
-   with zero tolerance for null or NaN rows — a column that is single-valued except for missing or
-   NaN rows is reported under issue 1/2 instead (ruled 2026-07-16).
+3. **Constant/single-value columns** — `row_count > 0 and distinct_count == 1 and null_count == 0 and
+   not (nan_count or 0)`, excluding columns already flagged zero-heavy (see below) so a column is not
+   double-counted between the two issues. Constant means every row holds the same valid value, with
+   zero tolerance for null or NaN rows — a column that is single-valued except for missing or NaN rows
+   is reported under issue 1/2 instead (ruled 2026-07-16).
 4. **Numeric columns with negatives** — any column with `negative_count > 0`, sorted by
    descending count; detail names only the top offender with its row count.
 5. **Mostly-zero numeric columns** — `(row_count - null_count) > 0 and zero_count > 0 and
    zero_count / (row_count - null_count) >= 0.95`, sorted by descending zero count; this issue is
    computed and referenced (via `zero_heavy_names`) before the constant-column issue is appended,
-   even though it is appended last.
+   even though it is appended after the constant and negative issues.
 6. **High-cardinality fields** — any text-like column whose valid distinct count exceeds 50;
    detail lists up to three names. This is a caution about bounded categorical display, not an
    error, so it never fires for numeric or temporal columns.
@@ -510,7 +507,7 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
 
 ## Edge cases and invariants
 
-- **Object dtype**: excluded from `n_unique` entirely (`_is_unhashable_dtype`); `distinct_count`
+- **Object dtype**: excluded from `n_unique` entirely (`is_unhashable_dtype`); `distinct_count`
   is `None`, never computed and never guessed.
 - **All-null column**: min/max are `None` (Polars aggregate returns `None`); for numeric columns
   all of p25/median/mean/p75/std are `None` but `zero_count`/`negative_count` are `0`, not
@@ -561,7 +558,7 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   single gate for both the aggregation and parse. `_build_categorical_summary` emits a profile for
   every non-numeric column, including unsupported nested types.
 - **Column named `count`**: the aliasing scheme (`categorical_values::{name}`,
-  `_CATEGORICAL_VALUE_FIELD`/`_CATEGORICAL_COUNT_FIELD` prefixed with `__haute_`) avoids
+  `_CATEGORICAL_VALUE_FIELD`/`CATEGORICAL_COUNT_FIELD` prefixed with `__haute_`) avoids
   colliding with a user column literally named `count` (regression test
   `test_build_frame_stats_categorical_value_counts_handle_count_column_name`).
 - **Empty schema**: `_build_frame_stats` on a zero-column `LazyFrame`

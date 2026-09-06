@@ -27,8 +27,8 @@ relationship is recorded in `specs/ownership.toml`.
 
 - `IoFormat` and `FORMATS` describe each format's source kind, Polars reader/scanner and
   writer/sinker, extensions, engine dependencies, bounded-read class, and allowed arguments.
-- `DataSourceAdapter` wraps the legacy API-input `flat_file` surface only. It has no
-  Databricks branch.
+- `DataSourceAdapter` wraps the API-input `flat_file` source surface (the only supported
+  API-input source type). It has no Databricks branch.
 - `SourceCacheIdentity` is a versioned provider plus canonical descriptor. Construction
   rejects secret-bearing keys and credential-bearing URIs before canonical JSON and SHA-256.
 - `SourceCacheBuildContext` carries the execution profile, build class, cancellation,
@@ -110,11 +110,13 @@ an in-place or non-atomic fallback.
    pruned the graph to the target lineage and before strategy planning and before runtime
    identity (cache key) computation, so the RAM estimator reads the published generation
    and a refreshed generation's pointer is the one keyed. `executor.execute_graph` calls it
-   before its request planning; the lazy engine's later call finds the generation fresh
-   and records `reused`.
+   before its request planning; `haute.trace.execute_trace()` calls it before trace
+   preparation; the lazy engine's later call finds the generation fresh and records `reused`.
 2. For each snapshot-backed Data Input in order: validate the config, derive the identity
    and source signature, and read `SourceCacheStore.status(identity,
-   source_signature=...)`. `ready`/`fresh` and `ready`/`unknown` reuse; `missing` builds;
+   source_signature=...)`. A `missing` source signature with a published generation reuses it with
+   `warning_code="source_unavailable"` and never refreshes; without a generation preparation is
+   refused as `build_failed`. Otherwise `ready`/`fresh` and `ready`/`unknown` reuse; `missing` builds;
    `ready`/`stale` refreshes; `corrupt` raises `SourceCacheCorruptError`.
 3. `schema_only=True` records nothing and never builds; the node builder's
    `input_snapshot_missing` rejection remains the outcome for a missing generation.
@@ -253,7 +255,7 @@ Direct mode is not a general compatibility path. It is valid only for a file-bac
 Parquet scan, which already has the lazy, schema-bearing execution shape that a snapshot
 would duplicate.
 
-Legacy flat-file source projection treats an explicit empty `columns` iterable as a
+Flat-file source projection treats an explicit empty `columns` iterable as a
 row-cardinality-only request. `_select_columns()` validates against the complete lazy
 schema and retains its first schema-ordered column as a physical carrier; selecting no
 columns would make Polars report zero rows. Non-empty requests retain their exact existing
@@ -317,13 +319,13 @@ is no eager dataframe or collect-then-write fallback.
   than once per lease.
 - Partitioned Parquet sinks validate the final layout and preserve the previous published
   target if publication fails.
-- Direct bounded reads still require declared CSV dtypes and refuse eager-only formats and
-  eager `read` mode where a scanner exists; those rules no longer bound what a pipeline can
-  run, because snapshot builds inspect a CSV completely (`infer_schema_length=None`, a
-  literal keyword held by `tests/test_polars_io_interface_contracts.py`'s
-  `_LITERAL_KEYWORDS`), prefer the scanner over a configured eager read whenever every
-  configured argument is scanner-accepted (recording `eager_read_mode_scanned`), and run a
-  genuinely reader-only format inside the hard-capped worker.
+- Direct bounded reads require declared CSV dtypes and refuse eager-only formats and eager
+  `read` mode where a scanner exists. Snapshot builds instead inspect a CSV completely
+  (`infer_schema_length=None`, a literal keyword held by
+  `tests/test_polars_io_interface_contracts.py`'s `_LITERAL_KEYWORDS`), prefer the scanner
+  over a configured eager read whenever every configured argument is scanner-accepted
+  (recording `eager_read_mode_scanned`), and run a genuinely reader-only format inside the
+  hard-capped worker.
 - Automatic preparation is single-flight per identity within a process; across processes
   concurrent builds of one identity both publish valid generations and the last pointer
   replacement wins.

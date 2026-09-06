@@ -37,7 +37,7 @@ repository's authoritative default pipeline.
 - **API-input v2 sidecar** in `rating/config/quote_input/quotes.json` has a
   top-level `path`, `contract`, and `tables` array. Each table declares a
   JSONPath `path`, `displayPath`, label, emit flag, optional row-id column, and columns with
-  name/path/type/status/selection/levels fields.
+  name/path/type/status/selected (boolean emit/selection flag)/levels fields.
 - **Output sidecar** in `rating/config/quote_response/Quote_Response_9.json`
   has `outputMapping` entries (`source_port`, `source_column`, `output_path`,
   `enabled`), `outputFormat`, and a contract object.
@@ -60,10 +60,10 @@ repository's authoritative default pipeline.
    the file constructs `haute.Pipeline("my_pipeline")`, registers the decorated `quotes` and
    `Quote_Response_9` functions, then declares the four source-port connections.
 2. Running `quotes()` passes the relative path "config/quote_input/quotes.json" and the resolved generated-script
-   directory to `resolve_api_input_from_config()`. The shared helper validates the sidecar,
-   resolves its data path within the project boundary, and calls `load_v2_api_source()` to yield
-   the multi-table lazy input. The missing data path fails at the loader's filesystem metadata
-   read before any lazy frames are returned.
+   directory to `resolve_api_input_from_config()`. The shared helper anchors and project-boundary-checks
+   the sidecar's `path` first, rejects an absent or non-list `tables`, validates the v2 schema, and calls
+   `load_v2_api_source()` to yield the multi-table lazy input. The missing data file surfaces as
+   `FileNotFoundError` when the shared loader opens the resolved source for record iteration.
 3. `Quote_Response_9()` receives the four graph ports but returns the first
    (`quotes`) unchanged. The `Quote_Response_9` sidecar separately tells the
    output mechanism how port columns map to nested JSON paths.
@@ -103,9 +103,14 @@ repository's authoritative default pipeline.
 ## Error handling
 
 - Sidecar/data filesystem operations propagate errors such as `FileNotFoundError`; the current
-  missing quote data is detected by `load_v2_api_source()` when it stats the resolved data path.
-  No placeholder frame or default JSON is supplied.
-- `resolve_api_input_from_config()` propagates shared sidecar shape and v2 schema errors.
+  missing quote data surfaces as `FileNotFoundError` when `load_v2_api_source()` opens the resolved
+  source for record iteration (no cache layer can serve the schema). No placeholder frame or default
+  JSON is supplied.
+- `resolve_api_input_from_config()` propagates `ValueError` (`src/haute/_node_apply.py`) for a
+  missing or blank data path, `RuntimePathOutsideProjectError` (`src/haute/_path_resolution.py`) if
+  the data path escapes the project root, `ApiInputSchemaError` (`src/haute/_api_input_schema.py`)
+  for an absent or non-list `tables` array or invalid v2 schema, and `RuntimeError`
+  (`src/haute/_json_shred/_cache.py`) if no tables emit or no columns are selected.
 - `features.to_date()` and other Polars helpers defer expression errors until
   Polars evaluates the enclosing plan; `clean_columns()` can propagate schema
   collection/rename errors. They intentionally do not swallow invalid columns,
@@ -116,7 +121,10 @@ repository's authoritative default pipeline.
 
 ## Testing
 
-- `tests/test_output_nest_example_contract.py` snapshots both reference sidecars.
+- `tests/test_output_nest_example_contract.py` parses the checked-in `rating/main.py` and
+  pins its two node ids and four source-handle edges, but its shred/assemble contract
+  runs on inline copies of the two sidecars rather than the checked-in files, so the
+  tracked sidecars' contents have no direct regression coverage.
 - `tests/test_docs_accuracy.py` requires every tracked `rating/` Python, JSON, and model artifact
   to appear in this module map.
 - The generic mechanisms it exercises are covered by active tests such as

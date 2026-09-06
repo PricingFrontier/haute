@@ -36,7 +36,6 @@ Non-goals:
 
 | Package | State | Priority | Outcome |
 |---|---|---|---|
-| SPEC-A04 | Planned | P2 | Expression parsing, explore, I/O layer, JSON shredding, MLflow, optimiser, rating, reference pipeline and tracing specifications corrected. |
 | SPEC-A05 | Planned | P2 | Assistant, modelling, pipeline-config and submodels specifications corrected. |
 | SPEC-A06 | Planned | P2 | Frontend graph canvas and node editor specifications corrected. |
 | SPEC-A07 | Planned | P2 | Frontend shared, git, assistant, trace, modelling and preview UI specifications corrected. |
@@ -53,35 +52,6 @@ editing pass: for every finding it re-reads the cited specification line and
 the cited code at `HEAD`, applies the recorded fix or a better one that obeys
 the writing rules, or records the finding as already resolved with the proof,
 and never edits a file outside its list.
-
-### SPEC-A04 — Expression parsing, explore, I/O layer, JSON shredding, MLflow, optimiser, rating, reference pipeline, tracing
-
-**Why:** Forty-nine findings against nine components: non-existent symbols
-(`_UNHASHABLE_DTYPES`, `_is_unhashable_dtype`, `_CATEGORICAL_COUNT_FIELD`,
-`_record_relaxed_candidate_ambiguity`, `try_get`, the wrong trace-cache module
-and method), reversed step orders, stale counts and sizes, missing exception
-types and callers, and resolved-history phrasing (ADD04, ADD05, ADD10, ADD11,
-ADD12, F010, F049, F050, F051, F052, F053, F054, F100, F101, F102, F103, F104,
-F105, F106, F115, F121, F122, F141, F142, F143, F144, F145, F146, F176, F177,
-F178, F179, F201, F202, F204, F206, F207, F208, F209, F214, F219, F220, F221,
-F223, F224, F225, F226, F227, F234).
-
-**Plan:** One editing pass over the expression-parsing, explore-eda, io-layer,
-json-shredding, mlflow-model-registry, optimiser, rating, reference-pipeline and
-tracing documents. F010 describes the shipped one-candidate-per-edge behaviour
-of `_resolve_multi_frame_parent` (the resolution rules already disambiguate).
-F206's "becomes justified only if" gate is deleted rather than filed: no work
-is planned behind it. Stale counts (F214, F221) are dropped rather than
-refreshed so they cannot drift again.
-
-**Acceptance:** Every listed finding corrected or recorded as resolved at
-`HEAD`; the docs check stays green.
-
-**Dependencies:** None (its files are disjoint from SPEC-A05).
-
-**Evidence:** `fable5.1-review/findings.json`; `specs/explore-eda/low-level.md`;
-`specs/json-shredding/low-level.md`; `specs/mlflow-model-registry/low-level.md`;
-`specs/rating/low-level.md`; `specs/tracing/low-level.md`.
 
 ### SPEC-A05 — Assistant, modelling, pipeline-config, submodels
 

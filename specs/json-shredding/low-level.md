@@ -212,26 +212,24 @@ without another upstream read.
 
 **Build a structured-input cache** — `build_per_port_cache(data_path, v2_config, cache_dir)`:
 1. `validate_v2_schema(v2_config)` up front.
-2. Acquire the per-cache-directory lock (`_build_lock_for`) and retain that lock
+2. Acquire the per-cache-directory lock (`per_port_cache_publication_lock`) and retain that lock
    strongly for the complete critical section.
-3. No-op trapdoor: if `is_per_port_cache_valid` already holds for the current
-   in-memory schema and on-disk data file, return the existing `meta.json` payload
-   without rebuilding.
-4. Still under the lock, record the data-file signature (`_data_file_signature`)
-   *before* reading records. When a strong native revision is available, the
-   signature includes its strict versioned representation and a SHA-256 binding of
-   the signature to that revision so the completed proof can survive a process
-   restart without trusting an accidentally altered manifest field.
-5. Still under the lock, build the shared `_EmittingTableSpec`s once
-   (`table_is_emitting` plus parsed table/column paths); the walk and parquet frame
-   construction consume the same specs. The signature is shared by this logical
-   operation and, while its strong revision remains unchanged, by later planner and
-   loader operations. A later process can seed the same bounded memo from a live
-   working/committed manifest only when its current native revision matches the
-   persisted revision exactly and all matching manifests agree on the signature.
-6. Create the unique sibling staging temp dir. It precedes the shred because
-   parallel workers write their parts into it; a failure anywhere below removes
-   the whole directory.
+3. Mint the unique sibling staging temp path.
+4. Still under the lock, build the shared `_EmittingTableSpec`s once (`_emitting_table_specs`:
+   `table_is_emitting` plus parsed table/column paths), the schema fingerprint (`_v2_fingerprint`),
+   and the data-file signature (`_data_file_signature`) *before* reading records. When a strong
+   native revision is available, the signature includes its strict versioned representation and a
+   SHA-256 binding of the signature to that revision so the completed proof can survive a process
+   restart without trusting an accidentally altered manifest field. The signature is shared by this
+   logical operation and, while its strong revision remains unchanged, by later planner and loader
+   operations. A later process can seed the same bounded memo from a live working/committed
+   manifest only when its current native revision matches the persisted revision exactly and all
+   matching manifests agree on the signature.
+5. No-op trapdoor: if `is_per_port_cache_valid` already holds for the current in-memory schema and
+   the already-computed data-file signature, return the existing `meta.json` payload without
+   rebuilding.
+6. Create the unique sibling staging temp dir. It precedes the shred because parallel workers write
+   their parts into it; a failure anywhere below removes the whole directory.
 7. Shred, by one of two paths that produce identical artifacts:
    - **Serial** (default) — `shred_to_buffers(_counted_records(), v2_config,
      stats=skip_stats, _row_sink=writer.emit)` consumes `_iter_records` directly.
@@ -310,8 +308,8 @@ the skip/conservation accounting.
   must guard it with `if __name__ == "__main__":`; the packaged entry point
   (`haute = haute.cli:cli`) already does.
 - Parallel eligibility is therefore a performance choice only after memory ownership
-  is proven. Direct library builds without an execution context retain the historical
-  parallel path; isolated route builds never treat a per-process limit as an aggregate
+  is proven. Direct library builds without an execution context use the parallel path;
+  isolated route builds never treat a per-process limit as an aggregate
   descendant budget.
 
 **Shred core** — `shred_to_buffers(records, v2_config, stats=None)`:
@@ -442,7 +440,7 @@ the skip/conservation accounting.
    the shape a consumer receives.
 
 **Save-time cache promotion** — `mirror_cache_to_committed(data_path)`
-(`_json_flatten.py`):
+(`src/haute/_json_flatten.py`):
 1. No-op if this process has not built `working/` for this data file this session
    (`_session_consulted_hashes`, populated only by a successful build-route call) —
    guards against promoting a stale on-disk `working/` left from a previous process.
@@ -545,7 +543,7 @@ different source generation behind an optimistic estimate.
 5. Label assignment — inferred `label`s are B4-valid identifiers, never raw
    table paths (`path`/`displayPath` still carry the path). The root level is
    labelled `quote_info`; every other level is labelled by its innermost array key
-   through `derive_identifier_label(raw)` (`_api_input_schema.py`): the
+   through `derive_identifier_label(raw)` (`src/haute/_api_input_schema.py`): the
    `_sanitize_func_name` character pipeline (strip; spaces/hyphens → `_`;
    ASCII alnum/underscore kept; other ASCII dropped; non-ASCII reversibly
    encoded `_x<hex>_`) with frame-flavoured repairs — empty → `table`,
@@ -698,6 +696,9 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   selected columns on any emitting table". Missing/stale/corrupt/mismatched cache
   artifacts are rejected as optional fast paths and do not mask the direct raw-file
   result or its native missing/decode/type error.
+- `haute._json_shred._cache.SourceChangedDuringCacheBuildError` (a `RuntimeError`
+  subclass) — raised when the recorded data-file signature no longer matches after the
+  shred and before publication.
 - `PermissionError` — allowed to propagate from `_rename_dir_with_retry` once all
   retry delays are exhausted (a persistent, not transient, Windows lock).
 - `haute.errors.ConfigError` — raised by `_edge_join.py` for any malformed
@@ -774,15 +775,14 @@ Shred / inference / cache lifecycle (the `_json_shred/` package, `_json_flatten.
   point: emit checks, working→committed→direct resolution, cache corruption and
   exact-schema rejection, stale post-schema changes, scalar/empty arrays, typed
   raw-data failures, no-write direct fallback, and the uniform
-  `{label: LazyFrame}` return shape from one eligible frame up (the former
-  bare-frame single-table case is pinned as removed). Label invariant B4
+  `{label: LazyFrame}` return shape from one eligible frame up. Label invariant B4
   (ASCII-identifier-only labels; hard keywords rejected; valid *Unicode*
   identifiers such as `café` rejected with the ASCII rule named in the error)
   is pinned alongside the existing blank/duplicate cases in the
-  schema-validation suites; the B2 check now compares casefolded stems — a
+  schema-validation suites; the B2 check compares casefolded stems — a
   case-only pair such as `Items`/`items` is rejected naming both labels and
-  the shared stem — and the former Unicode B2 witness labels are pinned as
-  B4 rejections instead. Inference label derivation is pinned in the `infer` suites:
+  the shared stem — and Unicode identifier labels are pinned as
+  B4 rejections. Inference label derivation is pinned in the `infer` suites:
   `derive_identifier_label` character/repair cases (spaces, punctuation,
   digit-leading, hard keyword, empty, non-ASCII `_x<hex>_` encoding), root →
   `quote_info`, innermost-key labelling, symmetric collision qualification
@@ -797,7 +797,7 @@ Shred / inference / cache lifecycle (the `_json_shred/` package, `_json_flatten.
 - `tests/test_json_runtime_storage.py` — owned runtime-storage orphan recovery, symlink/reparse preservation, hard-link accounting, and budget-integrity safeguards.
 - `tests/test_json_cache_routes.py` — API integration tests for the build/status/
   delete HTTP routes (404/422/504 shapes, progress reporting).
-- `tests/test_json_cache_integrity.py` — the Wave-2 build/validity/load rework end
+- `tests/test_json_cache_integrity.py` — build/validity/load integration end
   to end: session-consulted gate populating `committed/`, data-file-signature
   invalidation, skip accounting surfaced through build/status responses.
 - `tests/test_json_cache_coverage_uplift.py`, `tests/test_multi_frame_end_to_end.py`,

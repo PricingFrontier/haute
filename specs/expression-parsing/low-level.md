@@ -26,9 +26,9 @@
   [server-api](../server-api/low-level.md) and produced here) — `nodes`,
   `edges`, `pipeline_name`, `pipeline_description`, `preamble`,
   `preserved_blocks`, `source_file`, `source_revision` (server-populated
-  live-document metadata), `warning`, `submodels`. Canonical structure shared
-  with the executor, codegen, deploy, and the
-  server API layer.
+  live-document metadata), `warning`, `submodels`, `sources`, `active_source`.
+  Canonical structure shared with the executor, codegen, deploy, and the server
+  API layer.
 - **`_ExprConverter`** (`_expression_parser.py`) — one AST-node-type-dispatch method per handled
   node kind; accumulates `columns`, `constants`, `expr_type`, `sub_expressions`, and an
   `_is_opaque` flag as it walks. Takes an optional `symbol_table` for top-level variable
@@ -51,8 +51,10 @@
 **`parse_pipeline_source`** (`parser.py`): `ast.parse(source)` → on `SyntaxError`, raise a
 contextual `ParseError` naming the source and syntax location → otherwise extract pipeline meta /
 decorated nodes / connect edges / preamble / preserved blocks by
-importing their implementation modules directly →
-collect labels from any nodes already carrying `_load_error` into a graph-level `warning` → if any
+importing their implementation modules directly → collect labels from any node whose
+config carries `_load_error` into a graph-level `warning` (nothing in `src/haute`
+produces that key; the config path raises `ConfigError` instead, so the step is reached
+only by tests that plant the marker) → if any
 `pipeline.submodel()` calls were found, require `_base_dir` or `_submodel_base_dir` (otherwise
 raise with every unresolved authored path), resolve registrations, group repeated paths by canonical definition id, parse
 each definition file once, and call `_parser_submodels.merge_submodels` → run
@@ -247,10 +249,9 @@ appended before the column that depends on it) → return the parsed expressions
 - **`evaluate_expression`/`parse_expression_chain`**: evaluator/non-syntax internal exceptions
   propagate to the trace/enrichment caller by design (see the high-level Failure model).
   `parse_expression_chain` catches only `SyntaxError` and converts it to an opaque singleton/empty
-  chain. The
-  removed prior behaviour — silently falling back to
-  `row_values.get(target_column)` — is documented in the module as deliberately deleted because it
-  laundered evaluator bugs into a self-consistent-looking trace.
+  chain. An evaluator exception propagates rather than falling back to
+  `row_values.get(target_column)`, so evaluator divergence is never hidden behind a
+  self-consistent-looking trace.
 - **`ValueError`** raised (not caught) from `_ExprEvaluator._eval_concat_str` for a non-`str`
   `separator` or non-`bool` `ignore_nulls` keyword, and from `_eval_replace` for an incomplete
   `replace_strict` mapping with no `default=` — mirroring Polars' own `InvalidOperationError`

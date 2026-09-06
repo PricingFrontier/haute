@@ -108,11 +108,11 @@ Out of scope (owned by neighbouring components):
   need a lossy string-to-original-dtype revert.
 - Multiple entries sharing the same factor key keep the *last* one (matches
   the intent of "later edits win" in the entry list).
-- After the table stage, `combinedOutputs` combine named table output columns
-  with a required fixed finite numeric `baseValue` using `multiply`, `add`,
-  `min`, or `max`. A table that never materialised its output column (because
-  it was incomplete — see Failure model) is omitted from combining, not
-  silently referenced as null.
+- After the table stage, `combinedOutputs` combine every materialised table
+  output column of the step with a required fixed finite numeric `baseValue`
+  using `multiply`, `add`, `min`, or `max`. A table that never materialised its
+  output column (because it was incomplete — see Failure model) is omitted from
+  combining, not silently referenced as null.
 - Every table output column and combined-output column is unique across the
   rating step. Duplicate `tables[].outputColumn` values are rejected with the
   later table index and duplicated column named; the runtime combine boundary

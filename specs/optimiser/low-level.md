@@ -243,8 +243,10 @@ HTTP 422; the 422 mapping remains for bounded streaming-collect failures.
   (chunk-by-chunk via `iter_chunked_frames`, only reached when a streaming plan was
   proven) or the classic path (execute pipeline → resolve source → validate/project → batched
   collection into `_ScenarioFrontierRangeAccumulator` → `finish()`).
-- `frontier_auto_range_status` enforces the job's timeout lazily, on poll — there is no
-  dedicated timeout-watcher thread for auto-range jobs, unlike solves (see below).
+- `frontier_auto_range_status` enforces the job's timeout lazily, on poll — solve, frontier-sweep,
+  and auto-range timeouts are all enforced lazily on their respective status polls (`solve_status`,
+  `frontier_status`, `frontier_auto_range_status`), with auto-range additionally checking elapsed
+  time within its worker loop. There is no dedicated timeout-watcher thread.
 - `cancel_frontier_auto_range` delegates to `_stop_frontier_auto_range_job`.
 
 ### Frontier computation and point selection (`src/haute/routes/optimiser.py`)
@@ -685,7 +687,7 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
 `test_optimiser_routes_critical_edges.py`, `test_optimiser_routes_real_library.py`, and
 `tests/performance/test_optimiser_memory_response_perf.py`.
 
-- **`tests/test_optimiser_routes.py`** — by far the largest file (~14k lines, dozens of test
+- **`tests/test_optimiser_routes.py`** — by far the largest file (dozens of test
   classes) covering the full route surface end-to-end against the FastAPI test client: node
   registration/codegen/executor passthrough, solve/status/estimate/apply/save/frontier/
   frontier-select/mlflow-log routes, ratebook solve, solve-with-history, scenario-value stats,

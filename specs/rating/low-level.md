@@ -16,10 +16,10 @@
   - `breakpoints` rule row: `{"boundary": str, "label": str}` — empty `boundary` marks the open-ended tail (sidecar map: `{boundary: label}`).
   A configured factor is strict: its type must be one of those three values;
   `column`, `outputColumn`, and `rules` must be non-empty; and at least one rule
-  must be usable for that type. Unknown pseudo-types such as `"age"`, mixed rule
-  vocabularies such as `{key, value}`, unsupported operators, blank
-  assignments, non-finite thresholds, and invalid breakpoint sets are rejected
-  by the shared config validator before save/codegen as well as by runtime.
+  must be usable for that type. Unknown pseudo-types such as `"age"` and mixed rule vocabularies such as `{key, value}` are rejected by the shared config validator before save/codegen.
+  Runtime rejects unsupported operators, non-finite thresholds, blank
+  assignments, and invalid breakpoint sets, but treats an unrecognised
+  discriminant with list rules as continuous.
   A factor containing only the editor's default `continuous` discriminant and
   otherwise-empty fields is the one documented draft no-op.
 - **Rating table** (`dict`): `{"factors": list[str] (1-3 cols), "factorDtypes"?: dict[str, dtype-descriptor], "outputColumn": str, "entries": list[dict], "defaultValue"?: str|number, "onMissing"?: "error"|"neutral"}`. `entries` is an ordered row array with one JSON scalar per factor plus numeric `"value"`. Invariant: `len(factors) <= _MAX_RATING_FACTORS` (3), enforced in `_rating_step_config._validate_factors`.
@@ -43,11 +43,12 @@
 
 **Banding** — `apply_banding_from_config(lf, config, base_dir=None)`:
 1. Resolve `config` (dict, or load a JSON sidecar via `_config_io.load_node_config`).
-2. `validate_banding_config(config)` validates every configured factor and
-   returns the canonical expanded factor rows used by execution and codegen.
-3. `_normalise_banding_factors(config)` delegates to that validator.
-4. `_apply_banding_factors(lf, factors)` loops factors in order, calling `_apply_banding` per factor; each factor's output column is added via `lf.with_columns(...)`, so later factors can already see earlier factors' output columns.
-5. Inside `_apply_banding`: `breakpoints` rules are converted to `continuous` rules first (`_breakpoints_to_rules`); float input columns are NaN/Infinity-sanitised to null (`when(is_nan|is_infinite).then(null).otherwise(col)` — built as a *local* expression, never aliased back onto the source column, so it cannot corrupt other nodes' view of that column); then a `pl.when/then` chain is built rule-by-rule (`_banding_condition` consumes the shared continuous-rule parser and turns each usable `op1/val1[,op2/val2]` pair into a boolean expression, ANDed together) and finished with `.otherwise(default)`.
+2. `_normalise_banding_factors(config)` delegates to `_banding_config.normalise_banding_factors`
+   (sidecar expansion plus shape rejection). The strict `validate_banding_config` validator is
+   called at the save/codegen boundary (`src/haute/_config_validation.py`), while runtime enforces
+   usable-rule checks inside `_apply_banding`.
+3. `_apply_banding_factors(lf, factors)` loops factors in order, calling `_apply_banding` per factor; each factor's output column is added via `lf.with_columns(...)`, so later factors can already see earlier factors' output columns.
+4. Inside `_apply_banding`: `breakpoints` rules are converted to `continuous` rules first (`_breakpoints_to_rules`); float input columns are NaN/Infinity-sanitised to null (`when(is_nan|is_infinite).then(null).otherwise(col)` — built as a *local* expression, never aliased back onto the source column, so it cannot corrupt other nodes' view of that column); then a `pl.when/then` chain is built rule-by-rule (`_banding_condition` consumes the shared continuous-rule parser and turns each usable `op1/val1[,op2/val2]` pair into a boolean expression, ANDed together) and finished with `.otherwise(default)`.
    Operators are resolved through the exported immutable
    `SUPPORTED_BANDING_OPERATORS` contract. An unknown operator raises before a
    `when` branch or output frame is published; trace enrichment imports the
@@ -76,24 +77,24 @@
       the once-resolved input schema before treating empty entries as a
       documented no-op.
    b. Return unchanged for an empty `entries` list only after that factor
-      validation; then parse `defaultValue`: tolerate non-numeric/non-finite
-      strings (treated as "no usable default", noted in the eventual miss error
-      rather than silently ignored).
-   c. Build a `pl.DataFrame(entries)`; return unchanged if it has no `"value"` column; reject (raise `ValueError`) any NaN/Infinity or null `value` entries.
-   d. Select only `[*factors, "value"]` from entries (drops any extra keys the sidecar/GUI may have left in an entry dict); return unchanged if any factor is absent from the entries' columns.
-   e. Resolve and validate each originating input dtype. Coerce the corresponding
-      lookup-entry column through that dtype, then evaluate `_rating_key_expr`
+      validation; return unchanged if `"value"` or any factor is missing from entry keys.
+   c. Parse `defaultValue`: tolerate non-numeric/non-finite strings (treated as
+      "no usable default", noted in the eventual miss error rather than silently ignored).
+   d. Resolve and validate each originating input dtype (`_validate_supported_factor_dtypes`).
+   e. Build a `pl.DataFrame(entries)` (return unchanged if `"value"` is absent); reject (raise `ValueError`) any NaN/Infinity or null `value` entries.
+   f. Select only `[*factors, "value"]` from entries (drops extra keys); return unchanged if any factor is absent from entries' columns.
+   g. Coerce lookup-entry columns to originating input dtypes, then evaluate `_rating_key_expr`
       into a collision-free temporary key column on both lookup and input sides.
-   f. Deduplicate the lookup on the temporary canonical keys with
+   h. Deduplicate the lookup on the temporary canonical keys with
       `keep="last"` and rename `value` to a collision-free internal value name.
-   g. Left join on the temporary keys (`how="left", maintain_order="left"`).
+   i. Left join on the temporary keys (`how="left", maintain_order="left"`).
       Source factor columns are untouched throughout.
-   h. If no usable default, wire in `_apply_rating_miss_guard` as a lazy-frame
+   j. If no usable default, wire in `_apply_rating_miss_guard` as a lazy-frame
       batch barrier over the temporary keys and internal value. Projection,
       predicate, and slice pushdown stop at the barrier, so validation cannot be
       pruned when a caller selects a different output column; diagnostics still
       show the exact keys used by the join.
-   i. Materialise/fill `outputColumn`, then drop every temporary key/value column.
+   k. Materialise/fill `outputColumn`, then drop every temporary key/value column.
 6. `_apply_rating_miss_guard` wraps the joined lazy frame in
    `map_batches(_check, projection_pushdown=False, predicate_pushdown=False,
    slice_pushdown=False, streamable=True)`. The callback returns each batch
@@ -208,9 +209,9 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
   first threshold, a null falling to the default band, a table miss resolved as neutral, and a
   multiplicative combine over a base value, with the trace's rating detail naming the matched
   entries and agreeing with the preview premium row by row.
-- **`tests/test_rating.py`** (~1840 lines, largest suite) — direct unit coverage of `_rating.py`: banding condition building, `_apply_rating_table` (incl. non-numeric defaults, duplicate entries, extra entry columns, schema-call-count/perf regression, large tables, all-null tables, boundary/negative/extreme float values, special-character factor names), `_combine_rating_columns` (incl. non-numeric columns, edge cases, multiply-with-zero, min/max mixed values), `_apply_banding` edge cases, sequential rating tables, dtype-preservation regressions (B1/B2), empty-string/int-typed factor values, null factor columns, and canonical row-array rating-step application end to end.
-- **`tests/test_banding.py`** (~1240 lines) — continuous/categorical `_apply_banding`, `_build_node_fn` integration, banding decorator parsing and codegen, standalone-execution parity with the executor path, multi-factor banding, hardening/adversarial inputs, and the full `breakpoints` mode (ordering, closures, open-ended boundary).
-- **`tests/test_rating_step.py`** (~1300 lines) — `RATING_STEP` executor node building, decorator parsing, codegen, and canonical-sidecar round-trip integration.
+- **`tests/test_rating.py`** (largest suite) — direct unit coverage of `_rating.py`: banding condition building, `_apply_rating_table` (incl. non-numeric defaults, duplicate entries, extra entry columns, schema-call-count/perf regression, large tables, all-null tables, boundary/negative/extreme float values, special-character factor names), `_combine_rating_columns` (incl. non-numeric columns, edge cases, multiply-with-zero, min/max mixed values), `_apply_banding` edge cases, sequential rating tables, dtype-preservation regressions (B1/B2), empty-string/int-typed factor values, null factor columns, and canonical row-array rating-step application end to end.
+- **`tests/test_banding.py`** — continuous/categorical `_apply_banding`, `_build_node_fn` integration, banding decorator parsing and codegen, standalone-execution parity with the executor path, multi-factor banding, hardening/adversarial inputs, and the full `breakpoints` mode (ordering, closures, open-ended boundary).
+- **`tests/test_rating_step.py`** — `RATING_STEP` executor node building, decorator parsing, codegen, and canonical-sidecar round-trip integration.
 - **`tests/test_rating_step_config_coverage.py`** — targeted and property coverage
   of `_rating_step_config.py`: every zero/one/two/three-factor accepted canonical
   shape, scalar identity and metadata/order preservation, JSON round trips, and

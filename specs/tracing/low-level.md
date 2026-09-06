@@ -93,12 +93,14 @@
   `DataFrame`, and every call site that indexes `eager_outputs` (correlation,
   enrichment, row-count/dtype lookups, the target-row-identity check) must
   branch on `isinstance(..., dict)` rather than assume a bare `DataFrame`.
-- **`source_frames_of`** (`trace.py`, built in `execute_trace`; threaded through
-  `_correlate_rows_posthoc` and `enrich_steps`) — `dict[tuple[source_id,
-  target_id], list[str | None]]`, one `sourceHandle` entry per edge between that
-  pair, in edge order. Lets both correlation and enrichment resolve which
-  frame(s) of a multi-frame parent a given child edge actually consumes, mirroring
-  the per-edge selection `_pick_source_frame` makes at execution time.
+- **`edge_metadata`** (`trace.py`, built in `execute_trace` and passed to
+  `_correlate_rows_posthoc`) — `dict[tuple[source_id, target_id], list[tuple[str | None, str | None]]]`,
+  mapping each source/target node pair to a list of `(sourceHandle, targetHandle)` tuples per edge,
+  in edge order. The target handle is load-bearing in correlation for selecting edge-join roles.
+- **`source_frames_of`** (`trace.py`, built in `execute_trace` and passed to
+  `enrich_steps`) — `dict[tuple[source_id, target_id], list[str | None]]`, a handle-only projection
+  of `edge_metadata` retaining each edge's `sourceHandle`. Lets enrichment resolve which frame(s)
+  of a multi-frame parent a given child edge actually consumes, mirroring `_pick_source_frame`.
 - **`_ROW_REORDERING_METHODS`** (`_trace_correlation.py`) — an exact closed set of
   method-call names (`sort`, `sort_by`, `join`, `group_by`, `gather`, `unique`,
   `pivot`, etc.) compared with LibCST `MethodCallSite` results. Comments, strings,
@@ -160,8 +162,8 @@
    correlated row (namespacing every parent's copy as `f"{pid}.{k}"` whenever
    more than one parent supplies the key). Nodes whose row correlation returned
    `None` are skipped entirely.
-9. `_enrich_steps()` (from `_trace_enrichment.py`, passed `source_frames_of`)
-   enriches every step in place.
+9. `enrich_steps()` (from `src/haute/_trace_enrichment.py`, imported into `trace.py` as
+   `_enrich_steps`, passed `source_frames_of` and `incoming_edges_of`) enriches every step in place.
 10. If `column` is set, `_prune_to_column_relevance()` tags and filters steps.
 11. `_build_trace_omissions()` turns attempted, unresolved correlations on the
     retained value path into diagnostic-linked `TraceOmission` entries; benign
@@ -223,9 +225,10 @@ identical matching logic:
    scores every row by how many shared columns match and picks the widest
    relaxed subset — but only if exactly one row achieves that width. Any tie
    (multiple exact or multiple best-relaxed matches) is recorded via
-   `_record_ambiguous_row_match` / `_record_relaxed_candidate_ambiguity` into
-   `diagnostics` and returns `(None, -1)`. `allow_relaxed` is forced to `False`
-   for an edge-join's JOIN-role parent (`_allows_relaxed_parent_match`) — a
+   `_record_ambiguous_row_match` (with reason `"duplicate_exact_match"` or
+   `"relaxed_match_ambiguous"`) into `diagnostics` and returns `(None, -1)`.
+   `allow_relaxed` is forced to `False` for an edge-join's JOIN-role parent
+   (`_allows_relaxed_parent_match`) — a
    relaxed miss there must not manufacture false lineage.
 4. Returns `(row_dict, positional_index, match_width)`, where `match_width` is
    the number of child columns projected onto this frame — the specificity a
@@ -235,20 +238,20 @@ identical matching logic:
 
 Correlates a multi-frame parent (`dict[label, DataFrame]`) row for one child.
 Called once per (parent, child) pair from `_correlate_rows_posthoc`, with
-`handles` set to `source_frames_of[(parent_id, child_id)]` — one `sourceHandle`
-per edge between that pair, in edge order:
+`edges` set to `(edge_metadata or {}).get((parent_id, child_id))` — a sequence
+of `(sourceHandle, targetHandle)` pairs per edge between that pair, in edge order:
 
-1. Deduplicate `handles` into an ordered set of non-`None` handles, then keep
-   only the frames that exist in the parent's `dict` and are non-empty as
-   `candidates`. No candidates → record an `unresolved_source_frame` diagnostic
-   and return `(None, -1)`.
+1. Appends one candidate per physical edge (duplicates allowed, without deduplicating
+   handles) for non-`None` handles whose frame exists in the parent's `dict` and is
+   non-empty as `candidates`. No candidates → record an `unresolved_source_frame`
+   diagnostic and return `(None, -1)`.
 2. Exactly one candidate → delegate straight to `_match_parent_row` on that
-   frame (this is the common case: a single edge, or several edges all naming
-   the same frame).
+   frame.
 3. Several candidates → call `_match_parent_row` on *each* independently
    (diagnostics suppressed per-candidate to avoid noise), keeping only frames
-   that produced a confident row match. No frame matches → record
-   `unresolved_source_frame` and return `(None, -1)`.
+   that produced a confident row match. Duplicate-handle edges are compared
+   independently. No frame matches → record `unresolved_source_frame` and
+   return `(None, -1)`.
 4. Disambiguate the surviving matches in order: (a) if `traced_column` is set
    and any matched frame's `DataFrame` has that column, narrow to those frames;
    (b) narrow further to the frame(s) with the widest `match_width`; (c) if more
@@ -267,7 +270,7 @@ per edge between that pair, in edge order:
      target and is marked unresolved (`None`, index `-1`).
    - If the parent's output (`eager_outputs[nid]`) is a `dict` (a multi-frame
      source), delegate to `_resolve_multi_frame_parent()` (above) with
-     `handles=source_frames_of.get((nid, resolved_child_id))` and the caller's
+     `edges=(edge_metadata or {}).get((nid, resolved_child_id))` and the caller's
      `traced_column`, and continue to the next node.
    - Otherwise, delegate to `_match_parent_row()` (above) on the bare
      `DataFrame`.
@@ -544,7 +547,7 @@ snapshot deterministically.
 | --- | --- | --- |
 | `ValueError` | `execute_trace` — empty graph, unknown `target_node_id`, `row_index` out of range (also raised inside `_correlate_rows_posthoc`), unresolved row-value mismatch after relocation attempt, `target_node_id` resolving to a multi-frame source's `dict` output | The HTTP route rejects an empty graph itself with 400; recognised remaining message shapes map to 404 / 400 / 409, while an unrecognised `ValueError` is sanitised to 500 |
 | `ValueError` (ambiguous duplicate match) | `_find_target_row_index` (`trace.py`) — the clicked `row_values` match more than one row on the shared columns during target-row relocation | Propagates unchanged out of `execute_trace`; HTTP route maps to 409 |
-| `TypeError` | `_resolve_preview_snapshot` — `preview` is not `None`/reader/dict, or a reader's `try_get` returns a non-`dict` non-`None` value | Caller of `execute_trace` |
+| `TypeError` | `_resolve_preview_snapshot` — `preview` is not `None`/reader/dict, or a reader's `get` returns a non-`dict` non-`None` value | Caller of `execute_trace` |
 | `RuntimeError` | Module import — malformed/non-positive `HAUTE_PREVIEW_CACHE_MAX_BYTES` or `HAUTE_TRACE_CACHE_MAX_BYTES` | Importing caller; cache construction does not start |
 | `ContractMismatchError` | Propagated unchanged from `_execute_eager_core` (execution-engine) on a cold-execution contract violation | HTTP route, mapped to 422 |
 | `TraceCorrelationUnsupportedError` (`ExecutionError`) | `_find_target_row_index` — selected target keys use an unsupported dtype/value comparison | HTTP 422 / background `contract_error`; stable code and node/key/dtype/reason fields |
