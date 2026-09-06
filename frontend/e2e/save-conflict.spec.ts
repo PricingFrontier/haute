@@ -35,6 +35,8 @@ test.describe("save conflict", () => {
     const labelInputB = pageB.locator("input.node-label-input")
     await expect(labelInputB).toHaveValue("raw_rows")
     await labelInputB.fill("raw_rows_b")
+    await labelInputB.press("Enter")
+    await expect(pageB.getByTitle("Unsaved changes")).toBeVisible()
     await pageB.getByRole("button", { name: "Save", exact: true }).click()
     await expect(pageB.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
 

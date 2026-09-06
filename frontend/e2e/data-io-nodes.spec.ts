@@ -108,6 +108,7 @@ test.describe("data input/output nodes", () => {
           name: document.pipeline_name ?? "main",
           description: document.pipeline_description ?? "",
           source_file: document.source_file,
+          base_revision: document.source_revision,
           preamble: document.preamble ?? "",
           preserved_blocks: document.preserved_blocks,
           sources: document.sources,
