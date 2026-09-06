@@ -405,15 +405,33 @@ id = "W03-S02"
 workflow = "W03"
 contract = "specs/frontend-graph-canvas/low-level.md#edge-cases-and-invariants"
 finding = "F11"
-state = "gap"
-package = "ENG-T08"
+state = "covered"
 entry_point = "browser"
 tier = "workflow"
 lane = "frontend"
-real = ["frontend-rename", "executor"]
+real = ["frontend-rename", "executor", "codegen", "parser"]
 stubbed = []
-tests = []
-invariant = "Renaming an upstream node keeps downstream Python executable and preview rows equal before and after the rename, save and reload."
+tests = [
+  "frontend/e2e/rename-execution.spec.ts::renaming an upstream node keeps downstream Python executable through preview, save and reload",
+  "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::1. coded consumer gains the binding on rename",
+  "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::2. uncoded consumer does not gain a mapping when code is empty or absent",
+  "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::3. existing mapping value rewritten, logical kept",
+  "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::4. renaming back removes the identity entry",
+  "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::5. two coded consumers both gain binding while uncoded does not",
+  "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::6. collision rejected when rename collides with another input without mutating graph",
+  "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::7. logical collision rejected when logical name is already bound",
+  "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::8. API-frame rename reaches the rule and binds logical name",
+  "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::9. instance keys still migrate exactly as before",
+  "frontend/src/utils/__tests__/nodeUpdatePlan.test.ts::10. sanitised label uses identity identifier in binding",
+  "frontend/src/__tests__/App.integration.test.tsx::renames an ordinary source and migrates every downstream input identity atomically",
+  "tests/test_rename_stable_binding.py::test_rename_stable_binding_execution_and_round_trip",
+]
+invariant = "Renaming an upstream node or an API input frame never edits a coded transform's code or parameter names: the rename records the logical-name binding on inputMapping (dropping identity entries, rejecting logical-name collisions before any mutation), the executor and codegen honour it, and preview rows are equal before and after the rename, save and reload."
+
+[scenarios.evidence]
+commit = "a9f7779a"
+command = 'cd frontend && npx playwright test e2e/rename-execution.spec.ts --retries=0 && npx vitest run src/utils/__tests__/nodeUpdatePlan.test.ts src/__tests__/App.integration.test.tsx; cd .. && uv run pytest tests/test_rename_stable_binding.py -q -p no:warnings'
+result = "e2e 1 passed (14.8s); vitest 57 passed; pytest 1 passed"
 
 [[scenarios]]
 id = "W03-S03"

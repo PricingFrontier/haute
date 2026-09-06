@@ -61,7 +61,6 @@ and file-name inventories do not establish semantic completeness.
 | Package | State | Priority | Outcome |
 |---|---|---|---|
 | ENG-T04 | Decision | P1 | Make the node execution boundary testable and truthful; detect F1. |
-| ENG-T08 | Reverify | P2 | Preserve executable meaning through rename and graph editing; detect F11. |
 | ENG-T10 | Planned | P2 | Cover every supported workflow family across product components. |
 | ENG-T11 | Planned | P2 | Add bounded state-machine, differential, and boundary generation. |
 | ENG-T12 | Planned | P2 | Enforce collection, regression sensitivity, and sustainable CI cost. |
@@ -123,45 +122,6 @@ the decision; implementation and completion depend on it.
 `tests/test_worker_isolation.py`; `tests/conftest.py`;
 `specs/sandbox-security/high-level.md`.
 
-### ENG-T08 — Preserve execution through rename and graph editing
-
-**Why:** F11 changes edge input names and structured mappings but leaves
-downstream Python referring to the old binding. UI tests check metadata and
-the related persistence browser test returns a synthetic successful preview.
-
-**Plan:** Define rename as a transaction over identities and all consumers.
-The root must choose a canonical stable-binding design or a Python-aware
-reference refactor and document ambiguous-reference rejection before code changes.
-Do not use textual replacement, temporary old-name aliases, or migration paths.
-
-Use the real frontend rename action and real backend execution in a minimal
-connected graph: preview known rows; rename source; preview again; save; reload;
-preview again. Compare rows, schema and input identity at every step. Extend
-ordinary-node and API-frame rename coverage with multiple consumers, instances,
-public submodel ports, sanitised-name collisions, and nested scopes. Names in
-strings/comments/attributes and shadowed local variables must not be incorrectly
-rewritten. An ambiguous edit must fail before graph/code/history mutation with
-an actionable error. Undo/redo must restore executable behaviour as one edit.
-
-Keep focused mocked identity tests, but remove preview stubbing from the new
-execution witness. Reuse core-flow and frame-persistence browser fixtures; backend
-semantic cases should carry the larger scope/collision matrix at lower cost.
-
-**Acceptance:** The simple rename sequence fails with an unbound old input on
-the baseline and succeeds with equal rows after the correction. Invalid/colliding
-renames preserve the old graph and undo history. All supported rename entry points
-map to a collected test, including frame labels and submodel interfaces.
-
-**Dependencies:** The coverage ledger; root-owned rename contract. The submodel interface
-invariant and conflict-safe persistence are current parser and server-api behaviour.
-
-**Evidence:** `frontend/src/utils/nodeUpdatePlan.ts`;
-`frontend/src/hooks/useGraphCommitController.ts`;
-`frontend/src/__tests__/App.integration.test.tsx`;
-`frontend/e2e/core-flows.spec.ts`;
-`frontend/e2e/persistence/api-input-frame-alignment.spec.ts`;
-`tests/test_codegen_input_identity.py`; `src/haute/_user_exec.py`.
-
 ### ENG-T10 — Complete the supported workflow families
 
 **Why:** Fixing eight examples alone leaves similar gaps in other user journeys.
@@ -178,7 +138,7 @@ the result. Use small synthetic fixtures with independently calculated outputs.
 |---|---|---|
 | W01: install and start | build-and-distribution, cli, hosted-databricks-app | Fresh supported install/init/open/run; missing or invalid config and optional dependency; hosted session bootstrap/failure/restart; useful error and no partial project. Reuse package/platform/optional-dependency lanes. |
 | W02: author and recover | pipeline-config, server-api, frontend-shared | Load/create/edit/save/reload; external edits, two clients, invalid source, recovery, disconnect/reconnect and unsaved work. The critical data-loss witnesses are current server-api tests. |
-| W03: build a graph | frontend-graph-canvas, frontend-node-editors, submodels, codegen | Create/configure/connect/disconnect/copy/instance/group/enter/exit/dissolve/delete/undo/redo/save/reopen. Conserve graph and computed meaning; singleton API input/output rules apply across nested definitions. ENG-T08 owns rename invariants; parse conservation is current parser behaviour. |
+| W03: build a graph | frontend-graph-canvas, frontend-node-editors, submodels, codegen | Create/configure/connect/disconnect/copy/instance/group/enter/exit/dissolve/delete/undo/redo/save/reopen. Conserve graph and computed meaning; singleton API input/output rules apply across nested definitions. Rename and parse-conservation invariants are current frontend and parser behaviour. |
 | W04: obtain and persist data | io-layer, databricks-io | File/inline/database/lakehouse/Databricks operations that the registry supports; source switch, schema discovery, cache refresh and explicit write. Preview cannot perform writes. Missing source, wrong options, empty input, cancellation and failed output preserve appropriate prior artifacts. External credentials never enter browser/code fixtures. |
 | W05: structured request to response | json-shredding | JSON/JSONL/XML input, frame/edge join, output mapping, dry-run and batch assembly; missing/null/empty/nested arrays, duplicate or missing keys, row ordering, strict schema errors and exact expected response per request. Persist frame edits and reopen. |
 | W06: execute and inspect | execution-engine, caching, tracing, frontend-trace-ui | Preview/refresh/trace/export with active source, cold/warm caches, config/data/helper edits, filtered/reordered/joined rows and multiple frames. Compare values and trace identity; stale result cannot replace a newer selection. Operation freshness is current execution-engine behaviour. |
@@ -269,7 +229,7 @@ as the production result. Add each generator only after its invariant is precise
   canonical parser, which does not support that recovery path.
 - Editing/version state: bounded load/edit/save/external-write/rename/undo/reload
   sequences. A small model tracks base revision, unsaved edit and durable files;
-  stale writes never replace a newer accepted generation. Use the save-precondition and ENG-T08 semantics.
+  stale writes never replace a newer accepted generation. Use the save-precondition and rename-binding semantics.
 - Jobs/cache: enumerate admitted/running/cancel/timeout/late-completion/retry
   sequences with controlled scheduler hooks. Results correspond to one snapshot,
   terminal state never revives, and resource ownership returns to baseline.
@@ -359,8 +319,7 @@ ENG-T04–11. Mutation expansion follows measured value, not a blanket target co
 ## Delivery order and verification
 
 Reproduce ENG-T04 and
-resolve its enforcement decision promptly. Follow with ENG-T08 rename-lifecycle
-work.
+resolve its enforcement decision promptly.
 Expand ENG-T10 one workflow slice at a time; add ENG-T11 properties only after
 the corresponding oracle is settled. Integrate ENG-T12 continuously.
 
