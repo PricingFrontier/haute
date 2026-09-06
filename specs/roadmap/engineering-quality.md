@@ -61,7 +61,6 @@ and file-name inventories do not establish semantic completeness.
 | Package | State | Priority | Outcome |
 |---|---|---|---|
 | ENG-T04 | Decision | P1 | Make the node execution boundary testable and truthful; detect F1. |
-| ENG-T11 | Planned | P2 | Add bounded state-machine, differential, and boundary generation. |
 | ENG-T12 | Planned | P2 | Enforce collection, regression sensitivity, and sustainable CI cost. |
 
 ## Planned improvements
@@ -121,56 +120,6 @@ the decision; implementation and completion depend on it.
 `tests/test_worker_isolation.py`; `tests/conftest.py`;
 `specs/sandbox-security/high-level.md`.
 
-### ENG-T11 — Exercise generated boundaries and state transitions
-
-**Why:** Curated valid examples miss illegal namespace combinations and operation
-orderings. The specs also explicitly identify gaps in malformed-source generation,
-expression/window parity and optimiser tie-label generation.
-
-**Plan:** Extend existing property/differential suites, with small bounded domains
-and independent oracles. Do not derive expected values by calling the same helper
-as the production result. Add each generator only after its invariant is precise:
-
-- Graph/source: generate bounded canonical DAGs with public submodel ports;
-  parse/generate/flatten preserves edge identities and computed rows. Mutate one
-  interface or authored connection at a time and require conservation or a
-  contextual rejection. Test malformed-source recovery independently from the
-  canonical parser, which does not support that recovery path.
-- Editing/version state: bounded load/edit/save/external-write/rename/undo/reload
-  sequences. A small model tracks base revision, unsaved edit and durable files;
-  stale writes never replace a newer accepted generation. Use the save-precondition and rename-binding semantics.
-- Jobs/cache: enumerate admitted/running/cancel/timeout/late-completion/retry
-  sequences with controlled scheduler hooks. Results correspond to one snapshot,
-  terminal state never revives, and resource ownership returns to baseline.
-- Numeric/data contracts: test documented expression operations against real
-  Polars over supported inputs, including multi-row partitions where supported;
-  simple independent band/rating oracles; structured output record/frame alignment;
-  optimiser level-label ties and supported dtype equivalence. Explicitly classify
-  documented unsupported forms rather than broadening semantics by accident.
-- Metamorphic relations: cold and warm results agree; save/reload preserves values;
-  request permutation preserves per-request answers for row-independent scoring;
-  equivalent public-interface graphs compute the same result. Do not apply row
-  permutation or chunk equivalence to order-sensitive/global operations without
-  their specified ordering/collection rules.
-
-Use the existing Hypothesis/toolchain support. Set small reproducible PR budgets,
-retain seeds and shrunk failing examples, and place any larger exploration in
-an explicit CI lane. Preserve every discovered defect as a fixed regression.
-No dependency upgrade or new property framework is needed solely for this plan.
-
-**Acceptance:** Each generated family demonstrates a distinct invariant and a
-known negative control that it detects. Failures reproduce from retained examples
-without relying on test order or a local Hypothesis cache. Generated tests do not
-replace the eight fixed defect witnesses or the real user workflow checks.
-
-**Dependencies:** ENG-T04–10 contracts for the relevant family. Do not generate
-against an undecided save, rename, publication or execution-boundary oracle.
-
-**Evidence:** `tests/test_codegen_roundtrip_property.py`;
-`tests/test_expression_parser_polars_parity.py`; `tests/test_job_lifecycle.py`;
-`tests/test_output_nested_roundtrip.py`; `tests/test_optimiser_ratebook_apply_agreement.py`;
-`specs/expression-parsing/low-level.md`; `specs/optimiser/low-level.md`.
-
 ### ENG-T12 — Make the new evidence permanent and affordable
 
 **Why:** Review-only probes provide no ongoing CI protection. Coverage and
@@ -229,8 +178,7 @@ ENG-T04–11. Mutation expansion follows measured value, not a blanket target co
 
 Reproduce ENG-T04 and
 resolve its enforcement decision promptly.
-Add ENG-T11 properties only after
-the corresponding oracle is settled. Integrate ENG-T12 continuously.
+Integrate ENG-T12 continuously.
 
 Each implementation slice is one coherent spec/test/fix change. First run the
 smallest new regression and record its intended failure, implement the smallest

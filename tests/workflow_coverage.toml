@@ -898,15 +898,29 @@ result = "366 passed in 9.71s"
 id = "W09-S03"
 workflow = "W09"
 contract = "specs/optimiser/low-level.md#testing"
-state = "gap"
-package = "ENG-T11"
+state = "covered"
 entry_point = "http"
 tier = "property"
 lane = "backend"
-real = ["solver"]
-stubbed = []
-tests = []
-invariant = "Solver level tie-breaking is stable under floating-point perturbation of tied levels: the documented tie order holds for generated level sets, not only the curated fixtures."
+real = ["save-canonicalisation", "ratebook-apply", "explainability-mirror"]
+stubbed = ["solver-emission (generated spellings; the emission format itself is pinned by the real-solver fixtures)"]
+tests = [
+  "tests/test_optimiser_level_tie_properties.py::test_every_spelling_of_one_typed_value_saves_to_one_key",
+  "tests/test_optimiser_level_tie_properties.py::test_distinct_typed_values_never_share_a_key",
+  "tests/test_optimiser_level_tie_properties.py::test_two_spellings_of_one_value_in_one_table_fail_loudly",
+  "tests/test_optimiser_level_tie_properties.py::test_saved_artifact_rates_every_typed_row_with_its_own_level",
+  "tests/test_optimiser_level_tie_properties.py::test_duplicate_saved_key_resolves_to_the_last_entry_in_engine_and_mirror",
+  "tests/test_optimiser_level_tie_properties.py::test_verbatim_labels_would_silently_drop_a_solved_rate",
+  "tests/test_optimiser_level_tie_properties.py::test_first_entry_wins_mirror_would_disagree_with_engine",
+  "tests/test_optimiser_ratebook_apply_agreement.py::TestFloatEmittedLevelsCanonicalisedAtSave::test_float64_levels_round_trip_solve_save_apply_with_zero_misses",
+  "tests/test_optimiser_ratebook_apply_agreement.py::TestRealSolverEndToEnd::test_solver_emits_colon_named_unit_separator_levels",
+]
+invariant = "Solver level tie-breaking is stable under floating-point perturbation of tied levels: for generated Int64, Float64, Float32 and String levels (single and composite) every emitted spelling of one typed value saves to one canonical key that an independent oracle predicts, distinct typed values never share a key, two spellings of one value in one emitted table are refused loudly at save rather than silently keeping the last rate, the saved artifact rates every typed row with its own level with the engine and the explainability mirror agreeing, and a duplicate saved key resolves to the last entry in both; the real solver's verbatim emission format stays pinned by the curated fixtures."
+
+[scenarios.evidence]
+commit = "b8b29097"
+command = 'uv run pytest tests/test_optimiser_level_tie_properties.py tests/test_optimiser_ratebook_apply_agreement.py -q -p no:warnings'
+result = "20 passed in 5.20s"
 
 [[scenarios]]
 id = "W10-S01"
