@@ -5,20 +5,20 @@
 Haute pipelines run user-authored Python (polars transform nodes and preamble/utility
 code) inside the local editor process; the CLI validates then imports training scripts
 inside the separate CLI process. The editor also loads user-supplied model/data
-artifacts (pickle, joblib) from disk. These are
-attacker-shaped inputs even in a single-user local tool: a pipeline file can be
-copied between machines, shared, or opened from an untrusted source, and a model
-artifact can be swapped out from under the project directory. This component is the
-set of defences that keep "run whatever code/data the project directory contains"
-from becoming "run whatever the file system contains" or "run whatever a hostile
-browser tab can smuggle through localhost."
+artifacts (pickle, joblib) from disk.
 
-It covers three independent threat surfaces: (1) arbitrary code execution via
-`exec()` of pipeline node/preamble code and normal module import of a CLI training
-script, (2) arbitrary code execution via
-deserializing untrusted pickle/joblib model artifacts, and (3) a random web page
-driving the local dev server through a user's browser (cross-site request/WebSocket
-hijack against `localhost`). A fourth, narrower concern — keeping generated
+Project code is trusted first-party code (decision of 6 September 2026, finding F1):
+node text, preambles, utility modules and training scripts run with the privileges of
+the process that runs haute, and access to a project is governed by who may edit its
+files, not by haute. Opening a project is running its code. What this component
+defends against is therefore narrower than a hostile author, and it says so rather
+than promising containment it cannot deliver: (1) accidents in node text, the
+`open()`, import, reflection and `eval` shapes that fail confusingly or corrupt state,
+caught by an accident guard before the code runs; (2) arbitrary code execution via
+deserializing untrusted pickle/joblib model artifacts, which can be swapped under a
+project without editing any code; and (3) a random web page driving the local dev
+server through a user's browser (cross-site request/WebSocket hijack against
+`localhost`). A fourth, narrower concern — keeping generated
 `.gitignore` entries consistent so secrets and per-clone state never get committed —
 is bundled in here because it is a small, self-contained guard module living beside
 the others, not because it shares a threat model with the first three.
@@ -69,14 +69,47 @@ Out of scope (owned elsewhere, linked where relevant):
 - The CLI's own write-sandbox used by the test suite (`tests/_write_sandbox.py`)
   is test infrastructure, not part of the shipped security surface.
 
+## Trust boundary
+
+- **Node text is trusted project code.** The enforcement boundary is the identity
+  the haute process runs as: the local user in the editor and the CLI, and the
+  hosted app's own identity inside its single-tenant container (see
+  [hosted-databricks-app](../hosted-databricks-app/high-level.md)). Anything that
+  identity can do, project code can do.
+- **Allowed operations.** Any Python or Polars the accident guard's syntax rules
+  admit. Direct file, environment and network access from node text is not
+  confined: the injected Polars module carries the whole Python object graph
+  beneath it (`pl.io.csv.functions.os` reaches the operating system), a preamble
+  imports freely, and no OS-level sandbox (seccomp, Landlock, restricted token,
+  network filter) exists on any supported platform. Only memory caps are enforced.
+- **Project reads and writes.** Haute's own loaders and writers stay inside the
+  project root (`validate_project_path`, the runtime path resolution below); that
+  containment protects haute's persistence from confused paths, not the machine
+  from the author.
+- **Environment exposure.** The process environment, including any credentials
+  the deployment supplies to haute itself, is visible to project code.
+- **Hosted mode.** Node code runs with the app's identity in its own container;
+  the platform proxy boundary adapts traffic and never contains code, and access
+  to a project is governed by the workspace permissions on the app.
+- **What real containment would require**, recorded so it is not implied: a
+  privilege-separated worker with an explicit filesystem, credential, process and
+  network policy enforced outside the Python object graph, per supported platform,
+  with its own CI lane. That is a product change (no ad-hoc reads outside the
+  project, no network from a transform) and is not planned.
+- `tests/test_node_code_trust_boundary.py` pins the boundary through the real node
+  entry point: the accident shapes are rejected before execution, permitted
+  transforms run, and a synthetic environment marker and an outside-project write
+  remain reachable.
+
 ## Behaviour
 
-- **Two independent layers gate `exec()`ed pipeline code**, and both must pass:
-  a structural AST walk (`validate_user_code`) rejects known escape-shaped syntax
-  *before* any code runs, and a restricted builtins/globals namespace
-  (`safe_globals`) removes the dangerous callables at runtime as defence in depth
-  even if a pattern slips past the AST layer. Neither layer alone is trusted to be
-  complete.
+- **Two independent layers gate `exec()`ed pipeline code as an accident guard**,
+  and both must pass: a structural AST walk (`validate_user_code`) rejects known
+  escape-shaped syntax *before* any code runs, and a restricted builtins/globals
+  namespace (`safe_globals`) removes the dangerous callables at runtime as defence
+  in depth even if a pattern slips past the AST layer. Neither layer alone is
+  trusted to be complete, and together they are not a containment boundary (see
+  Trust boundary above).
 - **The AST layer is allowlist-adjacent but implemented as a denylist of named
   escape primitives**: dunder attribute access to type-system/introspection
   dunders, frame/traceback/generator-frame attribute access, calls to reflection

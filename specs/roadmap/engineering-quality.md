@@ -60,65 +60,9 @@ and file-name inventories do not establish semantic completeness.
 
 | Package | State | Priority | Outcome |
 |---|---|---|---|
-| ENG-T04 | Decision | P1 | Make the node execution boundary testable and truthful; detect F1. |
-| ENG-T12 | Decision | P2 | Enforce collection, regression sensitivity, and sustainable CI cost; the F1 witnesses and the W13-S02 lane wait on decisions. |
+| ENG-T12 | Planned | P2 | Enforce collection, regression sensitivity, and sustainable CI cost; the W13-S02 container lane remains. |
 
 ## Planned improvements
-
-### ENG-T04 — Verify the actual node execution boundary
-
-**Why:** F1 shows that restrictions on builtins and explicit path helpers do not
-constrain all capabilities reachable through the actual injected Polars objects.
-The existing permissive executor fixture cannot prove project containment.
-
-**Plan:** First make a root-owned design decision on the node-text trust
-boundary for each supported local/hosted execution mode. Two outcomes are
-legitimate. Either keep the untrusted-node contract and enforce it outside the
-Python object graph, with a separately privileged process and explicit
-filesystem, credential, process and network confinement, or declare node text
-trusted first-party code in that mode, state it in sandbox-security and the
-execution UX, and keep the AST/builtins layer as an accident guard only.
-In-process Python holding the full Polars module cannot be contained, so a
-same-privilege child process or an additional attribute denylist is not evidence
-of containment. Specify allowed data operations, project reads/writes,
-environment exposure, and the enforcement boundary for the chosen outcome. If a
-supported platform cannot enforce a containment contract, report that limitation
-and gate the dependent implementation; never change the contract implicitly to
-make tests green.
-
-Promote the two local review witnesses into the owning tests using a temporary
-project, an outside-project sentinel and a synthetic environment marker. Exercise
-the real production node entry point, not just `validate_project_path`. Verify
-that the forbidden operation fails and the sentinel/marker remains protected,
-while ordinary permitted Polars transformations still work. Keep the test data
-synthetic and all writes inside the test's temporary parent directory. Do not
-read real credentials or contact external services.
-
-Add applicable path variants (relative, absolute, traversal and supported
-symlinks), permitted data IO controls, and cleanup after cancellation/failure.
-Test each materially distinct execution host; distinguish privileged preambles
-from restricted node text explicitly. Run these witnesses without the fixture
-that widens the execution root to the whole filesystem. Test-runner write guards
-must not intercept the call in place of the production enforcement being tested.
-
-**Acceptance:** Current witnesses fail at the missing runtime restriction before
-the change. Under a containment outcome, corrected execution rejects the
-operation for the specified reason, leaves the sentinel unchanged, and still
-computes the permitted control result. Under a trusted-code outcome, the
-sandbox-security and execution-engine specifications and the execution UX state
-the trust boundary explicitly, the witnesses are re-scoped as accident-guard
-regressions, and hosted mode records its own enforcement decision and lane.
-Any platform qualification required by the design has an explicit CI lane;
-unsupported enforcement cannot count as a skipped passing capability.
-
-**Dependencies:** The coverage ledger; a recorded execution-boundary design in
-sandbox-security and execution-engine. The initial reproductions can run before
-the decision; implementation and completion depend on it.
-
-**Evidence:** `src/haute/_user_exec.py`; `src/haute/_sandbox.py`;
-`tests/test_sandbox.py`; `tests/test_user_exec_imports.py`;
-`tests/test_worker_isolation.py`; `tests/conftest.py`;
-`specs/sandbox-security/high-level.md`.
 
 ### ENG-T12 — Make the new evidence permanent and affordable
 
@@ -142,16 +86,18 @@ a fresh run of the committed gate and tests left 3 effective survivors of
 3.0% ceiling; added PR cost is recorded per family in the owning Testing sections
 (about 70 seconds of serial backend time in total, no browser journeys added).
 
-**Plan:** the remaining steps.
+**Plan:** the remaining steps. ENG-T04 was decided on 6 September 2026
+(project code is trusted first-party code; the exec guard is an accident guard)
+and its witnesses landed in `tests/test_node_code_trust_boundary.py` with
+W15-S01 covered; the `_user_exec` mutation ownership review found the guard
+already exercised through the real entry point by those witnesses and the
+sandbox suite, so no new target was added.
 
-1. When ENG-T04 is decided, land its ordinary witnesses for F1 (W15-S01) through
-   the same red-to-green and sensitivity path, and re-run the mutation ownership
-   review for `_user_exec`.
-2. Decide W13-S02: either add a Docker-capable lane that builds the generated
-   scoring image and answers `/health` and `/quote`, or record the in-process
-   proof as the accepted limit. Docker is not available on the development
-   machine, so the lane cannot be verified locally before it is added.
-3. Claim programme completion only when no required `gap`/`decision` remains.
+1. Add the weekly/dispatch Docker lane for W13-S02 that builds the generated
+   scoring image and answers `/health` and `/quote` with local synthetic data;
+   its first scheduled run is the verification, since Docker is not available on
+   the development machine.
+2. Claim programme completion only when no required `gap`/`decision` remains.
 
 **Acceptance:** All eight runtime findings have ordinary collected tests, observed
 red-to-green evidence and outcome assertions at the real boundary. F5–F8 have
@@ -160,7 +106,7 @@ have an explicit final disposition; no required `gap`/`decision` remains when
 claiming the programme complete. Relevant CI checks are green without weakening
 existing gates, and runtime/platform/provider limitations are stated explicitly.
 
-**Dependencies:** ENG-T04 (F1 witnesses) and the W13-S02 decision.
+**Dependencies:** the W13-S02 lane.
 
 **Evidence:** `.github/workflows/ci.yml`; `.github/workflows/mutation.yml`;
 `.github/workflows/property-exploration.yml`; `frontend/package.json`;
@@ -171,8 +117,6 @@ existing gates, and runtime/platform/provider limitations are stated explicitly.
 
 ## Delivery order and verification
 
-Reproduce ENG-T04 and
-resolve its enforcement decision promptly.
 Integrate ENG-T12 continuously.
 
 Each implementation slice is one coherent spec/test/fix change. First run the

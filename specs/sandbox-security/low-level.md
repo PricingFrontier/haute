@@ -375,6 +375,13 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
 
 ## Testing
 
+- `tests/test_node_code_trust_boundary.py` — the ENG-T04 witnesses through the real
+  `_exec_user_code` entry point: `open`, `__import__`, `import`, reflection and `eval`
+  are rejected before execution with a sentinel file untouched, a permitted Polars
+  transform runs, and (pinning the accepted trust decision, not a defect) a synthetic
+  environment marker and an outside-project write remain reachable through the
+  injected Polars module.
+
 - `tests/test_host_binding.py` verifies loopback-only host validation, CLI/config precedence, trusted-host middleware, token non-exposure, and loopback URL formatting.
 
 - `tests/test_sandbox.py` — the primary suite for `_sandbox.py`. `TestSafeGlobals`

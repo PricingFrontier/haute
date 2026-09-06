@@ -44,6 +44,12 @@ collaboration and running pipelines as Databricks jobs are out of scope.
   decision has not disabled the local session gate, rewritten proxied traffic
   remains unauthorized. Outside the hosted entry point, local behavior is
   unchanged.
+- Project code (node text, preambles, utility modules) runs as trusted
+  first-party code with the app's own identity inside its single-tenant
+  container. The boundary adapts traffic; it does not contain code. Access to a
+  project is governed by the workspace permissions on the app, as
+  [sandbox-security](../sandbox-security/high-level.md) records under Trust
+  boundary.
 - Databricks browsing and SQL acquisition accept `DATABRICKS_HOST` plus either
   `DATABRICKS_TOKEN` or the complete
   `DATABRICKS_CLIENT_ID`/`DATABRICKS_CLIENT_SECRET` pair. The token takes

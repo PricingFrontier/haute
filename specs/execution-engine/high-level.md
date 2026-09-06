@@ -75,8 +75,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   recomputation — the dataframe execution cache's storage/eviction/fingerprinting
   policy belongs to [caching](../caching/high-level.md); this component only decides
   *what* to cache and consumes the cache's `get`/`scan`/`materialize` API.
-- Sandboxing of user-written Polars/Python snippets (`code` config fields) — the
-  actual restricted-`exec` mechanism is [sandbox-security](../sandbox-security/high-level.md);
+- The accident guard for user-written Polars/Python snippets (`code` config fields);
+  node code is trusted project code and the guard's restricted-`exec` mechanism and
+  the trust boundary are [sandbox-security](../sandbox-security/high-level.md);
   this component calls it at preamble-compile and node-build time.
 - Correlating a completed run into a human-readable trace/waterfall — that is
   [tracing](../tracing/high-level.md), which is built on top of the same

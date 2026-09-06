@@ -602,6 +602,12 @@ diagnostics; no generic editor fabricates a replacement config.
 
 ## Testing
 
+- `frontend/src/panels/editors/shared/__tests__/PolarsCodePanel.test.tsx` — the trust
+  statement under the Polars code editor ("Runs as trusted project code with the
+  privileges of the process running haute", ENG-T04) renders on every Polars node
+  panel; the statement is the execution UX half of the trust decision recorded in
+  [sandbox-security](../sandbox-security/high-level.md).
+
 React/Vitest tests cover editor interaction under `frontend/src/__tests__/editors/`,
 `frontend/src/panels/editors/__tests__/`, `frontend/src/panels/editors/banding/__tests__/`,
 `frontend/src/panels/editors/rating/__tests__/`, `frontend/src/__tests__/components/form/`, and
