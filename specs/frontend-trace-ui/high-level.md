@@ -22,8 +22,7 @@ the validated response snapshot. The backend owns trace computation and response
 - Arithmetic and backend-provided waterfall information render running
   contributions. Conditional calculation context renders the expression's
   human-readable branches, but does not map a backend branch index onto those
-  client-parsed rows; the backend selection is displayed as separate metadata
-  until the wire contract carries backend-authored branch structure.
+  client-parsed rows; the backend selection is displayed as separate metadata.
 - All controls and alerts use labels/roles appropriate to their state. Numeric/null/non-finite
   values are formatted explicitly rather than being confused with missing text.
 - A trace request is bound to graph `structuralVersion`, source, row limit,
@@ -56,14 +55,14 @@ concepts originate in [frontend-node-editors](../frontend-node-editors/high-leve
 ## Failure model
 
 Backend-reported request/node/waterfall/calculation problems and typed omissions render persistent
-visible alerts or omission cards. Banding/model-score root `error` fields take
-precedence over all normal detail content. Missing data required to explain a
-non-opaque calculation also renders an alert. Unknown detail shapes use the
-generic fallback; helper type guards avoid silently treating malformed optional
-values as valid numbers.
+visible alerts or omission cards. When the document lacks execution capability or the graph is
+unsynchronised, trace requests do not start; a mid-flight document identity change silently discards
+in-flight results back to idle rather than raising an alert. Banding/model-score root `error` fields
+take precedence over all normal detail content. Missing data required to explain a non-opaque
+calculation also renders an alert. Unknown detail shapes use the generic fallback; helper type guards
+avoid silently treating malformed optional values as valid numbers.
 
 Source-like grouping recognises only canonical node types emitted by the
 backend: `dataInput`, `apiInput`, and `constant`. There is no synthetic
-`source` or legacy `dataSource` production value. The current response does not
-yet expose safe provider/generation/freshness provenance, so the UI does not
-invent it or claim that a cache hit is fresh.
+`source` or legacy `dataSource` production value. The response carries no
+provider/generation/freshness provenance, and the UI renders none.

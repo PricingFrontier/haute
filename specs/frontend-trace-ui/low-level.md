@@ -36,9 +36,14 @@
 
 1. `frontend/src/hooks/useTracing.ts` captures graph `structuralVersion`, active
    source, row limit, streaming chunk size, target, row, column, and clicked
-   values with each request. A semantic change aborts and clears the state;
-   requests resolving within the 500 ms progress delay show no loading
-   chrome, while a request still pending after that delay enables compact
+   values with each request. Requests require document execution capability
+   (`capabilities?.can_execute === true`) and graph synchronisation
+   (`graphSynchronized`); if either is missing, the trace does not start. In-flight
+   requests verify document currency (`sourceFile`, `sourceRevision`, `loadStatus`,
+   `graphSynchronized`, `can_execute`); a change in document identity mid-flight
+   silently clears the trace state back to `idle`. A semantic change aborts and
+   clears the state; requests resolving within the 500 ms progress delay show no
+   loading chrome, while a request still pending after that delay enables compact
    progress/cancel UI.
 2. `frontend/src/panels/TracePanel.tsx` derives the story key used for card
    identity, finds the last applicable producer for the traced column,
@@ -91,12 +96,18 @@
 
 Missing calculation data for an expression that should explain a value, backend waterfall errors,
 typed omissions, request failures, and banding/model-score/optimiser/scenario/live-switch errors
-render persistent `role="alert"` UI. A banding or model-score root `error`
+render persistent `role="alert"` UI. When the document lacks execution capability or the graph is
+unsynchronised, trace requests do not start; a mid-flight document identity change silently resets
+trace state to `idle` without raising an alert. A banding or model-score root `error`
 suppresses all normal summary/result rows so placeholder nulls cannot look like
 valid evidence. A 409 invalidates the preview and requires a new row selection
 rather than retrying the same identity. Unknown node detail falls back to
-generic JSON. Pure parsers intentionally throw on invalid required numerical
-contracts instead of silently showing a plausible-but-wrong calculation.
+generic JSON. Nothing in `frontend/src/trace/` or `frontend/src/panels/trace/` throws on a
+malformed detail: `asBandingDetail` and `asModelScoreDetail` are plain casts, and the
+extractors return null or absent markers instead (`bandingRowFromDetail` and
+`formatBandingRange` return `null`, `modelScorePrediction` reports
+`hasPrediction: false`, `buildWaterfallSteps` returns `null` for fewer than three or
+non-numeric factors), so the renderers show an explicit alert or omission.
 
 ## Testing
 

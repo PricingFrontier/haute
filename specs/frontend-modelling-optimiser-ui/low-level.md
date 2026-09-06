@@ -45,8 +45,10 @@
   algorithm, fixed-parameter, required version-1 `evaluation`, and optional version-1
   `tuning` contracts. `trainingConfigurationIssues` derives incomplete target,
   objective, evaluation and tuning requirements for the Train guard; `ModellingConfig`
-  adds any invalid JSON draft for the selected CatBoost parameter strategy. Public
-  `split`/`cross_validation` fields have no editor or runtime result path.
+  adds any invalid JSON draft for the selected CatBoost parameter strategy. Top-level
+  node config keys `config.split` and `config.cross_validation` have no editor or runtime
+  result path (validation settings are edited under `evaluation.validation`, where
+  `cross_validation` is an editable method option).
 - Optimiser uses input node/banding-node descriptions, `FrontierRangeConfig`, constraints and
   ratebook `FactorTables`. `frontend/src/utils/banding.ts` returns ordered factor levels, including
   a banding default only for the ordering APIs that request it. Per-constraint

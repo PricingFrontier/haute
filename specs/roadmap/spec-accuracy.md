@@ -36,7 +36,6 @@ Non-goals:
 
 | Package | State | Priority | Outcome |
 |---|---|---|---|
-| SPEC-A07 | Planned | P2 | Frontend shared, git, assistant, trace, modelling and preview UI specifications corrected. |
 | SPEC-A08 | Planned | P2 | Ownership ledger, document structure and governance statements match the corpus. |
 | SPEC-A09 | Decision | P2 | The four findings that expose code, not prose, are fixed with tests. |
 
@@ -50,32 +49,6 @@ editing pass: for every finding it re-reads the cited specification line and
 the cited code at `HEAD`, applies the recorded fix or a better one that obeys
 the writing rules, or records the finding as already resolved with the proof,
 and never edits a file outside its list.
-
-### SPEC-A07 — Frontend shared, git, assistant, trace, modelling and preview UI
-
-**Why:** Thirty-two findings: a fifth bounded cache category missing from every
-enumeration, wrong exported type names, non-existent refs and guards
-(`peekingRef`, `setExpanded`, `refreshGeneration`, `applied`), a modal-mode
-union listed at three of six members, a stale bundle budget, an SSE variant
-count off by one, a guard order that contradicts the implementation, missing
-session-list surfaces, and resolved-history phrasing (ADD06, ADD16, ADD17,
-F055, F056, F057, F058, F059, F060, F061, F083, F084, F085, F086, F087, F088,
-F089, F090, F091, F092, F180, F181, F182, F183, F184, F185, F189, F190, F192,
-F193, F194, F195).
-
-**Plan:** One editing pass over the frontend-shared, frontend-git-ui,
-frontend-assistant-ui, frontend-trace-ui, frontend-modelling-optimiser-ui and
-frontend-preview-explore documents. The pivot-cache pin invariant (ADD07) is
-not described until SPEC-A09 has made the code honour it.
-
-**Acceptance:** Every listed finding corrected or recorded as resolved at
-`HEAD`; the docs check stays green.
-
-**Dependencies:** None (its files are disjoint from SPEC-A06).
-
-**Evidence:** `fable5.1-review/findings.json`; `specs/frontend-shared/low-level.md`;
-`specs/frontend-git-ui/low-level.md`; `specs/frontend-assistant-ui/low-level.md`;
-`specs/frontend-trace-ui/low-level.md`.
 
 ### SPEC-A08 — Ownership ledger, document structure and governance statements
 

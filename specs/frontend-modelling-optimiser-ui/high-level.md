@@ -26,8 +26,10 @@ results are supplied by API and result-store layers.
   capability lever. It lists only selected numeric input features and writes `-1` or
   `1` per feature, removing the key when the user selects zero. String/categorical,
   Boolean, date/datetime, target, weight, and excluded columns are never offered.
-- Modelling preview exposes only result-backed tabs (summary, coefficients/relativities, loss,
-  lift, residuals, feature importance, AVE and PDP) and resets selection when the result changes.
+- Modelling preview exposes summary unconditionally as the fallback tab whenever a result
+  exists, presents remaining tabs (coefficients/relativities, loss, lift, residuals,
+  feature importance, AVE and PDP) only when backed by non-empty result data, and resets
+  selection to summary when the result changes.
 - Optimiser config selects input/objective/mode, banding/ratebook factors, constraints, solver
   options and frontier ranges; it can auto-range constraints and submit solves. Starting another
   auto-range request or unmounting best-effort cancels that auto-range job; this panel has no
