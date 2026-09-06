@@ -642,15 +642,46 @@ invariant = "Backend-to-client conditional branch index mapping is not applicabl
 id = "W07-S01"
 workflow = "W07"
 contract = "specs/rating/high-level.md#behaviour"
-state = "gap"
-package = "ENG-T10"
+state = "covered"
 entry_point = "library"
 tier = "unit"
 lane = "backend"
-real = ["rating-engine"]
+real = ["rating-engine", "executor", "tracer", "expression-evaluator"]
 stubbed = []
-tests = []
-invariant = "The W07 row hand-calculated band and rating values at thresholds, ties and nulls hold."
+tests = [
+  "tests/test_rating_hand_calculated.py::test_rating_preview_matches_hand_calculated_premiums",
+  "tests/test_rating_hand_calculated.py::test_rating_trace_matches_hand_calculated_premiums",
+  "tests/test_rating_step_config_coverage.py::test_normalise_roundtrip_three_factors",
+  "tests/test_rating.py::TestBandingBoundaryValues::test_boundary_value_inclusive_exclusive",
+  "tests/test_rating.py::TestOverlappingBandingRulesFirstMatchWins::test_first_matching_rule_wins",
+  "tests/test_rating.py::TestApplyBandingEdgeCases::test_null_values_get_default",
+  "tests/test_rating.py::TestExtremeFloatValues::test_inf_in_banding_sanitized_to_default",
+  "tests/test_banding.py::TestBreakpointsMode::test_breakpoints_right_closed",
+  "tests/test_banding.py::TestBreakpointsMode::test_breakpoints_left_closed",
+  "tests/test_rating.py::TestRatingFactorInputSchema::test_missing_factor_fails_before_lookup_or_join",
+  "tests/test_rating_key_agreement.py::TestEnrichmentAgreesWithEngine::test_multi_factor_mixed_numeric_and_string",
+  "tests/test_rating_key_agreement.py::TestEngineKeyNormalisation::test_int_like_float_column_matches_string_keys",
+  "tests/test_rating_key_agreement.py::TestTemporalFactorColumns::test_date_and_datetime_factor_columns_match",
+  "tests/test_rating_key_agreement.py::TestDecimalFactorScale::test_decimal_matches_entry_authored_at_declared_scale",
+  "tests/test_rating_miss_fail_loud.py::TestOptInNeutral::test_neutral_fills_multiply_and_warns_with_count",
+  "tests/test_rating_miss_fail_loud.py::TestMissFailsLoudByDefault::test_renamed_band_label_raises_through_config_path",
+  "tests/test_rating.py::TestApplyRatingTableEdgeCases::test_duplicate_entries_keep_last",
+  "tests/test_rating_step.py::TestRatingStepExecutor::test_combine_operations",
+  "tests/test_rating_step_config_coverage.py::test_duplicate_table_output_columns_are_rejected_with_both_indices",
+  "tests/test_rating.py::TestApplyRatingTableEdgeCases::test_nan_in_entries_rejected",
+  "tests/test_expression_parser_polars_parity.py::test_round_matches_polars",
+  "tests/test_expression_parser_polars_parity.py::test_sqrt_and_clip_match_polars",
+  "tests/test_expression_parser_polars_parity.py::test_attribute_and_unsupported_nodes_return_none",
+  "tests/test_expression_parser.py::TestSyntaxErrors::test_code_with_syntax_error",
+  "tests/test_expression_parser.py::TestEvaluatedExpressionNulls::test_none_value_propagation",
+  "tests/test_expression_parser.py::TestEvaluatedExpressionConditional::test_when_then_substituted",
+]
+invariant = "A rating step previewed and traced through the real executor reproduces hand-calculated premiums (band thresholds at the boundary, a null falling to the default, a table miss resolved as neutral, a multiplicative combine over a base value); every banding and table rule has its documented outcome at exact thresholds, ties, nulls, missing factors, mixed key dtypes and rounding; invalid expressions become opaque and unsupported AST forms return None rather than a guess."
+
+[scenarios.evidence]
+commit = "80346da2"
+command = 'uv run pytest tests/test_rating_hand_calculated.py tests/test_rating.py tests/test_banding.py tests/test_rating_step.py tests/test_rating_step_config_coverage.py tests/test_rating_key_agreement.py tests/test_rating_miss_fail_loud.py tests/test_rating_dtype_contract.py tests/test_expression_parser.py tests/test_expression_parser_polars_parity.py -q -p no:warnings'
+result = "847 passed in 11.60s"
 
 [[scenarios]]
 id = "W08-S01"
@@ -726,15 +757,63 @@ result = "5 passed"
 id = "W09-S02"
 workflow = "W09"
 contract = "specs/optimiser/high-level.md#behaviour"
-state = "gap"
-package = "ENG-T10"
+state = "covered"
 entry_point = "http"
 tier = "workflow"
 lane = "backend"
-real = ["optimiser"]
+real = ["optimiser", "solver", "artifact-store"]
+stubbed = ["mlflow"]
+tests = [
+  "tests/test_optimiser_routes.py::TestExecutePipelineArgs::test_auto_range_required_columns_seed_uses_configured_data_input",
+  "tests/test_optimiser_routes.py::TestSolveOnlineUnit::test_solve_online_initializes_solver_and_records_history",
+  "tests/test_optimiser_routes.py::TestRatebookSolve::test_ratebook_solve_completes",
+  "tests/test_optimiser_routes.py::TestFrontierRoute::test_frontier_after_solve",
+  "tests/test_optimiser_frontier_materialisation.py::test_select_frontier_point_uses_stored_summary_without_solver",
+  "tests/test_optimiser_routes.py::TestSaveResultUnit::test_save_completed_job_writes_json",
+  "tests/test_optimiser_routes.py::TestMlflowLogExtended::test_mlflow_log_success_with_frontier",
+  "tests/test_optimiser_apply.py::TestExecutorOnline::test_online_apply_basic",
+  "tests/test_optimiser_apply.py::TestExecutorRatebook::test_ratebook_apply_basic",
+  "tests/test_optimiser_apply_trace_enrichment.py::test_online_execute_trace_attaches_candidate_explanation",
+  "tests/test_optimiser_apply_trace_enrichment.py::test_ratebook_execute_trace_explains_configured_input_factor_ladder",
+  "tests/test_optimiser_routes.py::TestFinalizeSolveResult::test_convergence_warning_when_not_converged",
+  "tests/test_optimiser_routes.py::TestFrontierInSolve::test_solve_with_empty_constraints_completes_without_frontier",
+  "tests/test_optimiser_routes.py::TestSaveArtifactGate::test_save_rejects_non_finite_values_pre_write",
+  "tests/test_optimiser_contracts.py::test_solve_rejects_null_quote_id_instead_of_dropping_rows",
+  "tests/test_rating_dtype_contract.py::test_ratebook_apply_reuses_the_same_dtype_contract",
+  "tests/test_rating_dtype_contract.py::test_ratebook_rejects_exact_dtype_drift_before_neutral_miss",
+  "tests/test_optimiser_ratebook_apply_agreement.py::TestMirrorAgreesWithEngine::test_duplicate_level_resolves_to_last_in_both",
+  "tests/test_optimiser_routes.py::TestFrontierSelect::test_select_last_frontier_point",
+  "tests/test_optimiser_frontier_materialisation.py::test_save_selected_frontier_point_does_not_use_stale_solve_result",
+  "tests/test_optimiser_apply.py::TestExecutorRatebook::test_ratebook_apply_rejects_stale_configured_input",
+  "tests/test_optimiser_contracts.py::test_real_solve_apply_totals_match_selected_rows",
+  "tests/test_optimiser_frontier_materialisation.py::test_apply_explicit_frontier_point_artifact_matches_response_preview",
+  "tests/test_optimiser_ratebook_apply_agreement.py::TestRealSolverEndToEnd::test_factor_values_land_on_the_right_rows",
+  "tests/test_optimiser_routes.py::TestSolverWorkerContextGuard::test_heavy_entrypoints_fail_loud_outside_worker_context",
+  "tests/test_optimiser_routes.py::TestApplyLambdasUnit::test_apply_preview_payload_is_capped_with_truncation_metadata",
+  "tests/test_optimiser_frontier_materialisation.py::test_apply_explicit_ratebook_frontier_point_is_contract_error",
+  "tests/test_optimiser_frontier_materialisation.py::test_frontier_point_artifact_handles_are_capped_oldest_first",
+  "tests/test_optimiser_apply_trace_enrichment.py::test_online_enrichment_surfaces_reconciliation_error",
+]
+invariant = "Estimate, solve, frontier, select, save, apply and trace agree in both online and ratebook modes: non-converged, empty-constraint and non-finite cases have their typed outcomes, factor dtypes and last-duplicate tie resolution are honoured identically by engine and mirror, a stale solve result or stale configured input is never applied, capped previews state their true totals, and heavy solver entrypoints refuse to run outside the worker context."
+
+[scenarios.evidence]
+commit = "80346da2"
+command = 'uv run pytest tests/test_optimiser_contracts.py tests/test_optimiser_apply.py tests/test_optimiser_apply_trace_enrichment.py tests/test_optimiser_frontier_materialisation.py tests/test_optimiser_ratebook_apply_agreement.py tests/test_rating_dtype_contract.py "tests/test_optimiser_routes.py::TestSolveOnlineUnit" "tests/test_optimiser_routes.py::TestRatebookSolve" "tests/test_optimiser_routes.py::TestFrontierRoute" "tests/test_optimiser_routes.py::TestFrontierSelect" "tests/test_optimiser_routes.py::TestSaveResultUnit" "tests/test_optimiser_routes.py::TestSaveArtifactGate" "tests/test_optimiser_routes.py::TestMlflowLogExtended" "tests/test_optimiser_routes.py::TestFinalizeSolveResult" "tests/test_optimiser_routes.py::TestFrontierInSolve" "tests/test_optimiser_routes.py::TestSolverWorkerContextGuard" "tests/test_optimiser_routes.py::TestApplyLambdasUnit" "tests/test_optimiser_routes.py::TestExecutePipelineArgs" -q -p no:warnings'
+result = "366 passed in 9.71s"
+
+[[scenarios]]
+id = "W09-S03"
+workflow = "W09"
+contract = "specs/optimiser/low-level.md#testing"
+state = "gap"
+package = "ENG-T11"
+entry_point = "http"
+tier = "property"
+lane = "backend"
+real = ["solver"]
 stubbed = []
 tests = []
-invariant = "The W09 row agreement between selected result, saved artifact, applied prices and trace holds."
+invariant = "Solver level tie-breaking is stable under floating-point perturbation of tied levels: the documented tie order holds for generated level sets, not only the curated fixtures."
 
 [[scenarios]]
 id = "W10-S01"
