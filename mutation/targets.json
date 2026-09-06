@@ -56,6 +56,13 @@
       "max_pending_per_shard": 80,
       "max_survival_rate": 15.0,
       "rationale": "The graph executor runs live Polars pipelines across preview, projection, materialisation, caching, sandboxed code, and transactional outputs. The maintained witnesses cover resource defaults, prepared-output immutability, path confinement, preamble safety, preview budgets, cache completeness, graph execution, model scoring, tracing, and output publication. Syntax-only postponed annotations and keyword markers are excluded; executable decisions remain under the unchanged 15% ceiling."
+    },
+    {
+      "name": "parser-conservation",
+      "config": "mutation/cosmic-ray.parser-conservation.toml",
+      "max_pending_per_shard": 80,
+      "max_survival_rate": 3.0,
+      "rationale": "The parser's structural acceptance gate is the F3 boundary (ENG-T07): it rejects any parse that lost an authored node, edge, handle or submodel reference, and reports a parent connection to a definition-owned child as dangling instead of dropping it. Its witness command is the conservation suite alone (34 tests, 3.4 seconds per run on the 2026-09-06 Windows baseline; 170 mutants before exclusions). Syntax-only postponed annotations are excluded with reviewed pragmas; the direct gate tests kill every comparison mutant on the node, edge and submodel-path mismatch branches. A fresh run of the committed gate and tests on 2026-09-06 left 3 effective survivors of 170 (1.76%). Residual survivors are three equivalent mutants: 'count > 1' -> 'count != 1' on Counter values that are never zero, 'pair[0] != target' -> 'is not' on interned identifiers, and 'root_ids | aliases' -> '^' on disjoint id sets."
     }
   ]
 }

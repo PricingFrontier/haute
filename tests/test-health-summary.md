@@ -16,5 +16,6 @@ Generated deterministically from the live test-debt scanners and mutation target
 | Mutation `json-shred` | 5.00% | mutation/targets.json max_survival_rate |
 | Mutation `jsonpath` | 4.00% | mutation/targets.json max_survival_rate |
 | Mutation `output-assembler` | 10.00% | mutation/targets.json max_survival_rate |
+| Mutation `parser-conservation` | 3.00% | mutation/targets.json max_survival_rate |
 | Mutation `path-resolution` | 5.00% | mutation/targets.json max_survival_rate |
 | Mutation `registry` | 0.00% | mutation/targets.json max_survival_rate |

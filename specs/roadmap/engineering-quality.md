@@ -61,7 +61,7 @@ and file-name inventories do not establish semantic completeness.
 | Package | State | Priority | Outcome |
 |---|---|---|---|
 | ENG-T04 | Decision | P1 | Make the node execution boundary testable and truthful; detect F1. |
-| ENG-T12 | Planned | P2 | Enforce collection, regression sensitivity, and sustainable CI cost. |
+| ENG-T12 | Decision | P2 | Enforce collection, regression sensitivity, and sustainable CI cost; the F1 witnesses and the W13-S02 lane wait on decisions. |
 
 ## Planned improvements
 
@@ -126,38 +126,32 @@ the decision; implementation and completion depend on it.
 mutation gates are useful but do not discover absent workflows. A refactor can
 also move behaviour outside a filename-specific mutation target.
 
-**Plan:**
+**Delivered (2026-09-06):** the ledger validator refuses a witness the ordinary
+lane would not collect (a module under `tests/performance/` or carrying a
+module-level perf mark) and keeps `scripts/property_test_files.txt` equal to the
+Hypothesis modules; the weekly `property-exploration` workflow runs that manifest
+under a wide, re-randomised budget and opens a `property-watch` issue on failure;
+the regression-sensitivity replay ran every fixed finding's witnesses against the
+pre-fix source in a detached worktree (all seven red; recorded in each ledger
+record's evidence and in `specs/engineering-quality/low-level.md`); the
+`parser-conservation` mutation target (F3's structural acceptance gate) was added
+after measuring its witness command (3.4 seconds per run, 170 mutants, 26.5%
+raw survival) with reviewed annotation pragmas and direct gate-branch tests, and
+a fresh run of the committed gate and tests left 3 effective survivors of
+170 (1.76%, the three equivalent mutants named in its rationale) under the
+3.0% ceiling; added PR cost is recorded per family in the owning Testing sections
+(about 70 seconds of serial backend time in total, no browser journeys added).
 
-1. Confirm exact test collection and execution lanes for each ledger record.
-   Ordinary backend witnesses belong under `tests/`, without a `perf` marker;
-   frontend tests use existing Vitest discovery; browser journeys use existing
-   Playwright projects and fixture isolation. Add targeted cross-platform cases
-   to the platform lane where filesystem/spawn behaviour requires it.
-2. Keep the current backend coverage/compatibility, frontend, browser, package,
-   performance and mutation gates. Expand only relevant selectors/targets;
-   do not lower floors, add skip/xfail debt, or increase retries to absorb failures.
-   Exact expected-failure evidence is collected before the fix locally; permanent
-   tests enter the ordinary green gate together with the correction.
-3. Check regression sensitivity with the original faulty implementation or a
-   narrowly scoped test-only fault in an isolated checkout: omitted revision
-   comparison, path-only suppression, stale namespace, discarded private edge,
-   incomplete rename, stale restart branch, ineffective publication fence and
-   missing execution enforcement must each trigger their intended assertion.
-   Replaying a safe recorded failure is acceptable evidence only for the exact
-   same code snapshot; report it as such. Do not modify the user's checkout to
-   run destructive or concurrent mutation experiments.
-4. Review mutation ownership for `_user_exec`, parser conservation, persistence,
-   watcher and cache callers after fixes. Add only bounded high-value targets and
-   decisive test commands after measuring their runtime. Backend mutation cannot
-   certify frontend rename behaviour; the real execution witness remains mandatory.
-   Equivalent/time-out mutants are not silently labelled killed.
-5. Measure added duration in existing CI artifacts and use the current job
-   timeout/budget contracts. Keep one smoke journey per critical UI handoff and
-   shift combinations to lower tiers. Run deterministic race regressions without
-   retry dependence; retain traces, seeds and exact selectors on failure.
-6. At each package completion update owning Testing sections and ledger records,
-   fold temporary spec contracts into current behaviour, and remove its roadmap
-   row/section. Keep active work in this catalogue, with no second remediation tree.
+**Plan:** the remaining steps.
+
+1. When ENG-T04 is decided, land its ordinary witnesses for F1 (W15-S01) through
+   the same red-to-green and sensitivity path, and re-run the mutation ownership
+   review for `_user_exec`.
+2. Decide W13-S02: either add a Docker-capable lane that builds the generated
+   scoring image and answers `/health` and `/quote`, or record the in-process
+   proof as the accepted limit. Docker is not available on the development
+   machine, so the lane cannot be verified locally before it is added.
+3. Claim programme completion only when no required `gap`/`decision` remains.
 
 **Acceptance:** All eight runtime findings have ordinary collected tests, observed
 red-to-green evidence and outcome assertions at the real boundary. F5–F8 have
@@ -166,13 +160,14 @@ have an explicit final disposition; no required `gap`/`decision` remains when
 claiming the programme complete. Relevant CI checks are green without weakening
 existing gates, and runtime/platform/provider limitations are stated explicitly.
 
-**Dependencies:** Incremental after each package; final completion requires
-ENG-T04–11. Mutation expansion follows measured value, not a blanket target count.
+**Dependencies:** ENG-T04 (F1 witnesses) and the W13-S02 decision.
 
 **Evidence:** `.github/workflows/ci.yml`; `.github/workflows/mutation.yml`;
-`frontend/package.json`; `frontend/playwright.config.ts`; `pyproject.toml`;
-`mutation/targets.json`; `scripts/run_mutation_suite.py`;
-`tests/test_test_debt.py`; `tests/test-health-summary.md`.
+`.github/workflows/property-exploration.yml`; `frontend/package.json`;
+`frontend/playwright.config.ts`; `pyproject.toml`; `mutation/targets.json`;
+`scripts/run_mutation_suite.py`; `scripts/property_test_files.txt`;
+`tests/test_test_debt.py`; `tests/test-health-summary.md`;
+`tests/test_workflow_coverage.py`.
 
 ## Delivery order and verification
 

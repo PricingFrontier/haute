@@ -22,7 +22,7 @@ def _edge_identity(edge: GraphEdge) -> _EdgeIdentity:
     return edge.source, edge.target, edge.sourceHandle, edge.targetHandle
 
 
-def _edge_detail(identity: _EdgeIdentity) -> dict[str, str | None]:
+def _edge_detail(identity: _EdgeIdentity) -> dict[str, str | None]:  # pragma: no mutate
     source, target, source_handle, target_handle = identity
     return {
         "source": source,
@@ -39,8 +39,8 @@ def assert_parser_structure_conserved(
     root_nodes: Sequence[GraphNode],
     root_edges: Sequence[GraphEdge],
     submodel_paths: Sequence[str] = (),
-    submodel_files: Mapping[str, str] | None = None,
-    submodel_instance_paths: Sequence[str] | None = None,
+    submodel_files: Mapping[str, str] | None = None,  # pragma: no mutate
+    submodel_instance_paths: Sequence[str] | None = None,  # pragma: no mutate
     submodel_aliases: Collection[str] = (),
 ) -> None:
     """Reject any parser result that lost an authored structural identity.

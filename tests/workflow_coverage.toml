@@ -362,7 +362,7 @@ invariant = "A Save based on a stale document revision is rejected with a confli
 [scenarios.evidence]
 commit = "e512dc5f"
 command = 'uv run pytest "tests/test_route_save_pipeline.py::TestStaleSavePrecondition" "tests/test_partial_failure.py::TestStaleSaveUnderLock" -q -p no:warnings'
-result = "10 passed"
+result = "10 passed; sensitivity replay 2026-09-06 at 9daa4372: TestStaleSavePrecondition and TestStaleSaveUnderLock fail 10 of 10 against src/haute/routes/_save_pipeline.py and src/haute/routes/pipeline.py from e512dc5f^"
 
 [[scenarios]]
 id = "W02-S02"
@@ -385,7 +385,7 @@ invariant = "A server write followed by an external write to the same path befor
 [scenarios.evidence]
 commit = "e512dc5f"
 command = 'uv run pytest "tests/test_server.py::TestFileWatcher::test_external_write_to_self_written_path_before_flush_is_broadcast" "tests/test_server.py::TestFileWatcher::test_unchanged_self_write_to_same_path_is_suppressed" "tests/test_server.py::TestFileWatcher::test_self_delete_is_suppressed_but_external_recreate_is_broadcast" -q -p no:warnings'
-result = "3 passed"
+result = "3 passed; sensitivity replay 2026-09-06 at 9daa4372: TestFileWatcher fails 6 of 12 against src/haute/routes/_helpers.py, src/haute/_file_ops.py and src/haute/server.py from e512dc5f^"
 
 [[scenarios]]
 id = "W02-S03"
@@ -430,7 +430,7 @@ invariant = "A parent connection naming a private submodel child is rejected as 
 [scenarios.evidence]
 commit = "4f2b0865"
 command = 'uv run pytest "tests/test_parser_conservation.py::TestPrivateChildEndpoints" -q -p no:warnings'
-result = "5 passed"
+result = "5 passed; sensitivity replay 2026-09-06 at 9daa4372: TestPrivateChildEndpoints fails 5 of 5 against the parser files from 4f2b0865^"
 
 [[scenarios]]
 id = "W03-S02"
@@ -463,7 +463,7 @@ invariant = "Renaming an upstream node or an API input frame never edits a coded
 [scenarios.evidence]
 commit = "a9f7779a"
 command = 'cd frontend && npx playwright test e2e/rename-execution.spec.ts --retries=0 && npx vitest run src/utils/__tests__/nodeUpdatePlan.test.ts src/__tests__/App.integration.test.tsx; cd .. && uv run pytest tests/test_rename_stable_binding.py -q -p no:warnings'
-result = "e2e 1 passed (14.8s); vitest 57 passed; pytest 1 passed"
+result = "e2e 1 passed (14.8s); vitest 57 passed; pytest 1 passed; sensitivity replay 2026-09-06 at 9daa4372: the Vitest witnesses fail 7 of 57 against frontend/src/utils/nodeUpdatePlan.ts from a9f7779a^ (browser journey not replayed)"
 
 [[scenarios]]
 id = "W03-S03"
@@ -844,7 +844,7 @@ invariant = "A second optimiser setup, data-output preparation, or auto-range jo
 [scenarios.evidence]
 commit = "00bbe3ff"
 command = 'uv run pytest "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_uses_edited_helper_on_next_operation" "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_reuses_namespace_when_helper_is_unchanged" "tests/test_optimiser_routes.py::TestEstimateRoute::test_streaming_auto_range_job_pins_one_preamble_fingerprint" "tests/test_executor.py::TestPreviewCacheInvalidation::test_prepare_data_output_uses_edited_helper_on_next_operation" "tests/test_executor.py::TestPreambleLockConcurrency::test_compile_preamble_pinned_fingerprint_is_used_verbatim" -q -p no:warnings'
-result = "5 passed"
+result = "5 passed; sensitivity replay 2026-09-06 at 9daa4372: the preamble witnesses fail 4 of 13 against src/haute/executor.py and src/haute/routes/_optimiser_service.py from 00bbe3ff^"
 
 [[scenarios]]
 id = "W09-S02"
@@ -1017,7 +1017,7 @@ invariant = "Every committed generation is one create-only pointer object: a com
 [scenarios.evidence]
 commit = "272af286"
 command = 'uv run pytest "tests/test_project_storage.py::TestUcPublicationAuthority" "tests/test_project_storage.py::TestUcContainerDeathSurvival" -q -p no:warnings'
-result = "34 passed in 27.00s"
+result = "34 passed in 27.00s; sensitivity replay 2026-09-06 at 9daa4372: TestUcPublicationAuthority errors 9 of 9 against src/haute/_uc_transport.py and src/haute/_storage_types.py from 272af286^"
 
 [[scenarios]]
 id = "W11-S02"
@@ -1049,7 +1049,7 @@ invariant = "Restore after publishing on a newly selected branch resumes that br
 [scenarios.evidence]
 commit = "e46d9c6a"
 command = 'uv run pytest "tests/test_project_storage.py::TestUcContainerDeathSurvival" "tests/test_project_storage.py::TestContainerDeathSurvival" -q -p no:warnings'
-result = "40 passed in 37.10s"
+result = "40 passed in 37.10s; sensitivity replay 2026-09-06 at 9daa4372: the container-death witnesses fail 7 of 40 against src/haute/_project_storage.py from e46d9c6a^"
 
 [[scenarios]]
 id = "W11-S03"

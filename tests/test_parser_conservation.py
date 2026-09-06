@@ -1331,3 +1331,129 @@ class TestPrivateChildEndpoints:
             diagnostic.source_file == "main.py" and diagnostic.source_span is not None
             for diagnostic in endpoint_diagnostics
         )
+
+
+class TestConservationGateRaisesOnEveryMismatch:
+    """Direct witnesses for the gate's own failure branches (ENG-T12 mutation target).
+
+    A correct parser never reaches these branches, so they are driven directly:
+    each mismatch is exercised in both lexicographic directions (a lost item and
+    an extra item) so that a comparison weakened to ``<`` or ``>`` cannot pass
+    unnoticed, and the consistent input is the known-good control.
+    """
+
+    @staticmethod
+    def _graph(node_ids: list[str], edges: list[tuple[str, str]]):
+        from tests.conftest import make_graph
+
+        return make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": node_id,
+                        "data": {"label": node_id, "nodeType": "polars", "config": {"code": ""}},
+                    }
+                    for node_id in node_ids
+                ],
+                "edges": [
+                    {"id": f"e_{source}_{target}", "source": source, "target": target}
+                    for source, target in edges
+                ],
+            }
+        )
+
+    @staticmethod
+    def _raw(*specs: tuple[str, list[str]]) -> list[dict]:
+        return [{"func_name": name, "param_names": params} for name, params in specs]
+
+    def test_consistent_structure_is_accepted(self) -> None:
+        from haute._parser_conservation import assert_parser_structure_conserved
+
+        graph = self._graph(["a", "b"], [("a", "b")])
+        assert (
+            assert_parser_structure_conserved(
+                raw_nodes=self._raw(("a", []), ("b", ["a"])),
+                explicit_connects=[],
+                root_nodes=graph.nodes,
+                root_edges=graph.edges,
+                submodel_paths=["child.py"],
+                submodel_instance_paths=["child.py"],
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        ("authored", "parsed"),
+        [(["a", "b"], ["a"]), (["a"], ["a", "b"]), (["a", "b"], ["b", "a"])],
+        ids=["lost-node", "extra-node", "reordered-nodes"],
+    )
+    def test_node_identity_mismatch_is_rejected(
+        self, authored: list[str], parsed: list[str]
+    ) -> None:
+        from haute._parser_conservation import assert_parser_structure_conserved
+
+        graph = self._graph(parsed, [])
+        with pytest.raises(ParseError, match="conserve authored node identities") as exc_info:
+            assert_parser_structure_conserved(
+                raw_nodes=self._raw(*((name, []) for name in authored)),
+                explicit_connects=[],
+                root_nodes=graph.nodes,
+                root_edges=graph.edges,
+            )
+        assert exc_info.value.context["authored_node_ids"] == authored
+        assert exc_info.value.context["parsed_node_ids"] == parsed
+
+    @pytest.mark.parametrize(
+        ("parsed_edges", "expected_parsed"),
+        [
+            ([], []),
+            ([("a", "b"), ("b", "a")], [("a", "b"), ("b", "a")]),
+            ([("b", "a")], [("b", "a")]),
+        ],
+        ids=["lost-edge", "extra-edge", "wrong-edge"],
+    )
+    def test_edge_identity_mismatch_is_rejected(
+        self,
+        parsed_edges: list[tuple[str, str]],
+        expected_parsed: list[tuple[str, str]],
+    ) -> None:
+        from haute._parser_conservation import assert_parser_structure_conserved
+
+        graph = self._graph(["a", "b"], parsed_edges)
+        with pytest.raises(ParseError, match="conserve authored edge") as exc_info:
+            assert_parser_structure_conserved(
+                raw_nodes=self._raw(("a", []), ("b", ["a"])),
+                explicit_connects=[],
+                root_nodes=graph.nodes,
+                root_edges=graph.edges,
+            )
+        assert exc_info.value.context["authored_edges"] == [
+            {"source": "a", "target": "b", "source_handle": None, "target_handle": None}
+        ]
+        assert exc_info.value.context["parsed_edges"] == [
+            {"source": s, "target": t, "source_handle": None, "target_handle": None}
+            for s, t in expected_parsed
+        ]
+
+    @pytest.mark.parametrize(
+        ("authored", "loaded"),
+        [(["child.py"], []), ([], ["child.py"]), (["a.py", "b.py"], ["b.py", "a.py"])],
+        ids=["lost-reference", "extra-reference", "reordered-references"],
+    )
+    def test_submodel_reference_mismatch_is_rejected(
+        self, authored: list[str], loaded: list[str]
+    ) -> None:
+        from haute._parser_conservation import assert_parser_structure_conserved
+
+        graph = self._graph(["a"], [])
+        with pytest.raises(ParseError, match="conserve authored submodel references") as exc_info:
+            assert_parser_structure_conserved(
+                raw_nodes=self._raw(("a", [])),
+                explicit_connects=[],
+                root_nodes=graph.nodes,
+                root_edges=graph.edges,
+                submodel_paths=authored,
+                submodel_instance_paths=loaded,
+            )
+        assert exc_info.value.context["authored_submodel_paths"] == authored
+        assert exc_info.value.context["loaded_submodel_paths"] == loaded
