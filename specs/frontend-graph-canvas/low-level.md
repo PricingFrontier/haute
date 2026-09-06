@@ -330,8 +330,13 @@ newer overlapping transform.
    rename, occurrence edges only rebind their external `sourceHandle` because
    the shared definition is already keyed by public port id. Ordinary targets
    additionally migrate `input_scenario_map` keys and instance `inputMapping`
-   entries. The pure preflight checks each affected executable target's
-   post-commit input-name set for duplicates. On a collision the commit
+   entries, and a coded ordinary polars transform whose input was renamed
+   records the binding `inputMapping[<old name>] = <new name>` (identity
+   entries are dropped, an emptied mapping is removed): a rename never edits
+   `config.code`, so the transform's parameter names and body stay exactly
+   as authored while the edge carries the new name. The pure preflight checks
+   each affected executable target's post-commit input-name set — edge names
+   and the logical names they resolve to — for duplicates. On a collision the commit
    returns `{ ok: false, error }` and **nothing mutates** — no snapshot, no
    config, no edges, no mappings; `NodePanel` passes the result through
    `OnUpdateConfig` so the ApiInputEditor surfaces `error` inline at the

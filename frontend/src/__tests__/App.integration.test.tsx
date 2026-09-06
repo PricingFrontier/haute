@@ -1335,6 +1335,11 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       options.collision ? "collision name" : "Other Source",
       "polars",
     )
+    const codedConsumer = makeNode("coded_consumer", "Coded Consumer", "polars")
+    codedConsumer.data.config = {
+      code: 'df = Other_Source.select("value")',
+      untouched: "coded-consumer-config",
+    }
 
     return {
       nodes: [
@@ -1347,6 +1352,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
         firstOriginalInstance,
         secondOriginalInstance,
         liveSwitchInstance,
+        codedConsumer,
       ],
       edges: [
         {
@@ -1381,6 +1387,13 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
           id: "e_ordinary_instance",
           source: "ordinary_source",
           target: "instance_value",
+          sourceHandle: null,
+          targetHandle: null,
+        },
+        {
+          id: "e_ordinary_coded",
+          source: "ordinary_source",
+          target: "coded_consumer",
           sourceHandle: null,
           targetHandle: null,
         },
@@ -1679,6 +1692,11 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       instanceOf: "live_1",
       inputMapping: { Renamed_Source: "Mapped_Ordinary", stable_key: "Stable_Value" },
       untouched: "live-instance-config",
+    })
+    expect(configFor("coded_consumer")).toEqual({
+      code: 'df = Other_Source.select("value")',
+      inputMapping: { Other_Source: "Renamed_Source" },
+      untouched: "coded-consumer-config",
     })
     expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore + 1)
 

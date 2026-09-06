@@ -238,6 +238,113 @@ function applyConfigMapping(
   return null
 }
 
+function targetInputCollision(affected: AffectedRenameTarget): string | null {
+  const names = incomingEdgeInputNames({
+    targetNodeId: affected.target.id,
+    boundaryNodeId: affected.incomingTargetId,
+    nodes: affected.incomingScope.nodes as unknown as SimpleNode[],
+    edges: affected.incomingScope.edges as unknown as SimpleEdge[],
+    submodels: affected.incomingScope.submodels,
+  })
+  if (affected.scope !== affected.incomingScope) {
+    names.push(...incomingEdgeInputNames({
+      targetNodeId: affected.target.id,
+      nodes: affected.scope.nodes as unknown as SimpleNode[],
+      edges: affected.scope.edges as unknown as SimpleEdge[],
+      submodels: affected.scope.submodels,
+    }))
+  }
+  const seen = new Set<string>()
+  for (const name of names) {
+    if (seen.has(name)) return name
+    seen.add(name)
+  }
+  return null
+}
+
+function isCodedOrdinaryTransform(node: Node): boolean {
+  if (node.data.nodeType !== NODE_TYPES.POLARS) return false
+  const config = (node.data.config ?? {}) as Record<string, unknown>
+  if ("instanceOf" in config) return false
+  return typeof config.code === "string" && config.code.trim().length > 0
+}
+
+/**
+ * A coded ordinary transform references its inputs by name in `config.code`.
+ * A rename never edits that code: it records the logical→edge binding on the
+ * transform's `inputMapping` instead, so the generated parameter names and the
+ * code stay exactly as authored while the edge carries the new name.
+ */
+function preserveCodedTransformBindings(
+  changes: MappingChanges,
+  affected: AffectedRenameTarget,
+): NodeUpdatePlanFailure | null {
+  const { scope, target, pairs } = affected
+  if (!isCodedOrdinaryTransform(target)) return null
+  const edgeCollision = targetInputCollision(affected)
+  const label = String(target.data.label ?? target.id)
+  if (edgeCollision !== null) {
+    return { ok: false, error: `Target "${label}" already has an input named "${edgeCollision}".` }
+  }
+  const scopeChanges = changes.get(scope) ?? new Map<string, Record<string, unknown>>()
+  const config = scopeChanges.get(target.id) ?? ((target.data.config ?? {}) as Record<string, unknown>)
+  const mapping: Record<string, string> = {}
+  if (isRecord(config.inputMapping)) {
+    for (const [logical, current] of Object.entries(config.inputMapping)) {
+      if (typeof current === "string") mapping[logical] = current
+    }
+  }
+  for (const { from, to } of pairs) {
+    if (Object.values(mapping).includes(to)) continue // a logical name already follows this edge
+    if (Object.hasOwn(mapping, from)) {
+      return { ok: false, error: `Target "${label}" already has an input named "${from}".` }
+    }
+    if (Object.hasOwn(mapping, to)) {
+      return { ok: false, error: `Target "${label}" already has an input named "${to}".` }
+    }
+    mapping[from] = to
+  }
+  for (const [logical, current] of Object.entries(mapping)) {
+    if (logical === current) delete mapping[logical]
+  }
+  // The post-rename edge names resolve to logical names through the mapping;
+  // two edges resolving to one logical name would be an unbound or ambiguous
+  // input at run time, so refuse before anything mutates.
+  const logicalByEdge = new Map(Object.entries(mapping).map(([logical, current]) => [current, logical]))
+  const edgeNames = incomingEdgeInputNames({
+    targetNodeId: target.id,
+    boundaryNodeId: affected.incomingTargetId,
+    nodes: affected.incomingScope.nodes as unknown as SimpleNode[],
+    edges: affected.incomingScope.edges as unknown as SimpleEdge[],
+    submodels: affected.incomingScope.submodels,
+  })
+  if (affected.scope !== affected.incomingScope) {
+    edgeNames.push(...incomingEdgeInputNames({
+      targetNodeId: target.id,
+      nodes: affected.scope.nodes as unknown as SimpleNode[],
+      edges: affected.scope.edges as unknown as SimpleEdge[],
+      submodels: affected.scope.submodels,
+    }))
+  }
+  const seen = new Set<string>()
+  for (const edgeName of edgeNames) {
+    const logical = logicalByEdge.get(edgeName) ?? edgeName
+    if (seen.has(logical)) {
+      return { ok: false, error: `Target "${label}" already has an input named "${logical}".` }
+    }
+    seen.add(logical)
+  }
+  const nextConfig: Record<string, unknown> = { ...config }
+  if (Object.keys(mapping).length === 0) delete nextConfig.inputMapping
+  else nextConfig.inputMapping = mapping
+  const unchanged =
+    JSON.stringify(nextConfig.inputMapping ?? null) === JSON.stringify(config.inputMapping ?? null)
+  if (unchanged) return null
+  scopeChanges.set(target.id, nextConfig)
+  changes.set(scope, scopeChanges)
+  return null
+}
+
 function collectMappingChanges(
   rootScope: RenameGraphScope,
   affectedByScope: AffectedTargets,
@@ -265,6 +372,8 @@ function collectMappingChanges(
         false,
       )
       if (failure) return failure
+      const bindingFailure = preserveCodedTransformBindings(changes, affected)
+      if (bindingFailure) return bindingFailure
       for (const field of ["data_input", "banding_source", "ratebook_input"] as const) {
         const scalarFailure = applyConfigMapping(changes, affected.scope, affected.target, field, affected.pairs, false)
         if (scalarFailure) return scalarFailure
@@ -303,30 +412,6 @@ function applyMappingChanges(changes: MappingChanges): void {
     })
     scope.nodes.splice(0, scope.nodes.length, ...mappedNodes)
   }
-}
-
-function targetInputCollision(affected: AffectedRenameTarget): string | null {
-  const names = incomingEdgeInputNames({
-    targetNodeId: affected.target.id,
-    boundaryNodeId: affected.incomingTargetId,
-    nodes: affected.incomingScope.nodes as unknown as SimpleNode[],
-    edges: affected.incomingScope.edges as unknown as SimpleEdge[],
-    submodels: affected.incomingScope.submodels,
-  })
-  if (affected.scope !== affected.incomingScope) {
-    names.push(...incomingEdgeInputNames({
-      targetNodeId: affected.target.id,
-      nodes: affected.scope.nodes as unknown as SimpleNode[],
-      edges: affected.scope.edges as unknown as SimpleEdge[],
-      submodels: affected.scope.submodels,
-    }))
-  }
-  const seen = new Set<string>()
-  for (const name of names) {
-    if (seen.has(name)) return name
-    seen.add(name)
-  }
-  return null
 }
 
 function findInputCollision(affectedByScope: AffectedTargets): NodeUpdatePlanFailure | null {

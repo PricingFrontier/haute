@@ -541,7 +541,15 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   occurs. Name-referencing config can never half-apply or overwrite an existing key.
 - An ordinary source-label rename derives the old and new `edgeInputName` for every outgoing
   edge and uses the same duplicate preflight and atomic mapping migration as an API-frame rename.
-  Sanitisation-only no-ops do not rewrite mappings. The same transaction rewrites scalar
+  Sanitisation-only no-ops do not rewrite mappings. Either rename leaves a coded ordinary polars
+  transform's `config.code` and parameter names untouched: the transaction records the
+  logical-name binding `inputMapping[<old input name>] = <new input name>` on every such
+  consumer (unless an existing entry already follows that edge), drops identity entries and an
+  emptied mapping, and rejects — before any mutation — a rename whose logical input names would
+  collide on a target, with the same inline error the edge-name preflight uses. Codegen then
+  emits the parameters under their logical names with `inputMapping=` on the decorator, and the
+  executor binds them, so preview rows before and after the rename, and after save and reload,
+  are identical. Uncoded transforms and other node kinds keep their edge-derived names. The same transaction rewrites scalar
   exact-input selectors on downstream Optimiser (`data_input`, `banding_source`) and Optimiser
   Apply (`ratebook_input`) nodes when their selected edge is renamed.
 - `edgeInputName` resolves an editor-only edge sourced by a drilled submodel's composite Input by
