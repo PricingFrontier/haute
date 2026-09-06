@@ -240,10 +240,12 @@ Out of scope (owned elsewhere, linked where relevant):
   a naive `==` string comparison would leave open, even though the local-network
   threat model (a same-machine browser tab, not a remote attacker) makes timing
   attacks a lower-probability vector than the Origin/Host checks it's layered with.
-- **Loopback-only serving is a hard product boundary.** `cli/_serve.py` rejects
-  wildcard, LAN/public, and custom-hostname binds before startup. Haute has no
-  reverse-proxy or shared-host mode because this UI can execute project code and
-  access project files.
+- **Loopback-only serving is the posture of `haute serve` and the stock app.**
+  `src/haute/cli/_serve.py` rejects wildcard, LAN/public, and custom-hostname
+  binds before startup because this UI can execute project code and access
+  project files. The only exception is the explicit hosted deployment entry point
+  in `src/haute/hosted.py`, which delegates authentication to a platform SSO proxy
+  (see [hosted-databricks-app](../hosted-databricks-app/high-level.md)).
 - **Lazy env-var reads over import-time constants.** A constant frozen at import
   silently ignores overrides applied afterward (programmatic server start, test
   `monkeypatch.setenv`, uvicorn reload) — this was an actual regression class, not

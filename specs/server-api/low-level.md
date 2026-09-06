@@ -610,14 +610,13 @@ FastAPI's `{"detail": <string-or-object>}` envelope; this includes structured 50
 payloads nested under `detail`. Pydantic request/query validation uses
 `{"detail": [validation-error...]}`. `_RequestIdMiddleware` constructs its 500 JSON directly.
 The JSON-cache router's `ApiInputSchemaError` is another deliberate direct-response exception:
-`{"detail": str, "type": "ApiInputSchemaError"}`. Pipeline-list parse failures surface `str(exc)` as `PipelineSummary.error` only for
-`ParseError` (hand-authored, path-safe messages); any other exception is logged
-server-side and surfaced as a fixed "Failed to parse pipeline. Check the server logs for
-details." message, and the `file` field is always relative to the working directory
-(falling back to the file name). Live-sync parse failures surface `str(exc)` as
-`parse_error.error`; primary pipeline load uses FastAPI's `{"detail": <parse diagnostic>}`
-422 envelope when no discovered file parses. The `ParseError` and live-sync diagnostics
-deliberately bypass the internal-error sanitizer.
+`{"detail": str, "type": "ApiInputSchemaError"}`. Any load failure for a discovered file
+in pipeline listing yields a `source_only` summary with `diagnostic_count=1` and the failure
+is logged server-side; there is no per-item error string on the wire, and the `file` field
+is always relative to the working directory (falling back to the file name). Live-sync
+parse failures surface `str(exc)` as `parse_error.error`; primary pipeline load uses
+FastAPI's `{"detail": <parse diagnostic>}` 422 envelope when no discovered file parses.
+The `ParseError` and live-sync diagnostics deliberately bypass the internal-error sanitizer.
 
 Two safety nets exist above individual route handlers: `_RequestIdMiddleware` catches any
 exception a route handler failed to catch and returns its separately pinned sanitized 500 shape (with a

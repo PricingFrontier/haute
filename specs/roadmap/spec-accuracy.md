@@ -36,7 +36,6 @@ Non-goals:
 
 | Package | State | Priority | Outcome |
 |---|---|---|---|
-| SPEC-A01 | Planned | P1 | The seven P1 route, security and submodel contracts read as the code behaves. |
 | SPEC-A02 | Planned | P2 | Server API, git, hosted app, hosted storage and sandbox specifications corrected. |
 | SPEC-A03 | Planned | P2 | Background jobs, build, caching, CLI, codegen, Databricks I/O, deploy, engineering-quality and execution-engine specifications corrected. |
 | SPEC-A04 | Planned | P2 | Expression parsing, explore, I/O layer, JSON shredding, MLflow, optimiser, rating, reference pipeline and tracing specifications corrected. |
@@ -56,36 +55,6 @@ editing pass: for every finding it re-reads the cited specification line and
 the cited code at `HEAD`, applies the recorded fix or a better one that obeys
 the writing rules, or records the finding as already resolved with the proof,
 and never edits a file outside its list.
-
-### SPEC-A01 — P1 contracts
-
-**Why:** Seven findings describe contracts an integrator would code against
-wrongly: the git readiness state set (F002), the storage bind status code and
-its claimed 409 (F003, F004), the security boundary that denies the hosted
-reverse-proxy mode exists (F006), a `PipelineSummary.error` field that does not
-exist (F007), submodel routes described as writing files (F008), and a null
-inbound submodel handle described as silently dropped when it raises (F009, and
-its low-level twin ADD14).
-
-**Plan:** Fix the descriptions. F003 keeps the route at 200 (the body's
-`outcome` already carries the pending state; a status change would alter a
-contract for no consumer). F009/ADD14 state the `ParseError` that
-`flatten_graph` raises through `resolve_submodel_instances`, because a draft
-handle that reaches execution must fail loudly rather than vanish. F006 states
-the boundary as it is: loopback-only is the posture of `haute serve`, and the
-hosted entry point in `src/haute/hosted.py` delegates authentication to the
-platform proxy, cross-linked to the hosted-databricks-app specification.
-
-**Acceptance:** Each of the eight findings is either corrected in the cited
-document (and in every sibling passage the finding names) or recorded as
-resolved at `HEAD` with the proof; `tests/test_docs_accuracy.py` stays green.
-
-**Dependencies:** None.
-
-**Evidence:** `fable5.1-review/report.md`; `fable5.1-review/findings.json`;
-`specs/git-integration/low-level.md`; `specs/hosted-project-storage/low-level.md`;
-`specs/sandbox-security/high-level.md`; `specs/server-api/low-level.md`;
-`specs/submodels/high-level.md`; `specs/submodels/low-level.md`.
 
 ### SPEC-A02 — Server API, git, hosted app, hosted storage, sandbox
 

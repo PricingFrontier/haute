@@ -100,13 +100,15 @@ appends only missing exact lines under a `# Haute` block. Existing non-UTF-8 byt
 with replacement for membership testing. It deliberately does not ignore `*.haute.json`,
 because pipeline position sidecars belong on the save ledger.
 
-**`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of six
-literal values: `"no-repository"` (there is no Git repository), `"unset"` (repository
-present, attached HEAD, no working branch recorded), `"detached"` (HEAD has no branch;
-`head_sha` supplies the accurate commit context), `"invalid"` (Git metadata or the recorded
-pair is missing / ineligible / invariant-violating), `"divergent"` (attached HEAD is on
-neither the recorded branch nor its ledger), or `"ready"`. This read is total for missing
-and invalid repository metadata; transport/server failures remain non-200 responses.
+**`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of seven
+literal values: `"git-unavailable"` (no Git binary on PATH; distinct from
+`"no-repository"` so the UI does not offer init), `"no-repository"` (there is no Git
+repository), `"unset"` (repository present, attached HEAD, no working branch recorded),
+`"detached"` (HEAD has no branch; `head_sha` supplies the accurate commit context),
+`"invalid"` (Git metadata or the recorded pair is missing / ineligible /
+invariant-violating), `"divergent"` (attached HEAD is on neither the recorded branch nor
+its ledger), or `"ready"`. This read is total for missing and invalid repository metadata;
+transport/server failures remain non-200 responses.
 
 **HTTP contracts.** Every handler is synchronous `def`, so FastAPI runs git subprocess work
 in its thread pool. Request bodies are the named Pydantic models; omitted fields take the
@@ -115,7 +117,7 @@ validation envelope.
 
 | Method and path | Input | Success response |
 |---|---|---|
-| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (six-state readiness contract above, including `head_sha` when resolvable) |
+| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (seven-state readiness contract above, including `head_sha` when resolvable) |
 | `POST /api/git/working-branch` | `GitSetWorkingBranchRequest {branch,create=false}` | `GitSetWorkingBranchResponse {working_branch,state,last_save_sha?}` |
 | `POST /api/git/move` | `GitMoveRequest {sha}` | `GitMoveResponse {sha,short_sha,prior_branch,is_detached=true}` |
 | `POST /api/git/identity` | `GitSetIdentityRequest {user_name,user_email,set_global=false}` | `GitSetIdentityResponse {user_name,user_email,scope}` |

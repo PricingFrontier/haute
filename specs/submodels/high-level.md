@@ -378,9 +378,9 @@ must resolve the original pipeline-owned sidecars.
   [execution-engine](../execution-engine/high-level.md), tracing, deployment, expression-parsing,
   and the dissolve route; those consumers request the flat form and never execute a
   canonical occurrence node directly.
-- Depends on the codegen component through `SavePipelineService`: create emits the rewritten
-  parent plus submodel files; dissolve uses `graph_to_code` only when no submodels remain and
-  `graph_to_code_multi` when other occurrences remain.
+- Depends on [codegen](../codegen/high-level.md) through the explicit Save transaction:
+  codegen is invoked only by the explicit Save transaction (`SavePipelineService`,
+  server-api); the submodel routes neither generate nor write code.
 - Depends on [server-api](../server-api/high-level.md) for
   `SavePipelineService`, the shared `save_lock`, `pipeline_dir()` resolution,
   sidecar position loading, and the codebase-wide sanitised-error-detail
@@ -442,9 +442,10 @@ must resolve the original pipeline-owned sidecars.
   containing `/` or `\`) returns `400`; a reference resolving
   outside the project returns `403`. These typed path failures are mapped
   before filesystem access rather than escaping as an uncaught `ValueError`.
-- A null target handle on an inbound submodel edge is an unassigned editor
-  draft and is omitted by `flatten_graph`. A missing outbound handle, a
-  wrong-prefixed mapped handle, or a stale child reference raises `ParseError`.
+- A null inbound handle on an occurrence raises a contextual `ParseError`
+  (matching `_port_name`) during `flatten_graph` through
+  `resolve_submodel_instances`. A missing outbound handle, a wrong-prefixed
+  mapped handle, or a stale child reference likewise raises `ParseError`.
   Because dissolve is transform-only, these failures leave the submitted
   graph unchanged and cannot touch the parent or child files.
 - Any failure partway through the later explicit Save transaction (config
