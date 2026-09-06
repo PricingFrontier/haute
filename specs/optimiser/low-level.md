@@ -534,6 +534,11 @@ returned as a generic `status: "error"` payload.
 
 ## Edge cases and invariants
 
+- **Preamble dependencies are pinned per operation.** Estimate, solve and streaming
+  auto-range resolve `preamble_execution_fingerprint` once when the job starts executing
+  and pass it to every `_compile_preamble` call of that job, so chunks never mix helper
+  versions; a later job resolves a fresh fingerprint and computes with edited helpers. See
+  the execution-engine `_compile_preamble` contract.
 - **One blocking solve process-wide, plus graph/node setup single-flight.**
   `_check_no_concurrent_jobs` scans the shared optimiser store and blocks a second solve for any
   graph/node. `estimate`, `frontier_auto_range`, and `frontier_recompute` are explicitly excluded

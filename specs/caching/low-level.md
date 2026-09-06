@@ -130,6 +130,11 @@ and tested by the [IO layer](../io-layer/low-level.md).
 
 ## Edge cases and invariants
 
+- **Namespace and dataframe-cache identity share one snapshot.** An operation that
+  materialises dataframe-cache artifacts compiles its preamble under the dependency
+  fingerprint it pinned at admission; cache entries written by that operation therefore
+  describe the same helper contents the namespace was compiled from, and a helper edit
+  changes both for the next operation.
 - `canonical_json()` is the sole encoder for JSON-shaped transient digest and
   cache-key material. The one deliberate exception is the persisted modelling
   feature-contract hash: its historical compact sort-keyed JSON plus SHA-256

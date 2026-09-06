@@ -828,12 +828,17 @@ fallback after a process failure.
   tiny `_preamble_cells_guard` lock (never held during exec, so a hot cache hit never
   waits behind a slow compile in another thread) and populated under the coarser
   `_preamble_lock` with a double-check, so concurrent first-callers of the same key
-  return the *same* namespace dict rather than each compiling their own. `force_refresh=True`
-  (the default) recomputes a dependency fingerprint and evicts stale `utility` module
-  imports (plus matching `.pyc` files, since same-size/same-mtime edits can hide
-  behind bytecode-timestamp caching); `force_refresh=False` (sink/optimiser tight
-  loops) uses a fixed `"no-refresh"` fingerprint and skips validation/hashing
-  entirely, on the caller's promise that imported helper files are stable for the loop.
+  return the *same* namespace dict rather than each compiling their own. By default
+  each call recomputes the dependency fingerprint (`preamble_execution_fingerprint`) and
+  evicts stale `utility` module imports (plus matching `.pyc` files, since
+  same-size/same-mtime edits can hide behind bytecode-timestamp caching). A
+  multi-chunk operation (data-output sink, optimiser estimate/solve/auto-range) resolves
+  that fingerprint once at admission and passes it as `execution_fingerprint`, so every
+  chunk of that operation reuses one namespace without re-hashing helper files, while the
+  next operation resolves a fresh fingerprint and therefore sees helper edits. There is no
+  process-lifetime marker: a namespace is never reused across operations under a
+  dependency identity other than the one it was compiled for, and the dataframe cache key
+  of an operation is derived from the same pinned snapshot.
 - **`resolve_orig_source_names`/`build_instance_mapping` reject ambiguity rather than
   guessing.** A substring-match pairing between an instance node's upstream sources
   and the original node's parameter names that is ambiguous in either direction

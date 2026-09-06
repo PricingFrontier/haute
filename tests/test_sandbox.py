@@ -2076,12 +2076,12 @@ class TestPreambleCacheEviction:
         info_before = _compile_preamble.cache_info()  # type: ignore[attr-defined]
         bound = info_before.maxsize
 
-        # Insert ``bound + 5`` distinct preambles with force_refresh=False
+        # Insert ``bound + 5`` distinct preambles with execution_fingerprint
         # so each is a fresh miss that populates the cache rather than a
         # cache_clear() on every call.
         for i in range(bound + 5):
             preamble = f"PREAMBLE_EVICT_TEST_{i} = {i}\n"
-            _compile_preamble(preamble, force_refresh=False)
+            _compile_preamble(preamble, execution_fingerprint=f"pin-{i}")
 
         info_after = _compile_preamble.cache_info()  # type: ignore[attr-defined]
         assert info_after.currsize <= bound

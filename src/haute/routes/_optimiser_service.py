@@ -4165,6 +4165,13 @@ class OptimiserSolveService:
                     base_required = {
                         streaming_plan.base_node_id: streaming_plan.base_required_columns,
                     }
+                from haute._cache import preamble_execution_fingerprint
+                from haute.executor import _pipeline_dir
+
+                pinned = preamble_execution_fingerprint(
+                    body.graph.preamble or "",
+                    pipeline_dir=_pipeline_dir(body.graph),
+                )
                 lazy_outputs = self._execute_pipeline(
                     body,
                     job_id,
@@ -4172,6 +4179,7 @@ class OptimiserSolveService:
                     required_columns_by_node=base_required,
                     target_node_id=streaming_plan.base_node_id,
                     execution_context=execution_context,
+                    preamble_fingerprint=pinned,
                 )
                 self._raise_if_frontier_auto_range_stopped(job_id)
                 base_lf = lazy_outputs.get(streaming_plan.base_node_id)
@@ -4206,13 +4214,13 @@ class OptimiserSolveService:
                 self._raise_if_frontier_auto_range_stopped(job_id)
                 chunk_index = 0
                 from haute.chunking import ChunkRunnerRequest, iter_chunked_frames
-                from haute.executor import _compile_preamble, _pipeline_dir
+                from haute.executor import _compile_preamble
 
                 preamble_ns = (
                     _compile_preamble(
                         body.graph.preamble or "",
-                        force_refresh=False,
                         pipeline_dir=_pipeline_dir(body.graph),
+                        execution_fingerprint=pinned,
                     )
                     or None
                 )
@@ -4561,6 +4569,7 @@ class OptimiserSolveService:
         required_columns_by_node: Mapping[str, Iterable[str]] | None = None,
         target_node_id: str | None = None,
         execution_context: ExecutionContext | None = None,
+        preamble_fingerprint: str | None = None,
     ) -> dict[str, Any]:
         """Execute the pipeline lazily up to the optimiser node.
 
@@ -4568,6 +4577,7 @@ class OptimiserSolveService:
         """
         body = _with_flattened_optimiser_graph(body)
         try:
+            from haute._cache import preamble_execution_fingerprint
             from haute.executor import (
                 _build_node_fn,
                 _compile_preamble,
@@ -4578,11 +4588,20 @@ class OptimiserSolveService:
             # Resolve scenario: optimiser runs on batch data, not live.
             scenario = _resolve_batch_scenario(body.graph) or "batch"
 
+            pinned = (
+                preamble_fingerprint
+                if preamble_fingerprint is not None
+                else preamble_execution_fingerprint(
+                    body.graph.preamble or "",
+                    pipeline_dir=_pipeline_dir(body.graph),
+                )
+            )
+
             preamble_ns = (
                 _compile_preamble(
                     body.graph.preamble or "",
-                    force_refresh=False,
                     pipeline_dir=_pipeline_dir(body.graph),
+                    execution_fingerprint=pinned,
                 )
                 or None
             )

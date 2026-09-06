@@ -2937,6 +2937,139 @@ class TestEstimateRoute:
             streaming_response.ranges["conversion_prediction"].max
         )
 
+    def test_streaming_auto_range_job_pins_one_preamble_fingerprint(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Streaming auto-range job must resolve one pinned preamble fingerprint."""
+        import haute.executor
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        source_path = tmp_path / "base.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2", "q1"],
+                "premium": [100.0, 200.0, 50.0],
+                "base_premium": [100.0, 100.0, 100.0],
+                "unused_payload": ["drop", "me", "please"],
+            }
+        ).write_parquet(source_path)
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataInput",
+                            "config": _snapshot_parquet_data_input(str(source_path)),
+                        },
+                    },
+                    {
+                        "id": "scenario",
+                        "data": {
+                            "label": "scenario",
+                            "nodeType": "scenarioExpander",
+                            "config": {
+                                "quote_id": "quote_id",
+                                "column_name": "premium_multiplier",
+                                "min_value": 0.5,
+                                "max_value": 1.5,
+                                "steps": 2,
+                                "step_column": "scenario_index",
+                                "contract": {
+                                    "inputs": [],
+                                    "outputs": ["premium_multiplier", "scenario_index"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "features",
+                        "data": {
+                            "label": "features",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = scenario.with_columns("
+                                    "conversion_prediction="
+                                    "pl.col('premium') * pl.col('premium_multiplier') "
+                                    "/ pl.col('base_premium'))"
+                                ),
+                                "contract": {
+                                    "inputs": [
+                                        "premium",
+                                        "base_premium",
+                                        "premium_multiplier",
+                                    ],
+                                    "outputs": ["conversion_prediction"],
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "not_needed_for_auto_range",
+                                "constraints": {"conversion_prediction": {"min": 0.0}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "premium_multiplier",
+                                "data_input": "features",
+                                "chunk_size": 4,
+                                "auto_range_partition_count": 2,
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "scenario").model_dump(),
+                    make_edge("scenario", "features").model_dump(),
+                    make_edge("features", "opt").model_dump(),
+                ],
+                "preamble": "PREAMBLE_CONST = 42\n",
+                "source_file": str(tmp_path / "pipeline.py"),
+            }
+        )
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        prepared = service._prepare_frontier_auto_range(body)
+        assert prepared["streaming_plan"] is not None
+
+        streaming_job_id = store.create_job(
+            {"status": "running", "job_type": "frontier_auto_range"}
+        )
+
+        recorded_fingerprints: list[str | None] = []
+        real_compile = haute.executor._compile_preamble
+
+        def recording_compile(preamble, *args, **kwargs):
+            recorded_fingerprints.append(kwargs.get("execution_fingerprint"))
+            return real_compile(preamble, *args, **kwargs)
+
+        monkeypatch.setattr(haute.executor, "_compile_preamble", recording_compile)
+
+        service._run_streaming_frontier_auto_range_job(
+            body,
+            streaming_job_id,
+            config=prepared["config"],
+            chunk_size=prepared["chunk_size"],
+            partition_count=prepared["partition_count"],
+            streaming_plan=prepared["streaming_plan"],
+        )
+
+        assert len(recorded_fingerprints) >= 2
+        assert len(set(recorded_fingerprints)) == 1
+        assert recorded_fingerprints[0] is not None
+
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_streaming_maps_bounded_collect_failure_to_422(
         self,
@@ -13506,6 +13639,211 @@ class TestExecutePipelineExtended:
             "expected_income": [10.0, 12.0],
             "volume": [1.0, 0.8],
         }
+
+    def test_execute_pipeline_uses_edited_helper_on_next_operation(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import haute.execution as execution
+        from haute._sandbox import set_project_root
+        from haute.executor import _compile_preamble, execute_graph
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+        util_dir = tmp_path / "utility"
+        util_dir.mkdir()
+        (util_dir / "__init__.py").write_text("", encoding="utf-8")
+        (util_dir / "helpers.py").write_text("VALUE = 10\n", encoding="utf-8")
+
+        scored_path = _make_scored_data(tmp_path)
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataInput",
+                            "config": _snapshot_parquet_data_input(scored_path),
+                        },
+                    },
+                    {
+                        "id": "t",
+                        "data": {
+                            "label": "t",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": "df = source.with_columns(v=pl.lit(VALUE))",
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "expected_income",
+                                "constraints": {"volume": {"min": 0.9}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "scenario_value",
+                                "data_input": "t",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "t").model_dump(),
+                    make_edge("t", "opt").model_dump(),
+                ],
+                "preamble": "from utility.helpers import VALUE\n",
+                "source_file": str(tmp_path / "pipeline.py"),
+            }
+        )
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        checkpoint_dir = tmp_path / "ckpt"
+        checkpoint_dir.mkdir()
+        body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
+
+        try:
+            job_id_1 = store.create_job({"status": "running"})
+            outputs = service._execute_pipeline(
+                body,
+                job_id_1,
+                checkpoint_dir,
+                target_node_id="t",
+            )
+            assert outputs["t"].collect()["v"][0] == 10
+
+            # Edit helpers.py to VALUE = 200 (make the file size differ)
+            (util_dir / "helpers.py").write_text(
+                "VALUE = 200\n# longer file to ensure byte size differs\n",
+                encoding="utf-8",
+            )
+
+            preview_res = execute_graph(graph, target_node_id="t")
+            assert preview_res["t"].preview[0]["v"] == 200
+
+            job_id_2 = store.create_job({"status": "running"})
+            outputs_2 = service._execute_pipeline(
+                body,
+                job_id_2,
+                checkpoint_dir,
+                target_node_id="t",
+            )
+            assert outputs_2["t"].collect()["v"][0] == 200
+        finally:
+            execution.invalidate_dataframe_execution_cache()
+            _compile_preamble.cache_clear()
+
+    def test_execute_pipeline_reuses_namespace_when_helper_is_unchanged(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import haute.execution as execution
+        from haute._sandbox import set_project_root
+        from haute.executor import _compile_preamble
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)
+        util_dir = tmp_path / "utility"
+        util_dir.mkdir()
+        (util_dir / "__init__.py").write_text("", encoding="utf-8")
+        (util_dir / "helpers.py").write_text("VALUE = 10\n", encoding="utf-8")
+
+        scored_path = _make_scored_data(tmp_path)
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataInput",
+                            "config": _snapshot_parquet_data_input(scored_path),
+                        },
+                    },
+                    {
+                        "id": "t",
+                        "data": {
+                            "label": "t",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": "df = source.with_columns(v=pl.lit(VALUE))",
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "expected_income",
+                                "constraints": {"volume": {"min": 0.9}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "scenario_value",
+                                "data_input": "t",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("source", "t").model_dump(),
+                    make_edge("t", "opt").model_dump(),
+                ],
+                "preamble": "from utility.helpers import VALUE\n",
+                "source_file": str(tmp_path / "pipeline.py"),
+            }
+        )
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        checkpoint_dir = tmp_path / "ckpt"
+        checkpoint_dir.mkdir()
+        body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
+
+        _compile_preamble.cache_clear()
+        initial_hits = _compile_preamble.cache_info().hits
+
+        try:
+            job_id_1 = store.create_job({"status": "running"})
+            outputs_1 = service._execute_pipeline(
+                body,
+                job_id_1,
+                checkpoint_dir,
+                target_node_id="t",
+            )
+            val_1 = outputs_1["t"].collect()["v"][0]
+
+            job_id_2 = store.create_job({"status": "running"})
+            outputs_2 = service._execute_pipeline(
+                body,
+                job_id_2,
+                checkpoint_dir,
+                target_node_id="t",
+            )
+            val_2 = outputs_2["t"].collect()["v"][0]
+
+            assert val_1 == val_2 == 10
+            assert _compile_preamble.cache_info().hits > initial_hits
+        finally:
+            execution.invalidate_dataframe_execution_cache()
+            _compile_preamble.cache_clear()
 
     def test_execute_pipeline_reuses_auto_range_data_input_for_solve(
         self,
