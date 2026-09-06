@@ -469,15 +469,38 @@ result = "e2e 1 passed (14.8s); vitest 57 passed; pytest 1 passed"
 id = "W03-S03"
 workflow = "W03"
 contract = "specs/frontend-graph-canvas/high-level.md#behaviour"
-state = "gap"
-package = "ENG-T10"
+state = "covered"
 entry_point = "browser"
 tier = "browser"
 lane = "browser"
-real = ["backend", "browser"]
+real = ["backend", "browser", "codegen", "parser"]
 stubbed = []
-tests = []
-invariant = "The graph editing sequence in the W03 row conserves graph structure and computed meaning after save and reopen."
+tests = [
+  "frontend/e2e/graph-editing-sequence.spec.ts::a graph editing sequence conserves structure and computed meaning through save and reopen",
+  "frontend/e2e/core-flows.spec.ts::creates a submodel, adds a parent-side input, and persists it",
+  "frontend/e2e/core-flows.spec.ts::persists node edits through save and reload",
+  "frontend/e2e/edge-join.spec.ts::inserts lookup and named API joins on rendered edges, persists them, and traces both",
+  "frontend/e2e/edge-join.spec.ts::drills into an unsaved submodel containing an API Input",
+  "frontend/src/hooks/__tests__/useEdgeHandlers.test.ts::onDrop creates a new node from shared node metadata and drag config",
+  "frontend/src/hooks/__tests__/useEdgeHandlers.test.ts::handleDeleteEdge removes edge by id",
+  "frontend/src/hooks/__tests__/useKeyboardShortcuts.test.ts::Ctrl+V resolves copied node and edge identities before one atomic paste",
+  "frontend/src/hooks/__tests__/useKeyboardShortcuts.test.ts::Ctrl+V filters out singleton nodes that already exist in the graph",
+  "frontend/src/hooks/__tests__/useKeyboardShortcuts.test.ts::Ctrl+G inside submodel shows nesting warning instead of dialog",
+  "frontend/src/hooks/__tests__/useNodeHandlers.test.ts::handleCreateInstance creates an instance node with toast",
+  "frontend/src/hooks/__tests__/useNodeHandlers.test.ts::refuses to instance a submodel definition containing a singleton",
+  "frontend/src/hooks/__tests__/useNodeHandlers.test.ts::handleDeleteNode removes node and connected edges in ONE atomic step",
+  "frontend/src/hooks/__tests__/useSubmodelNavigation.test.ts::handleDissolveSubmodel calls API and updates nodes",
+  "frontend/src/stores/__tests__/useGraphStore.undoAtomicity.test.ts::single-node delete (with edges) is ONE undo entry; one undo restores node AND edges",
+  "frontend/src/stores/__tests__/useGraphStore.loadSnapshot.test.ts::atomically installs a clean saved baseline and clears both histories",
+  "tests/test_parser_conservation.py::TestPrivateChildEndpoints::test_parent_connect_to_private_child_is_rejected_as_dangling",
+  "tests/test_parser_submodels.py::TestMergeSubmodels::test_flatten_qualifies_runtime_children_and_removes_definition",
+]
+invariant = "A real editing sequence over the seeded project (disconnect, undo, redo, copy and paste, delete, instance, group and dissolve) leaves the graph structure and the previewed rows unchanged after save and reopen, and the saved file carries exactly the surviving nodes and connections; the client-side gestures are pinned individually by the store and hook tests, and the parser conserves or rejects every authored connection."
+
+[scenarios.evidence]
+commit = "b22726d8"
+command = 'cd frontend && npx playwright test e2e/graph-editing-sequence.spec.ts e2e/core-flows.spec.ts e2e/edge-join.spec.ts --retries=0 && npx vitest run src/hooks/__tests__/useEdgeHandlers.test.ts src/hooks/__tests__/useKeyboardShortcuts.test.ts src/hooks/__tests__/useNodeHandlers.test.ts src/hooks/__tests__/useSubmodelNavigation.test.ts src/stores/__tests__/useGraphStore.undoAtomicity.test.ts src/stores/__tests__/useGraphStore.loadSnapshot.test.ts; cd .. && uv run pytest tests/test_parser_conservation.py tests/test_parser_submodels.py -q -p no:warnings'
+result = "e2e 12 passed (1.0m); vitest Tests  240 passed (240); pytest 69 passed in 1.88s"
 
 [[scenarios]]
 id = "W04-S01"
@@ -914,15 +937,40 @@ result = "9 passed in 7.12s"
 id = "W10-S02"
 workflow = "W10"
 contract = "specs/explore-eda/high-level.md#behaviour"
-state = "gap"
-package = "ENG-T10"
+state = "covered"
 entry_point = "browser"
 tier = "browser"
 lane = "browser"
-real = ["backend", "browser"]
+real = ["backend", "browser", "explore-service"]
 stubbed = []
-tests = []
-invariant = "The W10 row explore and present outcomes hold."
+tests = [
+  "frontend/e2e/explore.spec.ts::uses cached Explore schema and formats a Pivot before its ordinary preview resolves",
+  "frontend/e2e/explore.spec.ts::a chart bound to a pivot renders from real pivot results and goes stale with its pivot",
+  "frontend/e2e/explore.spec.ts::a failed re-cache keeps the previous report visible as stale and reports the failure",
+  "frontend/src/panels/__tests__/ExplorePreview.test.tsx::cancels the active Explore job through the API",
+  "frontend/src/panels/__tests__/ExplorePreview.test.tsx::shows a retained stale report in yellow, forces refresh, and does not render it",
+  "frontend/src/__tests__/editors/ExplorePivotsConfig.test.tsx::loads and persists typed exact filter members",
+  "frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx::reports a retained result from a superseded identity as stale, never ready",
+  "frontend/src/panels/explore/__tests__/ExploreSummaryCards.test.tsx::copies the numeric display grid as TSV from its native action button",
+  "frontend/src/panels/explore/__tests__/ComboChart.test.tsx::exports a 2x PNG painted with the theme background before the chart",
+  "frontend/src/panels/explore/__tests__/ExploreSummaryCards.test.tsx::keeps all-null numeric fields visible with placeholder stats",
+  "frontend/src/panels/explore/__tests__/ExploreSummaryCards.test.tsx::expands high-cardinality categorical fields with capped top-value details",
+  "tests/test_explore_routes.py::test_explore_cancel_stops_in_flight_job",
+  "tests/test_explore_routes.py::test_failed_explore_refresh_preserves_last_durable_generation",
+  "tests/test_explore_routes.py::test_explore_cache_status_detects_changed_source_data_as_stale",
+  "tests/test_explore_pivot_routes.py::test_pivot_calculates_filters_aggregations_repeated_values_and_grand_totals",
+  "tests/test_explore_pivot_routes.py::test_pivot_cardinality_limits_accept_the_boundary_and_reject_one_above",
+  "tests/test_explore_pivot_routes.py::test_pivot_failure_is_typed_and_never_publishes_partial_result",
+  "tests/test_explore_round_trip.py::test_pivot_chart_cards_and_overview_round_trip_together",
+  "tests/test_explore_routes.py::test_all_null_column_has_none_min_max_values",
+  "tests/test_explore_routes.py::test_build_frame_stats_profiles_cardinality_identifier_and_duplicates",
+]
+invariant = "Run, pivot, chart, edit, save and reopen work against the real backend: a chart bound to a pivot renders from real pivot results and goes stale with its pivot, and a failed re-cache keeps the previous report visible as stale with a curated failure; cancel, retry, filters, export, exact aggregates and the all-null, cardinality and cap boundaries are pinned by the component and backend tests."
+
+[scenarios.evidence]
+commit = "b22726d8"
+command = 'cd frontend && npx playwright test e2e/explore.spec.ts --retries=0 && npx vitest run src/panels/__tests__/ExplorePreview.test.tsx src/__tests__/editors/ExplorePivotsConfig.test.tsx src/__tests__/editors/ExploreChartsConfig.test.tsx src/panels/explore/__tests__/ExploreSummaryCards.test.tsx src/panels/explore/__tests__/ComboChart.test.tsx; cd .. && uv run pytest tests/test_explore_routes.py tests/test_explore_pivots.py tests/test_explore_pivot_routes.py tests/test_explore_round_trip.py -q -p no:warnings'
+result = "e2e 3 passed (41.2s); vitest Tests  110 passed (110); pytest 263 passed in 121.14s (0:02:01)"
 
 [[scenarios]]
 id = "W11-S01"
