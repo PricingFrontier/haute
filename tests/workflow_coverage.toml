@@ -1300,17 +1300,32 @@ invariant = "A superseded terminal state is not applicable to the single-flight 
 [[scenarios]]
 id = "W15-S01"
 workflow = "W15"
-contract = "specs/sandbox-security/high-level.md#behaviour"
+contract = "specs/sandbox-security/high-level.md#trust-boundary"
 finding = "F1"
-state = "decision"
-package = "ENG-T04"
+state = "covered"
 entry_point = "library"
 tier = "unit"
 lane = "backend"
 real = ["user-exec", "polars"]
 stubbed = []
-tests = []
-invariant = "Node text cannot read an injected environment marker or write outside the project through the injected Polars object while permitted transforms still run."
+tests = [
+  "tests/test_node_code_trust_boundary.py::TestAccidentGuardAtTheNodeEntryPoint::test_documented_accident_shapes_are_rejected_before_execution",
+  "tests/test_node_code_trust_boundary.py::TestAccidentGuardAtTheNodeEntryPoint::test_permitted_transform_runs_through_the_same_entry_point",
+  "tests/test_node_code_trust_boundary.py::TestNodeCodeIsTrustedProjectCode::test_environment_and_outside_writes_remain_reachable_through_polars",
+  "tests/test_sandbox.py::TestSafeGlobals::test_import_blocked",
+  "tests/test_sandbox.py::TestSafeGlobals::test_open_blocked",
+  "tests/test_sandbox.py::TestSafeGlobals::test_eval_blocked",
+  "tests/test_sandbox.py::TestSafeGlobals::test_all_dangerous_builtins_blocked",
+  "tests/test_sandbox.py::TestValidateProjectPath::test_path_outside_root_raises",
+  "tests/test_sandbox.py::TestValidateProjectPath::test_traversal_attack_blocked",
+  "tests/test_sandbox.py::TestSafeUnpickle::test_os_system_blocked",
+]
+invariant = "Project code is trusted first-party code, stated in sandbox-security, execution-engine, the hosted app specification and the node editor: through the real node entry point the accident guard rejects open, imports, reflection and eval before any code runs and leaves a sentinel untouched, a permitted Polars transform runs, haute's own file loads stay inside the project root, untrusted model artifacts cannot execute code, and a synthetic environment marker and an outside-project write remain reachable through the injected Polars module and are pinned as the accepted posture rather than claimed contained."
+
+[scenarios.evidence]
+commit = "db045aee"
+command = 'uv run pytest tests/test_node_code_trust_boundary.py tests/test_sandbox.py -q -p no:warnings'
+result = "331 passed, 7 skipped in 11.98s; the environment-marker and outside-write probes of the 5 September 2026 review reproduce on every tree and are pinned as the accepted trust posture, not contained"
 
 [[scenarios]]
 id = "W15-S02"
