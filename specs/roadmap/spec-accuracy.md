@@ -137,20 +137,24 @@ green.
 result cache evicts pinned keys once unpinned ones run out although the store
 invariant says pinned entries are exempt (ADD07), the hatch build hook's atomic
 proof-publication failure branch has no test although the Testing section
-claims one (F023), and the JSON cache keeps an old-manifest upgrade path that
-the canonical-only policy forbids in a prerelease codebase (F203).
+claims one (F023), and the json-shredding specifications describe the
+persisted-proof rebind as a legacy-manifest upgrade although the code rebinds
+current-format manifests written on another volume or before a revision was
+observable (F203).
 
 **Plan:** Decisions taken: F095 treats a blank or whitespace-only header as
 absent (the guard the specification already describes) with a test; ADD07
 makes the pivot trimmer exempt pinned keys like the other four caches, with a
-Vitest witness; F023 adds the OSError-during-publication test; F203 removes the
-manifest-upgrade path so a manifest without the proof field fails validity and
-is rebuilt, with the shred tests adjusted. Each change updates its own
-specification passage in the same commit.
+Vitest witness; F023 adds the OSError-during-publication test; F203 rewrites the
+two json-shredding passages to describe the rebind rule as it is (a
+content-matching manifest whose recorded proof differs is rebound after a full
+hash) and leaves the code alone, because that path is the fresh-host and
+first-observation rebind rather than a format shim. Each code change updates
+its own specification passage in the same commit.
 
-**Acceptance:** Four behaviour changes each with a test; the four
-specification passages describe the new behaviour; backend and frontend suites
-green.
+**Acceptance:** Three behaviour changes each with a test; the four
+specification passages describe the behaviour as shipped; backend and frontend
+suites green.
 
 **Dependencies:** SPEC-A02 and SPEC-A07 (they leave these passages alone).
 

@@ -649,12 +649,16 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   record is a closed shape: `schema_version` is exactly the integer `1` (not a bool
   or numerically equal float), integer identity/size/time fields use their declared
   bounds, and Windows file IDs are exact non-zero 128-bit hexadecimal values.
-  Missing, old, malformed, or
-  conflicting records fall through to a complete hash. Once that hash succeeds,
-  each live legacy v2 manifest whose recorded size/SHA-256 agrees is upgraded by an
-  atomic `meta.json` replacement with the current revision-bound proof. A mismatch
-  is not changed; a write failure is logged and does not fail or weaken the proven
-  read. Revision movement fails the signature operation, loader failure publishes
+  Missing, malformed, or conflicting records, and records for an earlier source
+  generation, fall through to a complete hash. Once that hash succeeds,
+  `_rebind_persisted_source_proofs` rewrites each live v2 manifest whose recorded
+  size/SHA-256 agrees with the fresh hash but whose recorded proof differs (a cache
+  built on another volume, or before this host could observe a revision) by an atomic
+  `meta.json` replacement carrying the current revision-bound proof; a manifest already
+  carrying that proof, or one whose content differs, is not changed, and the rewrite is
+  skipped when the source revision moved after the hash. A write failure is logged and
+  does not fail or weaken the proven read. Revision movement fails the signature
+  operation, loader failure publishes
   nothing, and least-recently-used entries are evicted at the bound.
   Callers receive independent signature mappings so mutation of one result cannot
   poison later validity checks. When strong revision support is unavailable, each

@@ -225,13 +225,15 @@ that surrounded its full source hash beside that hash, with a digest binding tho
 fields against accidental manifest drift. After a restart, Haute may seed its
 bounded process memo from working/committed metadata only when the current revision
 matches that persisted revision exactly and every matching candidate agrees on the
-signature. Old metadata, conflicting proofs, a revision change, or a platform or
-filesystem that cannot provide a strong token forces a complete source hash.
-After that complete hash, Haute may atomically upgrade a live legacy manifest with
-the new revision-bound proof only when the manifest's recorded size and SHA-256
-match the freshly observed source. A failed upgrade is logged and leaves serving on
-the already-safe full-hash path; it never turns a metadata write into a weaker
-validity decision.
+signature. Metadata recorded for an earlier source generation, conflicting proofs, a
+revision change, or a platform or filesystem that cannot provide a strong token forces
+a complete source hash. After that complete hash, Haute atomically rebinds each live
+manifest whose recorded size and SHA-256 match the freshly observed source but whose
+recorded proof differs (a cache built on another volume, or before this host could
+observe a revision) to the current revision-bound proof, so later processes on this
+host reuse the proof without re-hashing the source. A failed rebind is logged and
+leaves serving on the already-safe full-hash path; it never turns a metadata write
+into a weaker validity decision.
 Runtime goes further to close the hash-then-reopen race: it atomically pins each requested
 artifact to a private file-backed snapshot, verifies size/SHA-256 from that exact
 snapshot in bounded chunks, and gives its stable path to Polars. A rewrite that
