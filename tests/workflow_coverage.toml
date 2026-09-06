@@ -639,15 +639,33 @@ id = "W11-S01"
 workflow = "W11"
 contract = "specs/hosted-project-storage/low-level.md#edge-cases-and-invariants"
 finding = "F2"
-state = "decision"
-package = "ENG-T05"
+state = "covered"
 entry_point = "hosted"
 tier = "unit"
 lane = "backend"
-real = ["publisher"]
+real = ["publisher", "git"]
 stubbed = ["files-api"]
-tests = []
-invariant = "A competing pointer arriving after the final read and before the pointer write is never silently overwritten."
+tests = [
+  "tests/test_project_storage.py::TestUcPublicationAuthority::test_a_competitor_arriving_after_our_read_and_before_our_create_is_not_overwritten",
+  "tests/test_project_storage.py::TestUcPublicationAuthority::test_a_competitor_arriving_during_our_bundle_upload_stops_at_the_create",
+  "tests/test_project_storage.py::TestUcPublicationAuthority::test_initial_publication_with_competing_writers_admits_exactly_one_generation_one",
+  "tests/test_project_storage.py::TestUcPublicationAuthority::test_a_stalled_predecessor_resuming_after_takeover_cannot_commit",
+  "tests/test_project_storage.py::TestUcPublicationAuthority::test_a_rejected_publisher_keeps_its_saves_and_a_fresh_container_restores_the_winner",
+  "tests/test_project_storage.py::TestUcPublicationAuthority::test_pointer_create_failure_before_commit_is_retryable",
+  "tests/test_project_storage.py::TestUcPublicationAuthority::test_an_ambiguous_pointer_create_is_reconciled_on_the_next_attempt",
+  "tests/test_project_storage.py::TestUcPublicationAuthority::test_every_acknowledged_generation_is_ordered_and_never_replaced",
+  "tests/test_project_storage.py::TestUcPublicationAuthority::test_fork_target_pointer_is_created_never_overwritten",
+  "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_a_mid_flight_publish_by_another_writer_stops_before_the_pointer",
+  "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_a_superseding_writer_stops_publishing",
+  "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_a_surviving_clone_the_volume_moved_past_stops_publishing",
+  "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_retention_prunes_beyond_the_newest_five",
+]
+invariant = "Every committed generation is one create-only pointer object: a competitor committing the same generation after this writer's head read (or during its bundle upload, or at the initial publication of an empty location, or as the successor of a stalled predecessor) is never overwritten but refused at the create, the loser's local saves survive, a create that failed before commit is retried, an ambiguous create that landed is reconciled on the next attempt, and a two-writer history keeps every acknowledged generation strictly ordered. Production atomicity of the create-only upload is a separate provider qualification (scripts/uc_create_only_qualification.py), not claimed by these tests."
+
+[scenarios.evidence]
+commit = "272af286"
+command = 'uv run pytest "tests/test_project_storage.py::TestUcPublicationAuthority" "tests/test_project_storage.py::TestUcContainerDeathSurvival" -q -p no:warnings'
+result = "34 passed in 27.00s"
 
 [[scenarios]]
 id = "W11-S02"

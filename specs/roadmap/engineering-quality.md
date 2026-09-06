@@ -61,7 +61,6 @@ and file-name inventories do not establish semantic completeness.
 | Package | State | Priority | Outcome |
 |---|---|---|---|
 | ENG-T04 | Decision | P1 | Make the node execution boundary testable and truthful; detect F1. |
-| ENG-T05 | Decision | P1 | Prove publication ordering at the authoritative pointer; detect F2. |
 | ENG-T08 | Reverify | P2 | Preserve executable meaning through rename and graph editing; detect F11. |
 | ENG-T10 | Planned | P2 | Cover every supported workflow family across product components. |
 | ENG-T11 | Planned | P2 | Add bounded state-machine, differential, and boundary generation. |
@@ -123,47 +122,6 @@ the decision; implementation and completion depend on it.
 `tests/test_sandbox.py`; `tests/test_user_exec_imports.py`;
 `tests/test_worker_isolation.py`; `tests/conftest.py`;
 `specs/sandbox-security/high-level.md`.
-
-### ENG-T05 — Publish one authoritative generation under competing writers
-
-**Why:** F2 injects a competing UC pointer after the final read and before the
-unconditional upload. Publication reports success while replacing the competitor.
-The existing race test injects before the final read and therefore passes.
-
-**Plan:** Preserve the deterministic in-memory Files API transport; add explicit
-hooks around bundle upload, final pointer read, and pointer commit. Keep the real
-publisher. Enumerate competitor arrival before final read, after final read,
-initial empty-pointer publication, and predecessor resumption after claim takeover.
-Record a history of attempts, outcomes and authoritative generations; assert
-that every acknowledged commit has a valid ordering and a stale writer cannot
-overwrite the winning generation. Test rejection preserving local saved work,
-failure before/after commit, and retry after an ambiguous transport response.
-
-Before selecting a fix, verify the actual storage API's available atomic
-conditional-update or enforced-writer primitive. Check create-only upload first:
-if a per-generation object written with overwrite disabled is honoured
-atomically by the volume, the authoritative head becomes the highest committed
-generation object rather than a mutable pointer, and the post-read window
-disappears. Record the chosen capability and supported failure semantics in
-hosted-project-storage. A fake must model the real API, not invent
-compare-and-swap support. Another read or a longer advisory lease cannot close
-the interval. If the provider cannot supply the required primitive, choose and
-specify a supported publication authority before declaring the guarantee
-satisfied. A provider contract qualification must use an isolated test resource
-when implementation reaches that step.
-
-**Acceptance:** The post-read interleaving fails on the baseline by detecting the
-overwritten pointer. All critical orderings preserve the accepted winner or
-surface an explicit conflict under the chosen contract. Local saves and retry
-state remain usable; no success message is inferred only from bundle existence.
-Unit evidence and provider capability evidence are reported separately.
-
-**Dependencies:** The coverage ledger; root-owned storage capability/design decision.
-The deterministic regression does not wait for remote credentials; provider
-qualification is required to claim the production atomicity guarantee.
-
-**Evidence:** `src/haute/_uc_transport.py`; `src/haute/_project_storage.py`;
-`tests/test_project_storage.py`; `specs/hosted-project-storage/low-level.md`.
 
 ### ENG-T08 — Preserve execution through rename and graph editing
 
@@ -228,7 +186,7 @@ the result. Use small synthetic fixtures with independently calculated outputs.
 | W08: train, retain and score | modelling, mlflow-model-registry, frontend-modelling-optimiser-ui | Configure/train/cancel/retry/persist/load/score and switch panels; minimal real supported model plus worker/lifecycle tests. Empty input, target/weight validation, partition boundaries, non-finite metrics, stale model/cache identity and artifact mismatch have explicit results. |
 | W09: optimise, choose and apply | optimiser | Estimate/solve/frontier/select/save/apply/trace; online and ratebook modes, infeasible/empty/non-finite cases, factor dtypes, tie ordering, constraints at limits and stale/cancelled jobs. Selected result, saved artifact, applied prices and trace agree. Keep current thread-backed isolation truthful. |
 | W10: explore and present | explore-eda, frontend-preview-explore | Run/cancel/retry report; pivot/filter/chart/edit/save/reopen/export; exact aggregates, empty/all-null/constant/large-cardinality and cap boundaries. Dependent charts become stale/refresh together; failed refresh retains or clears prior evidence exactly as specified. |
-| W11: version and restore | git-integration, hosted-project-storage, frontend-git-ui | Choose working branch/save/compare/revert/submit/push/pull/conflict/restore; cancellation leaves usable state and unsaved edits are protected. ENG-T05/06 supply pointer and restart contracts. Use temporary bare remotes and deterministic UC transport. |
+| W11: version and restore | git-integration, hosted-project-storage, frontend-git-ui | Choose working branch/save/compare/revert/submit/push/pull/conflict/restore; cancellation leaves usable state and unsaved edits are protected. The pointer and restart contracts are current hosted-project-storage behaviour. Use temporary bare remotes and deterministic UC transport. |
 | W12: assistant edit lifecycle | assistant, frontend-assistant-ui | Request/stream/tool proposal/validation/apply/save/verify/undo/cancel/reconnect with real application service and deterministic provider boundary. Stale proposals cannot overwrite newer edits; failed verification stays visible. Live provider qualification remains a separate lane. |
 | W13: deploy and score | deploy | Validate/prune/bundle/load/score for one and many requests; compare editor dry-run with packaged scoring using the same synthetic input. Missing artifacts, invalid output, non-JSON values and unsupported target fail at the specified stage; stub upload/service SDKs in ordinary CI. |
 | W14: admission and lifecycle | background-jobs | Running/completed/error/cancelled/timeout/superseded transitions for each applicable job family; late progress/completion cannot revive terminal jobs; reservations, processes, cache leases and temporary artifacts release once. A successful retry proves subsequent usability. |
@@ -400,8 +358,8 @@ ENG-T04–11. Mutation expansion follows measured value, not a blanket target co
 
 ## Delivery order and verification
 
-Reproduce ENG-T04/05 and
-resolve their enforcement/provider decisions promptly. Follow with ENG-T08 rename-lifecycle
+Reproduce ENG-T04 and
+resolve its enforcement decision promptly. Follow with ENG-T08 rename-lifecycle
 work.
 Expand ENG-T10 one workflow slice at a time; add ENG-T11 properties only after
 the corresponding oracle is settled. Integrate ENG-T12 continuously.
