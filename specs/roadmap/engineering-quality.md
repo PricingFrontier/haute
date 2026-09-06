@@ -63,7 +63,6 @@ and file-name inventories do not establish semantic completeness.
 | ENG-T04 | Decision | P1 | Make the node execution boundary testable and truthful; detect F1. |
 | ENG-T05 | Decision | P1 | Prove publication ordering at the authoritative pointer; detect F2. |
 | ENG-T06 | Reverify | P2 | Preserve the selected published branch across restore; detect F4. |
-| ENG-T07 | Reverify | P1 | Conserve or reject every authored connection; detect F3. |
 | ENG-T08 | Reverify | P2 | Preserve executable meaning through rename and graph editing; detect F11. |
 | ENG-T09 | Planned | P2 | Reconcile F5–F8 against executable boundary contracts. |
 | ENG-T10 | Planned | P2 | Cover every supported workflow family across product components. |
@@ -198,39 +197,6 @@ The ordinary branch-restart regression can be implemented independently.
 `tests/test_hosted.py`; `frontend/e2e/git-graph.spec.ts`;
 `frontend/e2e/git-sidebar-regression.spec.ts`.
 
-### ENG-T07 — Parse, flatten and save without losing authored graph intent
-
-**Why:** F3 lets parent connections name private child nodes, then drops those
-connections without a diagnostic. Valid generated round trips cannot generate
-that illegal raw-source case. Pipeline-config prose also conflicts with the
-public-interface parser/codegen contract.
-
-**Plan:** Reconcile pipeline-config, expression-parsing, codegen and submodels:
-parent endpoints are root nodes or registered occurrence aliases with valid
-public ports. Every authored edge is represented, with identity preserved, or
-rejected explicitly before a save can erase it.
-
-Add raw-source cases to parser conservation/submodel tests: private child as
-source, as target, child-to-child, nested child, and a shared definition used by
-two aliases. Include missing alias/port, duplicate identity, and legal root/public
-port controls. Assert contextual `ParseError` and no file mutation, not merely
-that the smaller returned graph remains a DAG. For valid inputs assert the
-ordered edge/handle identities through parse, flatten, generate and reparse,
-plus equal computed rows for a tiny multi-file graph.
-
-**Acceptance:** The original two private-child edges produce a targeted rejection
-on corrected code and are silently absent on baseline, making the regression
-red there. Legal public interfaces and repeated definition occurrences continue
-to execute. Recovery UI retains the invalid source and exposes the diagnostic.
-
-**Dependencies:** The coverage ledger; root resolves the contradictory endpoint prose
-before tests. No private-endpoint compatibility or repair fallback is added.
-
-**Evidence:** `src/haute/_parser_conservation.py`;
-`src/haute/_parser_submodels.py`; `tests/test_parser_conservation.py`;
-`tests/test_parser_submodels.py`; `tests/test_codegen_roundtrip_property.py`;
-`tests/test_codegen_execution_equivalence.py`; `tests/test_pipeline_recovery.py`.
-
 ### ENG-T08 — Preserve execution through rename and graph editing
 
 **Why:** F11 changes edge input names and structured mappings but leaves
@@ -260,8 +226,8 @@ the baseline and succeeds with equal rows after the correction. Invalid/collidin
 renames preserve the old graph and undo history. All supported rename entry points
 map to a collected test, including frame labels and submodel interfaces.
 
-**Dependencies:** The coverage ledger; root-owned rename contract. ENG-T07 supplies the
-submodel interface invariant; conflict-safe persistence is current server-api behaviour.
+**Dependencies:** The coverage ledger; root-owned rename contract. The submodel interface
+invariant and conflict-safe persistence are current parser and server-api behaviour.
 
 **Evidence:** `frontend/src/utils/nodeUpdatePlan.ts`;
 `frontend/src/hooks/useGraphCommitController.ts`;
@@ -322,7 +288,7 @@ the result. Use small synthetic fixtures with independently calculated outputs.
 |---|---|---|
 | W01: install and start | build-and-distribution, cli, hosted-databricks-app | Fresh supported install/init/open/run; missing or invalid config and optional dependency; hosted session bootstrap/failure/restart; useful error and no partial project. Reuse package/platform/optional-dependency lanes. |
 | W02: author and recover | pipeline-config, server-api, frontend-shared | Load/create/edit/save/reload; external edits, two clients, invalid source, recovery, disconnect/reconnect and unsaved work. The critical data-loss witnesses are current server-api tests. |
-| W03: build a graph | frontend-graph-canvas, frontend-node-editors, submodels, codegen | Create/configure/connect/disconnect/copy/instance/group/enter/exit/dissolve/delete/undo/redo/save/reopen. Conserve graph and computed meaning; singleton API input/output rules apply across nested definitions. ENG-T07/08 own parse/rename invariants. |
+| W03: build a graph | frontend-graph-canvas, frontend-node-editors, submodels, codegen | Create/configure/connect/disconnect/copy/instance/group/enter/exit/dissolve/delete/undo/redo/save/reopen. Conserve graph and computed meaning; singleton API input/output rules apply across nested definitions. ENG-T08 owns rename invariants; parse conservation is current parser behaviour. |
 | W04: obtain and persist data | io-layer, databricks-io | File/inline/database/lakehouse/Databricks operations that the registry supports; source switch, schema discovery, cache refresh and explicit write. Preview cannot perform writes. Missing source, wrong options, empty input, cancellation and failed output preserve appropriate prior artifacts. External credentials never enter browser/code fixtures. |
 | W05: structured request to response | json-shredding | JSON/JSONL/XML input, frame/edge join, output mapping, dry-run and batch assembly; missing/null/empty/nested arrays, duplicate or missing keys, row ordering, strict schema errors and exact expected response per request. Persist frame edits and reopen. |
 | W06: execute and inspect | execution-engine, caching, tracing, frontend-trace-ui | Preview/refresh/trace/export with active source, cold/warm caches, config/data/helper edits, filtered/reordered/joined rows and multiple frames. Compare values and trace identity; stale result cannot replace a newer selection. Operation freshness is current execution-engine behaviour. |
@@ -503,8 +469,7 @@ ENG-T04–11. Mutation expansion follows measured value, not a blanket target co
 ## Delivery order and verification
 
 Reproduce ENG-T04/05 and
-resolve their enforcement/provider decisions promptly; those decisions must not
-block ENG-T07 parser conservation. Follow with ENG-T06 and ENG-T08 lifecycle
+resolve their enforcement/provider decisions promptly. Follow with ENG-T06 and ENG-T08 lifecycle
 work, and reconcile ENG-T09 prose alongside the relevant boundary review.
 Expand ENG-T10 one workflow slice at a time; add ENG-T11 properties only after
 the corresponding oracle is settled. Integrate ENG-T12 continuously.

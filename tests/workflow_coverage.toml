@@ -35,6 +35,8 @@ id = "W03"
 title = "Build a graph"
 components = ["frontend-graph-canvas", "frontend-node-editors", "submodels", "codegen"]
 documents = [
+  "specs/pipeline-config/high-level.md",
+  "specs/pipeline-config/low-level.md",
   "specs/frontend-graph-canvas/high-level.md",
   "specs/frontend-graph-canvas/low-level.md",
   "specs/frontend-node-editors/high-level.md",
@@ -376,17 +378,27 @@ result = "1 passed"
 [[scenarios]]
 id = "W03-S01"
 workflow = "W03"
-contract = "specs/codegen/low-level.md#error-handling"
+contract = "specs/pipeline-config/low-level.md#edge-cases-and-invariants"
 finding = "F3"
-state = "gap"
-package = "ENG-T07"
+state = "covered"
 entry_point = "file"
 tier = "unit"
 lane = "backend"
 real = ["parser"]
 stubbed = []
-tests = []
-invariant = "A parent connection naming a private submodel child is rejected with a contextual ParseError before any save can drop it."
+tests = [
+  "tests/test_parser_conservation.py::TestPrivateChildEndpoints::test_parent_connect_to_private_child_is_rejected_as_dangling",
+  "tests/test_parser_conservation.py::TestPrivateChildEndpoints::test_private_child_as_source_only_is_rejected",
+  "tests/test_parser_conservation.py::TestPrivateChildEndpoints::test_child_to_child_connect_is_rejected",
+  "tests/test_parser_conservation.py::TestPrivateChildEndpoints::test_shared_definition_two_occurrences_public_ports_succeed_but_child_id_fails",
+  "tests/test_parser_conservation.py::TestPrivateChildEndpoints::test_private_child_connect_leaves_document_non_ready_with_the_diagnostic",
+]
+invariant = "A parent connection naming a private submodel child is rejected as a dangling connect() endpoint with its authored identity before any save can drop it; legal public-port connections through one or two occurrences are preserved."
+
+[scenarios.evidence]
+commit = "4f2b0865"
+command = 'uv run pytest "tests/test_parser_conservation.py::TestPrivateChildEndpoints" -q -p no:warnings'
+result = "5 passed"
 
 [[scenarios]]
 id = "W03-S02"
