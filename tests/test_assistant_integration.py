@@ -298,3 +298,81 @@ class TestMutationEndToEnd:
         ]
         assert tool_messages
         assert "version capture failed" in str(tool_messages[-1].content)
+
+    async def test_an_applied_assistant_mutation_is_undone_by_moving_the_ledger_back(
+        self, project_root: Path, mutations_ready
+    ):
+        import subprocess
+
+        from haute import _git
+        from haute._git_archive import move_to_commit
+        from haute.assistant._ops import AssistantOperationError
+        from haute.assistant._tools import _application_service
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        def _run_git(repo: Path, *args: str) -> str:
+            result = subprocess.run(
+                ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+            )
+            return result.stdout.strip()
+
+        working = "pricing-dev"
+        _run_git(project_root, "init", "-b", "main")
+        _run_git(project_root, "config", "user.name", "Test Actuary")
+        _run_git(project_root, "config", "user.email", "test@example.com")
+        _run_git(project_root, "add", "main.py", "haute.toml")
+        _run_git(project_root, "commit", "-m", "initial pipeline")
+        _git.set_working_branch(working, project_root, cwd=project_root, create=True)
+
+        service = _application_service()
+        pre_mutation_graph, pre_mutation_revision = service.inspect("main.py")
+        pre_mutation_bytes = (project_root / "main.py").read_bytes()
+        tip_before = _run_git(project_root, "rev-parse", f"{working}-save")
+
+        store = SessionStore()
+        session_id = store.create("main.py").id
+        events = await _run_turn(ExactPlanProvider(), store, session_id)
+        finished = next(
+            event
+            for event in events
+            if event.type == "tool_finished" and event.name == "apply_graph_plan"
+        )
+        assert finished.is_error is False, "mutation tool must succeed"
+
+        saved_text = (project_root / "main.py").read_text(encoding="utf-8")
+        assert "def Age_band(" in saved_text
+        assert "quotes" in saved_text
+        assert (project_root / "main.py").read_bytes() != pre_mutation_bytes
+
+        # The apply lands through SavePipelineService.save -> _capture_save_in_ledger
+        # (src/haute/routes/_save_pipeline.py), which commits the saved file on the
+        # working branch's ledger — the assistant never bypasses the save ledger.
+        tip_after = _run_git(project_root, "rev-parse", f"{working}-save")
+        assert tip_after != tip_before
+
+        stale_plan = service.dry_run(
+            "main.py",
+            [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}],
+        )
+        assert stale_plan.base_revision != pre_mutation_revision
+
+        # POST /api/git/move service function: src/haute/_git_archive.py::move_to_commit
+        move_to_commit(tip_before, project_root, cwd=project_root)
+
+        assert (project_root / "main.py").read_bytes() == pre_mutation_bytes
+        restored_graph = parse_pipeline_to_graph(
+            project_root / "main.py", project_root=project_root
+        )
+        assert "Age_band" not in {node.id for node in restored_graph.nodes}
+        assert "quotes" in {node.id for node in restored_graph.nodes}
+        assert {node.id for node in restored_graph.nodes} == {
+            node.id for node in pre_mutation_graph.nodes
+        }
+
+        restored_plan = service.dry_run("main.py", ADD_NODE_OPS)
+        assert restored_plan.base_revision == pre_mutation_revision
+
+        with pytest.raises(AssistantOperationError) as exc:
+            await service.apply("main.py", stale_plan.plan_hash)
+        assert exc.value.code == "stale_revision"
+        assert (project_root / "main.py").read_bytes() == pre_mutation_bytes

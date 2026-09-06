@@ -2318,3 +2318,188 @@ class TestProtocolLaunchCleanup:
         assert released == [True]
         assert not prepared.exists()
         service._supervisor.launch_protocol.assert_not_called()
+
+
+class TestTrainServiceLifecycles:
+    def test_a_training_job_can_be_started_again_after_a_failed_and_after_a_cancelled_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.modelling._training_job import model_contract_filename
+        from haute.routes._job_store import JobStore
+        from haute.routes._training_lifecycle import _TRAINING_JOB_TYPE
+        from haute.schemas import TrainRequest
+
+        store = JobStore()
+        output_dir = tmp_path / "outputs"
+        output_dir.mkdir()
+
+        cancel_job_id: str | None = None
+
+        def protocol_runner(function, request, **kwargs):
+            result = _inline_protocol_runner(function, request, **kwargs)
+            if request.request_id == cancel_job_id:
+                assert service.cancel(request.request_id)["status"] == "cancelled"
+            return result
+
+        service = TrainService(store, protocol_runner=protocol_runner)
+        launched = []
+        original_launch = service._supervisor.launch_protocol
+
+        def capture_launch(*args, **kwargs):
+            thread = original_launch(*args, **kwargs)
+            launched.append(thread)
+            return thread
+
+        monkeypatch.setattr(service._supervisor, "launch_protocol", capture_launch)
+
+        config = {
+            "name": "quoted",
+            "target": "y",
+            "algorithm": "catboost",
+            "loss_function": "RMSE",
+            "params": {"iterations": 2},
+            "output_dir": str(output_dir),
+            "evaluation": MINIMAL_EVALUATION,
+        }
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "data": {
+                            "label": "source",
+                            "nodeType": "dataInput",
+                            "config": {"path": "data.parquet"},
+                        },
+                    },
+                    {
+                        "id": "quoted",
+                        "data": {
+                            "label": "quoted",
+                            "nodeType": "modelling",
+                            "config": config,
+                        },
+                    },
+                ],
+                "edges": [make_edge("source", "quoted").model_dump()],
+            }
+        )
+        body = TrainRequest(graph=graph, node_id="quoted")
+
+        def fake_execute_and_sink(_body, _preamble_ns, _row_limit, job_id, **kwargs):
+            prep_file = tmp_path / f"prep_{job_id}.parquet"
+            prep_file.write_bytes(b"prepared")
+            return str(prep_file)
+
+        monkeypatch.setattr(service, "_compile_preamble", lambda _graph: None)
+        monkeypatch.setattr(service, "_estimate_ram", lambda *a, **k: (None, None, 100, 3))
+        monkeypatch.setattr(service, "_check_gpu_vram_before_launch", lambda *a, **k: None)
+        monkeypatch.setattr(service, "_execute_and_sink", fake_execute_and_sink)
+
+        class FailingJob:
+            def __init__(self, **kwargs) -> None:
+                self.output_dir = Path(kwargs["output_dir"])
+
+            def run(self, *_args, **_kwargs):
+                raise RuntimeError("injected worker failure")
+
+        current_model_bytes = b"generation-1-model"
+
+        class VersionedTrainingJob(_SuccessfulTrainingJob):
+            def run(self, progress, on_iteration, **kwargs):
+                result = super().run(progress, on_iteration, **kwargs)
+                Path(result.model_path).write_bytes(current_model_bytes)
+                return result
+
+        def assert_registry_free(prior_job_id: str | None = None) -> None:
+            assert not store.has_job_with_status("running")
+            assert len(service._training_jobs._tokens_by_job_id) == 0
+            assert len(service._training_jobs._latest_by_key) == 0
+            if prior_job_id is not None:
+                assert service._training_jobs.cancel(prior_job_id) is False
+                assert not service._training_jobs.is_cancelled(prior_job_id)
+                assert service._training_jobs.cancellation_reason(prior_job_id) is None
+                assert service._training_jobs._tokens_by_job_id.get(prior_job_id) is None
+                assert (
+                    service._training_jobs._latest_by_key.get((_TRAINING_JOB_TYPE, prior_job_id))
+                    is None
+                )
+
+        model_path = output_dir / "quoted.cbm"
+        contract_path = output_dir / model_contract_filename("quoted")
+
+        # 1. Start a training job that FAILS in the worker
+        assert_registry_free()
+        with patch("haute.modelling.TrainingJob", FailingJob):
+            resp1 = service.start(body)
+            assert resp1.status == "started"
+            service._join_preparation(resp1.job_id)
+            launched[-1].join_and_raise(timeout=10)
+
+        job1 = store.require_job(resp1.job_id)
+        assert job1["status"] == "error"
+        assert job1["terminal_reason"] == "error"
+        assert not model_path.exists()
+        assert not contract_path.exists()
+        assert not any(output_dir.glob("*.json"))
+        assert not list(tmp_path.rglob(".haute-training-*"))
+        assert not (tmp_path / f"prep_{resp1.job_id}.parquet").exists()
+
+        # 2. Start the SAME node's training again with a healthy worker
+        assert_registry_free(resp1.job_id)
+        current_model_bytes = b"generation-1-model"
+        with patch("haute.modelling.TrainingJob", VersionedTrainingJob):
+            resp2 = service.start(body)
+            assert resp2.status == "started"
+            assert resp2.job_id != resp1.job_id
+            service._join_preparation(resp2.job_id)
+            launched[-1].join_and_raise(timeout=10)
+
+        job2 = store.require_job(resp2.job_id)
+        assert job2["status"] == "completed"
+        assert model_path.is_file()
+        assert model_path.read_bytes() == b"generation-1-model"
+        assert contract_path.is_file()
+        assert (output_dir / "quoted.evaluation-plan.json").is_file()
+        assert (output_dir / "quoted.evaluation-results.json").is_file()
+        assert (output_dir / "quoted.evaluation-report.json").is_file()
+        assert not list(tmp_path.rglob(".haute-training-*"))
+        assert not (tmp_path / f"prep_{resp2.job_id}.parquet").exists()
+
+        # 3. Start a third run and CANCEL it before publication
+        assert_registry_free(resp2.job_id)
+        current_model_bytes = b"generation-2-model"
+        with patch("haute.modelling.TrainingJob", VersionedTrainingJob):
+            resp3 = service.start(body)
+            assert resp3.status == "started"
+            assert resp3.job_id not in (resp1.job_id, resp2.job_id)
+            cancel_job_id = resp3.job_id
+            service._join_preparation(resp3.job_id)
+            launched[-1].join_and_raise(timeout=10)
+
+        job3 = store.require_job(resp3.job_id)
+        assert job3["status"] == "cancelled"
+        # Completed run's artifacts are still intact
+        assert model_path.read_bytes() == b"generation-1-model"
+        assert contract_path.is_file()
+        assert not list(tmp_path.rglob(".haute-training-*"))
+        assert not (tmp_path / f"prep_{resp3.job_id}.parquet").exists()
+
+        # 4. Start a fourth run after the cancellation: completes, publishes new generation
+        assert_registry_free(resp3.job_id)
+        cancel_job_id = None
+        current_model_bytes = b"generation-2-model"
+        with patch("haute.modelling.TrainingJob", VersionedTrainingJob):
+            resp4 = service.start(body)
+            assert resp4.status == "started"
+            assert resp4.job_id not in (resp1.job_id, resp2.job_id, resp3.job_id)
+            service._join_preparation(resp4.job_id)
+            launched[-1].join_and_raise(timeout=10)
+
+        job4 = store.require_job(resp4.job_id)
+        assert job4["status"] == "completed"
+        # New generation published!
+        assert model_path.read_bytes() == b"generation-2-model"
+        assert not list(tmp_path.rglob(".haute-training-*"))
+        assert not (tmp_path / f"prep_{resp4.job_id}.parquet").exists()
+        assert_registry_free(resp4.job_id)
