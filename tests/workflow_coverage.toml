@@ -1223,15 +1223,28 @@ result = "548 passed, 2 skipped in 17.93s"
 id = "W13-S02"
 workflow = "W13"
 contract = "specs/deploy/low-level.md#testing"
-state = "decision"
-package = "ENG-T12"
+state = "covered"
 entry_point = "scoring"
 tier = "process"
 lane = "package"
-real = ["docker", "generated-app"]
-stubbed = []
-tests = []
-invariant = "A built container image answers /health and /quote for local synthetic data; whether CI gains a Docker-capable lane for that smoke is the user's decision, and until then the generated app is proven only in-process."
+real = ["generated-app", "uvicorn"]
+stubbed = ["docker"]
+tests = [
+  "tests/test_container_smoke_script.py::TestPrepareBuildDirectory::test_writes_four_artefacts_and_pinned_pip_line",
+  "tests/test_container_smoke_script.py::TestPrepareBuildDirectory::test_custom_wheel_requirement_copies_wheel_and_updates_dockerfile",
+  "tests/test_container_smoke_script.py::TestBuildAndPushImageCleanup::test_cleans_build_dir_on_docker_failure",
+  "tests/test_container_smoke_script.py::TestContainerSmokeServeCheck::test_prepare_only_without_serve_check",
+  "tests/test_container_smoke_script.py::TestContainerSmokeServeCheck::test_cli_serve_check_boots_the_generated_app_and_scores_the_golden_request",
+  "tests/test_infrastructure_contracts.py::TestContainerSmokeWorkflowContract::test_container_smoke_workflow_matches_operational_contracts",
+  "tests/test_container.py::TestGenerateAppSource::test_contains_health_endpoint",
+  "tests/test_container.py::TestGenerateAppSource::test_contains_quote_endpoint",
+]
+invariant = "The deployable artefact is proven, not only the in-process app: prepare_build_directory writes the manifest, artifacts, app.py and pinned Dockerfile (installing a local wheel when one is supplied) and build_and_push_image still cleans the build directory on a docker failure; scripts/container_smoke.py boots that build directory under a real uvicorn process and /health answers ok while /quote scores the example's golden request to every golden_output.json column; the container-smoke workflow builds and runs the real image weekly (Mondays 04:23 UTC) and on dispatch, checks the same two endpoints with curl and raises a container-watch issue on failure, and its cron, force_fail input, wheel build, serve-check, docker build/run and alarm steps are pinned by a contract test. Docker is not available on the development machine, so the image itself is verified only by the scheduled lane."
+
+[scenarios.evidence]
+commit = "63e71a61"
+command = 'uv run pytest tests/test_container_smoke_script.py tests/test_infrastructure_contracts.py tests/test_container.py tests/test_deploy_container.py -q -p no:warnings'
+result = "152 passed in 13.03s"
 
 [[scenarios]]
 id = "W14-S01"

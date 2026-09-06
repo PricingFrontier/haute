@@ -3,7 +3,10 @@
 This report preserves the 5 September 2026 review at commit
 `06c377e1fb0c5643d5c2bc781de73044daacdbb1`. Findings, source line references,
 and execution results describe that snapshot, not a fresh verification run.
-The [implementation plan](engineering-quality.md) owns current delivery work.
+The test expansion programme that answered these findings (ENG-T01 to ENG-T12)
+is complete; its witnesses are recorded in `tests/workflow_coverage.toml` and
+the owning component Testing sections, and the [submodels roadmap](submodels.md)
+owns the naming work that follows F13.
 Raw logs, probe programs, and review-coverage artifacts remain outside this
 repository; references to them below are provenance, not runnable checkout paths.
 Repository source links are relative so the report can be read from any clone.
@@ -37,7 +40,7 @@ P1 means fix promptly because it threatens security, persisted work, or computed
 
 **Fix order.** Address F9 and F12 early because ordinary editing can lose work or compute obsolete results. F1–F3 are the other P1 boundaries. F10 should accompany the Save work, followed by F11 and F4. Each finding below includes the failure mechanism, evidence, and acceptance criteria; no fixes have been applied.
 
-**Test-suite follow-up:** [Why the existing tests missed these defects](test-gap-findings-2026-09-05.md) maps every implementation finding to its neighbouring tests, explains the missing assertions and workflows, and records 12 existing tests that pass despite the reproduced defects.
+**Test-suite follow-up:** the companion test-gap analysis (retired with the programme it supported) mapped every implementation finding to its neighbouring tests and recorded 12 existing tests that passed despite the reproduced defects; the durable answer is the ledger record and Testing-section entry for each finding.
 
 ## F1 — P1: The node-code sandbox exposes unrestricted operating-system capabilities
 

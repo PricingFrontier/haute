@@ -139,14 +139,12 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
-    "engineering-quality",
     "explore-eda",
     "optimiser",
     "submodels",
 )
 _ROADMAP_SUPPORTING_REPORTS = (
     "bug-findings-2026-09-05.md",
-    "test-gap-findings-2026-09-05.md",
 )
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
