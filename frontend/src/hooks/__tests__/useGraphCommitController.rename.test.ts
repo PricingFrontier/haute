@@ -259,4 +259,84 @@ describe("useGraphCommitController submodel occurrence rename", () => {
 
     expect(commitGraph).not.toHaveBeenCalled()
   })
+  function ordinarySource(): Node {
+    return {
+      id: "src_1",
+      type: "polars",
+      position: { x: 0, y: 0 },
+      data: {
+        label: "source",
+        nodeType: "polars",
+        config: { code: "df = pl.DataFrame()" },
+        _functionName: "source",
+        _defaultInputName: "source",
+      },
+    }
+  }
+
+  it("does not resolve again when only preview metadata changed during identity resolution", async () => {
+    const resolveNodeIdentities = vi.fn(async (candidateNodes: readonly Node[]) => candidateNodes.map((n) => ({
+      ...n,
+      data: { ...n.data, _functionName: String(n.data.label), _defaultInputName: String(n.data.label) },
+    })))
+    const { hook, graphRef, commitGraph } = createController([ordinarySource()], [], {}, resolveNodeIdentities)
+    // A preview response lands while the request is in flight: only metadata changes.
+    resolveNodeIdentities.mockImplementationOnce(async (candidateNodes: readonly Node[]) => {
+      graphRef.current = {
+        nodes: graphRef.current.nodes.map((node) => ({ ...node, data: { ...node.data, _status: "ok" } })),
+        edges: graphRef.current.edges,
+      }
+      return candidateNodes.map((n) => ({
+        ...n,
+        data: { ...n.data, _functionName: String(n.data.label), _defaultInputName: String(n.data.label) },
+      }))
+    })
+
+    let result: unknown
+    await act(async () => {
+      result = await hook.result.current.onRenameNode("src_1", "renamed_source")
+    })
+
+    expect(result).toEqual({ ok: true })
+    expect(resolveNodeIdentities).toHaveBeenCalledOnce()
+    expect(commitGraph).toHaveBeenCalledOnce()
+    const [committedNodes] = commitGraph.mock.calls[0]
+    const renamed = committedNodes.find((n: Node) => n.id === "src_1")
+    expect(renamed.data.label).toBe("renamed_source")
+  })
+
+  it("resolves again and keeps the newer config when the node itself changed during identity resolution", async () => {
+    const resolveNodeIdentities = vi.fn(async (candidateNodes: readonly Node[]) => candidateNodes.map((n) => ({
+      ...n,
+      data: { ...n.data, _functionName: String(n.data.label), _defaultInputName: String(n.data.label) },
+    })))
+    const { hook, graphRef, commitGraph } = createController([ordinarySource()], [], {}, resolveNodeIdentities)
+    resolveNodeIdentities.mockImplementationOnce(async (candidateNodes: readonly Node[]) => {
+      graphRef.current = {
+        nodes: graphRef.current.nodes.map((node) => (
+          node.id === "src_1"
+            ? { ...node, data: { ...node.data, config: { code: "df = pl.DataFrame().head(1)" } } }
+            : node
+        )),
+        edges: graphRef.current.edges,
+      }
+      return candidateNodes.map((n) => ({
+        ...n,
+        data: { ...n.data, _functionName: String(n.data.label), _defaultInputName: String(n.data.label) },
+      }))
+    })
+
+    let result: unknown
+    await act(async () => {
+      result = await hook.result.current.onRenameNode("src_1", "renamed_source")
+    })
+
+    expect(result).toEqual({ ok: true })
+    expect(resolveNodeIdentities).toHaveBeenCalledTimes(2)
+    expect(commitGraph).toHaveBeenCalledOnce()
+    const [committedNodes] = commitGraph.mock.calls[0]
+    const renamed = committedNodes.find((n: Node) => n.id === "src_1")
+    expect(renamed.data.label).toBe("renamed_source")
+    expect(renamed.data.config).toEqual({ code: "df = pl.DataFrame().head(1)" })
+  })
 })

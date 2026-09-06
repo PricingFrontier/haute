@@ -1722,7 +1722,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     expect(graphCommitStateBytes()).toBe(stateBefore)
   })
 
-  it("does not overwrite a newer graph edit with a stale rename identity", async () => {
+  it("applies a rename on top of a newer graph edit instead of overwriting it", async () => {
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph()))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     let resolveIdentity!: (value: Awaited<ReturnType<typeof api.resolveEditorNodeIdentities>>) => void
@@ -1757,11 +1757,16 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       })
     })
 
-    expect(await screen.findByTestId("node-panel-label-error")).toHaveTextContent(
-      /graph changed while identity resolution was running/,
-    )
-    expect(graphCommitStateBytes()).toBe(stateAfterNewerEdit)
-    expect(label).toHaveValue("Other Source")
+    // The graph moved while the first identity request was in flight, so the
+    // controller resolves again against the live graph and commits on top of
+    // the newer edit: the moved position survives and the rename lands.
+    await waitFor(() => {
+      expect(useGraphStore.getState().nodes.find((node) => node.id === "ordinary_source")?.data.label)
+        .toBe("Renamed Source")
+    })
+    expect(useGraphStore.getState().nodes.find((node) => node.id === "original_2")?.position.x)
+      .toBe(321)
+    expect(graphCommitStateBytes()).not.toBe(stateAfterNewerEdit)
   })
 
   it("leaves an API frame rename untouched when identity resolution fails", async () => {

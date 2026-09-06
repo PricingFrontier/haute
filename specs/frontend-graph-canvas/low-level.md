@@ -346,7 +346,13 @@ newer overlapping transform.
    outgoing edge identities from the refreshed source handles, and the update
    planner rebinds downstream consumers (`inputMapping`, `input_scenario_map`,
    `data_input`, `banding_source`, `ratebook_input`) from the old alias to the
-   new one without code changes. The pure preflight checks
+   new one without code changes. An in-flight identity request is stale only
+   when the node's own authored fields (label, node type, config), the
+   definition interfaces or the document identity changed, or a newer request
+   for the same node superseded it; positions, selection and preview metadata
+   never invalidate it. A stale request resolves again against the live graph
+   (up to three attempts) and only then refuses, so a background update never
+   cancels a rename. The pure preflight checks
    each affected executable target's post-commit input-name set — edge names
    and the logical names they resolve to — for duplicates. On a collision the commit
    returns `{ ok: false, error }` and **nothing mutates** — no snapshot, no

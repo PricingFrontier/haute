@@ -4,6 +4,7 @@ import type { Edge, Node } from "@xyflow/react"
 import type { OnUpdateConfigResult } from "../panels/editors/_shared"
 import { isSubmodelInstanceConfig, type SubmodelInstanceConfig } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
+import { structuralFingerprint } from "../utils/structuralFingerprint"
 import {
   prepareNodeUpdate,
   type PreparedNodeUpdate,
@@ -12,11 +13,18 @@ import {
 type GraphSnapshot = { nodes: Node[]; edges: Edge[] }
 type ToastType = "success" | "error" | "warning" | "info"
 
+/**
+ * A preview response or a sync frame may replace the graph while an identity
+ * request is in flight. That is not a reason to drop the user's edit: the
+ * controller resolves again against the live graph, up to this many times,
+ * and refuses only a request superseded by a newer edit of the same node.
+ */
+const MAX_IDENTITY_ATTEMPTS = 3
+
 type GraphCommitRequest = {
   nodeId: string
   generation: number
-  graph: GraphSnapshot
-  submodels: Record<string, unknown>
+  editKey: string
   documentIdentity: string
 }
 
@@ -91,24 +99,40 @@ export default function useGraphCommitController({
     reservedApiInputFrameLabels,
   }), [graphRef, readOnly, reservedApiInputFrameLabels, submodelsRef])
 
+  // What an identity resolution depends on: the node's own authored fields and
+  // the definition interfaces. Positions, selection and preview metadata
+  // (underscore-prefixed data) change constantly and must not invalidate it.
+  const editKey = useCallback((nodeId: string): string => {
+    const node = graphRef.current.nodes.find((candidate) => candidate.id === nodeId)
+    const data = (node?.data ?? {}) as Record<string, unknown>
+    return JSON.stringify({
+      label: data.label ?? null,
+      nodeType: data.nodeType ?? null,
+      config: data.config ?? null,
+      submodels: structuralFingerprint({ submodels: submodelsRef.current }),
+    })
+  }, [graphRef, submodelsRef])
+
   const beginRequest = useCallback((nodeId: string): GraphCommitRequest => {
     const generation = (requestGenerationsRef.current.get(nodeId) ?? 0) + 1
     requestGenerationsRef.current.set(nodeId, generation)
     return {
       nodeId,
       generation,
-      graph: graphRef.current,
-      submodels: submodelsRef.current,
+      editKey: editKey(nodeId),
       documentIdentity: readDocumentIdentity(),
     }
-  }, [graphRef, readDocumentIdentity, submodelsRef])
+  }, [editKey, readDocumentIdentity])
+
+  const requestSuperseded = useCallback((request: GraphCommitRequest): boolean => (
+    requestGenerationsRef.current.get(request.nodeId) !== request.generation
+  ), [])
 
   const requestIsStale = useCallback((request: GraphCommitRequest): boolean => (
-    requestGenerationsRef.current.get(request.nodeId) !== request.generation
-    || graphRef.current !== request.graph
-    || submodelsRef.current !== request.submodels
+    requestSuperseded(request)
+    || editKey(request.nodeId) !== request.editKey
     || readDocumentIdentity() !== request.documentIdentity
-  ), [graphRef, readDocumentIdentity, submodelsRef])
+  ), [editKey, readDocumentIdentity, requestSuperseded])
 
   const commit = useCallback((prepared: PreparedNodeUpdate): void => {
     // Keep request-facing refs coherent immediately; the store subscription
@@ -150,23 +174,32 @@ export default function useGraphCommitController({
       return { ok: true }
     }
 
-    const candidate = { ...currentNode, data }
     const pending = (async (): Promise<OnUpdateConfigResult> => {
       try {
-        const resolved = await resolveNodeIdentities([candidate])
-        if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
-          throw new Error("identity resolver returned an invalid node")
-        }
-        if (requestIsStale(request)) {
-          return {
-            ok: false,
-            error: "Node update was not applied because the graph changed while identity resolution was running.",
+        for (let attempt = 1; attempt <= MAX_IDENTITY_ATTEMPTS; attempt += 1) {
+          const liveNode = graphRef.current.nodes.find((node) => node.id === nodeId)
+          if (!liveNode) return { ok: false, error: `Cannot update missing node "${nodeId}".` }
+          const attemptRequest = attempt === 1 ? request : beginRequest(nodeId)
+          const resolved = await resolveNodeIdentities([{ ...liveNode, data }])
+          if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
+            throw new Error("identity resolver returned an invalid node")
           }
+          if (requestSuperseded(attemptRequest)) {
+            return {
+              ok: false,
+              error: "Node update was not applied because a newer edit of this node superseded it.",
+            }
+          }
+          if (requestIsStale(attemptRequest)) continue
+          const finalPlan = prepare(nodeId, resolved[0].data, true)
+          if (!finalPlan.ok) return finalPlan
+          commit(finalPlan)
+          return { ok: true }
         }
-        const finalPlan = prepare(nodeId, resolved[0].data, true)
-        if (!finalPlan.ok) return finalPlan
-        commit(finalPlan)
-        return { ok: true }
+        return {
+          ok: false,
+          error: "Node update was not applied because the graph kept changing while identity resolution was running.",
+        }
       } catch (error: unknown) {
         return {
           ok: false,
@@ -179,78 +212,93 @@ export default function useGraphCommitController({
       if (!result.ok) addToast("error", result.error)
     })
     return { ok: true }
-  }, [addToast, beginRequest, commit, graphRef, prepare, registerPendingCommit, requestIsStale, resolveNodeIdentities])
+  }, [addToast, beginRequest, commit, graphRef, prepare, registerPendingCommit, requestIsStale, requestSuperseded, resolveNodeIdentities])
 
   const onRenameNode = useCallback((
     nodeId: string,
     label: string,
   ): Promise<OnUpdateConfigResult> => {
     if (readOnly) return Promise.resolve({ ok: false, error: "This pipeline document is read-only." })
-    const currentNode = graphRef.current.nodes.find((node) => node.id === nodeId)
-    if (!currentNode) return Promise.resolve({ ok: false, error: `Cannot rename missing node "${nodeId}".` })
-    if (currentNode.data.label === label) return Promise.resolve({ ok: true })
-    const isSubmodel = currentNode.data?.nodeType === NODE_TYPES.SUBMODEL
-      && isSubmodelInstanceConfig(currentNode.data?.config)
-    const candidateData: Record<string, unknown> = isSubmodel
-      ? {
-          ...currentNode.data,
-          label,
-          config: {
-            ...(currentNode.data.config as SubmodelInstanceConfig),
-            alias: label,
-          },
-        }
-      : {
-          ...currentNode.data,
-          label,
-        }
-    const candidate = { ...currentNode, data: candidateData }
-    const request = beginRequest(nodeId)
+    const initialNode = graphRef.current.nodes.find((node) => node.id === nodeId)
+    if (!initialNode) return Promise.resolve({ ok: false, error: `Cannot rename missing node "${nodeId}".` })
+    if (initialNode.data.label === label) return Promise.resolve({ ok: true })
+    const isOccurrence = (node: Node): boolean => (
+      node.data?.nodeType === NODE_TYPES.SUBMODEL && isSubmodelInstanceConfig(node.data?.config)
+    )
+    // An occurrence's name is its alias, so the candidate carries the new alias into
+    // the identity request and the returned handle identities carry the new names.
+    const candidateFor = (currentNode: Node): Node => {
+      const candidateData: Record<string, unknown> = isOccurrence(currentNode)
+        ? {
+            ...currentNode.data,
+            label,
+            config: {
+              ...(currentNode.data.config as SubmodelInstanceConfig),
+              alias: label,
+            },
+          }
+        : {
+            ...currentNode.data,
+            label,
+          }
+      return { ...currentNode, data: candidateData }
+    }
     const pending = (async (): Promise<OnUpdateConfigResult> => {
       try {
-        const resolved = await resolveNodeIdentities([candidate])
-        if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
-          throw new Error("identity resolver returned an invalid node")
-        }
-        if (requestIsStale(request)) {
-          return {
-            ok: false,
-            error: "Rename was not applied because the graph changed while identity resolution was running.",
+        for (let attempt = 1; attempt <= MAX_IDENTITY_ATTEMPTS; attempt += 1) {
+          const currentNode = graphRef.current.nodes.find((node) => node.id === nodeId)
+          if (!currentNode) return { ok: false, error: `Cannot rename missing node "${nodeId}".` }
+          const isSubmodel = isOccurrence(currentNode)
+          const request = beginRequest(nodeId)
+          const resolved = await resolveNodeIdentities([candidateFor(currentNode)])
+          if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
+            throw new Error("identity resolver returned an invalid node")
           }
-        }
-        if (isSubmodel) {
-          const resolvedFn = resolved[0].data?._functionName
-          if (resolvedFn !== label) {
+          if (requestSuperseded(request)) {
             return {
               ok: false,
-              error: `Occurrence names must be identifiers; use "${resolvedFn ?? ""}".`,
+              error: "Rename was not applied because a newer edit of this node superseded it.",
             }
           }
-          const isUsed = graphRef.current.nodes.some((other) => {
-            if (other.id === nodeId) return false
-            if (other.id === label) return true
-            if (other.data?.label === label) return true
-            const otherConfig = other.data?.config
-            if (
-              other.data?.nodeType === NODE_TYPES.SUBMODEL
-              && isSubmodelInstanceConfig(otherConfig)
-              && otherConfig.alias === label
-            ) {
-              return true
+          if (requestIsStale(request)) continue
+          if (isSubmodel) {
+            const resolvedFn = resolved[0].data?._functionName
+            if (resolvedFn !== label) {
+              return {
+                ok: false,
+                error: `Occurrence names must be identifiers; use "${resolvedFn ?? ""}".`,
+              }
             }
-            return false
-          })
-          if (isUsed) {
-            return {
-              ok: false,
-              error: `"${label}" is already used by another node.`,
+            const isUsed = graphRef.current.nodes.some((other) => {
+              if (other.id === nodeId) return false
+              if (other.id === label) return true
+              if (other.data?.label === label) return true
+              const otherConfig = other.data?.config
+              if (
+                other.data?.nodeType === NODE_TYPES.SUBMODEL
+                && isSubmodelInstanceConfig(otherConfig)
+                && otherConfig.alias === label
+              ) {
+                return true
+              }
+              return false
+            })
+            if (isUsed) {
+              return {
+                ok: false,
+                error: `"${label}" is already used by another node.`,
+              }
             }
           }
+          const prepared = prepare(nodeId, resolved[0].data, true)
+          if (!prepared.ok) return prepared
+          commit(prepared)
+          return { ok: true }
         }
-        const prepared = prepare(nodeId, resolved[0].data, true)
-        if (!prepared.ok) return prepared
-        commit(prepared)
-        return { ok: true }
+        return {
+          ok: false,
+          error: "Rename was not applied because the graph kept changing while identity resolution was running.",
+        }
       } catch (error: unknown) {
         return {
           ok: false,
@@ -260,7 +308,7 @@ export default function useGraphCommitController({
     })()
     registerPendingCommit(pending)
     return pending
-  }, [beginRequest, commit, graphRef, prepare, readOnly, registerPendingCommit, requestIsStale, resolveNodeIdentities])
+  }, [beginRequest, commit, graphRef, prepare, readOnly, registerPendingCommit, requestIsStale, requestSuperseded, resolveNodeIdentities])
 
   return { onUpdateNode, onRenameNode, waitForPendingCommits }
 }
