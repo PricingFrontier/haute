@@ -60,7 +60,6 @@ and file-name inventories do not establish semantic completeness.
 
 | Package | State | Priority | Outcome |
 |---|---|---|---|
-| ENG-T02 | Reverify | P1 | Protect edit/save/reload and external-change workflows; detect F9 and F10. |
 | ENG-T03 | Reverify | P1 | Keep computation and cache identity consistent across operations; detect F12. |
 | ENG-T04 | Decision | P1 | Make the node execution boundary testable and truthful; detect F1. |
 | ENG-T05 | Decision | P1 | Prove publication ordering at the authoritative pointer; detect F2. |
@@ -73,82 +72,6 @@ and file-name inventories do not establish semantic completeness.
 | ENG-T12 | Planned | P2 | Enforce collection, regression sensitivity, and sustainable CI cost. |
 
 ## Planned improvements
-
-### ENG-T02 — Edit, save, observe external changes, and recover
-
-**Why:** F9 serialises Save requests without checking their base revision, so a
-valid external edit can be overwritten. F10 records self-writes by path/time,
-so a later external write to the same path can be suppressed. Existing response
-ordering, lock-spy, and different-path watcher tests miss the persisted result.
-
-**Plan:** Extend the existing stale-revision precondition to Save rather than
-designing a new one. `pipeline_document_revision` in
-`src/haute/_pipeline_revision.py` already digests the canonical graph, the parent
-source and its `.haute.json` sidecar, and every submodel child source and
-sidecar; it is returned by load and save responses, required as `base_revision`
-by submodel create and dissolve, and required as `source_revision` by recovery
-preview, each rejecting a mismatch with 409 before any mutation. Amend
-server-api, pipeline-config and frontend-shared contracts so `SavePipelineRequest`,
-the inline request type in `frontend/src/api/client.ts` and the payload built in
-`frontend/src/hooks/usePipelineAPI.ts` carry that token, and the route checks it
-inside the save transaction before mutation, returning a `409` whose flat
-`detail` begins with the stable code `stale_document_revision:` (the
-repository's error-shape standard; the revisions go to the server log).
-Specify initial creation separately, UI
-recovery, and whether recovery artifacts, which feed the separate recovery
-revision, join the Save precondition. Specify how external writes during
-a multi-file commit are detected and handled; an application lock alone cannot
-promise filesystem-wide atomicity. Self-write suppression must identify committed
-content, with an explicit deletion representation, failed-write and rollback
-lifecycle.
-
-Extend real route/persistence tests and watcher tests with these scenario groups:
-
-| Sequence | Decisive assertions |
-|---|---|
-| Load A; external valid B; save A-based edit | Conflict; every B-owned artifact byte preserved; no new save-ledger commit or publish acknowledgement. |
-| Two clients load A; first saves B; delayed second saves C | Exactly one fresh save; stale client gets conflict; B remains on disk. Reverse the arrival order as a separate case. |
-| Fresh base; ordinary save; save response arrives after newer UI edit | Correct disk generation and returned revision; newer unsaved UI edit stays dirty. |
-| Only child source, config, sidecar or recovery artifact changes | The document revision changes where the specified ownership requires it; a stale write cannot overwrite that artifact. |
-| Delete/recreate target; malformed external edit; failed commit partway through | Explicit conflict/error; no mixed generation; recovery retains user work and coherent revision. Test identical recreation according to content-revision semantics. |
-| Server write then external replace/modify/delete on same path before coalesced event | Update describes final disk state; unchanged server-only control is suppressed. |
-| Failed server write or rollback followed by external edit | Marker does not hide external work; duplicate events do not erase dirty browser state. |
-
-Keep the actual Save service and disk writes in the witness. Drive the watcher
-with an injected event iterator and real classification, then assert the parsed
-broadcast revision/content. Add one two-page browser Save conflict workflow with
-real routes and a temporary project: conflict is visible, the local unsaved edit
-survives, and explicit reload/reapply permits a subsequent fresh save. Do not add
-an implicit overwrite retry. Separately cover disconnect/reconnect retrieving
-the current document when an event was missed.
-
-Replace the misleading `TestConcurrentSaveAndPreview` assertions in
-`tests/test_partial_failure.py`: two raw `Path.write_text` calls are not a Save
-test; absence of a `_lock` attribute is not a concurrency invariant; checking a
-self-write marker is not proof of preview cache invalidation. Replace with a
-real overlapping Save/preview operation and output/revision assertions, or remove
-redundancy when the owning modules already prove the contract.
-
-**Acceptance:** The stale-save and same-path cases fail on the baseline for lost
-bytes/missing notification, then pass with the correction. Fresh-save, true
-self-write, and conflict-recovery controls pass. HTTP contracts, generated
-frontend types/validators, request builder, persistence and UI agree. No broad
-exception assertion can pass merely because a fixture or import is broken.
-
-**Dependencies:** The coverage ledger; root defines the revision/creation/transaction
-contract before code. Generated API contract changes are atomic across stacks.
-
-**Evidence:** `src/haute/schemas.py::SavePipelineRequest`;
-`src/haute/routes/pipeline.py::save_pipeline`; `src/haute/_pipeline_revision.py`;
-`src/haute/routes/submodel.py`; `src/haute/routes/_save_pipeline.py`;
-`frontend/src/api/client.ts`; `frontend/src/hooks/usePipelineAPI.ts`;
-`src/haute/routes/_helpers.py`;
-`src/haute/server.py`; `tests/test_save_pipeline_integrity.py`;
-`tests/test_pipeline_revision.py`; `tests/test_save_lock_contract.py`;
-`tests/test_partial_failure.py`; `tests/test_server.py`;
-`frontend/src/hooks/__tests__/usePipelineAPI.test.ts`;
-`frontend/src/hooks/__tests__/usePipelineAPI.gaps.test.ts`;
-`frontend/e2e/core-flows.spec.ts`.
 
 ### ENG-T03 — Pin dependencies once per operation and refresh the next operation
 
@@ -389,7 +312,7 @@ renames preserve the old graph and undo history. All supported rename entry poin
 map to a collected test, including frame labels and submodel interfaces.
 
 **Dependencies:** The coverage ledger; root-owned rename contract. ENG-T07 supplies the
-submodel interface invariant; ENG-T02 supplies conflict-safe persistence.
+submodel interface invariant; conflict-safe persistence is current server-api behaviour.
 
 **Evidence:** `frontend/src/utils/nodeUpdatePlan.ts`;
 `frontend/src/hooks/useGraphCommitController.ts`;
@@ -449,7 +372,7 @@ the result. Use small synthetic fixtures with independently calculated outputs.
 | Workflow | Components | Required sequence and outcomes |
 |---|---|---|
 | W01: install and start | build-and-distribution, cli, hosted-databricks-app | Fresh supported install/init/open/run; missing or invalid config and optional dependency; hosted session bootstrap/failure/restart; useful error and no partial project. Reuse package/platform/optional-dependency lanes. |
-| W02: author and recover | pipeline-config, server-api, frontend-shared | Load/create/edit/save/reload; external edits, two clients, invalid source, recovery, disconnect/reconnect and unsaved work. ENG-T02 owns the critical data-loss witnesses. |
+| W02: author and recover | pipeline-config, server-api, frontend-shared | Load/create/edit/save/reload; external edits, two clients, invalid source, recovery, disconnect/reconnect and unsaved work. The critical data-loss witnesses are current server-api tests. |
 | W03: build a graph | frontend-graph-canvas, frontend-node-editors, submodels, codegen | Create/configure/connect/disconnect/copy/instance/group/enter/exit/dissolve/delete/undo/redo/save/reopen. Conserve graph and computed meaning; singleton API input/output rules apply across nested definitions. ENG-T07/08 own parse/rename invariants. |
 | W04: obtain and persist data | io-layer, databricks-io | File/inline/database/lakehouse/Databricks operations that the registry supports; source switch, schema discovery, cache refresh and explicit write. Preview cannot perform writes. Missing source, wrong options, empty input, cancellation and failed output preserve appropriate prior artifacts. External credentials never enter browser/code fixtures. |
 | W05: structured request to response | json-shredding | JSON/JSONL/XML input, frame/edge join, output mapping, dry-run and batch assembly; missing/null/empty/nested arrays, duplicate or missing keys, row ordering, strict schema errors and exact expected response per request. Persist frame edits and reopen. |
@@ -512,7 +435,7 @@ new tests have an identified missing outcome. Required decisions/gaps remain
 visible and prevent a claim of complete coverage. No new EDA, hosted, deployment
 adapter or solver feature is implemented merely to satisfy an invented test.
 
-**Dependencies:** The coverage ledger; corresponding ENG-T02–09 contracts where
+**Dependencies:** The coverage ledger; corresponding ENG-T03–09 contracts where
 workflows overlap. Unrelated W slices can proceed independently after root scoping.
 
 **Evidence:** `frontend/e2e/core-flows.spec.ts`; `frontend/e2e/data-io-nodes.spec.ts`;
@@ -541,7 +464,7 @@ as the production result. Add each generator only after its invariant is precise
   canonical parser, which does not support that recovery path.
 - Editing/version state: bounded load/edit/save/external-write/rename/undo/reload
   sequences. A small model tracks base revision, unsaved edit and durable files;
-  stale writes never replace a newer accepted generation. Use ENG-T02/08 semantics.
+  stale writes never replace a newer accepted generation. Use the save-precondition and ENG-T08 semantics.
 - Jobs/cache: enumerate admitted/running/cancel/timeout/late-completion/retry
   sequences with controlled scheduler hooks. Results correspond to one snapshot,
   terminal state never revives, and resource ownership returns to baseline.
@@ -566,7 +489,7 @@ known negative control that it detects. Failures reproduce from retained example
 without relying on test order or a local Hypothesis cache. Generated tests do not
 replace the eight fixed defect witnesses or the real user workflow checks.
 
-**Dependencies:** ENG-T02–10 contracts for the relevant family. Do not generate
+**Dependencies:** ENG-T03–10 contracts for the relevant family. Do not generate
 against an undecided save, rename, publication or execution-boundary oracle.
 
 **Evidence:** `tests/test_codegen_roundtrip_property.py`;
@@ -621,7 +544,7 @@ claiming the programme complete. Relevant CI checks are green without weakening
 existing gates, and runtime/platform/provider limitations are stated explicitly.
 
 **Dependencies:** Incremental after each package; final completion requires
-ENG-T02–11. Mutation expansion follows measured value, not a blanket target count.
+ENG-T03–11. Mutation expansion follows measured value, not a blanket target count.
 
 **Evidence:** `.github/workflows/ci.yml`; `.github/workflows/mutation.yml`;
 `frontend/package.json`; `frontend/playwright.config.ts`; `pyproject.toml`;
@@ -630,8 +553,8 @@ ENG-T02–11. Mutation expansion follows measured value, not a blanket target co
 
 ## Delivery order and verification
 
-Start with ENG-T02 and ENG-T03 to
-cover ordinary data-loss and stale-result workflows. Reproduce ENG-T04/05 and
+Start with ENG-T03 to
+cover stale-result workflows. Reproduce ENG-T04/05 and
 resolve their enforcement/provider decisions promptly; those decisions must not
 block ENG-T07 parser conservation. Follow with ENG-T06 and ENG-T08 lifecycle
 work, and reconcile ENG-T09 prose alongside the relevant boundary review.

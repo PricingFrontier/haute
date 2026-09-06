@@ -305,46 +305,73 @@ invariant = "Browser coverage of CLI signal handling is not applicable because t
 [[scenarios]]
 id = "W02-S01"
 workflow = "W02"
-contract = "specs/server-api/high-level.md#failure-model"
+contract = "specs/server-api/low-level.md#key-types-and-data-structures"
 finding = "F9"
-state = "gap"
-package = "ENG-T02"
+state = "covered"
 entry_point = "http"
 tier = "route"
 lane = "backend"
-real = ["filesystem", "save-service"]
+real = ["filesystem", "save-service", "save-lock"]
 stubbed = []
-tests = []
-invariant = "A Save based on a stale document revision is rejected with a conflict and the newer on-disk bytes of every owned artifact survive."
+tests = [
+  "tests/test_route_save_pipeline.py::TestStaleSavePrecondition::test_stale_base_revision_is_rejected_and_newer_bytes_survive",
+  "tests/test_route_save_pipeline.py::TestStaleSavePrecondition::test_two_clients_from_same_base_only_first_arrival_saves",
+  "tests/test_route_save_pipeline.py::TestStaleSavePrecondition::test_config_only_external_edit_blocks_stale_save",
+  "tests/test_route_save_pipeline.py::TestStaleSavePrecondition::test_creation_requires_null_base_revision",
+  "tests/test_route_save_pipeline.py::TestStaleSavePrecondition::test_deleted_target_conflicts_with_old_revision",
+  "tests/test_partial_failure.py::TestStaleSaveUnderLock::test_concurrent_saves_under_lock_only_one_succeeds",
+  "frontend/src/hooks/__tests__/usePipelineAPI.test.ts::a stale_document_revision conflict keeps the edit dirty and blocks until reload",
+  "frontend/e2e/save-conflict.spec.ts::a stale save is rejected, keeps the local edit, and succeeds after reload",
+]
+invariant = "A Save based on a stale document revision is rejected with a conflict and the newer on-disk bytes of every owned artifact survive; the browser keeps the local edit and succeeds only after an explicit reload."
+
+[scenarios.evidence]
+commit = "e512dc5f"
+command = 'uv run pytest "tests/test_route_save_pipeline.py::TestStaleSavePrecondition" "tests/test_partial_failure.py::TestStaleSaveUnderLock" -q -p no:warnings'
+result = "10 passed"
 
 [[scenarios]]
 id = "W02-S02"
 workflow = "W02"
-contract = "specs/server-api/high-level.md#design-rationale"
+contract = "specs/server-api/low-level.md#edge-cases-and-invariants"
 finding = "F10"
-state = "gap"
-package = "ENG-T02"
+state = "covered"
 entry_point = "file"
 tier = "workflow"
 lane = "backend"
 real = ["watcher-classification", "filesystem"]
 stubbed = ["event-delivery"]
-tests = []
-invariant = "A server write followed by an external write to the same path before the coalesced event is processed is broadcast as the external content."
+tests = [
+  "tests/test_server.py::TestFileWatcher::test_external_write_to_self_written_path_before_flush_is_broadcast",
+  "tests/test_server.py::TestFileWatcher::test_unchanged_self_write_to_same_path_is_suppressed",
+  "tests/test_server.py::TestFileWatcher::test_self_delete_is_suppressed_but_external_recreate_is_broadcast",
+]
+invariant = "A server write followed by an external write to the same path before the coalesced event is processed is broadcast as the external content; an unchanged self-write and a self-deletion stay suppressed."
+
+[scenarios.evidence]
+commit = "e512dc5f"
+command = 'uv run pytest "tests/test_server.py::TestFileWatcher::test_external_write_to_self_written_path_before_flush_is_broadcast" "tests/test_server.py::TestFileWatcher::test_unchanged_self_write_to_same_path_is_suppressed" "tests/test_server.py::TestFileWatcher::test_self_delete_is_suppressed_but_external_recreate_is_broadcast" -q -p no:warnings'
+result = "3 passed"
 
 [[scenarios]]
 id = "W02-S03"
 workflow = "W02"
-contract = "specs/server-api/low-level.md#control-flow"
-state = "gap"
-package = "ENG-T02"
+contract = "specs/server-api/low-level.md#edge-cases-and-invariants"
+state = "covered"
 entry_point = "file"
 tier = "workflow"
 lane = "backend"
 real = ["watcher-classification", "filesystem"]
 stubbed = ["event-delivery"]
-tests = []
+tests = [
+  "tests/test_server.py::TestFileWatcher::test_unrelated_external_edit_in_same_batch_is_broadcast_with_its_content",
+]
 invariant = "An unrelated external edit in the same watcher batch as a server write is broadcast with the edited file's actual document content and fingerprint."
+
+[scenarios.evidence]
+commit = "e512dc5f"
+command = 'uv run pytest "tests/test_server.py::TestFileWatcher::test_unrelated_external_edit_in_same_batch_is_broadcast_with_its_content" -q -p no:warnings'
+result = "1 passed"
 
 [[scenarios]]
 id = "W03-S01"

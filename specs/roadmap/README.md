@@ -18,7 +18,7 @@ or maintenance issue; `P3` opportunistic work.
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
-| [Test coverage and workflow assurance](engineering-quality.md) | Behavioural witnesses, edge cases, lifecycle workflows, regression sensitivity | `ENG-T02` |
+| [Test coverage and workflow assurance](engineering-quality.md) | Behavioural witnesses, edge cases, lifecycle workflows, regression sensitivity | `ENG-T03` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
 
