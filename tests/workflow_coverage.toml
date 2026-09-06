@@ -718,15 +718,53 @@ result = "42 passed in 5.83s"
 id = "W08-S02"
 workflow = "W08"
 contract = "specs/modelling/high-level.md#behaviour"
-state = "gap"
-package = "ENG-T10"
+state = "covered"
 entry_point = "http"
 tier = "workflow"
 lane = "backend"
-real = ["training-worker", "registry"]
-stubbed = []
-tests = []
-invariant = "The W08 row train, retain, score outcomes hold."
+real = ["training-worker", "registry", "scorer"]
+stubbed = ["mlflow-tracking"]
+tests = [
+  "tests/test_train_config_builder.py::TestBuildTrainingJobKwargs::test_kwargs_construct_a_real_training_job",
+  "tests/test_train_config_builder.py::TestExplicitObjectiveRequired::test_catboost_empty_loss_fails_loud",
+  "tests/test_training_worker_protocol.py::test_train_service_publishes_complete_evaluation_run",
+  "tests/test_train_service_coverage.py::TestTrainServiceLifecycles::test_a_training_job_can_be_started_again_after_a_failed_and_after_a_cancelled_run",
+  "tests/test_training_worker_protocol.py::test_cancel_before_publication_preserves_durable_artifacts",
+  "tests/test_training_worker_protocol.py::test_train_service_publication_wins_late_cancel_and_records_elapsed",
+  "tests/test_training_worker_protocol.py::test_training_entrypoint_stages_complete_evaluation_and_public_response",
+  "tests/test_training_worker_protocol.py::test_windows_publication_retries_transient_contention_and_publishes_complete_generation",
+  "tests/test_training_worker_protocol.py::test_train_service_rejects_evaluation_response_artifact_mismatch",
+  "tests/test_modelling.py::TestCatBoostAlgorithm::test_fit_predict",
+  "tests/test_modelling.py::TestTrainingJob::test_basic_training",
+  "tests/test_modelling.py::TestTrainingJob::test_empty_dataframe_raises",
+  "tests/test_modelling.py::TestTrainingJob::test_missing_target_raises",
+  "tests/test_modelling.py::TestTrainingJob::test_with_weight_column",
+  "tests/test_target_task_gate.py::TestTrainingTargetTaskIssue::test_fractional_decimal_gates_classification",
+  "tests/test_target_task_gate.py::TestTrainingJobGate::test_prepare_data_gates_continuous_target_under_classification",
+  "tests/test_training_evaluation.py::test_final_test_positions_never_enter_any_selection_fit",
+  "tests/test_training_evaluation.py::test_selection_fits_are_sequential_evaluation_only_and_final_fit_is_once",
+  "tests/test_training_lorenz_nonfinite.py::TestLorenzCallSiteFiltering::test_non_finite_predictions_are_filtered",
+  "tests/test_modelling_routes.py::TestTrainBackgroundLaunchFailures::test_non_finite_training_result_marks_job_error",
+  "tests/test_mlflow_io.py::TestResolveArtifactLocal::test_cache_hit_returns_local_path",
+  "tests/test_mlflow_io_concurrency.py::TestLoadModelSingleFlight::test_concurrent_same_model_loads_once_and_shares_instance",
+  "tests/test_mlflow_model_cache_key_contract.py::TestFastPathArtifactPerturbation::test_relogged_artifact_bytes_invalidate_in_process_cache",
+  "tests/test_mlflow_model_cache_key_contract.py::TestFullPathArtifactPerturbation::test_latest_retrain_in_place_invalidates_cache",
+  "tests/test_model_scorer.py::TestModelScorerScore::test_all_features_present_scores_successfully",
+  "tests/test_model_scorer.py::TestModelScorerScore::test_feature_contract_rejects_declared_categorical_level_drift",
+  "tests/test_model_scorer.py::TestValidateFeatures::test_missing_features_raises",
+  "tests/test_model_scorer.py::TestBatchScoreToParquetEmpty::test_empty_input_produces_empty_parquet_regression",
+  "tests/test_modelling.py::TestTrainingJob::test_offset_column",
+  "tests/test_modelling_export.py::TestByteStableExportForExistingConfigs::test_clean_catboost_script_is_byte_stable",
+  "frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx::moves focus and activation with arrows, wrapping and skipping disabled tabs",
+  "frontend/src/panels/__tests__/ModellingPreview.test.tsx::shows Loss tab when loss_history has data",
+  "frontend/e2e/core-flows.spec.ts::runs a real modelling training job and keeps results when switching panels",
+]
+invariant = "Configure, train, cancel, retry, persist, load and score run through the real lifecycle and a real CatBoost fit; a failed or cancelled run leaves the node startable again and its durable artifacts intact; empty input, target/weight validation, partition boundaries, non-finite metrics, stale model or cache identity and artifact mismatch each have their typed outcome; and the modelling panels switch without losing results."
+
+[scenarios.evidence]
+commit = "090a5003"
+command = 'uv run pytest tests/test_train_service_coverage.py tests/test_training_worker_protocol.py tests/test_train_config_builder.py tests/test_mlflow_io.py tests/test_mlflow_io_concurrency.py tests/test_mlflow_model_cache_key_contract.py tests/test_model_scorer.py tests/test_target_task_gate.py tests/test_training_evaluation.py tests/test_training_lorenz_nonfinite.py tests/test_modelling_export.py tests/test_offset_scoring.py "tests/test_modelling.py::TestCatBoostAlgorithm" "tests/test_modelling.py::TestTrainingJob" "tests/test_modelling_routes.py::TestTrainBackgroundLaunchFailures" -q -p no:warnings'
+result = "607 passed in 55.68s"
 
 [[scenarios]]
 id = "W09-S01"
@@ -970,15 +1008,42 @@ result = "8 passed in 2.29s"
 id = "W12-S02"
 workflow = "W12"
 contract = "specs/assistant/high-level.md#behaviour"
-state = "gap"
-package = "ENG-T10"
+state = "covered"
 entry_point = "http"
 tier = "workflow"
 lane = "backend"
-real = ["assistant-application"]
+real = ["assistant-application", "save-service", "git"]
 stubbed = ["provider"]
-tests = []
-invariant = "The W12 row assistant edit lifecycle outcomes hold."
+tests = [
+  "tests/test_assistant_routes.py::TestMessageTurn::test_happy_path_streams_sse_events",
+  "tests/test_assistant_loop.py::TestToolRoundTrip::test_tool_dispatch_result_feedback_and_second_round",
+  "tests/test_assistant_loop.py::TestToolRoundTrip::test_tool_error_feeds_model_not_turn_failure",
+  "tests/test_assistant_application.py::TestDryRun::test_real_save_validation_runs_before_a_plan_is_recorded",
+  "tests/test_assistant_application.py::TestDryRun::test_dry_run_is_no_write_and_records_exact_plan",
+  "tests/test_assistant_application.py::TestApply::test_low_risk_apply_is_exact_single_use_and_truthfully_verified",
+  "tests/test_assistant_application.py::TestApply::test_stale_revision_is_rejected_before_write_or_publish",
+  "tests/test_assistant_application.py::TestApply::test_committed_verification_failure_is_published_and_never_retried",
+  "tests/test_assistant_application.py::TestSchemaValidationScope::test_group_by_edit_validates_at_schema_tier",
+  "tests/test_assistant_integration.py::TestMutationEndToEnd::test_instruction_to_disk_broadcast_and_readback",
+  "tests/test_assistant_integration.py::TestMutationEndToEnd::test_an_applied_assistant_mutation_is_undone_by_moving_the_ledger_back",
+  "tests/test_assistant_loop.py::TestCancellation::test_inflight_mutation_completes_despite_cancel",
+  "tests/test_assistant_routes.py::TestSessionResume::test_resume_after_restart_returns_same_id_and_transcript",
+  "tests/test_assistant_session_persistence.py::TestRevival::test_restart_revives_a_session_from_disk",
+  "tests/test_assistant_providers.py::TestDatabricksProvider::test_all_providers_advertise_the_same_portable_production_schema",
+  "tests/test_assistant_config.py::TestReadinessMatrix::test_missing_api_key_names_the_env_var",
+  "tests/test_assistant_tools.py::TestReadTools::test_get_node_config_returns_redacted_policy_eligible_config",
+  "tests/test_assistant_ops.py::TestSemanticPlans::test_plan_rejects_polars_code_whose_result_is_discarded",
+  "frontend/src/stores/__tests__/useAssistantStore.test.ts::renders a failed terminal event as marker plus error toast",
+  "frontend/src/stores/__tests__/useAssistantStore.test.ts::renders a backend cancelled event as a stopped marker without a toast",
+  "frontend/src/stores/__tests__/useAssistantStore.test.ts::marks post-terminal events as interrupted and shows an error toast",
+  "frontend/src/api/__tests__/assistant.test.ts::throws loudly on an unrecognised event type",
+]
+invariant = "A turn streams typed events through the real application service with a deterministic provider; a proposal is validated and applied only under its exact revision-bound plan, a stale proposal is rejected before any write, a failed post-commit verification stays visible, cancellation lets an in-flight save finish, a session resumes after restart, an applied mutation is undone by moving the save ledger back to the prior commit, and the client renders failed, cancelled and interrupted streams as such."
+
+[scenarios.evidence]
+commit = "090a5003"
+command = 'uv run pytest tests/test_assistant_routes.py tests/test_assistant_loop.py tests/test_assistant_application.py tests/test_assistant_integration.py tests/test_assistant_session_persistence.py tests/test_assistant_providers.py tests/test_assistant_config.py tests/test_assistant_tools.py tests/test_assistant_ops.py -q -p no:warnings'
+result = "522 passed, 1 skipped in 38.94s"
 
 [[scenarios]]
 id = "W13-S01"
