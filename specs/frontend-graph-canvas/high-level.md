@@ -214,16 +214,16 @@ candidate, with the error toast.
   source-right for Input and target-left for Output. In the canonical
   projection, Input lists one row per declared public input port and maps its
   immutable `portId` to one or more ordered internal target endpoints. Its
-  child-side executable input name is the sanitised public input label; the
-  immutable port id remains handle identity only. Selecting the owner Input
+  child-side executable input name is the sanitised public input port ID; the
+  public input label is display-only. Selecting the owner Input
   boundary shows those same frames in the inspector using the standard Inputs
   chips and remove affordance. Removing a frame explicitly deletes its routes,
   identity-map entry, and all parent bindings to that port across occurrences;
   the edit is atomic and undoable. A read-only drilled occurrence renders the
   list without remove controls. Output keeps one target handle;
   every child-to-Output mapping carries an immutable public output `portId` and
-  one internal source endpoint. A canonical occurrence contributes the
-  sanitised public output label downstream. Parent bindings stay on
+  one internal source endpoint. A canonical occurrence contributes its
+  occurrence alias (or <alias>__<port_id> when declaring more than one output port) downstream. Parent bindings stay on
   `in__<portId>`/`out__<portId>`. Changing internal endpoints while retaining
   a port id and direction is a compatible shared-definition edit. Incidental
   removal or direction changes of a bound port are rejected atomically across
@@ -518,8 +518,8 @@ candidate, with the error toast.
 - **Connections that would duplicate an input name are rejected at drag
   time.** Every ordinary incoming edge contributes its API frame label or
   sanitised source label. A canonical drilled Input contributes its sanitised
-  public input label, and a canonical occurrence output contributes its sanitised
-  public output label. A connection whose derived name duplicates an existing
+  public input port ID, and a canonical occurrence output contributes its
+  occurrence alias (or <alias>__<port_id> when declaring more than one output port). A connection whose derived name duplicates an existing
   executable input on the target is refused with a named toast, mirroring the
   backend's save-time `ParseError`. The
   alternative — accepting the edge and letting codegen suffix a parameter —

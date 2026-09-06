@@ -68,6 +68,7 @@ def resolve_editor_identity(
     source_handles: list[str] | tuple[str, ...] = (),
     source_handle_labels: Mapping[str, str] | None = None,
     config_reference_override: str | None = None,
+    alias: str | None = None,
 ) -> ResolvedEditorIdentity:
     """Resolve one node's editor identities without filesystem access."""
     kind = NodeType(node_type)
@@ -98,12 +99,19 @@ def resolve_editor_identity(
             raise ValueError("Public source-handle labels must exactly cover submodel handles.")
     elif handle_labels:
         raise ValueError("Public source-handle labels are only valid for submodel nodes.")
+    if kind == NodeType.SUBMODEL:
+        if not isinstance(alias, str) or not alias:
+            raise ValueError(f"Submodel node {label!r} requires an alias.")
+    out_handles = [h for h in handles if h.startswith("out__")]
+    output_port_count = len(out_handles)
     mapping = {
         handle: executable_input_name(
             node_type=kind,
             label=label,
             source_handle=handle,
             source_handle_label=handle_labels.get(handle),
+            alias=alias,
+            output_port_count=output_port_count if kind == NodeType.SUBMODEL else None,
         )
         for handle in handles
     }

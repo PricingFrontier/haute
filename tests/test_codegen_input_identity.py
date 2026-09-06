@@ -147,7 +147,7 @@ def test_generated_params_follow_edge_order_across_all_source_kinds() -> None:
     assert _function_args(code, "combine_inputs") == [
         "quotes",
         "ordinary_source",
-        "Nested_child_source",
+        "rating",
     ]
 
 

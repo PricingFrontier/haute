@@ -1750,7 +1750,7 @@ describe("NodePanel", () => {
       expect(props.onDeleteEdge).toHaveBeenNthCalledWith(2, "edge_drivers")
     })
 
-    it("uses the authoritative public label for a submodel-fed input", () => {
+    it("uses the authoritative occurrence name for a submodel-fed input", () => {
       const target = makeNode({
         id: "target",
         data: { label: "Target", description: "", nodeType: "polars", config: {} },
@@ -1763,7 +1763,7 @@ describe("NodePanel", () => {
           nodeType: "submodel",
           config: { definitionId: "pricing", alias: "pricing" },
           _defaultInputName: null,
-          _sourceHandleInputNames: { "out__premium": "Written_premium" },
+          _sourceHandleInputNames: { "out__premium": "pricing" },
         },
       })
       const child = makeNode({
@@ -1803,7 +1803,7 @@ describe("NodePanel", () => {
       expect(latestTransformInputSources()).toEqual([
         expect.objectContaining({
           edgeId: "edge_child",
-          name: "Written_premium",
+          name: "pricing",
           sourceLabel: "Pricing Module",
         }),
       ])

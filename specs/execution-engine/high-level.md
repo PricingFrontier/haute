@@ -415,8 +415,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
   exactly one *input name*, derived by `edge_input_name` (`_graph_utils.py`): an
   `apiInput`-frame edge's name is its frame label verbatim (frame labels are
   validated as ASCII Python identifiers by the api-input schema); a collapsed
-  submodel-output edge's name is the sanitised public output label resolved
-  through its definition; every ordinary edge's name is the sanitised source-node label.
+  submodel-output edge's name is the occurrence's own name (or f"{alias}__{port_id}"
+  when declaring more than one output port); every ordinary edge's name is the sanitised source-node label.
   Public submodel inputs likewise contribute their sanitised labels to child nodes.
   Immutable public port ids address boundary handles only and never become frame names.
   That name is simultaneously the name listed in

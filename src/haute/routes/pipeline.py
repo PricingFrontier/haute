@@ -201,6 +201,7 @@ async def resolve_pipeline_editor_identities(
                 label=node.label,
                 source_handles=node.source_handles,
                 source_handle_labels=node.source_handle_labels,
+                alias=node.alias,
             )
             identities.append(
                 EditorIdentityResponseNode(

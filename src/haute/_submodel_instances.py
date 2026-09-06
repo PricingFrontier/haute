@@ -904,7 +904,7 @@ def expand_submodel_instances(
                     continue
                 if edge.target in selected_ids:
                     assert target_instance is not None
-                    old_name = _sanitize_func_name(_input_port(target_instance, edge).label)
+                    old_name = _sanitize_func_name(_input_port(target_instance, edge).port_id)
                 else:
                     old_name = _boundary_edge_input_name(
                         edge,

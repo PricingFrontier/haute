@@ -7,7 +7,8 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from haute._graph_utils import _edge_id, edge_input_label
+from haute._graph_utils import _edge_id, edge_input_label, edge_input_name
+from haute._submodel_instances import rewrite_boundary_input_names
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -102,13 +103,25 @@ def _build_public_interface(
         else:
             output_groups.setdefault((edge.source, edge.sourceHandle), []).append(edge)
 
+    allocated_port_ids: set[str] = set()
+
+    def _mint_port_id(label: str) -> str:
+        base = _sanitize_func_name(label)
+        candidate = base
+        suffix = 2
+        while candidate in allocated_port_ids:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        allocated_port_ids.add(candidate)
+        return candidate
+
     input_ports: list[SubmodelInputPort] = []
     input_ids: dict[tuple[str, str | None], str] = {}
-    for index, (identity, edges) in enumerate(input_groups.items(), start=1):
-        port_id = f"input_{index}"
-        input_ids[identity] = port_id
+    for identity, edges in input_groups.items():
         source = node_map[edges[0].source]
         label = _public_frame_label(edges[0], source, submodels)
+        port_id = _mint_port_id(label)
+        input_ids[identity] = port_id
         input_ports.append(
             SubmodelInputPort(
                 portId=port_id,
@@ -127,12 +140,12 @@ def _build_public_interface(
 
     output_ports: list[SubmodelOutputPort] = []
     output_ids: dict[tuple[str, str | None], str] = {}
-    for index, (identity, edges) in enumerate(output_groups.items(), start=1):
-        port_id = f"output_{index}"
-        output_ids[identity] = port_id
+    for identity, edges in output_groups.items():
         edge = edges[0]
         source = node_map[edge.source]
         label = _public_frame_label(edge, source, submodels)
+        port_id = _mint_port_id(label)
+        output_ids[identity] = port_id
         output_ports.append(
             SubmodelOutputPort(
                 portId=port_id,
@@ -200,6 +213,47 @@ def _rewire_canonical_boundary_edges(
                 )
             )
     return rewired
+
+
+def _preserve_consumer_input_names(
+    parent_nodes: list[GraphNode],
+    cross_edges: list[GraphEdge],
+    *,
+    child_node_ids: set[str],
+    node_map: dict[str, GraphNode],
+    occurrence: GraphNode,
+    output_ids: dict[tuple[str, str | None], str],
+    submodels_before: dict[str, SubmodelDefinition] | None,
+    submodels_after: dict[str, SubmodelDefinition],
+) -> list[GraphNode]:
+    """Keep every remaining consumer bound to the frame it read before grouping.
+
+    A consumer of a grouped node used that node's own name as its input; after
+    grouping the same frame arrives from the new occurrence under the
+    occurrence's name (or ``<name>__<portId>`` with several output ports). The
+    physical name changes, the authored code does not: record the old name as
+    the logical name through ``inputMapping`` and rewrite schema-owned
+    selectors, exactly as flattening does across the same boundary.
+    """
+    renames: dict[str, dict[str, str]] = {}
+    for edge in cross_edges:
+        if edge.source not in child_node_ids or edge.target in child_node_ids:
+            continue
+        old_name = edge_input_name(edge, node_map[edge.source], submodels=submodels_before)
+        rewired = GraphEdge(
+            id=edge.id,
+            source=occurrence.id,
+            target=edge.target,
+            sourceHandle=f"out__{output_ids[(edge.source, edge.sourceHandle)]}",
+            targetHandle=edge.targetHandle,
+            targetPort=edge.targetPort,
+        )
+        new_name = edge_input_name(rewired, occurrence, submodels=submodels_after)
+        if old_name != new_name:
+            renames.setdefault(edge.target, {})[old_name] = new_name
+    if not renames:
+        return parent_nodes
+    return rewrite_boundary_input_names(parent_nodes, renames)
 
 
 def create_submodel_graph(
@@ -382,6 +436,16 @@ def create_submodel_graph(
 
     # Assemble new parent graph
     existing_submodels[sm_name] = definition
+    parent_nodes = _preserve_consumer_input_names(
+        parent_nodes,
+        cross_edges,
+        child_node_ids=child_node_id_set,
+        node_map=graph.node_map,
+        occurrence=sm_node,
+        output_ids=output_ids,
+        submodels_before=graph.submodels,
+        submodels_after=existing_submodels,
+    )
     new_graph = graph.model_copy(
         update={
             "nodes": parent_nodes + [sm_node],

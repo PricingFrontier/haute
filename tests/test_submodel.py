@@ -289,8 +289,8 @@ class TestParserSubmodel:
             )
 
             @submodel.polars
-            def Transform(Source: pl.LazyFrame) -> pl.LazyFrame:
-                return Source.select("x")
+            def Transform(source: pl.LazyFrame) -> pl.LazyFrame:
+                return source.select("x")
         """,
         )
 

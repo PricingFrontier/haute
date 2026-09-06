@@ -116,7 +116,7 @@ Expansion is a pure transform per instance:
    to qualified runtime ids and from each bound public input port id to its
    upstream parent identity. Rewrite cloned child configs through that map.
    Also rewrite remaining parent consumers from the selected occurrence's
-   sanitised public output label to the qualified runtime output source. When
+   authored alias (or <alias>__<port_id> when multi-output) to the qualified runtime output source. When
    this changes the physical name of an ordinary Polars input, preserve the
    public logical name with `inputMapping`. An unbound, ambiguous, or otherwise stale declared reference
    is an error. Unregistered opaque fields are unchanged, never guessed.
@@ -271,8 +271,8 @@ document and returns the new revision.
 4. Build structured public ports. Incoming edges sharing one external logical
    frame become one input port with ordered internal targets and exactly one
    parent binding. Outgoing edges sharing one internal source endpoint become
-   one output port. Allocate opaque `input_N`/`output_N` ids independent of
-   child ids and labels. Preserve each pre-group executable frame name as the
+   one output port. Mint port IDs by sanitising each frame label (appending `_2`,
+   `_3` on collision). Preserve each pre-group executable frame name as the
    corresponding public port label, so child and parent consumer code requires
    no generated rename.
 5. Validate that every generated public label resolves to the same executable
@@ -291,8 +291,11 @@ document and returns the new revision.
    config is exactly `{definitionId, alias}`. Rewire parent edges only through
    `in__<portId>`/`out__<portId>` handles, preserving still-hidden authored
    ports in both edge data and deterministic ids. Remaining parent consumers
-   keep the same executable input name because the public output label carries
-   the pre-group source identity.
+   keep the input name they were authored with: the occurrence's name (or
+   `<alias>__<portId>` with several output ports) becomes the physical input
+   and the previous name is recorded as the logical name through
+   `inputMapping`, with schema-owned selectors rewritten, exactly as
+   flattening does across the same boundary (F13).
 8. Return a new parent graph with the prior registry entries preserved plus the
    definition and occurrence. Return `SubmodelGraphResult` metadata for the
    transform-only route; the input graph is untouched.
@@ -380,8 +383,8 @@ Acquires `save_lock` and runs the body in a threadpool:
   an edge-join endpoint restores its authored base/join `targetHandle` and
   rewrites the port-id role reference to the bound upstream parent identity.
 - **Outbound edge-join roles survive extraction and flattening.** A remaining
-  edge join fed by one or more selected sources uses the canonical sanitised
-  public output labels while hierarchical, then qualified
+  edge join fed by one or more selected sources uses the occurrence alias (or
+  <alias>__<port_id> when multi-output) while hierarchical, then qualified
   runtime source ids after expansion; two outputs of one occurrence never
   collapse to the shared occurrence id.
 - **`_submodel_paths.py` checks the resolved pipeline-relative path before

@@ -2039,8 +2039,12 @@ VALUE = 7
 pipeline = haute.Pipeline("main")
 
 @pipeline.polars
-def transform(df: pl.LazyFrame) -> pl.LazyFrame:
-    df = df.with_columns(pl.lit(1).alias("one"))
+def rows() -> pl.LazyFrame:
+    return pl.LazyFrame({"x": [1]})
+
+@pipeline.polars
+def transform(rows: pl.LazyFrame) -> pl.LazyFrame:
+    df = rows.with_columns(pl.lit(1).alias("one"))
     return df
 """
         first_graph = parse_pipeline_source(source)
@@ -2065,8 +2069,12 @@ USER_PATH = _HautePath("data")
 pipeline = haute.Pipeline("main")
 
 @pipeline.polars
-def transform(df: pl.LazyFrame) -> pl.LazyFrame:
-    return df
+def rows() -> pl.LazyFrame:
+    return pl.LazyFrame({"x": [1]})
+
+@pipeline.polars
+def transform(rows: pl.LazyFrame) -> pl.LazyFrame:
+    return rows
 """
 
         graph = parse_pipeline_source(source)
@@ -2159,11 +2167,15 @@ import haute
 pipeline = haute.Pipeline("main")
 
 @pipeline.polars
-def transform(df: pl.LazyFrame) -> pl.LazyFrame:
+def rows() -> pl.LazyFrame:
+    return pl.LazyFrame({"x": [1]})
+
+@pipeline.polars
+def transform(rows: pl.LazyFrame) -> pl.LazyFrame:
     # haute:preserve-start
     marker = 1
     # haute:preserve-end
-    return df
+    return rows
 """
         graph = parse_pipeline_source(source)
         assert graph.preserved_blocks == []

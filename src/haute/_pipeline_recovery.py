@@ -1036,6 +1036,7 @@ def _build_recovery_graph(
                     source_handles=source_handles,
                     source_handle_labels=source_handle_labels,
                     config_reference_override=candidate.config_reference,
+                    alias=(candidate.config or {}).get("alias") if candidate.config else None,
                 )
             except (HauteError, ValueError):
                 resolved_identity = None
@@ -1079,14 +1080,33 @@ def _build_recovery_graph(
         if edge_availability == "ready" and source_candidate.node_type is not None:
             try:
                 source_handle_label = None
+                alias = None
+                output_port_count = None
                 if source_candidate.node_type == NodeType.SUBMODEL:
                     port_id = (edge.source_handle or "").removeprefix("out__")
                     source_handle_label = dict(source_candidate.submodel_output_labels).get(port_id)
+                    alias = (
+                        source_candidate.config.get("alias")
+                        if isinstance(source_candidate.config, dict)
+                        else None
+                    )
+                    # When a definition is unavailable (`_unavailable_submodel_definition`)
+                    # the count is unknown: use the number of distinct `out__` handles the
+                    # parent's own edges reference for that occurrence, and treat one or none
+                    # as a single output.
+                    if source_candidate.submodel_output_ports:
+                        output_port_count = len(source_candidate.submodel_output_ports)
+                    else:
+                        ref_handles = handles_by_source.get(source_candidate.recovery_id, [])
+                        distinct_out_handles = {h for h in ref_handles if h.startswith("out__")}
+                        output_port_count = max(1, len(distinct_out_handles))
                 input_name = executable_input_name(
                     node_type=source_candidate.node_type,
                     label=source_candidate.authored_id,
                     source_handle=edge.source_handle,
                     source_handle_label=source_handle_label,
+                    alias=alias,
+                    output_port_count=output_port_count,
                 )
             except ValueError:
                 input_name = None
@@ -1206,6 +1226,11 @@ def _canonical_snapshot(
             label=node.data.label,
             source_handles=source_handles,
             source_handle_labels=source_handle_labels,
+            alias=(
+                (node.data.config or {}).get("alias") or node.data.label
+                if node.data.nodeType == NodeType.SUBMODEL
+                else None
+            ),
         )
         nodes.append(
             RecoveryPipelineNode(

@@ -1089,6 +1089,7 @@ class PipelineGraph(BaseModel):
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
     _parser_parameter_names: dict[str, list[str]] = PrivateAttr(default_factory=dict)
+    _parser_edge_parameter_names: dict[str, list[str]] = PrivateAttr(default_factory=dict)
 
     _parser_definition_id: str | None = PrivateAttr(default=None)
     _parser_input_ports: list[SubmodelInputPort] | None = PrivateAttr(default=None)

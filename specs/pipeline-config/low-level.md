@@ -266,6 +266,15 @@ forwards projection/profile fields; external-file resolution validates
   `dangling_edges`; the document loads as non-ready with that diagnostic and Save is refused
   until the source is repaired. The live `Pipeline.connect()` rejects the same mistake
   immediately because live submodel children are not registered there.
+- A Polars node's positional parameters are exactly its connected inputs, by name: an
+  ordinary source contributes its sanitised node name, an API input its frame handle, and an
+  occurrence its own name (`a`, or `a__<portId>` when the definition declares several output
+  ports); a declared `inputMapping={logical: connected}` lets the code keep another name. The
+  parser infers nothing else: a parameter that matches no connected input, a connected input
+  with no parameter, or a duplicate raises `ParseError` (`unbound_parameters`,
+  `unconsumed_inputs`, `connected_inputs`, `remediation`) from the binding gate; the document
+  loads as non-ready with that diagnostic and Save is refused, so a Save can never rewrite the
+  authored signature (F13).
 - Duplicate node function names are rejected twice, independently: at live registration
   (`NodeRegistry._register_node`, `ValueError`) and at static parse time
   (`_extract_decorated_nodes`, `ParseError`) — because the function name becomes the graph

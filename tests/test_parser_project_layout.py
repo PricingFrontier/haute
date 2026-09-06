@@ -41,8 +41,8 @@ submodel = haute.Submodel(
 
 
 @submodel.polars
-def score(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
-    return raw_rows.with_columns(pl.lit(1).alias("score"))
+def score() -> pl.LazyFrame:
+    return pl.LazyFrame({"x": [1]})
 """,
     )
     _write(

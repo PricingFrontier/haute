@@ -209,8 +209,8 @@ submodel = haute.Submodel(
 )
 
 @submodel.polars
-def {node_name}(df: pl.LazyFrame) -> pl.LazyFrame:
-    return df
+def {node_name}() -> pl.LazyFrame:
+    return pl.LazyFrame({{"x": [1]}})
 """,
         encoding="utf-8",
     )
@@ -539,7 +539,7 @@ def source() -> pl.LazyFrame:
             "    input_ports=[],\n"
             "    output_ports=[],\n"
             ")\n"
-            "@submodel.polars\ndef rate(df: pl.LazyFrame) -> pl.LazyFrame:\n    return df\n",
+            "@submodel.polars\ndef rate() -> pl.LazyFrame:\n    return pl.LazyFrame({'x': [1]})\n",
             encoding="utf-8",
         )
         (rating_root / "main.py").write_text(
@@ -577,7 +577,7 @@ def source() -> pl.LazyFrame:
             "    input_ports=[],\n"
             "    output_ports=[],\n"
             ")\n"
-            "@submodel.polars\ndef rate(df: pl.LazyFrame) -> pl.LazyFrame:\n    return df\n",
+            "@submodel.polars\ndef rate() -> pl.LazyFrame:\n    return pl.LazyFrame({'x': [1]})\n",
             encoding="utf-8",
         )
         (tmp_path / "a_broken.py").write_text(

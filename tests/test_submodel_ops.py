@@ -77,7 +77,7 @@ class TestCreateSubmodelGraph:
         e = edges[0]
         assert e.source == "src"
         assert e.target.startswith("submodel_instance_")
-        assert e.targetHandle == "in__input_1"
+        assert e.targetHandle == "in__src"
 
     def test_output_port_rewiring(self):
         """Output edge from child node to external node rewires correctly."""
@@ -116,11 +116,11 @@ class TestCreateSubmodelGraph:
         assert len(edges) == 1
         e = edges[0]
         assert e.source.startswith("submodel_instance_")
-        assert e.sourceHandle == "out__output_1"
+        assert e.sourceHandle == "out__Priced_quotes"
         assert e.target == "out"
         definition = result.graph.submodels["inner"]
         assert [(port.port_id, port.label) for port in definition.output_ports] == [
-            ("output_1", "Priced quotes")
+            ("Priced_quotes", "Priced quotes")
         ]
 
     def test_grouping_keeps_public_boundary_labels_as_polars_frame_names(self):
@@ -173,10 +173,10 @@ class TestCreateSubmodelGraph:
         result = create_submodel_graph(graph, ["features", "switch"], "Inputs")
         definition = result.graph.submodels["Inputs"]
         assert [(port.port_id, port.label) for port in definition.input_ports] == [
-            ("input_1", "raw quotes")
+            ("raw_quotes", "raw quotes")
         ]
         assert [(port.port_id, port.label) for port in definition.output_ports] == [
-            ("output_1", "live switch")
+            ("live_switch", "live switch")
         ]
         assert definition.graph.node_map["features"].data.config["code"] == "df = raw_quotes"
         assert result.graph.node_map["consumer"].data.config["code"] == "df = live_switch"
@@ -188,7 +188,7 @@ class TestCreateSubmodelGraph:
         )
         assert "def risk_features(raw_quotes: pl.LazyFrame)" in files["modules/Inputs.py"]
         assert "def consumer(live_switch: pl.LazyFrame)" in files["main.py"]
-        assert "Inputs__output_1" not in files["main.py"]
+        assert "Inputs__live_switch" not in files["main.py"]
 
     def test_submodels_metadata_populated(self):
         """Submodel metadata includes child IDs, ports, and internal graph."""
@@ -200,7 +200,7 @@ class TestCreateSubmodelGraph:
         meta = subs["sub"]
         assert meta.file == "modules/sub.py"
         assert meta.definition_id == "sub"
-        assert [port.port_id for port in meta.input_ports] == ["input_1"]
+        assert [port.port_id for port in meta.input_ports] == ["src"]
         assert [target.node_id for target in meta.input_ports[0].targets] == ["t1"]
         assert meta.graph.pipeline_name == "sub"
 
@@ -396,7 +396,7 @@ class TestCreateSubmodelGraph:
         result = create_submodel_graph(graph, ["t1", "t2"], "multi_in")
 
         subs = result.graph.submodels["multi_in"]
-        assert [port.port_id for port in subs.input_ports] == ["input_1", "input_2"]
+        assert [port.port_id for port in subs.input_ports] == ["a", "b"]
         assert [target.node_id for port in subs.input_ports for target in port.targets] == [
             "t1",
             "t2",
@@ -430,7 +430,7 @@ class TestCreateSubmodelGraph:
         result = create_submodel_graph(graph, ["t1", "t2"], "multi_out")
 
         subs = result.graph.submodels["multi_out"]
-        assert [port.port_id for port in subs.output_ports] == ["output_1", "output_2"]
+        assert [port.port_id for port in subs.output_ports] == ["t1", "t2"]
         assert [port.source.node_id for port in subs.output_ports] == ["t1", "t2"]
 
     def test_bidirectional_cross_edges(self):
@@ -803,3 +803,71 @@ class TestDuplicatePublicLabels:
             "My src",
             "Other src",
         ]
+
+
+class TestGroupingPreservesConsumerBindings:
+    """F13: the occurrence's name is the new physical input; authored code keeps its old name."""
+
+    def test_grouping_records_the_consumer_binding_through_input_mapping(self):
+        graph = make_graph(
+            {
+                "pipeline_name": "test",
+                "nodes": [
+                    {
+                        "id": "raw_quotes",
+                        "data": {
+                            "label": "raw quotes",
+                            "nodeType": "dataInput",
+                            "config": {"path": "quotes.parquet"},
+                        },
+                    },
+                    {
+                        "id": "features",
+                        "data": {
+                            "label": "risk features",
+                            "nodeType": "polars",
+                            "config": {"code": "df = raw_quotes"},
+                        },
+                    },
+                    {
+                        "id": "switch",
+                        "data": {
+                            "label": "live switch",
+                            "nodeType": "polars",
+                            "config": {"code": "df = risk_features"},
+                        },
+                    },
+                    {
+                        "id": "consumer",
+                        "data": {
+                            "label": "consumer",
+                            "nodeType": "polars",
+                            "config": {"code": "df = live_switch"},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "in", "source": "raw_quotes", "target": "features"},
+                    {"id": "inside", "source": "features", "target": "switch"},
+                    {"id": "out", "source": "switch", "target": "consumer"},
+                ],
+            }
+        )
+
+        result = create_submodel_graph(graph, ["features", "switch"], "Scoring")
+        consumer = result.graph.node_map["consumer"]
+        # The authored code is untouched; the physical input is now the occurrence.
+        assert consumer.data.config["code"] == "df = live_switch"
+        assert consumer.data.config["inputMapping"] == {"live_switch": "Scoring"}
+
+        files = graph_to_code_multi(result.graph, pipeline_name="test", source_file="main.py")
+        assert "def consumer(live_switch: pl.LazyFrame)" in files["main.py"]
+        assert 'inputMapping={"live_switch": "Scoring"}' in files["main.py"].replace("'", '"')
+
+        # Flattening the grouped graph binds the same frame back to the same name.
+        from haute.graph_utils import flatten_graph
+
+        flat = flatten_graph(result.graph)
+        flat_consumer = flat.node_map["consumer"]
+        assert flat_consumer.data.config["code"] == "df = live_switch"
+        assert list(flat_consumer.data.config["inputMapping"]) == ["live_switch"]

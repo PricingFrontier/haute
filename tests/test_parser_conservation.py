@@ -137,16 +137,16 @@ class TestParameterBucketConservation:
             pipeline = haute.Pipeline("m")
 
             @pipeline.polars
-            def a(df):
-                return df
+            def a():
+                return pl.LazyFrame()
 
             @pipeline.polars
-            def b(df):
-                return df
+            def b():
+                return pl.LazyFrame()
 
             @pipeline.polars
-            def c(df):
-                return df
+            def c():
+                return pl.LazyFrame()
 
             @pipeline.polars
             def target(a, /, b, *, c):
@@ -179,12 +179,12 @@ class TestParameterBucketConservation:
                 pipeline = haute.Pipeline("m")
 
                 @pipeline.polars
-                def a(df):
-                    return df
+                def a():
+                    return None
 
                 @pipeline.polars
-                def c(df):
-                    return df
+                def c():
+                    return None
 
                 @pipeline.live_switch(config="config/source_switch/switch.json")
                 def switch(a, *, c=None):
@@ -614,8 +614,8 @@ class TestGraphStructureConservationGate:
                 return pl.LazyFrame({{"x": [1]}})
 
             @pipeline.polars
-            def sink(transform: pl.LazyFrame) -> pl.LazyFrame:
-                return transform
+            def sink(child: pl.LazyFrame) -> pl.LazyFrame:
+                return child
 
             pipeline.submodel(
                 {child.name!r},
@@ -690,8 +690,8 @@ class TestGraphStructureConservationGate:
             )
 
             @submodel.polars
-            def child_in(external: pl.LazyFrame) -> pl.LazyFrame:
-                return external
+            def child_in(base: pl.LazyFrame) -> pl.LazyFrame:
+                return base
 
             @submodel.polars
             def child_out(child_in: pl.LazyFrame) -> pl.LazyFrame:
@@ -712,8 +712,8 @@ class TestGraphStructureConservationGate:
                 return pl.LazyFrame({{"x": [1]}})
 
             @pipeline.polars
-            def sink(result: pl.LazyFrame) -> pl.LazyFrame:
-                return result
+            def sink(ported_child: pl.LazyFrame) -> pl.LazyFrame:
+                return ported_child
 
             pipeline.submodel(
                 {child.name!r},
@@ -1457,3 +1457,428 @@ class TestConservationGateRaisesOnEveryMismatch:
             )
         assert exc_info.value.context["authored_submodel_paths"] == authored
         assert exc_info.value.context["loaded_submodel_paths"] == loaded
+
+
+# ---------------------------------------------------------------------------
+# F13 -- Strict parameter binding for Polars nodes.
+# ---------------------------------------------------------------------------
+
+
+class TestPolarsParameterBinding:
+    def test_positional_param_not_matching_incoming_edge_rejected(self) -> None:
+        source = textwrap.dedent(
+            """\
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("test_unbound")
+
+            @pipeline.polars
+            def a() -> pl.LazyFrame:
+                return pl.LazyFrame({"x": [1]})
+
+            @pipeline.polars
+            def b(unbound: pl.LazyFrame) -> pl.LazyFrame:
+                return unbound
+
+            pipeline.connect("a", "b")
+            """
+        )
+        with pytest.raises(
+            ParseError,
+            match="Pipeline function parameters do not match the node's connected inputs.",
+        ) as exc_info:
+            parse_pipeline_source(source, source_file="main.py")
+
+        assert exc_info.value.context["node_id"] == "b"
+        assert exc_info.value.context["unbound_parameters"] == ["unbound"]
+        assert exc_info.value.context["unconsumed_inputs"] == ["a"]
+        assert exc_info.value.context["connected_inputs"] == ["a"]
+        assert (
+            exc_info.value.context["remediation"]
+            == "Name each parameter after the node or frame connected to it, "
+            "or declare inputMapping={logical: connected} on the decorator."
+        )
+
+    def test_incoming_edge_not_matching_any_parameter_rejected(self) -> None:
+        source = textwrap.dedent(
+            """\
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("test_unconsumed")
+
+            @pipeline.polars
+            def a() -> pl.LazyFrame:
+                return pl.LazyFrame({"x": [1]})
+
+            @pipeline.polars
+            def b() -> pl.LazyFrame:
+                return pl.LazyFrame({"y": [2]})
+
+            pipeline.connect("a", "b")
+            """
+        )
+        with pytest.raises(
+            ParseError,
+            match="Pipeline function parameters do not match the node's connected inputs.",
+        ) as exc_info:
+            parse_pipeline_source(source, source_file="main.py")
+
+        assert exc_info.value.context["node_id"] == "b"
+        assert exc_info.value.context["unbound_parameters"] == []
+        assert exc_info.value.context["unconsumed_inputs"] == ["a"]
+        assert exc_info.value.context["connected_inputs"] == ["a"]
+        assert (
+            exc_info.value.context["remediation"]
+            == "Name each parameter after the node or frame connected to it, "
+            "or declare inputMapping={logical: connected} on the decorator."
+        )
+
+    def test_input_mapping_succeeds_executes_and_roundtrips(self) -> None:
+        from haute.executor import execute_graph
+
+        source = textwrap.dedent(
+            """\
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("test_mapping")
+
+            @pipeline.polars
+            def src() -> pl.LazyFrame:
+                return pl.LazyFrame({"x": [1, 2, 3]})
+
+            @pipeline.polars(inputMapping={"raw_data": "src"})
+            def transform(raw_data: pl.LazyFrame) -> pl.LazyFrame:
+                return raw_data.with_columns((pl.col("x") * 2).alias("x2"))
+
+            pipeline.connect("src", "transform")
+            """
+        )
+        graph = parse_pipeline_source(source, source_file="main.py")
+        assert len(graph.nodes) == 2
+        assert len(graph.edges) == 1
+
+        results = execute_graph(graph, target_node_id="transform")
+        assert results["transform"].status == "ok"
+        assert results["transform"].preview == [
+            {"x": 1, "x2": 2},
+            {"x": 2, "x2": 4},
+            {"x": 3, "x2": 6},
+        ]
+
+        files = graph_to_code_multi(graph, pipeline_name="test_mapping", source_file="main.py")
+        assert "def transform(raw_data: pl.LazyFrame)" in files["main.py"]
+        assert 'inputMapping={"raw_data": "src"}' in files["main.py"].replace("'", '"')
+        reparsed = parse_pipeline_source(files["main.py"], source_file="main.py")
+        assert len(reparsed.nodes) == 2
+        assert len(reparsed.edges) == 1
+        regenerated = graph_to_code_multi(
+            reparsed, pipeline_name="test_mapping", source_file="main.py"
+        )
+        assert regenerated == files
+
+    def test_occurrence_output_parameter_is_the_occurrence_name(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        child = _write(
+            tmp_path,
+            "child.py",
+            """
+            import polars as pl
+            import haute
+
+            submodel = haute.Submodel(
+                "child",
+                definition_id="child",
+                input_ports=[
+                    {
+                        "portId": "source",
+                        "label": "Source",
+                        "targets": [{"nodeId": "transform", "handleId": None}],
+                    }
+                ],
+                output_ports=[
+                    {
+                        "portId": "result",
+                        "label": "Result",
+                        "source": {"nodeId": "transform", "handleId": None},
+                    }
+                ],
+            )
+
+            @submodel.polars
+            def transform(source: pl.LazyFrame) -> pl.LazyFrame:
+                return source
+            """,
+        )
+        parent = _write(
+            tmp_path,
+            "main.py",
+            f"""
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("main")
+
+            @pipeline.polars
+            def source() -> pl.LazyFrame:
+                return pl.LazyFrame({{"x": [1]}})
+
+            @pipeline.polars
+            def sink(a: pl.LazyFrame) -> pl.LazyFrame:
+                return a
+
+            pipeline.submodel(
+                {child.name!r},
+                definition_id="child",
+                instance_id="submodel__a",
+                alias="a",
+            )
+            pipeline.connect("source", "a", target_port="source")
+            pipeline.connect("a", "sink", source_port="result")
+            """,
+        )
+        hierarchical = parse_pipeline_file(parent)
+        assert len(hierarchical.nodes) == 3
+        assert len(hierarchical.edges) == 2
+
+        from haute.executor import execute_graph
+
+        results = execute_graph(hierarchical, target_node_id="sink")
+        assert results["sink"].status == "ok"
+        assert results["sink"].preview == [{"x": 1}]
+
+        parent_invalid = _write(
+            tmp_path,
+            "main_invalid.py",
+            f"""
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("main_invalid")
+
+            @pipeline.polars
+            def source() -> pl.LazyFrame:
+                return pl.LazyFrame({{"x": [1]}})
+
+            @pipeline.polars
+            def sink(Result: pl.LazyFrame) -> pl.LazyFrame:
+                return Result
+
+            pipeline.submodel(
+                {child.name!r},
+                definition_id="child",
+                instance_id="submodel__a",
+                alias="a",
+            )
+            pipeline.connect("source", "a", target_port="source")
+            pipeline.connect("a", "sink", source_port="result")
+            """,
+        )
+        with pytest.raises(
+            ParseError,
+            match="Pipeline function parameters do not match the node's connected inputs.",
+        ) as exc_info:
+            parse_pipeline_file(parent_invalid)
+
+        assert exc_info.value.context["node_id"] == "sink"
+        assert exc_info.value.context["unbound_parameters"] == ["Result"]
+        assert exc_info.value.context["connected_inputs"] == ["a"]
+
+    def test_degraded_document_with_parameter_mismatch(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from haute.server import app
+
+        pipeline_file = _write(
+            tmp_path,
+            "main.py",
+            """
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("main")
+
+            @pipeline.polars
+            def a() -> pl.LazyFrame:
+                return pl.LazyFrame({"x": [1]})
+
+            @pipeline.polars
+            def b(unbound: pl.LazyFrame) -> pl.LazyFrame:
+                return unbound
+
+            pipeline.connect("a", "b")
+            """,
+        )
+
+        document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+        assert document.load_status == "degraded"
+        assert any(
+            diagnostic.code == "pipeline_parse_invalid"
+            and "Pipeline function parameters do not match" in diagnostic.message
+            for diagnostic in document.diagnostics
+        )
+
+        monkeypatch.chdir(tmp_path)
+        client = TestClient(app, raise_server_exceptions=False)
+        get_response = client.get("/api/pipeline")
+        assert get_response.status_code == 200
+        assert get_response.json()["load_status"] == "degraded"
+
+        save_response = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "main",
+                "source_file": "main.py",
+                "base_revision": "posted-ready-revision",
+                "graph": {"nodes": [], "edges": []},
+            },
+        )
+        assert save_response.status_code == 409
+        assert "not ready" in save_response.json()["detail"]
+
+    def test_submodel_definition_input_port_binds_logical_name(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        child_valid = _write(
+            tmp_path,
+            "child_valid.py",
+            """
+            import polars as pl
+            import haute
+
+            submodel = haute.Submodel(
+                "child",
+                definition_id="child",
+                input_ports=[
+                    {
+                        "portId": "source",
+                        "label": "Source",
+                        "targets": [{"nodeId": "first_step", "handleId": None}],
+                    }
+                ],
+                output_ports=[
+                    {
+                        "portId": "result",
+                        "label": "Result",
+                        "source": {"nodeId": "first_step", "handleId": None},
+                    }
+                ],
+            )
+
+            @submodel.polars
+            def first_step(source: pl.LazyFrame) -> pl.LazyFrame:
+                return source
+            """,
+        )
+        parent_valid = _write(
+            tmp_path,
+            "main_valid.py",
+            f"""
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("main_valid")
+
+            @pipeline.polars
+            def source() -> pl.LazyFrame:
+                return pl.LazyFrame({{"x": [1]}})
+
+            @pipeline.polars
+            def sink(a: pl.LazyFrame) -> pl.LazyFrame:
+                return a
+
+            pipeline.submodel(
+                {child_valid.name!r},
+                definition_id="child",
+                instance_id="submodel__a",
+                alias="a",
+            )
+            pipeline.connect("source", "a", target_port="source")
+            pipeline.connect("a", "sink", source_port="result")
+            """,
+        )
+        graph = parse_pipeline_file(parent_valid)
+        assert graph is not None
+
+        child_invalid = _write(
+            tmp_path,
+            "child_invalid.py",
+            """
+            import polars as pl
+            import haute
+
+            submodel = haute.Submodel(
+                "child",
+                definition_id="child",
+                input_ports=[
+                    {
+                        "portId": "source",
+                        "label": "Source",
+                        "targets": [{"nodeId": "first_step", "handleId": None}],
+                    }
+                ],
+                output_ports=[
+                    {
+                        "portId": "result",
+                        "label": "Result",
+                        "source": {"nodeId": "first_step", "handleId": None},
+                    }
+                ],
+            )
+
+            @submodel.polars
+            def first_step(unbound_name: pl.LazyFrame) -> pl.LazyFrame:
+                return unbound_name
+            """,
+        )
+        parent_invalid = _write(
+            tmp_path,
+            "main_invalid.py",
+            f"""
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("main_invalid")
+
+            @pipeline.polars
+            def source() -> pl.LazyFrame:
+                return pl.LazyFrame({{"x": [1]}})
+
+            @pipeline.polars
+            def sink(a: pl.LazyFrame) -> pl.LazyFrame:
+                return a
+
+            pipeline.submodel(
+                {child_invalid.name!r},
+                definition_id="child",
+                instance_id="submodel__a",
+                alias="a",
+            )
+            pipeline.connect("source", "a", target_port="source")
+            pipeline.connect("a", "sink", source_port="result")
+            """,
+        )
+        with pytest.raises(
+            ParseError,
+            match="Pipeline function parameters do not match the node's connected inputs.",
+        ) as exc_info:
+            parse_pipeline_file(parent_invalid)
+
+        assert exc_info.value.context["node_id"] == "first_step"
+        assert exc_info.value.context["unbound_parameters"] == ["unbound_name"]
+        assert exc_info.value.context["unconsumed_inputs"] == ["source"]
+        assert exc_info.value.context["connected_inputs"] == ["source"]
+        assert (
+            exc_info.value.context["remediation"]
+            == "Name each parameter after the node or frame connected to it, "
+            "or declare inputMapping={logical: connected} on the decorator."
+        )

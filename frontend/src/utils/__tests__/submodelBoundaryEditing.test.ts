@@ -116,20 +116,20 @@ describe("submodelBoundaryEditing", () => {
     })
 
     expect(created).not.toBeNull()
-    expect(created?.portId).toBe("input_1")
+    expect(created?.portId).toBe("incoming_frame")
     expect(created?.submodels.definition_pricing).toMatchObject({
       inputPorts: [{
-        portId: "input_1",
+        portId: "incoming_frame",
         label: "incoming_frame",
         targets: [],
       }],
-      _inputPortInputNames: { input_1: "incoming_frame" },
+      _inputPortInputNames: { incoming_frame: "incoming_frame" },
     })
     expect(created?.edges).toEqual([expect.objectContaining({
       source: source.id,
       sourceHandle: null,
       target: "instance_primary",
-      targetHandle: "in__input_1",
+      targetHandle: "in__incoming_frame",
       data: { _inputName: "incoming_frame" },
     })])
 
@@ -144,12 +144,12 @@ describe("submodelBoundaryEditing", () => {
       parentEdges: created!.edges,
     })
     expect((boundary(drilled.nodes, "input").data as SubmodelPortData).ports)
-      .toEqual([{ id: "input_1", label: "incoming_frame", parentEdges: created!.edges }])
+      .toEqual([{ id: "incoming_frame", label: "incoming_frame", parentEdges: created!.edges }])
     expect(drilled.edges.some((edge) => edge.source === boundary(drilled.nodes, "input").id))
       .toBe(false)
   })
 
-  it("allocates public ids independently from executable input names", () => {
+  it("mints public ids from sanitised frame labels", () => {
     const current = state()
     const definition = current.submodels.definition_pricing as SubmodelDefinition
     const source = makeNode("upstream", "polars", {
@@ -163,7 +163,7 @@ describe("submodelBoundaryEditing", () => {
         ...current.submodels,
         definition_pricing: {
           ...definition,
-          _inputPortInputNames: { policy: "input_1" },
+          _inputPortInputNames: { policy: "policy" },
         },
       },
     }, {
@@ -173,7 +173,7 @@ describe("submodelBoundaryEditing", () => {
       targetHandle: SUBMODEL_INPUT_HANDLE,
     })
 
-    expect(created?.portId).toBe("input_1")
+    expect(created?.portId).toBe("incoming_frame")
   })
 
   it("skips an input id already occupied by an output port", () => {
@@ -191,7 +191,7 @@ describe("submodelBoundaryEditing", () => {
         definition_pricing: {
           ...definition,
           inputPorts: [],
-          outputPorts: [{ ...definition.outputPorts[0], portId: "input_1" }],
+          outputPorts: [{ ...definition.outputPorts[0], portId: "incoming_frame" }],
           _inputPortInputNames: {},
         },
       },
@@ -202,7 +202,7 @@ describe("submodelBoundaryEditing", () => {
       targetHandle: SUBMODEL_INPUT_HANDLE,
     })
 
-    expect(created?.portId).toBe("input_2")
+    expect(created?.portId).toBe("incoming_frame_2")
   })
 
   it("binds an existing named port through the same socket on a copy", () => {

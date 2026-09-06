@@ -357,6 +357,12 @@ def parse_submodel_source(
         str(node["func_name"]): [str(name) for name in node.get("param_names", ())]
         for node in raw_nodes
     }
+    graph._parser_edge_parameter_names = {
+        str(node["func_name"]): [
+            str(name) for name in node.get("edge_param_names", node.get("param_names", ()))
+        ]
+        for node in raw_nodes
+    }
 
     (
         graph._parser_definition_id,

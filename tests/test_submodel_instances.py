@@ -670,7 +670,7 @@ def test_flatten_rewrites_public_input_label_to_exact_external_frame_name() -> N
             _node(
                 "consumer",
                 NodeType.OPTIMISER,
-                config={"data_input": "Quote_records"},
+                config={"data_input": "quotes"},
             )
         ],
         edges=[],
@@ -728,7 +728,7 @@ def test_flatten_rewrites_public_output_label_to_exact_internal_source_name() ->
             _node(
                 "consumer",
                 NodeType.OPTIMISER_APPLY,
-                config={"ratebook_input": "Published_results"},
+                config={"ratebook_input": "score"},
             ),
         ],
         edges=[
@@ -770,7 +770,7 @@ def test_flatten_rewrites_public_output_source_port_in_multi_frame_mapping() -> 
                 config={
                     "outputMapping": [
                         {
-                            "source_port": "Published_results",
+                            "source_port": "score",
                             "source_column": "premium",
                             "output_path": "$.premium",
                             "enabled": True,
@@ -850,7 +850,7 @@ def test_flatten_preserves_public_input_label_for_ordinary_polars_code() -> None
                 "consumer",
                 NodeType.POLARS,
                 label="Child transform",
-                config={"code": "df = Policy_records"},
+                config={"code": "df = policy"},
             )
         ],
         edges=[],
@@ -885,10 +885,10 @@ def test_flatten_preserves_public_input_label_for_ordinary_polars_code() -> None
     result = flatten_graph(graph)
     consumer = result.node_map[qualified_runtime_node_id("instance_a", "consumer")]
 
-    assert consumer.data.config["inputMapping"] == {"Policy_records": "External_policies"}
+    assert consumer.data.config["inputMapping"] == {"policy": "External_policies"}
     generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
-    assert "def Child_transform(Policy_records: pl.LazyFrame)" in generated
-    assert "df = Policy_records" in generated
+    assert "def Child_transform(policy: pl.LazyFrame)" in generated
+    assert "df = policy" in generated
 
 
 def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> None:
@@ -911,7 +911,7 @@ def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> Non
                 "consumer",
                 NodeType.POLARS,
                 label="Consumer",
-                config={"code": "df = Published_results"},
+                config={"code": "df = score"},
             ),
         ],
         edges=[
@@ -927,12 +927,10 @@ def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> Non
 
     result = flatten_graph(graph)
 
-    assert result.node_map["consumer"].data.config["inputMapping"] == {
-        "Published_results": "Internal_Output"
-    }
+    assert result.node_map["consumer"].data.config["inputMapping"] == {"score": "Internal_Output"}
     generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
-    assert "def Consumer(Published_results: pl.LazyFrame)" in generated
-    assert "df = Published_results" in generated
+    assert "def Consumer(score: pl.LazyFrame)" in generated
+    assert "df = score" in generated
 
 
 def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
@@ -942,7 +940,7 @@ def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
                 "original",
                 NodeType.POLARS,
                 label="Original",
-                config={"code": "df = Published_input"},
+                config={"code": "df = published"},
             ),
             _node(
                 "copy",
@@ -950,7 +948,7 @@ def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
                 label="Copy",
                 config={
                     "instanceOf": "original",
-                    "inputMapping": {"Published_input": "Published_input"},
+                    "inputMapping": {"published": "published"},
                 },
             ),
         ],
@@ -990,12 +988,12 @@ def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
     original = flattened.node_map[qualified_runtime_node_id("instance_a", "original")]
     copy = flattened.node_map[qualified_runtime_node_id("instance_a", "copy")]
 
-    assert original.data.config["inputMapping"] == {"Published_input": "External_source"}
-    assert copy.data.config["inputMapping"] == {"Published_input": "External_source"}
+    assert original.data.config["inputMapping"] == {"published": "External_source"}
+    assert copy.data.config["inputMapping"] == {"published": "External_source"}
     generated = graph_to_code_multi(flattened, pipeline_name="main")["main.py"]
-    assert "def Original(Published_input: pl.LazyFrame)" in generated
+    assert "def Original(published: pl.LazyFrame)" in generated
     assert "def Copy(External_source: pl.LazyFrame)" in generated
-    assert "return Original(Published_input=External_source)" in generated
+    assert "return Original(published=External_source)" in generated
 
 
 def test_stale_schema_declared_node_reference_fails_loudly() -> None:
@@ -1392,23 +1390,22 @@ def test_grouping_creates_one_canonical_definition_and_first_occurrence() -> Non
 
     definition = (result.graph.submodels or {})["pricing"]
     assert definition.file == "modules/pricing.py"
-    assert [port.port_id for port in definition.input_ports] == ["input_1"]
+    assert [port.port_id for port in definition.input_ports] == ["source"]
     assert [(target.node_id, target.handle_id) for target in definition.input_ports[0].targets] == [
         ("child_a", "left"),
         ("child_b", "right"),
     ]
-    assert [port.port_id for port in definition.output_ports] == ["output_1"]
+    assert [port.port_id for port in definition.output_ports] == ["child_b"]
     assert definition.output_ports[0].source == SubmodelEndpoint(
         node_id="child_b",
         handle_id="priced",
     )
-    assert {"input_1", "output_1"}.isdisjoint({"child_a", "child_b"})
     assert {
         (edge.source, edge.target, edge.sourceHandle, edge.targetHandle)
         for edge in result.graph.edges
     } == {
-        ("source", occurrence.id, "policies", "in__input_1"),
-        (occurrence.id, "sink", "out__output_1", None),
+        ("source", occurrence.id, "policies", "in__source"),
+        (occurrence.id, "sink", "out__child_b", None),
     }
     assert len(result.graph.edges) == 2
 
@@ -1502,7 +1499,7 @@ def test_grouping_preserves_child_input_configs_and_uses_public_labels() -> None
     children = definition.graph.node_map
 
     assert [(port.port_id, port.label) for port in definition.input_ports] == [
-        ("input_1", "drivers")
+        ("drivers", "drivers")
     ]
     assert children["child_router"].data.config["input_scenario_map"] == {
         "drivers": "live",
@@ -1552,7 +1549,7 @@ def test_grouping_does_not_rewrite_configs_to_opaque_public_port_ids() -> None:
     )
 
     definition = (grouped.graph.submodels or {})["pricing"]
-    assert definition.input_ports[0].port_id == "input_1"
+    assert definition.input_ports[0].port_id == "drivers"
     assert definition.input_ports[0].label == "drivers"
     assert definition.graph.node_map["child_router"].data.config["input_scenario_map"] == {
         "drivers": "live",

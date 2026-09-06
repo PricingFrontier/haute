@@ -6,6 +6,7 @@
 |---|---|
 | `src/haute/parser.py` | Strict public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates AST metadata/node/edge extraction, submodel resolution + merge, conservation, and graph-shape validation for valid pipeline source; whole-file syntax errors raise contextual `ParseError`. |
 | `src/haute/_parser_conservation.py` | Strict fail-loud acceptance gate. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
+| `src/haute/_parser_bindings.py` | Strict parameter binding gate (`assert_polars_parameters_bound`): every parsed Polars node's positional parameters must equal its connected executable input names after `inputMapping`, in parent files and definition files (public input ports bind the sanitised port ID); any other shape is a `ParseError` with `unbound_parameters`, `unconsumed_inputs`, `connected_inputs` and `remediation` (F13). |
 | `src/haute/_parser_regex.py` | Neutral syntax-recovery discovery. `recover_pipeline_fragments` locates pipeline metadata, `@pipeline.<type>` function fragments, `pipeline.connect()` declarations, and `pipeline.submodel()` registrations textually, re-parsing individual fragments with `ast` where possible. It never constructs canonical graph models. |
 | `src/haute/_parser_submodels.py` | `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: resolves explicit `pipeline.submodel("path", ...)` registrations, parses each referenced submodel file into its own `PipelineGraph`, and merges canonical occurrences into the parent (hierarchical or flattened). |
 | `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`) and to a concrete, Polars-mirroring value (`_ExprEvaluator` / `_BranchTrackingEvaluator`). |
@@ -208,6 +209,14 @@ appended before the column that depends on it) → return the parsed expressions
   own definition graph. Exact duplicate `connect()` identities raise the
   dedicated diagnostic; every other difference raises `ParseError` before
   graph-shape validation or return.
+- **Polars parameter binding is strictly conserved**: every Polars node's
+  positional parameter set (after applying `inputMapping`) must equal the set
+  of executable input names contributed by incoming edges (or public input port
+  sanitised IDs for submodel definition nodes). Mismatches fail immediately
+  with `ParseError("Pipeline function parameters do not match the node's connected inputs.")`
+  naming the node, the unbound positional parameters, unconsumed inputs,
+  connected inputs, and remediation guidance.
+
 ## Error handling
 
 - **`ConfigError`** propagates from `src/haute/_config_builder.py` when a healthy parse cannot
@@ -276,14 +285,22 @@ Tests live under `tests/`, split by concern:
   occurrence, no dangling edge, and every sink computes the generated source rows. The
   `hypothesis.find` negative control rewrites one legal connection into the private form and
   shows the acceptance flip naming exactly that connection. Consumers of an occurrence
-  output name their parameter after the output port's label, as codegen emits; a parameter
-  named after the occurrence alias parses but is not executable, which the family does not
-  generate.
+  output name their parameter after the occurrence alias, as codegen emits; a parameter
+  named after the output port's label is rejected with unbound parameters.
 - **`test_parser_conservation.py`** — regression tests asserting that parsing (and the implicit
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node
   function shape, alias awareness, implicit-edge dedup, exact node/edge/handle/submodel identity,
   aggregated missing/unrecoverable submodel diagnostics, duplicate submodel-name rejection, and
   parity between neutral fragment discovery/editor recovery and strict authored-structure rules.
+- **`TestPolarsParameterBinding`** (`tests/test_parser_conservation.py`) -- tests
+  the strict parameter binding acceptance gate for Polars nodes: rejects unbound
+  positional parameters and unconsumed incoming edges with exact diagnostic
+  context; verifies that `inputMapping` correctly maps parameters, executes, and
+  roundtrips through codegen; confirms consumers of submodel occurrence outputs
+  bind the occurrence's own name; validates that parameter-mismatched pipelines
+  load in degraded mode for editor recovery while rejecting saves with HTTP 409;
+  and ensures definition nodes receiving public input ports bind to the sanitised
+  port ID.
 - **`test_parser_project_layout.py`**, **`test_parser_internals.py`**, and
   **`test_parser_sanitize_contracts.py`** — project-root/base-directory handling, internal
   parser invariants, and sanitisation contracts.

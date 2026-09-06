@@ -96,7 +96,7 @@ Out of scope (owned by neighbouring components):
   `haute._graph_utils.edge_input_name` in edge order: an `apiInput`-frame edge
   contributes its frame label verbatim (labels are validated as ASCII Python
   identifiers by the api-input schema), a submodel-output edge contributes the
-  sanitised public output label declared by its definition, and every ordinary
+  occurrence's own name (or f"{alias}__{port_id}" when declaring more than one output port), and every ordinary
   edge contributes the sanitised source-node label. A frame emitted as `quotes` is therefore callable as
   `quotes` in every downstream body — the same string the editor lists as the
   input. When a canvas topology rewrite replaces a Polars node's parent while
@@ -118,11 +118,11 @@ Out of scope (owned by neighbouring components):
   a file, unused registry definitions are rejected, and occurrence ids and
   aliases are never inferred. Parent connections name declared public port
   ids; `in__<portId>`/`out__<portId>` exist only in graph JSON and are not
-  emitted as authored parameter names. Public input and output labels are the
-  semantic frame names on their respective sides of the boundary: child
-  parameters use sanitised input labels and a source occurrence contributes
-  its sanitised public output label downstream. Instance aliases and immutable
-  port ids never leak into executable frame names.
+  emitted as authored parameter names. Inside a definition, child
+  parameters use sanitised public input port IDs. Downstream, an occurrence
+  contributes its own name (or <alias>__<port_id> when declaring more than one
+  output port) as the executable input name; public output labels remain
+  semantic frame labels for display.
   `graph_to_code` refuses a hierarchical graph rather than returning an
   arbitrary file. Each definition file carries its declared
   `definition_id`, complete literal `input_ports`/`output_ports` contract,

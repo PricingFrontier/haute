@@ -189,8 +189,8 @@ submodel = haute.Submodel(
 )
 
 @submodel.polars
-def base_rate(df: pl.LazyFrame) -> pl.LazyFrame:
-    return df
+def base_rate() -> pl.LazyFrame:
+    return pl.LazyFrame({"x": [1]})
 """)
         (tmp_path / "pipeline.py").write_text("""\
 import haute

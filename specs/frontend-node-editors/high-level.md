@@ -25,10 +25,10 @@ backend API modules own validation and persistence.
 - Connected inputs are listed by their **input name — the exact argument name in the node's
   code**, 1:1 with the generated function signature: an API-input frame edge's chip shows the
   frame label carried on the edge (`quotes` is displayed as `quotes` and callable as `quotes`),
-  an ordinary source's chip shows the sanitised node label, and a submodel-output edge's chip
-  shows the child node's sanitised label (what the flattened code actually binds). Inside a
-  drilled submodel, an edge from the composite Input resolves its opaque row handle back to that
-  row's existing frame label and applies the same sanitisation; the literal boundary-card label
+  an ordinary source's chip shows the sanitised node label, and a submodel `out__` edge's input name
+  is the occurrence's name (or `<name>__<portId>` with several output ports), resolved by the backend identity endpoint from the alias the request carries. Inside a
+  drilled submodel, an edge from the composite Input resolves its row handle to that public
+  input port's sanitised port ID; the literal boundary-card label
   `INPUT` is never presented as the child's argument name. The source
   node is named in the chip tooltip. Two frames connected from one API input render as two
   distinct, individually removable chips with two distinct names. Live-switch mapping rows and

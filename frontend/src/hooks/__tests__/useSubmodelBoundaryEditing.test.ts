@@ -184,16 +184,16 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
     expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
       inputPorts: [{
-        portId: "input_1",
+        portId: "external_input",
         label: "external_input",
         targets: [],
       }],
-      _inputPortInputNames: { input_1: "external_input" },
+      _inputPortInputNames: { external_input: "external_input" },
     })
     expect(fixture.graphRef.current.edges).toEqual([expect.objectContaining({
       source: "external",
       target: PLACEHOLDER_ID,
-      targetHandle: "in__input_1",
+      targetHandle: "in__external_input",
       data: { _inputName: "external_input" },
     })])
   })

@@ -12,6 +12,7 @@ import haute.routes._helpers as helpers
 def _write_pipeline(py_path: Path, *submodels: str) -> None:
     lines = [
         "import haute",
+        "import polars as pl",
         'pipeline = haute.Pipeline("test")',
     ]
     for path in submodels:
@@ -23,8 +24,8 @@ def _write_pipeline(py_path: Path, *submodels: str) -> None:
     lines.extend(
         [
             "@pipeline.polars",
-            "def node(df):",
-            "    return df",
+            "def node():",
+            "    return pl.LazyFrame({'x': [1]})",
             "",
         ]
     )

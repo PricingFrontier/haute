@@ -930,7 +930,7 @@ def _canonical_definition_source_metadata(
     node_source_ids: dict[str, list[str]] = {}
 
     for port in definition.input_ports:
-        parameter_name = _sanitize_func_name(port.label)
+        parameter_name = _sanitize_func_name(port.port_id)
         for target in port.targets:
             add_binding(target.node_id, parameter_name, port.port_id, target.handle_id)
 

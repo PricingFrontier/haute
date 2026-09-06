@@ -85,12 +85,17 @@ function requestNode(
   }
   let sourceHandles: string[] = []
   let sourceHandleLabels: Record<string, string> = {}
+  let alias: string | undefined
   if (nodeType === NODE_TYPES.API_INPUT) {
     sourceHandles = apiInputFrameLabels(
       node.data.config as Record<string, unknown> | undefined,
       reservedApiInputFrameLabels,
     )
   } else if (nodeType === NODE_TYPES.SUBMODEL) {
+    if (!isSubmodelInstanceConfig(node.data.config)) {
+      throw new Error(`Cannot resolve editor identity for submodel ${node.id}: malformed occurrence`)
+    }
+    alias = node.data.config.alias
     const definition = submodelDefinition(node, submodels)
     sourceHandles = definition.outputPorts.map((port) => `out__${port.portId}`)
     sourceHandleLabels = Object.fromEntries(
@@ -110,6 +115,7 @@ function requestNode(
     node_type: nodeType,
     source_handles: sourceHandles,
     source_handle_labels: sourceHandleLabels,
+    ...(alias !== undefined ? { alias } : {}),
   }
 }
 

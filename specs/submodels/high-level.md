@@ -86,9 +86,9 @@ by one shared **definition** and any number of parent-graph **instances**:
   `portId`, label, and exactly one internal source `{nodeId, handleId}`.
   Parent edges may address only `in__<portId>` and `out__<portId>` handles;
   internal child ids are never a parent-graph interface. After backend
-  sanitisation, the input label is the child-side frame name and the output
-  label is the parent-side frame name. Aliases and port ids never become
-  executable parameter names.
+  sanitisation, the public input port ID is the child-side frame name.
+  Occurrence names (or `<alias>__<portId>`) name submodel outputs downstream;
+  public input and output labels remain display labels.
 - Referential integrity is checked on load, mutation, flatten, and save:
   instance definitions must exist, public port ids must be unique, endpoints
   must exist with matching directions, and parent bindings must use a declared
@@ -290,9 +290,9 @@ must resolve the original pipeline-owned sidecars.
   identity already present in the parent under any casing is a conflict,
   matching the case-insensitive module no-clobber rule.
 - **Canonical boundary identity and executable naming are separate.** Parent edges
-  address only `in__<portId>` and `out__<portId>` handles. Public port labels
-  provide the semantic executable frame names, internal endpoint ids stay
-  definition-private, and neither may substitute for immutable port identity. Drill-down projects the
+  address only `in__<portId>` and `out__<portId>` handles. Public input port IDs
+  and occurrence names provide the executable frame names, internal endpoint ids stay
+  definition-private, and public port labels remain display labels. Drill-down projects the
   definition contract as one composite Input and one composite Output card.
   Declared outputs remain visible and round-trip without consumers. Draft or
   stale boundary handles are rejected before save or execution.
@@ -390,13 +390,15 @@ must resolve the original pipeline-owned sidecars.
 - A downstream node fed across a canonical submodel boundary resolves the
   occurrence's `out__<portId>` handle through the referenced definition to
   that public output's internal `{nodeId, handleId}` data source. Its parent
-  input name is the sanitised public output label emitted by codegen; the
-  occurrence alias and structural port id are not part of that name. See
+  input name is the occurrence's own sanitised name (`_sanitize_func_name(alias)`),
+  or `<name>__<portId>` when the referenced definition declares more than one
+  output port (aliases are unique among a parent's nodes by construction;
+  public output labels remain display labels). See
   [frontend-node-editors](../frontend-node-editors/high-level.md)
   for chip derivation and [codegen](../codegen/high-level.md) for the backend
   rule.
 - A downstream `edgeJoin`'s base/join role is governed solely by each boundary edge's target
-  handle. Resolve `out__<portId>` for the edge's executable input identity before duplicate-name
+  handle. Resolve `out__<portId>` for the edge's executable input identity (the occurrence name or `<name>__<portId>`) before duplicate-name
   validation, so two public outputs of one occurrence remain distinct even though their parent
   edges share the same occurrence `source`.
 

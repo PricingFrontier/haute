@@ -21,6 +21,7 @@ import {
   UNRESOLVED_INPUT_NAME,
 } from "./apiInputPorts"
 import { appEdge } from "./flowElements"
+import { portableKey } from "./portableKey"
 import { buildSubmodelViewGraph } from "./submodelViewGraph"
 import type {
   SubmodelBoundaryEditResult,
@@ -504,14 +505,18 @@ function nextEdgeId(base: string, edges: readonly Edge[]): string {
   return candidate
 }
 
-function nextInputPortId(definition: SubmodelDefinition): string {
+function mintPortId(definition: SubmodelDefinition, label: string): string {
   const occupied = new Set([
     ...definition.inputPorts.map((port) => port.portId),
     ...definition.outputPorts.map((port) => port.portId),
   ])
-  let index = 1
-  while (occupied.has(`input_${index}`)) index += 1
-  return `input_${index}`
+  const base = portableKey(label)
+  let candidate = base
+  let suffix = 2
+  while (occupied.has(candidate)) {
+    candidate = `${base}_${suffix++}`
+  }
+  return candidate
 }
 
 function nextOutputPortId(definition: SubmodelDefinition): string {
@@ -586,7 +591,7 @@ export function connectCanonicalSubmodelInputFromParentConnection(
     if (config.instanceOf !== undefined) {
       throw new Error("New public inputs can only be added through the definition owner")
     }
-    portId = nextInputPortId(definition)
+    portId = mintPortId(definition, inputName)
     const nextDefinition: SubmodelDefinition = {
       ...definition,
       inputPorts: [
@@ -599,7 +604,7 @@ export function connectCanonicalSubmodelInputFromParentConnection(
       ],
       _inputPortInputNames: {
         ...definition._inputPortInputNames,
-        [portId]: inputName,
+        [portId]: portId,
       },
     }
     nextSubmodels = {

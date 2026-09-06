@@ -31,6 +31,7 @@ from haute._graph_builders import (
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute._parser_bindings import assert_polars_parameters_bound
 from haute._parser_conservation import (
     assert_parser_structure_conserved,
     missing_submodel_error,
@@ -201,6 +202,12 @@ def parse_pipeline_source(
         str(node["func_name"]): [str(name) for name in node.get("param_names", ())]
         for node in raw_nodes
     }
+    graph._parser_edge_parameter_names = {
+        str(node["func_name"]): [
+            str(name) for name in node.get("edge_param_names", node.get("param_names", ()))
+        ]
+        for node in raw_nodes
+    }
 
     # --- Submodel handling ---------------------------------------------------
     registrations = _extract_submodel_registrations(tree)
@@ -313,6 +320,7 @@ def parse_pipeline_source(
         submodel_instance_paths=submodel_instance_paths,
         submodel_aliases=submodel_aliases,
     )
+    assert_polars_parameters_bound(graph, raw_nodes)
 
     validate_pipeline_graph_shape_contracts(
         graph,

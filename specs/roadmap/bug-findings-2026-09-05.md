@@ -22,6 +22,7 @@ Review date: 5 September 2026. HEAD: `06c377e1fb0c5643d5c2bc781de73044daacdbb1`.
 | F10 | P2 | Watcher suppresses a later external write to the same path | Failing coalesced-event probe with passing control; new in pass 2 |
 | F11 | P2 | Upstream rename breaks downstream Python input bindings | Actual frontend update plan + failing executor probe; new in pass 2 |
 | F12 | P1 | New optimiser jobs reuse obsolete utility code | Failing repeated-job probe; preview gives the correct new value; new in pass 2 |
+| F13 | P1 | Parser accepts unbound function parameters and Save rewrites the signature | Failing parse/execute/codegen probe; found 6 September 2026 by the ENG-T11 generated family, after the snapshot |
 
 The following entries concern specification accuracy, retained from the first pass:
 
@@ -131,6 +132,20 @@ P1 means fix promptly because it threatens security, persisted work, or computed
 **Correction.** Resolve and pin the dependency fingerprint/namespace at the beginning of each operation, then reuse that exact snapshot within its chunks or iterations. Tie the namespace and dataframe-cache key to the same dependency snapshot. Audit [the streaming auto-range call](../../src/haute/routes/_optimiser_service.py#L4212) and [the data-output preparation call](../../src/haute/executor.py#L2021), which use the same no-refresh mechanism. The concrete reproduction here covers successive optimiser setups.
 
 **Acceptance evidence.** The regression (local review artifact: `test_review_pass2.py:98`) invokes `OptimiserSolveService._execute_pipeline` twice with real builders and caching, and compares the second input with a correct intervening preview. Add separate estimate/solve operations after a helper edit, direct repeated output preparations, unchanged-dependency cache hits, and a mid-operation edit that must not mix namespaces between chunks.
+
+## F13 — P1: The parser accepts unbound function parameters and Save rewrites the signature
+
+Found on 6 September 2026 by the ENG-T11 generated submodel-endpoint family, after the review snapshot; recorded here so the catalogue stays the single list.
+
+**Trigger and result.** A hand-authored consumer whose parameter name matches no connected input parses cleanly: `def sink(foo)` fed by `pipeline.connect("source", "sink")`, or `def sink_a(a)` fed by an occurrence registered as `a`. Execution then fails with `NameError` because the executor binds the frame under the connected input name only. Saving the document rewrites the signature to that connected name while leaving the body untouched (`def sink(source)` with `df = foo`), so the saved file is no longer executable and the authored name is lost.
+
+**Cause.** [Edge inference](../../src/haute/_graph_builders.py) matched parameters to upstream node ids and silently ignored every other parameter, and the structural acceptance gate compared authored and parsed identities without asking whether each parameter had an input at all. For an occurrence output the executable input name was the definition's public output port label, so the name the author connects by (`a`) and the name the code had to use (`Result`) differed, and nothing said so until execution.
+
+**Contract conflict.** [The node-editor contract](../../specs/frontend-node-editors/high-level.md) promises that connected inputs are the exact argument names of the node's code, one-to-one with the generated signature; the parser did not enforce that promise for authored files, and [the codegen contract](../../specs/codegen/high-level.md) let the generated signature diverge from the authored body.
+
+**Correction.** The parser now enforces the promise with no inference: every positional parameter must equal a connected input (or an `inputMapping` entry), every connected input must be consumed, and any other shape is a `ParseError` carried into the editor as a degraded document, so Save is refused and the file is untouched. An occurrence output contributes the occurrence's own name (`a`, or `a__<portId>` when the definition declares several output ports) instead of the port label, because occurrence names are unique in the parent while port labels of unrelated definitions collide (every example definition labels its output `Result`). Inside a definition the same principle applies on the way in: a node fed by a public input port binds its parameter to the port id, the name the parent connects by, and port labels are display only.
+
+**Acceptance evidence.** `tests/test_parser_conservation.py::TestPolarsParameterBinding` (unbound and unconsumed cases with exact diagnostics, the mapped form executing and round-tripping byte-identically, the occurrence-name form executing and the port-label form rejected, the degraded document and the refused save, definition input ports), the executable-name unit tests, and the generated family in `tests/test_submodel_endpoint_properties.py`, which now authors consumers by occurrence name and computes rows through flattening.
 
 ## Retained specification findings
 

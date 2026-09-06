@@ -344,7 +344,9 @@ test.describe("core browser flows", () => {
     await expect(submodelNode.getByText("enriched", { exact: true })).toHaveCount(0)
     const frameName = "browser_optimiser_rows"
     await connectHandles(page, sourceHandle, newInputHandle)
-    await expect(submodelNode.locator('[data-handleid="in__input_2"]')).toBeAttached()
+    // The new public input is named after the frame it receives (F13): its
+    // handle is in__<name>, no longer an opaque in__input_<n>.
+    await expect(submodelNode.locator(`[data-handleid="in__${frameName}"]`)).toBeAttached()
     await expect(collapsedTargets).toHaveCount(3)
     await expect(newInputHandle).toBeVisible()
     await expect(submodelNode.getByTestId(/^submodel-input-frame-row-/)).toHaveCount(0)

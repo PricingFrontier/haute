@@ -935,10 +935,11 @@ class TestScenarioNormalization:
         py_path = tmp_path / "pipeline.py"
         py_path.write_text(
             "import haute\n"
+            "import polars as pl\n"
             "pipeline = haute.Pipeline('test')\n"
             "@pipeline.polars\n"
-            "def transform(df):\n"
-            "    return df\n"
+            "def transform():\n"
+            "    return pl.LazyFrame({'x': [1]})\n"
         )
 
         # Write sidecar with "live" NOT in first position
@@ -1212,10 +1213,11 @@ class TestParsePipelineToGraph:
         py_path = tmp_path / "pipeline.py"
         py_path.write_text(
             "import haute\n"
+            "import polars as pl\n"
             "pipeline = haute.Pipeline('test')\n"
             "@pipeline.polars\n"
-            "def my_node(df):\n"
-            "    return df\n"
+            "def my_node():\n"
+            "    return pl.LazyFrame({'x': [1]})\n"
         )
         sidecar = py_path.with_suffix(".haute.json")
         sidecar.write_text(json.dumps({"positions": {"my_node": {"x": 42.0, "y": 99.0}}}))
@@ -1271,10 +1273,11 @@ class TestParsePipelineToGraph:
         py_path = tmp_path / "pipeline.py"
         py_path.write_text(
             "import haute\n"
+            "import polars as pl\n"
             "pipeline = haute.Pipeline('test')\n"
             "@pipeline.polars\n"
-            "def node(df):\n"
-            "    return df\n"
+            "def node():\n"
+            "    return pl.LazyFrame({'x': [1]})\n"
         )
         sidecar = py_path.with_suffix(".haute.json")
         sidecar.write_text(json.dumps({"sources": ["batch_a", "batch_b"]}))
@@ -1291,10 +1294,11 @@ class TestParsePipelineToGraph:
         py_path = tmp_path / "pipeline.py"
         py_path.write_text(
             "import haute\n"
+            "import polars as pl\n"
             "pipeline = haute.Pipeline('test')\n"
             "@pipeline.polars\n"
-            "def node(df):\n"
-            "    return df\n"
+            "def node():\n"
+            "    return pl.LazyFrame({'x': [1]})\n"
         )
         sidecar = py_path.with_suffix(".haute.json")
         sidecar.write_text(
@@ -1312,10 +1316,11 @@ class TestParsePipelineToGraph:
         py_path = tmp_path / "pipeline.py"
         py_path.write_text(
             "import haute\n"
+            "import polars as pl\n"
             "pipeline = haute.Pipeline('test')\n"
             "@pipeline.polars\n"
-            "def node(df):\n"
-            "    return df\n"
+            "def node():\n"
+            "    return pl.LazyFrame({'x': [1]})\n"
         )
 
         graph = parse_pipeline_to_graph(py_path)

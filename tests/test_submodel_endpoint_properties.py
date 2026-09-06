@@ -107,14 +107,22 @@ pipeline.submodel(
 )
 """
     ]
-    # A consumer of an occurrence output names its parameter after the public
-    # output port's label ("Result"), exactly as codegen emits it; that is the
+    # A consumer of an occurrence output names its parameter after the occurrence
+    # alias ("a" / "b"), exactly as codegen emits it; that is the
     # physical edge input the executor binds after flattening.
+    sink_a_has_input = any("sink_a" in c for c in rendered_connects)
+    sink_b_has_input = any("sink_b" in c for c in rendered_connects)
+
+    sink_a_param = "a: pl.LazyFrame" if sink_a_has_input else ""
+    sink_a_body = "return a" if sink_a_has_input else "return pl.LazyFrame()"
+    sink_b_param = "b: pl.LazyFrame" if sink_b_has_input else ""
+    sink_b_body = "return b" if sink_b_has_input else "return pl.LazyFrame()"
+
     sinks = [
-        """
+        f"""
 @pipeline.polars
-def sink_a(Result: pl.LazyFrame) -> pl.LazyFrame:
-    return Result
+def sink_a({sink_a_param}) -> pl.LazyFrame:
+    {sink_a_body}
 """
     ]
     if occ_count == 2:
@@ -127,10 +135,10 @@ pipeline.submodel(
     instance_of="submodel__a",
 )
 """)
-        sinks.append("""
+        sinks.append(f"""
 @pipeline.polars
-def sink_b(Result: pl.LazyFrame) -> pl.LazyFrame:
-    return Result
+def sink_b({sink_b_param}) -> pl.LazyFrame:
+    {sink_b_body}
 """)
 
     submodels_code = "\n".join(submodel_registrations)

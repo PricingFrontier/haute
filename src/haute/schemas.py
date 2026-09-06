@@ -474,6 +474,7 @@ class EditorIdentityRequestNode(BaseModel):
     node_id: str = Field(min_length=1, max_length=512)
     label: str = Field(min_length=1, max_length=2048)
     node_type: NodeType
+    alias: Annotated[str, Field(min_length=1, max_length=512)] | None = Field(default=None)
     source_handles: list[Annotated[str, Field(min_length=1, max_length=512)]] = Field(
         default_factory=list,
         max_length=1024,

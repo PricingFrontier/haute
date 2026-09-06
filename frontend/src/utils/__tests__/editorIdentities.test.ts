@@ -26,7 +26,7 @@ function node(
 }
 
 describe("editor identity resolution", () => {
-  it("builds a strict batch with public submodel port labels", () => {
+  it("builds a strict batch with occurrence name and public submodel port labels", () => {
     const api = node("api", "class", "apiInput", {
       tables: [
         {
@@ -85,6 +85,7 @@ describe("editor identity resolution", () => {
           node_type: "submodel",
           source_handles: ["out__written-premium"],
           source_handle_labels: { "out__written-premium": "Written premium" },
+          alias: "pricing_secondary",
         },
       ],
     })
@@ -245,5 +246,25 @@ describe("editor identity resolution", () => {
         default_input_name: null, source_handle_input_names: null as unknown as Record<string, string>,
       })) }),
     })).rejects.toThrow(/boundary.*map|input.*map/i)
+  })
+
+  it("rejects a submodel node without alias", () => {
+    const occurrence = node("pricing", "Tarif café", "submodel", {
+      definitionId: "pricing-definition",
+    })
+    const definition: SubmodelDefinition = {
+      definitionId: "pricing-definition",
+      file: "modules/pricing.py",
+      graph: { nodes: [], edges: [] },
+      inputPorts: [],
+      outputPorts: [],
+    }
+    expect(() =>
+      buildEditorIdentityRequest(
+        [occurrence],
+        { "pricing-definition": definition },
+        RESERVED,
+      ),
+    ).toThrow("Cannot resolve editor identity for submodel pricing: malformed occurrence")
   })
 })
