@@ -309,7 +309,6 @@ def parse_pipeline_source(
         root_nodes=rf_nodes,
         root_edges=edges,
         submodel_paths=submodel_paths,
-        submodel_graphs=submodel_graphs,
         submodel_files=submodel_files,
         submodel_instance_paths=submodel_instance_paths,
         submodel_aliases=submodel_aliases,

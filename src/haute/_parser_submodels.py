@@ -469,6 +469,9 @@ def _merge_registered_submodels(
         source_registration = aliases.get(source)
         target_registration = aliases.get(target)
         if source_registration is None and target_registration is None:
+            # Root-to-root connections already live in the parent graph; any
+            # other endpoint is neither a parent node nor an occurrence alias
+            # and is rejected as dangling by the conservation gate.
             continue
 
         actual_source = source

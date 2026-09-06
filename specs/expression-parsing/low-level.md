@@ -201,7 +201,9 @@ appended before the column that depends on it) → return the parsed expressions
   internal child id.
 - **Conservation is an acceptance gate**: the parser compares authored root
   nodes and ordered edges, registration paths and explicit identity fields,
-  occurrence aliases and public port ids, and the constructed
+  occurrence aliases and public port ids (a parent `connect` that names a
+  definition-owned child id or any other unknown endpoint is rejected as
+  dangling with its authored identity), and the constructed
   definition/occurrence registry. Each child source is conserved within its
   own definition graph. Exact duplicate `connect()` identities raise the
   dedicated diagnostic; every other difference raises `ParseError` before

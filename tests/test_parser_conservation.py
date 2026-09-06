@@ -849,3 +849,485 @@ class TestRecoveryContractValidation:
             "inputs": ("a",),
             "outputs": ("b",),
         }
+
+
+# ---------------------------------------------------------------------------
+# F3 — parent connect to private child nodes rejected as dangling endpoints.
+# ---------------------------------------------------------------------------
+
+
+class TestPrivateChildEndpoints:
+    def test_parent_connect_to_private_child_is_rejected_as_dangling(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        child = _write(
+            tmp_path,
+            "child.py",
+            """
+            import polars as pl
+            import haute
+
+            submodel = haute.Submodel(
+                "child",
+                definition_id="child",
+                input_ports=[
+                    {
+                        "portId": "source",
+                        "label": "Source",
+                        "targets": [{"nodeId": "transform", "handleId": None}],
+                    }
+                ],
+                output_ports=[
+                    {
+                        "portId": "result",
+                        "label": "Result",
+                        "source": {"nodeId": "transform", "handleId": None},
+                    }
+                ],
+            )
+
+            @submodel.polars
+            def transform(source: pl.LazyFrame) -> pl.LazyFrame:
+                return source
+            """,
+        )
+        parent = _write(
+            tmp_path,
+            "main.py",
+            f"""
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("main")
+
+            @pipeline.polars
+            def source() -> pl.LazyFrame:
+                return pl.LazyFrame({{"x": [1]}})
+
+            @pipeline.polars
+            def sink(transform: pl.LazyFrame) -> pl.LazyFrame:
+                return transform
+
+            pipeline.submodel(
+                {child.name!r},
+                definition_id="child",
+                instance_id="submodel__child",
+                alias="child",
+            )
+            pipeline.connect("source", "transform")
+            pipeline.connect("transform", "sink")
+            """,
+        )
+
+        graph = None
+        with pytest.raises(ParseError, match="dangling") as exc_info:
+            graph = parse_pipeline_file(parent)
+
+        assert graph is None
+        assert exc_info.value.context["dangling_edges"] == [
+            {
+                "source": "source",
+                "target": "transform",
+                "source_handle": None,
+                "target_handle": None,
+            },
+            {
+                "source": "transform",
+                "target": "sink",
+                "source_handle": None,
+                "target_handle": None,
+            },
+        ]
+
+    def test_private_child_as_source_only_is_rejected(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        child = _write(
+            tmp_path,
+            "child.py",
+            """
+            import polars as pl
+            import haute
+
+            submodel = haute.Submodel(
+                "child",
+                definition_id="child",
+                input_ports=[
+                    {
+                        "portId": "source",
+                        "label": "Source",
+                        "targets": [{"nodeId": "transform", "handleId": None}],
+                    }
+                ],
+                output_ports=[
+                    {
+                        "portId": "result",
+                        "label": "Result",
+                        "source": {"nodeId": "transform", "handleId": None},
+                    }
+                ],
+            )
+
+            @submodel.polars
+            def transform(source: pl.LazyFrame) -> pl.LazyFrame:
+                return source
+            """,
+        )
+        parent = _write(
+            tmp_path,
+            "main.py",
+            f"""
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("main")
+
+            @pipeline.polars
+            def source() -> pl.LazyFrame:
+                return pl.LazyFrame({{"x": [1]}})
+
+            @pipeline.polars
+            def sink(transform: pl.LazyFrame) -> pl.LazyFrame:
+                return transform
+
+            pipeline.submodel(
+                {child.name!r},
+                definition_id="child",
+                instance_id="submodel__child",
+                alias="child",
+            )
+            pipeline.connect("transform", "sink")
+            """,
+        )
+
+        graph = None
+        with pytest.raises(ParseError, match="dangling") as exc_info:
+            graph = parse_pipeline_file(parent)
+
+        assert graph is None
+        assert exc_info.value.context["dangling_edges"] == [
+            {
+                "source": "transform",
+                "target": "sink",
+                "source_handle": None,
+                "target_handle": None,
+            },
+        ]
+
+    def test_child_to_child_connect_is_rejected(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        child = _write(
+            tmp_path,
+            "child.py",
+            """
+            import polars as pl
+            import haute
+
+            submodel = haute.Submodel(
+                "child",
+                definition_id="child",
+                input_ports=[
+                    {
+                        "portId": "source",
+                        "label": "Source",
+                        "targets": [{"nodeId": "transform", "handleId": None}],
+                    }
+                ],
+                output_ports=[
+                    {
+                        "portId": "result",
+                        "label": "Result",
+                        "source": {"nodeId": "other", "handleId": None},
+                    }
+                ],
+            )
+
+            @submodel.polars
+            def transform(source: pl.LazyFrame) -> pl.LazyFrame:
+                return source
+
+            @submodel.polars
+            def other(transform: pl.LazyFrame) -> pl.LazyFrame:
+                return transform
+            """,
+        )
+        parent = _write(
+            tmp_path,
+            "main.py",
+            f"""
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("main")
+
+            @pipeline.polars
+            def source() -> pl.LazyFrame:
+                return pl.LazyFrame({{"x": [1]}})
+
+            @pipeline.polars
+            def sink(other: pl.LazyFrame) -> pl.LazyFrame:
+                return other
+
+            pipeline.submodel(
+                {child.name!r},
+                definition_id="child",
+                instance_id="submodel__child",
+                alias="child",
+            )
+            pipeline.connect("transform", "other")
+            """,
+        )
+
+        graph = None
+        with pytest.raises(ParseError, match="dangling") as exc_info:
+            graph = parse_pipeline_file(parent)
+
+        assert graph is None
+        assert exc_info.value.context["dangling_edges"] == [
+            {
+                "source": "transform",
+                "target": "other",
+                "source_handle": None,
+                "target_handle": None,
+            },
+        ]
+
+    def test_shared_definition_two_occurrences_public_ports_succeed_but_child_id_fails(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        child = _write(
+            tmp_path,
+            "child.py",
+            """
+            import polars as pl
+            import haute
+
+            submodel = haute.Submodel(
+                "child",
+                definition_id="child",
+                input_ports=[
+                    {
+                        "portId": "source",
+                        "label": "Source",
+                        "targets": [{"nodeId": "transform", "handleId": None}],
+                    }
+                ],
+                output_ports=[
+                    {
+                        "portId": "result",
+                        "label": "Result",
+                        "source": {"nodeId": "transform", "handleId": None},
+                    }
+                ],
+            )
+
+            @submodel.polars
+            def transform(source: pl.LazyFrame) -> pl.LazyFrame:
+                return source
+            """,
+        )
+        parent_valid = _write(
+            tmp_path,
+            "main_valid.py",
+            f"""
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("main_valid")
+
+            @pipeline.polars
+            def source() -> pl.LazyFrame:
+                return pl.LazyFrame({{"x": [1]}})
+
+            @pipeline.polars
+            def sink_a(a: pl.LazyFrame) -> pl.LazyFrame:
+                return a
+
+            @pipeline.polars
+            def sink_b(b: pl.LazyFrame) -> pl.LazyFrame:
+                return b
+
+            pipeline.submodel(
+                {child.name!r},
+                definition_id="child",
+                instance_id="submodel__a",
+                alias="a",
+            )
+            pipeline.submodel(
+                {child.name!r},
+                definition_id="child",
+                instance_id="submodel__b",
+                alias="b",
+                instance_of="submodel__a",
+            )
+            pipeline.connect("source", "a", target_port="source")
+            pipeline.connect("a", "sink_a", source_port="result")
+            pipeline.connect("source", "b", target_port="source")
+            pipeline.connect("b", "sink_b", source_port="result")
+            """,
+        )
+
+        hierarchical = parse_pipeline_file(parent_valid)
+        assert any(
+            edge.source == "source"
+            and edge.target == "submodel__a"
+            and edge.targetHandle == "in__source"
+            for edge in hierarchical.edges
+        )
+        assert any(
+            edge.source == "submodel__a"
+            and edge.target == "sink_a"
+            and edge.sourceHandle == "out__result"
+            for edge in hierarchical.edges
+        )
+        assert any(
+            edge.source == "source"
+            and edge.target == "submodel__b"
+            and edge.targetHandle == "in__source"
+            for edge in hierarchical.edges
+        )
+        assert any(
+            edge.source == "submodel__b"
+            and edge.target == "sink_b"
+            and edge.sourceHandle == "out__result"
+            for edge in hierarchical.edges
+        )
+
+        parent_invalid = _write(
+            tmp_path,
+            "main_invalid.py",
+            f"""
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("main_invalid")
+
+            @pipeline.polars
+            def source() -> pl.LazyFrame:
+                return pl.LazyFrame({{"x": [1]}})
+
+            @pipeline.polars
+            def sink_a(a: pl.LazyFrame) -> pl.LazyFrame:
+                return a
+
+            @pipeline.polars
+            def sink_b(b: pl.LazyFrame) -> pl.LazyFrame:
+                return b
+
+            pipeline.submodel(
+                {child.name!r},
+                definition_id="child",
+                instance_id="submodel__a",
+                alias="a",
+            )
+            pipeline.submodel(
+                {child.name!r},
+                definition_id="child",
+                instance_id="submodel__b",
+                alias="b",
+                instance_of="submodel__a",
+            )
+            pipeline.connect("source", "a", target_port="source")
+            pipeline.connect("a", "sink_a", source_port="result")
+            pipeline.connect("source", "b", target_port="source")
+            pipeline.connect("b", "sink_b", source_port="result")
+            pipeline.connect("source", "transform")
+            """,
+        )
+
+        graph = None
+        with pytest.raises(ParseError, match="dangling") as exc_info:
+            graph = parse_pipeline_file(parent_invalid)
+
+        assert graph is None
+        assert exc_info.value.context["dangling_edges"] == [
+            {
+                "source": "source",
+                "target": "transform",
+                "source_handle": None,
+                "target_handle": None,
+            }
+        ]
+
+    def test_private_child_connect_leaves_document_non_ready_with_the_diagnostic(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        child = _write(
+            tmp_path,
+            "child.py",
+            """
+            import polars as pl
+            import haute
+
+            submodel = haute.Submodel(
+                "child",
+                definition_id="child",
+                input_ports=[
+                    {
+                        "portId": "source",
+                        "label": "Source",
+                        "targets": [{"nodeId": "transform", "handleId": None}],
+                    }
+                ],
+                output_ports=[
+                    {
+                        "portId": "result",
+                        "label": "Result",
+                        "source": {"nodeId": "transform", "handleId": None},
+                    }
+                ],
+            )
+
+            @submodel.polars
+            def transform(source: pl.LazyFrame) -> pl.LazyFrame:
+                return source
+            """,
+        )
+        parent_path = _write(
+            tmp_path,
+            "main.py",
+            f"""
+            import polars as pl
+            import haute
+
+            pipeline = haute.Pipeline("main")
+
+            @pipeline.polars
+            def source() -> pl.LazyFrame:
+                return pl.LazyFrame({{"x": [1]}})
+
+            @pipeline.polars
+            def sink(transform: pl.LazyFrame) -> pl.LazyFrame:
+                return transform
+
+            pipeline.submodel(
+                {child.name!r},
+                definition_id="child",
+                instance_id="submodel__child",
+                alias="child",
+            )
+            pipeline.connect("source", "transform")
+            pipeline.connect("transform", "sink")
+            """,
+        )
+
+        document = load_pipeline_editor_document(parent_path, project_root=tmp_path)
+        assert document.load_status != "ready"
+        assert document.load_status == "degraded"
+        endpoint_diagnostics = [
+            diagnostic
+            for diagnostic in document.diagnostics
+            if diagnostic.code == "connection_endpoint_missing"
+        ]
+        assert len(endpoint_diagnostics) == 2
+        assert {diagnostic.scope for diagnostic in endpoint_diagnostics} == {"edge"}
+        assert all(
+            diagnostic.source_file == "main.py" and diagnostic.source_span is not None
+            for diagnostic in endpoint_diagnostics
+        )

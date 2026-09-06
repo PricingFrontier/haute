@@ -7,7 +7,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any
 
 from haute._graph_builders import _edge_param_names_for_node
-from haute._types import GraphEdge, GraphNode, PipelineGraph
+from haute._types import GraphEdge, GraphNode
 from haute.errors import ParseError
 
 _EdgeIdentity = tuple[str, str, str | None, str | None]
@@ -39,7 +39,6 @@ def assert_parser_structure_conserved(
     root_nodes: Sequence[GraphNode],
     root_edges: Sequence[GraphEdge],
     submodel_paths: Sequence[str] = (),
-    submodel_graphs: Mapping[str, PipelineGraph] | None = None,
     submodel_files: Mapping[str, str] | None = None,
     submodel_instance_paths: Sequence[str] | None = None,
     submodel_aliases: Collection[str] = (),
@@ -47,8 +46,10 @@ def assert_parser_structure_conserved(
     """Reject any parser result that lost an authored structural identity.
 
     Root nodes and locally-resolvable edges are compared exactly before
-    submodel boundary rewiring. Cross-boundary edge endpoints are accepted
-    only when they identify a child in one of the loaded submodel graphs.
+    submodel boundary rewiring. A parent ``connect`` endpoint must be a root
+    node or a registered occurrence alias; a definition-owned child id, like
+    any other unknown name, is reported as dangling with its authored
+    identity so the connection can never be dropped silently.
     Authored submodel paths must match the loaded metadata in source order.
     """
     authored_node_ids = [str(node["func_name"]) for node in raw_nodes]
@@ -102,9 +103,10 @@ def assert_parser_structure_conserved(
             duplicate_edges=duplicate_edges,
         )
 
-    loaded_graphs = submodel_graphs or {}
-    child_ids = {node.id for graph in loaded_graphs.values() for node in graph.nodes}
-    known_endpoint_ids = root_ids | child_ids | set(submodel_aliases)
+    # Definition-owned child ids are deliberately not endpoints: a parent may
+    # only reach a definition through a registered occurrence alias and its
+    # declared public ports (expression-parsing and codegen contracts).
+    known_endpoint_ids = root_ids | set(submodel_aliases)
     dangling = [
         identity
         for identity in connect_identities

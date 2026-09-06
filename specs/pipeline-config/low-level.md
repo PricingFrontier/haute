@@ -260,10 +260,12 @@ forwards projection/profile fields; external-file resolution validates
 
 - `Pipeline.to_graph()` materialises live registrations through `_build_rf_nodes` and
   `_build_edges`; it does not maintain a second node-type or edge-inference implementation.
-- A static `pipeline.connect()` naming a non-root endpoint is deferred until submodel child ids
-  are known. Cross-boundary child references are accepted; every remaining unknown endpoint
-  raises `ParseError` from the parser's conservation gate. The live `Pipeline.connect()` rejects
-  the same mistake immediately because live submodel children are not registered there.
+- A static `pipeline.connect()` endpoint must be a root node or a registered occurrence alias
+  with a declared public port. A definition-owned child id, like any other unknown endpoint,
+  raises `ParseError` from the parser's conservation gate with the authored connection in
+  `dangling_edges`; the document loads as non-ready with that diagnostic and Save is refused
+  until the source is repaired. The live `Pipeline.connect()` rejects the same mistake
+  immediately because live submodel children are not registered there.
 - Duplicate node function names are rejected twice, independently: at live registration
   (`NodeRegistry._register_node`, `ValueError`) and at static parse time
   (`_extract_decorated_nodes`, `ParseError`) — because the function name becomes the graph
