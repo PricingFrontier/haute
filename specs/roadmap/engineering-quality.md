@@ -61,7 +61,6 @@ and file-name inventories do not establish semantic completeness.
 | Package | State | Priority | Outcome |
 |---|---|---|---|
 | ENG-T04 | Decision | P1 | Make the node execution boundary testable and truthful; detect F1. |
-| ENG-T10 | Planned | P2 | Cover every supported workflow family across product components. |
 | ENG-T11 | Planned | P2 | Add bounded state-machine, differential, and boundary generation. |
 | ENG-T12 | Planned | P2 | Enforce collection, regression sensitivity, and sustainable CI cost. |
 
@@ -121,96 +120,6 @@ the decision; implementation and completion depend on it.
 `tests/test_sandbox.py`; `tests/test_user_exec_imports.py`;
 `tests/test_worker_isolation.py`; `tests/conftest.py`;
 `specs/sandbox-security/high-level.md`.
-
-### ENG-T10 — Complete the supported workflow families
-
-**Why:** Fixing eight examples alone leaves similar gaps in other user journeys.
-The seed below covers every component; each slice expands its row into the actions
-and modes explicitly supported by its current specifications and maps existing
-tests before creating more.
-
-**Plan:** Implement the following as separate bounded slices, each with its own
-spec review, exact test selectors and acceptance evidence. Retain existing real
-training, trace, IO, graph and explore browser journeys where they already prove
-the result. Use small synthetic fixtures with independently calculated outputs.
-
-| Workflow | Components | Required sequence and outcomes |
-|---|---|---|
-| W01: install and start | build-and-distribution, cli, hosted-databricks-app | Fresh supported install/init/open/run; missing or invalid config and optional dependency; hosted session bootstrap/failure/restart; useful error and no partial project. Reuse package/platform/optional-dependency lanes. |
-| W02: author and recover | pipeline-config, server-api, frontend-shared | Load/create/edit/save/reload; external edits, two clients, invalid source, recovery, disconnect/reconnect and unsaved work. The critical data-loss witnesses are current server-api tests. |
-| W03: build a graph | frontend-graph-canvas, frontend-node-editors, submodels, codegen | Create/configure/connect/disconnect/copy/instance/group/enter/exit/dissolve/delete/undo/redo/save/reopen. Conserve graph and computed meaning; singleton API input/output rules apply across nested definitions. Rename and parse-conservation invariants are current frontend and parser behaviour. |
-| W04: obtain and persist data | io-layer, databricks-io | File/inline/database/lakehouse/Databricks operations that the registry supports; source switch, schema discovery, cache refresh and explicit write. Preview cannot perform writes. Missing source, wrong options, empty input, cancellation and failed output preserve appropriate prior artifacts. External credentials never enter browser/code fixtures. |
-| W05: structured request to response | json-shredding | JSON/JSONL/XML input, frame/edge join, output mapping, dry-run and batch assembly; missing/null/empty/nested arrays, duplicate or missing keys, row ordering, strict schema errors and exact expected response per request. Persist frame edits and reopen. |
-| W06: execute and inspect | execution-engine, caching, tracing, frontend-trace-ui | Preview/refresh/trace/export with active source, cold/warm caches, config/data/helper edits, filtered/reordered/joined rows and multiple frames. Compare values and trace identity; stale result cannot replace a newer selection. Operation freshness is current execution-engine behaviour. |
-| W07: rate and explain | rating, expression-parsing | Band/rating configuration, preview and trace against hand-calculated values; exact thresholds, ties, nulls, missing factors, mixed supported key types, rounding and invalid expressions. Supported expression parity is explicit; unsupported AST forms retain their documented outcome. |
-| W08: train, retain and score | modelling, mlflow-model-registry, frontend-modelling-optimiser-ui | Configure/train/cancel/retry/persist/load/score and switch panels; minimal real supported model plus worker/lifecycle tests. Empty input, target/weight validation, partition boundaries, non-finite metrics, stale model/cache identity and artifact mismatch have explicit results. |
-| W09: optimise, choose and apply | optimiser | Estimate/solve/frontier/select/save/apply/trace; online and ratebook modes, infeasible/empty/non-finite cases, factor dtypes, tie ordering, constraints at limits and stale/cancelled jobs. Selected result, saved artifact, applied prices and trace agree. Keep current thread-backed isolation truthful. |
-| W10: explore and present | explore-eda, frontend-preview-explore | Run/cancel/retry report; pivot/filter/chart/edit/save/reopen/export; exact aggregates, empty/all-null/constant/large-cardinality and cap boundaries. Dependent charts become stale/refresh together; failed refresh retains or clears prior evidence exactly as specified. |
-| W11: version and restore | git-integration, hosted-project-storage, frontend-git-ui | Choose working branch/save/compare/revert/submit/push/pull/conflict/restore; cancellation leaves usable state and unsaved edits are protected. The pointer and restart contracts are current hosted-project-storage behaviour. Use temporary bare remotes and deterministic UC transport. |
-| W12: assistant edit lifecycle | assistant, frontend-assistant-ui | Request/stream/tool proposal/validation/apply/save/verify/undo/cancel/reconnect with real application service and deterministic provider boundary. Stale proposals cannot overwrite newer edits; failed verification stays visible. Live provider qualification remains a separate lane. |
-| W13: deploy and score | deploy | Validate/prune/bundle/load/score for one and many requests; compare editor dry-run with packaged scoring using the same synthetic input. Missing artifacts, invalid output, non-JSON values and unsupported target fail at the specified stage; stub upload/service SDKs in ordinary CI. |
-| W14: admission and lifecycle | background-jobs | Running/completed/error/cancelled/timeout/superseded transitions for each applicable job family; late progress/completion cannot revive terminal jobs; reservations, processes, cache leases and temporary artifacts release once. A successful retry proves subsequent usability. |
-| W15: containment and assurance | sandbox-security, engineering-quality, reference-pipeline | ENG-T04 boundary witnesses and ENG-T12 gates. The checked-in rating project remains a documented non-runnable snapshot: validate that limitation, never invent missing data or advertise it as the runnable end-to-end fixture. |
-
-Apply a common boundary vocabulary only where meaningful: zero/one/many; missing
-versus null versus empty; valid limit minus one/at limit/plus one; duplicate and
-reordered identities; supported dtype classes including non-finite numbers;
-relative/case-sensitive/nested paths; warm/cold/invalidated cache; success/failure
-before and after commit; cancellation before start/during work/at publication;
-same and different projects/nodes/clients. Audit success, failure and recovery
-outcomes separately. Cover valid boundary values as well as rejection.
-
-Browser coverage concentrates on observable transitions: keyboard access and
-focus, loading/disabled/error/empty states, pending edit completion, narrow
-viewport where already supported, navigation between panels, and recovery after
-reconnect. Assert accessible visible state and final data; screenshots support
-layout checks but do not establish computational correctness. Keep most input
-combinations in fast backend or component tests, with one real cross-stack
-witness for each materially different UI-to-runtime handoff.
-
-Explicitly disposition these existing specification limitations while mapping
-the families; they are not all missing product features:
-
-- W01: the CLI Testing section flags uninvoked registered signal callbacks and
-  mocked Vite/uvicorn startup. Add deterministic callback cleanup tests and one
-  bounded real start/readiness/stop witness if existing browser/package harnesses
-  do not already exercise the CLI lifecycle. Check help defaults/types with
-  focused assertions, not nine broad snapshots merely to increase test volume.
-- W03: hierarchical generated modules are supported through static parse/flatten;
-  direct hierarchical `Pipeline.run()` registration is explicitly not the current
-  equivalence path. Test the supported path; do not introduce a failing success
-  requirement for the unsupported one.
-- W06: HTTP preview currently retains target-only materialisation. A first trace
-  must produce correct lineage by the supported route even when it recomputes;
-  successful full-lineage cache reuse requires a separate cache-scope change and
-  is not an acceptance requirement here. Keep value/identity parity and current
-  performance budgets distinct.
-- W13: platform-container service updates are unimplemented and must remain loud.
-  A real built-image smoke for the implemented generic container scoring contract
-  can close a packaging gap using local synthetic data, without requiring a live
-  registry push or implementing a cloud adapter. Record provider-only tests as
-  external qualification, not as covered by an SDK mock.
-- Indirectly covered frontend helpers are not automatic gaps. Inspect the
-  `flowHandles` and toolbar formatting assertions named by their specs; add a
-  focused case only if a meaningful boundary outcome is absent.
-
-**Acceptance:** All W01–W15 actions and all current node types/modes have a
-reviewed covered or justified inapplicable record. Existing evidence is reused;
-new tests have an identified missing outcome. Required decisions/gaps remain
-visible and prevent a claim of complete coverage. No new EDA, hosted, deployment
-adapter or solver feature is implemented merely to satisfy an invented test.
-
-**Dependencies:** The coverage ledger; corresponding ENG-T04–09 contracts where
-workflows overlap. Unrelated W slices can proceed independently after root scoping.
-
-**Evidence:** `frontend/e2e/core-flows.spec.ts`; `frontend/e2e/data-io-nodes.spec.ts`;
-`frontend/e2e/edge-join.spec.ts`; `frontend/e2e/explore.spec.ts`;
-`frontend/e2e/smoke.spec.ts`; `tests/test_data_io_roundtrips.py`;
-`tests/test_output_nested_roundtrip.py`; `tests/test_trace_matches_preview.py`;
-`tests/test_rating_key_agreement.py`; `tests/test_training_worker_protocol.py`;
-`tests/test_optimiser_ratebook_apply_agreement.py`; `tests/test_job_lifecycle.py`;
-`tests/test_deploy_batch_scoring.py`; `tests/test_cli_smoke.py`;
-`specs/reference-pipeline/high-level.md`.
 
 ### ENG-T11 — Exercise generated boundaries and state transitions
 
@@ -320,7 +229,7 @@ ENG-T04–11. Mutation expansion follows measured value, not a blanket target co
 
 Reproduce ENG-T04 and
 resolve its enforcement decision promptly.
-Expand ENG-T10 one workflow slice at a time; add ENG-T11 properties only after
+Add ENG-T11 properties only after
 the corresponding oracle is settled. Integrate ENG-T12 continuously.
 
 Each implementation slice is one coherent spec/test/fix change. First run the
