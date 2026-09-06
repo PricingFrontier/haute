@@ -668,6 +668,20 @@ for route-level tests, and direct unit tests for the pure-function modules.
 - **`test_route_helpers.py`** / **`test_route_helpers_contracts.py`** — `SidecarModel`
   defaults, `validate_safe_path` traversal/absolute-path rejection, the pipeline index's
   double-checked-locking and invalidation contract, module-dependency casefold matching.
+- **`test_save_precondition_properties.py`** — the generated editing/version-state family
+  (ENG-T11): 1..6 generated load/edit/save/external-write operations for two clients are
+  driven through the real save and editor-document routes in lockstep with a plain-Python
+  model of each client's base revision, the on-disk generation and the accepted saves. A
+  save is accepted exactly when the client's base equals the on-disk revision (None only
+  while the file does not exist), a rejected save leaves every artifact byte-identical with
+  the `409` `stale_document_revision` detail, an accepted save lands its content and reports
+  the byte-true token (a return to earlier bytes reports that generation's token; new bytes
+  a token never seen), an external edit invalidates every client until it reloads, and the
+  last accepted generation is what survives. The `hypothesis.find` negative control patches
+  `SavePipelineService._require_base_revision` to a no-op and finds a sequence in which a
+  stale save overwrites a newer accepted generation: the regression-sensitivity control for
+  the ENG-T02 fix. A creation with a non-null base and a null base against an existing file
+  are both rejected without touching disk.
 - **`test_route_save_pipeline.py`** / **`test_save_pipeline_integrity.py`** — `SavePipelineService`
   unit and integration tests: singleton/name-collision validation, transactional rollback on
   a mid-save failure, stale-config diff-based cleanup, casefold-collision guards, reserved

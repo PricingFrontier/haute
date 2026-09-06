@@ -14,6 +14,7 @@
 | `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, coverage shards/gate, compatibility/probe, performance, optional dependencies, platform, mutation-config, frontend, and browser E2E lanes. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
 | `.github/workflows/dependencies.yml` | Runs the weekly/manual fresh unlocked-resolve monitor plus the locked Python/frontend advisory gate, the latter daily as well as on manual dispatch, main lock-policy changes, and relevant PRs; retains failed reports and raises/updates dependency-watch issues on every non-pull-request failure. |
 | `.github/workflows/frontend-shuffle.yml` | Runs the scheduled/manual shuffled Vitest monitor and raises/updates shuffle-watch issues with its seed on eligible failures. |
+| `.github/workflows/property-exploration.yml` | Runs the weekly/manual wide-budget Hypothesis lane (HAUTE_PROPERTY_EXAMPLES over `scripts/property_test_files.txt`) and raises/updates property-watch issues on eligible failures. |
 | `.github/workflows/mutation.yml` | Plans changed mutation targets, runs separate CI-job shards whose mutants execute serially per runner, and uses a failure-aware non-cancelled status condition on the single merge gate so plan/shard failures become failed rather than skipped checks. |
 | `.github/workflows/performance.yml` | Runs scheduled/manual Python and browser-performance lanes and uploads their artifacts. |
 | `frontend/package.json` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); defines frontend lint/type/unit/coverage/bundle/E2E/benchmark command entry points and frontend critical-coverage entries. |
@@ -52,6 +53,7 @@
 | `scripts/check_dependency_audit.py` | Stdlib-only fail-closed advisory-policy orchestrator/parser: exports the exact locked Python graph, runs pinned `pip-audit` and full-tree `npm audit`, validates report schemas, gives npm meta-findings a topology-independent transitive identity, and subtracts only current exact accepted-risk entries. |
 | `security/accepted-risks.toml` | Versioned exact advisory acceptance registry. Entries require ecosystem/package/advisory identity, owner, exposure, compensating control, approval date, and non-expired review date; stale, duplicate, malformed, mismatched, or unused entries fail the audit. |
 | `scripts/core_test_files.txt` | Curated core test-subset manifest and its selection/refresh rationale for canary/dependency lanes. |
+| `scripts/property_test_files.txt` | Manifest of every Hypothesis test module for the property-exploration lane; `tests/test_workflow_coverage.py` keeps it equal to the modules that import `hypothesis`. |
 | `scripts/e2e_git_topologies.py` | Exercises Git topology scenarios used by repository-level verification. |
 | `scripts/generate_api_contracts.py` | Deterministically composes the execution-strategy diagnostic and Explore chart root models into one Draft 2020-12 JSON Schema bundle, fixes the recursive finite-JSON definition, and atomically writes or byte-checks the committed frontend source artifact. |
 | `scripts/extract_polars_io.py` | Extracts the Polars I/O argument schema by introspection, and with `--diff` reports installed-versus-committed drift as a non-failing Markdown freshness summary. |
@@ -73,6 +75,7 @@
 | `mutation/targets.json` | Declares selected mutation targets, witness suites, survival budgets, and rationales. |
 | `mutation/cosmic-ray.executor.toml` | Cosmic Ray configuration for executor mutation coverage. |
 | `mutation/cosmic-ray.job-store.toml` | Cosmic Ray configuration for job-store mutation coverage. |
+| `mutation/cosmic-ray.parser-conservation.toml` | Cosmic Ray configuration for the parser structural-acceptance-gate mutation coverage (ENG-T12). |
 | `mutation/cosmic-ray.json-cache.toml` | Cosmic Ray configuration for JSON-cache mutation coverage. |
 | `mutation/cosmic-ray.jsonpath.toml` | Cosmic Ray configuration for JSONPath mutation coverage. |
 | `mutation/cosmic-ray.json-shred.toml` | Cosmic Ray configuration for JSON-shredding mutation coverage. |
@@ -102,6 +105,7 @@
 | `tests/workflow_coverage.toml` | Versioned workflow coverage ledger: workflow families, node types, and scenario records with coverage state, owning package, test references, and execution evidence. |
 | `tests/test_workflow_coverage.py` | Ledger validator (`load_ledger`, `roadmap_package_ids`, `ledger_violations`) and its malformed-ledger cases; a meta-marked repository-health module. |
 | `tests/_test_debt_scanner.py` | Test-debt scanning primitives (backend AST visitor, frontend source scanner, frontend test-file predicate) shared by `tests/test_test_debt.py` and `tests/test_workflow_coverage.py`; a support module, not a test. |
+| `tests/_property_budget.py` | Shared Hypothesis settings for the generated families: `pr_budget` (small, derandomised, no example database, reproduction blob printed) and the `exploration_examples` override read from the `EXPLORATION_ENV` variable (HAUTE_PROPERTY_EXAMPLES); a support module, not a test. |
 | `repro/` | Point-in-time benchmark/reproduction programs and metadata; not an automatically current product-behaviour contract. |
 | `mlflow.db` | Checked-in SQLite MLflow tracking-store snapshot (experiments, runs, metrics, parameters, tags, and model-version metadata). It is repository data/local state, not an installed-package input or a runtime prerequisite; MLflow may instead use the configured tracking store. |
 
@@ -488,8 +492,40 @@ are never retained in the report artifact.
   traversal, absolute, out-of-root, skipped, or focused references, contract
   paths that are empty, directories, traversal, missing, or missing their
   heading, not-applicable without reason, undeclared supplemental documents,
-  unmapped component or node type).
+  unmapped component or node type, a witness under `tests/performance/` or
+  in a module carrying a module-level perf mark, which the ordinary lane's
+  `-m 'not perf'` addopts would deselect), and the property-manifest
+  completeness check (`scripts/property_test_files.txt` equals the set of
+  `tests/test_*.py` modules importing `hypothesis`).
 
+- Generated families (ENG-T11) run under `tests/_property_budget.py::pr_budget`:
+  a small explicit `max_examples`, `derandomize=True` (the seed derives from the
+  test itself, so a failure reproduces regardless of test order), `database=None`
+  (no dependence on a local `.hypothesis` cache) and `print_blob=True`; shrunk
+  failing examples are retained as `@example`s, and every family carries a
+  negative control built with `hypothesis.find` under the same settings. Setting
+  `HAUTE_PROPERTY_EXAMPLES` lifts the budget and re-randomises the search; the
+  weekly `property-exploration` workflow runs the manifest that way (it is not a
+  PR check) and opens a `property-watch` issue on failure.
+- Regression sensitivity of the fixed runtime findings (ENG-T12 step 3) was
+  replayed on 2026-09-06 at commit `9daa4372` in a detached worktree: the ledger
+  witnesses of each finding ran green at HEAD and then against the pre-fix
+  version of the fixed source files (`git show <fix>^:<path>`), all going red:
+  F9 stale saves (`src/haute/routes/_save_pipeline.py` and
+  `src/haute/routes/pipeline.py` before `e512dc5f`: 10 of 10 witnesses fail),
+  F10 watcher self-write suppression (`src/haute/routes/_helpers.py`,
+  `src/haute/_file_ops.py` and `src/haute/server.py` before `e512dc5f`: 6 of 12
+  fail), F12 preamble pinning (`src/haute/executor.py` and
+  `src/haute/routes/_optimiser_service.py` before `00bbe3ff`: 4 of 13 fail), F3
+  private child endpoints (`src/haute/_parser_conservation.py`,
+  `src/haute/_parser_submodels.py` and `src/haute/parser.py` before `4f2b0865`:
+  5 of 5 fail), F4 restart target (`src/haute/_project_storage.py` before
+  `e46d9c6a`: 7 of 40 fail), F2 create-only publication
+  (`src/haute/_uc_transport.py` and `src/haute/_storage_types.py` before
+  `272af286`: all 9 error at the removed create fence), and F11 rename binding
+  (`frontend/src/utils/nodeUpdatePlan.ts` before `a9f7779a`: 7 of the 57
+  Vitest witnesses fail; the browser journey is not replayed). This is evidence for
+  those snapshots only; it is not a per-PR gate.
 - Active backend test groups live in `tests/`: unit, property-based,
   regression, API/contract, end-to-end, security/sandbox, and repository
   hygiene tests. `tests/fixtures/` provides the corresponding stable data and

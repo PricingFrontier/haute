@@ -96,8 +96,8 @@ Out of scope:
   and reviewed screenshots at 1440×900 and 1024×768. Firefox remains a smoke
   compatibility project rather than a visual oracle. User-reported canvas
   defects receive the smallest regression at the owning tier before a fix.
-- Scheduled dependency and frontend-order lanes are deliberately non-PR
-  monitoring checks: on eligible failures they create or update a labelled
+- Scheduled dependency, frontend-order and property-exploration lanes are
+  deliberately non-PR monitoring checks: on eligible failures they create or update a labelled
   GitHub issue carrying diagnostic/reproduction context. Mutation and
   performance workflows likewise operate through maintained scripts/artifacts.
 - Python performance reports use schema 4, recording deterministic workload and

@@ -537,6 +537,23 @@ is only warranted for a concrete thread callable that can honour such a signal.
   synchronised threads, not mocks, for the highest-risk races (concurrent creates,
   concurrent updates to the same/different jobs, the heavy-object-eviction-vs-update
   race, the optimistic-lock race).
+- `tests/test_job_lifecycle_properties.py` — generated state-machine families (ENG-T11)
+  driving the real objects and plain-Python reference models written from the
+  high-level contract in lockstep over 1..10 generated operations: the lifecycle
+  model (`JobStore`/`JobLifecycle`: any terminal reason from running, strictly
+  higher precedence replaces a non-completed terminal reason, `completed` is
+  immutable except the explicit completed-to-error correction, invalid requests
+  raise without mutating, `ended_at`/`completed_at` follow the accepted write,
+  and a terminal job never returns to running), the single-flight model
+  (`SingleFlightCoordinator`: one owner per key, idempotent re-acquire, typed
+  conflict naming the owner, release by a non-owner is a no-op) and the registry
+  model (`CancellableJobRegistry`: registering supersedes the previous job for
+  the key with reason `superseded`, an explicit cancel overwrites that reason
+  on the token as the code does, release clears the latest pointer only when
+  it still names the job, and `latest_publication` admits only an uncancelled
+  latest owner). Each family carries a `hypothesis.find` negative control
+  refuting a wrong model (first-write-wins and last-write-wins lifecycles, a
+  release that frees any owner, a superseded job that may publish).
 - `tests/test_job_lifecycle.py` — transition metadata correctness; store-boundary
   rejection of invalid transitions; compare-and-swap completion publication
   (publisher suppression after a lost claim, publisher failure, and real-thread

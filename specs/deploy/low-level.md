@@ -600,6 +600,16 @@ what they cover:
   tolerance comparison (numeric, boolean, Decimal,
   large-integer zero-tolerance), missing-expected-column and row-count-mismatch failure
   modes, malformed golden-row rejection, end-to-end `validate_deploy` blocking on drift.
+- **`test_scoring_metamorphic_properties.py`** — generated metamorphic relations for
+  row-independent scoring (ENG-T11): over generated 1..8-row frames (float or null `x`, a
+  label) and a small list of row-independent transforms, `score_graph` on a permuted frame
+  equals the unpermuted result permuted the same way; the editor preview (`execute_graph`)
+  and `score_graph` agree row-for-row and each derived column equals a plain-Python oracle
+  computed from the input value; a cold and a warm `execute_graph` of the same graph agree,
+  the warm run is proven to be a preview-cache hit (the cache's `get` is spied), and a code
+  edit is computed afresh against the new transform's oracle. The `hypothesis.find`
+  negative control shows an order-sensitive `cum_sum` transform breaking the permutation
+  relation, which is why the property domain excludes order-sensitive operations.
 - **`test_deploy_identity_parity.py`** — `artifact_identity_fingerprint` determinism, the
   output-schema cache folding artefact identity into its key, the deliberate
   `modelScore`-passthrough-rejection behaviour, artefact threading through

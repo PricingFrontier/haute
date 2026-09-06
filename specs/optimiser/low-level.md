@@ -778,11 +778,25 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   that completed optimiser jobs get their heavy runtime objects slimmed and owned artifacts
   evicted (a job-store/memory-discipline test, not a wall-clock benchmark).
 
-Known coverage gap: there is no property-based/fuzz testing of the
-price-contour-emitted level-label tie-breaking logic beyond the specific fixture cases in
-`test_optimiser_ratebook_apply_agreement.py` and
-`test_optimiser_apply_trace_enrichment.py`; the dtype agreement matrix itself is exhaustive
-over the supported dtype families.
+- **`tests/test_optimiser_level_tie_properties.py`** — the generated level-tie family
+  (ENG-T11, ledger W09-S03): for generated Int64, Float64, Float32 and String levels, single
+  and composite, the generator plays price-contour's emission role (`str()` of the typed
+  value) and perturbs the spelling (`repr`, fixed and scientific notation, the widened
+  binary32 representation, the raw float). Properties: every spelling of one typed value
+  saves to one `__factor_group__` key that an independent oracle predicts, distinct typed
+  values never share a key and carry the generator's quote counts, two spellings of one value
+  in one emitted table are refused with the loud `ValueError`, the saved artifact rates every
+  typed row with its own level with the engine and the explainability mirror agreeing and no
+  miss logged, and a duplicate saved key resolves to the last entry in both. Negative
+  controls built with `hypothesis.find`: verbatim (uncanonicalised) labels let the apply
+  path silently keep the last of two rates for one value (the 3b.10 fault the loud check
+  prevents), and a first-entry-wins mirror disagrees with the engine. The real solver's
+  verbatim emission format stays pinned by the fixtures in
+  `test_optimiser_ratebook_apply_agreement.py`; it is not run per example.
+
+The generated family above covers level-label tie-breaking across the supported dtype
+families; the dtype agreement matrix in `test_optimiser_ratebook_apply_agreement.py` and
+`test_optimiser_apply_trace_enrichment.py` remains the exhaustive curated counterpart.
 
 ## Canonical frontier range implementation
 

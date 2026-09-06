@@ -37,6 +37,12 @@ _WORKFLOW_ID_PATTERN = re.compile(r"^W\d{2}$")
 _SCENARIO_ID_PATTERN = re.compile(r"^W\d{2}-S\d{2}$")
 _FINDING_PATTERN = re.compile(r"^F\d+$")
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{7,40}$")
+# A module-level ``pytestmark`` naming the perf marker (or a file under
+# tests/performance/) is deselected by the ordinary lane's ``-m 'not perf'``
+# addopts, so it can never witness a covered scenario (ENG-T12 step 1).
+_PERF_MARK_PATTERN = re.compile(r"\bperf\b")
+_PROPERTY_MANIFEST = Path("scripts") / "property_test_files.txt"
+_HYPOTHESIS_IMPORT = re.compile(r"^(?:from|import) hypothesis\b", re.MULTILINE)
 _ROADMAP_HEADING_PATTERN = re.compile(r"^### ([A-Z0-9]+(?:-[A-Z0-9]+)+)\s+", re.MULTILINE)
 _MARKDOWN_HEADING_PATTERN = re.compile(r"^#{1,6}\s+(.+)$", re.MULTILINE)
 _TEST_CALL_START = re.compile(r"^[ \t]*(?:it|test)\b", re.MULTILINE)
@@ -182,6 +188,38 @@ def _scan_frontend_debt(root: Path) -> list[_FrontendDebtSite]:
             content = fe_path.read_text(encoding="utf-8")
             sites.extend(_scan_frontend_source(content, rel_path))
     return sites
+
+
+def _module_is_perf_marked(tree: ast.Module) -> bool:
+    """True when a module-level ``pytestmark`` assignment names the perf marker."""
+    for node in tree.body:
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        if not any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in targets):
+            continue
+        if _PERF_MARK_PATTERN.search(ast.unparse(node)):
+            return True
+    return False
+
+
+def hypothesis_test_modules(root: Path) -> set[str]:
+    """Repository-relative test modules that import Hypothesis (the exploration lane)."""
+    found: set[str] = set()
+    for path in (root / "tests").rglob("test_*.py"):
+        if "performance" in path.relative_to(root).parts:
+            continue
+        if _HYPOTHESIS_IMPORT.search(path.read_text(encoding="utf-8")):
+            found.add(path.relative_to(root).as_posix())
+    return found
+
+
+def property_manifest_modules(root: Path) -> set[str]:
+    """Modules listed in scripts/property_test_files.txt (comments and blanks skipped)."""
+    lines = (root / _PROPERTY_MANIFEST).read_text(encoding="utf-8").splitlines()
+    return {line.strip() for line in lines if line.strip() and not line.startswith("#")}
 
 
 def _is_valid_frontend_test_path(file_part: str) -> bool:
@@ -406,6 +444,12 @@ def _validate_test_reference(
                 "file name must match test_*.py"
             ]
 
+        if len(parts) > 2 and parts[1] == "performance":
+            return [
+                f"scenario {scenario_id}: test file {file_part!r} lives under "
+                "tests/performance/ and is not collected by the ordinary lane"
+            ]
+
         rem_parts = remainder.split("::")
         if len(rem_parts) == 1:
             class_name: str | None = None
@@ -434,6 +478,12 @@ def _validate_test_reference(
             tree = ast.parse(file_path.read_text(encoding="utf-8"), filename=str(file_path))
         except SyntaxError as err:
             return [f"scenario {scenario_id}: syntax error parsing {file_part}: {err}"]
+
+        if _module_is_perf_marked(tree):
+            return [
+                f"scenario {scenario_id}: test file {file_part!r} carries a module-level "
+                "perf mark and is deselected by the ordinary lane"
+            ]
 
         if class_name is not None:
             target_class: ast.ClassDef | None = None
@@ -1329,3 +1379,53 @@ def test_escaped_title_is_compared_by_collected_value(tmp_path: Path) -> None:
     data["scenarios"][0]["tests"] = [f"frontend/src/__tests__/escaped.test.ts::{raw_spelling}"]
     violations = ledger_violations(data, root=tmp_path, node_types=["alpha"])
     assert any("it() or test() call" in v for v in violations)
+
+
+def test_perf_marked_module_cannot_witness_a_scenario(tmp_path: Path) -> None:
+    data = _valid_ledger(tmp_path)
+    marked = tmp_path / "tests" / "test_marked.py"
+    marked.write_text(
+        "import pytest\n\npytestmark = pytest.mark.perf\n\n\ndef test_ok() -> None:\n    pass\n",
+        encoding="utf-8",
+    )
+    data["scenarios"][0]["tests"] = ["tests/test_marked.py::test_ok"]
+    violations = ledger_violations(data, root=tmp_path, node_types=["alpha"])
+    assert any("module-level perf mark" in v for v in violations)
+
+    marked.write_text(
+        "import pytest\n\npytestmark = [pytest.mark.slow, pytest.mark.perf]\n\n\n"
+        "def test_ok() -> None:\n    pass\n",
+        encoding="utf-8",
+    )
+    violations = ledger_violations(data, root=tmp_path, node_types=["alpha"])
+    assert any("module-level perf mark" in v for v in violations)
+
+    marked.write_text(
+        "import pytest\n\npytestmark = pytest.mark.slow\n\n\ndef test_ok() -> None:\n    pass\n",
+        encoding="utf-8",
+    )
+    assert ledger_violations(data, root=tmp_path, node_types=["alpha"]) == []
+
+
+def test_performance_directory_module_cannot_witness_a_scenario(tmp_path: Path) -> None:
+    data = _valid_ledger(tmp_path)
+    perf_dir = tmp_path / "tests" / "performance"
+    perf_dir.mkdir()
+    (perf_dir / "test_perf.py").write_text("def test_ok() -> None:\n    pass\n", encoding="utf-8")
+    data["scenarios"][0]["tests"] = ["tests/performance/test_perf.py::test_ok"]
+    violations = ledger_violations(data, root=tmp_path, node_types=["alpha"])
+    assert any("tests/performance/" in v and "ordinary lane" in v for v in violations)
+
+
+def test_property_manifest_lists_every_hypothesis_module() -> None:
+    """The exploration lane runs scripts/property_test_files.txt; keep it complete."""
+    root = Path(__file__).resolve().parents[1]
+    expected = hypothesis_test_modules(root)
+    listed = property_manifest_modules(root)
+    assert expected, "no Hypothesis modules found under tests/"
+    assert listed == expected, (
+        f"missing from manifest: {sorted(expected - listed)}; "
+        f"stale in manifest: {sorted(listed - expected)}"
+    )
+    for module in listed:
+        assert (root / module).is_file(), module

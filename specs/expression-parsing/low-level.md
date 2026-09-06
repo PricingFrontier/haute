@@ -266,6 +266,19 @@ Tests live under `tests/`, split by concern:
   regression-tests one specific historical codebase-review finding.
 - **`test_parser_submodels.py`** — `extract_submodel_registrations`, `parse_submodel_source`,
   `merge_submodels`, and cross-boundary-edge reconstruction.
+- **`test_submodel_endpoint_properties.py`** — the generated graph/source family (ENG-T11):
+  generated child definitions (an identity chain behind one public input and one public
+  output port), one or two occurrences, and 1..4 authored parent connections drawn from the
+  legal public-port forms and the private child-endpoint forms. Parsing conserves exactly
+  the legal edges (occurrence instance ids with `in__`/`out__` handles) and rejects any
+  private endpoint as dangling with the authored identities in authored order; flattening a
+  fully wired legal graph yields one qualified runtime node per internal node per
+  occurrence, no dangling edge, and every sink computes the generated source rows. The
+  `hypothesis.find` negative control rewrites one legal connection into the private form and
+  shows the acceptance flip naming exactly that connection. Consumers of an occurrence
+  output name their parameter after the output port's label, as codegen emits; a parameter
+  named after the occurrence alias parses but is not executable, which the family does not
+  generate.
 - **`test_parser_conservation.py`** — regression tests asserting that parsing (and the implicit
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node
   function shape, alias awareness, implicit-edge dedup, exact node/edge/handle/submodel identity,
@@ -304,20 +317,32 @@ Tests live under `tests/`, split by concern:
   `_ExprEvaluator`'s output against real Polars computations; the source of truth for the
   documented `round()`-half-to-even and similar intentional divergences from naive Python
   semantics.
+- **`test_expression_parity_properties.py`** — the generated differential (ENG-T11): a bounded
+  grammar (depth at most three) of documented, well-formed single-row forms — arithmetic,
+  `abs`/`round`/`clip`/`fill_null`/`sqrt`/`log`, comparisons, `is_null`/`is_not_null`,
+  `is_between` with every `closed` value, `is_in`, regex and literal `str.contains`,
+  `to_lowercase`/`to_uppercase`, and `when/then/otherwise` — over int, float, tie-float and
+  null cells, each example evaluated by `_ExprEvaluator` and by real Polars on a typed one-row
+  frame (a null cell keeps its column family's dtype, so null propagation is proven through
+  every operation). It runs under the shared PR budget with retained curated edge examples, a
+  `hypothesis.find` negative control proving a naive-Python evaluator (decimal `round`,
+  substring `contains`, inclusive `is_between`, `False` for a null comparison) is caught on the
+  same grammar, and classification pins for the documented placeholders: window, `shift`,
+  `diff` and aggregation forms return the receiver value on a single row, and `cum_sum`,
+  rolling and unhandled string methods return `None`.
 
-Strategy is unit + scenario-regression throughout; no property-based/fuzz testing was found.
+Strategy is unit + scenario-regression plus the generated single-row differential above.
 Known coverage gaps:
 
 - The neutral syntax-recovery scanner is exercised only against curated malformed-input scenarios, not
   randomly-generated broken Python source.
-- `test_expression_parser_polars_parity.py` cross-checks a curated subset (notably rounding,
-  regex `str.contains`, `is_between`, `is_in`, conditionals, and a few numeric methods) against
-  real Polars. It is not an exhaustive semantic differential. Unsupported AST/method forms
-  return `None`, and defensive malformed-call branches sometimes intentionally differ from
-  Polars by ignoring an argument or avoiding an exception.
+- The differential covers documented single-row forms only. Unsupported AST/method forms
+  return `None`, defensive malformed-call branches intentionally differ from Polars by ignoring
+  an argument or avoiding an exception, and neither is generated.
 - Window result calculation is described textually using regex extraction and a row-local AST
-  evaluator; the suite does not prove full partition/window semantics against a multi-row Polars
-  frame.
+  evaluator; the single-row placeholder for window and aggregation forms is pinned as a
+  classification, not as parity, and the suite does not prove partition/window semantics
+  against a multi-row Polars frame.
 
 ## Neutral syntax-recovery fragments
 
