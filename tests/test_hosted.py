@@ -9,12 +9,17 @@ specs/hosted-databricks-app/high-level.md.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from haute._git_state import read_working_branch
 from haute._local_security import DISABLE_AUTH_ENV
+from haute._project_storage import PROJECT_DIR_ENV
+from haute._storage_types import StorageUnavailableError
 from haute.hosted import (
     DATABRICKS_APP_ENV_VARS,
     FORWARDED_USER_SCOPE_KEY,
@@ -24,6 +29,11 @@ from haute.hosted import (
     databricks_app_environment,
 )
 from haute.server import app as haute_app
+
+_APP_DIR = str(Path(__file__).resolve().parent.parent / "databricks_app")
+if _APP_DIR not in sys.path:
+    sys.path.insert(0, _APP_DIR)
+import bootstrap  # noqa: E402
 
 # Header set observed from the real Databricks Apps proxy (see
 # databricks_app/LEARNINGS.md).
@@ -204,3 +214,108 @@ class TestBoundaryDoesNotBypassLocalAuth:
             headers={**_PROXY_HEADERS, "cookie": "unrelated=1"},
         )
         assert response.status_code == 403
+
+
+class TestEnsureProject:
+    def test_unbound_boot_seeds_a_volatile_project_and_chdirs_into_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_dir = tmp_path / "project"
+        monkeypatch.setenv(PROJECT_DIR_ENV, str(project_dir))
+        monkeypatch.delenv("HAUTE_STATE_VOLUME", raising=False)
+
+        configured_creds: list[Path] = []
+        monkeypatch.setattr(
+            "haute._project_storage.configure_git_credentials",
+            lambda path: configured_creds.append(path),
+        )
+        monkeypatch.chdir(tmp_path)
+
+        returned_path = bootstrap.ensure_project()
+
+        assert returned_path == project_dir
+        assert Path.cwd() == project_dir
+        assert (project_dir / "haute.toml").is_file()
+        assert (project_dir / "rating" / "main.py").is_file()
+
+        assert (project_dir / ".git").is_dir()
+        proc_status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert proc_status.stdout.strip() == ""
+
+        proc_log = subprocess.run(
+            ["git", "log", "-1", "--format=%s"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert proc_log.stdout.strip().startswith("Seed haute project")
+
+        # A volatile seed commits on `main` but records no working branch: the
+        # session opens in the first-run chooser, exactly like a fresh local
+        # project (frontend/e2e/core-flows.spec.ts "first-run chooser ...").
+        assert read_working_branch(project_dir) is None
+        assert configured_creds == [Path.home() / ".haute-runtime"]
+
+    @pytest.mark.parametrize("outcome", ["restored", "present"])
+    def test_a_restored_or_present_boot_never_reseeds(
+        self, outcome: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        sentinel = project_dir / "sentinel.txt"
+        sentinel.write_text("survives", encoding="utf-8")
+
+        monkeypatch.setenv(PROJECT_DIR_ENV, str(project_dir))
+        monkeypatch.setattr(
+            "haute._project_storage.restore_if_bound",
+            lambda _dir: outcome,
+        )
+        monkeypatch.setattr(
+            "haute._project_storage.configure_git_credentials",
+            lambda _path: None,
+        )
+        monkeypatch.chdir(tmp_path)
+
+        returned_path = bootstrap.ensure_project()
+
+        assert returned_path == project_dir
+        assert Path.cwd() == project_dir
+        assert sentinel.is_file()
+        assert sentinel.read_text(encoding="utf-8") == "survives"
+        assert not (project_dir / "haute.toml").exists()
+        assert not (project_dir / "rating").exists()
+        assert not (project_dir / ".git").exists()
+
+    def test_a_failed_restore_gates_the_boot_without_seeding(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_dir = tmp_path / "project"
+        monkeypatch.setenv(PROJECT_DIR_ENV, str(project_dir))
+
+        def _failing_restore(_dir: Path) -> str:
+            raise StorageUnavailableError("volume down")
+
+        monkeypatch.setattr(
+            "haute._project_storage.restore_if_bound",
+            _failing_restore,
+        )
+        monkeypatch.setattr(
+            "haute._project_storage.configure_git_credentials",
+            lambda _path: None,
+        )
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(StorageUnavailableError, match="volume down"):
+            bootstrap.ensure_project()
+
+        if project_dir.exists():
+            assert list(project_dir.iterdir()) == []
+        assert not (project_dir / "haute.toml").exists()
+        assert not (project_dir / ".git").exists()

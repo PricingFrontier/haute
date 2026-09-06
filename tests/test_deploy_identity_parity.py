@@ -18,7 +18,8 @@ Regression tests for the deploy identity cluster (C0.3):
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
@@ -456,3 +457,103 @@ class TestScoreTestQuotesThreadsArtifacts:
         assert len(results) == 1
         assert results[0]["status"] == "error"
         assert "contract mismatch" in results[0]["error"].lower()
+
+
+class TestEditorAndPackagedScoringAgree:
+    def test_dry_run_and_packaged_scoring_return_identical_rows_for_the_same_input(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute.deploy._model_code import HauteModel
+        from haute.deploy._pruner import find_output_node, prune_for_deploy
+        from haute.deploy._scorer import score_graph
+        from haute.executor import execute_graph
+
+        monkeypatch.chdir(tmp_path)
+        input_file = tmp_path / "input.parquet"
+        input_df = pl.DataFrame({"x": [1.5, 2.0, None], "label": ["row1", "row2", "row3"]})
+        input_df.write_parquet(input_file)
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": str(input_file), "sourceType": "flat_file"},
+                        },
+                    },
+                    {
+                        "id": "trans",
+                        "data": {
+                            "label": "trans",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": "df = src.with_columns(doubled=pl.col('x') * 2.0)",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "dataOutput",
+                            "config": {"output": True},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "trans", "sourceHandle": "src"},
+                    {"id": "e2", "source": "trans", "target": "out"},
+                ],
+            }
+        )
+
+        out_id = find_output_node(graph)
+        pruned, _kept, _removed = prune_for_deploy(graph, out_id)
+
+        # 1. Editor path: dry-run/preview execution
+        exec_results = execute_graph(graph, target_node_id=out_id)
+        assert exec_results[out_id].status == "ok"
+        editor_rows = exec_results[out_id].preview
+
+        # 2. Deploy path: score_graph
+        score_df = score_graph(
+            graph=pruned,
+            input_df=input_df,
+            input_node_ids=["src"],
+            output_node_id=out_id,
+        )
+        score_rows = score_df.to_dicts()
+
+        # 3. Packaged model path: HauteModel.predict over bundled manifest
+        manifest = {
+            "pruned_graph": pruned.model_dump(),
+            "input_node_ids": ["src"],
+            "output_node_id": out_id,
+            "artifacts": {},
+        }
+        manifest_path = tmp_path / "deploy_manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        model = HauteModel()
+        ctx = MagicMock()
+        ctx.artifacts = {"deploy_manifest": str(manifest_path)}
+        model.load_context(ctx)
+
+        predict_df = model.predict(ctx, input_df.to_pandas())
+        predict_rows = pl.from_pandas(predict_df).to_dicts()
+
+        # JSON-safe conversion
+        def to_json_safe(rows: list[dict]) -> list[dict]:
+            return json.loads(json.dumps(rows))
+
+        editor_json = to_json_safe(editor_rows)
+        score_json = to_json_safe(score_rows)
+        predict_json = to_json_safe(predict_rows)
+
+        assert len(editor_json) == 3
+        assert editor_json == score_json == predict_json
