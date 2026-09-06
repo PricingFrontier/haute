@@ -115,22 +115,21 @@ pending candidate and those positions and selections are merged into the
 committed view rather than reverted. Only a structural change voids the
 candidate, with the error toast.
 
-- **Node rendering.** All non-submodel pipeline node types render through one
-  component, `PipelineNode`, dispatched via a shared `nodeTypes` registry
-  (`utils/nodeTypeRegistry.ts`) so the live editor canvas and the read-only
-  comparison canvases never disagree on which component renders a given node
-  type. Every node renders at full detail at every zoom level — zoom changes
-  scale and nothing else — plus a distinct marker/pill render path for
-  edge-join nodes. Reduced zoom-dependent renderings were removed: they hid an
-  API input's emitted frames and narrowed other nodes into a truncating label
-  precisely when the whole graph was in view, which is when that structure is
-  most worth seeing. An ordinary card's body name is right-aligned on the card,
-  matching the placement of API-input and submodel output-frame names; this
-  alignment also applies when that body name is the node identity rather than a
-  labelled output handle.
+- **Node rendering.** All pipeline node types other than `submodel`,
+  `submodelPort`, and the recovery renderer render through one component,
+  `PipelineNode`, dispatched via a shared `nodeTypes` registry
+  (`frontend/src/utils/nodeTypeRegistry.ts`) so the live editor canvas and the
+  read-only comparison canvases never disagree on which component renders a
+  given node type. Every node renders at full detail at every zoom level — zoom
+  changes scale and nothing else — plus a distinct marker/pill render path for
+  edge-join nodes. Full detail at every zoom keeps an API input's emitted frames
+  and node names readable exactly when the whole graph is in view. An ordinary
+  card's body name is right-aligned on the card, matching the placement of
+  API-input and submodel output-frame names; this alignment also applies when
+  that body name is the node identity rather than a labelled output handle.
 - **Canonical data-I/O nodes.** The 19-type frontend vocabulary matches the
-  backend enum and includes `dataInput` and `dataOutput`, never historical
-  Data Source/Data Sink aliases. Data Input is source-only; Data Output is a
+  backend enum and includes `dataInput` and `dataOutput`. Data Input is
+  source-only; Data Output is a
   sink with one upstream input. Neither is a singleton. Their new-node
   defaults contain only the active discriminated branch, and an incomplete
   required choice remains visibly incomplete rather than gaining an
@@ -457,8 +456,7 @@ candidate, with the error toast.
   The context menu's entry for an existing submodel node
   reads "Dissolve Submodel", not "Ungroup Submodel". Clicking a submodel node
   opens the standard node inspector but fetches no preview — submodel is a
-  non-previewable node type — rather than the output-port summary table that
-  was once proposed and never built. Create and dissolve are main-canvas
+  non-previewable node type. Create and dissolve are main-canvas
   operations: while a drilled submodel view is active both handlers refuse to
   run and toast an instruction to return to the main pipeline — the same
   client-side gate as save — instead of sending a mis-scoped request that the
@@ -498,11 +496,10 @@ candidate, with the error toast.
   nodes and edges as separate history actions for one delete, paste, or cut
   would require two undos; one complete snapshot makes each gesture reverse
   as one action.
-- **Dirty is fully derived**, replacing an earlier imperative
-  `setDirty(true)` pattern that had a specific bug: undoing back to the
-  saved state left `dirty=true` because the boolean and the saved reference
-  could drift out of sync. Deriving it from a fingerprint comparison
-  eliminates that class of bug entirely.
+- **Dirty is fully derived from a fingerprint comparison**: comparing the live
+  graph against the saved reference ensures undoing back to the saved state
+  leaves `dirty=false` without allowing boolean state and the saved reference
+  to drift out of sync.
 - **Three separate fingerprints at three granularities** — structural,
   panel-context, and persisted — exist so that expensive recomputation only
   happens at the granularity that actually changed. A position drag never
@@ -541,32 +538,19 @@ candidate, with the error toast.
   graph. Duplicate-name failures retain their purpose-written wording; other
   invalid-connection failures surface their supplied reason instead of silently
   discarding the gesture.
-- **API-input frame rows own both the name and the handle.** The earlier
-  layout computed the body's label column and the handle positions in two
-  unrelated coordinate systems — a stacked list inside the body vs.
-  percentages of the full node height including the header — which kept
-  the same order but drifted vertically as status/trace/label content
-  changed the body height, so a user could not tell which line left which
-  frame. Mounting each handle inside the row that names it makes the
-  alignment structural: it holds for one, two, or any number of frames
-  because there are no longer two layouts to keep in sync, and no
-  per-frame-count constants exist to go stale.
+- **API-input frame rows own both the name and the handle.** Mounting each
+  handle inside the row that names it makes the alignment structural: it holds
+  for one, two, or any number of frames without separate layout coordinate
+  systems to keep in sync or per-frame-count positioning constants.
 - **One frame-label derivation, one identity.** One ordered list of eligible
-  frame labels (with no minimum count) drives the
-  rendered handles, the body rows, downstream input chips, and the
-  generated function parameters all read from it, so none of them can
-  disagree. The earlier design split "visible names" from "multi-port
-  handle mode" (labelled handles only from two frames up, a null-id
-  default handle for one) to avoid touching persisted edge identity in a
-  presentation-only release; the convergence release deliberately retired
-  that split — a sole frame's edge now carries the frame label like any
-  other, because a name that exists on screen but not in the persisted
-  edge or the code argument is exactly the hidden-mapping class this
-  design removes.
+  frame labels (with no minimum count) drives the rendered handles, the body
+  rows, downstream input chips, and the generated function parameters, so none
+  of them can disagree. A sole frame's edge carries the frame label like any
+  other, because a name that exists on screen but not in the persisted edge or
+  the code argument is a hidden mapping.
 - **The zero-frame body states the absence explicitly** — "No emitted
   frames" beside the retained instance name — rather than rendering an
-  empty body or keeping the old name-only layout: an unconfigured
-  API-input should say what is missing.
+  empty body: an unconfigured API-input states what is missing.
 - **Comparison-view diff, trace, and hover visuals reuse the same
   border/ring element used for selection**, rather than each state owning
   its own overlay shape, so every node type — including pill-shaped
@@ -638,7 +622,7 @@ candidate, with the error toast.
   inspector panel and its per-type editors consume the graph exclusively
   through `useGraph()`/`GraphProvider`, never via props, and call back into
   `App.tsx`'s `onUpdateNode` to commit config changes. They also consume
-  this component's frame display resolution (`utils/apiInputPorts.ts`) to
+  this component's frame display resolution (`frontend/src/utils/apiInputPorts.ts`) to
   label downstream inputs and output frames by the dataframe an edge
   delivers.
 - [server-api](../server-api/high-level.md) — the backend counterpart to
@@ -666,12 +650,12 @@ candidate, with the error toast.
   apply, rollback, and dirty-gating behaviour as any external edit — nothing
   here special-cases them), and the assistant panel reads the derived dirty state
   to gate sending while local edits are unsaved.
-- `frontend-shared` — the shared node-data types (`types/node.ts`) and the
+- `frontend-shared` — the shared node-data types (`frontend/src/types/node.ts`) and the
   edge-join role/api-input-port handle-id conventions
-  (`utils/edgeJoinRoles.ts`, `utils/apiInputPorts.ts`) that this component
+  (`frontend/src/utils/edgeJoinRoles.ts`, `frontend/src/utils/apiInputPorts.ts`) that this component
   and the node editors both depend on. The node-type metadata table
-  (`utils/nodeTypes.ts`) and the default-target-handle sentinel
-  (`utils/flowHandles.ts`) are owned by *this* component (above), not
+  (`frontend/src/utils/nodeTypes.ts`) and the default-target-handle sentinel
+  (`frontend/src/utils/flowHandles.ts`) are owned by *this* component (above), not
   `frontend-shared` — both `frontend-node-editors` and other components
   import them from here.
 

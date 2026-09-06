@@ -173,17 +173,6 @@ compatibility check before the single graph setter is called. A mixed React
 Flow change batch applies its non-removal changes inside that same staged
 reconciliation rather than dropping them or committing a second mutation.
 
-Tests must precede implementation and cover: two independent occurrences of
-one definition; fresh identity/alias allocation; one-snapshot undo; navigation
-by instance plus shared definition; public-handle rendering and direction
-checks; persistence through graph replacement; selection-based creation from
-an atomic store snapshot even when effect-mirrored refs are stale; grouping
-two disconnected input nodes; shared-edit messaging; and
-atomic interface-break rejection with all affected occurrences reported.
-Coverage includes every deletion entry point and stale create/dissolve
-responses after an intervening local mutation, request-context change, or
-newer overlapping transform.
-
 - **`GraphSnapshot`** (`{ nodes: Node[]; edges: PipelineEdge[]; preamble: string;
   submodels: Record<string, unknown> }`,
   `useGraphStore.ts`) — the unit of undo/redo for a graph edit.
@@ -434,10 +423,9 @@ newer overlapping transform.
     `useUpdateNodeInternals(id)` effect so React Flow re-measures handle
     positions whenever port topology changes.
     **Every node renders at full detail at every zoom.** There is no
-    level-of-detail switch: reduced renderings previously replaced a node's
-    body below a zoom threshold, which hid an api input's emitted frames and
-    narrowed other nodes into a truncating label — losing exactly the
-    structure a zoomed-out view exists to show. The generic body-name row is
+    level-of-detail switch: a reduced body would hide an api input's emitted
+    frames and truncate node names — losing exactly the structure a
+    zoomed-out view exists to show. The generic body-name row is
     right-aligned on the card, so its single-frame/node name follows the same
     visual convention as labelled multi-frame outputs. An api-input with ≥1
     eligible frame renders the frame-row body:
@@ -465,9 +453,8 @@ newer overlapping transform.
     hover reuses that same pseudo-element, removing the clip and strengthening
     its fill to the node accent while the real handle remains transparent at its
     2×2px geometry. Edge geometry and the 28px `::after` hit
-    area remain unchanged. `_SourceHandle` renders no duplicate label of its own: the
-    evenly-spaced set it once carried existed only for the zoom levels that hid
-    the frame rows, so removing those removed its only caller. Positional
+    area remain unchanged. `_SourceHandle` renders one unlabelled right-edge
+    handle; the frame rows own every labelled api-input handle. Positional
     `output-connector[<idx>]:<node label>` test
     ids follow the visual top-to-bottom order, and the name
     span keeps its `api-input-body-label-<label>` test id. Edge-join nodes
@@ -564,9 +551,9 @@ newer overlapping transform.
 15. **Pipeline load (`usePipelineAPI`, mount effect).** Calls `loadPipeline`
     with a cold-start retry policy (`INITIAL_PIPELINE_RETRY_POLICY`, 6
     retries at 250ms base delay); the response is validated through
-    `parsePipelineResponse` before touching the graph. On success, the hook
+    `parsePipelineEditorDocument` before touching the graph. On success, the hook
     canonicalises an omitted/null preamble to `""` and submodels to `{}`,
-    requires a non-empty, non-whitespace `source_revision` for a live document, copies
+    requires a non-null `source_revision` for a live document (blankness is not checked), copies
     `preserved_blocks`/`source_revision` into their request-facing refs,
     updates the matching refs, then calls `loadGraphSnapshot` once with
     normalised edges and all four persisted fields. That one transition
@@ -812,16 +799,13 @@ newer overlapping transform.
   frame, ids = the raw labels. A blank, duplicate,
   non-identifier, or keyword label renders **no handle** (not `port_<idx>`).
   Duplicate labels render **one** handle — the first occurrence only, never
-  a disambiguated `label__<idx>`. (See `_SourceHandles` in `PipelineNode.tsx`
-  and `frontend/src/__tests__/nodes/ApiInputHandles.test.tsx`.)
+  a disambiguated `label__<idx>`. (See
+  `frontend/src/nodes/PipelineNode.tsx::_SourceHandle` and
+  `frontend/src/__tests__/nodes/ApiInputHandles.test.tsx`.)
 - **Zoom changes nothing but scale.** Every node renders one way at every zoom
   level, so an api input's frame rows, and every node's type badge and name,
   stay on screen with the whole graph in view. Handle ids and geometry are
   therefore both zoom-invariant and edges cannot rebind on a zoom change.
-  The removed level-of-detail switch traded exactly the information a
-  zoomed-out view is for; if a very large graph ever makes far-zoom rendering
-  costly, the answer is virtualising off-screen nodes, not hiding the ports of
-  on-screen ones.
 - **The visible rows and the labelled handles are the same list.** Both
   read `apiInputFrameLabels`, so a config with two emit tables of which one
   has an invalid label renders exactly one row and one labelled handle (the
@@ -1027,7 +1011,7 @@ newer overlapping transform.
   remains authoritative if the graph changed after the last pointer move.
 - `usePipelineAPI`'s initial load `.catch` distinguishes an
   unmount-triggered `AbortError` (silently ignored) from every other
-  failure (including a `parsePipelineResponse` contract violation), which
+  failure (including a `parsePipelineEditorDocument` contract violation), which
   toasts `Failed to load pipeline: …` and clears `loading`.
 - `usePipelineAPI.fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`
   each distinguish three outcomes on preview failure: an abort or
@@ -1092,12 +1076,12 @@ again through the editor and save paths.
     history-aware vs. raw actions; `MAX_HISTORY` eviction; `isDirty()` as a
     pure, render-stable selector across save/edit/undo cycles, including
     submodel-only edits; regressions cap both undo and redo stacks; a regression
-    block confirming `useUIStore` no longer exposes `dirty`/`setDirty` and
-    doesn't duplicate graph-shaped state.
+    block asserting `useUIStore` exposes no `dirty`/`setDirty` and no
+    graph-shaped state.
   - `frontend/src/stores/__tests__/useGraphStore.fieldEditUndo.test.tsx` — a whole inline field edit is
     one undo step regardless of edit size; a no-op edit pushes nothing; a
-    guard test documents what the pre-fix per-keystroke wiring would have
-    done.
+    guard test asserts that committing per keystroke pushes one snapshot per
+    character.
   - `frontend/src/stores/__tests__/useGraphStore.structuralVersion.test.ts` — the full bump/no-bump
     matrix: position/selection/preview-only node changes never bump
     `structuralVersion`; preview-only changes bump `panelContextVersion`
@@ -1129,7 +1113,7 @@ again through the editor and save paths.
   - `frontend/src/panels/__tests__/NodePanel.graphContext.test.tsx` — DOM-level regression that
     `NodePanel` and nested editors (`DataOutputEditor`, `ModellingConfig`,
     `OptimiserConfig`) consume the graph purely via `useGraph()`, including
-    a structural assertion that `DataOutputEditor`'s prop type no longer declares
+    a structural assertion that `DataOutputEditor`'s prop type declares none of
     `allNodes`/`edges`/`submodels`/`preamble`; and the #84 fail-loud
     behaviour for a missing `instanceOf` reference (diagnostic naming the
     missing id, never a silently stringified fallback label).

@@ -36,7 +36,6 @@ Non-goals:
 
 | Package | State | Priority | Outcome |
 |---|---|---|---|
-| SPEC-A06 | Planned | P2 | Frontend graph canvas and node editor specifications corrected. |
 | SPEC-A07 | Planned | P2 | Frontend shared, git, assistant, trace, modelling and preview UI specifications corrected. |
 | SPEC-A08 | Planned | P2 | Ownership ledger, document structure and governance statements match the corpus. |
 | SPEC-A09 | Decision | P2 | The four findings that expose code, not prose, are fixed with tests. |
@@ -51,32 +50,6 @@ editing pass: for every finding it re-reads the cited specification line and
 the cited code at `HEAD`, applies the recorded fix or a better one that obeys
 the writing rules, or records the finding as already resolved with the proof,
 and never edits a file outside its list.
-
-### SPEC-A06 — Frontend graph canvas and node editors
-
-**Why:** Twenty-one findings: `parsePipelineResponse` named where
-`parsePipelineEditorDocument` runs, a plural `_SourceHandles` symbol, paths
-relative to `frontend/src/`, a revision guard overstated, an incomplete node
-renderer exception list, and eleven passages of resolved-history, rejected-
-proposal or process-mandate language (ADD09, F062, F063, F064, F065, F068,
-F069, F070, F071, F072, F073, F074, F075, F077, F078, F079, F080, F081, F186,
-F187, F188).
-
-**Plan:** One editing pass over the four frontend-graph-canvas and
-frontend-node-editors documents, excluding the two heading folds SPEC-A08
-owns (F067, ADD08) and the ownership claims SPEC-A08 records (F066, F082).
-F079's older-format fallback is described as the single current behaviour
-(an absent `sort_by` resolves to the sole active Value sort, else null).
-
-**Acceptance:** Every listed finding corrected or recorded as resolved at
-`HEAD`; the docs check stays green, including the frontend path rule for
-`## Testing` references.
-
-**Dependencies:** None.
-
-**Evidence:** `fable5.1-review/findings.json`;
-`specs/frontend-graph-canvas/high-level.md`; `specs/frontend-graph-canvas/low-level.md`;
-`specs/frontend-node-editors/low-level.md`.
 
 ### SPEC-A07 — Frontend shared, git, assistant, trace, modelling and preview UI
 

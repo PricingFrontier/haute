@@ -221,9 +221,7 @@ single name — the chip text, the code argument, and the key persisted contract
 live-switch `input_scenario_map` and the instance `inputMapping`, both consumed by the
 backend). It is read per edge by the shared `edgeInputName` helper from server-owned editor
 identity metadata, so the panel can never advertise a name the code does not
-recognise. (An earlier interim design split `varName` from `displayLabel` to avoid touching
-executable contracts in a presentation-only release; that split itself produced the
-name-shown-but-not-callable confusion and was deliberately retired by the convergence release.)
+recognise.
 
 ## Interactions
 

@@ -70,8 +70,7 @@
   source-node label or id;
   `edgeId` is the stable chip key and removal target; `frameUnresolved` marks an API-input edge
   whose frame could not be resolved, rendering the chip in its warning state. `name` is
-  required, so every fixture constructing an `InputSource` fails to compile until it declares
-  one — the former `varName`/`displayLabel` pair no longer exists.
+  required on every `InputSource`.
   `OnReplaceConfig` accepts a complete next config and returns the same commit result; provider
   switches use it to remove inactive branch keys in one undoable mutation.
 - API schemas have separate persisted read/write and inferred/reconciled representations in
@@ -441,7 +440,7 @@ trio and nullable scale split are required on every version-1 placement that own
 cards are rejected rather than defaulted or migrated. Row sort defaults to ascending and Value
 sort/scale default to none.
 `options.sort_by` persists the selected Row/Value placement id or null for default ascending Row
-labels. Older v1 cards derive it from their sole active Value sort, otherwise null. Placement cards
+labels; an absent `sort_by` resolves to the sole active Value sort, else null. Placement cards
 render none of these controls. The Configure subview omits the redundant `Configure <pivot name>`
 page heading and begins with its committed Pivot name control. The standalone Sorting, Formatting, and Conditional Formatting
 titles preserve heading semantics while their text uses the shared `EditorLabel` contract:
@@ -570,7 +569,7 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   `<unresolved>` marker with `frameUnresolved`; a named stale handle is retained verbatim. Neither
   state aliases the source's sole emitted table.
 - `frontend/src/panels/editors/OutputEditor.tsx`'s per-frame block label is the edge's input
-  name via the same shared helper, and the persisted `source_port` key (`framePortId`) now
+  name via the same shared helper, and the persisted `source_port` key (`framePortId`)
   *equals* that name by construction — the frame label for API-input edges, the sanitised
   source label otherwise — so display and persisted identity cannot diverge. An unresolvable
   API-input edge renders the block header in the explicit unresolved state (parent label
@@ -586,12 +585,6 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   every listed issue blocks a valid save. Each visible blank or known-missing join-key selection is
   marked with `aria-invalid` and a danger border, including the active mode's required empty
   control or controls when a non-cross join has no keys.
-
-(The former NOTE here — two frames of one API input sharing one sanitised `varName`, leaving
-`input_scenario_map` unable to distinguish them — is resolved by the input-identity
-convergence: scenario-map keys are now the frame-derived input names, and the backend's
-matching in `executor.py`, `projection.py`, and the deploy pruner consumes the same
-`edge_input_name` derivation.)
 
 ## Error handling
 
@@ -649,10 +642,9 @@ that render `InputSourcesBar` (`ModelScoreEditor`, `OptimiserApplyEditor`,
 `ScenarioExpanderEditor`, `BandingEditor`, and the hover suite), by the OutputEditor suite's
 name-equals-`framePortId` and unresolved-block-header cases, and by
 `frontend/src/utils/__tests__/apiInputPorts.test.ts` for the shared `edgeInputName`
-derivation. Because `InputSource.name` replaces the former `varName`/`displayLabel` pair,
-every suite constructing `InputSource` fixtures (Transform, RatingStep, LiveSwitch,
+derivation. Every suite constructing `InputSource` fixtures (Transform, RatingStep, LiveSwitch,
 ScenarioExpander, ModelScore, OptimiserApply, Banding, ExternalFile, ExploreCode, and the
-hover suite) migrates its fixtures — a compile-time-loud migration, not a runtime fallback.
+hover suite) supplies the required `InputSource.name` property.
 
 Optimiser and Optimiser Apply selector tests additionally pin that option text and persisted
 values are the exact per-edge names, including two frames from one API Input; source node ids and
@@ -687,7 +679,7 @@ The initial Banding-to-Rating configuration-shape matrix is:
 | Continuous Banding | `frontend-node-editors` | `frontend/src/panels/editors/banding/__tests__/BandingRulesGrid.test.tsx::makeFactor` plus continuous render/edit/copy cases | Component | None; behaviour is local to one grid. |
 | Categorical Banding | `frontend-node-editors` | The same factory with categorical rules and value/match-count cases | Component | Included only as one factor in the mixed journey. |
 | Breakpoint Banding | `frontend-node-editors` | `frontend/src/panels/editors/banding/__tests__/BreakpointGrid.test.tsx` boundary/label/order fixtures and `frontend/src/__tests__/editors/BandingEditor.test.tsx` mode cases | Component | Included only as one factor in the mixed journey. |
-| Mixed three-factor Banding→Rating | `frontend-node-editors` | Generated `browser_mixed_banding.json` and `browser_rating.json` from `run_frontend_e2e_server.py` | Browser | Authoritative cross-editor Cartesian rebuild, edit, save, and reload journey. |
+| Mixed three-factor Banding→Rating | `frontend-node-editors` | Generated `browser_mixed_banding.json` and `browser_rating.json` from `scripts/run_frontend_e2e_server.py` | Browser | Authoritative cross-editor Cartesian rebuild, edit, save, and reload journey. |
 | Zero-level configured factor | `frontend-modelling-optimiser-ui` | `frontend/src/__tests__/utils/banding.test.ts` zero-level classifier plus `frontend/src/__tests__/editors/RatingStepEditor.test.tsx` warning/no-stale-level case | Unit + component | None; a deterministic warning contract needs no browser duplication. |
 | Malformed or partial draft | `frontend-modelling-optimiser-ui` | `frontend/src/__tests__/utils/banding.test.ts` malformed-default, blank-output, and partial-rule cases | Unit | None; invalid drafts are classification inputs, not a persistence journey. |
 | Mixed Rating outputs | `frontend-node-editors` | `frontend/src/__tests__/editors/RatingStepEditor.test.tsx` multi-table `combinedOutputs` selection/duplicate/output cases | Component | None until a cross-node persisted failure is found. |
