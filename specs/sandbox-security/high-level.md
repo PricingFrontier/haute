@@ -26,9 +26,10 @@ the others, not because it shares a threat model with the first three.
 ## Scope
 
 In scope:
-- AST-level static validation of pipeline/preamble code before `exec()` and of CLI
-  training scripts before module import (`validate_user_code`), plus the restricted
-  builtins namespace used only by the `exec()` paths (`safe_globals`).
+- AST-level static validation of pipeline/preamble code before `exec()`, pivot
+  formulas before `eval()`, and CLI training scripts before module import
+  (`validate_user_code`), plus the restricted builtins namespace used by the
+  `exec()` and `eval()` paths (`safe_globals`).
 - The actual `exec()` call sites for pipeline node code and its namespace assembly
   (`_exec_user_code`).
 - Restricted unpickling for both raw pickle files and joblib archives
@@ -176,8 +177,12 @@ Out of scope (owned elsewhere, linked where relevant):
   only that cookie; an absent Origin is accepted only when the cookie is already valid.
   WebSocket handshakes always require an explicit matching Origin and the cookie.
   Query-string token transport is unsupported. `OPTIONS` skips only the token check,
-  never Origin/Host checks. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` remains an explicit
-  local development escape hatch; the loopback/forwarded-header gate remains active.
+  never Origin/Host checks. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` is an explicit
+  local development escape hatch and the switch set process-wide by the hosted
+  Databricks Apps entry point (`haute.hosted.create_app`); in local mode the
+  loopback and forwarded-header gates remain active, while in hosted mode the
+  forwarded-header gate is satisfied by header rewriting at the proxy boundary
+  rather than by rejection.
   `HAUTE_TRUSTED_HOSTS` is a comma-separated list of normalized loopback authorities;
   entries may pin an exact port. The FastAPI app snapshots it when middleware is
   installed, invalid/non-loopback entries raise `ValueError`, and `haute serve`
@@ -264,8 +269,12 @@ Out of scope (owned elsewhere, linked where relevant):
 - Depended on by the [execution engine](../execution-engine/high-level.md):
   `_user_exec._exec_user_code` (the sandboxed `exec()` path for pipeline node code)
   and `executor.py` both import `validate_user_code`/`safe_globals` directly, and
-  `_model_scorer.py`/`deploy/_scorer.py` reuse the same `_exec_user_code` entry
-  point for scoring-time code execution.
+  `_builders.py`, `chunking.py`, and `_model_scorer.py`/`deploy/_scorer.py` reuse
+  the same `_exec_user_code` entry point for node execution and scoring-time code
+  execution.
+- Depended on by [explore-eda](../explore-eda/high-level.md): `routes/_pivot_service.py`
+  imports `validate_user_code` and `safe_globals` directly to validate and `eval()`
+  configured pivot formulas without going through `_exec_user_code`.
 - Depended on by the io-layer (`_io.py`) for `validate_project_path`,
   `safe_unpickle`, and `safe_joblib_load` when loading external model/data
   artifacts (`load_external_object`), and by `routes/optimiser.py` and
@@ -281,12 +290,15 @@ Out of scope (owned elsewhere, linked where relevant):
   before `accept()`-ing a connection.
 - Depended on by `haute init` (project scaffolding, via `cli/_init_cmd.py`) and by
   `_git_setup.py`'s unborn-repo commit seed for `ensure_gitignore_guards`.
-- Supplies numeric parsing helpers to `executor.py`, `trace.py`,
-  `_execution_admission.py`, `assistant/_loop.py`, and the route callers
-  `routes/pipeline.py`, `routes/json_cache.py`, `routes/output_assemble.py`,
-  `routes/input_cache.py`, `routes/_optimiser_service.py`, and
-  `routes/_training_lifecycle.py`. This component owns the parsing helpers, not the
-  knobs' meanings, which belong to their respective components.
+- Supplies numeric parsing helpers to callers across the codebase, including
+  `executor.py`, `trace.py`, `_execution_admission.py`, `assistant/_loop.py`,
+  `_dataframe_execution_cache.py`, `_input_preparation.py`, `_interactive_workers.py`,
+  `_source_cache.py`, `_json_shred/` (`_records.py`, `_runtime_storage.py`, `_writer.py`),
+  `deploy/_batch_scoring.py`, and the route modules `routes/pipeline.py`,
+  `routes/json_cache.py`, `routes/output_assemble.py`, `routes/input_cache.py`,
+  `routes/_explore_service.py`, `routes/_optimiser_service.py`, `routes/_training_artifacts.py`,
+  `routes/_training_lifecycle.py`, and `routes/_training_worker.py`. This component owns
+  the parsing helpers, not the knobs' meanings, which belong to their respective components.
 
 ## Failure model
 

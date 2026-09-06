@@ -94,8 +94,9 @@ is treated as an implicit shared data plane.
 
 ## Failure model
 
-- A partial or whitespace-only hosted environment fails at startup and names
-  the missing contract variables without exposing their values.
+- Whitespace-only values count as absent, so an all-whitespace environment is
+  the local posture; an environment contract that is partial after stripping
+  fails at startup naming the missing variables without exposing their values.
 - Calling the hosted factory outside the complete environment fails rather than
   falling back to a local server.
 - Missing Databricks authentication identifies the accepted credential forms;

@@ -36,7 +36,6 @@ Non-goals:
 
 | Package | State | Priority | Outcome |
 |---|---|---|---|
-| SPEC-A02 | Planned | P2 | Server API, git, hosted app, hosted storage and sandbox specifications corrected. |
 | SPEC-A04 | Planned | P2 | Expression parsing, explore, I/O layer, JSON shredding, MLflow, optimiser, rating, reference pipeline and tracing specifications corrected. |
 | SPEC-A05 | Planned | P2 | Assistant, modelling, pipeline-config and submodels specifications corrected. |
 | SPEC-A06 | Planned | P2 | Frontend graph canvas and node editor specifications corrected. |
@@ -54,33 +53,6 @@ editing pass: for every finding it re-reads the cited specification line and
 the cited code at `HEAD`, applies the recorded fix or a better one that obeys
 the writing rules, or records the finding as already resolved with the proof,
 and never edits a file outside its list.
-
-### SPEC-A02 — Server API, git, hosted app, hosted storage, sandbox
-
-**Why:** Twenty-two P2 and P3 findings against these five components: omitted
-routes, fields and startup steps, a stale 422 mapping, a header token transport
-that does not exist, a blank forwarded-email identity described as rejected,
-partial paths, and resolved-history phrasing (ADD02, F093, F094, F096, F097,
-F099, F126, F127, F128, F129, F130, F131, F132, F134, F135, F196, F198, F199,
-F200, F229, F230, F231).
-
-**Plan:** One editing pass over `specs/server-api/low-level.md`,
-`specs/git-integration/low-level.md`, `specs/hosted-project-storage/low-level.md`,
-`specs/hosted-databricks-app/high-level.md`, `specs/hosted-databricks-app/low-level.md`,
-`specs/sandbox-security/high-level.md` and `specs/sandbox-security/low-level.md`.
-The module-map rows F097 asks for (`databricks_app/app.yaml`,
-`databricks_app/requirements.txt`, the two scripts and `LEARNINGS.md`) are
-added with one-line responsibilities.
-
-**Acceptance:** Every listed finding corrected or recorded as resolved at
-`HEAD`; the docs check stays green, including the module-map path and
-test-reference rules the new rows and paths must satisfy.
-
-**Dependencies:** SPEC-A01 (shared files).
-
-**Evidence:** `fable5.1-review/findings.json`; `specs/server-api/low-level.md`;
-`specs/git-integration/low-level.md`; `specs/hosted-project-storage/low-level.md`;
-`specs/hosted-databricks-app/low-level.md`; `specs/sandbox-security/high-level.md`.
 
 ### SPEC-A04 — Expression parsing, explore, I/O layer, JSON shredding, MLflow, optimiser, rating, reference pipeline, tracing
 

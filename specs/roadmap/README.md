@@ -20,7 +20,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
-| [Specification accuracy](spec-accuracy.md) | Corpus review findings of 6 September 2026: accuracy, stale symbols, writing rules, ownership ledger, structure | `SPEC-A02` |
+| [Specification accuracy](spec-accuracy.md) | Corpus review findings of 6 September 2026: accuracy, stale symbols, writing rules, ownership ledger, structure | `SPEC-A04` |
 
 ## Supporting findings
 

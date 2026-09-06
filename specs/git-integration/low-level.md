@@ -15,7 +15,7 @@
 | `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Uses a bounded marker-aware identity cache, a stable project-path key across `git init`, a common-Git-directory key for linked worktrees, and weak lock values so idle repositories are evicted. It never invokes Git. |
 | `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
 | `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list owned by [sandbox-security](../sandbox-security/low-level.md) and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
-| `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per endpoint, each a thin `try/except` around a single Git-domain call; converts the domain layer's typed exceptions to HTTP responses via `_handle_git_error`. |
+| `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per Git endpoint, each a thin `try/except` around a single Git-domain call; converts the domain layer's typed exceptions to HTTP responses via `_handle_git_error`. The `/api/git/storage/*` endpoints hosted in this router are owned by [hosted-project-storage](../hosted-project-storage/low-level.md). |
 
 ## Key types and data structures
 
@@ -113,11 +113,11 @@ transport/server failures remain non-200 responses.
 **HTTP contracts.** Every handler is synchronous `def`, so FastAPI runs git subprocess work
 in its thread pool. Request bodies are the named Pydantic models; omitted fields take the
 defaults shown. Query bounds are enforced by FastAPI and invalid input uses its standard 422
-validation envelope.
+validation envelope. The `/api/git/storage/*` endpoints hosted in this router and the post-commit push enqueue on `POST /api/git/commit` are owned by [hosted-project-storage](../hosted-project-storage/low-level.md).
 
 | Method and path | Input | Success response |
 |---|---|---|
-| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (seven-state readiness contract above, including `head_sha` when resolvable) |
+| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (seven-state readiness contract above, including `head_sha` when resolvable; augmented via `_with_storage_state` with durable-storage fields `storage`, `storage_remote`, `storage_forked_from`, `sync`, and `storage_bind` owned by [hosted-project-storage](../hosted-project-storage/low-level.md)) |
 | `POST /api/git/working-branch` | `GitSetWorkingBranchRequest {branch,create=false}` | `GitSetWorkingBranchResponse {working_branch,state,last_save_sha?}` |
 | `POST /api/git/move` | `GitMoveRequest {sha}` | `GitMoveResponse {sha,short_sha,prior_branch,is_detached=true}` |
 | `POST /api/git/identity` | `GitSetIdentityRequest {user_name,user_email,set_global=false}` | `GitSetIdentityResponse {user_name,user_email,scope}` |
@@ -146,7 +146,7 @@ validation envelope.
 **Save.** `commit_save(paths, working, cwd, message)` → `resolve_ledger(working)` (find-or-
 lazily-spawn the ledger at the working branch's current tip, checkout if not already
 current) → `git status --porcelain -- <paths>` to check anything in *paths* actually
-changed (idempotent no-op returns `None`) → `git add -- <paths>` → `git commit -m <msg> --
+changed (idempotent no-op returns `None`) → `git add -- <paths>` → `git diff --cached --quiet HEAD -- <paths>` re-check (returns `None` when clean, reconciling a stale index entry that reported a spurious modification) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
 what else the user may have pre-staged) → returns the new SHA.
 
@@ -535,7 +535,7 @@ process failures, and precise ref-movement races deterministic.
   modules, organized into
   focused test classes covering: slugification, branch-category naming, ledger
   resolve/spawn, `commit_save` (including idempotent-no-op saves), milestone merge and its
-  invariant checks, git identity get/set, working-branch status across all six states,
+  invariant checks, git identity get/set, working-branch status across all seven readiness states,
   `set_working_branch` including the unborn-repo seed path and its gitignore-guard
   interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`), move-to-
   commit, milestone history and commit-context breadcrumbs, rename-preserving ledger
@@ -557,7 +557,7 @@ process failures, and precise ref-movement races deterministic.
 - **`tests/test_git_improvements.py`** — focused roadmap regressions for the shared
   repository lock (including cached lookup, `git init` identity stability, and weak-registry
   eviction), concurrent real saves, lock-scoped atomic clone-state updates,
-  six-state readiness, locale-stable Git execution, NUL-delimited history fields,
+  seven-state readiness, locale-stable Git execution, NUL-delimited history fields,
   batched commit context, merge-replay refusal, network-free remote listing, targeted
   historical extraction, archive member/byte ceilings, typed archive/parse failures, and
   Windows cleanup retries.

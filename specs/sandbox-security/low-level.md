@@ -17,6 +17,9 @@
   `validate_user_code`/`_ASTValidator` for any blocked construct or unparseable
   code. Carries the original `SyntaxError` as `__cause__` when validation failed
   because the code could not be parsed at all.
+- **`ArtifactVersionMismatchError`** (`_sandbox.py`) — a `HauteError` subclass raised
+  when a persisted scikit-learn estimator's `_sklearn_version` does not match the
+  runtime environment's installed version.
 - **`_ASTValidator(ast.NodeVisitor)`** (`_sandbox.py`) — the structural gate.
   Constructed per validation call with `allow_imports: bool` and
   `polars_alias_shadowed: bool` (whether user code rebinds the name `pl` anywhere,
@@ -369,6 +372,15 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
 - `_env.py` returns a default only for an unset variable. Explicit malformed,
   non-finite, zero, or negative values raise `RuntimeError`; an optional integer
   returns `None` only when the variable is absent.
+- `ArtifactVersionMismatchError` (extends `HauteError`, defined in `_sandbox.py`) —
+  raised by `_estimator_version_mismatch_is_an_error` during `safe_unpickle` or
+  `safe_joblib_load` when a persisted scikit-learn estimator's `_sklearn_version`
+  mismatches the installed library version. Propagates uncaught to the caller
+  (`_io.load_external_object`).
+- `ExecutionError` (extends `HauteError`, imported from `haute.errors`) — raised
+  by `_exec_user_code` when the input name `'df'` conflicts with the reserved
+  output name for polars node code, or when node code finishes without assigning
+  its result to `'df'`. Propagates to the node executor or pipeline runner.
 - `ensure_gitignore_guards` does not raise on non-UTF-8 existing `.gitignore`
   content (`errors="replace"` on read); ordinary filesystem errors (permission
   denied, disk full) propagate uncaught.

@@ -32,8 +32,6 @@
 
 ## Key types and data structures
 
-ASSIST-A05 adds the following contracts:
-
 - `SavePipelineService.validate_graph(graph, source_file)` is public and
   side-effect free. It validates Edge Join connected roles, target handles,
   and mutually exclusive/required key forms through the canonical
@@ -42,7 +40,7 @@ ASSIST-A05 adds the following contracts:
 - `AssistantMessageRequest` is a strict request containing only `session_id`
   and `message`; graph-authoring confirmation payloads are rejected as unknown
   fields.
-- assistant plan/application responses carry `base_revision`,
+- Assistant plan and application responses carry `base_revision`,
   `result_revision`, `capability_hash`, `plan_hash`, semantic diff,
   verification tier/evidence, warnings and ledger reference as applicable.
   Unknown fields remain rejected at typed HTTP boundaries.
@@ -58,6 +56,7 @@ HauteError
 ├── ExecutionError
 │   ├── PreambleError
 │   ├── ContractResolutionError
+│   ├── InputPreparationError
 │   ├── RatingExtremaUndefinedError
 │   ├── LiveSwitchScenarioError
 │   ├── TraceCorrelationUnsupportedError
@@ -182,7 +181,7 @@ when a path/query/body fails model validation):
 | `GET /api/pipeline` | No body | First discovered authored `PipelineEditorDocument`, irrespective of load status; a new empty ready document only when no authored document exists. Readable authored errors remain HTTP 200. |
 | `GET /api/pipeline/{name}` | Pipeline name path parameter | Named `PipelineEditorDocument`; a readable non-ready document is found by recovered metadata or file stem and remains HTTP 200. |
 | `POST /api/pipeline/editor-identities` | `EditorIdentitiesRequest {nodes:[{node_id,label,node_type,source_handles}]}` | `EditorIdentitiesResponse {identities:[{node_id,function_name,config_reference,default_input_name,source_handle_input_names}]}` in exact request order; public handles are sanitised server-side and the operation has no project-state side effects. |
-| `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live", base_revision}`; `base_revision` is a required `RevisionToken | null` | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, warnings=[], git_sha=null}`, or `409` with a flat `detail` beginning `stale_document_revision:` when `base_revision` does not equal the on-disk `source_revision` (`null` versus an existing file, or a token versus a missing file, are mismatches) |
+| `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live", base_revision}`; `base_revision` is a required `RevisionToken | null` | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, warnings=[], git_sha=null, identity_required=false}`, or `409` with a flat `detail` beginning `stale_document_revision:` when `base_revision` does not equal the on-disk `source_revision` (`null` versus an existing file, or a token versus a missing file, are mismatches) |
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
 | `POST /api/pipeline/preview` | `PreviewNodeRequest {graph, node_id, row_limit=100 (1..10000), source="live", requested_preview_columns=null (non-empty when present), streaming_chunk_size=null (1..10000000, bool rejected), port_label=null}`; `node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child | `PreviewNodeResponse`, extending `NodeResult` with `node_id`, timings/memory, per-node schemas/statuses, and optional execution metrics |
 | `POST /api/pipeline/trace` | `TraceRequest {graph, row_index=0 (>=0), target_node_id=null, column=null, row_limit=100 (1..10000), source="live", row_values=null, streaming_chunk_size=null}`; a non-null `target_node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child | Explicit JSON `TraceResponse {status, trace}`. `trace` includes successful steps, typed omissions, correlation/waterfall evidence, UTC `generated_at`, source identity, and `execution_origin: fresh_execution|preview_cache|trace_cache`; the payload is serialized and `TraceResponse`-validated in the worker, then the returned `JSONResponse` skips a second event-loop validation pass |
@@ -211,8 +210,8 @@ and reconciliation failures enforceable at the HTTP boundary rather than accepti
 trace dictionaries.
 
 **WebSocket contract.** `GET /ws/sync` upgrades only after an explicit Origin exactly matches
-the loopback Host authority and the HttpOnly cookie or non-browser token header validates.
-Query parameters are not an authentication transport.
+the loopback Host authority and the HttpOnly session cookie validates. No header or query
+token transport exists; the HttpOnly session cookie validates WebSocket and HTTP requests.
 The client sends `{"type":"resync","source_file":str,"document_schema_version":1,
 "document_fingerprint"?:sha256}`; a resync whose `document_schema_version` is not the
 current literal `1` receives a `parse_error` frame naming the unsupported version, and
@@ -248,6 +247,7 @@ assistant execution tool.
 **Startup.** `_lifespan()`: `_clear_bytecache()` (rmtree every `__pycache__` under
 `src/haute/`) → `configure_logging()` → `_load_env(Path.cwd())` → validate and cache
 execution-telemetry and optimiser-housekeeping configuration →
+`recover_json_runtime_storage()` (reaps dead-process spills and orphaned runtime storage under `.haute_cache`) →
 `_ensure_pipeline_index()` (builds the name→path index once, under a double-checked lock) →
 spawn `_watcher_forever()` and a tracked worker-thread optimiser-reaper task. The lifespan yields
 without awaiting filesystem housekeeping, so temp-directory population cannot delay server
@@ -393,8 +393,10 @@ concurrent plain saves, but does not coordinate another worker process):
     what this save just wrote or protects), invalidate the pipeline index, and — if the
     project has a recorded git working branch — capture the save in the git ledger
     (`_git.commit_save`); `GitDomainError`/`GitError` become response warnings because the
-    on-disk save already succeeded, while an unexpected exception still propagates after
-    the filesystem transaction and stale cleanup have committed. Return the
+    on-disk save already succeeded (if version capture was skipped because git lacks a
+    commit identity, `identity_required` is set to `true` to prompt the client, while every
+    other capture failure leaves it `false`), while an unexpected exception still propagates
+    after the filesystem transaction and stale cleanup have committed. Return the
     committed `source_revision` with the normal response fields.
 
 **Executable graph request containment.** Before work starts, every route that
@@ -549,20 +551,19 @@ generation; child code cannot write the `JobStore` or parent LRU caches.
 - **Windows-reserved device names** (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`,
   any casing, any extension) are rejected for both codegen output filenames and config
   sidecar filenames, on every platform, for the same cross-platform-loadability reason.
-- **v2 apiInput validation guardrails (B1/B2/B3)**: B1 rejects an unknown column `type`
-  string at validate time instead of the historical silent downgrade to `str`; B2 rejects two
-  table labels whose filesystem-safe sanitisation collides *casefolded* (case-insensitive
-  filesystems would otherwise let the second table's parquet clobber the first); B3 is
-  structural — every validation failure raises `ApiInputSchemaError` specifically, so the
-  JSON-cache route can catch it and return a structured 422 rather than a generic 500.
+- **`apiInput` validation guardrails**: An unknown column `type` string is rejected at
+  validate time; two table labels whose filesystem-safe sanitisation collides *casefolded*
+  are rejected (case-insensitive filesystems would otherwise let the second table's parquet
+  clobber the first); and every validation failure raises `ApiInputSchemaError` specifically,
+  so the JSON-cache route can catch it and return a structured 422 rather than a generic 500.
 - **OUTPUT assembly's cut is schema-determined, never data-dependent** (axiom A4 in the
   algorithm's design doc): `_plan_cut` operates purely on which table carries which field, so
   the plan can be computed once at save time and reused at every run without re-deriving it
   from row values. `_prune` treats an empty array/object as "carries no data" and omits it —
   the documented round-trip invariant is equality *up to empty collections*, not bit-exact.
 - **`is_active_mapping_entry`** skips an OUTPUT mapping row with a blank `source_column` or
-  `output_path` in the shared OUTPUT contract, assembler, and WS-04-owned execution
-  consumers — a half-finished editor row never demands `pl.col("")` or produces a confusing
+  `output_path` in the shared OUTPUT contract, assembler, and execution consumers — a
+  half-finished editor row never demands `pl.col("")` or produces a confusing
   `missing=['']` failure. Projection planner parity is owned by the execution-engine
   workstream.
 - **`GraphEdge` handle validation rejects `""` but accepts `None`** for `sourceHandle` /
@@ -576,7 +577,7 @@ generation; child code cannot write the `JobStore` or parent LRU caches.
 | `ConfigError` | save, preview, output-assemble dry-run | 400 / embedded `NodeResult.error` / 422 | Save: bad `haute.toml`. Preview: swallowed into the node result so the canvas shows it in-situ. |
 | `ContractMismatchError` | trace, preview, output-assemble dry-run | 422 / embedded `NodeResult.error` / 422 | Message already names the node + symmetric column diff. |
 | `SchemaMismatchError` | preview | embedded `NodeResult.error` | Adapted identically to `ContractMismatchError`, so a propagated join-key dtype mismatch never becomes a generic 500. |
-| `ParseError` | primary pipeline load, preview | 422 / embedded `NodeResult.error` | Primary load returns the first parse diagnostic when files exist but none parses; preview surfaces graph-shape issues per node. |
+| `ParseError` | preview | embedded `NodeResult.error` | Preview surfaces graph-shape issues per node. An unreadable document on the editor-document routes propagates to the request-ID backstop as a sanitized 500 (authored failures arrive as 200 degraded/source-only documents). |
 | `ApiInputSchemaError` | json-cache; preview/write execution | 422 | JSON cache retains its `type` discriminator envelope; execution routes use the public-contract adapter (`api_input_schema_invalid`). |
 | `OutputMappingSchemaError` | output-assemble dry-run | 422 | Raised both by the schema-only pre-check and if execution surfaces it deeper (an unmapped port). |
 | `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError` | preview, output write, output-assemble dry-run | 507 | Payload is `exc.to_payload()`, nested under `detail`, for every route. |
@@ -588,14 +589,15 @@ generation; child code cannot write the `JobStore` or parent LRU caches.
 | `HTTPException` (raised directly) | path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | `raise_node_not_found`, `raise_node_type_error`, `raise_pipeline_not_found`, `raise_validation_error` centralise the structured-log + raise pattern. |
 | Any other `Exception` | route catch-alls | 500 | Route handlers generally log and return `_INTERNAL_ERROR_DETAIL`; `_RequestIdMiddleware` is a separate backstop whose fixed detail is `Internal server error`. |
 
-The synchronous public-contract adapter maps this closed set to HTTP 422; background jobs
-use the same stable codes and named fields under terminal `contract_error`:
+The synchronous public-contract adapter maps this closed set to HTTP 422 (except `InputPreparationError` with `reason_code == "memory_limited"`, which maps to 507); background jobs
+use the same stable codes and named fields under terminal `contract_error` (or `memory_limited` for that memory case):
 
 | Exception | Stable code | Named fields |
 |---|---|---|
 | `ApiInputSchemaError` | `api_input_schema_invalid` | — |
 | `PreambleError` | `preamble_failed` | `source_line` |
 | `ContractResolutionError` | `contract_resolution_failed` | `node_id`, `node_type`, `failure_kind` |
+| `InputPreparationError` | `input_preparation_failed` | `node_id`, `identity_digest`, `build_class`, `reason_code`, `remediation` |
 | `ChunkMemoryRiskError` | `chunk_memory_risk` | `target_node_id`, `reason_code`, `estimated_target_row_bytes`, `estimated_minimum_chunk_bytes`, `row_expansion_factor`, `target_chunk_bytes` |
 | `GroupByExecutionUnsupportedError` | `group_by_execution_unsupported` | `node_id`, `operator`, `profile`, `reason_code`, `remediation`, `estimated_peak_bytes`, `headroom_bytes` |
 | `TraceCorrelationUnsupportedError` | `trace_correlation_unsupported` | `node_id`, `key_columns`, `dtypes`, `reason_code` |
@@ -614,9 +616,9 @@ The JSON-cache router's `ApiInputSchemaError` is another deliberate direct-respo
 in pipeline listing yields a `source_only` summary with `diagnostic_count=1` and the failure
 is logged server-side; there is no per-item error string on the wire, and the `file` field
 is always relative to the working directory (falling back to the file name). Live-sync
-parse failures surface `str(exc)` as `parse_error.error`; primary pipeline load uses
-FastAPI's `{"detail": <parse diagnostic>}` 422 envelope when no discovered file parses.
-The `ParseError` and live-sync diagnostics deliberately bypass the internal-error sanitizer.
+parse failures surface `str(exc)` as `parse_error.error`. An unreadable document on the editor-document
+routes propagates to the request-ID backstop as a sanitized 500; authored failures arrive as
+200 degraded/source-only documents. Live-sync diagnostics deliberately bypass the internal-error sanitizer.
 
 Two safety nets exist above individual route handlers: `_RequestIdMiddleware` catches any
 exception a route handler failed to catch and returns its separately pinned sanitized 500 shape (with a
@@ -644,7 +646,7 @@ Tests live under `tests/`, one file per module or per feature slice, using FastA
 `TestClient` against a temporary project directory (a `haute.toml` + pipeline `.py` fixture)
 for route-level tests, and direct unit tests for the pure-function modules.
 
-- **`test_server.py`** (44 test classes) — the broadest integration suite: app lifecycle,
+- **`test_server.py`** — the broadest integration suite: app lifecycle,
   middleware behaviour, static SPA serving (including the partial-build fail-fast case), the
   `/ws/sync` protocol (resync requests, fingerprint short-circuit, rejection reasons), and
   the file watcher end-to-end (debounce, module-dependency re-parse, config-triggered
