@@ -520,17 +520,27 @@ invariant = "The W08 row train, retain, score outcomes hold."
 [[scenarios]]
 id = "W09-S01"
 workflow = "W09"
-contract = "specs/execution-engine/low-level.md#edge-cases-and-invariants"
+contract = "specs/optimiser/low-level.md#edge-cases-and-invariants"
 finding = "F12"
-state = "gap"
-package = "ENG-T03"
+state = "covered"
 entry_point = "http"
 tier = "workflow"
 lane = "backend"
-real = ["preamble-compiler", "dataframe-cache", "builders"]
+real = ["preamble-compiler", "dataframe-cache", "builders", "filesystem"]
 stubbed = []
-tests = []
-invariant = "A second optimiser setup after a helper edit computes with the new helper value while the first keeps the old one."
+tests = [
+  "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_uses_edited_helper_on_next_operation",
+  "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_reuses_namespace_when_helper_is_unchanged",
+  "tests/test_optimiser_routes.py::TestEstimateRoute::test_streaming_auto_range_job_pins_one_preamble_fingerprint",
+  "tests/test_executor.py::TestPreviewCacheInvalidation::test_prepare_data_output_uses_edited_helper_on_next_operation",
+  "tests/test_executor.py::TestPreambleLockConcurrency::test_compile_preamble_pinned_fingerprint_is_used_verbatim",
+]
+invariant = "A second optimiser setup, data-output preparation, or auto-range job after a helper edit computes with the new helper value while the first keeps the old one; within one job every preamble compile uses the fingerprint pinned at admission, and an unchanged helper reuses the cached namespace."
+
+[scenarios.evidence]
+commit = "00bbe3ff"
+command = 'uv run pytest "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_uses_edited_helper_on_next_operation" "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_reuses_namespace_when_helper_is_unchanged" "tests/test_optimiser_routes.py::TestEstimateRoute::test_streaming_auto_range_job_pins_one_preamble_fingerprint" "tests/test_executor.py::TestPreviewCacheInvalidation::test_prepare_data_output_uses_edited_helper_on_next_operation" "tests/test_executor.py::TestPreambleLockConcurrency::test_compile_preamble_pinned_fingerprint_is_used_verbatim" -q -p no:warnings'
+result = "5 passed"
 
 [[scenarios]]
 id = "W09-S02"

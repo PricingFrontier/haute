@@ -60,7 +60,6 @@ and file-name inventories do not establish semantic completeness.
 
 | Package | State | Priority | Outcome |
 |---|---|---|---|
-| ENG-T03 | Reverify | P1 | Keep computation and cache identity consistent across operations; detect F12. |
 | ENG-T04 | Decision | P1 | Make the node execution boundary testable and truthful; detect F1. |
 | ENG-T05 | Decision | P1 | Prove publication ordering at the authoritative pointer; detect F2. |
 | ENG-T06 | Reverify | P2 | Preserve the selected published branch across restore; detect F4. |
@@ -72,56 +71,6 @@ and file-name inventories do not establish semantic completeness.
 | ENG-T12 | Planned | P2 | Enforce collection, regression sensitivity, and sustainable CI cost. |
 
 ## Planned improvements
-
-### ENG-T03 — Pin dependencies once per operation and refresh the next operation
-
-**Why:** F12 uses a process-lifetime no-refresh namespace for independent
-optimiser jobs. A helper edit changes the dataframe-cache fingerprint while
-computation still uses old values. The preview refresh test uses another caller;
-the optimiser cache test mocks the compiler and builders.
-
-**Plan:** Specify operation-scoped dependency snapshots in execution-engine,
-caching and optimiser before implementation. At operation admission resolve the
-namespace and dependency identity together; reuse that snapshot throughout its
-chunks. A later operation resolves a fresh snapshot. Define mid-operation edits
-as either completing the pinned snapshot or explicitly superseding it, never
-publishing values under a different dependency identity.
-
-- In one test, create `utility.py` with value 10; materialise real optimiser
-  inputs; change the helper to 200; preview; start another optimiser setup.
-  Assert preview and second input equal 200, the first equals 10, and retained
-  cache provenance matches the executed snapshot. No solver is needed for this
-  minimal regression; do not patch the compiler, builders or cache-key logic.
-- Cover each no-refresh call site at the planning baseline: `_execute_pipeline`
-  and `_run_streaming_frontier_auto_range_job` in
-  `src/haute/routes/_optimiser_service.py`, and `prepare_data_output` in
-  `src/haute/executor.py`. Every other `_compile_preamble` caller uses the
-  default refresh. Give each of the three an operation-scoped disposition and
-  witness, covering separate estimate and solve admissions, streaming
-  auto-range and repeated data-output preparation; do not assume one caller
-  fixes them all.
-- Cover unchanged helper cache reuse, transitive helper edits, helper deletion
-  and syntax errors, two project roots with the same module name, and changed
-  preamble text. Preserve the documented source-fingerprint policy when choosing
-  same-size/timestamp cases; do not assert a stronger freshness guarantee silently.
-- Hold a multi-chunk operation at a checkpoint while editing its helper; assert
-  no mixed old/new rows and no incorrectly labelled cache entry. Cancellation,
-  failure and the next successful operation must release state and use the
-  correct snapshot. Clear module/cache state in teardown, not between the two
-  operations that form the regression.
-
-**Acceptance:** The real repeated-setup test fails with 10 instead of 200 on the
-baseline and passes after correction. Reuse controls remain effective. Every
-no-refresh call site has evidence for the lifetime it assumes. One small real
-solver integration subsequently checks that the changed input reaches the result.
-
-**Dependencies:** The coverage ledger; root-owned snapshot semantics. No dependency on
-the optimiser extraction or process-isolation roadmaps.
-
-**Evidence:** `src/haute/executor.py::_compile_preamble`;
-`src/haute/routes/_optimiser_service.py`; `tests/test_executor.py`;
-`tests/test_optimiser_routes.py`; `tests/test_optimiser_routes_real_library.py`;
-`tests/test_data_io_nodes.py`; `tests/test_streaming_chunk_size_threading.py`.
 
 ### ENG-T04 — Verify the actual node execution boundary
 
@@ -376,7 +325,7 @@ the result. Use small synthetic fixtures with independently calculated outputs.
 | W03: build a graph | frontend-graph-canvas, frontend-node-editors, submodels, codegen | Create/configure/connect/disconnect/copy/instance/group/enter/exit/dissolve/delete/undo/redo/save/reopen. Conserve graph and computed meaning; singleton API input/output rules apply across nested definitions. ENG-T07/08 own parse/rename invariants. |
 | W04: obtain and persist data | io-layer, databricks-io | File/inline/database/lakehouse/Databricks operations that the registry supports; source switch, schema discovery, cache refresh and explicit write. Preview cannot perform writes. Missing source, wrong options, empty input, cancellation and failed output preserve appropriate prior artifacts. External credentials never enter browser/code fixtures. |
 | W05: structured request to response | json-shredding | JSON/JSONL/XML input, frame/edge join, output mapping, dry-run and batch assembly; missing/null/empty/nested arrays, duplicate or missing keys, row ordering, strict schema errors and exact expected response per request. Persist frame edits and reopen. |
-| W06: execute and inspect | execution-engine, caching, tracing, frontend-trace-ui | Preview/refresh/trace/export with active source, cold/warm caches, config/data/helper edits, filtered/reordered/joined rows and multiple frames. Compare values and trace identity; stale result cannot replace a newer selection. ENG-T03 supplies operation freshness. |
+| W06: execute and inspect | execution-engine, caching, tracing, frontend-trace-ui | Preview/refresh/trace/export with active source, cold/warm caches, config/data/helper edits, filtered/reordered/joined rows and multiple frames. Compare values and trace identity; stale result cannot replace a newer selection. Operation freshness is current execution-engine behaviour. |
 | W07: rate and explain | rating, expression-parsing | Band/rating configuration, preview and trace against hand-calculated values; exact thresholds, ties, nulls, missing factors, mixed supported key types, rounding and invalid expressions. Supported expression parity is explicit; unsupported AST forms retain their documented outcome. |
 | W08: train, retain and score | modelling, mlflow-model-registry, frontend-modelling-optimiser-ui | Configure/train/cancel/retry/persist/load/score and switch panels; minimal real supported model plus worker/lifecycle tests. Empty input, target/weight validation, partition boundaries, non-finite metrics, stale model/cache identity and artifact mismatch have explicit results. |
 | W09: optimise, choose and apply | optimiser | Estimate/solve/frontier/select/save/apply/trace; online and ratebook modes, infeasible/empty/non-finite cases, factor dtypes, tie ordering, constraints at limits and stale/cancelled jobs. Selected result, saved artifact, applied prices and trace agree. Keep current thread-backed isolation truthful. |
@@ -435,7 +384,7 @@ new tests have an identified missing outcome. Required decisions/gaps remain
 visible and prevent a claim of complete coverage. No new EDA, hosted, deployment
 adapter or solver feature is implemented merely to satisfy an invented test.
 
-**Dependencies:** The coverage ledger; corresponding ENG-T03–09 contracts where
+**Dependencies:** The coverage ledger; corresponding ENG-T04–09 contracts where
 workflows overlap. Unrelated W slices can proceed independently after root scoping.
 
 **Evidence:** `frontend/e2e/core-flows.spec.ts`; `frontend/e2e/data-io-nodes.spec.ts`;
@@ -489,7 +438,7 @@ known negative control that it detects. Failures reproduce from retained example
 without relying on test order or a local Hypothesis cache. Generated tests do not
 replace the eight fixed defect witnesses or the real user workflow checks.
 
-**Dependencies:** ENG-T03–10 contracts for the relevant family. Do not generate
+**Dependencies:** ENG-T04–10 contracts for the relevant family. Do not generate
 against an undecided save, rename, publication or execution-boundary oracle.
 
 **Evidence:** `tests/test_codegen_roundtrip_property.py`;
@@ -544,7 +493,7 @@ claiming the programme complete. Relevant CI checks are green without weakening
 existing gates, and runtime/platform/provider limitations are stated explicitly.
 
 **Dependencies:** Incremental after each package; final completion requires
-ENG-T03–11. Mutation expansion follows measured value, not a blanket target count.
+ENG-T04–11. Mutation expansion follows measured value, not a blanket target count.
 
 **Evidence:** `.github/workflows/ci.yml`; `.github/workflows/mutation.yml`;
 `frontend/package.json`; `frontend/playwright.config.ts`; `pyproject.toml`;
@@ -553,8 +502,7 @@ ENG-T03–11. Mutation expansion follows measured value, not a blanket target co
 
 ## Delivery order and verification
 
-Start with ENG-T03 to
-cover stale-result workflows. Reproduce ENG-T04/05 and
+Reproduce ENG-T04/05 and
 resolve their enforcement/provider decisions promptly; those decisions must not
 block ENG-T07 parser conservation. Follow with ENG-T06 and ENG-T08 lifecycle
 work, and reconcile ENG-T09 prose alongside the relevant boundary review.
