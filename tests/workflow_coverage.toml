@@ -451,15 +451,51 @@ invariant = "The graph editing sequence in the W03 row conserves graph structure
 id = "W04-S01"
 workflow = "W04"
 contract = "specs/io-layer/low-level.md#data-output"
-state = "gap"
-package = "ENG-T10"
+state = "covered"
 entry_point = "http"
 tier = "route"
 lane = "backend"
-real = ["registry", "filesystem"]
-stubbed = []
-tests = []
-invariant = "The W04 row outcomes for supported IO operations, cancellation and failed output hold."
+real = ["registry", "filesystem", "source-cache"]
+stubbed = ["databricks-sdk"]
+tests = [
+  "tests/test_input_providers.py::test_direct_parquet_reads_the_anchored_source_without_a_snapshot",
+  "tests/test_io.py::TestReadSourceCSV::test_reads_csv_file",
+  "tests/test_input_providers.py::test_inline_snapshot_builds_resolves_and_redacts_records",
+  "tests/test_input_providers.py::test_database_uses_bounded_sqlite_snapshot_and_cached_read_is_offline",
+  "tests/test_data_io_nodes.py::test_prepare_database_output_without_staging_path_is_transactional",
+  "tests/test_input_providers.py::test_lakehouse_freshness_is_unknown_without_a_provider_version_token",
+  "tests/test_data_io_nodes.py::test_prepare_rejects_a_staging_path_for_non_atomic_lakehouse_output",
+  "tests/test_databricks_io.py::test_snapshot_builder_publishes_through_source_cache_store",
+  "tests/test_databricks_io.py::test_iter_batches_streams_and_checks_cancellation",
+  "tests/test_data_io_config_contract.py::test_invalid_data_output_branch_fails",
+  "tests/test_polars_io_registry.py::TestWritePolarsOutput::test_parquet_sink_and_rescan",
+  "tests/test_data_io_nodes.py::TestExecuteSinkDataOutput::test_data_input_to_data_output_ndjson_round_trip",
+  "tests/test_data_io_nodes.py::TestExecuteSinkDataOutput::test_overwrite_true_replaces_existing_destination",
+  "tests/test_data_io_nodes.py::TestExecuteSinkDataOutput::test_failed_file_write_preserves_existing_target",
+  "tests/test_data_io_nodes.py::TestExecuteSinkDataOutput::test_parent_does_not_publish_file_after_request_cancellation",
+  "tests/test_data_io_nodes.py::TestPreviewNeverWrites::test_preview_of_a_data_output_node_writes_nothing_and_passes_rows_through",
+  "tests/test_input_preparation.py::test_a_preview_never_prepares_an_inactive_live_switch_branch",
+  "tests/test_polars_io_registry.py::TestSnapshotBuildReads::test_a_csv_without_a_declared_schema_scans_with_whole_file_inference",
+  "tests/test_databricks_endpoints.py::test_tables_constructs_full_name_when_sdk_omits_it",
+  "tests/test_input_preparation.py::test_reuse_refresh_and_rebuild_follow_the_source_signature",
+  "tests/test_source_cache.py::test_status_reports_fresh_stale_and_unknown",
+  "tests/test_input_preparation.py::test_an_absent_source_reuses_the_published_generation_with_a_warning",
+  "tests/test_input_preparation.py::test_a_ragged_csv_row_fails_the_build_and_keeps_the_previous_generation",
+  "tests/test_input_preparation.py::test_a_source_truncated_to_zero_bytes_fails_the_refresh_and_keeps_the_previous_generation",
+  "tests/test_input_preparation.py::test_a_header_only_source_publishes_an_empty_generation",
+  "tests/test_input_preparation.py::test_a_cancelled_build_is_typed_and_publishes_nothing",
+  "tests/test_source_cache.py::test_failed_refresh_preserves_previous_current_generation",
+  "tests/test_databricks_credentials.py::test_credential_representation_redacts_all_auth_values",
+  "tests/test_input_providers.py::test_databricks_identity_is_query_distinct_and_contains_no_resolved_secrets",
+  "tests/test_polars_io_registry.py::test_database_config_rejects_inline_uri_credentials",
+  "frontend/e2e/data-io-nodes.spec.ts::cards render and the editor is capability-driven",
+]
+invariant = "Every registry-supported input and output provider round-trips through a snapshot or a direct scan; a preview passes a data output through without writing while the explicit write publishes it; source switch, schema discovery and cache refresh follow the source signature; a missing, malformed, emptied or cancelled source and a failed output leave the previously published generation or target intact; and credentials never enter identities, fixtures or error text."
+
+[scenarios.evidence]
+commit = "f9265ddf"
+command = 'uv run pytest tests/test_input_providers.py tests/test_input_preparation.py tests/test_source_cache.py tests/test_data_io_nodes.py tests/test_data_io_roundtrips.py tests/test_data_io_config_contract.py tests/test_polars_io_registry.py tests/test_databricks_io.py tests/test_databricks_credentials.py tests/test_databricks_endpoints.py "tests/test_io.py::TestReadSourceCSV" -q -p no:warnings'
+result = "378 passed, 2 skipped in 13.97s"
 
 [[scenarios]]
 id = "W05-S01"
@@ -491,15 +527,45 @@ result = "6 passed in 9.36s"
 id = "W05-S02"
 workflow = "W05"
 contract = "specs/json-shredding/high-level.md#behaviour"
-state = "gap"
-package = "ENG-T10"
+state = "covered"
 entry_point = "http"
 tier = "route"
 lane = "backend"
-real = ["shredder"]
+real = ["shredder", "assembler", "edge-join"]
 stubbed = []
-tests = []
-invariant = "The W05 row per-request exact responses and strict schema errors hold."
+tests = [
+  "tests/test_v2_codec_and_shred.py::test_shred_to_buffers_row_counts_match_iteration_depths",
+  "tests/test_load_v2_api_source.py::test_single_port_returns_one_entry_dict",
+  "tests/test_scalar_array_and_inference.py::test_jsonl_input_is_shredded",
+  "tests/test_json_shred_parallel.py::test_parallel_build_matches_serial_build_exactly",
+  "tests/test_xml_api_input.py::test_xml_routes_through_structured_api_input_codec",
+  "tests/test_edge_join.py::test_edge_join_runtime_how_matrix_with_unmatched_rows_on_both_sides",
+  "tests/test_edge_join.py::test_edge_join_roles_come_from_target_handles_even_when_source_ids_match",
+  "tests/test_output_assembler.py::test_assemble_parent_and_child_array",
+  "tests/test_output_nested_roundtrip.py::test_nested_output_roundtrips_to_original",
+  "tests/test_apiinput_flat_output_dry_run.py::test_flat_apiinput_to_output_dry_run_route",
+  "tests/test_output_assembler.py::test_assemble_data_model_example_round_trip",
+  "tests/test_output_nested_roundtrip.py::test_nested_output_renders_through_deploy_scorer",
+  "tests/test_output_assembler.py::test_assemble_empty_child_array_is_omitted",
+  "tests/test_output_assembler.py::test_assemble_rejects_null_nesting_key_on_either_side",
+  "tests/test_scalar_array_and_inference.py::test_empty_array_only_produces_empty_child_table",
+  "tests/test_output_assembler.py::test_validate_rejects_two_columns_on_one_path",
+  "tests/test_v2_codec_and_shred.py::test_validate_rejects_duplicate_table_labels",
+  "tests/test_json_shred_parallel.py::test_byte_ranges_read_back_every_record_in_order",
+  "tests/test_output_assembler.py::test_same_level_join_output_follows_the_first_source_then_unmatched_later_rows",
+  "tests/test_v2_codec_and_shred.py::test_validate_v2_schema_rejects_invalid_declared_scalars",
+  "tests/test_scalar_array_and_inference.py::test_build_bool_in_numeric_column_fails_loud",
+  "tests/test_json_shred_w1_conservation.py::test_build_conserves_root_rows_and_accounts_skips",
+  "frontend/e2e/edge-join.spec.ts::inserts lookup and named API joins on rendered edges, persists them, and traces both",
+  "frontend/e2e/persistence/api-input-frame-alignment.spec.ts::frame-bound edges and downstream names survive save/reload and an in-place rename",
+  "frontend/e2e/persistence/api-input-v2-native.spec.ts::Infer Tables → Preview → optional Cache round-trips through disk and reload",
+]
+invariant = "JSON, JSONL and XML inputs shred to the declared tables with every root row accounted for; frame and edge joins, output mapping, dry-run and batch assembly return the exact expected document per request; missing, null, empty and nested arrays, duplicate or missing keys, deterministic row order and strict schema errors have the documented outcomes; and frame edits persist through save and reload."
+
+[scenarios.evidence]
+commit = "f9265ddf"
+command = 'uv run pytest tests/test_v2_codec_and_shred.py tests/test_load_v2_api_source.py tests/test_scalar_array_and_inference.py tests/test_json_shred_parallel.py tests/test_xml_api_input.py tests/test_edge_join.py tests/test_output_assembler.py tests/test_output_nested_roundtrip.py tests/test_apiinput_flat_output_dry_run.py tests/test_json_shred_w1_conservation.py -q -p no:warnings'
+result = "506 passed in 28.85s"
 
 [[scenarios]]
 id = "W06-S01"
