@@ -165,7 +165,16 @@ the lock; the slow part — the upload — runs outside it.
   instead of silently interleaving generations with — or overwriting —
   its replacement. A read-before-write comparison still runs first,
   only to stop early without packaging when the loss is already
-  visible.
+  visible. The fence is only as strong as the volume's create-only
+  upload: that it admits exactly one of several simultaneous creates is
+  a provider property no offline test can prove, so it is not assumed.
+  `scripts/uc_create_only_qualification.py` is the release gate for
+  hosted publication: it must pass against an isolated volume path with
+  the workspace's own credentials, and its result be recorded in
+  `databricks_app/LEARNINGS.md`, before the guarantee is claimed for
+  production. Until then the runtime already behaves as if the provider
+  could be ambiguous (an unclear create is retried, a lost race stops
+  loudly) and the guarantee is design intent, not a proven property.
 - **A claim makes the location behave like a locally-owned file.** The
   fence prevents corruption but only fires at write time; the claim
   (`CLAIM.json` beside the pointer) is the *steering* layer that stops
