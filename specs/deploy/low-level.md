@@ -15,7 +15,8 @@
 | `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
 | `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature/conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check. |
 | `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph`. |
-| `src/haute/deploy/_container.py` | Container build/push orchestration, generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub. |
+| `src/haute/deploy/_container.py` | Container build/push orchestration, build-directory preparation (`prepare_build_directory`), generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub. |
+| `scripts/container_smoke.py` | Standalone CLI script to verify the container deployment pipeline for an example (copy bundle, resolve deploy config, prepare build directory, and optionally execute a live uvicorn process smoke check). |
 | `src/haute/deploy/_impact.py` | Impact analysis: batched endpoint scoring (Databricks SDK or HTTP `/quote`), quote-envelope normalisation, percent-change statistics, categorical segment breakdown, terminal/Markdown report formatting. |
 | `src/haute/deploy/_request_limits.py` | Deployed-container request-body size limiting: environment resolution, `Content-Length` and streamed-byte enforcement before JSON materialisation, and structured limit/header/parse errors. |
 
@@ -564,6 +565,7 @@ what they cover:
   admission, cancellation, memory and bounded-streaming error mappings; body-limit env
   precedence and streamed-byte enforcement; JSON response truncation/envelope boundaries;
   NDJSON streaming; Dockerfile dependency pins and build-directory cleanup.
+- **`test_container_smoke_script.py`** — covers the container deployment seam (`prepare_build_directory` writing artefacts and handling custom wheel requirements), `build_and_push_image` build-directory cleanup on Docker failure, and the end-to-end `--serve-check` uvicorn subprocess smoke.
 - **`test_deploy_batch_scoring.py`** — the multi-row path end to end: a one-row request
   launching no worker; a two-row request launching exactly one
   `haute-deploy-batch` worker with the budget's memory limit and
