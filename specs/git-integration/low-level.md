@@ -409,7 +409,7 @@ tips (verifying each still resolves — a tombstone can outlive its objects if t
 were hand-deleted and gc ran), and consumes the trash
 refs + tombstone. The restored pair is NOT auto-adopted as the working branch.
 
-**Historical extraction (`archive_commit` / `commit_pipeline_graph`).** `ls-tree` first
+**Historical extraction (`src/haute/_git_history.py::archive_commit` / `src/haute/routes/_helpers.py::commit_pipeline_graph`).** Bounded extraction is owned by `archive_commit`, while the parse step `commit_pipeline_graph` is owned by [server-api](../server-api/low-level.md). `ls-tree` first
 enumerates the selected commit and filters to `haute.toml`, Python modules, Haute sidecars,
 and files below `config/` or `prompts/`; `git archive` receives only those literal paths.
 Tar extraction is implemented with Python-3.11-compatible regular-file/directory handling

@@ -50,8 +50,8 @@
 
 **`parse_pipeline_source`** (`parser.py`): `ast.parse(source)` → on `SyntaxError`, raise a
 contextual `ParseError` naming the source and syntax location → otherwise extract pipeline meta /
-decorated nodes / connect edges / preamble / preserved blocks by
-importing their implementation modules directly → collect labels from any node whose
+decorated nodes / connect edges / preamble / preserved blocks using the AST
+primitives from `src/haute/_ast_helpers.py` → collect labels from any node whose
 config carries `_load_error` into a graph-level `warning` (nothing in `src/haute`
 produces that key; the config path raises `ConfigError` instead, so the step is reached
 only by tests that plant the marker) → if any

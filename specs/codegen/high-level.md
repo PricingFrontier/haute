@@ -58,7 +58,8 @@ Out of scope (owned by neighbouring components):
   [expression-parsing](../expression-parsing/high-level.md). Parsed node/config conversion in
   `src/haute/_graph_builders.py` is owned by
   [pipeline-config](../pipeline-config/high-level.md). Codegen shares
-  `src/haute/_ast_helpers.py` and `src/haute/_code_extraction.py` with those read paths because
+  `src/haute/_ast_helpers.py` with those read paths, and `src/haute/_code_extraction.py`
+  with the execution builders, the config builder and the assistant tools, because
   generation and extraction are two directions of the same contract (see Interactions).
 - Declarative per-node JSON sidecar read/write and folder conventions —
   [pipeline-config](../pipeline-config/high-level.md) (`haute._config_io`).
@@ -286,10 +287,12 @@ Out of scope (owned by neighbouring components):
 - **Depends on** `haute._graph_shape`, `haute._edge_join`, and
   `haute._topo` for graph-shape validation, edge-join role resolution, and
   topological ordering before any source is emitted.
-- **Shares** `src/haute/_ast_helpers.py` and `src/haute/_code_extraction.py` with the parser
+- **Shares** `src/haute/_ast_helpers.py` with the parser
   (`src/haute/parser.py`, `src/haute/_graph_builders.py`,
   `src/haute/_parser_regex.py`,
-  `src/haute/_parser_submodels.py`) — generation and extraction
+  `src/haute/_parser_submodels.py`) and `src/haute/_code_extraction.py` with
+  `src/haute/_builders.py`, `src/haute/_config_builder.py` and
+  `src/haute/assistant/_tools.py` — generation and extraction
   are two halves of one round-trip contract; a change to how codegen wraps
   user code generally requires a matching change to how extraction unwraps
   it.

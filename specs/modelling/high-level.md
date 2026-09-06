@@ -211,6 +211,115 @@ Invariants that always hold:
   dtype. A timing-only win cannot justify doubling the live feature-matrix
   allocation at the training boundary.
 
+### Unified evaluation and bounded tuning
+
+Every modelling node supplies one strict version-1 `evaluation` object. Random and
+group evaluation specify `schema_version` (1), `strategy` (`random` or `group`), optional
+`group_column` (for `strategy="group"`), `seed`, optional `test` object (e.g. `size`), and a
+`validation` object (e.g. `{"method": "cross_validation", "fold_count": 5}`).
+Random/group single validation uses
+`{"method": "single", "size": <source-relative fraction>}` and no validation uses
+`{"method": "none"}`. `test` is optional. Fractions are finite numbers in `[0, 1)`;
+Boolean numbers are invalid, and integer allocation must leave every requested
+partition and every final development-training set non-empty.
+
+Temporal evaluation uses a required `date_column`, an optional
+`test={"start": <ISO date/datetime>}`, and exactly one of:
+
+- `validation={"method": "single", "start": <ISO date/datetime>}`;
+- `validation={"method": "cross_validation", "fold_count": 2..10,
+  "window": "expanding"}`;
+- `validation={"method": "none"}`.
+
+Temporal boundaries retain equal dates as one unit. A single-validation boundary
+precedes the final-test boundary and all resulting intervals are non-empty.
+Expanding-window CV divides the ordered distinct development dates into an initial
+training block and the requested validation blocks; every training date is strictly
+earlier than its validation dates. Rolling windows, embargoes and relative period
+boundaries are not accepted.
+
+Random classification evaluation is stratified by target. Preflight rejects a plan
+when any requested test/validation partition or fold cannot contain every class and
+reports the class counts and required minimum. Regression remains unstratified. Group
+evaluation canonicalises group keys, keeps each group in exactly one partition, and
+uses a deterministic seeded row-count-balancing assignment. It fails when any
+requested partition/fold would be empty.
+
+After null-target filtering, planning writes and strictly reloads one canonical
+digest-linked `{model}.evaluation-plan.json` for the exact prepared parquet. The artifact
+contains the source digest, exact source positions, development/final-test
+membership, ordered validation-fit train/validation memberships, canonical strategy
+configuration, row counts, and bounded group/date summaries.
+
+Planning assigns the final test first. Every validation fit is then derived solely
+from development positions. Single validation has one selection fit; K-fold
+validation has K; no validation has zero. An ordinary run performs those selection
+fits followed by exactly one deployable final fit on all development rows.
+Selection fits use an evaluation-only execution path: they materialise their
+partition, fit the algorithm, compute every configured metric and retain row counts
+and best iteration, but do not save a model or feature contract, run
+SHAP/PDP/full diagnostics, write MLflow, or publish per-fit artifacts.
+
+Validation-fit results are persisted in canonical order and aggregated from the
+reloaded artifact using validation-row-weighted metric means plus population standard
+deviation, minimum, maximum, fit count and total validation rows. Only the final fit
+emits deployable-model loss history and expensive diagnostics. The final fit evaluates
+the final test once when present; otherwise diagnostics are explicitly labelled as
+development/training diagnostics.
+
+The completed response exposes one `evaluation` report containing selection metrics
+and ordered validation fits, final-test metrics when present, development/test counts,
+the exact fit count, plan digest/path, result/report artifact paths, and group/date
+summaries. It never labels a selection metric as final-test performance.
+
+CatBoost nodes may additionally supply one strict version-1 `tuning` object specifying
+`schema_version` (1), `trial_count`, `seed`, `metric`, and a `search_space` mapping
+parameter names to candidate lists or conditional choices. Absence preserves ordinary
+training. GLM tuning and tuning with `validation.method="none"` are invalid. `trial_count`
+includes baseline trial zero, defaults to 20, and is an exact integer from 5 through 50.
+The search space has one through thirty-two non-empty names. Each unconditional name maps
+directly to a list of two through fifty canonically distinct finite JSON candidate values.
+Haute passes the selected value to CatBoost without inferring a numeric range, integer/float
+sampling mode, logarithmic scale, or step. A conditional entry instead uses the exact
+shape `{"choices": [...], "when": {...}}`; its candidate list obeys the same bounds.
+Optional `when` conditions reference sampled or fixed parameters, contain non-empty
+canonical choice sets, and form an acyclic, possible dependency graph.
+
+Sampled values override only same-named fixed parameters. Fixed parameter JSON otherwise
+remains unrestricted and unchanged. The implementation uses the pinned Optuna 4.x seeded
+TPE sampler through sequential ask/tell only. Every trial reuses the exact persisted
+development-only validation plan. Trial zero is the current fixed configuration and is
+labelled `baseline`. Exactly one configured finite metric selects the winner: Gini, AUC
+and R² maximise; RMSE, MAE, MSE, log loss, Poisson deviance and Tweedie deviance minimise.
+Ties select the lower trial index. Every trial retains every configured metric and the
+existing validation-row-weighted aggregate. All trial fits run sequentially under the
+run's one admission lease and cancellation token, and models/pools are released between fits.
+
+For the winning trial, the final tree count is the deterministic
+validation-row-weighted median of `best_iteration + 1`, capped by fixed
+`iterations`. The final fit merges the winning sampled values into the untouched
+fixed object, uses that explicit tree count, removes validation-only early-stop
+controls, trains on all development rows, and evaluates the final test once.
+
+The run persists canonical `{model}.tuning-plan.json`, `{model}.tuning-trials.json`, and
+`{model}.tuning-report.json` artifacts recording configs/digests, sampler/version/seed,
+ordered trials and fits, objectives, winner/baseline comparison, exact final
+parameters/tree count and fit bounds. Evaluation, tuning, model and feature-contract
+artifacts are one staged transactional publication set. Failure, cancellation, a
+lost terminal race, malformed content or response/artifact mismatch publishes none.
+Trial evidence stores `elapsed_seconds=0.0` deliberately so canonical artifact bytes
+do not depend on machine timing; the completed job owns the real total elapsed time,
+which the Summary surface displays.
+MLflow receives one final run with the selected final parameters, final-test metrics
+when present, selection and baseline/winner tuning summaries, and all
+evaluation/tuning artifacts.
+
+Live tuning progress is monotonic over planning, trial/fold fits, final fit and
+publication and exposes phase, one-based trial/fold indices and counts,
+completed/total fits, and best objective so far. Only the final fit contributes model
+loss history. Live training and exported scripts use the same config builder and
+produce equivalent evaluation plans, fit bounds and result artifacts.
+
 ## Design rationale
 
 The single config→kwargs builder (`_train_config.py`) exists because live training and
@@ -455,193 +564,19 @@ Cancellation, crash, malformed result, or pre-commit publication failure preserv
 prior set and removes prepared/staged files. A post-commit backup or staging cleanup
 error is logged without relabelling the already durable model as failed. Dispersion
   publishes bounded scalar metadata and no artifact.
+- Unknown evaluation versions or fields, legacy public `split`/`cross_validation`,
+  malformed strategy keys, inexact/Boolean fold counts, non-finite fractions, and structurally
+  invalid validation/test objects fail during cheap config validation before a job is created.
+- Evaluation planning rejects group leakage, temporal ties split across partitions, and invalid
+  temporal ordering before persistence. The strict plan loader rejects unknown/missing fields,
+  source mismatches, duplicate/out-of-range or non-canonical positions, overlap, empty
+  requested partitions, count/summary disagreement, non-partitioning ordinary CV, and a
+  non-expanding temporal CV sequence; training also compares the reloaded plan with the
+  generated plan before fitting.
+- Search-space validation for tuning rejects orchestration-owned keys, including objectives/losses,
+  device/resource selection, callbacks, write directories, random seed, and `iterations`; the fixed
+  `iterations` value is the upper ceiling.
+- Preflight enforces hard bounds on tuning fit counts: `trial_fit_count = trial_count * validation_fit_count <= 200`
+  (with `total_fit_count = trial_fit_count + 1`). A candidate-fit error aborts with the trial index,
+  sampled parameters and original actionable exception; it is never skipped.
 
-## Unified evaluation and bounded tuning
-
-### Canonical evaluation configuration
-
-Every modelling node supplies one strict version-1 `evaluation` object. Random and
-group evaluation use the following shape (with `group_column` present only for
-`strategy="group"`):
-
-```json
-{
-  "schema_version": 1,
-  "strategy": "group",
-  "group_column": "policyholder_id",
-  "seed": 42,
-  "test": {"size": 0.2},
-  "validation": {"method": "cross_validation", "fold_count": 5}
-}
-```
-
-Random/group single validation uses
-`{"method": "single", "size": <source-relative fraction>}` and no validation uses
-`{"method": "none"}`. `test` is optional. Fractions are finite numbers in `[0, 1)`;
-Boolean numbers are invalid, and integer allocation must leave every requested
-partition and every final development-training set non-empty.
-
-Temporal evaluation uses a required `date_column`, an optional
-`test={"start": <ISO date/datetime>}`, and exactly one of:
-
-- `validation={"method": "single", "start": <ISO date/datetime>}`;
-- `validation={"method": "cross_validation", "fold_count": 2..10,
-  "window": "expanding"}`;
-- `validation={"method": "none"}`.
-
-Temporal boundaries retain equal dates as one unit. A single-validation boundary
-precedes the final-test boundary and all resulting intervals are non-empty.
-Expanding-window CV divides the ordered distinct development dates into an initial
-training block and the requested validation blocks; every training date is strictly
-earlier than its validation dates. Rolling windows, embargoes and relative period
-boundaries are not accepted.
-
-Random classification evaluation is stratified by target. Preflight rejects a plan
-when any requested test/validation partition or fold cannot contain every class and
-reports the class counts and required minimum. Regression remains unstratified. Group
-evaluation canonicalises group keys, keeps each group in exactly one partition, and
-uses a deterministic seeded row-count-balancing assignment. It fails when any
-requested partition/fold would be empty.
-
-Unknown versions or fields, legacy public `split`/`cross_validation`, malformed
-strategy keys, inexact/Boolean fold counts, non-finite fractions, and structurally
-invalid validation/test objects fail during cheap config validation before a job is
-created.
-
-### Evaluation plan, fits, and results
-
-After null-target filtering, planning writes and strictly reloads one canonical
-digest-linked `{model}.evaluation-plan.json` for the exact prepared parquet. The artifact
-contains the source digest, exact source positions, development/final-test
-membership, ordered validation-fit train/validation memberships, canonical strategy
-configuration, row counts, and bounded group/date summaries.
-
-Planning rejects group leakage, temporal ties split across partitions, and invalid
-temporal ordering before persistence. The strict loader rejects unknown/missing fields,
-source mismatches, duplicate/out-of-range or non-canonical positions, overlap, empty
-requested partitions, count/summary disagreement, non-partitioning ordinary CV, and a
-non-expanding temporal CV sequence; training also compares the reloaded plan with the
-generated plan before fitting.
-
-Planning assigns the final test first. Every validation fit is then derived solely
-from development positions. Single validation has one selection fit; K-fold
-validation has K; no validation has zero. An ordinary run performs those selection
-fits followed by exactly one deployable final fit on all development rows.
-Selection fits use an evaluation-only execution path: they materialise their
-partition, fit the algorithm, compute every configured metric and retain row counts
-and best iteration, but do not save a model or feature contract, run
-SHAP/PDP/full diagnostics, write MLflow, or publish per-fit artifacts.
-
-Validation-fit results are persisted in canonical order and aggregated from the
-reloaded artifact using validation-row-weighted metric means plus population standard
-deviation, minimum, maximum, fit count and total validation rows. Only the final fit
-emits deployable-model loss history and expensive diagnostics. The final fit evaluates
-the final test once when present; otherwise diagnostics are explicitly labelled as
-development/training diagnostics.
-
-The completed response exposes one `evaluation` report containing selection metrics
-and ordered validation fits, final-test metrics when present, development/test counts,
-the exact fit count, plan digest/path, result/report artifact paths, and group/date
-summaries. It never labels a selection metric as final-test performance.
-
-### Bounded deterministic CatBoost tuning
-
-CatBoost nodes may additionally supply one strict version-1 `tuning` object:
-
-```json
-{
-  "schema_version": 1,
-  "trial_count": 20,
-  "seed": 42,
-  "metric": "gini",
-  "search_space": {
-    "depth": [4, 6, 8, 10],
-    "learning_rate": [0.01, 0.03, 0.05, 0.1, 0.2],
-    "grow_policy": ["SymmetricTree", "Depthwise"],
-    "min_data_in_leaf": {
-      "choices": [10, 25, 50, 100],
-      "when": {"grow_policy": ["Depthwise"]}
-    }
-  }
-}
-```
-
-Absence preserves ordinary training. GLM tuning and tuning with
-`validation.method="none"` are invalid. `trial_count` includes baseline trial zero,
-defaults to 20, and is an exact integer from 5 through 50. The search space has one
-through thirty-two non-empty names. Each unconditional name maps directly to a list
-of two through fifty canonically distinct finite JSON candidate values. Haute passes
-the selected value to CatBoost without inferring a numeric range, integer/float
-sampling mode, logarithmic scale, or step. A conditional entry instead uses the exact
-shape `{"choices": [...], "when": {...}}`; its candidate list obeys the same bounds.
-Optional `when` conditions reference sampled or fixed parameters, contain non-empty
-canonical choice sets, and form an acyclic, possible dependency graph.
-
-Sampled values override only same-named fixed parameters. Search-space validation
-rejects orchestration-owned keys, including objectives/losses, device/resource
-selection, callbacks, write directories, random seed, and `iterations`; the fixed
-`iterations` value is the upper ceiling. Fixed parameter JSON otherwise remains
-unrestricted and unchanged.
-
-The implementation uses the pinned Optuna 4.x seeded TPE sampler through sequential
-ask/tell only. Every trial reuses the exact persisted development-only validation
-plan. Trial zero is the current fixed configuration and is labelled `baseline`.
-Exactly one configured finite metric selects the winner: Gini, AUC and R² maximise;
-RMSE, MAE, MSE, log loss, Poisson deviance and Tweedie deviance minimise. Ties select
-the lower trial index. Every trial retains every configured metric and the existing
-validation-row-weighted aggregate.
-
-The hard preflight bounds are:
-
-```text
-trial_fit_count = trial_count * validation_fit_count <= 200
-total_fit_count = trial_fit_count + 1
-```
-
-All trial fits run sequentially under the run's one admission lease and cancellation
-token, and models/pools are released between fits. A candidate-fit error aborts with
-the trial index, sampled parameters and original actionable exception; it is never
-skipped.
-
-For the winning trial, the final tree count is the deterministic
-validation-row-weighted median of `best_iteration + 1`, capped by fixed
-`iterations`. The final fit merges the winning sampled values into the untouched
-fixed object, uses that explicit tree count, removes validation-only early-stop
-controls, trains on all development rows, and evaluates the final test once.
-
-The run persists canonical `{model}.tuning-plan.json`, `{model}.tuning-trials.json`, and
-`{model}.tuning-report.json` artifacts recording configs/digests, sampler/version/seed,
-ordered trials and fits, objectives, winner/baseline comparison, exact final
-parameters/tree count and fit bounds. Evaluation, tuning, model and feature-contract
-artifacts are one staged transactional publication set. Failure, cancellation, a
-lost terminal race, malformed content or response/artifact mismatch publishes none.
-Trial evidence stores `elapsed_seconds=0.0` deliberately so canonical artifact bytes
-do not depend on machine timing; the completed job owns the real total elapsed time,
-which the Summary surface displays.
-MLflow receives one final run with the selected final parameters, final-test metrics
-when present, selection and baseline/winner tuning summaries, and all
-evaluation/tuning artifacts.
-
-Live tuning progress is monotonic over planning, trial/fold fits, final fit and
-publication and exposes phase, one-based trial/fold indices and counts,
-completed/total fits, and best objective so far. Only the final fit contributes model
-loss history. Live training and exported scripts use the same config builder and
-produce equivalent evaluation plans, fit bounds and result artifacts.
-
-### Regression evidence
-
-Focused evaluation tests prove strict canonical parsing, deterministic plans, random
-stratification/failure counts, final-test exclusion, group row balancing/non-leakage,
-temporal boundary/tie/expanding-window ordering, fit counts, summaries, digest
-linkage, and artifact round trips. Training tests prove evaluation-only selection
-fits, one deployable final fit, exact metric aggregation, final-test-once behaviour,
-single-child sequential execution, cancellation checkpoints, and cleanup.
-
-Tuning tests prove static search-space validation, seeded ordered sampling,
-conditional resolution, merge preservation, baseline participation, metric direction
-and tie-breaking, weighted final tree count, exact fit bounds/invocations, candidate
-failure visibility, reused plan digest, progress monotonicity, and strict artifact
-round trips. Worker/service/route tests retain one admission lease, terminal-race
-ownership, transactional publication/rollback and release on every terminal path.
-Backend/frontend runtime guards and export tests prove the same canonical objects and
-labels end to end.

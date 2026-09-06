@@ -478,6 +478,19 @@ candidate, with the error toast.
   graph before either canvas renders; persisted history is not expected to
   contain transient `_functionName`, `_defaultInputName`, or
   `_sourceHandleInputNames` metadata.
+- **Recovery canvas rendering and minimal repair.** Unavailable and blocked nodes
+  remain selectable and expose their diagnostics, source/config location, and
+  deterministic blocking path instead of a normal editor. The recovery banner
+  contains an accessible issues navigator. Unresolved connections render as
+  non-interactive dashed overlays only when the server supplies two unambiguous
+  recovery endpoints. Selection, pan, zoom, and diagnostic navigation remain
+  available while every mutation is fenced. Minimal repair is the one deliberate
+  exception to the degraded canvas's mutation fence. It is admitted only by
+  `can_repair`, targets a server recovery identity, and never mutates the in-memory
+  React Flow graph optimistically. After a confirmed removal succeeds, App validates
+  and atomically adopts the returned editor document, clears the removed selection,
+  advances the raw revision mirror, and replaces graph/history from that authoritative
+  snapshot.
 
 ## Design rationale
 
@@ -650,11 +663,10 @@ candidate, with the error toast.
   apply, rollback, and dirty-gating behaviour as any external edit — nothing
   here special-cases them), and the assistant panel reads the derived dirty state
   to gate sending while local edits are unsaved.
-- `frontend-shared` — the shared node-data types (`frontend/src/types/node.ts`) and the
-  edge-join role/api-input-port handle-id conventions
-  (`frontend/src/utils/edgeJoinRoles.ts`, `frontend/src/utils/apiInputPorts.ts`) that this component
-  and the node editors both depend on. The node-type metadata table
-  (`frontend/src/utils/nodeTypes.ts`) and the default-target-handle sentinel
+- `frontend-shared` — the shared node-data types (`frontend/src/types/node.ts`)
+  that this component and the node editors both depend on. The node-type metadata table
+  (`frontend/src/utils/nodeTypes.ts`), the edge-join role/api-input-port handle-id conventions
+  (`frontend/src/utils/edgeJoinRoles.ts`, `frontend/src/utils/apiInputPorts.ts`), and the default-target-handle sentinel
   (`frontend/src/utils/flowHandles.ts`) are owned by *this* component (above), not
   `frontend-shared` — both `frontend-node-editors` and other components
   import them from here.
@@ -723,28 +735,12 @@ candidate, with the error toast.
 - Version comparison catches a failed historical-pipeline fetch and renders a
   dedicated error state (message plus a "Back to editor" button) in place
   of the canvases, rather than crashing the comparison view.
+- When live sync reports a degraded document, a clean canvas atomically adopts the recovered snapshot; a
+  dirty canvas retains local graph/history but immediately adopts the authoritative read-only capability
+  fence. Source-only state shows the current source and diagnostics. If a renderable snapshot existed in
+  this browser session, it may remain behind an explicit stale-reference label with its own prior revision;
+  it cannot be saved, executed, or mistaken for current state. A versioned system load failure replaces
+  the editor with the dedicated failure surface and marks any retained canvas unsynchronised; the next
+  valid document update clears that failure atomically. A failed or stale repair leaves the current recovery
+  canvas unchanged; no migration or upgrade action exists.
 
-## Recovery canvas behaviour
-
-Unavailable and blocked nodes remain selectable and expose their diagnostics, source/config location,
-and deterministic blocking path instead of a normal editor. The recovery banner contains an accessible
-issues navigator. Unresolved connections render as non-interactive dashed overlays only when the server
-supplies two unambiguous recovery endpoints. Selection, pan, zoom, and diagnostic navigation remain
-available while every mutation is fenced.
-
-When live sync reports a degraded document, a clean canvas atomically adopts the recovered snapshot; a
-dirty canvas retains local graph/history but immediately adopts the authoritative read-only capability
-fence. Source-only state shows the current source and diagnostics. If a renderable snapshot existed in
-this browser session, it may remain behind an explicit stale-reference label with its own prior revision;
-it cannot be saved, executed, or mistaken for current state. A versioned system load failure replaces
-the editor with the dedicated failure surface and marks any retained canvas unsynchronised; the next
-valid document update clears that failure atomically.
-
-Minimal repair is the one deliberate exception to the degraded canvas's
-mutation fence. It is admitted only by `can_repair`, targets a server recovery
-identity, and never mutates the in-memory React Flow graph optimistically.
-After a confirmed removal succeeds, App validates and atomically adopts the
-returned editor document, clears the removed selection, advances the raw
-revision mirror, and replaces graph/history from that authoritative snapshot.
-A failed or stale repair leaves the current recovery canvas unchanged. No
-migration or upgrade action exists.

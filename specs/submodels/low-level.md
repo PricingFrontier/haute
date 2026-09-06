@@ -12,7 +12,7 @@
 | `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): transform-only `POST /create` and `POST /dissolve`, plus read-only persisted `GET /{definition_id}`. It validates the current parent revision and maps failures without writing files. |
 
 Related but external to this component:
-- `src/haute/_parser_submodels.py` (expression-parsing) — parses
+- `src/haute/_parser_submodels.py` ([expression-parsing](../expression-parsing/low-level.md)) — parses
   `pipeline.submodel(...)` calls and submodel `.py` files, and calls into
   canonical reusable-instance helpers to build the hierarchical view at parse
   time. Parsed child graphs retain their declared description,

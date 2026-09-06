@@ -897,6 +897,22 @@ The internal `_split.py` primitives remain covered through direct training tests
 the public evaluation contract has dedicated plan/config/orchestration suites above.
 No public node-config test treats `SplitConfig` as an accepted alternative.
 
+Focused evaluation tests prove strict canonical parsing, deterministic plans, random
+stratification/failure counts, final-test exclusion, group row balancing/non-leakage,
+temporal boundary/tie/expanding-window ordering, fit counts, summaries, digest
+linkage, and artifact round trips. Training tests prove evaluation-only selection
+fits, one deployable final fit, exact metric aggregation, final-test-once behaviour,
+single-child sequential execution, cancellation checkpoints, and cleanup.
+
+Tuning tests prove static search-space validation, seeded ordered sampling,
+conditional resolution, merge preservation, baseline participation, metric direction
+and tie-breaking, weighted final tree count, exact fit bounds/invocations, candidate
+failure visibility, reused plan digest, progress monotonicity, and strict artifact
+round trips. Worker/service/route tests retain one admission lease, terminal-race
+ownership, transactional publication/rollback and release on every terminal path.
+Backend/frontend runtime guards and export tests prove the same canonical objects and
+labels end to end.
+
 ## Canonical modelling artifacts
 
 Under the [canonical-only format policy](../README.md#canonical-only-format-policy),

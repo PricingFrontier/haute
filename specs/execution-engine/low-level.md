@@ -18,7 +18,7 @@
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
 | `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve fault, collect-count, and typed-error telemetry. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
-| `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`; owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component. |
+| `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`; owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
 | `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), explicit `topo_sort_ids_filtered` (opt-in subset traversal returning both the order and every dropped edge/endpoint), and `ancestors` (BFS over reversed edges). The default sorter never silently ignores an unknown endpoint. |
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
@@ -649,6 +649,27 @@ merely *named* like one of these from another module remains an internal 500.
 defaults to `process`. `thread` exists as an explicit compatibility/test mode and
 retains the documented non-killable timeout semantics—it is never an automatic
 fallback after a process failure.
+
+### Assistant interaction
+
+`src/haute/assistant/_tools.py::get_node_schema` is a cross-component caller of
+the public lazy-execution facade. It validates the target against the original
+hierarchical graph, flattens submodels for execution, compiles the saved
+preamble with the pipeline directory, selects the graph's saved active source,
+and calls `execute_lazy_graph` with `target_node_id`, `preserve_node_ids`, and
+contract enforcement. It reads only lazy schemas; a dict-shaped multi-frame
+result is rendered per port and no frame is collected.
+
+The assistant application service owns the post-save verification tiers (see
+[assistant high-level](../assistant/high-level.md)): a plan that affects
+executable flow declares `schema`, which reparses and validates the saved graph,
+evaluates the closed structural postconditions, and resolves exact lazy-schema
+evidence for the affected nodes through this component's lazy facade; only a
+mutation with no executable target may declare `structural`. Schema evidence is
+not row-level execution or model-quality proof, and a schema failure is never
+reported as successful verification. This component does not own assistant
+project revisions, plan hashes or save authority, and no assistant tool may
+present a structural or schema result as execution evidence.
 
 ## Edge cases and invariants
 
@@ -1310,6 +1331,11 @@ fallback after a process failure.
   keeps its own carrier for an empty-demand edge. Pinned by `tests/test_column_lineage.py`
   (including the drop-everything program the property test falsified) and the
   projected-versus-full property tests in `tests/test_column_lineage_properties.py`.
+- **Canonical execution interfaces.** Under the
+  [canonical-only format policy](../README.md#canonical-only-format-policy),
+  maintained execution call sites use the current typed planner, admission, runtime-input, and
+  diagnostic result objects directly. No private compatibility wrappers, tuple projections, or
+  test-only call shapes remain; tests exercise the maintained interfaces.
 
 ## Error handling
 
@@ -1638,31 +1664,3 @@ tests that construct real admitted contexts. The direct suite asserts complete
 coverage of `_ADAPTIVE_MEMORY_POLICY`, `_PROFILE_MEMORY_ENV`, and
 `_PROFILE_PROCESS_RSS_ENV` for every `ExecutionProfile`, and exercises adaptive,
 fixed, strict-server, explicit-override, process-RSS, and in-flight-reservation paths.
-
-## Canonical execution interfaces
-
-Under the [canonical-only format policy](../README.md#canonical-only-format-policy),
-maintained execution call sites use the current typed planner, admission, runtime-input, and
-diagnostic result objects directly. No private compatibility wrappers, tuple projections, or
-test-only call shapes remain; tests exercise the maintained interfaces.
-
-## Assistant interaction
-
-`src/haute/assistant/_tools.py::get_node_schema` is a cross-component caller of
-the public lazy-execution facade. It validates the target against the original
-hierarchical graph, flattens submodels for execution, compiles the saved
-preamble with the pipeline directory, selects the graph's saved active source,
-and calls `execute_lazy_graph` with `target_node_id`, `preserve_node_ids`, and
-contract enforcement. It reads only lazy schemas; a dict-shaped multi-frame
-result is rendered per port and no frame is collected.
-
-The assistant application service owns the post-save verification tiers (see
-[assistant high-level](../assistant/high-level.md)): a plan that affects
-executable flow declares `schema`, which reparses and validates the saved graph,
-evaluates the closed structural postconditions, and resolves exact lazy-schema
-evidence for the affected nodes through this component's lazy facade; only a
-mutation with no executable target may declare `structural`. Schema evidence is
-not row-level execution or model-quality proof, and a schema failure is never
-reported as successful verification. This component does not own assistant
-project revisions, plan hashes or save authority, and no assistant tool may
-present a structural or schema result as execution evidence.

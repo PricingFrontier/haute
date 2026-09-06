@@ -36,8 +36,7 @@ Non-goals:
 
 | Package | State | Priority | Outcome |
 |---|---|---|---|
-| SPEC-A08 | Planned | P2 | Ownership ledger, document structure and governance statements match the corpus. |
-| SPEC-A09 | Decision | P2 | The four findings that expose code, not prose, are fixed with tests. |
+| SPEC-A09 | Decision | P2 | The three findings that expose code, not prose, are fixed with tests; the fourth was a prose fix. |
 
 ## Planned improvements
 
@@ -49,32 +48,6 @@ editing pass: for every finding it re-reads the cited specification line and
 the cited code at `HEAD`, applies the recorded fix or a better one that obeys
 the writing rules, or records the finding as already resolved with the proof,
 and never edits a file outside its list.
-
-### SPEC-A08 — Ownership ledger, document structure and governance statements
-
-**Why:** Seventeen findings that cut across components: prose ownership claims
-without a `specs/ownership.toml` record (F032, F066, F082, F098, F138, F197,
-F233, ADD18), a stale ledger rationale (F215), documents carrying a seventh
-top-level heading (F067, F175, F211, ADD08), governance statements in
-`specs/README.md` that overstate the inventory gate, the coverage contract and
-the roadmap index (F147, F148, F149), and roadmap Evidence fields that name no
-source (F228).
-
-**Plan:** One editing pass, run after the component packages because it edits
-the shared ledger and folds headings in documents they also touch. Ledger
-entries name the primary that already documents the file's behaviour; heading
-folds move content under the template's six headings without changing it;
-F148 classifies the packaged assistant example bundles in the coverage contract.
-
-**Acceptance:** Every listed finding corrected; `specs/ownership.toml` records
-every file two Module maps name or prose claims across components; every
-component document carries exactly the template headings; the docs check stays
-green.
-
-**Dependencies:** SPEC-A02 to SPEC-A07.
-
-**Evidence:** `fable5.1-review/findings.json`; `specs/ownership.toml`;
-`specs/README.md`; `specs/roadmap/explore-eda.md`; `tests/test_docs_accuracy.py`.
 
 ### SPEC-A09 — Findings that expose code
 

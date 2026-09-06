@@ -791,6 +791,22 @@ reconciliation rather than dropping them or committing a second mutation.
     when the inspected version changes, not an in-place reset) and mirrors
     the shared `selectedId` onto its own `selected` flags so both canvases
     highlight a clicked node's counterpart.
+24. **Recovery adaptation and minimal repair.** `adaptPipelineEditorDocument` is the
+    sole recovery-to-React-Flow adapter. Unresolved declarations become
+    `selectable: false` dashed presentation edges only when both recovery endpoint ids
+    are non-null. `PipelineRecoveryBanner` exposes the bounded diagnostic list as an
+    accessible navigator, while `NodePanel` resolves unavailable/blocked node diagnostic
+    ids through `useDocumentStatusStore`. `usePipelineAPI` exposes the same validated
+    document-adoption transition used by initial load for a successful repair response.
+    `PipelineRepairDialog` performs no local node deletion: App adopts the returned
+    document, updates request-facing source/revision refs, loads one fresh graph
+    snapshot/history baseline, marks it synchronized, and only then closes the selected
+    recovery panel. If the repair was launched from a drilled submodel, navigation
+    metadata resets to the authoritative root without restoring the stale saved parent
+    snapshot. Revision/plan errors do not call that transition. Although ordinary
+    mutation remains fenced, `can_repair` independently admits this one document-level
+    command. The dialog consumes only the strict validated DTOs from
+    `frontend/src/types/pipelineRepair.ts`. There is no migration path.
 
 ## Edge cases and invariants
 
@@ -969,6 +985,15 @@ reconciliation rather than dropping them or committing a second mutation.
   visible to validation — `HTMLInputElement` silently strips newlines
   before JavaScript ever sees them, which would let one slip past the
   unsafe-character check.
+- **Live document application and recovery snapshot retention.** Live document
+  application retains the last renderable snapshot in memory, keyed with its revision.
+  Clean updates replace graph/status atomically from the user's perspective. Dirty
+  updates apply status first and retain graph/history. Source-only rendering either shows
+  current source alone or labels the retained snapshot stale; all mutation and execution
+  handlers consume the shared capability fence. A current-source system `parse_error` sets
+  the document store's `systemFailure`, marks graph state unsynchronised, and renders
+  `PipelineLoadFailureView`; the next valid document transition clears the failure before
+  publishing its graph.
 
 ## Error handling
 
@@ -1502,30 +1527,3 @@ again through the editor and save paths.
   drag points are derived from live locator geometry and every assertion is
   an observable DOM, preview, trace, or persisted-pipeline outcome.
 
-## Recovery implementation contract
-
-`adaptPipelineEditorDocument` is the sole recovery-to-React-Flow adapter. Unresolved declarations
-become `selectable: false` dashed presentation edges only when both recovery endpoint ids are non-null.
-`PipelineRecoveryBanner` exposes the bounded diagnostic list as an accessible navigator, while
-`NodePanel` resolves unavailable/blocked node diagnostic ids through `useDocumentStatusStore`.
-
-Live document application retains the last renderable snapshot in memory, keyed with its revision.
-Clean updates replace graph/status atomically from the user's perspective. Dirty updates apply status
-first and retain graph/history. Source-only rendering either shows current source alone or labels the
-retained snapshot stale; all mutation and execution handlers consume the shared capability fence.
-A current-source system `parse_error` sets the document store's `systemFailure`, marks graph
-state unsynchronised, and renders `PipelineLoadFailureView`; the next valid document transition clears
-the failure before publishing its graph.
-
-`usePipelineAPI` exposes the same validated document-adoption transition used
-by initial load for a successful repair response. `PipelineRepairDialog`
-performs no local node deletion: App adopts the returned document, updates
-request-facing source/revision refs, loads one fresh graph snapshot/history
-baseline, marks it synchronized, and only then closes the selected recovery
-panel. If the repair was launched from a drilled submodel, navigation metadata
-resets to the authoritative root without restoring the stale saved parent
-snapshot.
-Revision/plan errors do not call that transition. Although ordinary mutation
-remains fenced, `can_repair` independently admits this one document-level
-command. The dialog consumes only the strict validated DTOs from
-`frontend/src/types/pipelineRepair.ts`. There is no migration path.
