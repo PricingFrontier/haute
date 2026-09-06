@@ -448,15 +448,26 @@ id = "W05-S01"
 workflow = "W05"
 contract = "specs/server-api/low-level.md#control-flow"
 finding = "F6"
-state = "gap"
-package = "ENG-T09"
+state = "covered"
 entry_point = "http"
 tier = "process"
 lane = "backend"
-real = ["cross-process-lock", "filesystem"]
+real = ["cross-process-lock", "filesystem", "isolated-worker"]
 stubbed = []
-tests = []
-invariant = "Cancellation or timeout of an HTTP JSON cache build cannot release admission or the publication lock before child exit and staging cleanup."
+tests = [
+  "tests/test_json_cache_cross_process.py::test_http_build_cancellation_terminates_the_child_and_cleans_staging_before_releasing_the_lock",
+  "tests/test_json_cache_cross_process.py::test_http_build_timeout_terminates_the_child_and_cleans_staging_before_releasing_the_lock",
+  "tests/test_json_cache_cross_process.py::test_cache_build_lock_serializes_independent_processes",
+  "tests/test_json_cache_routes.py::TestBuildJsonCache::test_transaction_does_not_publish_after_request_cancellation",
+  "tests/test_json_cache_routes.py::TestBuildJsonCache::test_transaction_rejects_pre_dispatch_cancellation_and_surfaces_cleanup_failure",
+  "tests/test_json_cache_routes.py::TestJsonCacheProgress::test_progress_is_inactive_when_504_returns_after_worker_join",
+]
+invariant = "Cancellation or timeout of an HTTP JSON cache build terminates the live child and discards the staging generation before the cross-process publication lock is released; a second process is blocked on that lock throughout, and the route releases admission only after the worker join."
+
+[scenarios.evidence]
+commit = "2073df1c"
+command = 'uv run pytest "tests/test_json_cache_cross_process.py::test_http_build_cancellation_terminates_the_child_and_cleans_staging_before_releasing_the_lock" "tests/test_json_cache_cross_process.py::test_http_build_timeout_terminates_the_child_and_cleans_staging_before_releasing_the_lock" "tests/test_json_cache_cross_process.py::test_cache_build_lock_serializes_independent_processes" "tests/test_json_cache_routes.py::TestBuildJsonCache::test_transaction_does_not_publish_after_request_cancellation" "tests/test_json_cache_routes.py::TestBuildJsonCache::test_transaction_rejects_pre_dispatch_cancellation_and_surfaces_cleanup_failure" "tests/test_json_cache_routes.py::TestJsonCacheProgress::test_progress_is_inactive_when_504_returns_after_worker_join" -q -p no:warnings'
+result = "6 passed in 9.36s"
 
 [[scenarios]]
 id = "W05-S02"
@@ -505,15 +516,31 @@ id = "W08-S01"
 workflow = "W08"
 contract = "specs/modelling/low-level.md#error-handling"
 finding = "F8"
-state = "gap"
-package = "ENG-T09"
+state = "covered"
 entry_point = "http"
 tier = "process"
 lane = "backend"
 real = ["training-worker"]
 stubbed = []
-tests = []
-invariant = "A dependency's plain ValueError is classified as an unexpected error with a safe public message, distinct from HauteValidationError contract errors."
+tests = [
+  "tests/test_training_worker_protocol.py::test_training_entrypoint_maps_contract_failures",
+  "tests/test_training_worker_protocol.py::test_training_entrypoint_rejects_incomplete_evaluation_and_tuning_artifacts",
+  "tests/test_training_worker_protocol.py::test_dispersion_worker_maps_malformed_requests_to_contract_failures",
+  "tests/test_training_worker_protocol.py::test_dispersion_worker_maps_estimator_failures",
+  "tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage::test_haute_validation_error_channel_is_stamped_user_facing",
+  "tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage::test_plain_value_error_does_not_ride_the_validation_channel",
+  "tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage::test_metric_stage_wrapper_rides_the_validation_channel",
+  "tests/test_modelling_routes.py::TestBackgroundThreadErrors::test_background_validation_error",
+  "tests/test_modelling_routes.py::TestBackgroundThreadErrors::test_background_plain_value_error_takes_the_fallback",
+  "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_worker_missing_term_columns_is_contract_error",
+  "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_worker_fallback_stamps_curated_message",
+]
+invariant = "A HauteValidationError (the metric-stage wrapper included) is promoted verbatim as a contract_error while a dependency's plain ValueError is classified as an unexpected error whose public message names only the type, the raw text surviving in the diagnostic field; training and dispersion workers apply the same taxonomy."
+
+[scenarios.evidence]
+commit = "2073df1c"
+command = 'uv run pytest "tests/test_training_worker_protocol.py::test_training_entrypoint_maps_contract_failures" "tests/test_training_worker_protocol.py::test_training_entrypoint_rejects_incomplete_evaluation_and_tuning_artifacts" "tests/test_training_worker_protocol.py::test_dispersion_worker_maps_malformed_requests_to_contract_failures" "tests/test_training_worker_protocol.py::test_dispersion_worker_maps_estimator_failures" "tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage" "tests/test_modelling_routes.py::TestBackgroundThreadErrors::test_background_validation_error" "tests/test_modelling_routes.py::TestBackgroundThreadErrors::test_background_plain_value_error_takes_the_fallback" "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_worker_missing_term_columns_is_contract_error" "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_worker_fallback_stamps_curated_message" -q -p no:warnings'
+result = "42 passed in 5.83s"
 
 [[scenarios]]
 id = "W08-S02"
@@ -573,15 +600,25 @@ id = "W10-S01"
 workflow = "W10"
 contract = "specs/explore-eda/low-level.md#runjob-parent-supervisor-thread"
 finding = "F7"
-state = "gap"
-package = "ENG-T09"
+state = "covered"
 entry_point = "http"
 tier = "route"
 lane = "backend"
 real = ["explore-service"]
 stubbed = []
-tests = []
-invariant = "Unexpected exception text from materialisation or summarisation never reaches status or result payloads."
+tests = [
+  "tests/test_explore_routes.py::test_explore_worker_maps_failures_to_typed_terminal_statuses",
+  "tests/test_explore_routes.py::test_explore_remote_worker_failure_is_sanitized",
+  "tests/test_explore_routes.py::test_failed_explore_refresh_preserves_last_durable_generation",
+  "tests/test_explore_routes.py::test_failed_parent_restore_never_selects_the_replacement_generation",
+  "tests/test_explore_routes.py::test_explore_staging_cleanup_failure_preserves_primary_job_failure",
+]
+invariant = "Unexpected exception text from materialisation or summarisation never reaches status or result payloads; the job ends in error with the fixed internal-error detail."
+
+[scenarios.evidence]
+commit = "2073df1c"
+command = 'uv run pytest "tests/test_explore_routes.py::test_explore_worker_maps_failures_to_typed_terminal_statuses" "tests/test_explore_routes.py::test_explore_remote_worker_failure_is_sanitized" "tests/test_explore_routes.py::test_failed_explore_refresh_preserves_last_durable_generation" "tests/test_explore_routes.py::test_failed_parent_restore_never_selects_the_replacement_generation" "tests/test_explore_routes.py::test_explore_staging_cleanup_failure_preserves_primary_job_failure" -q -p no:warnings'
+result = "9 passed in 7.12s"
 
 [[scenarios]]
 id = "W10-S02"
@@ -669,15 +706,27 @@ id = "W12-S01"
 workflow = "W12"
 contract = "specs/assistant/high-level.md#application-services-and-mutation-authority"
 finding = "F5"
-state = "gap"
-package = "ENG-T09"
+state = "covered"
 entry_point = "http"
 tier = "workflow"
 lane = "backend"
 real = ["assistant-application"]
 stubbed = ["provider"]
-tests = []
-invariant = "An executable-flow assistant edit requires schema evidence and a schema failure is never reported as successful verification."
+tests = [
+  "tests/test_assistant_application.py::TestSchemaValidationScope::test_group_by_edit_validates_at_schema_tier",
+  "tests/test_assistant_application.py::TestSchemaValidationScope::test_new_branch_off_a_shared_input_ignores_the_input_s_other_branches",
+  "tests/test_assistant_application.py::TestSchemaValidationScope::test_untouched_collateral_that_already_failed_becomes_a_warning",
+  "tests/test_assistant_application.py::TestSchemaValidationScope::test_a_node_this_plan_changed_is_never_excused",
+  "tests/test_assistant_application.py::TestApply::test_low_risk_apply_is_exact_single_use_and_truthfully_verified",
+  "tests/test_assistant_application.py::test_dry_run_binds_schema_evidence_into_executable_plan",
+  "tests/test_assistant_application.py::test_dry_run_rejects_trace_regression_polars_plan_before_storing",
+]
+invariant = "An executable-flow assistant edit declares the schema tier with exact evidence for the affected nodes, a mutation with no executable target declares structural, and a schema failure on a changed node is rejected before any plan is stored."
+
+[scenarios.evidence]
+commit = "2073df1c"
+command = 'uv run pytest "tests/test_assistant_application.py::TestSchemaValidationScope" "tests/test_assistant_application.py::TestApply::test_low_risk_apply_is_exact_single_use_and_truthfully_verified" "tests/test_assistant_application.py::test_dry_run_binds_schema_evidence_into_executable_plan" "tests/test_assistant_application.py::test_dry_run_rejects_trace_regression_polars_plan_before_storing" -q -p no:warnings'
+result = "8 passed in 2.29s"
 
 [[scenarios]]
 id = "W12-S02"

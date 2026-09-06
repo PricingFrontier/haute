@@ -63,7 +63,6 @@ and file-name inventories do not establish semantic completeness.
 | ENG-T04 | Decision | P1 | Make the node execution boundary testable and truthful; detect F1. |
 | ENG-T05 | Decision | P1 | Prove publication ordering at the authoritative pointer; detect F2. |
 | ENG-T08 | Reverify | P2 | Preserve executable meaning through rename and graph editing; detect F11. |
-| ENG-T09 | Planned | P2 | Reconcile F5–F8 against executable boundary contracts. |
 | ENG-T10 | Planned | P2 | Cover every supported workflow family across product components. |
 | ENG-T11 | Planned | P2 | Add bounded state-machine, differential, and boundary generation. |
 | ENG-T12 | Planned | P2 | Enforce collection, regression sensitivity, and sustainable CI cost. |
@@ -204,42 +203,6 @@ invariant and conflict-safe persistence are current parser and server-api behavi
 `frontend/e2e/core-flows.spec.ts`;
 `frontend/e2e/persistence/api-input-frame-alignment.spec.ts`;
 `tests/test_codegen_input_identity.py`; `src/haute/_user_exec.py`.
-
-### ENG-T09 — Reconcile shared boundary contracts and their witnesses
-
-**Why:** F5–F8 are prose contradictions, not four more reproduced runtime bugs.
-Mechanical documentation checks were green despite them. Tests should protect
-the existing correct behaviour while specifications adopt one owner per contract.
-
-**Plan:** Review the current assertions below and extend only missing outcomes:
-
-| Finding | Spec correction and executable obligation |
-|---|---|
-| F5 | Execution-engine must reference assistant-owned post-save verification tiers. Executable edits require schema evidence; non-executable edits may be structural. Schema failure cannot be reported as successful schema verification; schema-only work must not collect rows. |
-| F6 | JSON-shredding/caching must distinguish per-process reentrancy from the native cross-process build lock and the HTTP child/parent lifecycle. `tests/test_json_cache_cross_process.py::test_cache_build_lock_serializes_independent_processes` already proves two spawned processes exclude each other on the build lock; verify it covers publication of the same cache, then add the missing witness that cancellation/timeout cannot release admission or the publication lock before child exit and staging cleanup. Preserve the in-process library path's separate contract. |
-| F7 | Explore must expose explicitly safe typed errors and keep unexpected exception text diagnostic-only. Inject a synthetic diagnostic marker and verify it stays out of status/result payloads and rendered messages while terminal state and logging remain useful. |
-| F8 | Modelling must distinguish `HauteValidationError` provenance from a dependency's plain `ValueError`, including training and dispersion. Assert error classification, public message, diagnostics and cleanup, not only an exception class. |
-
-Do not add tests that freeze contradictory paragraphs or require a prose-only
-defect to make runtime tests fail. Link consumers to the owner and run docs
-accuracy after reconciliation. Keep package acceptance tests in owning Testing
-sections so a future refactor can find the behavioural obligation.
-
-**Acceptance:** Four prose conflicts are removed without weakening the currently
-implemented contracts. Existing correct tests remain green; any added test closes
-a demonstrated assertion gap. JSON lock evidence uses separate processes, and
-error tests use synthetic data with exact public/private outcome assertions.
-
-**Dependencies:** The coverage ledger. Root semantic review of the actual current
-behaviour; no dependency on changing assistant verification or worker architecture.
-
-**Evidence:** `tests/test_assistant_application.py`;
-`tests/test_json_cache_cross_process.py`; `tests/test_json_cache_routes.py`;
-`tests/test_explore_routes.py`; `tests/test_training_worker_protocol.py`;
-`src/haute/assistant/_application.py`; `src/haute/routes/_training_worker.py`;
-`specs/execution-engine/low-level.md`; `specs/json-shredding/low-level.md`;
-`specs/caching/low-level.md`; `specs/explore-eda/high-level.md`;
-`specs/modelling/low-level.md`.
 
 ### ENG-T10 — Complete the supported workflow families
 
@@ -439,7 +402,7 @@ ENG-T04–11. Mutation expansion follows measured value, not a blanket target co
 
 Reproduce ENG-T04/05 and
 resolve their enforcement/provider decisions promptly. Follow with ENG-T08 rename-lifecycle
-work, and reconcile ENG-T09 prose alongside the relevant boundary review.
+work.
 Expand ENG-T10 one workflow slice at a time; add ENG-T11 properties only after
 the corresponding oracle is settled. Integrate ENG-T12 continuously.
 
