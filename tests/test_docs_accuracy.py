@@ -142,6 +142,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "engineering-quality",
     "explore-eda",
     "optimiser",
+    "submodels",
 )
 _ROADMAP_SUPPORTING_REPORTS = (
     "bug-findings-2026-09-05.md",

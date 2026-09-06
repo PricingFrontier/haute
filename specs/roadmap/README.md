@@ -21,6 +21,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Test coverage and workflow assurance](engineering-quality.md) | Behavioural witnesses, edge cases, lifecycle workflows, regression sensitivity | `ENG-T04` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
+| [Submodels](submodels.md) | Public port and occurrence identities, authoring surface | `SUB-L01` |
 
 ## Supporting findings
 
