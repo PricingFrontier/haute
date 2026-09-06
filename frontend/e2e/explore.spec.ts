@@ -183,4 +183,214 @@ test.describe("Explore cached field pivot journey", () => {
       if (heldRoute) await page.unroute("**/api/pipeline/preview")
     }
   })
+
+  test("a chart bound to a pivot renders from real pivot results and goes stale with its pivot", async ({
+    page,
+  }) => {
+    test.slow()
+    await openApp(page)
+
+    const canvas = page.locator(".react-flow")
+    await expect(canvas).toBeVisible()
+    await page.getByTestId("node-palette-item-explore").dragTo(canvas, {
+      targetPosition: { x: 250, y: 150 },
+    })
+    const exploreNode = page.getByLabel(/Explore node: Explore/i)
+    await expect(exploreNode).toBeVisible()
+    await exploreNode.click()
+
+    const label = page.getByTestId("node-panel-label-input")
+    await label.fill("browser_explore")
+    await label.press("Enter")
+    await expect(label).toHaveValue("browser_explore")
+
+    const namedExploreNode = page.getByLabel(/Explore node: browser_explore/i)
+    await expect(namedExploreNode).toBeVisible()
+    await page.getByTestId("node-panel-close").click()
+    await connect(
+      page,
+      page.getByTestId("rf__node-raw_rows").getByTestId("output-connector[0]:raw_rows"),
+      namedExploreNode.getByTestId("input-connector[0]:browser_explore"),
+    )
+
+    await namedExploreNode.click()
+    await expect(page.getByTestId("node-panel")).toBeVisible()
+    await page.getByRole("tab", { name: "Polars Code", exact: true }).click()
+    const editor = page.locator(".cm-content")
+    await expect(editor).toBeVisible()
+    await editor.click()
+    await page.keyboard.press("Control+A")
+    await page.keyboard.type('df = df.with_columns((pl.col("value") * 2000).alias("derived_value"))')
+    await expect(editor).toContainText("derived_value")
+
+    await save(page)
+    await page.reload()
+    await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
+    const persistedExplore = page.getByLabel(/Explore node: browser_explore/i)
+    await persistedExplore.click()
+    await expect(page.getByTestId("node-panel")).toBeVisible()
+    const cacheButton = page.getByTestId("explore-preview-frame").getByRole("button", {
+      name: /Needs caching|Re-cache/,
+    })
+    await expect(cacheButton).toBeEnabled()
+    await cacheButton.click()
+    await expect(page.getByTestId("explore-preview-frame")).toContainText("Cached", { timeout: 60_000 })
+
+    await page.getByTestId("node-panel").getByRole("tab", { name: "Pivots", exact: true }).click()
+    await page.getByRole("button", { name: "Add Pivot", exact: true }).click()
+    await page.getByRole("button", { name: "Configure Pivot 1", exact: true }).click()
+
+    const derivedActions = page.getByRole("group", { name: "derived_value field actions" })
+    await expect(derivedActions).toBeVisible()
+    await derivedActions.getByRole("button", { name: "Add derived_value to Columns" }).click()
+    await page.getByRole("group", { name: "id field actions" }).getByRole("button", {
+      name: "Add id to Rows",
+    }).click()
+    await page.getByRole("group", { name: "value field actions" }).getByRole("button", {
+      name: "Add value to Values",
+    }).click()
+
+    await save(page)
+    await page.getByTestId("explore-preview-frame").getByRole("tab", {
+      name: "Pivots",
+      exact: true,
+    }).click()
+    const pivot = page.getByRole("region", { name: "Pivot 1" })
+    await expect(pivot).toBeVisible()
+    const table = pivot.getByRole("table")
+    await expect(table, "real cached-data pivot calculation renders a table").toBeVisible({ timeout: 60_000 })
+
+    // Open Charts tab in editor and add a chart bound to Pivot 1 with one series
+    await page.getByTestId("node-panel").getByRole("tab", { name: "Charts", exact: true }).click()
+    await page.getByRole("button", { name: "Add Chart", exact: true }).click()
+    await page.getByRole("button", { name: "Configure Chart 1", exact: true }).click()
+
+    const sourceSelect = page.getByRole("combobox", { name: "Source pivot" })
+    await sourceSelect.selectOption({ label: "Pivot 1" })
+    await save(page)
+
+    // Open Charts tab in preview frame; assert chart element renders (not a placeholder)
+    await page.getByTestId("explore-preview-frame").getByRole("tab", {
+      name: "Charts",
+      exact: true,
+    }).click()
+    const chartCard = page.getByTestId("explore-chart-visualisation")
+    await expect(chartCard).toBeVisible()
+    const chartElement = chartCard.locator("canvas, svg")
+    await expect(chartElement.first()).toBeVisible({ timeout: 60_000 })
+    await expect(chartCard.getByText(/Select a source Pivot/i)).toHaveCount(0)
+
+    // Change the pivot (remove a row field)
+    await page.getByTestId("node-panel").getByRole("tab", { name: "Pivots", exact: true }).click()
+    const configPivotButton = page.getByRole("button", { name: "Configure Pivot 1", exact: true })
+    if (await configPivotButton.isVisible()) await configPivotButton.click()
+    await page.getByRole("button", { name: "Remove id from Rows" }).click()
+
+    // Assert the chart card shows the stale indicator/text
+    await expect(chartCard.getByText(/Updating source Pivot automatically|Calculating Pivot/i)).toBeVisible()
+
+    // After the pivot recalculates, the chart re-renders (no stale text)
+    await expect(chartCard.getByText(/Updating source Pivot automatically|Calculating Pivot/i)).toHaveCount(0, {
+      timeout: 60_000,
+    })
+    await expect(chartElement.first()).toBeVisible()
+  })
+
+  test("a failed re-cache keeps the previous report visible as stale and reports the failure", async ({
+    page,
+  }) => {
+    test.slow()
+    await openApp(page)
+
+    const canvas = page.locator(".react-flow")
+    await expect(canvas).toBeVisible()
+    await page.getByTestId("node-palette-item-explore").dragTo(canvas, {
+      targetPosition: { x: 250, y: 150 },
+    })
+    const exploreNode = page.getByLabel(/Explore node: Explore/i)
+    await expect(exploreNode).toBeVisible()
+    await exploreNode.click()
+
+    const label = page.getByTestId("node-panel-label-input")
+    await label.fill("browser_explore")
+    await label.press("Enter")
+    await expect(label).toHaveValue("browser_explore")
+
+    const namedExploreNode = page.getByLabel(/Explore node: browser_explore/i)
+    await expect(namedExploreNode).toBeVisible()
+    await page.getByTestId("node-panel-close").click()
+    await connect(
+      page,
+      page.getByTestId("rf__node-raw_rows").getByTestId("output-connector[0]:raw_rows"),
+      namedExploreNode.getByTestId("input-connector[0]:browser_explore"),
+    )
+
+    await namedExploreNode.click()
+    await expect(page.getByTestId("node-panel")).toBeVisible()
+    await page.getByRole("tab", { name: "Polars Code", exact: true }).click()
+    const editor = page.locator(".cm-content")
+    await expect(editor).toBeVisible()
+    await editor.click()
+    await page.keyboard.press("Control+A")
+    await page.keyboard.type('df = df.with_columns((pl.col("value") * 2000).alias("derived_value"))')
+    await expect(editor).toContainText("derived_value")
+
+    await save(page)
+    await page.reload()
+    await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
+    const persistedExplore = page.getByLabel(/Explore node: browser_explore/i)
+    await persistedExplore.click()
+    await expect(page.getByTestId("node-panel")).toBeVisible()
+    const cacheButton = page.getByTestId("explore-preview-frame").getByRole("button", {
+      name: /Needs caching|Re-cache/,
+    })
+    await expect(cacheButton).toBeEnabled()
+    await cacheButton.click()
+    await expect
+      .poll(() => cacheButton.evaluate((el) => el.style.background))
+      .toContain("var(--success-fill)")
+
+    // Edit Explore Polars code to raise
+    await page.getByTestId("node-panel").getByRole("tab", { name: "Polars Code", exact: true }).click()
+    await editor.click()
+    await page.keyboard.press("Control+A")
+    await page.keyboard.type('raise ValueError("boom")')
+    await expect(editor).toContainText("raise ValueError")
+
+    // Trigger Re-cache
+    const reCacheButton = page.getByTestId("explore-preview-frame").getByRole("button", {
+      name: /Re-cache|Needs caching/,
+    })
+    await expect(reCacheButton).toBeEnabled()
+    await reCacheButton.click()
+
+    // Assert: job ends in error state visible in the panel, no traceback or file path in message
+    const failureAlert = page.getByRole("alert").filter({ hasText: /Explore failed/i })
+    await expect(failureAlert).toBeVisible({ timeout: 60_000 })
+    const failureMessage = (await failureAlert.textContent()) ?? ""
+    expect(failureMessage).not.toMatch(/traceback/i)
+    expect(failureMessage).not.toMatch(/\.py/i)
+    expect(failureMessage).not.toMatch(/File\s+"/i)
+
+    // Previous report marked stale (yellow/stale indicator)
+    await expect
+      .poll(() => reCacheButton.evaluate((el) => el.style.background))
+      .toContain("var(--warning-strong)")
+    await expect(page.getByTestId("explore-preview-frame")).toContainText(/cache stale/i)
+
+    // Restore code and Re-cache: report is fresh again
+    await editor.click()
+    await page.keyboard.press("Control+A")
+    await page.keyboard.type('df = df.with_columns((pl.col("value") * 2000).alias("derived_value"))')
+    await expect(editor).toContainText("derived_value")
+
+    await reCacheButton.click()
+    await expect(page.getByTestId("explore-preview-frame")).toContainText("Cached", { timeout: 60_000 })
+    const freshButton = page.getByTestId("explore-preview-frame").getByRole("button", {
+      name: /Re-cache|Needs caching/,
+    })
+    await expect
+      .poll(() => freshButton.evaluate((el) => el.style.background))
+      .toContain("var(--success-fill)")
+  })
 })

@@ -25,6 +25,7 @@
 | `frontend/playwright.config.ts` | Configures serial browser E2E projects, retries, artifacts, and readiness-managed local E2E server. |
 | `frontend/e2e/browserInteractions.ts` | Shared Playwright helpers for app-level modifier shortcuts and React Flow submodel double-click dispatch. |
 | `frontend/e2e/core-flows.spec.ts` | Playwright coverage for core browser flows. |
+| `frontend/e2e/graph-editing-sequence.spec.ts` | Playwright witness, against the real backend, that a graph editing sequence (group and dissolve, disconnect, undo and redo, copy and paste, delete) conserves graph structure and previewed rows through save and reopen. |
 | `frontend/e2e/rename-execution.spec.ts` | Playwright witness, against the real backend, that renaming an upstream node keeps a downstream coded transform executable through preview, save and reload. |
 | `frontend/e2e/canvas-assurance.spec.ts` | Deterministic Chromium coverage and visual baselines for mixed Banding-to-Rating persistence and optimiser result/apply/MLflow-boundary journeys. |
 | `frontend/e2e/data-io-nodes.spec.ts` | Playwright coverage for data-I/O node browser flows. |
