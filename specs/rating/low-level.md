@@ -202,6 +202,12 @@ tables use the `rating_table_lookup_misses` /
 
 Backend tests live under `tests/` (no dedicated subdirectory for this component):
 
+- **`tests/test_rating_hand_calculated.py`** — the end-to-end witness that a banding
+  node feeding a rating step, previewed through the real executor and traced through the real
+  trace path, reproduces premiums calculated by hand in the test body: a boundary age on the
+  first threshold, a null falling to the default band, a table miss resolved as neutral, and a
+  multiplicative combine over a base value, with the trace's rating detail naming the matched
+  entries and agreeing with the preview premium row by row.
 - **`tests/test_rating.py`** (~1840 lines, largest suite) — direct unit coverage of `_rating.py`: banding condition building, `_apply_rating_table` (incl. non-numeric defaults, duplicate entries, extra entry columns, schema-call-count/perf regression, large tables, all-null tables, boundary/negative/extreme float values, special-character factor names), `_combine_rating_columns` (incl. non-numeric columns, edge cases, multiply-with-zero, min/max mixed values), `_apply_banding` edge cases, sequential rating tables, dtype-preservation regressions (B1/B2), empty-string/int-typed factor values, null factor columns, and canonical row-array rating-step application end to end.
 - **`tests/test_banding.py`** (~1240 lines) — continuous/categorical `_apply_banding`, `_build_node_fn` integration, banding decorator parsing and codegen, standalone-execution parity with the executor path, multi-factor banding, hardening/adversarial inputs, and the full `breakpoints` mode (ordering, closures, open-ended boundary).
 - **`tests/test_rating_step.py`** (~1300 lines) — `RATING_STEP` executor node building, decorator parsing, codegen, and canonical-sidecar round-trip integration.
