@@ -86,8 +86,7 @@
         },
         "inputPorts": [
           {
-            "portId": "base",
-            "label": "base",
+            "name": "base",
             "targets": [
               {
                 "nodeId": "child1"
@@ -97,8 +96,7 @@
         ],
         "outputPorts": [
           {
-            "portId": "quotes",
-            "label": "quotes",
+            "name": "quotes",
             "source": {
               "nodeId": "child1"
             }

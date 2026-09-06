@@ -875,11 +875,9 @@ describe("canonical submodel boundary resolution", () => {
       file: "modules/pricing.py",
       graph: { nodes: [child], edges: [] },
       inputPorts: [],
-      _inputPortInputNames: {},
       outputPorts: [
         {
-          portId: "written_premium",
-          label: "Written premium",
+          name: "written_premium",
           source: { nodeId: child.id, handleId: null },
         },
       ],
@@ -919,15 +917,13 @@ describe("canonical submodel boundary resolution", () => {
       graph: { nodes: [firstTarget, secondTarget], edges: [] },
       inputPorts: [
         {
-          portId: "policy_data",
-          label: "Policy data",
+          name: "policy_data",
           targets: [
             { nodeId: firstTarget.id, handleId: null },
             { nodeId: secondTarget.id, handleId: "base" },
           ],
         },
       ],
-      _inputPortInputNames: { policy_data: "policy_data" },
       outputPorts: [],
     }
     const edge: SimpleEdge = {

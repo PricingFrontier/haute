@@ -7,7 +7,6 @@ import {
   incomingEdgeInputNames,
   resolveSubmodelBoundaryNode,
   resolveSubmodelBoundaryNodes,
-  submodelInputPortIdForName,
 } from "./apiInputPorts"
 
 type ConnectionLike = {
@@ -171,8 +170,8 @@ export function validatePipelineConnection(
         if (!isSubmodelDefinition(definition, targetNode.data.config.definitionId)) {
           throw new Error("Canonical submodel definition is unavailable")
         }
-        const portId = submodelInputPortIdForName(definition, candidateName)
-        if (portId === null) {
+        const port = definition.inputPorts.find((p) => p.name === candidateName)
+        if (!port) {
           if (targetNode.data.config.instanceOf !== undefined) {
             throw new Error("New public inputs can only be added through the definition owner")
           }
@@ -180,7 +179,7 @@ export function validatePipelineConnection(
         }
         if (edges.some(
           (edge) => edge.target === candidate.target
-            && edge.targetHandle === `in__${portId}`,
+            && edge.targetHandle === `in__${port.name}`,
         )) {
           return {
             ok: false,
@@ -207,8 +206,8 @@ export function validatePipelineConnection(
           && edge.targetHandle === candidate.targetHandle,
       )
       if (existingBinding) {
-        const portId = candidate.targetHandle?.slice("in__".length)
-        if (!portId) {
+        const portName = candidate.targetHandle?.slice("in__".length)
+        if (!portName) {
           throw new Error("Canonical submodel input handle is malformed")
         }
         const config = targetNode.data.config
@@ -218,15 +217,15 @@ export function validatePipelineConnection(
         if (!isSubmodelDefinition(definition, config?.definitionId)) {
           throw new Error("Canonical submodel definition is unavailable")
         }
-        const inputName = definition._inputPortInputNames?.[portId]
-        if (typeof inputName !== "string" || inputName.length === 0) {
-          throw new Error(`Canonical submodel input ${portId} has no authoritative identity`)
+        const port = definition.inputPorts.find((candidatePort) => candidatePort.name === portName)
+        if (!port) {
+          throw new Error(`Canonical submodel input ${portName} has no authoritative identity`)
         }
         return {
           ok: false,
           reason: {
             kind: "duplicate-input-name",
-            inputName,
+            inputName: port.name,
           },
         }
       }

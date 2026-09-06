@@ -6,8 +6,8 @@ import { buildSubmodelViewGraph } from "../submodelViewGraph"
 
 const makeDefinition = (nodes: Node[]): SubmodelDefinition => ({
   definitionId: "definition_pricing", file: "modules/pricing.py", graph: { nodes, edges: [] },
-  inputPorts: [{ portId: "policy", label: "Policy data", targets: [{ nodeId: "prepare", handleId: null }] }],
-  outputPorts: [{ portId: "premium", label: "Written premium", source: { nodeId: "score", handleId: "out" } }],
+  inputPorts: [{ name: "policy", targets: [{ nodeId: "prepare", handleId: null }] }],
+  outputPorts: [{ name: "premium", source: { nodeId: "score", handleId: "out" } }],
 })
 const instance = () => makeNode("instance_primary", "submodel", { data: { label: "Pricing", nodeType: "submodel", config: { definitionId: "definition_pricing", alias: "pricing" } } })
 const boundary = (nodes: Node[], direction: "input" | "output") => nodes.find((node) => node.type === "submodelPort" && (node.data as SubmodelPortData).portDirection === direction)!
@@ -19,9 +19,9 @@ describe("buildSubmodelViewGraph", () => {
     const graph = buildSubmodelViewGraph({ submodelName: "pricing", instanceId: "instance_primary", definition: makeDefinition(children), childNodes: children, childEdges: [makeEdge("prepare", "score")], parentNodes: [makeNode("api"), instance(), makeNode("output")], parentEdges })
     const input = boundary(graph.nodes, "input").data as SubmodelPortData
     const output = boundary(graph.nodes, "output").data as SubmodelPortData
-    expect(input).toMatchObject({ instanceId: "instance_primary", definitionId: "definition_pricing", ports: [{ id: "policy", label: "Policy data", parentEdges: [parentEdges[0]] }] })
+    expect(input).toMatchObject({ instanceId: "instance_primary", definitionId: "definition_pricing", ports: [{ id: "policy", label: "policy", parentEdges: [parentEdges[0]] }] })
     expect(output).toMatchObject({ instanceId: "instance_primary", definitionId: "definition_pricing", externalNodeIds: ["output"] })
-    expect(graph.edges).toEqual(expect.arrayContaining([expect.objectContaining({ sourceHandle: "policy", target: "prepare", data: { submodelBoundary: { direction: "input", portId: "policy", parentEdges: [parentEdges[0]] } } }), expect.objectContaining({ source: "score", sourceHandle: "out", data: { submodelBoundary: { direction: "output", portId: "premium", parentConsumerEdges: [parentEdges[1]] } } })]))
+    expect(graph.edges).toEqual(expect.arrayContaining([expect.objectContaining({ sourceHandle: "policy", target: "prepare", data: { submodelBoundary: { direction: "input", name: "policy", parentEdges: [parentEdges[0]] } } }), expect.objectContaining({ source: "score", sourceHandle: "out", data: { submodelBoundary: { direction: "output", name: "premium", parentConsumerEdges: [parentEdges[1]] } } })]))
   })
   it("retains input bindings from every occurrence in the shared frame projection", () => {
     const children = [makeNode("prepare"), makeNode("score")]

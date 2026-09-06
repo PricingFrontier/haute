@@ -110,7 +110,6 @@ export interface RecoverySubmodel {
   diagnostic_ids: string[]
   graph: RecoveryGraph
   input_ports: SubmodelInputPort[]
-  input_port_input_names: Record<string, string>
   output_ports: SubmodelOutputPort[]
 }
 
@@ -406,10 +405,9 @@ function parseEndpoint(value: unknown, field: string): SubmodelEndpoint {
 
 function parseInputPort(value: unknown, field: string): SubmodelInputPort {
   const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, ["portId", "label", "targets"])
+  exactKeys(object, field, ["name", "targets"])
   return {
-    portId: expectNonBlankString(PARSER, object.portId, `${field}.portId`),
-    label: expectNonBlankString(PARSER, object.label, `${field}.label`),
+    name: expectNonBlankString(PARSER, object.name, `${field}.name`),
     targets: expectArray(PARSER, object.targets, `${field}.targets`).map((target, index) =>
       parseEndpoint(target, `${field}.targets[${index}]`),
     ),
@@ -418,10 +416,9 @@ function parseInputPort(value: unknown, field: string): SubmodelInputPort {
 
 function parseOutputPort(value: unknown, field: string): SubmodelOutputPort {
   const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, ["portId", "label", "source"])
+  exactKeys(object, field, ["name", "source"])
   return {
-    portId: expectNonBlankString(PARSER, object.portId, `${field}.portId`),
-    label: expectNonBlankString(PARSER, object.label, `${field}.label`),
+    name: expectNonBlankString(PARSER, object.name, `${field}.name`),
     source: parseEndpoint(object.source, `${field}.source`),
   }
 }
@@ -497,23 +494,11 @@ function parseRecoverySubmodel(value: unknown, field: string): RecoverySubmodel 
     "diagnostic_ids",
     "graph",
     "input_ports",
-    "input_port_input_names",
     "output_ports",
   ])
   const inputPorts = expectArray(PARSER, object.input_ports, `${field}.input_ports`).map(
     (port, index) => parseInputPort(port, `${field}.input_ports[${index}]`),
   )
-  const inputPortInputNames = nonBlankStringMap(
-    object.input_port_input_names,
-    `${field}.input_port_input_names`,
-  )
-  const inputPortIds = inputPorts.map((port) => port.portId)
-  if (
-    Object.keys(inputPortInputNames).length !== inputPortIds.length
-    || inputPortIds.some((portId) => !(portId in inputPortInputNames))
-  ) {
-    throw new Error(`${PARSER}: ${field}.input_port_input_names must exactly cover input_ports`)
-  }
   return {
     definition_id: expectNonBlankString(
       PARSER,
@@ -533,7 +518,6 @@ function parseRecoverySubmodel(value: unknown, field: string): RecoverySubmodel 
       `${field}.graph`,
     ),
     input_ports: inputPorts,
-    input_port_input_names: inputPortInputNames,
     output_ports: expectArray(PARSER, object.output_ports, `${field}.output_ports`).map(
       (port, index) => parseOutputPort(port, `${field}.output_ports[${index}]`),
     ),
@@ -818,7 +802,6 @@ function adaptRecoveryGraph(
           graph: { nodes: adaptedGraph.nodes, edges: adaptedGraph.edges },
           inputPorts: structuredClone(submodel.input_ports),
           outputPorts: structuredClone(submodel.output_ports),
-          _inputPortInputNames: structuredClone(submodel.input_port_input_names),
         } satisfies SubmodelDefinition,
       ]
     }),

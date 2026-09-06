@@ -303,13 +303,11 @@ describe("filterIncomingEdges", () => {
           file: "pricing.py",
           graph: { nodes: [], edges: [] },
           inputPorts: [{
-            portId: "features",
-            label: "features",
+            name: "features",
             targets: [{ nodeId: "child", handleId: null }],
           }],
           outputPorts: [{
-            portId: "priced",
-            label: "priced",
+            name: "priced",
             source: { nodeId: "child", handleId: null },
           }],
         },

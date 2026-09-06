@@ -163,34 +163,30 @@ describe("SubmodelNode", () => {
       graph: { nodes: [graphNode("premium"), graphNode("discount")], edges: [] },
       outputPorts: [
         {
-          portId: "premium",
-          label: "Premium",
+          name: "premium",
           source: { nodeId: "premium", handleId: null },
         },
         {
-          portId: "discount",
-          label: "Discount",
+          name: "discount",
           source: { nodeId: "discount", handleId: null },
         },
       ],
     })
     renderNode({ label: "Test" })
     expect(screen.getByTestId("submodel-body")).toBeTruthy()
-    expect(screen.getByText("Premium")).toBeTruthy()
-    expect(screen.getByText("Discount")).toBeTruthy()
+    expect(screen.getByText("premium")).toBeTruthy()
+    expect(screen.getByText("discount")).toBeTruthy()
   })
   it("co-locates canonical input anchors under one visible socket", () => {
     setDefinition({
       graph: { nodes: [graphNode("base_rate"), graphNode("claims")], edges: [] },
       inputPorts: [
         {
-          portId: "base_rate",
-          label: "Base rate",
+          name: "base_rate",
           targets: [{ nodeId: "base_rate", handleId: null }],
         },
         {
-          portId: "claims",
-          label: "Claims",
+          name: "claims",
           targets: [{ nodeId: "claims", handleId: null }],
         },
       ],
@@ -213,8 +209,8 @@ describe("SubmodelNode", () => {
     // React Flow breaks equal-distance overlap ties by measured DOM order.
     // The interactive generic socket must win over its canonical edge anchors.
     expect(container.querySelectorAll(".react-flow__handle.target")[0]).toBe(genericHandle)
-    expect(screen.queryByText("Base rate")).toBeNull()
-    expect(screen.queryByText("Claims")).toBeNull()
+    expect(screen.queryByText("base_rate")).toBeNull()
+    expect(screen.queryByText("claims")).toBeNull()
     expect(container.querySelector(
       '[data-handleid="' + DEFAULT_TARGET_HANDLE + '"]',
     )).toBeNull()
@@ -224,13 +220,11 @@ describe("SubmodelNode", () => {
       graph: { nodes: [graphNode("result_a"), graphNode("result_b")], edges: [] },
       outputPorts: [
         {
-          portId: "result_a",
-          label: "Result A",
+          name: "result_a",
           source: { nodeId: "result_a", handleId: null },
         },
         {
-          portId: "result_b",
-          label: "Result B",
+          name: "result_b",
           source: { nodeId: "result_b", handleId: null },
         },
       ],
@@ -262,13 +256,11 @@ describe("SubmodelNode", () => {
             edges: [],
           },
           inputPorts: [{
-            portId: "policy",
-            label: "Policy data",
+            name: "policy",
             targets: [{ nodeId: "internal_input_17", handleId: null }],
           }],
           outputPorts: [{
-            portId: "premium",
-            label: "Written premium",
+            name: "premium",
             source: { nodeId: "internal_output_42", handleId: null },
           }],
         },
@@ -292,8 +284,8 @@ describe("SubmodelNode", () => {
       expect(container.querySelector(
         `[data-handleid="${SUBMODEL_INPUT_HANDLE}"]`,
       )).toBeTruthy()
-      expect(screen.queryByText("Policy data")).toBeNull()
-      expect(screen.getByText("Written premium")).toBeTruthy()
+      expect(screen.queryByText("policy")).toBeNull()
+      expect(screen.getByText("premium")).toBeTruthy()
       expect(screen.getByRole("button")).toHaveAccessibleName(/2 child nodes/)
       expect(container.querySelector('[data-handleid*="internal_input_17"]')).toBeNull()
       expect(container.querySelector('[data-handleid*="internal_output_42"]')).toBeNull()
@@ -392,13 +384,11 @@ describe("SubmodelNode", () => {
       graph: { nodes: [graphNode("internal_a"), graphNode("internal_b")], edges: [] },
       outputPorts: [
         {
-          portId: "polars_12",
-          label: "add_drivers",
+          name: "add_drivers",
           source: { nodeId: "internal_a", handleId: null },
         },
         {
-          portId: "polars_13",
-          label: "claims",
+          name: "claims",
           source: { nodeId: "internal_b", handleId: null },
         },
       ],
@@ -406,10 +396,10 @@ describe("SubmodelNode", () => {
     renderNode({ label: "Multi Output" })
 
     const firstRow = screen.getByTestId(
-      "submodel-output-frame-row-out__polars_12",
+      "submodel-output-frame-row-out__add_drivers",
     )
     const secondRow = screen.getByTestId(
-      "submodel-output-frame-row-out__polars_13",
+      "submodel-output-frame-row-out__claims",
     )
     const inputHandle = screen.getByTestId("submodel-input-handle")
     expect(firstRow).toHaveTextContent("add_drivers")
@@ -420,7 +410,7 @@ describe("SubmodelNode", () => {
     expect(screen.queryByTestId("submodel-input-row")).toBeNull()
 
     const firstLabel = screen.getByTestId(
-      "submodel-output-body-label-out__polars_12",
+      "submodel-output-body-label-out__add_drivers",
     )
     expect(firstLabel).toHaveClass(
       "font-semibold",
@@ -429,10 +419,10 @@ describe("SubmodelNode", () => {
     )
 
     expect(firstRow.querySelector(
-      '[data-handleid="out__polars_12"]',
+      '[data-handleid="out__add_drivers"]',
     )).toHaveStyle({ top: "50%" })
     expect(secondRow.querySelector(
-      '[data-handleid="out__polars_13"]',
+      '[data-handleid="out__claims"]',
     )).toHaveStyle({ top: "50%" })
   })
   it("uses the standard full-width coloured header bar", () => {

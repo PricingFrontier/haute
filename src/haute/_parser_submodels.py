@@ -10,6 +10,7 @@ Handles:
 from __future__ import annotations
 
 import ast
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
@@ -272,6 +273,19 @@ def _extract_definition_contract(
                 f"Submodel {field} must be a literal list.",
                 field=field,
             )
+        for raw_port in raw_ports:
+            if isinstance(raw_port, Mapping):
+                for key in raw_port:
+                    if key in {"portId", "label"}:
+                        raise ParseError(
+                            f"Submodel {field} port declares {key!r}; a public port has one name: "
+                            "replace 'portId' and 'label' with 'name'.",
+                            field=field,
+                            remediation=(
+                                "Declare each public port as "
+                                "{'name': ..., 'targets': [...]} or {'name': ..., 'source': {...}}."
+                            ),
+                        )
         try:
             return [model.model_validate(port) for port in raw_ports]
         except ValueError as exc:
@@ -489,13 +503,13 @@ def _merge_registered_submodels(
 
         if source_registration is not None:
             instance_id, definition = source_registration
-            known_outputs = {port.port_id for port in definition.output_ports}
+            known_outputs = {port.name for port in definition.output_ports}
             if source_port not in known_outputs:
                 raise ParseError(
                     "Connection from a submodel instance must name a declared output port.",
                     alias=source,
                     instance_id=instance_id,
-                    port_id=source_port,
+                    port_name=source_port,
                     known_ports=sorted(known_outputs),
                 )
             actual_source = instance_id
@@ -508,13 +522,13 @@ def _merge_registered_submodels(
 
         if target_registration is not None:
             instance_id, definition = target_registration
-            known_inputs = {port.port_id for port in definition.input_ports}
+            known_inputs = {port.name for port in definition.input_ports}
             if target_port not in known_inputs:
                 raise ParseError(
                     "Connection to a submodel instance must name a declared input port.",
                     alias=target,
                     instance_id=instance_id,
-                    port_id=target_port,
+                    port_name=target_port,
                     known_ports=sorted(known_inputs),
                 )
             actual_target = instance_id

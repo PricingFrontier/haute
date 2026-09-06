@@ -436,12 +436,8 @@ class TestBugB7DissolveTargetOnly:
                             ).model_dump()
                         ],
                     },
-                    "inputPorts": [
-                        {"portId": "base", "label": "base", "targets": [{"nodeId": first}]}
-                    ],
-                    "outputPorts": [
-                        {"portId": "quotes", "label": "quotes", "source": {"nodeId": second}}
-                    ],
+                    "inputPorts": [{"name": "base", "targets": [{"nodeId": first}]}],
+                    "outputPorts": [{"name": "quotes", "source": {"nodeId": second}}],
                 }
             )
 

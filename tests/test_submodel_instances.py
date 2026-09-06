@@ -83,8 +83,7 @@ def _definition(
         if input_ports is not None
         else [
             SubmodelInputPort(
-                port_id="policy",
-                label="Policy data",
+                name="policy",
                 targets=[SubmodelEndpoint(node_id="local_input", handle_id="frame")],
             )
         ],
@@ -92,8 +91,7 @@ def _definition(
         if output_ports is not None
         else [
             SubmodelOutputPort(
-                port_id="premium",
-                label="Written premium",
+                name="premium",
                 source=SubmodelEndpoint(node_id="local_output", handle_id="scored"),
             )
         ],
@@ -127,15 +125,13 @@ def test_definition_rejects_duplicate_public_port_ids() -> None:
         _definition(
             input_ports=[
                 SubmodelInputPort(
-                    port_id="shared",
-                    label="Input",
+                    name="shared",
                     targets=[SubmodelEndpoint(node_id="local_input")],
                 )
             ],
             output_ports=[
                 SubmodelOutputPort(
-                    port_id="shared",
-                    label="Output",
+                    name="shared",
                     source=SubmodelEndpoint(node_id="local_output"),
                 )
             ],
@@ -147,8 +143,7 @@ def test_definition_rejects_missing_internal_endpoint() -> None:
         _definition(
             input_ports=[
                 SubmodelInputPort(
-                    port_id="policy",
-                    label="Policy",
+                    name="policy",
                     targets=[SubmodelEndpoint(node_id="missing_child")],
                 )
             ]
@@ -156,7 +151,7 @@ def test_definition_rejects_missing_internal_endpoint() -> None:
 
 
 def test_unrouted_input_port_round_trips_and_is_legal_when_unbound() -> None:
-    port = SubmodelInputPort(port_id="policy", label="Policy", targets=[])
+    port = SubmodelInputPort(name="policy", targets=[])
     definition = _definition(input_ports=[port])
 
     restored = SubmodelDefinition.model_validate(definition.model_dump(by_alias=True))
@@ -176,9 +171,7 @@ def test_unrouted_input_port_round_trips_and_is_legal_when_unbound() -> None:
 
 
 def test_expand_rejects_parent_binding_to_unrouted_input_port() -> None:
-    definition = _definition(
-        input_ports=[SubmodelInputPort(port_id="policy", label="Policy", targets=[])]
-    )
+    definition = _definition(input_ports=[SubmodelInputPort(name="policy", targets=[])])
     graph = PipelineGraph(
         nodes=[_node("source"), _instance("instance_a", "scoring")],
         edges=[
@@ -199,7 +192,7 @@ def test_expand_rejects_parent_binding_to_unrouted_input_port() -> None:
         "edge_id": "source_to_scoring",
         "instance_id": "instance_a",
         "definition_id": "definition_scoring",
-        "port_id": "policy",
+        "port_name": "policy",
     }
 
 
@@ -575,8 +568,7 @@ def test_public_input_port_can_fan_out_to_ordered_targets() -> None:
         graph=child,
         input_ports=[
             SubmodelInputPort(
-                port_id="policy",
-                label="Policy",
+                name="policy",
                 targets=[
                     SubmodelEndpoint(node_id="left", handle_id="left_frame"),
                     SubmodelEndpoint(node_id="right", handle_id="right_frame"),
@@ -679,8 +671,7 @@ def test_flatten_rewrites_public_input_label_to_exact_external_frame_name() -> N
         graph=child,
         input_ports=[
             SubmodelInputPort(
-                port_id="quotes",
-                label="Quote records",
+                name="quotes",
                 targets=[SubmodelEndpoint(node_id="consumer")],
             )
         ],
@@ -716,8 +707,7 @@ def test_flatten_rewrites_public_output_label_to_exact_internal_source_name() ->
         input_ports=[],
         output_ports=[
             SubmodelOutputPort(
-                port_id="results",
-                label="Published results",
+                name="results",
                 source=SubmodelEndpoint(node_id="output"),
             )
         ],
@@ -754,8 +744,7 @@ def test_flatten_rewrites_public_output_source_port_in_multi_frame_mapping() -> 
         input_ports=[],
         output_ports=[
             SubmodelOutputPort(
-                port_id="results",
-                label="Published results",
+                name="results",
                 source=SubmodelEndpoint(node_id="output"),
             )
         ],
@@ -859,8 +848,7 @@ def test_flatten_preserves_public_input_label_for_ordinary_polars_code() -> None
         graph=child,
         input_ports=[
             SubmodelInputPort(
-                port_id="policy",
-                label="Policy records",
+                name="policy",
                 targets=[SubmodelEndpoint(node_id="consumer")],
             )
         ],
@@ -898,8 +886,7 @@ def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> Non
         input_ports=[],
         output_ports=[
             SubmodelOutputPort(
-                port_id="results",
-                label="Published results",
+                name="results",
                 source=SubmodelEndpoint(node_id="output"),
             )
         ],
@@ -958,8 +945,7 @@ def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
         graph=child,
         input_ports=[
             SubmodelInputPort(
-                port_id="published",
-                label="Published input",
+                name="published",
                 targets=[
                     SubmodelEndpoint(node_id="original"),
                     SubmodelEndpoint(node_id="copy"),
@@ -1024,8 +1010,7 @@ def test_unbound_occurrence_validates_definition_topology_from_public_interface(
         graph=child,
         input_ports=[
             SubmodelInputPort(
-                port_id="policy",
-                label="Policy",
+                name="policy",
                 targets=[SubmodelEndpoint(node_id="explore")],
             )
         ],
@@ -1221,15 +1206,13 @@ def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Pat
             graph=PipelineGraph(nodes=[score], edges=[]),
             input_ports=[
                 SubmodelInputPort(
-                    port_id="policy",
-                    label="Policy data",
+                    name="policy",
                     targets=[SubmodelEndpoint(node_id="score")],
                 )
             ],
             output_ports=[
                 SubmodelOutputPort(
-                    port_id="scored",
-                    label="Scored",
+                    name="scored",
                     source=SubmodelEndpoint(node_id="score"),
                 )
             ],
@@ -1332,8 +1315,8 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
         "instance_b": ("definition_scoring", "scoring_b", "Secondary scoring", "instance_a"),
     }
     definition = (reparsed.submodels or {})["definition_scoring"]
-    assert [port.port_id for port in definition.input_ports] == ["policy"]
-    assert [port.port_id for port in definition.output_ports] == ["premium"]
+    assert [port.name for port in definition.input_ports] == ["policy"]
+    assert [port.name for port in definition.output_ports] == ["premium"]
     assert {
         (edge.source, edge.target, edge.sourceHandle, edge.targetHandle) for edge in reparsed.edges
     } == {
@@ -1390,12 +1373,12 @@ def test_grouping_creates_one_canonical_definition_and_first_occurrence() -> Non
 
     definition = (result.graph.submodels or {})["pricing"]
     assert definition.file == "modules/pricing.py"
-    assert [port.port_id for port in definition.input_ports] == ["source"]
+    assert [port.name for port in definition.input_ports] == ["source"]
     assert [(target.node_id, target.handle_id) for target in definition.input_ports[0].targets] == [
         ("child_a", "left"),
         ("child_b", "right"),
     ]
-    assert [port.port_id for port in definition.output_ports] == ["child_b"]
+    assert [port.name for port in definition.output_ports] == ["child_b"]
     assert definition.output_ports[0].source == SubmodelEndpoint(
         node_id="child_b",
         handle_id="priced",
@@ -1498,9 +1481,7 @@ def test_grouping_preserves_child_input_configs_and_uses_public_labels() -> None
     definition = (grouped.graph.submodels or {})["pricing"]
     children = definition.graph.node_map
 
-    assert [(port.port_id, port.label) for port in definition.input_ports] == [
-        ("drivers", "drivers")
-    ]
+    assert [port.name for port in definition.input_ports] == ["drivers"]
     assert children["child_router"].data.config["input_scenario_map"] == {
         "drivers": "live",
         "stable_input": "batch",
@@ -1549,8 +1530,7 @@ def test_grouping_does_not_rewrite_configs_to_opaque_public_port_ids() -> None:
     )
 
     definition = (grouped.graph.submodels or {})["pricing"]
-    assert definition.input_ports[0].port_id == "drivers"
-    assert definition.input_ports[0].label == "drivers"
+    assert definition.input_ports[0].name == "drivers"
     assert definition.graph.node_map["child_router"].data.config["input_scenario_map"] == {
         "drivers": "live",
         "input_1": "batch",
@@ -1586,7 +1566,7 @@ def test_canonical_input_port_rejects_more_than_one_parent_binding() -> None:
         validate_submodel_instances(graph)
 
     assert exc_info.value.context["instance_id"] == "instance_a"
-    assert exc_info.value.context["port_id"] == "policy"
+    assert exc_info.value.context["port_name"] == "policy"
 
 
 def test_rewrite_boundary_input_names_rejects_duplicate_output_mapping_entries() -> None:
@@ -1674,13 +1654,11 @@ def test_flatten_rejects_boundary_input_names_colliding_after_expansion() -> Non
         input_ports=[],
         output_ports=[
             SubmodelOutputPort(
-                port_id="results",
-                label="Published results",
+                name="results",
                 source=SubmodelEndpoint(node_id="output"),
             ),
             SubmodelOutputPort(
-                port_id="alternate",
-                label="Alternate results",
+                name="alternate",
                 source=SubmodelEndpoint(node_id="output"),
             ),
         ],

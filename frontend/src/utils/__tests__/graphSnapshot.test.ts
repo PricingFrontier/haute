@@ -66,7 +66,6 @@ const PREAMBLE = "import polars as pl"
 
 const SUBMODELS: Record<string, unknown> = {
   sub1: {
-    _inputPortInputNames: { input: "server_input" },
     nodes: [
       {
         id: "s1",
@@ -234,7 +233,6 @@ describe("canonical graph request projection", () => {
           graph: { nodes: [childNode], edges: [childEdge] },
           inputPorts: [],
           outputPorts: [],
-          _inputPortInputNames: { policy: "server_policy" },
         },
       },
     }
@@ -250,14 +248,12 @@ describe("canonical graph request projection", () => {
     expect(projected.edges[0]).not.toHaveProperty("selected")
     expect(projected.edges[0].data).toEqual({ routing: { mode: "explicit" } })
     const definition = projected.submodels?.pricing as Record<string, unknown>
-    expect(definition).not.toHaveProperty("_inputPortInputNames")
     const graph = definition.graph as { nodes: Node[]; edges: PipelineEdge[] }
     expect(graph.nodes[0]).not.toHaveProperty("selected")
     expect(graph.nodes[0].data).not.toHaveProperty("_functionName")
     expect(graph.edges[0]).not.toHaveProperty("selected")
     expect(graph.edges[0]).not.toHaveProperty("data")
     expect(input.nodes[0].data._functionName).toBe("server_price")
-    expect(input.submodels.pricing).toHaveProperty("_inputPortInputNames")
   })
 })
 
@@ -327,7 +323,6 @@ describe("graph store produces the pinned format", () => {
     const submodels = {
       definition: {
         definitionId: "definition",
-        _inputPortInputNames: { public_input: "server_public_input" },
         graph: {
           nodes: [{
             id: "child",
@@ -364,9 +359,6 @@ describe("graph store produces the pinned format", () => {
     expect(restored.nodes[0]?.data).not.toHaveProperty("_traceValue")
     expect(restored.edges[0]?.data).toEqual({ _inputName: "server_price" })
     const restoredDefinition = restored.submodels.definition as Record<string, unknown>
-    expect(restoredDefinition._inputPortInputNames).toEqual({
-      public_input: "server_public_input",
-    })
     const restoredChild = (
       restoredDefinition.graph as { nodes: Node[] }
     ).nodes[0]

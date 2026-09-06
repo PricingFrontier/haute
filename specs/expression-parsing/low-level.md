@@ -75,7 +75,7 @@ structured input/output ports are present. Build one `SubmodelDefinition` per
 definition id and one `SUBMODEL` occurrence per registration; each occurrence
 uses its explicit immutable `instance_id`, alias, optional label, and config
 `{definitionId, alias}`. Parent connect endpoints use aliases and declared
-public port ids, which become `in__<portId>`/`out__<portId>` graph handles;
+public port names, which become `in__<name>`/`out__<name>` graph handles;
 internal child ids are never accepted as parent endpoints. Only when
 `flatten=True` is the canonical hierarchical graph passed to
 `flatten_graph`. A submodel file containing its own registration raises

@@ -1896,7 +1896,7 @@ def test_cardinality_binding_uses_collapsed_submodel_occurrence_name() -> None:
                     "id": "public-result-edge",
                     "source": "occurrence",
                     "target": "target",
-                    "sourceHandle": "out__opaque-output-id",
+                    "sourceHandle": "out__opaque_output_id",
                 }
             ],
             "submodels": {
@@ -1919,8 +1919,7 @@ def test_cardinality_binding_uses_collapsed_submodel_occurrence_name() -> None:
                     "inputPorts": [],
                     "outputPorts": [
                         {
-                            "portId": "opaque-output-id",
-                            "label": "public result",
+                            "name": "opaque_output_id",
                             "source": {
                                 "nodeId": "internal_result",
                                 "handleId": None,

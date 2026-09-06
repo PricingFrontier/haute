@@ -912,7 +912,6 @@ describe("usePipelineAPI", () => {
       graph: { nodes: [child], edges: [] },
       inputPorts: [],
       outputPorts: [],
-      _inputPortInputNames: {},
     }
     const params = makeParams({
       submodelsRef: { current: { definition_pricing: definition } },
@@ -938,11 +937,9 @@ describe("usePipelineAPI", () => {
     expect(graph.nodes[0]).not.toHaveProperty("selected")
     expect(graph.nodes[0]?.data).not.toHaveProperty("_functionName")
     const sentDefinition = graph.submodels?.definition_pricing as typeof definition
-    expect(sentDefinition).not.toHaveProperty("_inputPortInputNames")
     expect(sentDefinition.graph.nodes[0]).not.toHaveProperty("selected")
     expect(sentDefinition.graph.nodes[0]?.data).not.toHaveProperty("_functionName")
     expect(root.data._functionName).toBe("root_function")
-    expect(definition._inputPortInputNames).toEqual({})
     expect(useGraphStore.getState().nodes[0]?.data._functionName).toBe("root_function")
   })
 

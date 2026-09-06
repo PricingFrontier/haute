@@ -68,15 +68,13 @@ def _reusable_definition(
     graph._parser_definition_id = definition_id
     graph._parser_input_ports = [
         SubmodelInputPort(
-            port_id="input",
-            label="Input",
+            name="input",
             targets=[SubmodelEndpoint(node_id=input_node_id)],
         )
     ]
     graph._parser_output_ports = [
         SubmodelOutputPort(
-            port_id="output",
-            label="Output",
+            name="output",
             source=SubmodelEndpoint(node_id=output_node_id),
         )
     ]
@@ -323,15 +321,13 @@ class TestParsePipelineFlattenRegression:
                 definition_id="scoring",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "Transform", "handleId": None}],
                     }
                 ],
                 output_ports=[
                     {
-                        "portId": "result",
-                        "label": "Result",
+                        "name": "result",
                         "source": {"nodeId": "Finalise", "handleId": None},
                     }
                 ],
@@ -405,8 +401,7 @@ class TestParsePipelineFlattenRegression:
                 definition_id="scoring",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "Transform", "handleId": None}],
                     }
                 ],

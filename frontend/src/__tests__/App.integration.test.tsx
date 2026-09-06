@@ -68,7 +68,7 @@ vi.mock("../api/client", async () => {
         label: string
         node_type: string
         source_handles: string[]
-        source_handle_labels: Record<string, string>
+        alias?: string
       }>
     }) => ({
       identities: payload.nodes.map((node) => {
@@ -86,9 +86,7 @@ vi.mock("../api/client", async () => {
           default_input_name: special ? null : functionName,
           source_handle_input_names: Object.fromEntries(node.source_handles.map((handle) => [
             handle,
-            node.source_handle_labels[handle] === undefined
-              ? handle
-              : identityName(node.source_handle_labels[handle]),
+            handle,
           ])),
         }
       }),
@@ -1492,19 +1490,16 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
           },
           inputPorts: [
             {
-              portId: "router_input",
-              label: "Router input",
+              name: "router_input",
               targets: [{ nodeId: childRouter.id, handleId: null }],
             },
             {
-              portId: "value_input",
-              label: "Value input",
+              name: "value_input",
               targets: [{ nodeId: childValueInstance.id, handleId: null }],
             },
             ...(options.collision
               ? [{
-                  portId: "ordinary_router",
-                  label: "Ordinary router input",
+                  name: "ordinary_router",
                   targets: [{ nodeId: childRouter.id, handleId: null }],
                 }]
               : []),
@@ -2049,8 +2044,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
           },
           inputPorts: [
             {
-              portId: "policy_data",
-              label: "Policy data",
+              name: "policy_data",
               targets: [
                 { nodeId: childRouter.id, handleId: null },
                 { nodeId: childInstance.id, handleId: null },

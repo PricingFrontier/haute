@@ -268,7 +268,7 @@ forwards projection/profile fields; external-file resolution validates
   immediately because live submodel children are not registered there.
 - A Polars node's positional parameters are exactly its connected inputs, by name: an
   ordinary source contributes its sanitised node name, an API input its frame handle, and an
-  occurrence its own name (`a`, or `a__<portId>` when the definition declares several output
+  occurrence its own name (`a`, or `a__<port_name>` when the definition declares several output
   ports); a declared `inputMapping={logical: connected}` lets the code keep another name. The
   parser infers nothing else: a parameter that matches no connected input, a connected input
   with no parameter, or a duplicate raises `ParseError` (`unbound_parameters`,

@@ -34,11 +34,11 @@ const definition: SubmodelDefinition = {
     edges: [],
   },
   inputPorts: [
-    { portId: "claims", label: "proposer_claims", targets: [{ nodeId: "child1", handleId: "join" }] },
-    { portId: "quote", label: "quote_info", targets: [{ nodeId: "child2", handleId: null }] },
+    { name: "claims", targets: [{ nodeId: "child1", handleId: "join" }] },
+    { name: "quote", targets: [{ nodeId: "child2", handleId: null }] },
   ],
   outputPorts: [
-    { portId: "claims_result", label: "Claims frame", source: { nodeId: "child1", handleId: "result" } },
+    { name: "claims_result", source: { nodeId: "child1", handleId: "result" } },
   ],
 }
 
@@ -112,7 +112,7 @@ describe("useSubmodelNavigation — canonical port building & branch gaps", () =
     const output = boundaries.find((node) => node.data.portDirection === "output")
     expect(input?.data).toMatchObject({
       label: "INPUT",
-      ports: [{ id: "claims", label: "proposer_claims" }, { id: "quote", label: "quote_info" }],
+      ports: [{ id: "claims", label: "claims" }, { id: "quote", label: "quote" }],
     })
     expect(output?.data).toMatchObject({ label: "OUTPUT", ports: [] })
 

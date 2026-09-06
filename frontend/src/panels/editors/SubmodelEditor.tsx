@@ -10,19 +10,17 @@ interface SubmodelEditorProps {
 }
 
 interface PortBadgeProps {
-  portId: string
-  label: string
+  name: string
   accentColor: string
 }
 
-function PortBadge({ portId, label, accentColor }: PortBadgeProps) {
+function PortBadge({ name, accentColor }: PortBadgeProps) {
   return (
     <span
       className="inline-flex items-center rounded px-2 py-0.5 font-mono text-[11px]"
       style={{ background: withAlpha(accentColor, 0.1), color: accentColor }}
     >
-      {label}
-      <span className="ml-1 opacity-60">[{portId}]</span>
+      {name}
     </span>
   )
 }
@@ -74,7 +72,7 @@ export default function SubmodelEditor({ config, accentColor }: SubmodelEditorPr
           <EditorLabel>Inputs</EditorLabel>
           <div className="mt-1 flex flex-wrap gap-1.5">
             {definition.inputPorts.map((port) => (
-              <PortBadge key={port.portId} {...port} accentColor={accentColor} />
+              <PortBadge key={port.name} {...port} accentColor={accentColor} />
             ))}
           </div>
         </div>
@@ -85,7 +83,7 @@ export default function SubmodelEditor({ config, accentColor }: SubmodelEditorPr
           <EditorLabel>Outputs</EditorLabel>
           <div className="mt-1 flex flex-wrap gap-1.5">
             {definition.outputPorts.map((port) => (
-              <PortBadge key={port.portId} {...port} accentColor={accentColor} />
+              <PortBadge key={port.name} {...port} accentColor={accentColor} />
             ))}
           </div>
         </div>

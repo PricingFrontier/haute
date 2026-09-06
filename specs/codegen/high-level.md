@@ -117,12 +117,12 @@ Out of scope (owned by neighbouring components):
   label=...)` registration per occurrence. Distinct definitions may not share
   a file, unused registry definitions are rejected, and occurrence ids and
   aliases are never inferred. Parent connections name declared public port
-  ids; `in__<portId>`/`out__<portId>` exist only in graph JSON and are not
+  names; `in__<name>`/`out__<name>` exist only in graph JSON and are not
   emitted as authored parameter names. Inside a definition, child
-  parameters use sanitised public input port IDs. Downstream, an occurrence
-  contributes its own name (or <alias>__<port_id> when declaring more than one
-  output port) as the executable input name; public output labels remain
-  semantic frame labels for display.
+  parameters use sanitised public input port names. Downstream, an occurrence
+  contributes its own name (or <alias>__<port_name> when declaring more than one
+  output port) as the executable input name; public ports declare a single
+  canonical name: portId and label are not emitted.
   `graph_to_code` refuses a hierarchical graph rather than returning an
   arbitrary file. Each definition file carries its declared
   `definition_id`, complete literal `input_ports`/`output_ports` contract,

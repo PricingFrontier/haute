@@ -12,8 +12,8 @@ const definition = {
   definitionId: "pricing",
   file: "modules/pricing.py",
   graph: { nodes: [], edges: [] },
-  inputPorts: [{ portId: "input_1", label: "Incoming", targets: [{ nodeId: "a", handleId: null }] }],
-  outputPorts: [{ portId: "output_1", label: "Priced", source: { nodeId: "a", handleId: null } }],
+  inputPorts: [{ name: "input_1", targets: [{ nodeId: "a", handleId: null }] }],
+  outputPorts: [{ name: "output_1", source: { nodeId: "a", handleId: null } }],
 }
 
 describe("structuralFingerprint", () => {
@@ -63,7 +63,7 @@ describe("structuralFingerprint", () => {
       submodels: {
         pricing: {
           ...definition,
-          outputPorts: [{ portId: "output_1", label: "Renamed", source: { nodeId: "a", handleId: null } }],
+          outputPorts: [{ name: "output_renamed", source: { nodeId: "a", handleId: null } }],
         },
       },
     })).not.toBe(base)

@@ -85,7 +85,6 @@ describe("pipeline editor document contract", () => {
         },
         input_ports: [],
         output_ports: [],
-        input_port_input_names: {},
       },
     }
 
@@ -148,7 +147,7 @@ describe("pipeline editor document contract", () => {
     expect(() => parsePipelineEditorDocument(badEdge)).toThrow(/missing recovery node/)
     const badUnresolved = document(); badUnresolved.unresolved_connections = [{ recovery_id: "edge:unresolved", source_recovery_id: "missing", target_recovery_id: null, source_authored_id: "x", target_authored_id: "a", source_handle: null, target_handle: null, source_port: null, target_port: null, source_span: null, diagnostic_ids: ["d1"] }]
     expect(() => parsePipelineEditorDocument(badUnresolved)).toThrow(/missing recovery node/)
-    const badSubmodel = document(); badSubmodel.submodels = { registered: { definition_id: "different", file: "modules/child.py", availability: "ready", diagnostic_ids: [], graph: { nodes: [], edges: [], unresolved_connections: [], submodels: null }, input_ports: [], output_ports: [], input_port_input_names: {} } }
+    const badSubmodel = document(); badSubmodel.submodels = { registered: { definition_id: "different", file: "modules/child.py", availability: "ready", diagnostic_ids: [], graph: { nodes: [], edges: [], unresolved_connections: [], submodels: null }, input_ports: [], output_ports: [] } }
     expect(() => parsePipelineEditorDocument(badSubmodel)).toThrow(/registry key/)
   })
 })

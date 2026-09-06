@@ -87,7 +87,7 @@ function mergeViewPresentation<T extends { viewNodes: Node[] }>(result: T, curre
 function parentOccurrenceHandlesAreResolved(result: SubmodelBoundaryEditResult): boolean {
   const definition = result.submodels[result.definitionId]
   if (!isSubmodelDefinition(definition, result.definitionId)) return false
-  const expectedHandles = definition.outputPorts.map((port) => `out__${port.portId}`)
+  const expectedHandles = definition.outputPorts.map((port) => `out__${port.name}`)
   return result.parentNodes.every((node) => {
     if (node.data.nodeType !== "submodel") return true
     const config = node.data.config
@@ -372,11 +372,11 @@ export default function useSubmodelBoundaryEditing({
     }
   }, [state, edges, commitWithParentIdentities, reportBoundaryError])
 
-  const deleteBoundaryInputPort = useCallback((portId: string): boolean => {
+  const deleteBoundaryInputPort = useCallback((portName: string): boolean => {
     try {
       const current = state()
       if (!current) return false
-      const result = removeSubmodelInputPort(current, portId)
+      const result = removeSubmodelInputPort(current, portName)
       if (!result) return false
       commitWithParentIdentities(result)
       return true

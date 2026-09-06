@@ -581,15 +581,13 @@ class TestGraphStructureConservationGate:
                 definition_id="child",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "transform", "handleId": None}],
                     }
                 ],
                 output_ports=[
                     {
-                        "portId": "result",
-                        "label": "Result",
+                        "name": "result",
                         "source": {"nodeId": "transform", "handleId": None},
                     }
                 ],
@@ -667,8 +665,7 @@ class TestGraphStructureConservationGate:
                 definition_id="ported_child",
                 input_ports=[
                     {
-                        "portId": "base",
-                        "label": "Base",
+                        "name": "base",
                         "targets": [
                             {
                                 "nodeId": "child_in",
@@ -679,8 +676,7 @@ class TestGraphStructureConservationGate:
                 ],
                 output_ports=[
                     {
-                        "portId": "quotes",
-                        "label": "Quotes",
+                        "name": "quotes",
                         "source": {
                             "nodeId": "child_out",
                             "handleId": "child_output_handle",
@@ -873,15 +869,13 @@ class TestPrivateChildEndpoints:
                 definition_id="child",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "transform", "handleId": None}],
                     }
                 ],
                 output_ports=[
                     {
-                        "portId": "result",
-                        "label": "Result",
+                        "name": "result",
                         "source": {"nodeId": "transform", "handleId": None},
                     }
                 ],
@@ -956,15 +950,13 @@ class TestPrivateChildEndpoints:
                 definition_id="child",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "transform", "handleId": None}],
                     }
                 ],
                 output_ports=[
                     {
-                        "portId": "result",
-                        "label": "Result",
+                        "name": "result",
                         "source": {"nodeId": "transform", "handleId": None},
                     }
                 ],
@@ -1032,15 +1024,13 @@ class TestPrivateChildEndpoints:
                 definition_id="child",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "transform", "handleId": None}],
                     }
                 ],
                 output_ports=[
                     {
-                        "portId": "result",
-                        "label": "Result",
+                        "name": "result",
                         "source": {"nodeId": "other", "handleId": None},
                     }
                 ],
@@ -1112,15 +1102,13 @@ class TestPrivateChildEndpoints:
                 definition_id="child",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "transform", "handleId": None}],
                     }
                 ],
                 output_ports=[
                     {
-                        "portId": "result",
-                        "label": "Result",
+                        "name": "result",
                         "source": {"nodeId": "transform", "handleId": None},
                     }
                 ],
@@ -1270,15 +1258,13 @@ class TestPrivateChildEndpoints:
                 definition_id="child",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "transform", "handleId": None}],
                     }
                 ],
                 output_ports=[
                     {
-                        "portId": "result",
-                        "label": "Result",
+                        "name": "result",
                         "source": {"nodeId": "transform", "handleId": None},
                     }
                 ],
@@ -1595,15 +1581,13 @@ class TestPolarsParameterBinding:
                 definition_id="child",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "transform", "handleId": None}],
                     }
                 ],
                 output_ports=[
                     {
-                        "portId": "result",
-                        "label": "Result",
+                        "name": "result",
                         "source": {"nodeId": "transform", "handleId": None},
                     }
                 ],
@@ -1760,15 +1744,13 @@ class TestPolarsParameterBinding:
                 definition_id="child",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "first_step", "handleId": None}],
                     }
                 ],
                 output_ports=[
                     {
-                        "portId": "result",
-                        "label": "Result",
+                        "name": "result",
                         "source": {"nodeId": "first_step", "handleId": None},
                     }
                 ],
@@ -1821,15 +1803,13 @@ class TestPolarsParameterBinding:
                 definition_id="child",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "first_step", "handleId": None}],
                     }
                 ],
                 output_ports=[
                     {
-                        "portId": "result",
-                        "label": "Result",
+                        "name": "result",
                         "source": {"nodeId": "first_step", "handleId": None},
                     }
                 ],

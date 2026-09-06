@@ -72,7 +72,7 @@ Removing or dissolving targets the clicked instance id, never a display name or
 definition id, and an owner cannot be dissolved while instances reference it.
 
 Submodel cards render only declared public ports. Handles are
-`in__<portId>`/`out__<portId>` and labels come from the port contract; internal
+`in__<name>`/`out__<name>` and labels come from the port name; internal
 child ids are neither rendered nor accepted as parent endpoints. Each canonical
 input handle accepts at most one parent binding. A connection
 between occurrences is allowed only output-public-port to input-public-port.
@@ -199,8 +199,8 @@ candidate, with the error toast.
   repeat the name. A canonical occurrence resolves `config.definitionId`
   against the typed definition registry, derives its accessible child count
   from the definition graph, renders one generic left-side `inputs` socket, and
-  renders every public output row with its `out__<portId>` handle and definition
-  label. Public `in__<portId>` targets are co-located invisibly at the generic
+  renders every public output row with its `out__<name>` handle and
+  name. Public `in__<name>` targets are co-located invisibly at the generic
   socket so stored bindings stay canonical without becoming multiple visible
   inputs. Submodel cards have no default persisted target handle: every stored
   binding names a declared port.
@@ -213,19 +213,18 @@ candidate, with the error toast.
   arrow to communicate left-to-right graph flow; handle direction remains
   source-right for Input and target-left for Output. In the canonical
   projection, Input lists one row per declared public input port and maps its
-  immutable `portId` to one or more ordered internal target endpoints. Its
-  child-side executable input name is the sanitised public input port ID; the
-  public input label is display-only. Selecting the owner Input
+  immutable `name` to one or more ordered internal target endpoints. Its
+  child-side executable input name is the public input port name. Selecting the owner Input
   boundary shows those same frames in the inspector using the standard Inputs
-  chips and remove affordance. Removing a frame explicitly deletes its routes,
-  identity-map entry, and all parent bindings to that port across occurrences;
+  chips and remove affordance. Removing a frame explicitly deletes its routes
+  and all parent bindings to that port across occurrences;
   the edit is atomic and undoable. A read-only drilled occurrence renders the
   list without remove controls. Output keeps one target handle;
-  every child-to-Output mapping carries an immutable public output `portId` and
+  every child-to-Output mapping carries an immutable public output `name` and
   one internal source endpoint. A canonical occurrence contributes its
-  occurrence alias (or <alias>__<port_id> when declaring more than one output port) downstream. Parent bindings stay on
-  `in__<portId>`/`out__<portId>`. Changing internal endpoints while retaining
-  a port id and direction is a compatible shared-definition edit. Incidental
+  occurrence alias (or `<alias>__<name>` when declaring more than one output port) downstream. Parent bindings stay on
+  `in__<name>`/`out__<name>`. Changing internal endpoints while retaining
+  a port name and direction is a compatible shared-definition edit. Incidental
   removal or direction changes of a bound port are rejected atomically across
   all occurrences; only the explicit Input-inspector action performs cascading
   interface retirement. Both composite nodes remain visible when empty and

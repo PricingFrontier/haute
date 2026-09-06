@@ -108,11 +108,11 @@ function liveHandles(
     const definition = submodels[config.definitionId]
     if (!isSubmodelDefinition(definition, config.definitionId)) return new Set()
     if (direction === "target") {
-      return new Set(definition.inputPorts.map(port => `in__${port.portId}`))
+      return new Set(definition.inputPorts.map(port => `in__${port.name}`))
     }
     const outputPorts = definition.outputPorts
     return outputPorts.length > 0
-      ? new Set(outputPorts.map(port => `out__${port.portId}`))
+      ? new Set(outputPorts.map(port => `out__${port.name}`))
       : new Set()
   }
 

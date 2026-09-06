@@ -47,15 +47,13 @@ submodel = haute.Submodel(
     definition_id="definition_pricing",
     input_ports=[
         {
-            "portId": "records",
-            "label": "Records",
+            "name": "records",
             "targets": [{"nodeId": "base_rate", "handleId": None}],
         }
     ],
     output_ports=[
         {
-            "portId": "priced",
-            "label": "Priced",
+            "name": "priced",
             "source": {"nodeId": "adjust", "handleId": None},
         }
     ],
@@ -208,8 +206,8 @@ class TestParseSubmodelSource:
         assert graph.pipeline_description == "Pricing submodel"
         assert graph.source_file == "modules/pricing.py"
         assert graph._parser_definition_id == "definition_pricing"
-        assert [port.port_id for port in graph._parser_input_ports or []] == ["records"]
-        assert [port.port_id for port in graph._parser_output_ports or []] == ["priced"]
+        assert [port.name for port in graph._parser_input_ports or []] == ["records"]
+        assert [port.name for port in graph._parser_output_ports or []] == ["priced"]
         assert {node.id for node in graph.nodes} == {"base_rate", "adjust"}
         assert {(edge.source, edge.target) for edge in graph.edges} == {("base_rate", "adjust")}
 

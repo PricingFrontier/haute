@@ -4732,7 +4732,7 @@ pipeline.connect("middle", "final")
         assert any(e["target"] == "final" for e in outgoing)
         # Parent handles expose stable public ids; internal endpoints stay private.
         definition = data["graph"]["submodels"]["inner"]
-        expected_handles = {f"out__{port['portId']}" for port in definition["outputPorts"]}
+        expected_handles = {f"out__{port['name']}" for port in definition["outputPorts"]}
         assert {edge.get("sourceHandle") for edge in outgoing} == expected_handles
         assert {port["source"]["nodeId"] for port in definition["outputPorts"]} == {"middle"}
 

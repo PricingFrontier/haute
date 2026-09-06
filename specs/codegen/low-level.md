@@ -55,11 +55,11 @@
    internal edges, validate every structured output source, and emit one
    `haute.Submodel(..., definition_id=..., input_ports=...,
    output_ports=...)` file. Then omit occurrence nodes from the root function
-   list, translate parent boundary handles only to declared public port ids,
-   derive child-boundary parameters from sanitised public input port IDs and downstream names from the occurrence alias (or <alias>__<port_id>), and emit one explicit
+   list, translate parent boundary handles only to declared public port names,
+   derive child-boundary parameters from sanitised public input port names and downstream names from the occurrence alias (or <alias>__<port_name>), and emit one explicit
    `pipeline.submodel(...)` registration per occurrence with its definition
    id, instance id, alias, and label. Parent `connect` calls refer to aliases
-   plus public port ids; synthetic `in__`/`out__` handles never enter source.
+   plus public port names; synthetic `in__`/`out__` handles never enter source.
    Finally `_assert_emitted_files_parse` validates every emitted file.
 
 ### `_generate_pipeline_lines` (shared by both paths above)

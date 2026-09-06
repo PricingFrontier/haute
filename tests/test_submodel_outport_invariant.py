@@ -57,15 +57,13 @@ def _canonical_graph() -> PipelineGraph:
                     "file": "modules/pricing.py",
                     "inputPorts": [
                         {
-                            "portId": "input_1",
-                            "label": "Source",
+                            "name": "input_1",
                             "targets": [{"nodeId": "child", "handleId": None}],
                         }
                     ],
                     "outputPorts": [
                         {
-                            "portId": "output_1",
-                            "label": "Child",
+                            "name": "output_1",
                             "source": {"nodeId": "child", "handleId": "frame"},
                         }
                     ],

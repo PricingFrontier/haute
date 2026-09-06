@@ -66,14 +66,12 @@ def resolve_editor_identity(
     node_type: NodeType | str,
     label: str,
     source_handles: list[str] | tuple[str, ...] = (),
-    source_handle_labels: Mapping[str, str] | None = None,
     config_reference_override: str | None = None,
     alias: str | None = None,
 ) -> ResolvedEditorIdentity:
     """Resolve one node's editor identities without filesystem access."""
     kind = NodeType(node_type)
     handles = list(source_handles)
-    handle_labels = dict(source_handle_labels or {})
     if len(handles) != len(set(handles)):
         raise ValueError("Source handles must be unique.")
     function_name = _sanitize_func_name(label)
@@ -93,12 +91,6 @@ def resolve_editor_identity(
             source_handle=None,
         )
     )
-    labelled_handles = {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
-    if kind in labelled_handles:
-        if set(handle_labels) != set(handles):
-            raise ValueError("Public source-handle labels must exactly cover submodel handles.")
-    elif handle_labels:
-        raise ValueError("Public source-handle labels are only valid for submodel nodes.")
     if kind == NodeType.SUBMODEL:
         if not isinstance(alias, str) or not alias:
             raise ValueError(f"Submodel node {label!r} requires an alias.")
@@ -109,7 +101,6 @@ def resolve_editor_identity(
             node_type=kind,
             label=label,
             source_handle=handle,
-            source_handle_label=handle_labels.get(handle),
             alias=alias,
             output_port_count=output_port_count if kind == NodeType.SUBMODEL else None,
         )

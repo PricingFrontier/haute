@@ -26,7 +26,7 @@ from typing import (
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
-from haute._graph_utils import build_parents_of
+from haute._graph_utils import _sanitize_func_name, build_parents_of
 
 # Type alias - nodes pass lazy frames between each other
 _Frame = pl.LazyFrame
@@ -923,22 +923,25 @@ class SubmodelInputPort(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    port_id: str = Field(alias="portId")
-    label: str
+    name: str
     targets: list[SubmodelEndpoint]
 
-    @field_validator("port_id", "label")
+    @field_validator("name")
     @classmethod
-    def _validate_text(cls, value: str) -> str:
-        if not value or value != value.strip():
-            raise ValueError("Submodel port ids and labels must be non-empty and unpadded.")
+    def _validate_name(cls, value: str) -> str:
+        sanitised = _sanitize_func_name(value)
+        if sanitised != value:
+            raise ValueError(
+                f"Submodel port names must be canonical identifiers "
+                f"(got {value!r}; expected {sanitised!r})."
+            )
         return value
 
     @model_validator(mode="after")
     def _reject_duplicate_targets(self) -> Self:
         identities = [(target.node_id, target.handle_id) for target in self.targets]
         if len(identities) != len(set(identities)):
-            raise ValueError(f"Submodel input port {self.port_id!r} has duplicate targets.")
+            raise ValueError(f"Submodel input port {self.name!r} has duplicate targets.")
         return self
 
 
@@ -947,15 +950,18 @@ class SubmodelOutputPort(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    port_id: str = Field(alias="portId")
-    label: str
+    name: str
     source: SubmodelEndpoint
 
-    @field_validator("port_id", "label")
+    @field_validator("name")
     @classmethod
-    def _validate_text(cls, value: str) -> str:
-        if not value or value != value.strip():
-            raise ValueError("Submodel port ids and labels must be non-empty and unpadded.")
+    def _validate_name(cls, value: str) -> str:
+        sanitised = _sanitize_func_name(value)
+        if sanitised != value:
+            raise ValueError(
+                f"Submodel port names must be canonical identifiers "
+                f"(got {value!r}; expected {sanitised!r})."
+            )
         return value
 
 
@@ -1005,13 +1011,15 @@ class SubmodelDefinition(BaseModel):
         if self.graph.submodels:
             raise ValueError("Nested submodels are not supported in a definition graph.")
 
-        port_ids = [
-            *(port.port_id for port in self.input_ports),
-            *(port.port_id for port in self.output_ports),
+        port_names = [
+            *(port.name for port in self.input_ports),
+            *(port.name for port in self.output_ports),
         ]
-        duplicates = sorted(port_id for port_id in set(port_ids) if port_ids.count(port_id) > 1)
+        duplicates = sorted(name for name in set(port_names) if port_names.count(name) > 1)
         if duplicates:
-            raise ValueError(f"Submodel definition has duplicate public port ids: {duplicates!r}.")
+            raise ValueError(
+                f"Submodel definition has duplicate public port names: {duplicates!r}."
+            )
 
         graph_node_ids = {node.id for node in self.graph.nodes}
         endpoint_ids = [target.node_id for port in self.input_ports for target in port.targets]

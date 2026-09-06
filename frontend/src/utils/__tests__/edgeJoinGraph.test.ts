@@ -257,8 +257,7 @@ describe("insertEdgeJoinNode", () => {
           inputPorts: [],
           outputPorts: [
             {
-              portId: "written_premium",
-              label: "Written premium",
+              name: "written_premium",
               source: { nodeId: child.id, handleId: null },
             },
           ],

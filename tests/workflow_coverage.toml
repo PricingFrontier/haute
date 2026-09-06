@@ -526,7 +526,7 @@ tests = [
   "tests/test_submodel_instances.py::test_flatten_preserves_public_output_label_for_ordinary_polars_code",
   "tests/test_pipeline_recovery.py::test_ready_document_exposes_submodel_occurrence_alias_as_executable_name",
   "tests/test_submodel_endpoint_properties.py::test_flatten_conserves_rows_through_public_ports",
-  "frontend/src/utils/__tests__/editorIdentities.test.ts::builds a strict batch with occurrence name and public submodel port labels",
+  "frontend/src/utils/__tests__/editorIdentities.test.ts::builds a strict batch with occurrence name and public submodel port handles",
   "frontend/src/utils/__tests__/editorIdentities.test.ts::rejects a submodel node without alias",
   "frontend/src/panels/__tests__/NodePanel.test.tsx::uses the authoritative occurrence name for a submodel-fed input",
   "frontend/src/utils/__tests__/apiInputPorts.test.ts::resolves an arbitrary-id occurrence output through its occurrence name",

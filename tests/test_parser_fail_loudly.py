@@ -424,12 +424,8 @@ class TestItem20SubmodelCrossBoundaryHandleValidation:
                 "sm1": {
                     "definitionId": "sm1",
                     "file": "modules/sm1.py",
-                    "inputPorts": [
-                        {"portId": "child_a", "label": "ChildA", "targets": [{"nodeId": "child_a"}]}
-                    ],
-                    "outputPorts": [
-                        {"portId": "result", "label": "Result", "source": {"nodeId": "child_a"}}
-                    ],
+                    "inputPorts": [{"name": "child_a", "targets": [{"nodeId": "child_a"}]}],
+                    "outputPorts": [{"name": "result", "source": {"nodeId": "child_a"}}],
                     "graph": {
                         "nodes": [
                             {
@@ -478,12 +474,8 @@ class TestItem20SubmodelCrossBoundaryHandleValidation:
                 "sm1": {
                     "definitionId": "sm1",
                     "file": "modules/sm1.py",
-                    "inputPorts": [
-                        {"portId": "child_a", "label": "ChildA", "targets": [{"nodeId": "child_a"}]}
-                    ],
-                    "outputPorts": [
-                        {"portId": "result", "label": "Result", "source": {"nodeId": "child_a"}}
-                    ],
+                    "inputPorts": [{"name": "child_a", "targets": [{"nodeId": "child_a"}]}],
+                    "outputPorts": [{"name": "result", "source": {"nodeId": "child_a"}}],
                     "graph": {
                         "nodes": [
                             {

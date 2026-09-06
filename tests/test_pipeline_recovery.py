@@ -160,22 +160,19 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                     "label": "class",
                     "node_type": "polars",
                     "source_handles": [],
-                    "source_handle_labels": {},
                 },
                 {
                     "node_id": "api",
                     "label": "Café request",
                     "node_type": "apiInput",
                     "source_handles": ["quotes", "vehicles"],
-                    "source_handle_labels": {},
                 },
                 {
                     "node_id": "pricing",
                     "label": "Pricing",
                     "node_type": "submodel",
                     "alias": "pricing",
-                    "source_handles": ["out__written-premium"],
-                    "source_handle_labels": {"out__written-premium": "Written premium"},
+                    "source_handles": ["out__written_premium"],
                 },
             ]
         },
@@ -201,7 +198,7 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
     }
     assert payload["identities"][1]["config_reference"].startswith("config/quote_input/")
     assert payload["identities"][2]["source_handle_input_names"] == {
-        "out__written-premium": "pricing"
+        "out__written_premium": "pricing"
     }
 
 
@@ -214,7 +211,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Node",
                 "node_type": "polars",
                 "source_handles": [],
-                "source_handle_labels": {},
                 "unexpected": True,
             }
         ],
@@ -224,14 +220,12 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "First",
                 "node_type": "polars",
                 "source_handles": [],
-                "source_handle_labels": {},
             },
             {
                 "node_id": "same",
                 "label": "Second",
                 "node_type": "polars",
                 "source_handles": [],
-                "source_handle_labels": {},
             },
         ],
         [
@@ -240,7 +234,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Request",
                 "node_type": "apiInput",
                 "source_handles": ["quotes", "quotes"],
-                "source_handle_labels": {},
             }
         ],
         [
@@ -249,7 +242,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Request",
                 "node_type": "apiInput",
                 "source_handles": [""],
-                "source_handle_labels": {},
             }
         ],
         [
@@ -258,7 +250,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Request",
                 "node_type": "apiInput",
                 "source_handles": ["class"],
-                "source_handle_labels": {},
             }
         ],
         [
@@ -267,7 +258,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Request",
                 "node_type": "apiInput",
                 "source_handles": ["café"],
-                "source_handle_labels": {},
             }
         ],
         [
@@ -276,7 +266,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Pricing",
                 "node_type": "submodel",
                 "source_handles": ["out__result"],
-                "source_handle_labels": {},
             }
         ],
         [
@@ -284,8 +273,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "pricing",
                 "label": "Pricing",
                 "node_type": "submodel",
-                "source_handles": ["out__result"],
-                "source_handle_labels": {"out__result": " Result "},
+                "alias": "pricing",
+                "source_handles": ["out__Result "],
             }
         ],
         [
@@ -293,8 +282,7 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "pricing_port",
                 "label": "Pricing port",
                 "node_type": "submodelPort",
-                "source_handles": ["out__result"],
-                "source_handle_labels": {"out__result": " Result "},
+                "source_handles": ["out__Result "],
             }
         ],
         [
@@ -302,8 +290,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "pricing",
                 "label": "Pricing",
                 "node_type": "submodel",
+                "alias": "pricing",
                 "source_handles": ["out__"],
-                "source_handle_labels": {"out__": "Result"},
             }
         ],
         [
@@ -321,7 +309,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Ordinary",
                 "node_type": "polars",
                 "source_handles": ["unexpected"],
-                "source_handle_labels": {},
             }
         ],
     ],
@@ -350,16 +337,15 @@ def test_capabilities_reject_unsorted_or_duplicate_reserved_api_input_labels(
 
 
 @pytest.mark.parametrize(
-    ("input_ports", "input_names"),
+    "input_ports",
     [
-        ([{}], {}),
-        ([{"portId": ""}], {}),
-        ([{"portId": "input"}], {"extra": "input_name"}),
-        ([{"portId": "input"}], {"input": ""}),
+        [{}],
+        [{"name": ""}],
+        [{"name": " input "}],
     ],
 )
 def test_recovery_submodel_definition_validates_input_port_identities(
-    input_ports: list[dict[str, object]], input_names: dict[str, str]
+    input_ports: list[dict[str, object]],
 ) -> None:
     with pytest.raises(ValidationError):
         RecoverySubmodelDefinition(
@@ -368,7 +354,6 @@ def test_recovery_submodel_definition_validates_input_port_identities(
             availability="ready",
             graph=RecoveryGraphSnapshot(),
             input_ports=input_ports,
-            input_port_input_names=input_names,
         )
 
 
@@ -404,7 +389,6 @@ def test_editor_identity_route_translates_resolver_value_error(
                     "label": "Ordinary",
                     "node_type": "polars",
                     "source_handles": [],
-                    "source_handle_labels": {},
                 }
             ]
         },
@@ -856,7 +840,6 @@ def test_canonical_snapshot_rejects_unavailable_nodes_and_submodels() -> None:
         file="models/pricing.py",
         availability="unavailable",
         graph=RecoveryGraphSnapshot(),
-        input_port_input_names={},
     )
     cases = [
         ([node("broken", "unavailable")], None, "node_unavailable"),
@@ -1055,13 +1038,11 @@ def test_ready_document_exposes_submodel_occurrence_alias_as_executable_name(
             "child",
             definition_id="child-definition",
             input_ports=[{
-                "portId": "input_1",
-                "label": "raw records",
+                "name": "input_1",
                 "targets": [{"nodeId": "transform", "handleId": None}],
             }],
             output_ports=[{
-                "portId": "output_1",
-                "label": "priced records",
+                "name": "output_1",
                 "source": {"nodeId": "transform", "handleId": None},
             }],
         )
@@ -1106,7 +1087,8 @@ def test_ready_document_exposes_submodel_occurrence_alias_as_executable_name(
     )
     assert output_edge.input_name == "unrelated_alias"
     assert document.submodels is not None
-    assert document.submodels["child-definition"].input_port_input_names == {"input_1": "input_1"}
+    child_ports = document.submodels["child-definition"].input_ports
+    assert [port["name"] for port in child_ports] == ["input_1"]
 
 
 def test_recovery_revision_authenticates_child_bytes_the_document_presents(
@@ -3004,8 +2986,7 @@ def test_editor_identity_route_requires_an_alias_for_submodel_nodes(client: Test
                     "node_id": "pricing",
                     "label": "Pricing",
                     "node_type": "submodel",
-                    "source_handles": ["out__written-premium"],
-                    "source_handle_labels": {"out__written-premium": "Written premium"},
+                    "source_handles": ["out__written_premium"],
                 }
             ]
         },

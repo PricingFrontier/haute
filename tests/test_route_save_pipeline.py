@@ -1186,7 +1186,7 @@ class TestSaveEndpointIntegration:
                         ],
                         "edges": [],
                     },
-                    "inputPorts": [{"portId": "policy", "label": "policy", "targets": []}],
+                    "inputPorts": [{"name": "policy", "targets": []}],
                     "outputPorts": [],
                 },
             },
@@ -1206,7 +1206,7 @@ class TestSaveEndpointIntegration:
         assert "no internal targets" in detail
         assert "edge_id=bind" in detail
         assert "instance_id=instance_a" in detail
-        assert "port_id=policy" in detail
+        assert "port_name=policy" in detail
 
     def test_save_empty_source_file_returns_400(self, client: TestClient) -> None:
         """Empty source_file should return 400."""

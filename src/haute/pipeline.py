@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Self, cast
 
@@ -806,6 +806,16 @@ class Submodel(NodeRegistry):
 
         super().__init__(name, description)
         self._definition_id = definition_id
+        for port_field, ports in (("input_ports", input_ports), ("output_ports", output_ports)):
+            for port in ports:
+                if isinstance(port, Mapping):
+                    for key in port:
+                        if key in {"portId", "label"}:
+                            raise ValueError(
+                                f"Submodel {port_field} port declares {key!r}; "
+                                "a public port has one name: "
+                                "replace 'portId' and 'label' with 'name'."
+                            )
         self._input_ports = [SubmodelInputPort.model_validate(port) for port in input_ports]
         self._output_ports = [SubmodelOutputPort.model_validate(port) for port in output_ports]
 

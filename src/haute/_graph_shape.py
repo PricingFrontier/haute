@@ -108,13 +108,11 @@ def _iter_submodel_definition_contexts(
         incoming: dict[str, list[str]] = {}
         outgoing: dict[str, list[str]] = {}
         for input_port in instance.definition.input_ports:
-            public_source = f"public:{input_port.port_id}"
+            public_source = f"public:{input_port.name}"
             for target in input_port.targets:
                 incoming.setdefault(target.node_id, []).append(public_source)
         for output_port in instance.definition.output_ports:
-            outgoing.setdefault(output_port.source.node_id, []).append(
-                f"public:{output_port.port_id}"
-            )
+            outgoing.setdefault(output_port.source.node_id, []).append(f"public:{output_port.name}")
         contexts.append(
             (
                 definition_id,

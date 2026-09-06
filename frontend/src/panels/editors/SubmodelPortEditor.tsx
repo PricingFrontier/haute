@@ -3,7 +3,7 @@ import { InputSourcesBar, type InputSource, type SimpleNode } from "./_shared"
 
 type SubmodelPortEditorProps = {
   node: SimpleNode
-  onDeleteInputPort?: (portId: string) => void
+  onDeleteInputPort?: (portName: string) => void
 }
 
 const isNonBlankText = (value: unknown): value is string =>

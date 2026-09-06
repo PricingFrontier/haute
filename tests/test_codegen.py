@@ -2841,15 +2841,13 @@ class TestCanonicalBindingRejection:
                         },
                         "inputPorts": [
                             {
-                                "portId": "records",
-                                "label": "Records",
+                                "name": "records",
                                 "targets": [{"nodeId": "child_a", "handleId": None}],
                             }
                         ],
                         "outputPorts": [
                             {
-                                "portId": "scored",
-                                "label": "Scored",
+                                "name": "scored",
                                 "source": {"nodeId": "child_a", "handleId": None},
                             }
                         ],
@@ -2958,8 +2956,7 @@ class TestDeclaredSubmodelOutputs:
             self._graph(
                 [
                     {
-                        "portId": "export",
-                        "label": "Export",
+                        "name": "export",
                         "source": {"nodeId": "child_export"},
                     }
                 ]
@@ -2968,7 +2965,7 @@ class TestDeclaredSubmodelOutputs:
         )
 
         assert (
-            "output_ports=[{'portId': 'export', 'label': 'Export', "
+            "output_ports=[{'name': 'export', "
             "'source': {'nodeId': 'child_export', 'handleId': None}}]" in files["modules/sm1.py"]
         )
         assert "pipeline.connect" not in files["main.py"]
@@ -2977,15 +2974,14 @@ class TestDeclaredSubmodelOutputs:
         ("ports", "error"),
         [
             (
-                [{"portId": "export", "label": "Export", "source": {"nodeId": "missing"}}],
+                [{"name": "export", "source": {"nodeId": "missing"}}],
                 "missing child",
             ),
             (
                 [
-                    {"portId": "export", "label": "Export", "source": {"nodeId": "child_export"}},
+                    {"name": "export", "source": {"nodeId": "child_export"}},
                     {
-                        "portId": "export",
-                        "label": "Duplicate",
+                        "name": "export",
                         "source": {"nodeId": "child_export"},
                     },
                 ],
@@ -3995,8 +3991,7 @@ class TestGraphToCodeSingleFileGuard:
                         "file": "modules/sm1.py",
                         "inputPorts": [
                             {
-                                "portId": "child_a",
-                                "label": "ChildA",
+                                "name": "child_a",
                                 "targets": [{"nodeId": "child_a"}],
                             }
                         ],
@@ -4106,8 +4101,7 @@ class TestSubmodelImportSafePath:
                         "file": 'modules/a"b\\c.py',
                         "inputPorts": [
                             {
-                                "portId": "child_a",
-                                "label": "ChildA",
+                                "name": "child_a",
                                 "targets": [{"nodeId": "child_a"}],
                             }
                         ],

@@ -51,7 +51,7 @@ export type NodeConfigEditorProps = {
   activeExplorePane: ExplorePane
   activeModellingPane: ModellingPane
   onDeleteEdge?: (edgeId: string) => void
-  onDeleteSubmodelInputPort?: (portId: string) => void
+  onDeleteSubmodelInputPort?: (portName: string) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
   onShowPivots: () => void
   errorLine?: number | null

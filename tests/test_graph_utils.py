@@ -518,7 +518,6 @@ class TestExecutableInputNameSubmodelOccurrence:
             node_type=NodeType.SUBMODEL,
             label="Pricing Submodel",
             source_handle="out__quotes",
-            source_handle_label="Quotes Frame",
             alias="pricing",
             output_port_count=1,
         )
@@ -531,8 +530,7 @@ class TestExecutableInputNameSubmodelOccurrence:
         first = executable_input_name(
             node_type=NodeType.SUBMODEL,
             label="Pricing Submodel",
-            source_handle="out__written-premium",
-            source_handle_label="Written Premium",
+            source_handle="out__written_premium",
             alias="pricing",
             output_port_count=2,
         )
@@ -540,7 +538,6 @@ class TestExecutableInputNameSubmodelOccurrence:
             node_type=NodeType.SUBMODEL,
             label="Pricing Submodel",
             source_handle="out__loss_ratio",
-            source_handle_label="Loss Ratio",
             alias="pricing",
             output_port_count=2,
         )
@@ -555,7 +552,6 @@ class TestExecutableInputNameSubmodelOccurrence:
             node_type=NodeType.SUBMODEL,
             label="My Submodel",
             source_handle="out__quotes",
-            source_handle_label="Quotes",
             alias="my-submodel 1",
             output_port_count=1,
         )
@@ -572,7 +568,6 @@ class TestExecutableInputNameSubmodelOccurrence:
                 node_type=NodeType.SUBMODEL,
                 label="Pricing",
                 source_handle="out__quotes",
-                source_handle_label="Quotes",
                 alias=None,
                 output_port_count=1,
             )
@@ -588,7 +583,6 @@ class TestExecutableInputNameSubmodelOccurrence:
                 node_type=NodeType.SUBMODEL,
                 label="Pricing",
                 source_handle="out__quotes",
-                source_handle_label="Quotes",
                 alias="pricing",
                 output_port_count=None,
             )

@@ -33,9 +33,9 @@ occurrence-owned state:
 
 ```text
 SubmodelEndpoint { nodeId: NodeId, handleId: HandleId | null }
-SubmodelInputPort { portId: PortId, label: string,
+SubmodelInputPort { name: str,
                     targets: ordered list[SubmodelEndpoint] }
-SubmodelOutputPort { portId: PortId, label: string,
+SubmodelOutputPort { name: str,
                      source: SubmodelEndpoint }
 SubmodelDefinition { definitionId, file, graph,
                      inputPorts[], outputPorts[], ...metadata }
@@ -73,10 +73,10 @@ the new occurrence position from each selected node; expansion adds the target
 occurrence position back. This makes one shared layout reusable at any number of
 independent parent-canvas positions without coordinate drift.
 
-Public handles are constructed only as `in__<portId>` and `out__<portId>`.
-Port ids are opaque and immutable; internal node ids and labels are not public
-port ids. Inputs fan out to their ordered targets, outputs have exactly one
-source, port ids are unique across the definition, and every endpoint must
+Public handles are constructed only as `in__<name>` and `out__<name>`.
+Port names are canonical identifiers; internal node ids and labels are not public
+port names. Inputs fan out to their ordered targets, outputs have exactly one
+source, port names are unique across both input and output ports in the definition, and every endpoint must
 refer to a node in the definition graph.
 
 The source form persists identity on both sides of the relationship:
@@ -138,9 +138,8 @@ Definition edits validate all live occurrences and their bindings as one
 transaction. Interface-breaking edits are rejected before any parent or child
 file is written and report every affected instance/port.
 The owner's drilled Input inspector is the explicit interface-retirement path.
-Removing one listed frame deletes its `SubmodelInputPort`, its
-`input_port_input_names` entry, every synthetic child route for that port, and
-every `in__<portId>` parent binding targeting an occurrence of the definition
+Removing one listed frame deletes its `SubmodelInputPort`, every synthetic child route for that port, and
+every `in__<name>` parent binding targeting an occurrence of the definition
 in one history transaction. This operation is intentionally distinct from
 ordinary boundary-edge deletion, which retains the shared in-use guard.
 Input boundary history projections retain that definition-wide parent-binding
@@ -271,28 +270,26 @@ document and returns the new revision.
 4. Build structured public ports. Incoming edges sharing one external logical
    frame become one input port with ordered internal targets and exactly one
    parent binding. Outgoing edges sharing one internal source endpoint become
-   one output port. Mint port IDs by sanitising each frame label (appending `_2`,
-   `_3` on collision). Preserve each pre-group executable frame name as the
-   corresponding public port label, so child and parent consumer code requires
-   no generated rename.
-5. Validate that every generated public label resolves to the same executable
-   name as its pre-group edge. Reject malformed, ambiguous, or colliding names
-   atomically rather than rewriting configs to opaque port ids. Collision is
-   checked per direction, on the sanitised label: two input ports (or two
-   output ports) whose `_sanitize_func_name(label)` is the same raise
-   `SubmodelValidationError(code="duplicate_public_label", status_code=400)`
-   naming the colliding labels and the shared executable name, before the
-   definition is built. Codegen still rejects a duplicate derived input name at
-   save; the creation gate stops that graph from being created at all.
+   one output port. Each port's name is the executable input name the boundary
+   edge carried before grouping (`edge_input_name`), so child and parent
+   consumer code requires no generated rename; a name already minted for the
+   new definition, in either direction, gets the suffix `_2`, `_3`, ... A
+   boundary edge whose source has no executable identity refuses creation with
+   `SubmodelValidationError(code="invalid_input_binding", status_code=400)`.
+5. The port models validate every name as a canonical identifier
+   (`_sanitize_func_name(name) == name`) and the definition rejects a name used
+   twice across both directions, so the graph is never built with an
+   ambiguous interface. Codegen still rejects a duplicate derived input name at
+   save.
 6. Compute the selected bounding-box centre as the occurrence position and
    subtract it from every selected child position before storing the definition
    graph. Internal positions are therefore occurrence-local.
 7. Create one typed `SubmodelDefinition` and one `SUBMODEL` occurrence whose
    config is exactly `{definitionId, alias}`. Rewire parent edges only through
-   `in__<portId>`/`out__<portId>` handles, preserving still-hidden authored
+   `in__<name>`/`out__<name>` handles, preserving still-hidden authored
    ports in both edge data and deterministic ids. Remaining parent consumers
    keep the input name they were authored with: the occurrence's name (or
-   `<alias>__<portId>` with several output ports) becomes the physical input
+   `<alias>__<name>` with several output ports) becomes the physical input
    and the previous name is recorded as the logical name through
    `inputMapping`, with schema-owned selectors rewritten, exactly as
    flattening does across the same boundary (F13).
@@ -467,7 +464,12 @@ Tests live in `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
   per-child source generation, child preamble and preserved-block round trips,
   compilable parent output, parsing, and request/response model contracts.
 - `tests/test_edge_join.py` — create/codegen integration for multiple public
-  outputs feeding distinct edge-join roles through `out__<portId>` handles.
+  outputs feeding distinct edge-join roles through `out__<name>` handles.
+- `tests/test_submodel_port_names.py` — the SUB-L01 contract: port models carry
+  exactly `name`, names must be canonical identifiers, a `portId` or `label`
+  key fails to parse (and the DSL raises) with the fix named, codegen emits
+  `name` only, the identity request and recovery document carry no label or
+  identity-map field, and no port-id or label token survives in `src/haute`.
 - `tests/test_submodel_instances.py` — canonical definition and occurrence
   validation, parse/codegen round trips, public-port expansion, targeted
   flattening, shared-definition retention, OUTPUT source-port migration across

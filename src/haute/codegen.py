@@ -888,21 +888,21 @@ def _registration_path_depth(recorded_path: str) -> int:
     return max(len(segments) - 1, 0)
 
 
-def _canonical_port_id(
+def _canonical_port_name(
     handle: str | None,
     *,
     prefix: str,
     edge: GraphEdge,
     endpoint: str,
 ) -> str:
-    """Return a validated public port id from a canonical boundary handle."""
+    """Return a validated public port name from a canonical boundary handle."""
     if not handle or not handle.startswith(prefix) or handle == prefix:
         raise ParseError(
             "Canonical submodel edge has a malformed public-port handle.",
             edge_id=edge.id,
             endpoint=endpoint,
             handle=handle,
-            expected=f"{prefix}<portId>",
+            expected=f"{prefix}<name>",
         )
     return handle.removeprefix(prefix)
 
@@ -930,9 +930,9 @@ def _canonical_definition_source_metadata(
     node_source_ids: dict[str, list[str]] = {}
 
     for port in definition.input_ports:
-        parameter_name = _sanitize_func_name(port.port_id)
+        parameter_name = port.name
         for target in port.targets:
-            add_binding(target.node_id, parameter_name, port.port_id, target.handle_id)
+            add_binding(target.node_id, parameter_name, port.name, target.handle_id)
 
     for edge in ordered_edges:
         source_node = node_map[edge.source]
@@ -960,7 +960,7 @@ def _canonical_definition_source_metadata(
 def _require_routed_input_port(
     instance: ResolvedSubmodelInstance,
     edge: GraphEdge,
-    port_id: str,
+    port_name: str,
 ) -> None:
     """Reject a parent binding whose public input has no internal route.
 
@@ -969,13 +969,13 @@ def _require_routed_input_port(
     the connect call would name a port that binds nothing.
     """
     for port in instance.definition.input_ports:
-        if port.port_id == port_id and not port.targets:
+        if port.name == port_name and not port.targets:
             raise ParseError(
                 "Submodel input port bound by a parent edge has no internal targets.",
                 edge_id=edge.id,
                 instance_id=instance.node.id,
                 definition_id=instance.config.definition_id,
-                port_id=port_id,
+                port_name=port_name,
             )
 
 
@@ -1054,13 +1054,11 @@ def _graph_to_code_multi_instances(
         incoming_context: dict[str, list[str]] = {}
         for input_port in definition.input_ports:
             for target in input_port.targets:
-                incoming_context.setdefault(target.node_id, []).append(
-                    f"public:{input_port.port_id}"
-                )
+                incoming_context.setdefault(target.node_id, []).append(f"public:{input_port.name}")
         outgoing_context: dict[str, list[str]] = {}
         for output_port in definition.output_ports:
             outgoing_context.setdefault(output_port.source.node_id, []).append(
-                f"public:{output_port.port_id}"
+                f"public:{output_port.name}"
             )
         validate_graph_shape_contracts(
             child_graph,
@@ -1163,7 +1161,7 @@ def _graph_to_code_multi_instances(
             else root_id_to_func[edge.target]
         )
         source_port = (
-            _canonical_port_id(
+            _canonical_port_name(
                 edge.sourceHandle,
                 prefix="out__",
                 edge=edge,
@@ -1173,7 +1171,7 @@ def _graph_to_code_multi_instances(
             else edge.sourceHandle or None
         )
         target_port = (
-            _canonical_port_id(
+            _canonical_port_name(
                 edge.targetHandle,
                 prefix="in__",
                 edge=edge,

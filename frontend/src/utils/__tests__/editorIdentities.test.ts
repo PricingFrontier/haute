@@ -26,7 +26,7 @@ function node(
 }
 
 describe("editor identity resolution", () => {
-  it("builds a strict batch with occurrence name and public submodel port labels", () => {
+  it("builds a strict batch with occurrence name and public submodel port handles", () => {
     const api = node("api", "class", "apiInput", {
       tables: [
         {
@@ -53,8 +53,7 @@ describe("editor identity resolution", () => {
       graph: { nodes: [], edges: [] },
       inputPorts: [],
       outputPorts: [{
-        portId: "written-premium",
-        label: "Written premium",
+        name: "written-premium",
         source: { nodeId: "result", handleId: null },
       }],
     }
@@ -70,21 +69,18 @@ describe("editor identity resolution", () => {
           label: "class",
           node_type: "apiInput",
           source_handles: ["quotes"],
-          source_handle_labels: {},
         },
         {
           node_id: "ordinary",
           label: "Polars",
           node_type: "polars",
           source_handles: [],
-          source_handle_labels: {},
         },
         {
           node_id: "pricing",
           label: "Tarif café",
           node_type: "submodel",
           source_handles: ["out__written-premium"],
-          source_handle_labels: { "out__written-premium": "Written premium" },
           alias: "pricing_secondary",
         },
       ],
@@ -182,7 +178,7 @@ describe("editor identity resolution", () => {
         preamble: "from haute import submodel", source_file: "modules/pricing.py",
         preserved_blocks: ["# keep this"],
       },
-      inputPorts: [{ portId: "policy", label: "Policy", targets: [{ nodeId: child.id, handleId: null }] }],
+      inputPorts: [{ name: "policy", targets: [{ nodeId: child.id, handleId: null }] }],
       outputPorts: [],
     }
     const root = node("instance", "Pricing", "submodel", { definitionId: "pricing", alias: "pricing" })
@@ -210,12 +206,10 @@ describe("editor identity resolution", () => {
     expect(resolve.mock.calls[1]?.[0].nodes.at(-1)).toMatchObject({
       node_type: "submodelPort",
       source_handles: ["policy"],
-      source_handle_labels: { policy: "Policy" },
     })
     expect(result.nodes[0].data._functionName).toBe("fn_instance")
     expect(result.submodels.pricing.graph.nodes[0].data._functionName).toBe("fn___submodel_input_ports__")
     expect(result.submodels.pricing.graph.edges[0].data?._inputName).toBe("in___submodel_input_ports__")
-    expect(result.submodels.pricing._inputPortInputNames).toEqual({ policy: "policy_input" })
     expect(result.submodels.pricing.graph.nodes).toHaveLength(1)
     expect(result.submodels.pricing.graph).toMatchObject({
       pipeline_name: "Pricing child", pipeline_description: null,
@@ -231,21 +225,6 @@ describe("editor identity resolution", () => {
       preamble: "from haute import submodel", source_file: "modules/pricing.py",
       preserved_blocks: ["# keep this"],
     })
-    expect(definition).not.toHaveProperty("_inputPortInputNames")
-  })
-
-  it("rejects a malformed canonical definition boundary identity", async () => {
-    const definition: SubmodelDefinition = {
-      definitionId: "empty", file: "modules/empty.py", graph: { nodes: [], edges: [] },
-      inputPorts: [], outputPorts: [],
-    }
-    await expect(resolveCanonicalGraphIdentities({
-      nodes: [], edges: [], submodels: { empty: definition }, reservedApiInputFrameLabels: RESERVED,
-      resolve: async (request) => ({ identities: request.nodes.map((requestNode) => ({
-        node_id: requestNode.node_id, function_name: "boundary", config_reference: null,
-        default_input_name: null, source_handle_input_names: null as unknown as Record<string, string>,
-      })) }),
-    })).rejects.toThrow(/boundary.*map|input.*map/i)
   })
 
   it("rejects a submodel node without alias", () => {

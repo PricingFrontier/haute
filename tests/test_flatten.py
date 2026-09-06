@@ -70,15 +70,13 @@ def _definition_payload(
         "graph": graph or _definition_graph(),
         "inputPorts": [
             {
-                "portId": "records",
-                "label": "Records",
+                "name": "records",
                 "targets": [{"nodeId": "child_input", "handleId": None}],
             }
         ],
         "outputPorts": [
             {
-                "portId": "priced",
-                "label": "Priced",
+                "name": "priced",
                 "source": {"nodeId": "child_output", "handleId": None},
             }
         ],

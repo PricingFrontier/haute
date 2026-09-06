@@ -1051,8 +1051,7 @@ class TestSubmodel:
             definition_id="definition_scoring",
             input_ports=[
                 {
-                    "portId": "quotes",
-                    "label": "Quotes",
+                    "name": "quotes",
                     "targets": [{"nodeId": "transform"}],
                 }
             ],
@@ -1061,7 +1060,7 @@ class TestSubmodel:
         assert s.name == "scoring"
         assert s.description == "score sub"
         assert s.definition_id == "definition_scoring"
-        assert s.input_ports[0].port_id == "quotes"
+        assert s.input_ports[0].name == "quotes"
         assert s.output_ports == []
         assert s.nodes == []
         assert s.edges == []
@@ -1073,15 +1072,14 @@ class TestSubmodel:
             input_ports=[],
             output_ports=[
                 {
-                    "portId": "score",
-                    "label": "Score",
+                    "name": "score",
                     "source": {"nodeId": "score_node"},
                 }
             ],
         )
         returned = s.output_ports
         returned.clear()
-        assert [port.port_id for port in s.output_ports] == ["score"]
+        assert [port.name for port in s.output_ports] == ["score"]
 
     def test_submodel_chaining_records_canonical_occurrences(self):
         p = Pipeline("main")

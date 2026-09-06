@@ -133,8 +133,7 @@ def test_generated_params_follow_edge_order_across_all_source_kinds() -> None:
                 "inputPorts": [],
                 "outputPorts": [
                     {
-                        "portId": "child",
-                        "label": "Nested child source",
+                        "name": "child",
                         "source": {"nodeId": "child", "handleId": None},
                     }
                 ],

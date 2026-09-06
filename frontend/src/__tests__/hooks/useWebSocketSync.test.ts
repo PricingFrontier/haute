@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Tests for useWebSocketSync — WebSocket connection lifecycle, message handling,
  * reconnection with exponential backoff, error handling, and cleanup on unmount.
  *
@@ -540,8 +540,7 @@ describe("useWebSocketSync", () => {
             graph: { nodes: [], edges: [] },
             inputPorts: [],
             outputPorts: [{
-              portId: "output_1",
-              label: "live_switch",
+              name: "output_1",
               source: { nodeId: "live_switch", handleId: null },
             }],
           },

@@ -28,7 +28,7 @@ from tests._projection_helpers import has_pair, pair_value, pair_value_or_none
 from tests.conftest import make_edge, make_graph, make_output_config
 
 
-def _public_output_definition(*, label: str = "public result") -> dict[str, object]:
+def _public_output_definition(*, name: str = "opaque_output_id") -> dict[str, object]:
     return {
         "definitionId": "definition_public_output",
         "file": "modules/public_output.py",
@@ -48,8 +48,7 @@ def _public_output_definition(*, label: str = "public result") -> dict[str, obje
         "inputPorts": [],
         "outputPorts": [
             {
-                "portId": "opaque-output-id",
-                "label": label,
+                "name": name,
                 "source": {"nodeId": "internal_result", "handleId": None},
             }
         ],
@@ -159,7 +158,7 @@ def test_projection_resolves_collapsed_submodel_inputs_by_occurrence_name() -> N
                     "id": "public-result-edge",
                     "source": "occurrence",
                     "target": "consumer",
-                    "sourceHandle": "out__opaque-output-id",
+                    "sourceHandle": "out__opaque_output_id",
                 }
             ],
             "submodels": {
@@ -224,7 +223,7 @@ def test_live_switch_pruning_uses_collapsed_submodel_public_output_label() -> No
                     "id": "public-result-edge",
                     "source": "occurrence",
                     "target": "switch",
-                    "sourceHandle": "out__opaque-output-id",
+                    "sourceHandle": "out__opaque_output_id",
                 },
                 {
                     "id": "fallback-edge",

@@ -25,16 +25,13 @@ function state(bound = false): SubmodelBoundaryEditState {
     file: "modules/pricing.py",
     graph: { nodes: children, edges: [] },
     inputPorts: [{
-      portId: "policy",
-      label: "Policy",
+      name: "policy",
       targets: [{ nodeId: "prepare", handleId: null }],
     }],
     outputPorts: [{
-      portId: "premium",
-      label: "Premium",
+      name: "premium",
       source: { nodeId: "score", handleId: "result" },
     }],
-    _inputPortInputNames: { policy: "policy_input" },
   }
   const parentNodes = [
     makeNode("instance_primary", "submodel", { data: { label: "Pricing", nodeType: "submodel", config: { definitionId: definition.definitionId, alias: "pricing" } } }),
@@ -103,7 +100,6 @@ describe("submodelBoundaryEditing", () => {
         definition_pricing: {
           ...definition,
           inputPorts: [],
-          _inputPortInputNames: {},
         },
       } as Record<string, unknown>,
     }
@@ -116,14 +112,12 @@ describe("submodelBoundaryEditing", () => {
     })
 
     expect(created).not.toBeNull()
-    expect(created?.portId).toBe("incoming_frame")
+    expect(created?.name).toBe("incoming_frame")
     expect(created?.submodels.definition_pricing).toMatchObject({
       inputPorts: [{
-        portId: "incoming_frame",
-        label: "incoming_frame",
+        name: "incoming_frame",
         targets: [],
       }],
-      _inputPortInputNames: { incoming_frame: "incoming_frame" },
     })
     expect(created?.edges).toEqual([expect.objectContaining({
       source: source.id,
@@ -161,10 +155,7 @@ describe("submodelBoundaryEditing", () => {
       edges: [],
       submodels: {
         ...current.submodels,
-        definition_pricing: {
-          ...definition,
-          _inputPortInputNames: { policy: "policy" },
-        },
+        definition_pricing: definition,
       },
     }, {
       source: source.id,
@@ -173,7 +164,7 @@ describe("submodelBoundaryEditing", () => {
       targetHandle: SUBMODEL_INPUT_HANDLE,
     })
 
-    expect(created?.portId).toBe("incoming_frame")
+    expect(created?.name).toBe("incoming_frame")
   })
 
   it("skips an input id already occupied by an output port", () => {
@@ -191,8 +182,7 @@ describe("submodelBoundaryEditing", () => {
         definition_pricing: {
           ...definition,
           inputPorts: [],
-          outputPorts: [{ ...definition.outputPorts[0], portId: "incoming_frame" }],
-          _inputPortInputNames: {},
+          outputPorts: [{ ...definition.outputPorts[0], name: "incoming_frame" }],
         },
       },
     }, {
@@ -202,13 +192,13 @@ describe("submodelBoundaryEditing", () => {
       targetHandle: SUBMODEL_INPUT_HANDLE,
     })
 
-    expect(created?.portId).toBe("incoming_frame_2")
+    expect(created?.name).toBe("incoming_frame_2")
   })
 
   it("binds an existing named port through the same socket on a copy", () => {
     const current = state()
     const source = makeNode("upstream", "polars", {
-      data: { _defaultInputName: "policy_input" },
+      data: { _defaultInputName: "policy" },
     })
     const parentNodes = current.parentNodes.map((node) => node.id === "instance_secondary" ? {
       ...node,
@@ -231,13 +221,13 @@ describe("submodelBoundaryEditing", () => {
       targetHandle: SUBMODEL_INPUT_HANDLE,
     })
 
-    expect(result?.portId).toBe("policy")
+    expect(result?.name).toBe("policy")
     expect(result?.submodels).toBe(current.submodels)
     expect(result?.edges).toEqual([expect.objectContaining({
       source: source.id,
       target: "instance_secondary",
       targetHandle: "in__policy",
-      data: { _inputName: "policy_input" },
+      data: { _inputName: "policy" },
     })])
   })
 
@@ -247,7 +237,7 @@ describe("submodelBoundaryEditing", () => {
       data: { _defaultInputName: "unseen_frame" },
     })
     const matchingSource = makeNode("matching", "polars", {
-      data: { _defaultInputName: "policy_input" },
+      data: { _defaultInputName: "policy" },
     })
     const parentNodes = current.parentNodes.map((node) => node.id === "instance_secondary" ? {
       ...node,
@@ -266,7 +256,7 @@ describe("submodelBoundaryEditing", () => {
         source: matchingSource.id,
         target: "instance_primary",
         targetHandle: "in__policy",
-        data: { _inputName: "policy_input" },
+        data: { _inputName: "policy" },
       }] as PipelineEdge[],
       submodels: current.submodels,
     }
@@ -281,7 +271,7 @@ describe("submodelBoundaryEditing", () => {
       sourceHandle: null,
       target: "instance_primary",
       targetHandle: SUBMODEL_INPUT_HANDLE,
-    })).toThrow(/policy_input.*already bound/i)
+    })).toThrow(/policy.*already bound/i)
   })
 
   it("fails closed when the reserved generic handle targets anything else", () => {
@@ -313,13 +303,12 @@ describe("submodelBoundaryEditing", () => {
 
     expect(result.submodels.definition_pricing).toMatchObject({
       inputPorts: [{
-        portId: "policy",
+        name: "policy",
         targets: [
           { nodeId: "prepare", handleId: null },
           { nodeId: "score", handleId: "joined" },
         ],
       }],
-      _inputPortInputNames: { policy: "policy_input" },
     })
     expect(result.parentNodes.map((node) => node.data.config)).toEqual(
       current.parentNodes.map((node) => node.data.config),
@@ -349,7 +338,6 @@ describe("submodelBoundaryEditing", () => {
 
     const definition = result.submodels.definition_pricing as SubmodelDefinition
     expect(definition.inputPorts).toEqual([])
-    expect(definition._inputPortInputNames).toEqual({})
     expect(boundary(result.viewNodes, "input").data._sourceHandleInputNames).toEqual({})
   })
 
@@ -396,7 +384,6 @@ describe("submodelBoundaryEditing", () => {
 
     const definition = result.submodels.definition_pricing as SubmodelDefinition
     expect(definition.inputPorts).toEqual([])
-    expect(definition._inputPortInputNames).toEqual({})
     expect(definition.graph).toEqual(
       (current.submodels.definition_pricing as SubmodelDefinition).graph,
     )
@@ -458,9 +445,42 @@ describe("submodelBoundaryEditing", () => {
     }
 
     expect(() => removeSubmodelBoundaryEdges(boundState, [route.id]))
-      .toThrow(/Pricing.*Policy/s)
+      .toThrow(/Pricing.*policy/i)
   })
 
-  it("blocks deletion of a used public output", () => { const current = state(true); const output = boundary(current.viewNodes, "output"); const declaration = current.viewEdges.find((edge) => edge.target === output.id)!; expect(() => removeSubmodelBoundaryEdges(current, [declaration.id])).toThrow(/Pricing.*Premium/s) })
+  it("blocks deletion of a used public output", () => { const current = state(true); const output = boundary(current.viewNodes, "output"); const declaration = current.viewEdges.find((edge) => edge.target === output.id)!; expect(() => removeSubmodelBoundaryEdges(current, [declaration.id])).toThrow(/Pricing.*premium/i) })
   it("removes an unbound public output from the shared definition", () => { const current = state(); const output = boundary(current.viewNodes, "output"); const declaration = current.viewEdges.find((edge) => edge.target === output.id)!; expect(removeSubmodelBoundaryEdges(current, [declaration.id])?.submodels.definition_pricing).toMatchObject({ outputPorts: [] }) })
+
+  it("mints output port names from child executable name and appends _2 on collision", () => {
+    const current = state()
+    const prepareNode = current.viewNodes.find((n) => n.id === "prepare")!
+    prepareNode.data = {
+      ...prepareNode.data,
+      _sourceHandleInputNames: { extra: "prepare_input" },
+    }
+    const output = boundary(current.viewNodes, "output")
+    const firstResult = applySubmodelBoundaryConnection(current, {
+      source: "prepare",
+      sourceHandle: null,
+      target: output.id,
+      targetHandle: null,
+    } as Connection)!
+
+    const firstDefinition = firstResult.submodels.definition_pricing as SubmodelDefinition
+    expect(firstDefinition.outputPorts.map((p) => p.name)).toEqual(["premium", "prepare_input"])
+
+    const secondResult = applySubmodelBoundaryConnection(firstResult, {
+      source: "prepare",
+      sourceHandle: "extra",
+      target: boundary(firstResult.viewNodes, "output").id,
+      targetHandle: null,
+    } as Connection)!
+
+    const secondDefinition = secondResult.submodels.definition_pricing as SubmodelDefinition
+    expect(secondDefinition.outputPorts.map((p) => p.name)).toEqual([
+      "premium",
+      "prepare_input",
+      "prepare_input_2",
+    ])
+  })
 })

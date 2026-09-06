@@ -49,11 +49,9 @@ const definition = (child: SimpleNode) => ({
   file: "modules/pricing.py",
   graph: { nodes: [child], edges: [] },
   inputPorts: [{
-    portId: "policy",
-    label: "Policy data",
+    name: "policy",
     targets: [{ nodeId: child.id, handleId: null }],
   }],
-  _inputPortInputNames: { policy: "policy" },
   outputPorts: [],
 })
 
@@ -164,30 +162,33 @@ describe("connection validation", () => {
     })
   })
 
-  it("rejects ambiguous generic input identity maps", () => {
+  it("rejects invalid submodel definitions with duplicate port names", () => {
     const api = apiInput("api", "policy")
     const submodel = occurrence()
     const child = node("prepare", "Prepare")
     const base = definition(child)
-    const ambiguous = {
+    const duplicate = {
       ...base,
       inputPorts: [
         ...base.inputPorts,
         {
-          portId: "policy_copy",
-          label: "Policy copy",
+          name: "policy",
           targets: [{ nodeId: child.id, handleId: "copy" }],
         },
       ],
-      _inputPortInputNames: { policy: "policy", policy_copy: "policy" },
     }
     expect(validatePipelineConnection({
       source: api.id,
       target: submodel.id,
       sourceHandle: "policy",
       targetHandle: SUBMODEL_INPUT_HANDLE,
-    }, [api, submodel], [], { definition_pricing: ambiguous }))
-      .toMatchObject({ ok: false })
+    }, [api, submodel], [], { definition_pricing: duplicate })).toEqual({
+      ok: false,
+      reason: {
+        kind: "invalid-connection",
+        message: "Canonical submodel definition is unavailable",
+      },
+    })
   })
 
   it("rejects a second binding to the same canonical public input", () => {

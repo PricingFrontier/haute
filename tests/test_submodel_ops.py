@@ -119,9 +119,7 @@ class TestCreateSubmodelGraph:
         assert e.sourceHandle == "out__Priced_quotes"
         assert e.target == "out"
         definition = result.graph.submodels["inner"]
-        assert [(port.port_id, port.label) for port in definition.output_ports] == [
-            ("Priced_quotes", "Priced quotes")
-        ]
+        assert [port.name for port in definition.output_ports] == ["Priced_quotes"]
 
     def test_grouping_keeps_public_boundary_labels_as_polars_frame_names(self):
         """Opaque port ids never leak into child or parent Polars signatures."""
@@ -172,12 +170,8 @@ class TestCreateSubmodelGraph:
 
         result = create_submodel_graph(graph, ["features", "switch"], "Inputs")
         definition = result.graph.submodels["Inputs"]
-        assert [(port.port_id, port.label) for port in definition.input_ports] == [
-            ("raw_quotes", "raw quotes")
-        ]
-        assert [(port.port_id, port.label) for port in definition.output_ports] == [
-            ("live_switch", "live switch")
-        ]
+        assert [port.name for port in definition.input_ports] == ["raw_quotes"]
+        assert [port.name for port in definition.output_ports] == ["live_switch"]
         assert definition.graph.node_map["features"].data.config["code"] == "df = raw_quotes"
         assert result.graph.node_map["consumer"].data.config["code"] == "df = live_switch"
 
@@ -200,7 +194,7 @@ class TestCreateSubmodelGraph:
         meta = subs["sub"]
         assert meta.file == "modules/sub.py"
         assert meta.definition_id == "sub"
-        assert [port.port_id for port in meta.input_ports] == ["src"]
+        assert [port.name for port in meta.input_ports] == ["src"]
         assert [target.node_id for target in meta.input_ports[0].targets] == ["t1"]
         assert meta.graph.pipeline_name == "sub"
 
@@ -396,7 +390,7 @@ class TestCreateSubmodelGraph:
         result = create_submodel_graph(graph, ["t1", "t2"], "multi_in")
 
         subs = result.graph.submodels["multi_in"]
-        assert [port.port_id for port in subs.input_ports] == ["a", "b"]
+        assert [port.name for port in subs.input_ports] == ["a", "b"]
         assert [target.node_id for port in subs.input_ports for target in port.targets] == [
             "t1",
             "t2",
@@ -430,7 +424,7 @@ class TestCreateSubmodelGraph:
         result = create_submodel_graph(graph, ["t1", "t2"], "multi_out")
 
         subs = result.graph.submodels["multi_out"]
-        assert [port.port_id for port in subs.output_ports] == ["t1", "t2"]
+        assert [port.name for port in subs.output_ports] == ["t1", "t2"]
         assert [port.source.node_id for port in subs.output_ports] == ["t1", "t2"]
 
     def test_bidirectional_cross_edges(self):
@@ -685,8 +679,6 @@ class TestCreateSubmodelGraph:
         assert graph.model_dump(mode="json") == before
 
     def test_malformed_existing_occurrence_config_fails_before_mutation(self):
-        from haute.routes._submodel_ops import SubmodelValidationError
-
         base = _simple_graph()
         malformed_occurrence = type(base.nodes[0]).model_validate(
             {
@@ -750,8 +742,8 @@ class TestCreateSubmodelGraph:
         assert placeholder.position == {"x": 60.0, "y": 120.0}
 
 
-class TestDuplicatePublicLabels:
-    """Creation rejects public ports that collide on their executable name."""
+class TestCollidingPublicNames:
+    """Creation disambiguates boundary public ports with numeric suffixes on collision."""
 
     @staticmethod
     def _two_source_graph(label_a: str, label_b: str):
@@ -785,23 +777,21 @@ class TestDuplicatePublicLabels:
             }
         )
 
-    def test_duplicate_input_label_rejected(self):
-        """Two boundary inputs sanitising to one name fail creation."""
+    def test_colliding_input_names_receive_suffixes(self):
+        """Two boundary inputs sanitising to one name receive disambiguating suffixes."""
         graph = self._two_source_graph("My src", "My-src")
-        with pytest.raises(SubmodelValidationError) as excinfo:
-            create_submodel_graph(graph, ["t1", "t2"], "grp")
-        assert excinfo.value.code == "duplicate_public_label"
-        assert excinfo.value.status_code == 400
-        assert "My_src" in excinfo.value.detail
+        result = create_submodel_graph(graph, ["t1", "t2"], "grp")
+        definition = result.graph.submodels["grp"]
+        assert [port.name for port in definition.input_ports] == ["My_src", "My_src_2"]
 
-    def test_distinct_input_labels_succeed(self):
+    def test_distinct_input_names_are_kept(self):
         """Distinct executable names still create the submodel."""
         graph = self._two_source_graph("My src", "Other src")
         result = create_submodel_graph(graph, ["t1", "t2"], "grp")
         definition = result.graph.submodels["grp"]
-        assert sorted(port.label for port in definition.input_ports) == [
-            "My src",
-            "Other src",
+        assert sorted(port.name for port in definition.input_ports) == [
+            "My_src",
+            "Other_src",
         ]
 
 

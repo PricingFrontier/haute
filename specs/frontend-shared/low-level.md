@@ -623,16 +623,16 @@ capabilities, diagnostics, spans, nodes, edges, unresolved connections, submodel
 duplicate recovery ids, non-finite coordinates, invalid spans, and edges with missing visual
 endpoints throw at ingestion. Every node requires `function_name`, nullable
 `default_input_name`, `source_handle_input_names`, and nullable `config_reference`; every edge
-requires nullable `input_name` (ready executable edges are non-null); every submodel input port
-has exact `input_port_input_names` coverage; capabilities require the sorted reserved API-frame
+requires nullable `input_name` (ready executable edges are non-null); every submodel port
+carries exactly `name`; capabilities require the sorted reserved API-frame
 labels. `adaptPipelineEditorDocument` clones configs and maps these values to transient
 `_functionName`, `_defaultInputName`, `_sourceHandleInputNames`, `_configReference`,
-`_inputName`, and `_inputPortInputNames` metadata alongside recovery presentation state.
+and `_inputName` metadata alongside recovery presentation state.
 
 `editorIdentities.ts` sends bounded prospective nodes to
 `POST /api/pipeline/editor-identities`, requires response cardinality and order to exactly match
-the request, supplies exact public-label coverage for submodel and drilled Input handles,
-requires each returned source-handle map to cover exactly the requested handles, and enforces
+the request, sends `out__<name>` handles for occurrences and bare port names for drilled Input
+boundaries, requires each returned source-handle map to cover exactly the requested handles, and enforces
 ordinary-versus-multi-output default-identity nullability before attaching node and edge identities
 immutably. Missing, reordered, malformed, semantically mismatched, or rejected identities throw
 before callers commit graph or history state. No frontend
@@ -641,9 +641,8 @@ production module derives Python executable names or config references.
 Raw canonical graphs entering an editable surface are resolved recursively and
 atomically: the root is one identity scope, and each embedded submodel definition
 is a separate scope. A definition scope adds a synthetic Input boundary whose
-handles are its declared input-port ids and whose labels are the corresponding
-public input labels; the returned exact handle map becomes
-the definition's transient `_inputPortInputNames`, while child-node and child-edge
+handles are its declared input-port names (the handle is the executable name, so
+no identity map is kept), while child-node and child-edge
 identities are attached normally. No partially resolved root or registry is
 published. Conversely, every canonical graph request uses the shared recursive
 projection that removes these editor-only fields before schema validation.

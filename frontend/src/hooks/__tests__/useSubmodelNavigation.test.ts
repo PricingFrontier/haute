@@ -379,10 +379,7 @@ describe("useSubmodelNavigation", () => {
       ...makeNode("child1"),
       data: { ...makeNode("child1").data, _functionName: "resolved_child" },
     }
-    const resolvedDefinition: SubmodelDefinition = {
-      ...makeDefinition([resolvedChild]),
-      _inputPortInputNames: {},
-    }
+    const resolvedDefinition: SubmodelDefinition = makeDefinition([resolvedChild])
     const params = makeParams({
       resolveCanonicalIdentities: vi.fn(async () => ({
         nodes: [resolvedNode],
@@ -405,8 +402,6 @@ describe("useSubmodelNavigation", () => {
     expect(params.submodelsRef.current).toBe(useGraphStore.getState().submodels)
     expect((params.submodelsRef.current[DEFINITION_ID] as SubmodelDefinition)
       .graph.nodes[0]?.data._functionName).toBe("resolved_child")
-    expect((params.submodelsRef.current[DEFINITION_ID] as SubmodelDefinition)
-      ._inputPortInputNames).toEqual({})
     const toasts = useToastStore.getState().toasts
     expect(toasts.some((t) => t.type === "success")).toBe(true)
     vi.useRealTimers()
@@ -466,10 +461,7 @@ describe("useSubmodelNavigation", () => {
         _sourceHandleInputNames: {},
       },
     })
-    const definition = {
-      ...makeDefinition([child]),
-      _inputPortInputNames: { policy: "policy_input" },
-    }
+    const definition = makeDefinition([child])
     useGraphStore.getState().loadGraphSnapshot({
       nodes: [root],
       edges: [],
@@ -487,10 +479,8 @@ describe("useSubmodelNavigation", () => {
     const requestGraph = mockCreate.mock.calls[0]![0].graph
     expect(requestGraph.nodes[0]?.data).not.toHaveProperty("_functionName")
     const requestDefinition = requestGraph.submodels?.[DEFINITION_ID] as SubmodelDefinition
-    expect(requestDefinition).not.toHaveProperty("_inputPortInputNames")
     expect(requestDefinition.graph.nodes[0]?.data).not.toHaveProperty("_functionName")
     expect(root.data._functionName).toBe("root_function")
-    expect(definition._inputPortInputNames).toEqual({ policy: "policy_input" })
   })
 
   it("creates against the current source revision and preserves source blocks", async () => {
@@ -569,8 +559,7 @@ describe("useSubmodelNavigation", () => {
     const embeddedDefinition: SubmodelDefinition = {
       ...makeDefinition([apiInput]),
       outputPorts: [{
-        portId: "quote",
-        label: "quote_info",
+        name: "quote",
         source: { nodeId: apiInput.id, handleId: "quote_info" },
       }],
     }
@@ -961,10 +950,7 @@ describe("useSubmodelNavigation", () => {
       _defaultInputName: null,
       _sourceHandleInputNames: {},
     }
-    const identifiedDefinition = {
-      ...makeDefinition(),
-      _inputPortInputNames: {},
-    }
+    const identifiedDefinition = makeDefinition()
     const params = makeParams({
       graphRef: { current: { nodes: [identifiedOccurrence], edges: [] } },
       submodelsRef: { current: { [DEFINITION_ID]: identifiedDefinition } },
@@ -984,7 +970,6 @@ describe("useSubmodelNavigation", () => {
     }))
     const requestGraph = mockDissolve.mock.calls[0]![0].graph
     expect(requestGraph.nodes[0]?.data).not.toHaveProperty("_functionName")
-    expect(requestGraph.submodels?.[DEFINITION_ID]).not.toHaveProperty("_inputPortInputNames")
     expect(identifiedOccurrence.data._functionName).toBe("pricing_function")
     expect(params.sourceRevisionRef.current).toBe("parent-rev-1")
     expect(params.setPreamble).not.toHaveBeenCalled()

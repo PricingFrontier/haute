@@ -9,7 +9,7 @@
 | `frontend/src/utils/nodeUpdatePlan.ts` | Pure selected-node update planner: reconciles API-frame handles, migrates dependent mappings, checks post-update input-name collisions, and returns either a complete root-graph/submodel candidate or a typed rejection without mutating the store. |
 | `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type at full detail regardless of zoom, plus the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted through the shared `FramePortRows` component) and edge-join geometry-dependent handle placement; each ordinary card uses one shared default port row with optional `inputs`/target content on the left and its node/output name plus optional source handle on the right; edge-join handles retain their specialised quiet treatment; owns api-input instance-name suppression and the zero-frame "No emitted frames" state. |
 | `frontend/src/nodes/FramePortRows.tsx` | Shared full-detail port-row primitives used by API Input, ordinary Pipeline nodes, the parent Submodel card, and drilled Input/Output boundary cards. `FramePortRows` owns common named-port typography, truncation/title behavior, row-relative source/target handle placement, and the mirrored origin semicircle class/accent for each direction. `DefaultInputPort` owns the canonical target handle and exact muted `inputs` label so it can compose into an ordinary node's shared row; `DefaultInputPortRow` wraps the same content for input-only boundary cards. |
-| `frontend/src/nodes/SubmodelNode.tsx` | Resolves occurrences through `config.definitionId` and the typed definition registry, then keeps the structural `SUBMODEL` marker in the standard accent header treatment and renders the mutable occurrence name as a 13px semibold primary-foreground right-hand header pill, followed by one visible generic `inputs` target plus labelled `out__<portId>` rows, a registry-derived accessible child count, and a visible invalid-definition alert. The generic target shares the first output row or falls back to a standalone row. Non-interactive `in__<portId>` anchors are co-located beneath it so canonical parent edges retain their named persisted handles without presenting multiple main-canvas input sockets. |
+| `frontend/src/nodes/SubmodelNode.tsx` | Resolves occurrences through `config.definitionId` and the typed definition registry, then keeps the structural `SUBMODEL` marker in the standard accent header treatment and renders the mutable occurrence name as a 13px semibold primary-foreground right-hand header pill, followed by one visible generic `inputs` target plus labelled `out__<name>` rows, a registry-derived accessible child count, and a visible invalid-definition alert. The generic target shares the first output row or falls back to a standalone row. Non-interactive `in__<name>` anchors are co-located beneath it so canonical parent edges retain their named persisted handles without presenting multiple main-canvas input sockets. |
 | `frontend/src/nodes/SubmodelPortNode.tsx` | Renders one composite Input or Output boundary card inside a drilled submodel. Both headers use the same right-pointing arrow while their handles retain their graph semantics. Input turns its ordered declared ports, including unrouted ports, into shared source-handle rows and has no creation row; Output renders one shared default-input row and never lists exported frames. |
 | `frontend/src/panels/editors/SubmodelPortEditor.tsx` | Renders the drilled boundary inspector body. Input reuses the standard `InputSourcesBar` chip/remove presentation for its declared public frames and exposes no mutation control when read-only; Output has no editable interface list. |
 | `frontend/src/panels/useGraph.ts` | Defines `GraphContext` (`React.Context<GraphContextValue \| undefined>`) and the `useGraph()` consumer hook, which throws when called outside a provider. |
@@ -42,7 +42,7 @@
 | `frontend/src/utils/submodelCreation.ts` | `requestSubmodelCreation` — the single policy and refusal-message owner shared by Ctrl+G and the toolbar Submodel action: editable context, main canvas, and at least two selected nodes. |
 | `frontend/src/utils/buildGraph.ts` | `buildGraph` (canonical backend payload shape, recursively stripped of editor-only metadata), `graphForRequestIdentity` (semantic graph projection consumed by Data Output), and `resolveGraphFromRefs` (parent-graph-takes-priority resolution used by preview/save/submodel calls). |
 | `frontend/src/utils/graphDiff.ts` | `diffPipelineNodes` — pure added/removed/changed/moved node diff between two graph versions, backing the comparison view. |
-| `frontend/src/utils/graphHelpers.ts` | `computeNextNodeId`, `normalizeEdges`, and `filterIncomingEdges(nodes, edges, submodels)`; validates endpoint/handle existence for layout against the handles rendered by each node component, resolving collapsed-submodel handles from the canonical definition registry. Collapsed submodels accept only declared `in__<portId>`/`out__<portId>` handles in stored data; their visible generic input handle is interaction-only and is rejected if synchronised. Drilled Output boundaries accept the canonical `null` and live `DEFAULT_TARGET_HANDLE` representations of their one shared target. The full normalised edge list remains in graph state and save. |
+| `frontend/src/utils/graphHelpers.ts` | `computeNextNodeId`, `normalizeEdges`, and `filterIncomingEdges(nodes, edges, submodels)`; validates endpoint/handle existence for layout against the handles rendered by each node component, resolving collapsed-submodel handles from the canonical definition registry. Collapsed submodels accept only declared `in__<name>`/`out__<name>` handles in stored data; their visible generic input handle is interaction-only and is rejected if synchronised. Drilled Output boundaries accept the canonical `null` and live `DEFAULT_TARGET_HANDLE` representations of their one shared target. The full normalised edge list remains in graph state and save. |
 | `frontend/src/utils/graphPerformance.ts` | `shouldUseLiteGraphEffects`/`GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT` (1000). |
 | `frontend/src/utils/makePreviewData.ts` | `makePreviewData` — `PreviewData` constructor with defaults. |
 | `frontend/src/utils/columnFingerprint.ts` | `columnFingerprint`/`columnsEqualByFingerprint` — collision-safe column-schema fingerprinting. |
@@ -162,7 +162,7 @@ structural handle identities in both views.
 Shared-definition save performs an interface diff by immutable port id and
 checks all parent placeholder edges. Any removed or direction-changed bound
 port yields a blocking dialog containing every
-affected instance label/id and port label/id. No setter, file request, dirty
+affected instance label/id and port name. No setter, file request, dirty
 baseline, or undo history is updated on rejection. A compatible edit submits
 one definition update and refreshes every occurrence without changing its
 position or bindings. Node deletion from React Flow, the context menu, and the
@@ -230,14 +230,13 @@ newer overlapping transform.
   staleness), `_status`, `_traceActive`, `_traceDimmed`, `_hoverDimmed`,
   `_traceValue`, `_traceMotionDisabled`, `_diffStatus`, plus server-owned
   `_functionName`, `_defaultInputName`, `_sourceHandleInputNames`, and
-  `_configReference`. Edges carry transient `_inputName`; submodel definitions
-  carry transient `_inputPortInputNames`. These identities are omitted from
+  `_configReference`. Edges carry transient `_inputName`. These identities are omitted from
   persistence/fingerprints but retained in live undo/redo snapshots.
 - **`SubmodelDefinition`** — `{ definitionId, file, graph, inputPorts,
   outputPorts }`, where every input port owns ordered internal targets and every
-  output port owns exactly one internal source. Public `portId` values are
+  output port owns exactly one internal source. Public `name` values are
   non-blank, unpadded, unique across both directions, and independent of child
-  ids and display labels.
+  ids.
 - **`SubmodelInstanceConfig`** — canonical per-occurrence
   `{ definitionId, alias, instanceOf? }`; every present field is non-blank and
   unpadded. The node id is the immutable occurrence id and is not inferred from
@@ -606,8 +605,7 @@ newer overlapping transform.
     Captures an exact live graph/preamble/submodel snapshot for the successful
     saved baseline, then projects a separate immutable canonical request graph.
     That request recursively strips React Flow presentation and every
-    underscore-prefixed node/edge/definition field, including submodel
-    `_inputPortInputNames`, while retaining canonical `PipelineEdge.sourcePort`/
+    underscore-prefixed node/edge field, while retaining canonical `PipelineEdge.sourcePort`/
     `targetPort`; the live snapshot keeps its authoritative identities. The
     request also sends `preservedBlocksRef.current` unchanged.
     It then stamps the attempt with
@@ -671,7 +669,7 @@ newer overlapping transform.
     Each declared input port
     becomes one labelled Input row and one edge per ordered target; each output
     port becomes one source-to-Output edge. Parent bindings are validated against
-    `in__<portId>`/`out__<portId>` before projection. The child graph, synthetic
+    `in__<name>`/`out__<name>` before projection. The child graph, synthetic
     edges, authoritative identities, and ELK positions are all computed before
     any view stack, graph, source-file ref, or selection mutation, so
     projection/identity-resolution/layout failure is atomic. A shared-definition
@@ -680,8 +678,9 @@ newer overlapping transform.
     `useSubmodelBoundaryEditing` intercepts boundary connects/deletes before the
     generic edge handler and dispatches canonical state to
     `canonicalSubmodelBoundaryEditing.ts`. Canonical reconciliation rebuilds the
-    definition graph and structured endpoints, allocates opaque `output_N` ids
-    for new exports, preserves both boundary-card positions, and leaves every
+    definition graph and structured endpoints, mints unique names from the child's
+    executable name (adding `_2`, `_3` on collision across both directions) for
+    new exports, preserves both boundary-card positions, and leaves every
     parent occurrence's id, position, alias, and edges untouched. Before an
     endpoint is removed or redirected, it scans all occurrences and rejects one
     atomic edit with a visible error if any changed public port is bound,
@@ -689,15 +688,15 @@ newer overlapping transform.
     the view, definition registry, and parent refs through one history-aware
     setter. Parent input binding happens through the collapsed occurrence's one
     generic target. A drop derives the frame name from the source node's
-    server-owned identity and looks it up in the definition's exact
-    `_inputPortInputNames` map. A matching name binds that declared port on an
-    owner or copy. A previously unseen name is allowed only on the owner: it
-    allocates the first unused `input_N` across both port directions and appends
-    an initially empty target list plus its identity-map entry. Both paths commit
-    the parent edge already retargeted to `in__<portId>` in the same history
-    entry. The generic handle is interaction-only and is never accepted as a
-    persisted or synchronised edge endpoint; invisible non-interactive named
-    anchors at the same row provide React Flow geometry for canonical edges.
+    server-owned identity and looks it up in the definition's declared input ports
+    (`definition.inputPorts.find(p => p.name === inputName)`). A matching name
+    binds that declared port on an owner or copy. A previously unseen name is
+    allowed only on the owner: it mints the port name from `inputName` (adding `_2`,
+    `_3` on collision across both directions) and appends an initially empty target
+    list. Both paths commit the parent edge already retargeted to `in__<name>`
+    in the same history entry. The generic handle is interaction-only and is never
+    accepted as a persisted or synchronised edge endpoint; invisible non-interactive
+    named anchors at the same row provide React Flow geometry for canonical edges.
     The generic handle precedes those co-located anchors in React Flow's
     measured handle order so equal-distance hit testing selects the interactive
     socket rather than a non-interactive canonical anchor.
@@ -723,7 +722,7 @@ newer overlapping transform.
     staleness is a structural fingerprint comparison
     (`utils/structuralFingerprint.ts`: sorted node ids with `type` and
     `data.nodeType`, sorted edge ids with their four endpoint fields, and each
-    definition's id with its sorted `(portId, label)` input and output ports),
+    definition's id with its sorted port names for input and output ports),
     captured when the request is issued and compared in the response guard
     alongside the serial and drilled-identity guards. Positions, selection,
     dragging, dimensions, and all other node data are excluded, so a click or a
@@ -744,7 +743,7 @@ newer overlapping transform.
     until the response succeeds. Dissolve resolves the selected node as a typed
     occurrence and sends only `instance_id`. Each request uses the same
     recursive canonical-payload projection as Save, so live node/edge identities
-    and definition `_inputPortInputNames` never cross a strict backend graph
+    never cross a strict backend graph
     schema. Each successful raw canonical response resolves identities for the
     root graph and every embedded definition before replacing nodes, edges,
     definitions, and preamble through one history-aware store action. Definition
@@ -757,9 +756,7 @@ newer overlapping transform.
     remain collapsed and keep the registry entry; dissolving the final
     occurrence removes the definition only from the submitted graph, while
     Save later decides whether its managed child files are safe to delete.
-    Definition resolution records exact `_inputPortInputNames` coverage by
-    resolving a synthetic Input boundary over the definition's declared input
-    ports. Any root or nested resolution failure leaves graph and refs untouched.
+    Any root or nested resolution failure leaves graph and refs untouched.
     A `409` leaves graph and refs untouched and surfaces the backend reload
     instruction.
 22. **Breadcrumb navigate (`handleBreadcrumbNavigate`).** Reconciles the
@@ -1333,7 +1330,7 @@ again through the editor and save paths.
     `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts` — canonical
     structured-port projection; per-occurrence collision-safe boundary ids;
     shared-interface compatibility preflight and atomic rejection; public-port
-    creation/removal, including cross-direction `input_N` allocation; collapsed
+    creation/removal, including cross-direction name minting with `_2` suffixes; collapsed
     generic-input owner/copy binding policy; definition-only reconciliation; boundary-position and
     server-identity preservation; rebuilt edge identity attachment; and invalid
     identity/topology rejection.

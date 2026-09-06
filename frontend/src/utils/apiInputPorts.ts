@@ -235,43 +235,6 @@ function canonicalSubmodelBoundary(
 }
 
 /**
- * Resolve an authoritative public input identity to its stable port id.
- *
- * The identity map is part of the persisted submodel contract, so consumers
- * must fail closed when it is incomplete or ambiguous rather than guessing
- * from display labels. A null result means the identity is genuinely new.
- */
-export function submodelInputPortIdForName(
-  definition: SubmodelDefinition,
-  inputName: string,
-): string | null {
-  const mapping = definition._inputPortInputNames
-  const portIds = new Set(definition.inputPorts.map((port) => port.portId))
-  if (
-    typeof mapping !== "object"
-    || mapping === null
-    || Array.isArray(mapping)
-    || Object.keys(mapping).length !== portIds.size
-    || Object.keys(mapping).some((id) => !portIds.has(id))
-    || [...portIds].some((id) => (
-      typeof mapping[id] !== "string" || mapping[id].length === 0
-    ))
-  ) {
-    throw new Error(
-      `Submodel definition ${definition.definitionId} has incomplete input identities`,
-    )
-  }
-
-  const entries = Object.entries(mapping) as Array<[string, string]>
-  if (new Set(entries.map(([, name]) => name)).size !== entries.length) {
-    throw new Error(
-      `Submodel definition ${definition.definitionId} has ambiguous input identities`,
-    )
-  }
-  return entries.find(([, name]) => name === inputName)?.[0] ?? null
-}
-
-/**
  * Resolve a synthetic submodel boundary handle to every declared child
  * endpoint. Canonical input ports may fan out.
  */
@@ -289,18 +252,18 @@ export function resolveSubmodelBoundaryNodes(
     throw new Error(
       "Cannot resolve " + direction + "put handle " + String(handle)
       + " for submodel instance " + boundaryNode.id
-      + ": expected " + prefix + "<portId>",
+      + ": expected " + prefix + "<name>",
     )
   }
-  const portId = handle.slice(prefix.length)
+  const name = handle.slice(prefix.length)
   if (direction === "in") {
     const port = canonical.definition.inputPorts.find(
-      (candidate) => candidate.portId === portId,
+      (candidate) => candidate.name === name,
     )
     if (!port) {
       throw new Error(
         "Cannot resolve input handle " + handle + " for submodel instance "
-        + boundaryNode.id + ": public port " + portId + " is missing",
+        + boundaryNode.id + ": public port " + name + " is missing",
       )
     }
     return port.targets.map((endpoint) => {
@@ -316,12 +279,12 @@ export function resolveSubmodelBoundaryNodes(
   }
 
   const port = canonical.definition.outputPorts.find(
-    (candidate) => candidate.portId === portId,
+    (candidate) => candidate.name === name,
   )
   if (!port) {
     throw new Error(
       "Cannot resolve output handle " + handle + " for submodel instance "
-      + boundaryNode.id + ": public port " + portId + " is missing",
+      + boundaryNode.id + ": public port " + name + " is missing",
     )
   }
   const child = canonical.graph.nodes.find(
@@ -365,7 +328,7 @@ export function resolveSubmodelBoundaryNode(
  * verbatim, including a stale non-null handle so the UI can identify the
  * unresolved edge. Ordinary sources consume authoritative backend identity
  * metadata. A submodel output uses the authoritative occurrence name (or
- * `<name>__<portId>` with multiple output ports) returned by the backend.
+ * `<name>__<port name>` with multiple output ports) returned by the backend.
  */
 export const UNRESOLVED_INPUT_NAME = "<unresolved>"
 
@@ -472,7 +435,7 @@ export function incomingEdgeInputNames({
   const boundaryNode = nodesById.get(boundaryNodeId)
   const names: string[] = []
   for (const edge of edges) {
-    let canonicalPortId: string | undefined
+    let canonicalPortName: string | undefined
     if (edge.target !== targetNodeId) {
       if (
         edge.target !== boundaryNodeId
@@ -485,9 +448,9 @@ export function incomingEdgeInputNames({
         submodels,
       )
       if (!targets.some((target) => target.id === targetNodeId)) continue
-      canonicalPortId = edge.targetHandle?.slice("in__".length)
+      canonicalPortName = edge.targetHandle?.slice("in__".length)
     }
-    if (canonicalPortId) {
+    if (canonicalPortName) {
       const instanceConfig = boundaryNode?.data.config
       if (!isSubmodelInstanceConfig(instanceConfig)) {
         throw new Error(`Cannot resolve input name: submodel ${boundaryNodeId} has malformed identity`)
@@ -496,13 +459,13 @@ export function incomingEdgeInputNames({
       if (!isSubmodelDefinition(definition, instanceConfig.definitionId)) {
         throw new Error(`Cannot resolve input name: submodel definition ${instanceConfig.definitionId} is unavailable`)
       }
-      const inputName = definition._inputPortInputNames?.[canonicalPortId]
-      if (typeof inputName !== "string" || inputName.length === 0) {
+      const port = definition.inputPorts.find((candidate) => candidate.name === canonicalPortName)
+      if (!port) {
         throw new Error(
-          `Cannot resolve input name: public input ${canonicalPortId} has no authoritative identity`,
+          `Cannot resolve input name: public input ${canonicalPortName} has no authoritative identity`,
         )
       }
-      names.push(inputName)
+      names.push(port.name)
       continue
     }
     const sourceNode = nodesById.get(edge.source)

@@ -8,7 +8,6 @@ from urllib.parse import quote
 
 from haute._graph_utils import (
     _edge_id,
-    _sanitize_func_name,
     edge_input_name,
 )
 from haute._types import (
@@ -191,14 +190,14 @@ def resolve_submodel_instances(
                 )
             instance = resolved[edge.target]
             port = _input_port(instance, edge)
-            binding_key = (edge.target, port.port_id)
+            binding_key = (edge.target, port.name)
             previous_edge_id = bound_input_ports.get(binding_key)
             if previous_edge_id is not None:
                 raise ParseError(
                     "Submodel input port is bound more than once.",
                     instance_id=edge.target,
                     definition_id=instance.config.definition_id,
-                    port_id=port.port_id,
+                    port_name=port.name,
                     edge_ids=[previous_edge_id, edge.id],
                 )
             bound_input_ports[binding_key] = edge.id
@@ -210,7 +209,7 @@ def validate_submodel_instances(graph: PipelineGraph) -> None:
     resolve_submodel_instances(graph)
 
 
-def _port_id(
+def _port_name(
     *,
     edge: GraphEdge,
     handle: str | None,
@@ -224,26 +223,26 @@ def _port_id(
             edge_id=edge.id,
             endpoint=endpoint,
             handle=handle,
-            expected=f"{prefix}<portId>",
+            expected=f"{prefix}<name>",
             instance_id=instance.node.id,
             definition_id=instance.config.definition_id,
         )
-    port_id = handle[len(prefix) :]
-    if not port_id:
+    port_name = handle[len(prefix) :]
+    if not port_name:
         raise ParseError(
-            "Submodel boundary edge has an empty public port id.",
+            "Submodel boundary edge has an empty public port name.",
             edge_id=edge.id,
             endpoint=endpoint,
             instance_id=instance.node.id,
         )
-    return port_id
+    return port_name
 
 
 def _input_port(
     instance: ResolvedSubmodelInstance,
     edge: GraphEdge,
 ) -> SubmodelInputPort:
-    port_id = _port_id(
+    port_name = _port_name(
         edge=edge,
         handle=edge.targetHandle,
         prefix="in__",
@@ -251,7 +250,7 @@ def _input_port(
         instance=instance,
     )
     for port in instance.definition.input_ports:
-        if port.port_id == port_id:
+        if port.name == port_name:
             return port
 
     raise ParseError(
@@ -259,8 +258,8 @@ def _input_port(
         edge_id=edge.id,
         instance_id=instance.node.id,
         definition_id=instance.config.definition_id,
-        port_id=port_id,
-        known_ports=[port.port_id for port in instance.definition.input_ports],
+        port_name=port_name,
+        known_ports=[port.name for port in instance.definition.input_ports],
     )
 
 
@@ -268,7 +267,7 @@ def _output_port(
     instance: ResolvedSubmodelInstance,
     edge: GraphEdge,
 ) -> SubmodelOutputPort:
-    port_id = _port_id(
+    port_name = _port_name(
         edge=edge,
         handle=edge.sourceHandle,
         prefix="out__",
@@ -276,7 +275,7 @@ def _output_port(
         instance=instance,
     )
     for port in instance.definition.output_ports:
-        if port.port_id == port_id:
+        if port.name == port_name:
             return port
 
     raise ParseError(
@@ -284,8 +283,8 @@ def _output_port(
         edge_id=edge.id,
         instance_id=instance.node.id,
         definition_id=instance.config.definition_id,
-        port_id=port_id,
-        known_ports=[port.port_id for port in instance.definition.output_ports],
+        port_name=port_name,
+        known_ports=[port.name for port in instance.definition.output_ports],
     )
 
 
@@ -876,7 +875,7 @@ def expand_submodel_instances(
                     edge_id=edge.id,
                     instance_id=target_instance.node.id,
                     definition_id=target_instance.config.definition_id,
-                    port_id=input_port.port_id,
+                    port_name=input_port.name,
                 )
             target_variants = [
                 (
@@ -904,7 +903,7 @@ def expand_submodel_instances(
                     continue
                 if edge.target in selected_ids:
                     assert target_instance is not None
-                    old_name = _sanitize_func_name(_input_port(target_instance, edge).port_id)
+                    old_name = _input_port(target_instance, edge).name
                 else:
                     old_name = _boundary_edge_input_name(
                         edge,

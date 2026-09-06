@@ -1791,8 +1791,7 @@ describe("NodePanel", () => {
           pricing: makeDefinition("pricing", [child], [], {
             outputPorts: [
               {
-                portId: "premium",
-                label: "Premium",
+                name: "premium",
                 source: { nodeId: "child_output", handleId: null },
               },
             ],
@@ -2077,8 +2076,7 @@ describe("NodePanel", () => {
         model_stuff: makeDefinition("model_stuff", [originalNode], [], {
           inputPorts: [
             {
-              portId: "competitor",
-              label: "Competitor",
+              name: "competitor",
               targets: [{ nodeId: "competitor_features", handleId: null }],
             },
           ],

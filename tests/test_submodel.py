@@ -118,9 +118,7 @@ def submodel_graph() -> PipelineGraph:
                 "definition_scoring": {
                     "definitionId": "definition_scoring",
                     "file": "modules/scoring.py",
-                    "inputPorts": [
-                        {"portId": "source", "label": "Source", "targets": [{"nodeId": "tx"}]}
-                    ],
+                    "inputPorts": [{"name": "source", "targets": [{"nodeId": "tx"}]}],
                     "outputPorts": [],
                     "graph": {
                         "nodes": [
@@ -280,8 +278,7 @@ class TestParserSubmodel:
                 definition_id="definition_scoring",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "Transform"}],
                     }
                 ],

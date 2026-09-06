@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from haute._graph_utils import _sanitize_func_name, incoming_edge_bindings
+from haute._graph_utils import incoming_edge_bindings
 from haute._types import NodeType, PipelineGraph, SubmodelDefinition
 from haute.errors import ParseError
 
@@ -79,12 +79,11 @@ def _declared_input_mapping(config: Mapping[str, Any]) -> Mapping[str, str] | No
 def _port_bound_inputs(definition: SubmodelDefinition, node_id: str) -> list[str]:
     """Inputs a definition node receives through public input ports.
 
-    Flattening binds a port-targeted node to the sanitised public input port ID
-    (``expand_submodel_instances`` records that name as the pre-expansion
-    input), so that port ID is the name the authored parameter must carry.
+    Flattening binds a port-targeted node to the public input port name,
+    so that port name is the name the authored parameter must carry.
     """
     return [
-        _sanitize_func_name(port.port_id)
+        port.name
         for port in definition.input_ports
         for target in port.targets
         if target.node_id == node_id

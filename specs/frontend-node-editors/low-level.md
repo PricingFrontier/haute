@@ -64,7 +64,7 @@
   carries one identity: `name` is the input's single name — chip text, code argument, and the
   key persisted contracts use (the live-switch `input_scenario_map`, the instance
   `inputMapping`) — derived per edge by `edgeInputName` (an API-input edge's frame label
-  verbatim; a submodel `out__` edge's input name is the occurrence's name (or `<name>__<portId>` with several output ports), resolved by the backend identity endpoint from the alias the request carries; else the sanitised source-node
+  verbatim; a submodel `out__` edge's input name is the occurrence's name (or `<name>__<port_name>` with several output ports), resolved by the backend identity endpoint from the alias the request carries; else the sanitised source-node
   label). `sourceLabel` is provenance metadata used only to explain an unresolved source;
   resolved tooltips, removal titles, and selectors identify the edge by `name`, never by the
   source-node label or id;
@@ -553,12 +553,12 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   exact-input selectors on downstream Optimiser (`data_input`, `banding_source`) and Optimiser
   Apply (`ratebook_input`) nodes when their selected edge is renamed.
 - `edgeInputName` resolves an editor-only edge sourced by a drilled submodel's composite Input by
-  matching the edge's opaque `sourceHandle` to the existing `SubmodelBoundaryPort.id`, then
-  sanitising that port's `id`. A missing handle, non-Input boundary, or unknown row is an
-  invariant violation and throws rather than falling back to the composite node's literal
-  `INPUT` label.
+  matching the edge's opaque `sourceHandle` to the existing `SubmodelBoundaryPort.id` (which
+  equals the public port name), then sanitising that port's `id`. A missing handle, non-Input
+  boundary, or unknown row is an invariant violation and throws rather than falling back to the
+  composite node's literal `INPUT` label.
 - `edgeInputName` treats only API-input sources' handles as frame names; a submodel
-  `out__` edge's input name is the occurrence's name (or `<name>__<portId>` with several output
+  `out__` edge's input name is the occurrence's name (or `<name>__<port_name>` with several output
   ports), resolved by the backend identity endpoint from the alias the request carries; and every other
   node type derives the sanitised source label.
 - The API-input editor rejects a frame label that fails backend invariant B4 (not an ASCII
@@ -634,7 +634,7 @@ state, including danger styling and field-level invalid-key borders.
 
 The input-identity work is pinned by `frontend/src/panels/__tests__/NodePanel.test.tsx`
 (`name` derivation for API-frame edges — sole frame included — ordinary sources, and submodel
-`out__` edges whose input name is the occurrence's name (or `<name>__<portId>` with several output ports), resolved by the backend identity endpoint from the alias the request carries; the `frameUnresolved` warning chip for a
+`out__` edges whose input name is the occurrence's name (or `<name>__<port_name>` with several output ports), resolved by the backend identity endpoint from the alias the request carries; the `frameUnresolved` warning chip for a
 zero-eligible-frame API source; the unresolved→resolved transition under an unchanged name
 string clearing the warning; signature-driven refresh on a frame rename; two frames from one
 API input rendering two distinct, independently removable chips whose names equal the
