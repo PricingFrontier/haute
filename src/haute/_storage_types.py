@@ -1,8 +1,8 @@
 """The shared vocabulary of hosted project storage.
 
 The error family both storage layers raise, and the three JSON records
-that live beside a project on a Unity Catalog volume: the ``HEAD.json``
-pointer, the ``CLAIM.json`` lease, and the ``LINEAGE.json`` fork
+that live beside a project on a Unity Catalog volume: the pointer,
+the ``CLAIM.json`` lease, and the ``LINEAGE.json`` fork
 provenance. Pure data and parsing — no IO, no process state. The IO
 lives in :mod:`haute._uc_transport`; the policy in
 :mod:`haute._project_storage`, which is the canonical import surface
@@ -76,11 +76,12 @@ class StorageClaimedError(StorageError):
 
 @dataclass(frozen=True)
 class UCHead:
-    """The ``HEAD.json`` pointer under a ``uc://`` location.
+    """One immutable ``pointers/NNNNNN.json`` record per committed generation.
 
-    Written LAST on every publish — the Files API has no atomic rename,
-    so the pointer arriving after its bundle is what makes a torn upload
-    harmless: readers only ever follow a generation that is complete.
+    Created exactly once, after its bundle is uploaded and verified, with a
+    create-only upload. The highest such record under a ``uc://`` location
+    is its head, and the create refusing an existing path is what makes two
+    writers resolve loudly instead of overwriting each other.
     """
 
     generation: int

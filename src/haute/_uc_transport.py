@@ -14,8 +14,8 @@ family and volume records sit beneath both in
 
 Design: ``specs/hosted-project-storage/``. The volume layout, in one
 breath: ``bundles/NNNNNN-<writer>.bundle`` (generation-numbered,
-writer-unique, each a complete ``git bundle --all``), a ``HEAD.json``
-pointer written LAST so a torn upload is never followed, ``CLAIM.json``
+writer-unique, each a complete ``git bundle --all``), immutable
+``pointers/NNNNNN.json`` records created after each bundle, ``CLAIM.json``
 (the lease), and on forks ``LINEAGE.json`` (provenance). Full bundles,
 not incremental: O(history) rather than O(diff), but a pricing project
 is small, and every generation being independently complete removes the
@@ -55,7 +55,7 @@ REMOTE_NAME = "origin"
 
 _UC_SCHEME = "uc://"
 _UC_BUNDLE_DIR = "bundles"
-_UC_HEAD_FILE = "HEAD.json"
+_UC_POINTER_DIR = "pointers"
 _UC_CLAIM_FILE = "CLAIM.json"
 _UC_LINEAGE_FILE = "LINEAGE.json"
 #: Generations kept after a publish — cheap rollback without unbounded growth.
@@ -86,7 +86,6 @@ class _UCPublishWork:
     bundle_create_ms: float = 0.0
     bundle_verify_ms: float = 0.0
     upload_ms: float = 0.0
-    publish_fence_ms: float = 0.0
     pointer_write_ms: float = 0.0
     local_record_ms: float = 0.0
     cleanup_ms: float = 0.0
@@ -94,7 +93,7 @@ class _UCPublishWork:
 
     @property
     def network_ms(self) -> float:
-        return self.lease_fence_ms + self.upload_ms + self.publish_fence_ms + self.pointer_write_ms
+        return self.lease_fence_ms + self.upload_ms + self.pointer_write_ms
 
 
 def _elapsed_ms(started_at: float) -> float:
@@ -142,6 +141,15 @@ def _is_not_found(exc: Exception) -> bool:
     return isinstance(exc, NotFound)
 
 
+def _is_already_exists(exc: Exception) -> bool:
+    """Whether *exc* is the Files API's refusal of a create-only upload."""
+    try:
+        from databricks.sdk.errors.platform import ResourceConflict
+    except ImportError:  # pragma: no cover - SDK absent means we never got here
+        return False
+    return isinstance(exc, ResourceConflict)
+
+
 def volume_read(path: str, *, event: str, unavailable: str) -> bytes | str | None:
     """Read a volume file, or ``None`` when it does not exist.
 
@@ -172,6 +180,28 @@ def volume_write(path: str, payload: bytes | IO[bytes], *, event: str, unavailab
     except Exception as exc:
         logger.warning(event, error=str(exc))
         raise StorageUnavailableError(unavailable) from exc
+
+
+def volume_create(path: str, payload: bytes, *, event: str, unavailable: str) -> bool:
+    """Create a volume file that must not already exist.
+
+    Returns ``False`` when the API refused because the path already exists —
+    the one outcome a caller must distinguish, since it is how a lost
+    publication race surfaces. Any other failure raises the caller's
+    message; an ambiguous failure (the request may have landed) is a
+    retryable :class:`StorageUnavailableError` like every other transport
+    fault — the next attempt reads the location and reconciles.
+    """
+    import io
+
+    try:
+        _files_api().upload(path, io.BytesIO(payload), overwrite=False)
+    except Exception as exc:
+        if _is_already_exists(exc):
+            return False
+        logger.warning(event, error=str(exc))
+        raise StorageUnavailableError(unavailable) from exc
+    return True
 
 
 def volume_download(
@@ -235,8 +265,12 @@ def _uc_volume_path(url: str) -> str:
     return "/Volumes/" + "/".join(volume.split(".")) + "/" + path
 
 
-def _uc_head_path(url: str) -> str:
-    return f"{_uc_volume_path(url)}/{_UC_HEAD_FILE}"
+def _uc_pointer_filename(generation: int) -> str:
+    return f"{generation:06d}.json"
+
+
+def _uc_pointer_path(url: str, generation: int) -> str:
+    return f"{_uc_volume_path(url)}/{_UC_POINTER_DIR}/{_uc_pointer_filename(generation)}"
 
 
 def _uc_claim_path(url: str) -> str:
@@ -251,6 +285,26 @@ def _uc_bundle_path(url: str, filename: str) -> str:
     return f"{_uc_volume_path(url)}/{_UC_BUNDLE_DIR}/{filename}"
 
 
+def _list_pointer_generations(url: str) -> list[int]:
+    directory = f"{_uc_volume_path(url)}/{_UC_POINTER_DIR}"
+    try:
+        entries = list(_files_api().list_directory_contents(directory))
+    except Exception as exc:
+        if _is_not_found(exc):
+            return []
+        logger.warning("uc_pointer_list_failed", error=str(exc))
+        raise StorageUnavailableError(
+            "The project's storage pointer could not be read from the volume."
+        ) from exc
+    generations: list[int] = []
+    for entry in entries:
+        name = getattr(entry, "name", None) or ""
+        if len(name) == 11 and name.endswith(".json") and name[:6].isdigit():
+            generations.append(int(name[:6]))
+    generations.sort()
+    return generations
+
+
 def read_uc_head(url: str) -> UCHead | None:
     """Return *url*'s pointer, or ``None`` when nothing was ever published.
 
@@ -258,13 +312,17 @@ def read_uc_head(url: str) -> UCHead | None:
     cannot be read — like the binding record, an unreadable pointer must
     never be mistaken for an empty location.
     """
+    generations = _list_pointer_generations(url)
+    if not generations:
+        return None
+    unavailable = "The project's storage pointer could not be read from the volume."
     raw = volume_read(
-        _uc_head_path(url),
+        _uc_pointer_path(url, generations[-1]),
         event="uc_head_read_failed",
-        unavailable="The project's storage pointer could not be read from the volume.",
+        unavailable=unavailable,
     )
     if raw is None:
-        return None
+        raise StorageUnavailableError(unavailable)
     try:
         payload = json.loads(raw)
     except (UnicodeError, json.JSONDecodeError) as exc:
@@ -706,7 +764,6 @@ def publish_to_uc(url: str, project_root: Path) -> None:
             bundle_create_ms=work.bundle_create_ms,
             bundle_verify_ms=work.bundle_verify_ms,
             upload_ms=work.upload_ms,
-            publish_fence_ms=work.publish_fence_ms,
             pointer_write_ms=work.pointer_write_ms,
             local_record_ms=work.local_record_ms,
             cleanup_ms=work.cleanup_ms,
@@ -721,7 +778,7 @@ def _publish_to_uc(url: str, project_root: Path, work: _UCPublishWork) -> None:
     Order matters: hold the lease → bundle locally (the only step under
     the repository mutation lock) → verify — the upload is the only
     durable copy, so it is proven readable before it is trusted → upload
-    the bundle → re-check the fence → write the pointer LAST → prune old
+    the bundle → create the generation's pointer, which is the fence → prune old
     generations (best-effort). A torn upload therefore leaves the
     previous pointer intact and harmless.
     """
@@ -791,26 +848,6 @@ def _publish_to_uc(url: str, project_root: Path, work: _UCPublishWork) -> None:
             finally:
                 work.upload_ms += _elapsed_ms(phase_started_at)
 
-    # The initial fence guarded the packaging; this one guards the pointer.
-    # Any movement in between means another writer published mid-flight —
-    # overwriting its pointer would silently discard its generation.
-    phase_started_at = time.perf_counter()
-    try:
-        latest = read_uc_head(url)
-    finally:
-        work.publish_fence_ms += _elapsed_ms(phase_started_at)
-    moved = (latest is None) != (head is None) or (
-        latest is not None
-        and head is not None
-        and (latest.generation != head.generation or latest.writer_id != head.writer_id)
-    )
-    if moved:
-        raise StorageSupersededError(
-            "Another app container has published newer work to this project's "
-            "storage location — publishing stopped so nothing is overwritten. "
-            "Restart the app to continue from the latest published project."
-        )
-
     pointer = UCHead(
         generation=generation,
         tip_sha=tip_sha,
@@ -820,10 +857,10 @@ def _publish_to_uc(url: str, project_root: Path, work: _UCPublishWork) -> None:
     )
     phase_started_at = time.perf_counter()
     try:
-        volume_write(
-            _uc_head_path(url),
+        committed = volume_create(
+            _uc_pointer_path(url, generation),
             pointer.to_json().encode("utf-8"),
-            event="uc_head_write_failed",
+            event="uc_pointer_write_failed",
             unavailable=(
                 "The project's storage pointer could not be written to the volume. "
                 "Saves are kept locally and will publish on the next save, or retry now."
@@ -831,6 +868,18 @@ def _publish_to_uc(url: str, project_root: Path, work: _UCPublishWork) -> None:
         )
     finally:
         work.pointer_write_ms += _elapsed_ms(phase_started_at)
+    if not committed:
+        # Another writer committed this generation between our read and our
+        # create. The create-only write is the fence: nothing of theirs was
+        # touched, and our bundle is an orphan the next prune would remove
+        # anyway — drop it now, best-effort, so the loser leaves no litter.
+        _discard_orphaned_bundle(url, bundle_filename)
+        raise StorageSupersededError(
+            "Another app container has published newer work to this project's "
+            "storage location — publishing stopped so nothing is overwritten. "
+            "Restart the app to continue from the latest published project."
+        )
+
     _writer.last_seen_generation = generation
     phase_started_at = time.perf_counter()
     try:
@@ -845,6 +894,13 @@ def _publish_to_uc(url: str, project_root: Path, work: _UCPublishWork) -> None:
         _prune_uc_bundles(url, generation)
     finally:
         work.cleanup_ms += _elapsed_ms(phase_started_at)
+
+
+def _discard_orphaned_bundle(url: str, filename: str) -> None:
+    try:
+        _files_api().delete(_uc_bundle_path(url, filename))
+    except Exception as exc:
+        logger.warning("uc_orphan_bundle_delete_failed", error=str(exc))
 
 
 def _prune_uc_bundles(url: str, newest: int) -> None:
@@ -876,6 +932,22 @@ def _prune_uc_bundles(url: str, newest: int) -> None:
             api.delete(f"{directory}/{name}")
         except Exception as exc:
             logger.warning("uc_bundle_prune_failed", name=name, error=str(exc))
+
+    pointer_dir = f"{_uc_volume_path(url)}/{_UC_POINTER_DIR}"
+    try:
+        pointer_entries = list(api.list_directory_contents(pointer_dir))
+    except Exception as exc:
+        logger.warning("uc_bundle_prune_failed", error=str(exc))
+        return
+    for entry in pointer_entries:
+        name = getattr(entry, "name", None) or ""
+        if len(name) == 11 and name.endswith(".json") and name[:6].isdigit():
+            generation = int(name[:6])
+            if generation <= cutoff and generation != newest:
+                try:
+                    api.delete(f"{pointer_dir}/{name}")
+                except Exception as exc:
+                    logger.warning("uc_bundle_prune_failed", name=name, error=str(exc))
 
 
 def download_bundle(url: str, head: UCHead, dest_dir: Path, *, what: str) -> Path:
@@ -1007,12 +1079,15 @@ def fork_uc_location(
     records_unavailable = (
         "The forked location's records could not be written to the storage volume."
     )
-    volume_write(
-        _uc_head_path(target),
+    if not volume_create(
+        _uc_pointer_path(target, 1),
         pointer.to_json().encode("utf-8"),
         event="uc_fork_pointer_write_failed",
         unavailable=records_unavailable,
-    )
+    ):
+        raise StorageConfigError(
+            "The fork target already has a stored project. Choose an empty location."
+        )
     volume_write(
         _uc_lineage_path(target),
         lineage.to_json().encode("utf-8"),

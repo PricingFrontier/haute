@@ -147,18 +147,25 @@ the lock; the slow part — the upload — runs outside it.
   chains stay rejected until representative growth crosses one of those gates:
   their dependency, retry, recovery, and retention complexity is not justified
   by an unmeasured possibility.
-- **Pointer written last.** The Files API offers upload-with-overwrite
-  but no atomic rename, so the volume layout is generation-numbered
-  bundles plus a small `HEAD.json` pointer written only after its
-  bundle is fully uploaded and verified. A torn or partial upload is
-  therefore harmless: readers only ever follow a generation that is
-  already complete. The last five generations are retained as cheap
-  rollback; older ones are pruned best-effort.
-- **Single-writer fencing.** The pointer carries a `writer_id`.
+- **One pointer per generation, created once.** The Files API offers
+  upload-with-overwrite and a create-only upload (`overwrite=false` is
+  refused when the path exists) but no atomic rename or
+  compare-and-swap, so the volume layout is generation-numbered
+  bundles plus one small immutable pointer record per committed
+  generation, created only after its bundle is fully uploaded and
+  verified; the highest committed pointer is the head. A torn or
+  partial upload is therefore harmless: readers only ever follow a
+  generation that is already complete. The last five generations are
+  retained as cheap rollback; older ones are pruned best-effort.
+- **Single-writer fencing.** Each pointer carries a `writer_id`.
   Single-writer remains the design assumption (one container, one
-  project), but a read-before-write comparison lets a superseded
-  container stop loudly instead of silently interleaving generations
-  with its replacement.
+  project), but the create-only pointer write is the fence: two
+  writers racing to the same generation contend on one path that only
+  one of them can create, so a superseded container stops loudly
+  instead of silently interleaving generations with — or overwriting —
+  its replacement. A read-before-write comparison still runs first,
+  only to stop early without packaging when the loss is already
+  visible.
 - **A claim makes the location behave like a locally-owned file.** The
   fence prevents corruption but only fires at write time; the claim
   (`CLAIM.json` beside the pointer) is the *steering* layer that stops
