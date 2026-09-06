@@ -62,7 +62,6 @@ and file-name inventories do not establish semantic completeness.
 |---|---|---|---|
 | ENG-T04 | Decision | P1 | Make the node execution boundary testable and truthful; detect F1. |
 | ENG-T05 | Decision | P1 | Prove publication ordering at the authoritative pointer; detect F2. |
-| ENG-T06 | Reverify | P2 | Preserve the selected published branch across restore; detect F4. |
 | ENG-T08 | Reverify | P2 | Preserve executable meaning through rename and graph editing; detect F11. |
 | ENG-T09 | Planned | P2 | Reconcile F5–F8 against executable boundary contracts. |
 | ENG-T10 | Planned | P2 | Cover every supported workflow family across product components. |
@@ -166,36 +165,6 @@ qualification is required to claim the production atomicity guarantee.
 
 **Evidence:** `src/haute/_uc_transport.py`; `src/haute/_project_storage.py`;
 `tests/test_project_storage.py`; `specs/hosted-project-storage/low-level.md`.
-
-### ENG-T06 — Save, change branch, publish, and restore a fresh session
-
-**Why:** F4 restores the branch captured at binding instead of the branch most
-recently published. An original-branch-only restart test cannot distinguish them.
-
-**Plan:** Specify durable branch selection and its relationship to a successfully
-published generation, including populated binds, unpublished local changes, branch
-removal and failed publication. Extend temporary Git/UC lifecycle fixtures:
-bind on A; select B; edit/save distinct rows on B; publish; discard clone-local
-state; restore in a fresh clone/session. Check the active working branch,
-corresponding save ledger, source bytes, parsed graph and computed result.
-
-Run the sequence for UC and a local bare Git remote. Add populated bind followed
-by selection, a failed publish that must not advertise an unavailable restart
-target, missing/renamed branch handling, restore twice, and missing Git identity
-followed by explicit identity setup and save retry. Follow the specified branch
-recovery behaviour rather than accepting any branch with matching file contents.
-
-**Acceptance:** Baseline UC test restores A/old data and fails; corrected UC and
-Git cases restore B and the correct save posture. No process-global binding cache
-or leftover `.haute` state makes a supposed restart pass. A browser test verifies
-the branch/recovery indication while backend tests own process replacement.
-
-**Dependencies:** The coverage ledger; ENG-T05 for concurrent publication guarantees.
-The ordinary branch-restart regression can be implemented independently.
-
-**Evidence:** `src/haute/_project_storage.py`; `tests/test_project_storage.py`;
-`tests/test_hosted.py`; `frontend/e2e/git-graph.spec.ts`;
-`frontend/e2e/git-sidebar-regression.spec.ts`.
 
 ### ENG-T08 — Preserve execution through rename and graph editing
 
@@ -469,7 +438,7 @@ ENG-T04–11. Mutation expansion follows measured value, not a blanket target co
 ## Delivery order and verification
 
 Reproduce ENG-T04/05 and
-resolve their enforcement/provider decisions promptly. Follow with ENG-T06 and ENG-T08 lifecycle
+resolve their enforcement/provider decisions promptly. Follow with ENG-T08 rename-lifecycle
 work, and reconcile ENG-T09 prose alongside the relevant boundary review.
 Expand ENG-T10 one workflow slice at a time; add ENG-T11 properties only after
 the corresponding oracle is settled. Integrate ENG-T12 continuously.

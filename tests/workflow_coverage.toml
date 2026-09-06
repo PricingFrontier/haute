@@ -617,15 +617,32 @@ id = "W11-S02"
 workflow = "W11"
 contract = "specs/hosted-project-storage/high-level.md#behaviour"
 finding = "F4"
-state = "gap"
-package = "ENG-T06"
+state = "covered"
 entry_point = "hosted"
 tier = "workflow"
 lane = "backend"
-real = ["storage-binding", "git"]
+real = ["storage-binding", "git", "push-queue"]
 stubbed = ["files-api"]
-tests = []
-invariant = "Restore after publishing on a newly selected branch resumes that branch with its contents and save ledger."
+tests = [
+  "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_restore_resumes_the_branch_published_last",
+  "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_populated_bind_then_selected_branch_becomes_the_restart_target",
+  "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_failed_publish_keeps_the_previous_restart_target",
+  "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_record_naming_a_branch_the_stored_project_lacks_still_serves",
+  "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_missing_identity_then_setup_then_save_retry",
+  "tests/test_project_storage.py::TestUcContainerDeathSurvival::test_deleting_the_published_branch_then_reselecting_moves_the_target",
+  "tests/test_project_storage.py::TestContainerDeathSurvival::test_restore_resumes_the_branch_published_last",
+  "tests/test_project_storage.py::TestContainerDeathSurvival::test_populated_bind_then_selected_branch_becomes_the_restart_target",
+  "tests/test_project_storage.py::TestContainerDeathSurvival::test_failed_publish_keeps_the_previous_restart_target_until_a_publish_succeeds",
+  "tests/test_project_storage.py::TestContainerDeathSurvival::test_restart_target_write_failure_is_a_transport_failure_after_the_push_landed",
+  "tests/test_project_storage.py::TestContainerDeathSurvival::test_binding_naming_a_branch_the_remote_lacks_still_serves",
+  "frontend/e2e/core-flows.spec.ts::first-run chooser creates a working branch and saves land on its ledger",
+]
+invariant = "Restore after publishing on a newly selected branch resumes that branch with its contents and save ledger, over UC and a bare git remote; the restart target moves only with a successful publish (a populated bind records none until the first publish, a failed transport or record write leaves the previous target and reports a transport failure), a record naming an absent branch still serves with the chooser, and a restored clone without a git identity fails its first save loudly and succeeds after identity setup. The browser chooser witness covers the recovery indication."
+
+[scenarios.evidence]
+commit = "e46d9c6a"
+command = 'uv run pytest "tests/test_project_storage.py::TestUcContainerDeathSurvival" "tests/test_project_storage.py::TestContainerDeathSurvival" -q -p no:warnings'
+result = "40 passed in 37.10s"
 
 [[scenarios]]
 id = "W11-S03"
