@@ -2923,6 +2923,116 @@ class TestDispersionErrorPaths:
         (job_id,) = store.list_jobs()
         assert store.require_job(job_id)["status"] == "memory_limited"
 
+    def test_dispersion_timeout_marks_the_job_timed_out_and_late_completion_cannot_revive_it(
+        self, client, nb_training_data, monkeypatch
+    ):
+        from haute._worker_isolation import IsolatedWorkerTimeoutError
+        from haute.schemas import DispersionEstimateRequest
+
+        graph = _make_negbinomial_graph(nb_training_data)
+        store, service = self._service()
+        monkeypatch.setattr("haute.routes.modelling._train_service", service)
+
+        # Confirm status read has no timeout accounting (unlike /train/status)
+        seed_job(
+            store,
+            "disp_no_status_timeout",
+            {
+                "status": "running",
+                "job_type": "dispersion_estimate",
+                "param": "theta",
+                "progress": 0.2,
+                "message": "Estimating",
+                "start_time": time.monotonic() - 500,
+                "timeout": 10,
+                "created_at": time.time(),
+            },
+        )
+        try:
+            status_read_before = client.get(
+                "/api/modelling/dispersion/status/disp_no_status_timeout"
+            )
+            assert status_read_before.status_code == 200
+            assert status_read_before.json()["status"] == "running"
+        finally:
+            store.delete_job("disp_no_status_timeout")
+
+        # Deadline is enforced via isolated worker timeout
+        def standin_worker(*_args: object, **_kwargs: object) -> None:
+            raise IsolatedWorkerTimeoutError(timeout_seconds=60.0)
+
+        threads: list[object] = []
+        orig_launch = service._launch_dispersion_background
+
+        def capturing_launch(*args: object, **kwargs: object):
+            t = orig_launch(*args, **kwargs)
+            if t is not None:
+                threads.append(t)
+            return t
+
+        body = DispersionEstimateRequest.model_validate(
+            {"graph": graph, "node_id": "train", "param": "theta"}
+        )
+        with (
+            patch.object(service, "_launch_dispersion_background", side_effect=capturing_launch),
+            patch("haute.routes._training_lifecycle._run_dispersion_process_job", standin_worker),
+        ):
+            resp = service.start_dispersion_estimate(body)
+
+        assert resp.status == "started"
+        job_id = resp.job_id
+
+        assert len(threads) == 1
+        threads[0].join(timeout=5.0)
+        assert not threads[0].is_alive()
+
+        expected_message = (
+            "The background process was stopped after exceeding its time limit "
+            "of 60 seconds. Try again with less data, or increase the configured timeout."
+        )
+
+        job = store.require_job(job_id)
+        assert job["status"] == "timed_out"
+        assert job["terminal_reason"] == "timed_out"
+        assert job["message"] == expected_message
+        assert "timed out" in job["message"].lower() or "time limit" in job["message"].lower()
+        assert "Traceback" not in job["message"]
+        assert job.get("elapsed_seconds", 0) >= 0
+        assert job.get("value") is None
+        assert job.get("result") is None
+
+        status_resp = client.get(f"/api/modelling/dispersion/status/{job_id}")
+        assert status_resp.status_code == 200
+        data = status_resp.json()
+        assert data["status"] == "timed_out"
+        assert data["terminal_reason"] == "timed_out"
+        assert data["message"] == expected_message
+        assert data["elapsed_seconds"] >= 0
+        assert data["value"] is None
+
+        # Late completion cannot revive the timed-out job
+        late_result = service._lifecycle.transition(
+            job_id,
+            to="completed",
+            message="Completed",
+            fields={"value": 2.45, "progress": 1.0},
+        )
+        assert late_result is None
+
+        status_again = client.get(f"/api/modelling/dispersion/status/{job_id}")
+        assert status_again.status_code == 200
+        data_again = status_again.json()
+        assert data_again["status"] == "timed_out"
+        assert data_again["terminal_reason"] == "timed_out"
+        assert data_again["message"] == expected_message
+        assert data_again["value"] is None
+
+        stored_again = store.require_job(job_id)
+        assert stored_again["status"] == "timed_out"
+        assert stored_again["terminal_reason"] == "timed_out"
+        assert stored_again["message"] == expected_message
+        assert stored_again.get("value") is None
+
     def test_cancel_dispersion_running_then_terminal_noop(self):
         store, service = self._service()
         job_id = store.create_job(
