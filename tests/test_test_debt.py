@@ -326,6 +326,16 @@ _EXPECTED_DEBT_IDS = {
     # native memory cap (Linux cgroup/rlimit, Windows Job Object); macOS skips.
     # See tests/test_input_preparation.py.
     "989b2ba60fe375be",
+    # Hosted git-credential helper — the askpass helper is a `#!/bin/sh`
+    # script installed only by the hosted container bootstrap
+    # (databricks_app/bootstrap.py), so the two tests that execute it cannot
+    # run on Windows, which has no shebang handling and refuses the file with
+    # WinError 193. The Linux legs run them. The helper's other contracts (no
+    # token in the file, no helper without a token, GIT_ASKPASS registration)
+    # stay platform-neutral and run everywhere.
+    # See tests/test_project_storage.py::TestCredentialHandling.
+    "b4318bcdd014bb2e",
+    "e2be584e12bb5227",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

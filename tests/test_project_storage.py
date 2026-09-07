@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import replace
@@ -511,10 +512,19 @@ class TestCredentialHandling:
         monkeypatch.setenv(GIT_TOKEN_ENV, "t")
         helper = _project_storage.configure_git_credentials(tmp_path / "runtime")
         assert helper is not None
-        assert stat.S_IMODE(helper.stat().st_mode) == 0o700
+        if sys.platform != "win32":
+            # NTFS carries no POSIX mode bits and chmod there only toggles the
+            # read-only flag. The helper is installed by the hosted container
+            # bootstrap alone, so owner-only is stated where it can hold; the
+            # registration below is platform-neutral and always checked.
+            assert stat.S_IMODE(helper.stat().st_mode) == 0o700
         assert os.environ["GIT_ASKPASS"] == str(helper)
         assert os.environ["GIT_TERMINAL_PROMPT"] == "0"
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the askpass helper is a #!/bin/sh script Windows cannot execute",
+    )
     def test_helper_emits_username_and_token_on_the_right_prompts(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -532,6 +542,10 @@ class TestCredentialHandling:
         assert ask("Username for 'https://github.com': ") == "x-access-token"
         assert ask("Password for 'https://x@github.com': ") == "super-secret-token"
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the askpass helper is a #!/bin/sh script Windows cannot execute",
+    )
     def test_helper_refuses_an_unrecognised_prompt_without_the_token(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

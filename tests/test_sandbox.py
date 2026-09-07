@@ -216,6 +216,14 @@ class TestSafeUnpickle:
         set_project_root(tmp_path)
         f = tmp_path / "plain.pkl"
         f.write_bytes(pickle.dumps({"a": 1}))
+
+        # Warm the load path before snapshotting: the allowlist machinery
+        # imports scipy on first use, and scipy installs warnings filters of
+        # its own at import time. Those are not the promotion under test, and
+        # whether they are already installed depends on what ran earlier in
+        # this process — so let the imports settle first and compare only what
+        # a second, fully warmed load leaves behind.
+        assert safe_unpickle(str(f)) == {"a": 1}
         before = list(warnings.filters)
 
         assert safe_unpickle(str(f)) == {"a": 1}
