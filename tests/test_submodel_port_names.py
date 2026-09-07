@@ -12,6 +12,7 @@ from haute import Submodel
 from haute._parser_submodels import parse_submodel_source
 from haute._types import (
     GraphNode,
+    NodeType,
     PipelineGraph,
     SubmodelDefinition,
     SubmodelEndpoint,
@@ -284,6 +285,31 @@ def test_codegen_emits_name_and_never_label_or_portid():
     assert "'name': 'out_data'" in sub_code
     assert "label" not in sub_code
     assert "portId" not in sub_code
+
+
+def test_submodel_port_identity_request_accepts_canonical_source_handles():
+    """A submodelPort request carrying only canonical handles validates.
+
+    The rejecting side of this validator is witnessed through the route; this
+    pins the accepting side, so a handle that is already a canonical
+    identifier is carried through untouched rather than refused.
+    """
+    node = EditorIdentityRequestNode(
+        node_id="port-1",
+        label="quotes",
+        node_type=NodeType.SUBMODEL_PORT,
+        source_handles=["quotes", "premiums"],
+    )
+
+    assert node.source_handles == ["quotes", "premiums"]
+
+    with pytest.raises(ValidationError, match="submodelPort source handles"):
+        EditorIdentityRequestNode(
+            node_id="port-2",
+            label="quotes",
+            node_type=NodeType.SUBMODEL_PORT,
+            source_handles=["not an identifier"],
+        )
 
 
 def test_deleted_schema_fields():
