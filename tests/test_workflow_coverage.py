@@ -7,6 +7,7 @@ import re
 import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -148,13 +149,49 @@ def _validate_contract_reference(contract_ref: str, *, root: Path, scenario_id: 
     if not anchor.strip():
         return [f"{context}: contract reference {contract_ref!r} has empty heading anchor"]
 
-    content = target.read_text(encoding="utf-8")
+    content = _read_source(target)
     headings = _extract_headings(content)
     valid_slugs = {slug(h) for h in headings}
     if anchor not in valid_slugs:
         return [f"{context}: contract anchor {anchor!r} not found in {file_part}"]
 
     return []
+
+
+@cache
+def _read_source_cached(path: str, mtime_ns: int, size: int) -> str:
+    return Path(path).read_text(encoding="utf-8")
+
+
+@cache
+def _parse_python_cached(path: str, mtime_ns: int, size: int) -> ast.Module | SyntaxError:
+    try:
+        return ast.parse(_read_source_cached(path, mtime_ns, size), filename=path)
+    except SyntaxError as err:
+        return err
+
+
+def _stat_key(path: Path) -> tuple[str, int, int]:
+    """Cache key that changes whenever *path*'s contents could have."""
+    info = path.stat()
+    return (str(path), info.st_mtime_ns, info.st_size)
+
+
+def _read_source(path: Path) -> str:
+    """Text of *path*, memoised on its stat identity."""
+    return _read_source_cached(*_stat_key(path))
+
+
+def _parse_python(path: Path) -> ast.Module | SyntaxError:
+    """Parsed module for *path*, or the ``SyntaxError`` parsing it raised.
+
+    The ledger names hundreds of test references spread over far fewer files,
+    and the debt scan walks the same tree, so an unmemoised validator reads and
+    parses the larger test modules many times over — enough to carry this past
+    the suite's per-test timeout. Keying on the stat identity keeps a file that
+    a test rewrites from being served from the cache.
+    """
+    return _parse_python_cached(*_stat_key(path))
 
 
 def _scan_backend_debt(root: Path) -> list[_DebtSite]:
@@ -164,9 +201,8 @@ def _scan_backend_debt(root: Path) -> list[_DebtSite]:
         for py_path in sorted(tests_dir.rglob("*.py")):
             if not py_path.is_file():
                 continue
-            try:
-                tree = ast.parse(py_path.read_text(encoding="utf-8"), filename=str(py_path))
-            except SyntaxError:
+            tree = _parse_python(py_path)
+            if isinstance(tree, SyntaxError):
                 continue
             rel_path = py_path.relative_to(root)
             sites.extend(_DebtVisitor(rel_path).scan(tree))
@@ -185,7 +221,7 @@ def _scan_frontend_debt(root: Path) -> list[_FrontendDebtSite]:
             rel_path = fe_path.relative_to(root)
             if not _is_frontend_test_file(REPO_ROOT / rel_path):
                 continue
-            content = fe_path.read_text(encoding="utf-8")
+            content = _read_source(fe_path)
             sites.extend(_scan_frontend_source(content, rel_path))
     return sites
 
@@ -211,7 +247,7 @@ def hypothesis_test_modules(root: Path) -> set[str]:
     for path in (root / "tests").rglob("test_*.py"):
         if "performance" in path.relative_to(root).parts:
             continue
-        if _HYPOTHESIS_IMPORT.search(path.read_text(encoding="utf-8")):
+        if _HYPOTHESIS_IMPORT.search(_read_source(path)):
             found.add(path.relative_to(root).as_posix())
     return found
 
@@ -474,10 +510,9 @@ def _validate_test_reference(
                 "is a non-test helper function (must start with 'test')"
             ]
 
-        try:
-            tree = ast.parse(file_path.read_text(encoding="utf-8"), filename=str(file_path))
-        except SyntaxError as err:
-            return [f"scenario {scenario_id}: syntax error parsing {file_part}: {err}"]
+        tree = _parse_python(file_path)
+        if isinstance(tree, SyntaxError):
+            return [f"scenario {scenario_id}: syntax error parsing {file_part}: {tree}"]
 
         if _module_is_perf_marked(tree):
             return [
@@ -539,7 +574,7 @@ def _validate_test_reference(
                 ]
 
         title = remainder
-        content = file_path.read_text(encoding="utf-8")
+        content = _read_source(file_path)
         if not _declares_test_title(content, title):
             return [
                 f"scenario {scenario_id}: test title {title!r} not found in it() or test() call "
@@ -965,7 +1000,11 @@ def _valid_ledger(root: Path) -> dict[str, Any]:
     }
 
 
+@pytest.mark.timeout(180)
 def test_workflow_coverage_ledger_is_valid() -> None:
+    # A whole-repository static scan, like the debt and write-sandbox lints:
+    # it parses every test module and every frontend test file, so it does not
+    # fit the suite's per-test budget for unit tests.
     root = Path(__file__).resolve().parents[1]
     ledger_path = root / "tests" / "workflow_coverage.toml"
     data = load_ledger(ledger_path)

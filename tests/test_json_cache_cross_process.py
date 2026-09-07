@@ -617,6 +617,7 @@ def test_cache_build_lock_passes_remaining_finite_timeout_and_detects_lost_handl
 
 def _run_build_transaction_until(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     *,
     cancel: bool,
     timeout_seconds: float | None,
@@ -628,8 +629,16 @@ def _run_build_transaction_until(
 
     from haute._execution_admission import IsolatedExecutionBudget
     from haute._execution_context import ExecutionProfile
+    from haute._worker_isolation import process_memory_caps_supported
     from haute.routes import json_cache
     from haute.routes._isolated_worker_async import WorkerCancellationGate
+
+    if not process_memory_caps_supported():
+        # macOS has no native kernel cap, so the default 'required' policy
+        # refuses the spawn before a child exists and this contract could
+        # never be observed there. Termination and staging cleanup are what
+        # is under test, and neither depends on the cap.
+        monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
 
     cache_dir = tmp_path / "json_identity"
     started = tmp_path / "child-started"
@@ -724,9 +733,10 @@ def _run_build_transaction_until(
 
 def test_http_build_cancellation_terminates_the_child_and_cleans_staging_before_releasing_the_lock(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     exc, child_pid, cache_dir = _run_build_transaction_until(
-        tmp_path, cancel=True, timeout_seconds=None
+        tmp_path, monkeypatch, cancel=True, timeout_seconds=None
     )
     assert isinstance(exc, IsolatedWorkerStoppedError) and exc.terminal_reason == "cancelled"
     deadline = time.monotonic() + 10.0
@@ -739,9 +749,10 @@ def test_http_build_cancellation_terminates_the_child_and_cleans_staging_before_
 
 def test_http_build_timeout_terminates_the_child_and_cleans_staging_before_releasing_the_lock(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     exc, child_pid, cache_dir = _run_build_transaction_until(
-        tmp_path, cancel=False, timeout_seconds=6.0
+        tmp_path, monkeypatch, cancel=False, timeout_seconds=6.0
     )
     assert isinstance(exc, IsolatedWorkerTimeoutError) and exc.timeout_seconds == 6.0
     deadline = time.monotonic() + 10.0

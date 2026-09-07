@@ -712,11 +712,20 @@ class TestStaleSaveUnderLock:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Two concurrent saves with the same base revision race under lock; exactly one wins."""
+        import asyncio
+
         from fastapi.testclient import TestClient
 
         from haute.server import app
 
         monkeypatch.chdir(tmp_path)
+        # ``save_lock`` is a module-level asyncio.Lock, and asyncio binds one to
+        # an event loop the first time it is awaited while already held. Any
+        # earlier test that contended it left it bound to that test's loop, so
+        # the losing request here would raise "bound to a different event loop"
+        # instead of being rejected as stale. A fresh lock binds to this
+        # client's loop; serialisation is what the route needs from it.
+        monkeypatch.setattr("haute.routes.pipeline.save_lock", asyncio.Lock())
         with TestClient(app) as client:
             base_graph = {
                 "nodes": [

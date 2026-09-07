@@ -733,6 +733,32 @@ def test_case_only_module_rename_preserves_newly_written_module(tmp_path: Path) 
         assert old.read_text(encoding="utf-8") == "# old module\n"
 
 
+def test_precondition_digest_is_found_by_file_identity_not_path_spelling(tmp_path: Path) -> None:
+    """The drift guard resolves a recorded digest by device and inode.
+
+    A case-insensitive filesystem hands the guard a spelling the precondition
+    never recorded, and macOS ``Path.resolve`` keeps that spelling rather than
+    the on-disk name. Recorded paths that have since vanished are stepped over,
+    and a file nothing recorded reads as absent when the precondition ran.
+    """
+    from haute.routes._save_pipeline import _recorded_digest_for_same_file
+
+    recorded = tmp_path / "module.py"
+    recorded.write_text("# recorded\n", encoding="utf-8")
+    vanished = tmp_path / "gone.py"
+    identities: dict[str, str | None] = {
+        str(vanished): "digest-of-a-file-since-removed",
+        str(recorded): "recorded-digest",
+    }
+
+    assert _recorded_digest_for_same_file(recorded, identities) == "recorded-digest"
+
+    unrecorded = tmp_path / "other.py"
+    unrecorded.write_text("# other\n", encoding="utf-8")
+    assert _recorded_digest_for_same_file(unrecorded, identities) is None
+    assert _recorded_digest_for_same_file(vanished, identities) is None
+
+
 def test_derived_module_removal_deletes_owned_file(tmp_path: Path) -> None:
     """A removed persisted definition deletes its uniquely owned module."""
     (tmp_path / "main.py").write_text(

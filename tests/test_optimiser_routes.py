@@ -791,11 +791,12 @@ class TestSolveRoute:
         store = JobStore()
         service = OptimiserSolveService(store)
         setup_started = threading.Event()
+        release_setup = threading.Event()
         launch_called = threading.Event()
 
         def slow_execute(*args, **kwargs):
             setup_started.set()
-            time.sleep(0.25)
+            assert release_setup.wait(timeout=10.0), "setup was never released"
             return {"source": scored_lf}
 
         def mark_launched(*args, **kwargs):
@@ -808,15 +809,18 @@ class TestSolveRoute:
             patch.object(service, "_build_grid", return_value=object()),
             patch.object(service, "_launch_background", side_effect=mark_launched),
         ):
-            start = time.monotonic()
             response = service.start(body)
-            elapsed = time.monotonic() - start
-            assert setup_started.wait(timeout=1.0)
-            assert launch_called.wait(timeout=2.0)
+            # ``start`` returned while setup is still blocked on release_setup,
+            # which is what "off the HTTP request" means. Holding setup open
+            # states that directly; an elapsed-time bound would only assert
+            # that a loaded runner beat an arbitrary wall-clock margin.
+            assert setup_started.wait(timeout=10.0)
+            assert not launch_called.is_set()
+            release_setup.set()
+            assert launch_called.wait(timeout=10.0)
 
         assert response.status == "started"
         assert response.job_id is not None
-        assert elapsed < 0.1
         assert store.require_job(response.job_id)["status"] == "running"
 
     def test_solve_setup_http_failure_becomes_pollable_status(self, scored_data):

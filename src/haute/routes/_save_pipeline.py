@@ -132,6 +132,34 @@ def _artifact_digest(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _recorded_digest_for_same_file(
+    target: Path,
+    identities: dict[str, str | None],
+) -> str | None:
+    """Digest *identities* recorded for the on-disk file *target* names.
+
+    A case-insensitive filesystem reaches one file through spellings the
+    precondition never recorded: ``modules/Foo.py`` and ``modules/foo.py`` are
+    the same file on macOS, where ``Path.resolve`` keeps the spelling it was
+    handed instead of the on-disk name. Device and inode identify that file
+    however it is spelled, and still tell genuinely distinct files apart on a
+    case-sensitive filesystem. ``None`` when nothing recorded names it, which
+    reads as "absent when the precondition ran".
+    """
+    try:
+        wanted = target.stat()
+    except OSError:
+        return None
+    for recorded, digest in identities.items():
+        try:
+            candidate = Path(recorded).stat()
+        except OSError:
+            continue
+        if candidate.st_dev == wanted.st_dev and candidate.st_ino == wanted.st_ino:
+            return digest
+    return None
+
+
 def _mark_self_write_cb(path: Path, payload: bytes) -> None:
     """Writer callback — signals the file-watcher for each rename.
 
@@ -283,7 +311,7 @@ class SavePipelineService:
         if key in identities:
             expected = identities[key]
         elif any(resolved.is_relative_to(root) for root in self._identity_roots):
-            expected = None
+            expected = _recorded_digest_for_same_file(target, identities)
         else:
             return
         if _artifact_digest(target) != expected:
