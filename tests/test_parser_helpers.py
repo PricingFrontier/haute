@@ -573,7 +573,12 @@ class TestExtractConnectCalls:
 class TestBuildEdges:
     @staticmethod
     def _raw(name: str, params: list[str]) -> dict:
-        return {"func_name": name, "param_names": params, "node_type": "polars"}
+        return {
+            "func_name": name,
+            "param_names": params,
+            "edge_param_names": params,
+            "node_type": "polars",
+        }
 
     def test_explicit_edges(self):
         nodes = [self._raw("a", []), self._raw("b", ["a"])]

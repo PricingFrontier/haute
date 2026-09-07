@@ -239,7 +239,7 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
     identifiers.  Instances keep their existing semantics: their signature is
     already physical and ``inputMapping`` describes the referenced original.
     """
-    logical_params = list(node_info.get("edge_param_names", node_info["param_names"]))
+    logical_params = list(node_info["edge_param_names"])
     config = node_info.get("config", {})
     input_mapping = config.get("inputMapping") if isinstance(config, dict) else None
     if (

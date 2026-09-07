@@ -330,8 +330,8 @@ class TestPreambleAliasAware:
 class TestImplicitEdgeDedup:
     def test_duplicate_param_name_yields_single_edge(self) -> None:
         raw_nodes = [
-            {"func_name": "a", "param_names": []},
-            {"func_name": "f", "param_names": ["a", "a"]},
+            {"func_name": "a", "param_names": [], "edge_param_names": []},
+            {"func_name": "f", "param_names": ["a", "a"], "edge_param_names": ["a", "a"]},
         ]
         edges = _build_edges(raw_nodes, [])
         ids = [e.id for e in edges]
@@ -1312,7 +1312,37 @@ class TestConservationGateRaisesOnEveryMismatch:
 
     @staticmethod
     def _raw(*specs: tuple[str, list[str]]) -> list[dict]:
-        return [{"func_name": name, "param_names": params} for name, params in specs]
+        return [
+            {"func_name": name, "param_names": params, "edge_param_names": params}
+            for name, params in specs
+        ]
+
+    @pytest.mark.parametrize(
+        "keyword", ["submodel_instance_paths", "submodel_graphs", "submodel_files", "unknown"]
+    )
+    def test_removed_and_unknown_keywords_are_rejected(self, keyword: str) -> None:
+        from haute._parser_conservation import assert_parser_structure_conserved
+
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            assert_parser_structure_conserved(
+                raw_nodes=[],
+                explicit_connects=[],
+                root_nodes=[],
+                root_edges=[],
+                **{keyword: []},
+            )
+
+    def test_missing_positional_parameter_metadata_is_rejected(self) -> None:
+        from haute._graph_builders import _build_edges
+        from haute._parser_bindings import assert_polars_parameters_bound
+        from haute._types import NodeType
+
+        graph = self._graph(["a"], [])
+        raw = {"func_name": "a", "node_type": NodeType.POLARS, "param_names": []}
+        with pytest.raises(KeyError, match="edge_param_names"):
+            _build_edges([raw], [])
+        with pytest.raises(KeyError, match="edge_param_names"):
+            assert_polars_parameters_bound(graph, [raw])
 
     def test_consistent_structure_is_accepted(self) -> None:
         from haute._parser_conservation import assert_parser_structure_conserved
@@ -1325,7 +1355,7 @@ class TestConservationGateRaisesOnEveryMismatch:
                 root_nodes=graph.nodes,
                 root_edges=graph.edges,
                 submodel_paths=["child.py"],
-                submodel_instance_paths=["child.py"],
+                submodel_occurrence_paths=["child.py"],
             )
             is None
         )
@@ -1401,7 +1431,7 @@ class TestConservationGateRaisesOnEveryMismatch:
                 root_nodes=graph.nodes,
                 root_edges=graph.edges,
                 submodel_paths=authored,
-                submodel_instance_paths=loaded,
+                submodel_occurrence_paths=loaded,
             )
         assert exc_info.value.context["authored_submodel_paths"] == authored
         assert exc_info.value.context["loaded_submodel_paths"] == loaded

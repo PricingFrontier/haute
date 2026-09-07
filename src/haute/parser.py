@@ -199,13 +199,10 @@ def parse_pipeline_source(
         warning=_format_load_error_warning(load_error_labels),
     )
     graph._parser_parameter_names = {
-        str(node["func_name"]): [str(name) for name in node.get("param_names", ())]
-        for node in raw_nodes
+        str(node["func_name"]): [str(name) for name in node["param_names"]] for node in raw_nodes
     }
     graph._parser_edge_parameter_names = {
-        str(node["func_name"]): [
-            str(name) for name in node.get("edge_param_names", node.get("param_names", ()))
-        ]
+        str(node["func_name"]): [str(name) for name in node["edge_param_names"]]
         for node in raw_nodes
     }
 
@@ -215,7 +212,7 @@ def parse_pipeline_source(
     submodel_base_dir = _submodel_base_dir or _base_dir
     submodel_graphs: dict[str, PipelineGraph] = {}
     submodel_files: dict[str, str] = {}
-    submodel_occurrence_paths: list[str] | None = None
+    submodel_occurrence_paths: list[str] = []
     submodel_names: set[str] = set()
     if registrations:
         if submodel_base_dir is None:
@@ -318,7 +315,6 @@ def parse_pipeline_source(
         root_nodes=rf_nodes,
         root_edges=edges,
         submodel_paths=submodel_paths,
-        submodel_files=submodel_files,
         submodel_occurrence_paths=submodel_occurrence_paths,
         submodel_aliases=submodel_names,
     )

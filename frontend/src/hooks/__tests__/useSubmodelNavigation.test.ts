@@ -811,7 +811,7 @@ describe("useSubmodelNavigation", () => {
 
     const reloadedNodes = [makeNode("other_node", "polars"), ...(retained ? [makeOccurrence()] : [])]
     act(() => {
-      result.current.handleDocumentReload(reloadedNodes)
+      result.current.handleDocumentReload({ nodes: reloadedNodes, edges: [] })
     })
 
     expect(result.current.viewStack).toHaveLength(1)
@@ -819,6 +819,7 @@ describe("useSubmodelNavigation", () => {
     expect(params.setActiveSubmodelIdentity).toHaveBeenLastCalledWith(null)
     expect(params.parentGraphRef.current).toBeNull()
     expect(params.setNodesRaw).toHaveBeenLastCalledWith(reloadedNodes)
+    expect(params.setEdgesRaw).toHaveBeenLastCalledWith([])
     vi.useRealTimers()
   })
 

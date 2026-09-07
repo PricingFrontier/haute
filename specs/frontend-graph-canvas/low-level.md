@@ -820,6 +820,10 @@ document replacement returns any drilled view to the authoritative root, clearin
 its cached parent graph, selection, and breadcrumbs together. Dirty child edits
 retain their canvas under the existing external-change fence.
 
+The navigation reload callback accepts exactly `{ nodes, edges }`, with both
+arrays required. Every accepted reload replaces both node and edge state; no
+array-only payload or omitted-edge compatibility branch is supported.
+
 - **API-input handle ids never synthesize.** Zero eligible frames render no
   source handle; one eligible frame or more renders one labelled handle per
   frame, ids = the raw labels. A blank, duplicate,

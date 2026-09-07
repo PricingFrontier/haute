@@ -112,9 +112,7 @@ def assert_polars_parameters_bound(
         config: Mapping[str, Any] = (
             graph_node.data.config if graph_node is not None else raw_node.get("config", {})
         )
-        authored = [
-            str(name) for name in raw_node.get("edge_param_names", raw_node.get("param_names", ()))
-        ]
+        authored = [str(name) for name in raw_node["edge_param_names"]]
         connected = [name for _edge, name in incoming_edge_bindings(graph, node_id)]
         _validate_node_parameters(
             node_id=node_id,
@@ -135,7 +133,7 @@ def assert_polars_parameters_bound(
             ]
             _validate_node_parameters(
                 node_id=child_node.id,
-                authored_params=edge_params.get(child_node.id, []),
+                authored_params=edge_params[child_node.id],
                 connected_inputs=connected,
                 input_mapping=_declared_input_mapping(child_node.data.config),
             )

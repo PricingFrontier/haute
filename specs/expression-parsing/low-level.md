@@ -129,6 +129,14 @@ appended before the column that depends on it) → return the parsed expressions
 
 ## Edge cases and invariants
 
+Parser internals consume only the current metadata contract. Every extracted
+node supplies `param_names` and `edge_param_names`; consumers must not infer
+missing positional-parameter metadata from the broader parameter list or an
+empty default. Missing required metadata is an internal contract failure.
+The conservation gate accepts `submodel_occurrence_paths` as its sole loaded
+occurrence manifest. Removed keywords and unknown keywords are rejected, with
+no alias or migration shim; direct test callers use the same current contract.
+
 - **Execution-order vs. walk-order**: `ast.walk` is breadth-first (parent before child), which for
   a chained `df.with_columns(A).with_columns(B)` visits the *outer* call (B) before the nested
   inner call (A). `_find_with_columns_calls` re-sorts by source span specifically so "last match

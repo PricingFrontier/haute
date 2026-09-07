@@ -49,7 +49,7 @@ export interface SubmodelNavReturn {
   handleDrillIntoSubmodel: (nodeId: string) => Promise<void>
   handleBreadcrumbNavigate: (depth: number) => void
   resetToAuthoritativeRoot: (sourceFile: string, pipelineName: string) => void
-  handleDocumentReload: (reloaded: Node[] | { nodes: Node[]; edges?: Edge[] }) => void
+  handleDocumentReload: (reloaded: { nodes: Node[]; edges: Edge[] }) => void
   handleCreateSubmodel: (name: string, nodeIds: string[]) => Promise<void>
   handleDissolveSubmodel: (instanceId: string) => Promise<void>
 }
@@ -355,10 +355,9 @@ export default function useSubmodelNavigation({
   }, [parentGraphRef, setActiveSubmodelIdentity])
 
   const handleDocumentReload = useCallback((
-    reloaded: Node[] | { nodes: Node[]; edges?: Edge[] },
+    reloaded: { nodes: Node[]; edges: Edge[] },
   ) => {
-    const reloadedNodes = Array.isArray(reloaded) ? reloaded : reloaded.nodes
-    const reloadedEdges = Array.isArray(reloaded) ? undefined : reloaded.edges
+    const { nodes: reloadedNodes, edges: reloadedEdges } = reloaded
     const activeView = viewStackRef.current[viewStackRef.current.length - 1]
     const drilledInstanceId =
       activeSubmodelIdentity?.instanceId ??
@@ -383,9 +382,7 @@ export default function useSubmodelNavigation({
     viewStackRef.current = rootView
     setViewStack(rootView)
     setNodesRaw(reloadedNodes)
-    if (reloadedEdges) {
-      setEdgesRaw(normalizeEdges(reloadedEdges))
-    }
+    setEdgesRaw(normalizeEdges(reloadedEdges))
     setSelectedNode(null)
     setLastSelectedId?.(null)
     setPreviewData(null)
