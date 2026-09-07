@@ -31,6 +31,15 @@
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
 | `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. |
 | `src/haute/routes/_runtime_path_errors.py` | Closed HTTP mapping for runtime-path failures: malformed path → 400, project-root escape → 403, selected by concrete exception type rather than message text. |
+| `src/haute/_node_config_recovery.py` | Current contracts and field reconciliation. |
+| `src/haute/_pipeline_recovery_drafts.py` | Durable draft lifecycle and transactions. |
+| `src/haute/_recovery_sources.py` | Literal source evidence and isolated generation. |
+| `src/haute/_recovery_schemas.py` | Strict DTOs and finite bounded JSON. |
+| `src/haute/_recovery_storage.py` | Contained evidence snapshots and canonical_json digests. |
+| `src/haute/_project_mutation_lock.py` | Cross-process project writer lock. |
+| `src/haute/_file_lock.py` | Shared OS file-lock primitives. |
+| `src/haute/node_defaults.json` | Shared palette/reset defaults. |
+| `src/haute/routes/recovery.py` | Draft API and authoritative document notifications. |
 
 ## Key types and data structures
 
@@ -841,7 +850,9 @@ are retained after discard. Original evidence is never included in graph payload
 Limits are 200 records, 512 artifacts, 16 MiB per artifact and 64 MiB per snapshot.
 The lock rendezvous uses a resolved-project-path hash in the user's temporary
 directory, so read-only previews and rejected mutations do not create project files.
-Non-finite JSON, ambiguous source boundaries and filesystem aliases fail explicitly.
+Recovery proposal and snapshot digests reuse `haute._cache.canonical_json`;
+public recovery settings remain finite JSON. Ambiguous source boundaries, non-finite
+values and filesystem aliases fail explicitly.
 Interrupted commits finish only if all written bytes and graph checks agree;
 otherwise they roll back only their own bytes or retain a conflicting journal.
 

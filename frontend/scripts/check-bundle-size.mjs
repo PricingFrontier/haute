@@ -18,7 +18,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // contract validators, server-owned editor identities, and extracted graph/job
 // controllers. The merged bundle is 1,322.8 KiB; 1,333 KiB preserves the same
 // ~10 KiB aggregate headroom without weakening the separate vendor caps.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1333
+// Generalised node recovery adds durable draft editing, source review, history,
+// restore, and strict response validation. Its dialog/validators are lazy; the
+// complete production bundle is 1,341.4 KiB. 1,352 KiB retains the same ~10 KiB
+// aggregate headroom. Startup and vendor caps stay unchanged, and the recovery
+// dialogs are explicitly prohibited from startup modulepreloads below.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1352
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -94,6 +99,8 @@ const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 283
 // surface. If one appears as a startup modulepreload, the app has likely
 // reintroduced an eager import path even if the initial gzip budget still fits.
 export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
+  "PipelineRepairDialog",
+  "RecoveryDraftDialog",
   "CodeMirrorEditor",
   "UtilityPanel",
   "vendor-codemirror",

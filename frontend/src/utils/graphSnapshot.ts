@@ -36,6 +36,8 @@ const REACT_FLOW_EDGE_UI_FIELDS = ["selected"] as const
 
 const LIVE_HISTORY_NODE_METADATA_FIELDS = new Set([
   "_functionName",
+  "_recoveryId",
+  "_sourceFile",
   "_defaultInputName",
   "_sourceHandleInputNames",
   "_configReference",

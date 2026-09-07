@@ -39,7 +39,7 @@ import RenameDialog from "./components/RenameDialog"
 import BackgroundJobPolling from "./components/BackgroundJobPolling"
 import PipelineLoadFailureView from "./components/PipelineLoadFailureView"
 import PipelineRecoveryBanner from "./components/PipelineRecoveryBanner"
-import PipelineRepairDialog, { type PipelineRepairTarget } from "./components/PipelineRepairDialog"
+import type { PipelineRepairTarget } from "./components/PipelineRepairDialog"
 import SourceRecoveryView from "./components/SourceRecoveryView"
 import StalePipelineReferenceBanner from "./components/StalePipelineReferenceBanner"
 import ImportsPanel from "./panels/ImportsPanel"
@@ -98,6 +98,7 @@ const WorkingBranchModal = lazy(() => import("./components/WorkingBranchModal"))
 const StorageBindModal = lazy(() => import("./components/StorageBindModal"))
 const UpstreamSyncModal = lazy(() => import("./components/UpstreamSyncModal"))
 const IdentityPromptModal = lazy(() => import("./components/IdentityPromptModal"))
+const PipelineRepairDialog = lazy(() => import("./components/PipelineRepairDialog"))
 const GitPanel = lazy(() => import("./panels/GitPanel"))
 const UtilityPanel = lazy(() => import("./panels/UtilityPanel"))
 const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
@@ -370,14 +371,16 @@ function FlowEditorOverlays({
         />
       )}
       {pipelineRepairTarget && (
-        <PipelineRepairDialog
-          key={`${documentSourceRevision ?? ""}:${pipelineRepairTarget.sourceFile}:${pipelineRepairTarget.recoveryId}`}
-          target={pipelineRepairTarget}
-          sourceFile={documentSourceFile}
-          sourceRevision={documentSourceRevision ?? ""}
-          onClose={onClosePipelineRepair}
-          onApplied={onRepairApplied}
-        />
+        <Suspense fallback={null}>
+          <PipelineRepairDialog
+            key={`${documentSourceRevision ?? ""}:${pipelineRepairTarget.sourceFile}:${pipelineRepairTarget.recoveryId}`}
+            target={pipelineRepairTarget}
+            sourceFile={documentSourceFile}
+            sourceRevision={documentSourceRevision ?? ""}
+            onClose={onClosePipelineRepair}
+            onApplied={onRepairApplied}
+          />
+        </Suspense>
       )}
       {nodeSearchOpen && (
         <Suspense fallback={null}>

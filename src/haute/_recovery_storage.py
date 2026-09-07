@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from haute._cache import canonical_json
 from haute._config_io import is_windows_reserved_filename, reject_duplicate_keys_hook
 from haute._pipeline_recovery import _recovery_artifacts
 from haute._pipeline_repair import PipelineRepairError
@@ -84,9 +85,7 @@ def decode(raw: str | None) -> bytes | None:
 
 
 def digest(value: Any) -> str:
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-    ).hexdigest()
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def snapshot(root: Path, source_file: str) -> tuple[list[str], dict[str, str | None]]:

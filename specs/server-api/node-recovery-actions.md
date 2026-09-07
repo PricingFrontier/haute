@@ -1,10 +1,14 @@
 # Explicit node recovery actions
 
+## Recovery loading and retention
+
 Recovery loading remains read-only. Rejected literal submodel registrations retain an
 unavailable submodel card, their authored connections, source span, and saved position.
 Their literal child reference and its artifacts participate in the recovery revision even
 when the current strict parser rejects the old registration. Ambiguous identities are
 diagnosed and cannot be repaired automatically. Downstream nodes remain blocked.
+
+## Confirmed recovery actions
 
 The recovery inspector extends removal with two explicitly confirmed actions:
 
@@ -30,15 +34,21 @@ The recovery inspector extends removal with two explicitly confirmed actions:
   the source untouched. It cannot persist another unavailable default node into the
   read-only recovery document; that node needs its config corrected first.
 
+## Consumer error attribution
+
 Updating a submodel may reveal a separately invalid consumer signature. Attribute that
 failure to the consumer and make its recovery inspector available. Do not rewrite or
 erase custom consumer code as part of a submodel update.
+
+## Recovery dry-run and apply API
 
 `POST /api/pipeline/repair/recover/dry-run` accepts source file/revision, target source
 file/recovery id, and `action: update | reset`. Apply uses the same fields plus the
 displayed plan hash. Responses use the existing repair change/plan shape with
 `repair_kind: update_node | reset_node` and `delete_config: false`. Existing removal
 routes retain their contract. No request accepts replacement bytes or source spans.
+
+## Verification, rollback, and save-lock transactions
 
 Plans are computed on the server, bound to the entire raw-artifact revision and exact
 before/after bytes, and previewed without changing project files. Application recomputes
@@ -47,6 +57,8 @@ edits using the existing rollback boundary, and reloads the authoritative docume
 Verification must conserve all node/edge identities except the explicit old-to-current
 registration identity mapping; the target must cease being unavailable. Other invalid
 nodes may keep the document degraded. Any failed verification restores original bytes.
+
+## Acceptance evidence
 
 Acceptance evidence includes a minimal copy of the demo's legacy registration, output
 port and stale Polars signature: both nodes and the connection remain visible; update

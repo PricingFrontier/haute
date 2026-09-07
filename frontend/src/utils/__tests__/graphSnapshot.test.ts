@@ -192,6 +192,8 @@ describe("canonical graph request projection", () => {
       data: {
         ...NODE.data,
         config: { expression: "pl.col('price')", _semanticOption: true },
+        _sourceFile: "main.py",
+        _recoveryId: "root@1",
         _functionName: "server_price",
         _defaultInputName: "server_price",
         _sourceHandleInputNames: {},
@@ -210,6 +212,8 @@ describe("canonical graph request projection", () => {
         label: "Child",
         nodeType: "polars",
         config: {},
+        _sourceFile: "modules/child.py",
+        _recoveryId: "child@2",
         _functionName: "server_child",
         _defaultInputName: "server_child",
         _sourceHandleInputNames: {},
@@ -308,6 +312,8 @@ describe("graph store produces the pinned format", () => {
       ...NODE,
       data: {
         ...NODE.data,
+        _sourceFile: "main.py",
+        _recoveryId: "root@1",
         _functionName: "server_price",
         _defaultInputName: "server_price",
         _sourceHandleInputNames: {},
@@ -329,6 +335,8 @@ describe("graph store produces the pinned format", () => {
             position: { x: 0, y: 0 },
             data: {
               label: "Child",
+              _sourceFile: "modules/child.py",
+              _recoveryId: "child@2",
               _functionName: "server_child",
               _defaultInputName: "server_child",
               _sourceHandleInputNames: {},
@@ -350,6 +358,8 @@ describe("graph store produces the pinned format", () => {
 
     const restored = useGraphStore.getState()
     expect(restored.nodes[0]?.data).toMatchObject({
+      _sourceFile: "main.py",
+      _recoveryId: "root@1",
       _functionName: "server_price",
       _defaultInputName: "server_price",
       _sourceHandleInputNames: {},
@@ -363,6 +373,8 @@ describe("graph store produces the pinned format", () => {
       restoredDefinition.graph as { nodes: Node[] }
     ).nodes[0]
     expect(restoredChild?.data).toMatchObject({
+      _sourceFile: "modules/child.py",
+      _recoveryId: "child@2",
       _functionName: "server_child",
       _defaultInputName: "server_child",
       _sourceHandleInputNames: {},

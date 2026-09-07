@@ -234,7 +234,8 @@ def test_submodel_update_rejects_ambiguous_or_escaping_identity(tmp_path, case):
     from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
     from haute.schemas import PipelineRepairRecoverRequest
 
-    parent = _legacy_demo(tmp_path)
+    _legacy_demo(tmp_path)
+    parent = tmp_path / "main.py"
     if case == "duplicate":
         parent.write_text(
             parent.read_text()
@@ -299,7 +300,8 @@ def test_config_reset_ownership_and_required_settings(tmp_path, case):
 def test_update_preserves_bom_crlf_comments_and_unrelated_sidecar_bytes(tmp_path):
     from haute._pipeline_repair import build_recover_unavailable_node_plan
 
-    parent = _legacy_demo(tmp_path)
+    _legacy_demo(tmp_path)
+    parent = tmp_path / "main.py"
     source = parent.read_text().replace(
         "pipeline.submodel(", "# café: preserve comment\npipeline.submodel("
     )

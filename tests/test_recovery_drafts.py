@@ -119,7 +119,8 @@ def test_draft_apply_and_restore_are_exact_and_idempotent(tmp_path):
 def test_required_blank_is_editable_but_cannot_apply(tmp_path):
     from haute._pipeline_recovery_drafts import edit_draft, preview_draft
 
-    source = _project(tmp_path, '{"inputType":"file","format":"parquet","mode":"scan","path":""}')
+    _project(tmp_path, '{"inputType":"file","format":"parquet","mode":"scan","path":""}')
+    source = tmp_path / "main.py"
     source.write_text(source.read_text().replace("pipeline.constant", "pipeline.data_input"))
     before = source.read_bytes()
     draft = _create(tmp_path)
@@ -143,7 +144,8 @@ def test_required_blank_is_editable_but_cannot_apply(tmp_path):
 def test_external_changes_make_draft_stale_without_discarding_values(tmp_path):
     from haute._pipeline_recovery_drafts import get_draft, preview_draft
 
-    source = _project(tmp_path)
+    _project(tmp_path)
+    source = tmp_path / "main.py"
     draft = _create(tmp_path)
     source.write_text(source.read_text() + "\n# later external edit\n")
     stale = get_draft(tmp_path, draft.draft_id)
@@ -218,7 +220,8 @@ def test_legacy_submodel_recovery_preserves_children_then_requires_explicit_code
 
 
 def test_reset_polars_stays_a_draft_until_configured(tmp_path):
-    source = _project(tmp_path)
+    _project(tmp_path)
+    source = tmp_path / "main.py"
     source.write_text(
         'import haute\nimport polars as pl\npipeline=haute.Pipeline("test")\n'
         '@pipeline.polars\ndef value():\n    return pl.LazyFrame({"a":[1]})\n'
@@ -278,7 +281,8 @@ def test_verification_failure_rolls_back_exact_bytes(tmp_path, monkeypatch):
 def test_restore_refuses_later_edits(tmp_path):
     from haute._pipeline_recovery_drafts import preview_draft
 
-    source = _project(tmp_path)
+    _project(tmp_path)
+    source = tmp_path / "main.py"
     draft, preview = _review(tmp_path, _create(tmp_path))
     applied = _apply_review(tmp_path, draft, preview)
     source.write_text(source.read_text() + "\n# user's later change\n")
@@ -288,7 +292,8 @@ def test_restore_refuses_later_edits(tmp_path):
 
 
 def test_custom_decorator_requires_manual_action(tmp_path):
-    source = _project(tmp_path)
+    _project(tmp_path)
+    source = tmp_path / "main.py"
     source.write_text(
         source.read_text().replace("@pipeline.constant", "@my_wrapper\n@pipeline.constant")
     )
@@ -298,7 +303,8 @@ def test_custom_decorator_requires_manual_action(tmp_path):
 
 
 def test_shared_config_reports_every_owner_and_preserves_both_nodes(tmp_path):
-    source = _project(tmp_path)
+    _project(tmp_path)
+    source = tmp_path / "main.py"
     source.write_text(
         source.read_text()
         + '\n@pipeline.constant(config="custom.json")\ndef second():\n    return None\n'
@@ -351,7 +357,8 @@ def test_coupled_submodel_and_consumer_can_apply_as_one_explicit_group(tmp_path)
 def test_conflicting_shared_config_candidates_cannot_be_applied(tmp_path):
     from haute._pipeline_recovery_drafts import create_draft
 
-    source = _project(tmp_path)
+    _project(tmp_path)
+    source = tmp_path / "main.py"
     source.write_text(
         source.read_text()
         + '\n@pipeline.constant(config="custom.json")\ndef second():\n    return None\n'

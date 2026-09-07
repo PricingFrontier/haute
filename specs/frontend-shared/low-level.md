@@ -58,6 +58,11 @@
 | `frontend/src/components/form/ConfigCheckbox.tsx` | Labelled controlled checkbox using a caller id or React `useId`, disabled semantics, and shared accent/text tokens. |
 | `frontend/src/components/form/EditorLabel.tsx` | Consistent micro-label primitive; can be a correctly associated `<label>` or non-form span/div for display-only content. |
 | `frontend/src/components/form/index.ts` | Public barrel for the committed text field/area, checkbox, and editor-label primitives; editor callers import the shared contract rather than deep paths. |
+| `frontend/src/api/recoveryDrafts.ts` | Transport. |
+| `frontend/src/components/RecoveryDraftDialog.tsx` | Local draft editing/review/apply/history/restore. |
+| `frontend/src/generated/api-contracts.recovery.generated.ts` | Generated DTOs. |
+| `frontend/src/panels/DraftEditingContext.tsx` | Draft side-effect guard. |
+| `frontend/src/types/recoveryDraft.ts` | Strict runtime response parsing. |
 
 ## Key types and data structures
 
@@ -711,3 +716,14 @@ ready nodes, so runtime failures can open a draft. These remain transient metada
 and are stripped from normal graph saves.
 Apply and Restore reject a dirty canvas before requesting any source mutation,
 so adopting the resulting document cannot erase unrelated unsaved pipeline edits.
+Live undo/redo snapshots retain `_recoveryId` and `_sourceFile` for root and child
+nodes, so reverting an edit preserves recovery targeting. Canonical save payloads
+and dirty fingerprints continue to strip these server-owned identities.
+The repair/recovery dialog and its draft validators load only when a recovery
+action is opened. Its local Suspense boundary leaves the mounted canvas intact;
+recovery does not increase the initial JavaScript budget.
+The complete production bundle with recovery measures 1,341.4 KiB gzip. Its
+aggregate allowance is 1,352 KiB, retaining the existing policy of roughly
+10 KiB headroom for all features together. The 283 KiB startup allowance and
+independent vendor limits remain unchanged; recovery dialogs are also prohibited
+from appearing in startup modulepreloads.
