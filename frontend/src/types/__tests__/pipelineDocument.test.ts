@@ -31,6 +31,7 @@ describe("pipeline editor document contract", () => {
     fixture.nodes[0].default_input_name = null
     fixture.nodes[0].source_handle_input_names = { drivers: "drivers" }
     fixture.nodes[0].config_reference = "config/quote_input/API_Input.json"
+    fixture.nodes[0].source_file = "main.py"
     fixture.edges = [{
       recovery_id: "edge:drivers",
       source_recovery_id: "node:a",
@@ -65,6 +66,8 @@ describe("pipeline editor document contract", () => {
       _defaultInputName: null,
       _sourceHandleInputNames: { drivers: "drivers" },
       _configReference: "config/quote_input/API_Input.json",
+      _recoveryId: "node:a",
+      _sourceFile: "main.py",
     })
     expect(adapted.edges[0].data).toMatchObject({ _inputName: "drivers" })
   })

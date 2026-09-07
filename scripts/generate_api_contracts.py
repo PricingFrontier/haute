@@ -21,6 +21,7 @@ from pydantic import BaseModel, RootModel
 
 from haute._execution_schemas import ExecutionStrategyDiagnosticPayload
 from haute._explore_chart_contracts import ExploreChartsConfig
+from haute._recovery_schemas import RecoveryDraft, RecoveryDraftList, RecoveryDraftPreview
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GENERATED_SCHEMA_PATH = REPO_ROOT / "frontend" / "src" / "generated" / "api-contracts.schema.json"
@@ -75,7 +76,13 @@ def _json_value_definition() -> dict[str, Any]:
 def build_contract_bundle() -> dict[str, Any]:
     """Build one deterministic JSON Schema bundle for the approved pilots."""
     definitions: dict[str, Any] = {}
-    for model in (ExecutionStrategyDiagnosticPayload, ExploreChartsConfig):
+    for model in (
+        ExecutionStrategyDiagnosticPayload,
+        ExploreChartsConfig,
+        RecoveryDraft,
+        RecoveryDraftList,
+        RecoveryDraftPreview,
+    ):
         for name, definition in _definitions_for(model).items():
             _merge_definition(definitions, name=name, value=definition)
 
@@ -91,10 +98,16 @@ def build_contract_bundle() -> dict[str, Any]:
         "properties": {
             "execution_strategy_diagnostic": {"$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"},
             "explore_charts": {"$ref": "#/$defs/ExploreChartsConfig"},
+            "recovery_draft": {"$ref": "#/$defs/RecoveryDraft"},
+            "recovery_draft_list": {"$ref": "#/$defs/RecoveryDraftList"},
+            "recovery_draft_preview": {"$ref": "#/$defs/RecoveryDraftPreview"},
         },
         "required": [
             "execution_strategy_diagnostic",
             "explore_charts",
+            "recovery_draft",
+            "recovery_draft_list",
+            "recovery_draft_preview",
         ],
         "additionalProperties": False,
         "$defs": definitions,

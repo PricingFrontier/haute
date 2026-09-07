@@ -1,4 +1,4 @@
-"""Revision-safe, remove-only repair planning for editor recovery documents.
+"""Revision-safe repair planning and shared transactional application.
 
 This module deliberately does not perform graph code generation.  It plans
 exact edits against server-reloaded recovery identities and leaves writes to
@@ -34,6 +34,8 @@ from haute.schemas import (
     PipelineRepairApplyResponse,
     PipelineRepairChange,
     PipelineRepairPlanResponse,
+    PipelineRepairRecoverApplyRequest,
+    PipelineRepairRecoverRequest,
     PipelineRepairRemoveRequest,
     RecoveryGraphSnapshot,
     RecoveryPipelineNode,
@@ -72,7 +74,7 @@ class RepairArtifactEdit:
 
     path: Path
     wire_path: str
-    before: bytes
+    before: bytes | None
     after: bytes | None
     description: str
     expose_diff: bool = True
@@ -83,13 +85,14 @@ class RepairArtifactEdit:
 
 
 @dataclass(frozen=True, slots=True)
-class RemoveUnavailableNodePlan:
+class PipelineRepairPlan:
     """Internal plan paired with its bounded public representation."""
 
     response: PipelineRepairPlanResponse
     edits: tuple[RepairArtifactEdit, ...]
     root_path: Path
     target_path: Path
+    expected_structure: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,7 +204,7 @@ def _find_target(
     if target.availability != "unavailable":
         raise PipelineRepairError(
             "repair_target_not_unavailable",
-            "Only an unavailable node can be removed through recovery repair.",
+            "Only an unavailable node can be changed through recovery repair.",
             availability=target.availability,
         )
     if target.source_span is None:
@@ -538,7 +541,7 @@ def _remove_position_entry(sidecar_bytes: bytes, authored_id: str) -> bytes:
 def _bounded_diff(edit: RepairArtifactEdit) -> tuple[str, bool]:
     if not edit.expose_diff:
         return "", False
-    before = edit.before.decode("utf-8-sig", errors="replace").splitlines(keepends=True)
+    before = (edit.before or b"").decode("utf-8-sig", errors="replace").splitlines(keepends=True)
     after_bytes = edit.after or b""
     after = after_bytes.decode("utf-8-sig", errors="replace").splitlines(keepends=True)
     rendered = "".join(
@@ -563,9 +566,10 @@ def _plan_hash(
     target_recovery_id: str,
     delete_config: bool,
     edits: list[RepairArtifactEdit],
+    repair_kind: str = "remove_unavailable_node",
 ) -> str:
     payload = {
-        "repair_kind": "remove_unavailable_node",
+        "repair_kind": repair_kind,
         "source_revision": source_revision,
         "source_file": source_file,
         "target_source_file": target_source_file,
@@ -575,7 +579,9 @@ def _plan_hash(
             {
                 "path": edit.wire_path,
                 "operation": edit.operation,
-                "before_sha256": hashlib.sha256(edit.before).hexdigest(),
+                "before_sha256": hashlib.sha256(edit.before).hexdigest()
+                if edit.before is not None
+                else None,
                 "after_sha256": (
                     hashlib.sha256(edit.after).hexdigest() if edit.after is not None else None
                 ),
@@ -639,7 +645,7 @@ def build_remove_unavailable_node_plan(
     *,
     project_root: Path,
     request: PipelineRepairRemoveRequest,
-) -> RemoveUnavailableNodePlan:
+) -> PipelineRepairPlan:
     """Reload current recovery state and build a deterministic no-write plan."""
 
     root = project_root.resolve()
@@ -812,7 +818,7 @@ def build_remove_unavailable_node_plan(
         warnings=warnings,
         predicted_load_status=_predicted_status(document, target),
     )
-    return RemoveUnavailableNodePlan(
+    return PipelineRepairPlan(
         response=response,
         edits=tuple(edits),
         root_path=root_path,
@@ -831,6 +837,17 @@ def apply_remove_unavailable_node_plan(
     plan instead of accepting any client-returned patch data.
     """
 
+    plan = build_remove_unavailable_node_plan(project_root=project_root, request=request)
+    return _commit_repair_plan(project_root=project_root, plan=plan, plan_hash=request.plan_hash)
+
+
+def _commit_repair_plan(
+    *,
+    project_root: Path,
+    plan: PipelineRepairPlan,
+    plan_hash: str,
+) -> PipelineRepairApplyResponse:
+    """Apply exact server edits under the caller's save lock, with rollback."""
     from haute.routes._save_pipeline import (
         _rollback_artifacts,
         _stage_artifact_delete,
@@ -838,11 +855,7 @@ def apply_remove_unavailable_node_plan(
         _TouchedFile,
     )
 
-    plan = build_remove_unavailable_node_plan(
-        project_root=project_root,
-        request=request,
-    )
-    if plan.response.plan_hash != request.plan_hash:
+    if plan.response.plan_hash != plan_hash:
         raise PipelineRepairError(
             "repair_plan_conflict",
             "The repair plan changed after confirmation; run dry-run again.",
@@ -850,7 +863,8 @@ def apply_remove_unavailable_node_plan(
         )
 
     for edit in plan.edits:
-        if not edit.path.is_file() or edit.path.read_bytes() != edit.before:
+        current = edit.path.read_bytes() if edit.path.is_file() else None
+        if current != edit.before or (edit.path.exists() and not edit.path.is_file()):
             raise PipelineRepairError(
                 "repair_artifact_conflict",
                 "A repair artifact changed after planning; reload and try again.",
@@ -866,6 +880,14 @@ def apply_remove_unavailable_node_plan(
                 _stage_artifact_write_bytes(edit.path, edit.after, touched)
 
         document = load_pipeline_editor_document(plan.root_path, project_root=project_root)
+        if (
+            plan.expected_structure is not None
+            and _recovery_structure(document) != plan.expected_structure
+        ):
+            raise PipelineRepairError(
+                "repair_post_write_conservation_failed",
+                "The repaired node/connection structure differs from the confirmed preview.",
+            )
         remaining_target = [
             node
             for node in _iter_recovery_nodes(document)
@@ -873,10 +895,18 @@ def apply_remove_unavailable_node_plan(
             and (node.source_file or "").replace("\\", "/").casefold()
             == plan.response.target_source_file.casefold()
         ]
-        if remaining_target:
+        removing = plan.response.repair_kind == "remove_unavailable_node"
+        if removing and remaining_target:
             raise PipelineRepairError(
                 "repair_post_write_conservation_failed",
                 "The selected node remained after the repair was staged.",
+            )
+        if not removing and (
+            len(remaining_target) != 1 or remaining_target[0].availability == "unavailable"
+        ):
+            raise PipelineRepairError(
+                "repair_post_write_conservation_failed",
+                "The selected node did not recover after the repair was staged.",
             )
         if document.load_status == "source_only":
             raise PipelineRepairError(
@@ -909,7 +939,61 @@ def apply_remove_unavailable_node_plan(
         raise
 
     return PipelineRepairApplyResponse(
+        repair_kind=plan.response.repair_kind,
         plan_hash=plan.response.plan_hash,
         applied_artifacts=[edit.wire_path for edit in plan.edits],
         document=document,
     )
+
+
+def build_recover_unavailable_node_plan(
+    *,
+    project_root: Path,
+    request: PipelineRepairRecoverRequest,
+) -> PipelineRepairPlan:
+    """Build a current-format update or reset using server-owned source evidence."""
+    from haute._pipeline_repair_actions import build_recovery_action_plan
+
+    return build_recovery_action_plan(project_root=project_root, request=request)
+
+
+def apply_recover_unavailable_node_plan(
+    *,
+    project_root: Path,
+    request: PipelineRepairRecoverApplyRequest,
+) -> PipelineRepairApplyResponse:
+    plan = build_recover_unavailable_node_plan(project_root=project_root, request=request)
+    return _commit_repair_plan(project_root=project_root, plan=plan, plan_hash=request.plan_hash)
+
+
+def _recovery_structure(document: PipelineEditorDocument) -> str:
+    """Stable authored identities for checking the staged document against its preview."""
+
+    def snapshot(graph: PipelineEditorDocument | RecoveryGraphSnapshot) -> dict[str, Any]:
+        return {
+            "nodes": [(node.source_file, node.authored_id, node.node_type) for node in graph.nodes],
+            "edges": [
+                (
+                    edge.source_authored_id,
+                    edge.target_authored_id,
+                    edge.source_port,
+                    edge.target_port,
+                )
+                for edge in graph.edges
+            ],
+            "unresolved": [
+                (
+                    edge.source_authored_id,
+                    edge.target_authored_id,
+                    edge.source_port,
+                    edge.target_port,
+                )
+                for edge in graph.unresolved_connections
+            ],
+            "submodels": {
+                key: snapshot(definition.graph)
+                for key, definition in (graph.submodels or {}).items()
+            },
+        }
+
+    return canonical_json(snapshot(document))

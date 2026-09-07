@@ -173,7 +173,13 @@ import {
 import {
   parseRemoveUnavailableNodeApplyResponse,
   parseRemoveUnavailableNodeDryRunResponse,
+  parseRecoverUnavailableNodeApplyResponse,
+  parseRecoverUnavailableNodeDryRunResponse,
+  type ApplyRecoverUnavailableNodeRequest,
   type ApplyRemoveUnavailableNodeRequest,
+  type RecoverUnavailableNodeDryRunResponse,
+  type RecoverUnavailableNodeApplyResponse,
+  type RecoverUnavailableNodeRequest,
   type RemoveUnavailableNodeDryRunResponse,
   type RemoveUnavailableNodeApplyResponse,
   type RemoveUnavailableNodeRequest,
@@ -709,6 +715,33 @@ export function applyRemoveUnavailableNode(
     delete_config: args.deleteConfig,
     plan_hash: args.planHash,
   }, options).then(parseRemoveUnavailableNodeApplyResponse)
+}
+
+export function dryRunRecoverUnavailableNode(
+  args: RecoverUnavailableNodeRequest,
+  options?: MutationOptions,
+): Promise<RecoverUnavailableNodeDryRunResponse> {
+  return post<unknown>("/api/pipeline/repair/recover/dry-run", {
+    source_file: args.sourceFile,
+    source_revision: args.sourceRevision,
+    target_source_file: args.targetSourceFile,
+    target_recovery_id: args.targetRecoveryId,
+    action: args.action,
+  }, options).then(parseRecoverUnavailableNodeDryRunResponse)
+}
+
+export function applyRecoverUnavailableNode(
+  args: ApplyRecoverUnavailableNodeRequest,
+  options?: MutationOptions,
+): Promise<RecoverUnavailableNodeApplyResponse> {
+  return post<unknown>("/api/pipeline/repair/recover/apply", {
+    source_file: args.sourceFile,
+    source_revision: args.sourceRevision,
+    target_source_file: args.targetSourceFile,
+    target_recovery_id: args.targetRecoveryId,
+    action: args.action,
+    plan_hash: args.planHash,
+  }, options).then(parseRecoverUnavailableNodeApplyResponse)
 }
 
 export interface PreviewNodeArgs {

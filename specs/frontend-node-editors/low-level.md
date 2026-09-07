@@ -753,6 +753,11 @@ update handlers reject calls.
 node when `useDocumentStatusStore.capabilities.can_repair` is true. It passes
 the node's `_recoveryId` and server-supplied `_sourceFile` to the document-level
 repair flow; it never derives or submits source spans.
+Known unavailable submodels offer `Update to current format`; supported ordinary
+nodes offer `Reset node`. Instances, unknown types and blocked nodes cannot reset.
+`PipelineRepairTarget.action` chooses the dialog transport and confirmation labels.
+Reset explicitly warns that settings/custom code are replaced and configuration may
+be needed. The palette and reset service share `src/haute/node_defaults.json`.
 
 The confirmation dialog requests a strict dry-run plan, displays each touched
 artifact and bounded unified diff, and distinguishes retained config from an

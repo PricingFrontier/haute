@@ -30,6 +30,7 @@ import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import OptimiserConstraintSettings, { type FrontierRangeConfig } from "./optimiser/OptimiserConstraintSettings"
 import OptimiserSolveStatus from "./optimiser/OptimiserSolveStatus"
 import { edgeInputName } from "../utils/apiInputPorts"
+import { useIsRecoveryDraft } from "./DraftEditingContext"
 
 // ─── Banding factor extraction ───
 
@@ -109,6 +110,7 @@ export default function OptimiserConfig({
   accentColor,
   deferColumnFetch = false,
 }: OptimiserConfigProps) {
+  const isRecoveryDraft = useIsRecoveryDraft()
   const { allNodes, edges, submodels } = useGraph()
   // ── Store-backed state (survives panel unmount) ──
   const nodeId = config._nodeId as string
@@ -176,7 +178,7 @@ export default function OptimiserConfig({
   const hasDataInputColumns = fallbackDataInputColumns.length > 0
   const previewTargetId = hasResolvableDataInput ? nodeId : ""
   const fetchedDataInputColumns = useDataInputColumns(previewTargetId, allNodes, edges, submodels, undefined, {
-    enabled: !hasDataInputColumns && !deferColumnFetch,
+    enabled: !isRecoveryDraft && !hasDataInputColumns && !deferColumnFetch,
     fallbackColumns: fallbackDataInputColumns,
   })
   const dataInputColumns = hasDataInputColumns ? fallbackDataInputColumns : fetchedDataInputColumns
@@ -213,7 +215,7 @@ export default function OptimiserConfig({
     { source: activeSource, structuralVersion },
     {
       toastLabel: "Solve estimate failed",
-      enabled: !deferColumnFetch,
+      enabled: !isRecoveryDraft && !deferColumnFetch,
     },
   )
 
@@ -246,6 +248,7 @@ export default function OptimiserConfig({
   // --- Actions (polling is handled by useBackgroundJobs hook in App.tsx) ---
 
   const handleSolve = useCallback(async () => {
+    if (isRecoveryDraft) return
     const documentFence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(documentFence)) return
     setSubmitting(true)
@@ -275,7 +278,7 @@ export default function OptimiserConfig({
     } finally {
       setSubmitting(false)
     }
-  }, [allNodes, buildGraphCb, constraints, currentConfigHash, nodeId, startSolveJob])
+  }, [allNodes, buildGraphCb, constraints, currentConfigHash, nodeId, startSolveJob, isRecoveryDraft])
 
   // Banding node selection — only from connected inputs
   const bandingNodes = useMemo(

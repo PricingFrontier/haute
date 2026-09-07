@@ -41,7 +41,7 @@ function setDefinition(overrides: Partial<SubmodelDefinition> = {}) {
 beforeEach(() => setDefinition())
 afterEach(() => {
   cleanup()
-  useGraphStore.setState({ submodels: {} })
+  useGraphStore.setState({ submodels: {}, edges: [] })
 })
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -129,6 +129,25 @@ describe("SubmodelNode", () => {
   it("does not display the definition file path", () => {
     renderNode({ label: "Test" })
     expect(screen.queryByText("submodels/pricing.py")).toBeNull()
+  })
+  it("keeps unavailable recovery handles disabled and exposes the load status", () => {
+    useGraphStore.setState({ edges: [{
+      id: "edge-in",
+      source: "upstream",
+      target: "test-node",
+      targetHandle: "in__claims",
+    }] })
+    const { container } = renderNode({
+      label: "Legacy inputs",
+      config: { definitionId: "missing-definition", alias: "legacy" },
+      _loadAvailability: "unavailable",
+      _sourceHandleInputNames: { out__output_1: "output_1" },
+    })
+    expect(screen.getByTestId("submodel-load-availability")).toHaveTextContent("unavailable")
+    expect(screen.getByRole("button")).toHaveAccessibleName(/unavailable/)
+    expect(screen.getByTestId("submodel-recovery-ports")).toBeInTheDocument()
+    expect(container.querySelector('[data-handleid="out__output_1"]')).toHaveClass("react-flow__handle")
+    expect(container.querySelector('[data-handleid="out__output_1"]')).toHaveStyle("pointer-events: none")
   })
   it("renders one generic input socket when its interface is empty", () => {
     const { container } = renderNode({ label: "Test" })

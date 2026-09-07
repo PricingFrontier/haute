@@ -6,7 +6,7 @@
 |---|---|
 | `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`); instance-node handling; contract kwarg formatting/injection (`_format_contract_kwarg`, `_format_contract_source`, `_inject_contract_kwarg`); pipeline/submodel file assembly (`_generate_pipeline_lines`); the final parse gate (`_assert_emitted_files_parse`). |
 | `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`. String-safety helpers (`_safe_str`, `_safe_path`), shared field extraction (`_common_node_fields`, `_build_params` — parameters are the per-edge input names supplied by the orchestrator, and duplicates are rejected by `src/haute/codegen.py::_validate_duplicate_node_inputs`), docstring sanitization (`_sanitize_description`), and per-type templates such as `_MODEL_SCORE`, `_BANDING_SINGLE`, and `_RETAINED_EXTERNAL`. |
-| `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: LibCST decorator-keyword injection, exact method-call discovery with source spans, and stable structured syntax failures. It never repairs invalid source or evaluates Python. |
+| `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: LibCST decorator-keyword injection, exact method-call discovery, exact expression/function replacement and generated function setup insertion, with stable structured syntax failures. It never repairs invalid Python syntax or evaluates source. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): codegen registers and reads per-node code builders through the canonical registry. |
 | `src/haute/_code_extraction.py` | Reverse direction of the codegen builders' body wrapping: strips generated boilerplate back out of a persisted function body so the user-facing code editor shows only what the user actually typed. Consolidated engine (`extract_user_code`) dispatches through `BOILERPLATE_MATCHERS`/`_FINALISERS` registries keyed by node "kind." |
 | `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`_get_decorator_kwargs`, `_is_pipeline_node_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), and whole-file extraction helpers (`_extract_function_bodies`, `_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, `_extract_preserved_blocks`) shared with the parser. |
@@ -485,3 +485,8 @@ writing a failing test before the fix.
 > the live `Pipeline.run()` API. That API only records `pipeline.submodel(...)` paths, so runtime
 > equivalence is intentionally established after static parse/flatten, not through live module
 > registration.
+## Recovery draft generation
+
+Single-node generation for a recovery draft preserves an explicit authored column
+contract but does not derive a new contract from external model artifacts. This
+explicit offline mode emits the current scaffold without contacting external services.

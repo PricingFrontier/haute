@@ -48,7 +48,9 @@ from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
 from haute._pipeline_recovery import empty_pipeline_editor_document
 from haute._pipeline_repair import (
     PipelineRepairError,
+    apply_recover_unavailable_node_plan,
     apply_remove_unavailable_node_plan,
+    build_recover_unavailable_node_plan,
     build_remove_unavailable_node_plan,
 )
 from haute._polars_io_registry import (
@@ -144,6 +146,8 @@ from haute.schemas import (
     PipelineRepairApplyResponse,
     PipelineRepairDryRunRequest,
     PipelineRepairPlanResponse,
+    PipelineRepairRecoverApplyRequest,
+    PipelineRepairRecoverRequest,
     PipelineSummary,
     PreviewNodeRequest,
     PreviewNodeResponse,
@@ -737,6 +741,59 @@ async def apply_remove_unavailable_node(
         async with save_lock:
             return await run_in_threadpool(
                 apply_remove_unavailable_node_plan,
+                project_root=Path.cwd().resolve(),
+                request=body,
+            )
+    except PipelineRepairError as exc:
+        return _pipeline_recovery_error_response(exc.status_code, exc.detail())
+    except OSError as exc:
+        logger.warning("pipeline_repair_apply_io_failed", error=str(exc))
+        return _pipeline_recovery_error_response(
+            409,
+            {
+                "code": "repair_artifact_unavailable",
+                "message": (
+                    "A repair artifact could not be written; original artifacts were restored."
+                ),
+            },
+        )
+
+
+@router.post("/pipeline/repair/recover/dry-run", response_model=PipelineRepairPlanResponse)
+async def dry_run_recover_unavailable_node(
+    body: PipelineRepairRecoverRequest,
+) -> PipelineRepairPlanResponse | JSONResponse:
+    """Preview an explicit current-format update or reset without writing."""
+    try:
+        async with save_lock:
+            plan = await run_in_threadpool(
+                build_recover_unavailable_node_plan,
+                project_root=Path.cwd().resolve(),
+                request=body,
+            )
+        return plan.response
+    except PipelineRepairError as exc:
+        return _pipeline_recovery_error_response(exc.status_code, exc.detail())
+    except OSError as exc:
+        logger.warning("pipeline_repair_dry_run_io_failed", error=str(exc))
+        return _pipeline_recovery_error_response(
+            409,
+            {
+                "code": "repair_artifact_unavailable",
+                "message": "A repair artifact could not be read; reload and try again.",
+            },
+        )
+
+
+@router.post("/pipeline/repair/recover/apply", response_model=PipelineRepairApplyResponse)
+async def apply_recover_unavailable_node(
+    body: PipelineRepairRecoverApplyRequest,
+) -> PipelineRepairApplyResponse | JSONResponse:
+    """Commit the recomputed, confirmed update/reset through the shared transaction."""
+    try:
+        async with save_lock:
+            return await run_in_threadpool(
+                apply_recover_unavailable_node_plan,
                 project_root=Path.cwd().resolve(),
                 request=body,
             )

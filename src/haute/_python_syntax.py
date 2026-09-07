@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TypeVar, cast
 
 import libcst as cst
 from libcst.metadata import MetadataWrapper, PositionProvider
 
 from haute.errors import HauteError
+
+_CSTNodeT = TypeVar("_CSTNodeT", bound=cst.CSTNode)
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +23,104 @@ class MethodCallSite:
     start_column: int
     end_line: int
     end_column: int
+
+
+@dataclass(frozen=True)
+class SourceNodeReplacement:
+    """Exact character-based source coordinates for one expression or function."""
+
+    start_line: int
+    start_column: int
+    end_line: int
+    end_column: int
+    source: str
+    is_function: bool = False
+
+
+class _SourceNodeReplacer(cst.CSTTransformer):
+    METADATA_DEPENDENCIES = (PositionProvider,)
+
+    def __init__(self, replacements: Sequence[SourceNodeReplacement]) -> None:
+        self.replacements = replacements
+        self.applied: set[int] = set()
+
+    def on_leave(self, original_node: _CSTNodeT, updated_node: _CSTNodeT) -> _CSTNodeT:
+        if not isinstance(original_node, (cst.BaseExpression, cst.FunctionDef)):
+            return updated_node
+        position = self.get_metadata(PositionProvider, original_node)
+        for index, replacement in enumerate(self.replacements):
+            if index in self.applied or (
+                position.start.line,
+                position.start.column,
+                position.end.line,
+                position.end.column,
+            ) != (
+                replacement.start_line,
+                replacement.start_column,
+                replacement.end_line,
+                replacement.end_column,
+            ):
+                continue
+            if replacement.is_function:
+                if not isinstance(original_node, cst.FunctionDef):
+                    continue
+                statements = cst.parse_module(replacement.source.rstrip("\n") + "\n").body
+                if len(statements) != 1 or not isinstance(statements[0], cst.FunctionDef):
+                    raise StructuredSyntaxError("replacement_function_invalid")
+                result: cst.CSTNode = statements[0].with_changes(
+                    leading_lines=original_node.leading_lines
+                )
+            else:
+                if not isinstance(original_node, cst.BaseExpression):
+                    continue
+                result = cst.parse_expression(replacement.source)
+            self.applied.add(index)
+            # Both replacements have been checked for the original syntax role;
+            # libcst's generic visitor return type cannot express that refinement.
+            return cast(_CSTNodeT, result)
+        return updated_node
+
+
+def replace_source_nodes(source: str, replacements: Sequence[SourceNodeReplacement]) -> str:
+    """Replace exact valid-source syntax nodes, preserving untouched syntax and trivia."""
+    try:
+        wrapper = MetadataWrapper(cst.parse_module(source))
+        transformer = _SourceNodeReplacer(replacements)
+        result = wrapper.visit(transformer)
+    except cst.ParserSyntaxError as exc:
+        raise _syntax_error("source_syntax_invalid", exc) from exc
+    if len(transformer.applied) != len(replacements):
+        raise StructuredSyntaxError("replacement_source_span_unmatched")
+    return result.code
+
+
+def prepend_function_statements(source: str, statements: str) -> str:
+    """Add generated setup after the docstring of one generated function."""
+    try:
+        module = cst.parse_module(source)
+        additions = cst.parse_module(statements).body
+    except cst.ParserSyntaxError as exc:
+        raise _syntax_error("source_syntax_invalid", exc) from exc
+    if len(module.body) != 1 or not isinstance(module.body[0], cst.FunctionDef):
+        raise StructuredSyntaxError("replacement_function_invalid")
+    function = module.body[0]
+    if not isinstance(function.body, cst.IndentedBlock):
+        raise StructuredSyntaxError("replacement_function_invalid")
+    body = function.body.body
+    first = body[0] if body else None
+    has_docstring = (
+        isinstance(first, cst.SimpleStatementLine)
+        and len(first.body) == 1
+        and isinstance(first.body[0], cst.Expr)
+        and isinstance(first.body[0].value, (cst.SimpleString, cst.ConcatenatedString))
+    )
+    split = 1 if has_docstring else 0
+    function = function.with_changes(
+        body=function.body.with_changes(
+            body=(*body[:split], *additions, *body[split:]),
+        )
+    )
+    return module.with_changes(body=(function,)).code
 
 
 class StructuredSyntaxError(HauteError):

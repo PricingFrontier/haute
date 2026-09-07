@@ -455,6 +455,7 @@ export default function useTracing({
 
       visibleChildNodes.push(node)
       if (data.nodeType !== NODE_TYPES.SUBMODEL) continue
+      if (data._loadAvailability === "unavailable") continue
       if (!isSubmodelInstanceConfig(data.config)) {
         throw new Error(
           "Submodel instance " + node.id + " has malformed canonical identity config",

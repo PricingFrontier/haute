@@ -51,6 +51,7 @@ import { SplitAndMetricsConfig } from "./modelling/SplitAndMetricsConfig"
 import { TargetAndTaskConfig } from "./modelling/TargetAndTaskConfig"
 import { TrainingActionsAndResults } from "./modelling/TrainingActionsAndResults"
 import type { ReactElement } from "react"
+import { useIsRecoveryDraft } from "./DraftEditingContext"
 
 type Props = {
   config: Record<string, unknown>
@@ -302,6 +303,7 @@ export default function ModellingConfig({
   upstreamColumns = [],
   activePane = "target",
 }: Props) {
+  const isRecoveryDraft = useIsRecoveryDraft()
   const { allNodes, edges, submodels, preamble } = useGraph()
   const nodeId = String(config._nodeId ?? "")
   const trainJob = useNodeResultsStore((state) => state.trainJobs[nodeId])
@@ -425,6 +427,7 @@ export default function ModellingConfig({
     [graph, nodeId],
   )
   const onTrain = useCallback(async () => {
+    if (isRecoveryDraft) return
     if (hasTrainingConfigurationIssues) return
     const documentFence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(documentFence)) return
@@ -494,7 +497,7 @@ export default function ModellingConfig({
     } finally {
       setSubmitting(false)
     }
-  }, [activeSource, allNodes, completeTrainJob, estimate.configHash, graph, hasTrainingConfigurationIssues, nodeId, startTrainJob, structuralVersion])
+  }, [activeSource, allNodes, completeTrainJob, estimate.configHash, graph, hasTrainingConfigurationIssues, nodeId, startTrainJob, structuralVersion, isRecoveryDraft])
   const onCancel = useCallback(async () => {
     const job = useNodeResultsStore.getState().trainJobs[nodeId]
     if (!job || cancelling) return

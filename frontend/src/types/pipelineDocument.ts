@@ -718,6 +718,8 @@ function adaptRecoveryGraph(
         nodeType,
         ...(node.config === null ? {} : { config: structuredClone(node.config) }),
         _functionName: node.function_name,
+        _recoveryId: node.recovery_id,
+        ...(node.source_file === null ? {} : { _sourceFile: node.source_file }),
         _defaultInputName: node.default_input_name,
         _sourceHandleInputNames: structuredClone(node.source_handle_input_names),
         ...(node.config_reference === null
@@ -728,11 +730,9 @@ function adaptRecoveryGraph(
               _loadAvailability: node.availability,
               _loadDiagnosticIds: [...node.diagnostic_ids],
               _loadBlockingPath: [...node.blocking_path],
-              _recoveryId: node.recovery_id,
               _authoredId: node.authored_id,
               _authoredDecorator: node.decorator_name,
               _authoredReceiver: receiver,
-              ...(node.source_file === null ? {} : { _sourceFile: node.source_file }),
               ...(node.source_span === null
                 ? {}
                 : { _sourceSpan: { ...node.source_span } }),

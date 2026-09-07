@@ -15,7 +15,9 @@
 | `src/haute/_types.py` | `NodeType` (`StrEnum`), the decorator↔NodeType maps, every per-node-type config `TypedDict`, the `SolveResultLike` Protocol family, and the canonical `NodeData` / `GraphNode` / `GraphEdge` / `PipelineGraph` Pydantic models (with `PipelineGraph`'s cached-property-invalidating `model_copy` override). |
 | `src/haute/_pipeline_revision.py` | [submodels](../submodels/low-level.md)-owned canonical parsed-graph revision plus the editor recovery revision over a contained, role-qualified raw-artifact manifest with explicit missing sentinels. |
 | `src/haute/_pipeline_recovery.py` | Side-effect-free editor loader: AST/regex skeleton discovery, isolated node resolution, availability/diagnostic propagation, typed sidecar merge, raw-artifact revision assembly, and ready/degraded/source-only classification. It never returns a canonical `PipelineGraph`. |
-| `src/haute/_pipeline_repair.py` | Pure minimal-scope unavailable-node removal planner plus revision/plan verification service. It computes exact source, explicit-connection, position-sidecar, and separately approved config edits; it never accepts client-authored bytes or implements migrations. |
+| `src/haute/_pipeline_repair.py` | Unavailable-node removal planner and shared revision/plan verification, conservation and rollback service for explicit removal, current-format update and reset. It never accepts client-authored bytes. |
+| `src/haute/_pipeline_repair_actions.py` | Bounded submodel-format update and ordinary-node reset planners; single-node codegen, shared palette defaults, isolated artifact-only preview and strict postconditions. |
+| `src/haute/_submodel_recovery.py` | Literal submodel registration identity evidence used only by recovery, raw revision discovery and explicitly requested updates. |
 | `src/haute/_sidecar.py` | Core read-side `.haute.json` contract: `SidecarModel`, the typed absent/valid/corrupt/unreadable read state, and the sidecar source/position normalisers. Lives outside the web layer so editor recovery never imports routes. |
 | `src/haute/routes/__init__.py` | Package docstring only — no code. |
 | `src/haute/routes/_helpers.py` | Re-exports the core sidecar read contract and `load_pipeline_editor_document` for route consumers; path/index/watcher/WebSocket helpers; strict `parse_pipeline_to_graph`; the sidecar write path (`save_sidecar`); historical-commit parsing; and the shared `save_lock`. |
@@ -809,5 +811,43 @@ identity must be absent. Strict parse success is recorded by the returned
 editor document; an independent authored error may validly remain degraded.
 Any verification or write failure rolls back all touched artifacts.
 
-The minimal package deliberately defines no migration schema, registry, or
-upgrade route.
+The additional `/api/pipeline/repair/recover/dry-run` and `/apply` routes accept
+`PipelineRepairRecoverRequest` / `PipelineRepairRecoverApplyRequest`, replacing the
+removal-only `delete_config` option with `action: update | reset`. Their plan responses
+use `update_node` / `reset_node`, keep `delete_config` false and otherwise share the
+bounded repair transport. The full scope and acceptance criteria are defined in
+[node recovery actions](node-recovery-actions.md). Updates and resets retain the target;
+application checks its recovered availability and compares the complete staged structure
+against the isolated preview. Python replacements use the shared LibCST boundary.
+
+## Persistent recovery drafts
+
+The accepted [generalised recovery specification](generalised-node-recovery-plan.md)
+is implemented by `_node_config_recovery.py`, `_recovery_sources.py`,
+`_pipeline_recovery_drafts.py` and `_recovery_storage.py`. The separate, strict
+`RecoveryDraft` DTO is never admitted as an executable graph. Source generation
+and validation run against an artifact-only temporary copy, without data probes.
+
+`routes/recovery.py` exposes `/api/pipeline/repair/contracts` and
+`/api/pipeline/repair/drafts` (GET/POST), then `/{draft_id}` (GET) and POST actions
+`edit`, `preview`, `apply`, `discard`, `restore-preview`, and `restore`. Edits and
+previews require `draft_revision`; apply/restore also require `source_revision`,
+the exact preview `plan_hash`, and an idempotent `operation_id`.
+
+The project mutation lock is shared with existing save/submodel writers and uses
+both asyncio and an OS file lock. Exact source/config/position bytes and a durable
+apply journal live under `.haute/recovery/`; active drafts and restoration evidence
+are retained after discard. Original evidence is never included in graph payloads.
+Limits are 200 records, 512 artifacts, 16 MiB per artifact and 64 MiB per snapshot.
+The lock rendezvous uses a resolved-project-path hash in the user's temporary
+directory, so read-only previews and rejected mutations do not create project files.
+Non-finite JSON, ambiguous source boundaries and filesystem aliases fail explicitly.
+Interrupted commits finish only if all written bytes and graph checks agree;
+otherwise they roll back only their own bytes or retain a conflicting journal.
+
+Compatibility recovery preserves valid fields across all 17 ordinary node types.
+Submodels use explicit registration/port adapters and retain definition/public-port
+identity, children and connections. Projected ports belong to their definition and
+require recovery there. Unknown types, computed/custom source and ambiguous shared
+instances remain explicit manual actions. Draft completeness checks are static:
+successful recovery does not certify runtime data, services or arbitrary user code.

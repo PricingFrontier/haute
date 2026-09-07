@@ -24,6 +24,7 @@ from haute._file_ops import atomic_write_text
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._project_mutation_lock import ProjectMutationLock
 from haute._sidecar import (
     SidecarModel,
     SidecarReadResult,
@@ -250,16 +251,9 @@ _self_write_lock = threading.Lock()
 #   - routes/submodel.py::dissolve_submodel (/api/submodel/dissolve)
 # all of which touch the project's .py / .haute.json / config sidecars.
 #
-# Scope: global (per-process). Per-pipeline keying would be sharper but
-# the single-user threat model has effectively no contention; the global
-# lock is the cheaper, well-trodden pattern (matches `_pipeline_index_lock`,
-# `_self_write_lock`, `ws_clients_lock` above).
-#
-# Save bodies run in a threadpool while this async lock is held, keeping the
-# event loop responsive without allowing two write-shaped operations to
-# interleave. It does NOT protect against multiple uvicorn worker processes
-# — out of scope under the single-user trust model.
-save_lock: asyncio.Lock = asyncio.Lock()
+# Save bodies run in a threadpool while the lock is held. The file lock also
+# serialises other server processes using the same project directory.
+save_lock = ProjectMutationLock()
 
 
 def _self_write_key(path: str | Path) -> str:

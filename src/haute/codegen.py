@@ -249,6 +249,8 @@ def _node_to_code(
     node: GraphNode,
     source_names: list[str] | None = None,
     source_ids: list[str] | None = None,
+    *,
+    derive_contract: bool = True,
 ) -> str:
     """Generate code for a single node.
 
@@ -289,6 +291,8 @@ def _node_to_code(
             ) from exc
         code = f"@pipeline.{dec_name}(config={_safe_path(cfg_path)})" + code[def_idx:]
 
+    if not derive_contract and node.data.config.get("contract") is None:
+        return code
     contract_kwarg = _format_contract_kwarg(
         node,
         parent_name_by_id=_parent_name_by_id(source_ids, source_names),

@@ -44,6 +44,7 @@ type NodePanelProps = {
   onDeleteSubmodelInputPort?: (portName: string) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
   onRefreshPreview?: () => void
+  onRecoverSettings?: () => void
   /** True when showing last-selected node while nothing is actively selected */
   dimmed?: boolean
   /** 1-based line number of the error in user code, if any */
@@ -56,8 +57,8 @@ type NodePanelProps = {
   readOnly?: boolean
   /** True when the current pipeline document is not executable/mutable. */
   documentReadOnly?: boolean
-  /** Opens the document-level remove-only recovery flow. */
-  onRemoveUnavailableNode?: (target: { sourceFile: string; recoveryId: string }) => void
+  /** Opens an explicitly confirmed document-level recovery action. */
+  onRemoveUnavailableNode?: (target: { sourceFile: string; recoveryId: string; action?: "remove" | "update" | "reset" | "recover" }) => void
 }
 
 // ─── Node types that do NOT show the Columns tab ──
@@ -677,6 +678,7 @@ type NodePanelHeaderProps = {
   showRefreshPreview: boolean
   refreshTitle: string
   onRefreshPreview?: () => void
+  onRecoverSettings?: () => void
   onClose: () => void
 }
 
@@ -688,6 +690,7 @@ function NodePanelHeader({
   showRefreshPreview,
   refreshTitle,
   onRefreshPreview,
+  onRecoverSettings,
   onClose,
 }: NodePanelHeaderProps) {
   const rename = useNodeRenameSession(nodeId)
@@ -721,6 +724,11 @@ function NodePanelHeader({
           >
             <RefreshCw size={11} />
             Refresh
+          </button>
+        )}
+        {onRecoverSettings && (
+          <button type="button" onClick={onRecoverSettings} className="px-2 py-1 rounded shrink-0 text-[11px] font-medium" style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}>
+            Recover settings
           </button>
         )}
         <button
@@ -774,11 +782,21 @@ function RecoveryNodePanel({
       recoveryData._sourceSpan ? `:${recoveryData._sourceSpan.start_line}` : ""
     }`
     : null
-  const canRemove = availability === "unavailable"
-    && canRepair
-    && typeof recoveryData._sourceFile === "string"
+  const hasRecoveryTarget = typeof recoveryData._sourceFile === "string"
     && typeof recoveryData._recoveryId === "string"
     && onRemoveUnavailableNode !== undefined
+  const canRemove = availability === "unavailable"
+    && canRepair
+    && hasRecoveryTarget
+  const nodeType = effectiveNodeType(node)
+  const canUpdate = canRemove && nodeType === NODE_TYPES.SUBMODEL
+  const canRecover = hasRecoveryTarget && (Object.hasOwn(NODE_TYPE_META, nodeType) || nodeType === NODE_TYPES.SUBMODEL_PORT)
+  const canReset = canRemove
+    && Object.hasOwn(NODE_TYPE_META, nodeType)
+    && nodeType !== NODE_TYPES.SUBMODEL
+    && nodeType !== NODE_TYPES.SUBMODEL_PORT
+    && !(typeof recoveryData.config?.instanceOf === "string")
+    && recoveryData._authoredDecorator !== "instance"
 
   return (
     <PanelShell testId="node-panel">
@@ -880,18 +898,62 @@ function RecoveryNodePanel({
             </ul>
           )}
         </section>
-        {canRemove && (
-          <button
-            type="button"
-            onClick={() => onRemoveUnavailableNode({
-              sourceFile: recoveryData._sourceFile!,
-              recoveryId: recoveryData._recoveryId!,
-            })}
-            className="w-full rounded px-3 py-2 text-[12px] font-semibold"
-            style={{ color: "var(--danger-text)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
-          >
-            Remove unavailable node
-          </button>
+        {(canRemove || canRecover) && (
+          <div className="space-y-2">
+            {canRecover && (
+              <button
+                type="button"
+                onClick={() => onRemoveUnavailableNode({
+                  sourceFile: recoveryData._sourceFile!,
+                  recoveryId: recoveryData._recoveryId!,
+                  action: "recover",
+                })}
+                className="w-full rounded px-3 py-2 text-[12px] font-semibold"
+                style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
+              >
+                Recover settings
+              </button>
+            )}
+            {canUpdate && (
+              <button
+                type="button"
+                onClick={() => onRemoveUnavailableNode({
+                  sourceFile: recoveryData._sourceFile!,
+                  recoveryId: recoveryData._recoveryId!,
+                  action: "update",
+                })}
+                className="w-full rounded px-3 py-2 text-[12px] font-semibold"
+                style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
+              >
+                Update to current format
+              </button>
+            )}
+            {canReset && (
+              <button
+                type="button"
+                onClick={() => onRemoveUnavailableNode({
+                  sourceFile: recoveryData._sourceFile!,
+                  recoveryId: recoveryData._recoveryId!,
+                  action: "reset",
+                })}
+                className="w-full rounded px-3 py-2 text-[12px] font-semibold"
+                style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
+              >
+                Reset node
+              </button>
+            )}
+            {canRemove && <button
+              type="button"
+              onClick={() => onRemoveUnavailableNode({
+                sourceFile: recoveryData._sourceFile!,
+                recoveryId: recoveryData._recoveryId!,
+              })}
+              className="w-full rounded px-3 py-2 text-[12px] font-semibold"
+              style={{ color: "var(--danger-text)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
+            >
+              Remove unavailable node
+            </button>}
+          </div>
         )}
       </div>
     </PanelShell>
@@ -1345,6 +1407,12 @@ function NodePanelContent({
         showRefreshPreview={showRefreshPreview}
         refreshTitle={refreshTitle}
         onRefreshPreview={onRefreshPreview}
+        onRecoverSettings={(() => {
+          const data = node.data as HauteNodeData
+          return typeof data._sourceFile === "string" && typeof data._recoveryId === "string" && onRemoveUnavailableNode
+            ? () => onRemoveUnavailableNode({ sourceFile: data._sourceFile!, recoveryId: data._recoveryId!, action: "recover" })
+            : undefined
+        })()}
         onClose={onClose}
       />
 

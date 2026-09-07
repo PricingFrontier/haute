@@ -675,7 +675,7 @@ recovery objects.
 
 ## Minimal repair transport
 
-`api/client.ts` exposes remove-only dry-run and apply calls. Both send the root
+`api/client.ts` exposes removal dry-run and apply calls. Both send the root
 document source, current raw revision, target source/recovery identity, and
 explicit `delete_config`; apply adds the exact dry-run plan hash. Runtime
 parsers reject unknown keys, non-remove discriminators, malformed hashes,
@@ -685,4 +685,29 @@ The public dry-run plan contains bounded display diffs and artifact metadata,
 not the bytes that apply will write. The server recomputes those bytes. A
 config-retention toggle creates a new request and invalidates the previous plan
 hash. API errors preserve structured repair detail for the confirmation UI.
-No shared type defines a migration registry or upgrade request.
+Separate recovery calls send `action: update | reset` and no deletion option to
+`/api/pipeline/repair/recover/dry-run` and `/apply`. The shared generic plan parser
+validates exact fields and action-specific discriminators; recovery plans require
+`delete_config: false`. Requests never carry client-authored replacement source/config.
+
+## Recovery draft transport and editing
+
+`api/recoveryDrafts.ts` uses the separate recovery routes and strict generated
+runtime validators. `RecoveryDraftDialog` resumes durable proposals, supports
+explicit source-qualified groups, edits settings through `NodeConfigEditor`, and
+shows provenance, affected owners and a reviewed source diff before Apply.
+Submodels have structural controls for relinking a definition and routing ports;
+existing names are read-only. Advanced JSON is a settings-map editor, never a
+client-authored source patch. Draft edits invalidate the preview and acknowledgement.
+
+`DraftEditingContext` prevents schema/data probing, input snapshot builds, output
+writes/previews, training and solving while normal editors are used for drafts.
+Draft state is local to the dialog and its dedicated API; graph save and undo
+history are not used. Stale and terminal records are read-only. Applied records
+offer a separate exact-byte restore preview. Unsaved changes must be saved before
+switching history, replacing targets or creating a reset proposal.
+The document adapter retains server-provided source/recovery identities even for
+ready nodes, so runtime failures can open a draft. These remain transient metadata
+and are stripped from normal graph saves.
+Apply and Restore reject a dirty canvas before requesting any source mutation,
+so adopting the resulting document cannot erase unrelated unsaved pipeline edits.

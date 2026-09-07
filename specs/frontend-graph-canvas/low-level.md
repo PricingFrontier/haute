@@ -804,7 +804,10 @@ reconciliation rather than dropping them or committing a second mutation.
     snapshot. Revision/plan errors do not call that transition. Although ordinary
     mutation remains fenced, `can_repair` independently admits this one document-level
     command. The dialog consumes only the strict validated DTOs from
-    `frontend/src/types/pipelineRepair.ts`. There is no migration path.
+    `frontend/src/types/pipelineRepair.ts`. Explicit update/reset actions share the
+    preview/apply dialog; see [node recovery actions](../server-api/node-recovery-actions.md).
+    Failed literal submodel registrations retain an unavailable SUBMODEL card and
+    disabled handles for authored connections even when no canonical definition exists.
 
 ## Edge cases and invariants
 
@@ -1541,3 +1544,10 @@ again through the editor and save paths.
   drag points are derived from live locator geometry and every assertion is
   an observable DOM, preview, trace, or persisted-pipeline outcome.
 
+## Recovery tracing boundary
+
+Trace projection must retain explicitly unavailable submodel cards without resolving
+their missing definitions. They have no executable child trace mapping until repaired.
+Ready submodels still require a valid canonical identity and definition; malformed
+ready state continues to fail clearly. A recovery placeholder must not crash canvas
+rendering before the user can select its recovery actions.

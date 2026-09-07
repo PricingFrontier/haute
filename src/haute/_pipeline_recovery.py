@@ -58,6 +58,7 @@ from haute._sidecar import (
     read_sidecar_state,
 )
 from haute._submodel_paths import resolve_submodel_reference
+from haute._submodel_recovery import submodel_registration_evidence
 from haute._types import NODE_TYPE_TO_DECORATOR, GraphNode, NodeType, PipelineGraph
 from haute.errors import ConfigError, HauteError, ParseError
 from haute.parser import _infer_parse_base_dir, parse_pipeline_source
@@ -127,6 +128,7 @@ class _RecoveredCandidate:
     endpoint_ids: tuple[str, ...] = ()
     submodel_input_ports: tuple[str, ...] = ()
     submodel_output_ports: tuple[str, ...] = ()
+    position_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -709,6 +711,8 @@ def _recover_ast_submodel_registrations(
     *,
     source_file: str,
     diagnostics: list[PipelineRecoveryDiagnostic],
+    unavailable_candidates: list[_RecoveredCandidate] | None = None,
+    include_invalid_references: bool = False,
 ) -> list[SubmodelRegistration]:
     """Recover independent valid registrations when one sibling is malformed."""
     registrations: list[SubmodelRegistration] = []
@@ -730,16 +734,47 @@ def _recover_ast_submodel_registrations(
                 statement.end_lineno or statement.lineno,
                 statement.end_col_offset or statement.col_offset,
             )
-            diagnostics.append(
-                _diagnostic(
-                    code="submodel_registration_invalid",
-                    scope="submodel",
-                    message=_exception_message(exc),
-                    source_file=source_file,
-                    source_span=span,
-                    remediation="Correct the submodel registration identity and file path.",
-                )
+            evidence = submodel_registration_evidence(statement)
+            diagnostic = _diagnostic(
+                code="submodel_registration_invalid",
+                scope="submodel",
+                message=_exception_message(exc),
+                source_file=source_file,
+                source_span=span,
+                element_id=evidence.name if evidence is not None else None,
+                remediation="Correct the submodel registration identity and file path.",
             )
+            diagnostics.append(diagnostic)
+            if evidence is not None:
+                if include_invalid_references:
+                    registrations.append(
+                        SubmodelRegistration(
+                            path=evidence.path,
+                            name=evidence.name,
+                            line=statement.lineno,
+                        )
+                    )
+                if unavailable_candidates is not None:
+                    unavailable_candidates.append(
+                        _RecoveredCandidate(
+                            authored_id=evidence.name,
+                            recovery_id=evidence.name,
+                            decorator_name="submodel",
+                            node_type=NodeType.SUBMODEL,
+                            description=evidence.name,
+                            config={
+                                "definitionId": evidence.definition_id or evidence.path,
+                                "alias": evidence.name,
+                            },
+                            config_reference=evidence.path,
+                            param_names=(),
+                            edge_param_names=(),
+                            span=span,
+                            availability="unavailable",
+                            diagnostic_ids=[diagnostic.diagnostic_id],
+                            position_key=evidence.instance_id,
+                        )
+                    )
     return registrations
 
 
@@ -756,6 +791,16 @@ def _build_recovery_graph(
     list[RecoveryPipelineEdge],
     list[RecoveryUnresolvedConnection],
 ]:
+    # Skeletons and registrations are discovered independently. Assign ids across
+    # their combined set so collisions still produce a valid recovery document.
+    for candidate, recovery_id in zip(
+        candidates,
+        _candidate_ids(
+            [(candidate.authored_id, candidate.span.start_line) for candidate in candidates]
+        ),
+        strict=True,
+    ):
+        candidate.recovery_id = recovery_id
     _mark_duplicate_candidates(
         candidates,
         source_file=source_file,
@@ -1010,7 +1055,7 @@ def _build_recovery_graph(
     for index, candidate in enumerate(candidates):
         position = positions.get(
             candidate.authored_id,
-            {"x": float(index * 300), "y": 0.0},
+            positions.get(candidate.position_key or "", {"x": float(index * 300), "y": 0.0}),
         )
         resolved_identity = None
         if candidate.node_type is not None:
@@ -1713,6 +1758,7 @@ def _source_references(
             tree,
             source_file="<revision-manifest>",
             diagnostics=[],
+            include_invalid_references=True,
         )
     )
     return config_refs, registrations
@@ -1968,10 +2014,12 @@ def _load_readable_pipeline_editor_document(
                 diagnostics=diagnostics,
             )
             connections = recovered_connections
+            unavailable_registrations: list[_RecoveredCandidate] = []
             registrations = _recover_ast_submodel_registrations(
                 tree,
                 source_file=source_file,
                 diagnostics=diagnostics,
+                unavailable_candidates=unavailable_registrations,
             )
             bodies = _extract_function_bodies(source, tree=tree)
             skeletons = _extract_decorated_node_skeletons(
@@ -2004,6 +2052,50 @@ def _load_readable_pipeline_editor_document(
                 captures=captures,
             )
             candidates.extend(submodel_occurrences)
+            for unavailable in unavailable_registrations:
+                # These handles are authored connection evidence only. The unavailable
+                # card remains non-executable and its downstream path stays blocked.
+                unavailable.submodel_output_ports = tuple(
+                    dict.fromkeys(
+                        connection.source_port
+                        for connection in recovered_connections
+                        if connection.source_authored_id == unavailable.authored_id
+                        and connection.source_port is not None
+                    )
+                )
+                unavailable.submodel_input_ports = tuple(
+                    dict.fromkeys(
+                        connection.target_port
+                        for connection in recovered_connections
+                        if connection.target_authored_id == unavailable.authored_id
+                        and connection.target_port is not None
+                    )
+                )
+            candidates.extend(unavailable_registrations)
+            if (
+                isinstance(strict_failure, ParseError)
+                and "unbound_parameters" in strict_failure.context
+            ):
+                failed_node_id = strict_failure.context.get("node_id")
+                matching = [
+                    candidate for candidate in candidates if candidate.authored_id == failed_node_id
+                ]
+                if len(matching) == 1 and matching[0].availability == "ready":
+                    failed = matching[0]
+                    diagnostic = _diagnostic(
+                        code="node_parse_invalid",
+                        scope="node",
+                        message=strict_failure.message,
+                        source_file=source_file,
+                        element_id=failed.recovery_id,
+                        source_span=failed.span,
+                        remediation=strict_failure.context.get(
+                            "remediation", "Correct this node's source or reset it."
+                        ),
+                    )
+                    diagnostics.append(diagnostic)
+                    failed.diagnostic_ids.append(diagnostic.diagnostic_id)
+                    failed.availability = "unavailable"
             nodes, edges, unresolved = _build_recovery_graph(
                 candidates,
                 connections,

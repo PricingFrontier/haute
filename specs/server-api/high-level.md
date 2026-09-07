@@ -501,7 +501,8 @@ arrive as degraded or source-only documents.
 
 ## Minimal transactional pipeline repair
 
-The only structured repair action is `Remove unavailable node`. It is not a
+Structured repair includes `Remove unavailable node` and the explicit update/reset
+actions defined in [node recovery actions](node-recovery-actions.md). Removal is not a
 recovery-graph Save and does not accept source bytes, source spans, replacement
 graphs, or migration instructions from the client. Dry-run identifies the
 current document by source file and raw-artifact revision, resolves the target

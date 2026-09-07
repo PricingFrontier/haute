@@ -14,6 +14,7 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useOutputWriteStore from "../../stores/useOutputWriteStore"
 import { buildGraph, graphForRequestIdentity } from "../../utils/buildGraph"
 import { useGraph } from "../useGraph"
+import { useIsRecoveryDraft } from "../DraftEditingContext"
 import IoFormatEditor from "./_IoFormatEditor"
 import { useIoCapabilities } from "./_ioFormats"
 import { INPUT_STYLE } from "./_shared"
@@ -145,6 +146,7 @@ export default function DataOutputEditor({
   accentColor: string
   nodeId: string
 }) {
+  const isRecoveryDraft = useIsRecoveryDraft()
   const { capabilities, error } = useIoCapabilities()
   const { allNodes, edges, submodels, preamble } = useGraph()
   const streamingChunkSize = useSettingsStore(
@@ -235,7 +237,7 @@ export default function DataOutputEditor({
   )
 
   useEffect(() => {
-    if (!ready) return
+    if (!ready || isRecoveryDraft) return
     const controller = new AbortController()
     void resolveOutputDestination({
       graph,
@@ -259,10 +261,10 @@ export default function DataOutputEditor({
       },
     )
     return () => controller.abort()
-  }, [graph, identity, nodeId, ready])
+  }, [graph, identity, nodeId, ready, isRecoveryDraft])
 
   const write = async (overwrite: boolean) => {
-    if (!ready || isWriting) return
+    if (isRecoveryDraft || !ready || isWriting) return
     if (overwrite && visibleState?.phase !== "confirm_overwrite") return
     const requestIdentity = identity
     const requestId = beginWrite(nodeId, requestIdentity)
@@ -369,7 +371,7 @@ export default function DataOutputEditor({
 
       <button
         type="button"
-        disabled={!ready || isWriting}
+        disabled={isRecoveryDraft || !ready || isWriting}
         onClick={() => void write(false)}
         className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
         style={{ background: "var(--accent)", color: "white" }}
@@ -390,6 +392,7 @@ export default function DataOutputEditor({
           </p>
           <button
             type="button"
+            disabled={isRecoveryDraft}
             onClick={() => void write(true)}
             className="px-3 py-1.5 rounded-lg text-xs font-medium"
             style={{ background: "var(--danger)", color: "white" }}

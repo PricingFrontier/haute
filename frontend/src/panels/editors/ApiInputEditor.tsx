@@ -54,6 +54,7 @@ import {
 import FramesTable, { type FramesTableRow } from "../../components/FramesTable"
 import KeyPickerModal from "../../components/KeyPickerModal"
 import Tooltip from "../../components/Tooltip"
+import { useIsRecoveryDraft } from "../DraftEditingContext"
 
 // The re-infer merge is `reconcileInferredTables` (apiInputInherit.ts): the
 // column-level reconciliation that supersedes the old whole-column-array
@@ -162,8 +163,9 @@ export default function ApiInputEditor({
   /** Server-advertised frame labels reserved by the executable language. */
   reservedFrameLabels: ReadonlySet<string>
 }) {
+  const isRecoveryDraft = useIsRecoveryDraft()
   const currentPath = configField<string | undefined>(config, "path", undefined)
-  const { schema, loading: loadingSchema, error: schemaError, fetchForPath } = useSchemaFetch(currentPath)
+  const { schema, loading: loadingSchema, error: schemaError, fetchForPath } = useSchemaFetch(isRecoveryDraft ? undefined : currentPath)
   const showCacheButton =
     !!currentPath && /\.(?:json|jsonl|ndjson|xml)$/i.test(currentPath)
   const [inferring, setInferring] = useState(false)

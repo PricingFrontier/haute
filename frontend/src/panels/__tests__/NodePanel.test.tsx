@@ -378,6 +378,35 @@ describe("NodePanel", () => {
     expect(screen.queryByRole("button", { name: "Remove unavailable node" })).not.toBeInTheDocument()
   })
 
+  it("offers update for unavailable submodels and reset for known ordinary nodes only", () => {
+    const onRemoveUnavailableNode = vi.fn()
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ load_status: "degraded", capabilities: { can_repair: true } }))
+    const { unmount } = renderPanel({ onRemoveUnavailableNode, node: makeNode({ data: { label: "Inputs", description: "", nodeType: "submodel", _loadAvailability: "unavailable", _sourceFile: "main.py", _recoveryId: "inputs@1" } }) })
+    fireEvent.click(screen.getByRole("button", { name: "Update to current format" }))
+    expect(onRemoveUnavailableNode).toHaveBeenCalledWith({ sourceFile: "main.py", recoveryId: "inputs@1", action: "update" })
+    unmount()
+    renderPanel({ onRemoveUnavailableNode, node: makeNode({ data: { label: "Broken", description: "", nodeType: "polars", _loadAvailability: "unavailable", _sourceFile: "main.py", _recoveryId: "broken@1" } }) })
+    expect(screen.getByRole("button", { name: "Reset node" })).toBeInTheDocument()
+  })
+
+  it("does not offer reset for an unavailable node instance", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      capabilities: { can_repair: true },
+    }))
+    renderPanel({ node: makeNode({ data: {
+      label: "Copied Polars",
+      description: "",
+      nodeType: "polars",
+      config: { instanceOf: "source-polars" },
+      _authoredDecorator: "instance",
+      _loadAvailability: "unavailable",
+      _sourceFile: "main.py",
+      _recoveryId: "copy@1",
+    } }) })
+    expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
+  })
+
   it("inspects a ready degraded sibling without mounting its normal editor", () => {
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
       load_status: "degraded",
