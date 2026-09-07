@@ -190,3 +190,50 @@ class TestTestFileNamingContracts:
         )
 
         assert offenders == []
+
+
+class TestContainerSmokeWorkflowContract:
+    def test_container_smoke_workflow_matches_operational_contracts(self) -> None:
+        import yaml
+
+        workflow_path = (
+            Path(__file__).resolve().parents[1] / ".github" / "workflows" / "container-smoke.yml"
+        )
+        data = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+        # YAML 1.1 parses unquoted 'on' as boolean True
+        on_section = data.get(True) or data.get("on") or {}
+
+        # Cron schedule (Mondays 04:23 UTC)
+        schedules = on_section.get("schedule", [])
+        cron_exprs = [s.get("cron") for s in schedules]
+        assert "23 4 * * 1" in cron_exprs
+
+        # force_fail dispatch input
+        dispatch_inputs = on_section.get("workflow_dispatch", {}).get("inputs", {})
+        assert "force_fail" in dispatch_inputs
+        assert dispatch_inputs["force_fail"].get("type") == "boolean"
+
+        # Steps in container-smoke job
+        steps = data.get("jobs", {}).get("container-smoke", {}).get("steps", [])
+        run_commands = [step.get("run", "") for step in steps if "run" in step]
+
+        # Wheel build step
+        assert any("HAUTE_BUILD_FRONTEND=1 uv build --wheel" in cmd for cmd in run_commands)
+
+        # Serve-check step
+        assert any(
+            "scripts/container_smoke.py" in cmd and "--serve-check" in cmd for cmd in run_commands
+        )
+
+        # Docker build and run steps
+        assert any("docker build" in cmd for cmd in run_commands)
+        assert any("docker run" in cmd for cmd in run_commands)
+
+        # Alarm step's label
+        alarm_step = next(
+            (step for step in steps if "container-watch" in step.get("run", "")),
+            None,
+        )
+        assert alarm_step is not None, "container-watch alarm step missing"
+        assert "container-watch" in alarm_step["run"]

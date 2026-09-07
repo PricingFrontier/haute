@@ -5,20 +5,20 @@
 Haute pipelines run user-authored Python (polars transform nodes and preamble/utility
 code) inside the local editor process; the CLI validates then imports training scripts
 inside the separate CLI process. The editor also loads user-supplied model/data
-artifacts (pickle, joblib) from disk. These are
-attacker-shaped inputs even in a single-user local tool: a pipeline file can be
-copied between machines, shared, or opened from an untrusted source, and a model
-artifact can be swapped out from under the project directory. This component is the
-set of defences that keep "run whatever code/data the project directory contains"
-from becoming "run whatever the file system contains" or "run whatever a hostile
-browser tab can smuggle through localhost."
+artifacts (pickle, joblib) from disk.
 
-It covers three independent threat surfaces: (1) arbitrary code execution via
-`exec()` of pipeline node/preamble code and normal module import of a CLI training
-script, (2) arbitrary code execution via
-deserializing untrusted pickle/joblib model artifacts, and (3) a random web page
-driving the local dev server through a user's browser (cross-site request/WebSocket
-hijack against `localhost`). A fourth, narrower concern — keeping generated
+Project code is trusted first-party code (decision of 6 September 2026, finding F1):
+node text, preambles, utility modules and training scripts run with the privileges of
+the process that runs haute, and access to a project is governed by who may edit its
+files, not by haute. Opening a project is running its code. What this component
+defends against is therefore narrower than a hostile author, and it says so rather
+than promising containment it cannot deliver: (1) accidents in node text, the
+`open()`, import, reflection and `eval` shapes that fail confusingly or corrupt state,
+caught by an accident guard before the code runs; (2) arbitrary code execution via
+deserializing untrusted pickle/joblib model artifacts, which can be swapped under a
+project without editing any code; and (3) a random web page driving the local dev
+server through a user's browser (cross-site request/WebSocket hijack against
+`localhost`). A fourth, narrower concern — keeping generated
 `.gitignore` entries consistent so secrets and per-clone state never get committed —
 is bundled in here because it is a small, self-contained guard module living beside
 the others, not because it shares a threat model with the first three.
@@ -26,9 +26,10 @@ the others, not because it shares a threat model with the first three.
 ## Scope
 
 In scope:
-- AST-level static validation of pipeline/preamble code before `exec()` and of CLI
-  training scripts before module import (`validate_user_code`), plus the restricted
-  builtins namespace used only by the `exec()` paths (`safe_globals`).
+- AST-level static validation of pipeline/preamble code before `exec()`, pivot
+  formulas before `eval()`, and CLI training scripts before module import
+  (`validate_user_code`), plus the restricted builtins namespace used by the
+  `exec()` and `eval()` paths (`safe_globals`).
 - The actual `exec()` call sites for pipeline node code and its namespace assembly
   (`_exec_user_code`).
 - Restricted unpickling for both raw pickle files and joblib archives
@@ -69,14 +70,47 @@ Out of scope (owned elsewhere, linked where relevant):
 - The CLI's own write-sandbox used by the test suite (`tests/_write_sandbox.py`)
   is test infrastructure, not part of the shipped security surface.
 
+## Trust boundary
+
+- **Node text is trusted project code.** The enforcement boundary is the identity
+  the haute process runs as: the local user in the editor and the CLI, and the
+  hosted app's own identity inside its single-tenant container (see
+  [hosted-databricks-app](../hosted-databricks-app/high-level.md)). Anything that
+  identity can do, project code can do.
+- **Allowed operations.** Any Python or Polars the accident guard's syntax rules
+  admit. Direct file, environment and network access from node text is not
+  confined: the injected Polars module carries the whole Python object graph
+  beneath it (`pl.io.csv.functions.os` reaches the operating system), a preamble
+  imports freely, and no OS-level sandbox (seccomp, Landlock, restricted token,
+  network filter) exists on any supported platform. Only memory caps are enforced.
+- **Project reads and writes.** Haute's own loaders and writers stay inside the
+  project root (`validate_project_path`, the runtime path resolution below); that
+  containment protects haute's persistence from confused paths, not the machine
+  from the author.
+- **Environment exposure.** The process environment, including any credentials
+  the deployment supplies to haute itself, is visible to project code.
+- **Hosted mode.** Node code runs with the app's identity in its own container;
+  the platform proxy boundary adapts traffic and never contains code, and access
+  to a project is governed by the workspace permissions on the app.
+- **What real containment would require**, recorded so it is not implied: a
+  privilege-separated worker with an explicit filesystem, credential, process and
+  network policy enforced outside the Python object graph, per supported platform,
+  with its own CI lane. That is a product change (no ad-hoc reads outside the
+  project, no network from a transform) and is not planned.
+- `tests/test_node_code_trust_boundary.py` pins the boundary through the real node
+  entry point: the accident shapes are rejected before execution, permitted
+  transforms run, and a synthetic environment marker and an outside-project write
+  remain reachable.
+
 ## Behaviour
 
-- **Two independent layers gate `exec()`ed pipeline code**, and both must pass:
-  a structural AST walk (`validate_user_code`) rejects known escape-shaped syntax
-  *before* any code runs, and a restricted builtins/globals namespace
-  (`safe_globals`) removes the dangerous callables at runtime as defence in depth
-  even if a pattern slips past the AST layer. Neither layer alone is trusted to be
-  complete.
+- **Two independent layers gate `exec()`ed pipeline code as an accident guard**,
+  and both must pass: a structural AST walk (`validate_user_code`) rejects known
+  escape-shaped syntax *before* any code runs, and a restricted builtins/globals
+  namespace (`safe_globals`) removes the dangerous callables at runtime as defence
+  in depth even if a pattern slips past the AST layer. Neither layer alone is
+  trusted to be complete, and together they are not a containment boundary (see
+  Trust boundary above).
 - **The AST layer is allowlist-adjacent but implemented as a denylist of named
   escape primitives**: dunder attribute access to type-system/introspection
   dunders, frame/traceback/generator-frame attribute access, calls to reflection
@@ -143,8 +177,12 @@ Out of scope (owned elsewhere, linked where relevant):
   only that cookie; an absent Origin is accepted only when the cookie is already valid.
   WebSocket handshakes always require an explicit matching Origin and the cookie.
   Query-string token transport is unsupported. `OPTIONS` skips only the token check,
-  never Origin/Host checks. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` remains an explicit
-  local development escape hatch; the loopback/forwarded-header gate remains active.
+  never Origin/Host checks. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` is an explicit
+  local development escape hatch and the switch set process-wide by the hosted
+  Databricks Apps entry point (`haute.hosted.create_app`); in local mode the
+  loopback and forwarded-header gates remain active, while in hosted mode the
+  forwarded-header gate is satisfied by header rewriting at the proxy boundary
+  rather than by rejection.
   `HAUTE_TRUSTED_HOSTS` is a comma-separated list of normalized loopback authorities;
   entries may pin an exact port. The FastAPI app snapshots it when middleware is
   installed, invalid/non-loopback entries raise `ValueError`, and `haute serve`
@@ -207,10 +245,12 @@ Out of scope (owned elsewhere, linked where relevant):
   a naive `==` string comparison would leave open, even though the local-network
   threat model (a same-machine browser tab, not a remote attacker) makes timing
   attacks a lower-probability vector than the Origin/Host checks it's layered with.
-- **Loopback-only serving is a hard product boundary.** `cli/_serve.py` rejects
-  wildcard, LAN/public, and custom-hostname binds before startup. Haute has no
-  reverse-proxy or shared-host mode because this UI can execute project code and
-  access project files.
+- **Loopback-only serving is the posture of `haute serve` and the stock app.**
+  `src/haute/cli/_serve.py` rejects wildcard, LAN/public, and custom-hostname
+  binds before startup because this UI can execute project code and access
+  project files. The only exception is the explicit hosted deployment entry point
+  in `src/haute/hosted.py`, which delegates authentication to a platform SSO proxy
+  (see [hosted-databricks-app](../hosted-databricks-app/high-level.md)).
 - **Lazy env-var reads over import-time constants.** A constant frozen at import
   silently ignores overrides applied afterward (programmatic server start, test
   `monkeypatch.setenv`, uvicorn reload) — this was an actual regression class, not
@@ -229,8 +269,12 @@ Out of scope (owned elsewhere, linked where relevant):
 - Depended on by the [execution engine](../execution-engine/high-level.md):
   `_user_exec._exec_user_code` (the sandboxed `exec()` path for pipeline node code)
   and `executor.py` both import `validate_user_code`/`safe_globals` directly, and
-  `_model_scorer.py`/`deploy/_scorer.py` reuse the same `_exec_user_code` entry
-  point for scoring-time code execution.
+  `_builders.py`, `chunking.py`, and `_model_scorer.py`/`deploy/_scorer.py` reuse
+  the same `_exec_user_code` entry point for node execution and scoring-time code
+  execution.
+- Depended on by [explore-eda](../explore-eda/high-level.md): `routes/_pivot_service.py`
+  imports `validate_user_code` and `safe_globals` directly to validate and `eval()`
+  configured pivot formulas without going through `_exec_user_code`.
 - Depended on by the io-layer (`_io.py`) for `validate_project_path`,
   `safe_unpickle`, and `safe_joblib_load` when loading external model/data
   artifacts (`load_external_object`), and by `routes/optimiser.py` and
@@ -246,12 +290,15 @@ Out of scope (owned elsewhere, linked where relevant):
   before `accept()`-ing a connection.
 - Depended on by `haute init` (project scaffolding, via `cli/_init_cmd.py`) and by
   `_git_setup.py`'s unborn-repo commit seed for `ensure_gitignore_guards`.
-- Supplies numeric parsing helpers to `executor.py`, `trace.py`,
-  `_execution_admission.py`, `assistant/_loop.py`, and the route callers
-  `routes/pipeline.py`, `routes/json_cache.py`, `routes/output_assemble.py`,
-  `routes/input_cache.py`, `routes/_optimiser_service.py`, and
-  `routes/_training_lifecycle.py`. This component owns the parsing helpers, not the
-  knobs' meanings, which belong to their respective components.
+- Supplies numeric parsing helpers to callers across the codebase, including
+  `executor.py`, `trace.py`, `_execution_admission.py`, `assistant/_loop.py`,
+  `_dataframe_execution_cache.py`, `_input_preparation.py`, `_interactive_workers.py`,
+  `_source_cache.py`, `_json_shred/` (`_records.py`, `_runtime_storage.py`, `_writer.py`),
+  `deploy/_batch_scoring.py`, and the route modules `routes/pipeline.py`,
+  `routes/json_cache.py`, `routes/output_assemble.py`, `routes/input_cache.py`,
+  `routes/_explore_service.py`, `routes/_optimiser_service.py`, `routes/_training_artifacts.py`,
+  `routes/_training_lifecycle.py`, and `routes/_training_worker.py`. This component owns
+  the parsing helpers, not the knobs' meanings, which belong to their respective components.
 
 ## Failure model
 

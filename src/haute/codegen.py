@@ -888,21 +888,21 @@ def _registration_path_depth(recorded_path: str) -> int:
     return max(len(segments) - 1, 0)
 
 
-def _canonical_port_id(
+def _canonical_port_name(
     handle: str | None,
     *,
     prefix: str,
     edge: GraphEdge,
     endpoint: str,
 ) -> str:
-    """Return a validated public port id from a canonical boundary handle."""
+    """Return a validated public port name from a canonical boundary handle."""
     if not handle or not handle.startswith(prefix) or handle == prefix:
         raise ParseError(
             "Canonical submodel edge has a malformed public-port handle.",
             edge_id=edge.id,
             endpoint=endpoint,
             handle=handle,
-            expected=f"{prefix}<portId>",
+            expected=f"{prefix}<name>",
         )
     return handle.removeprefix(prefix)
 
@@ -930,9 +930,9 @@ def _canonical_definition_source_metadata(
     node_source_ids: dict[str, list[str]] = {}
 
     for port in definition.input_ports:
-        parameter_name = _sanitize_func_name(port.label)
+        parameter_name = port.name
         for target in port.targets:
-            add_binding(target.node_id, parameter_name, port.port_id, target.handle_id)
+            add_binding(target.node_id, parameter_name, port.name, target.handle_id)
 
     for edge in ordered_edges:
         source_node = node_map[edge.source]
@@ -960,7 +960,7 @@ def _canonical_definition_source_metadata(
 def _require_routed_input_port(
     instance: ResolvedSubmodelInstance,
     edge: GraphEdge,
-    port_id: str,
+    port_name: str,
 ) -> None:
     """Reject a parent binding whose public input has no internal route.
 
@@ -969,13 +969,13 @@ def _require_routed_input_port(
     the connect call would name a port that binds nothing.
     """
     for port in instance.definition.input_ports:
-        if port.port_id == port_id and not port.targets:
+        if port.name == port_name and not port.targets:
             raise ParseError(
                 "Submodel input port bound by a parent edge has no internal targets.",
                 edge_id=edge.id,
                 instance_id=instance.node.id,
                 definition_id=instance.config.definition_id,
-                port_id=port_id,
+                port_name=port_name,
             )
 
 
@@ -1030,6 +1030,7 @@ def _graph_to_code_multi_instances(
     validate_graph_shape_contracts(graph, graph_label=pipeline_name)
 
     collision_labels = [node.data.label for node in root_nodes]
+    collision_labels.extend(instance.config.alias for instance in instances.values())
     for definition_id in definition_order:
         collision_labels.extend(node.data.label for node in definitions[definition_id].graph.nodes)
     _error_on_name_collisions(collision_labels)
@@ -1054,13 +1055,11 @@ def _graph_to_code_multi_instances(
         incoming_context: dict[str, list[str]] = {}
         for input_port in definition.input_ports:
             for target in input_port.targets:
-                incoming_context.setdefault(target.node_id, []).append(
-                    f"public:{input_port.port_id}"
-                )
+                incoming_context.setdefault(target.node_id, []).append(f"public:{input_port.name}")
         outgoing_context: dict[str, list[str]] = {}
         for output_port in definition.output_ports:
             outgoing_context.setdefault(output_port.source.node_id, []).append(
-                f"public:{output_port.port_id}"
+                f"public:{output_port.name}"
             )
         validate_graph_shape_contracts(
             child_graph,
@@ -1163,7 +1162,7 @@ def _graph_to_code_multi_instances(
             else root_id_to_func[edge.target]
         )
         source_port = (
-            _canonical_port_id(
+            _canonical_port_name(
                 edge.sourceHandle,
                 prefix="out__",
                 edge=edge,
@@ -1173,7 +1172,7 @@ def _graph_to_code_multi_instances(
             else edge.sourceHandle or None
         )
         target_port = (
-            _canonical_port_id(
+            _canonical_port_name(
                 edge.targetHandle,
                 prefix="in__",
                 edge=edge,
@@ -1186,22 +1185,32 @@ def _graph_to_code_multi_instances(
             _require_routed_input_port(target_instance, edge, target_port)
         connect_pairs.append((source_func, target_func, source_port, target_port))
 
-    submodel_imports = [
-        (
-            f"pipeline.submodel({_safe_path(instance.definition.file)}, "
-            f"definition_id={_safe_str(instance.config.definition_id)}, "
-            f"instance_id={_safe_str(instance.node.id)}, "
-            f"alias={_safe_str(instance.config.alias)}, "
-            + (
-                f"instance_of={_safe_str(instance.config.instance_of)}, "
-                if instance.config.instance_of is not None
-                else ""
+    submodel_imports: list[str] = []
+    for node in graph.nodes:
+        instance = instances.get(node.id)
+        if instance is None:
+            continue
+        name = instance.config.alias
+        if instance.config.instance_of is not None:
+            owner_ref = instance.config.instance_of
+            owner_instance = instances.get(owner_ref)
+            if owner_instance is None:
+                raise ParseError(
+                    "Submodel instance references an owner occurrence that does not exist.",
+                    instance_id=instance.node.id,
+                    definition_id=instance.config.definition_id,
+                    instance_of=owner_ref,
+                )
+            owner_name = owner_instance.config.alias
+            submodel_imports.append(
+                f"pipeline.submodel({_safe_path(instance.definition.file)}, "
+                f"{_safe_str(name)}, "
+                f"instance_of={_safe_str(owner_name)})"
             )
-            + f"label={_safe_str(instance.node.data.label)})"
-        )
-        for node in graph.nodes
-        if (instance := instances.get(node.id)) is not None
-    ]
+        else:
+            submodel_imports.append(
+                f"pipeline.submodel({_safe_path(instance.definition.file)}, {_safe_str(name)})"
+            )
     main_lines = _generate_pipeline_lines(
         kind="pipeline",
         name=pipeline_name,
@@ -1225,7 +1234,7 @@ def _graph_to_code_multi_instances(
         pipeline_name=pipeline_name,
         node_count=len(sorted_root_nodes),
         submodel_definition_count=len(definition_order),
-        submodel_instance_count=len(instances),
+        submodel_occurrence_count=len(instances),
     )
     return _assert_emitted_files_parse(files)
 

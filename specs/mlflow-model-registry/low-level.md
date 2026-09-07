@@ -309,10 +309,8 @@ artifact calls, local handler time (total less measured provider calls) below
 payload below 1 MiB. Provider latency is deliberately not replaced with a
 machine-local claim: production phase measurements provide that evidence, with
 5,000 ms p95 total time at the 100-candidate cap as the operational decision
-gate. The bounded N+1 path is retained; provider-side artifact
-metadata/filtering or a bounded index becomes justified only if those live
-measurements breach that gate. No speculative cache, retry fan-out, or
-concurrent request burst is added.
+gate. The bounded N+1 path is retained, performing one search and capped artifact calls.
+No speculative cache, retry fan-out, or concurrent request burst is added.
 
 `list_model_versions` fetches each version's backing-run params
 via `_model_version_run_params`, which swallows (and logs with a full
@@ -322,7 +320,7 @@ endpoint.
 
 ## Edge cases and invariants
 
-- **Disk-cache filenames are sha256 digests of the artifact path**, not
+- **Disk-cache directory names are sha256 digests of the artifact path**, not
   the artifact's own basename — two artifacts with the same basename in
   different directories (or across different runs sharing a digest
   namespace) never collide on disk, and the identity is validated
@@ -433,7 +431,7 @@ plain `RuntimeError`, not a `HauteError` subclass.
 - `tests/test_scoring_path_unified.py` verifies explicit flavor dispatch, unified scoring regression guards, structural invariants, wrapper dispatch, and eager/batch equivalence.
 - `tests/test_scoring_prep_perf.py` verifies prediction-frame preparation correctness, pyfunc named-frame dispatch, downstream passthrough, edge cases, and benchmark behavior.
 
-Tests live across fourteen primary files. Strategy is unit-level with `mlflow`,
+Tests live across primary files under `tests/`. Strategy is unit-level with `mlflow`,
 `catboost`, and `rustystats` either mocked or exercised against small
 real artifacts fixture-built in `tmp_path`; there is no test that talks
 to a live MLflow tracking server.
@@ -442,8 +440,8 @@ to a live MLflow tracking server.
   run/registered loading (happy path, missing args, invalid source
   type), pyfunc auto-detect and auto-discovery fallback, in-memory cache
   hit/LRU-eviction, CatBoost loader dispatch by task, model wrapping
-  (CatBoost cat-feature extraction, pyfunc signature extraction including
-  the older-MLflow ColSpec-list fallback), predict-frame preparation for
+  (CatBoost cat-feature extraction, pyfunc signature extraction),
+  predict-frame preparation for
   every flavor/dtype/null/categorical combination, artifact-by-extension
   discovery (top-level, subdirectory, "prefers top-level" ordering,
   missing → labeled error), classification proba shape handling
@@ -473,7 +471,7 @@ to a live MLflow tracking server.
   marks a run active before probing), and waiters on both the fast-path and
   full-resolve-path reusing a model that finished loading while they
   waited.
-- **`tests/test_mlflow_model_cache_key_contract.py`** (new) — pins cache-key
+- **`tests/test_mlflow_model_cache_key_contract.py`** — pins cache-key
   *completeness* specifically for the artifact-fingerprint component:
   `TestFastPathArtifactPerturbation` and `TestFullPathArtifactPerturbation`
   each rewrite the local artifact's bytes in place (disk-cache file for the
@@ -557,6 +555,9 @@ to a live MLflow tracking server.
   behavior, and callback lock boundaries.
 - **`tests/test_model_cache_observability.py`** — structured model-cache
   hit/miss events, counter concurrency, and blanket-clear reset semantics.
+- **`tests/performance/test_external_scaling_perf.py::test_mlflow_run_discovery_maximum_cardinality_budget`** —
+  enforces the representative performance certificate for run discovery: exactly one search call,
+  at most 100 artifact calls, and latency/serialization budgets under the maximum candidate cap.
 
 `score_from_config` is also exercised indirectly by
 `tests/test_model_score_codegen.py` and

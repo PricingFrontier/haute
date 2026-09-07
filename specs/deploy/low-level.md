@@ -15,7 +15,8 @@
 | `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
 | `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature/conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check. |
 | `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph`. |
-| `src/haute/deploy/_container.py` | Container build/push orchestration, generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub. |
+| `src/haute/deploy/_container.py` | Container build/push orchestration, build-directory preparation (`prepare_build_directory`), generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub. |
+| `scripts/container_smoke.py` | Standalone CLI script to verify the container deployment pipeline for an example (copy bundle, resolve deploy config, prepare build directory, and optionally execute a live uvicorn process smoke check). |
 | `src/haute/deploy/_impact.py` | Impact analysis: batched endpoint scoring (Databricks SDK or HTTP `/quote`), quote-envelope normalisation, percent-change statistics, categorical segment breakdown, terminal/Markdown report formatting. |
 | `src/haute/deploy/_request_limits.py` | Deployed-container request-body size limiting: environment resolution, `Content-Length` and streamed-byte enforcement before JSON materialisation, and structured limit/header/parse errors. |
 
@@ -38,7 +39,10 @@
   `output_node_id`, `artifacts` (`dict[str, Path]`), `input_schema`/`output_schema`
   (`dict[str, str]` of column name → Polars dtype string), `execution_policy` (the
   bundle-time batch strategy record from `_schema.py::infer_deploy_execution_policy`),
-  `removed_node_ids`.
+  `removed_node_ids`, `snapshot_provenance` (`dict[str, dict[str, Any]]`). It owns
+  an `_resources: ExitStack` released by idempotent `close()` (also implementing
+  `__enter__`/`__exit__`), which `deploy()`/`deploy_resolved()` invoke in a
+  `finally` to drop snapshot leases.
 - **`DeployResult`** (`_mlflow.py`) — returned by every backend: `model_name`,
   `model_version`, `model_uri`, `endpoint_url` (`None` if no endpoint configured/created),
   `manifest_path`.
@@ -88,8 +92,11 @@
   `_model_code.py`'s `HauteModel.load_context`): `haute_version`, `pipeline_name`,
   `pipeline_file`, `target`, `created_at`, `created_by`, `input_node_ids`,
   `output_node_id`, `output_fields`, `input_schema`, `output_schema`, `execution_policy`,
-  `artifacts`
-  (name → posix path), `pruned_graph` (full `model_dump()`), `nodes_deployed`,
+  `artifacts` (name → posix path), `snapshot_provenance` (node id → `provider` plus
+  the snapshot generation's metadata record: identity digest and identity, schema
+  version, generation id, source signature, data checksum, size, row and column
+  counts, columns, creation time, profile, build class), `pruned_graph` (full
+  `model_dump()`), `nodes_deployed`,
   `nodes_skipped`, `nodes_skipped_names`.
 
 ## Control flow
@@ -109,7 +116,7 @@
    one apiInput mapped `quotes=live, drivers=batch` keep exactly the `quotes` edge —
    then `ancestors()` walks backward from the output node over the filtered edge set.
 6. `find_deploy_input_nodes(pruned_graph)` — nodes with `nodeType="apiInput"`. If none,
-   accept a single `dataInput` source as the deliberate legacy live-input form.
+   accept a single `dataInput` source as the live-input form.
    Zero/multiple sources, or a sole `constant`/other unsupported source, fail with a
    correction that names the node/type and asks for an API Input.
 7. `collect_artifacts(pruned_graph, deploy_inputs, pipeline_dir, project_root=...)` →
@@ -395,7 +402,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 ## Edge cases and invariants
 
 - **Live scoring adds no per-request process spawn.** A one-row `/quote` (a JSON object,
-  or a one-element array) scores in the service process exactly as before; only
+  or a one-element array) scores in the service process; only
   `len(rows) > 1` reaches `_batch_scoring`. A warm worker pool is deliberately out of
   scope.
 - **Exactly one worker per batch request**, launched with the parent's admitted headroom
@@ -464,7 +471,8 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   recorded as `failed_rows`, before DataFrames are built — avoiding materialising rows
   that will be discarded.
 - **Model/contract artefact caches are stat-gated and per-key-locked**
-  (`StatGatedCache` in `_scorer.py`), so concurrent `/quote` requests on container start
+  (`src/haute/_stat_gated_cache.py::StatGatedCache`, instantiated in `_scorer.py`
+  as `_local_model_cache`), so concurrent `/quote` requests on container start
   perform exactly one disk load per artefact and later requests short-circuit on a cheap
   `(mtime_ns, size)` stat check; failed loads are never cached.
 - **Empty artefact set produces an empty fingerprint string** (`artifact_identity_fingerprint`
@@ -523,7 +531,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | Public `HauteError` (`ContractResolutionError`, `PreambleError`, and other errors with a stable `error_code`) | Execution engine or preamble compilation during scoring | Caught in `/quote` → HTTP 422 with `to_payload()`; server routes use the same stable public payload contract. |
 | `NotImplementedError` | `src/haute/deploy/__init__.py::_validate_target` (planned targets: `sagemaker`, `azure-ml`), `_container.py::_update_service` (platform-container service update not yet built) | Uncaught to caller; the `_update_service` message names the built image tag (which is pushed only when a registry was configured). |
 | `DeployError` (capped schema dry-run) | `_schema.py::infer_output_schema` when the fallback's worker fails: a `BatchScoreError` from the child, or any `IsolatedWorker*Error` (`IsolatedWorkerMemoryLimitUnsupportedError` on a host without native caps included) | Propagates from `resolve_config()`; names the blocking node/operator from the original group-by rejection and states that the served batch path could not be proven. |
-| `RuntimeError` (startup) | Generated `app.py`'s `_require_fail_closed_batch_enforcement` at module load: a `warned` execution policy with `HAUTE_WORKER_MEMORY_ENFORCEMENT` other than `required` | Uncaught — the service refuses to start rather than failing every batch request. |
+| `RuntimeError` (startup) | Generated `app.py`'s `_require_fail_closed_batch_enforcement` at module load: a `warned` execution policy with `HAUTE_WORKER_MEMORY_ENFORCEMENT` other than `required`, or `required` on a host where `process_memory_caps_supported()` is `False` | Uncaught — the service refuses to start rather than failing every batch request. |
 | `IsolatedWorkerMemoryLimitUnsupportedError` | `run_isolated_worker` under `required` enforcement on a host that cannot install a native cap | Caught in `_quote_batch` → HTTP 507 with `reason: "native_memory_cap_unavailable"`. |
 | `BatchScoreCleanupError` | `_batch_scoring.py::_remove_batch_temp_dir` (temp directory removal failed with no primary error in flight) | Caught in `_quote_batch`'s `finally`, logged `deploy_quote_batch_cleanup_failed`, replaces the computed response with HTTP 500 `deploy_internal_error`. With a primary error in flight it is attached to that error as a note instead. |
 | `BatchScoreError` | `_batch_scoring.py::accept_batch_outcome` (classified child failure, wrong outcome type, missing/unreadable/row-count-mismatched result parquet) | Caught in `_quote_batch` → 422 (`contract`/`bounded`), 507 (`memory`), 499 (`cancelled`), 500 (`error`). |
@@ -564,6 +572,7 @@ what they cover:
   admission, cancellation, memory and bounded-streaming error mappings; body-limit env
   precedence and streamed-byte enforcement; JSON response truncation/envelope boundaries;
   NDJSON streaming; Dockerfile dependency pins and build-directory cleanup.
+- **`test_container_smoke_script.py`** — covers the container deployment seam (`prepare_build_directory` writing artefacts and handling custom wheel requirements), `build_and_push_image` build-directory cleanup on Docker failure, and the end-to-end `--serve-check` uvicorn subprocess smoke.
 - **`test_deploy_batch_scoring.py`** — the multi-row path end to end: a one-row request
   launching no worker; a two-row request launching exactly one
   `haute-deploy-batch` worker with the budget's memory limit and
@@ -600,6 +609,16 @@ what they cover:
   tolerance comparison (numeric, boolean, Decimal,
   large-integer zero-tolerance), missing-expected-column and row-count-mismatch failure
   modes, malformed golden-row rejection, end-to-end `validate_deploy` blocking on drift.
+- **`test_scoring_metamorphic_properties.py`** — generated metamorphic relations for
+  row-independent scoring (ENG-T11): over generated 1..8-row frames (float or null `x`, a
+  label) and a small list of row-independent transforms, `score_graph` on a permuted frame
+  equals the unpermuted result permuted the same way; the editor preview (`execute_graph`)
+  and `score_graph` agree row-for-row and each derived column equals a plain-Python oracle
+  computed from the input value; a cold and a warm `execute_graph` of the same graph agree,
+  the warm run is proven to be a preview-cache hit (the cache's `get` is spied), and a code
+  edit is computed afresh against the new transform's oracle. The `hypothesis.find`
+  negative control shows an order-sensitive `cum_sum` transform breaking the permutation
+  relation, which is why the property domain excludes order-sensitive operations.
 - **`test_deploy_identity_parity.py`** — `artifact_identity_fingerprint` determinism, the
   output-schema cache folding artefact identity into its key, the deliberate
   `modelScore`-passthrough-rejection behaviour, artefact threading through

@@ -119,36 +119,38 @@ def test_edge_input_name_does_not_mutate_its_inputs() -> None:
     assert edge == edge_before
 
 
-def test_submodel_output_identity_uses_public_label_not_structural_handle() -> None:
+def test_submodel_output_identity_uses_occurrence_name_not_structural_handle() -> None:
     assert (
         graph_utils.executable_input_name(
             node_type=NodeType.SUBMODEL,
             label="Pricing",
-            source_handle="out__written-premium",
-            source_handle_label="Written premium",
+            source_handle="out__written_premium",
+            alias="pricing_secondary",
+            output_port_count=1,
         )
-        == "Written_premium"
+        == "pricing_secondary"
     )
 
-    with pytest.raises(ValueError, match="out__<port_id>"):
+    with pytest.raises(ValueError, match=r"out__<name>"):
         graph_utils.executable_input_name(
             node_type=NodeType.SUBMODEL,
             label="Pricing",
-            source_handle="written-premium",
-            source_handle_label="Written premium",
+            source_handle="written_premium",
+            alias="pricing_secondary",
+            output_port_count=1,
         )
 
 
-def test_submodel_edge_resolves_public_output_label_from_definition() -> None:
+def test_submodel_edge_resolves_occurrence_name_from_definition() -> None:
     source = GraphNode(
         id="pricing_instance",
         data=NodeData(
-            label="Pricing",
+            label="pricing_secondary",
             nodeType=NodeType.SUBMODEL,
             config={"definitionId": "pricing_definition", "alias": "pricing_secondary"},
         ),
     )
-    edge = _edge("pricing_instance", source_handle="out__written-premium")
+    edge = _edge("pricing_instance", source_handle="out__written_premium")
     definition = SubmodelDefinition(
         definitionId="pricing_definition",
         file="modules/pricing.py",
@@ -156,8 +158,7 @@ def test_submodel_edge_resolves_public_output_label_from_definition() -> None:
         inputPorts=[],
         outputPorts=[
             SubmodelOutputPort(
-                portId="written-premium",
-                label="Written premium",
+                name="written_premium",
                 source=SubmodelEndpoint(nodeId="source"),
             )
         ],
@@ -169,7 +170,7 @@ def test_submodel_edge_resolves_public_output_label_from_definition() -> None:
             source,
             submodels={"pricing_definition": definition},
         )
-        == "Written_premium"
+        == "pricing_secondary"
     )
 
 
@@ -177,7 +178,7 @@ def test_submodel_edge_requires_its_definition_for_public_label_resolution() -> 
     source = GraphNode(
         id="pricing_instance",
         data=NodeData(
-            label="Pricing",
+            label="pricing_secondary",
             nodeType=NodeType.SUBMODEL,
             config={"definitionId": "pricing_definition", "alias": "pricing_secondary"},
         ),
@@ -185,27 +186,26 @@ def test_submodel_edge_requires_its_definition_for_public_label_resolution() -> 
 
     with pytest.raises(ValueError, match="definition registry"):
         graph_utils.edge_input_name(
-            _edge("pricing_instance", source_handle="out__written-premium"),
+            _edge("pricing_instance", source_handle="out__written_premium"),
             source,
         )
 
 
-def test_editor_identity_resolver_uses_public_labels_for_boundary_handles() -> None:
+def test_editor_identity_resolver_for_boundary_handles() -> None:
     output = resolve_editor_identity(
         node_type=NodeType.SUBMODEL,
-        label="Pricing",
-        source_handles=("out__written-premium",),
-        source_handle_labels={"out__written-premium": "Written premium"},
+        label="pricing_secondary",
+        source_handles=("out__written_premium",),
+        alias="pricing_secondary",
     )
     public_input = resolve_editor_identity(
         node_type=NodeType.SUBMODEL_PORT,
         label="Submodel inputs",
-        source_handles=("policy-input",),
-        source_handle_labels={"policy-input": "Policy records"},
+        source_handles=("policy_input",),
     )
 
-    assert output.source_handle_input_names == {"out__written-premium": "Written_premium"}
-    assert public_input.source_handle_input_names == {"policy-input": "Policy_records"}
+    assert output.source_handle_input_names == {"out__written_premium": "pricing_secondary"}
+    assert public_input.source_handle_input_names == {"policy_input": "policy_input"}
 
 
 def test_editor_identity_resolver_owns_keyword_unicode_and_config_paths() -> None:

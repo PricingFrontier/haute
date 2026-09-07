@@ -130,7 +130,7 @@ describe("useKeyboardShortcuts", () => {
     const owner = makeNode("submodel_owner", "submodel", {
       selected: true,
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
@@ -138,7 +138,7 @@ describe("useKeyboardShortcuts", () => {
     const copy = makeNode("submodel_copy", "submodel", {
       selected: true,
       data: {
-        label: "Scoring instance",
+        label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
@@ -155,8 +155,9 @@ describe("useKeyboardShortcuts", () => {
     fireKey("Delete")
 
     expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
-    const [nextNodes] = vi.mocked(params.setNodesAndEdges).mock.calls[0]
-    expect((nextNodes as Node[]).map((node) => node.id)).toEqual(["submodel_owner"])
+    const surviving = vi.mocked(params.setNodesAndEdges).mock.calls[0][0] as Node[]
+    expect(surviving.map((node) => node.id)).toEqual(["submodel_owner"])
+    expect(params.setSelectedNode).toHaveBeenCalledWith(null)
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/Dissolve Submodel/)
   })
 
@@ -165,7 +166,7 @@ describe("useKeyboardShortcuts", () => {
     const owner = makeNode("submodel_owner", "submodel", {
       selected: true,
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },

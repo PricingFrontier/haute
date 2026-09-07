@@ -243,8 +243,10 @@ HTTP 422; the 422 mapping remains for bounded streaming-collect failures.
   (chunk-by-chunk via `iter_chunked_frames`, only reached when a streaming plan was
   proven) or the classic path (execute pipeline → resolve source → validate/project → batched
   collection into `_ScenarioFrontierRangeAccumulator` → `finish()`).
-- `frontier_auto_range_status` enforces the job's timeout lazily, on poll — there is no
-  dedicated timeout-watcher thread for auto-range jobs, unlike solves (see below).
+- `frontier_auto_range_status` enforces the job's timeout lazily, on poll — solve, frontier-sweep,
+  and auto-range timeouts are all enforced lazily on their respective status polls (`solve_status`,
+  `frontier_status`, `frontier_auto_range_status`), with auto-range additionally checking elapsed
+  time within its worker loop. There is no dedicated timeout-watcher thread.
 - `cancel_frontier_auto_range` delegates to `_stop_frontier_auto_range_job`.
 
 ### Frontier computation and point selection (`src/haute/routes/optimiser.py`)
@@ -534,6 +536,11 @@ returned as a generic `status: "error"` payload.
 
 ## Edge cases and invariants
 
+- **Preamble dependencies are pinned per operation.** Estimate, solve and streaming
+  auto-range resolve `preamble_execution_fingerprint` once when the job starts executing
+  and pass it to every `_compile_preamble` call of that job, so chunks never mix helper
+  versions; a later job resolves a fresh fingerprint and computes with edited helpers. See
+  the execution-engine `_compile_preamble` contract.
 - **One blocking solve process-wide, plus graph/node setup single-flight.**
   `_check_no_concurrent_jobs` scans the shared optimiser store and blocks a second solve for any
   graph/node. `estimate`, `frontier_auto_range`, and `frontier_recompute` are explicitly excluded
@@ -680,7 +687,7 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
 `test_optimiser_routes_critical_edges.py`, `test_optimiser_routes_real_library.py`, and
 `tests/performance/test_optimiser_memory_response_perf.py`.
 
-- **`tests/test_optimiser_routes.py`** — by far the largest file (~14k lines, dozens of test
+- **`tests/test_optimiser_routes.py`** — by far the largest file (dozens of test
   classes) covering the full route surface end-to-end against the FastAPI test client: node
   registration/codegen/executor passthrough, solve/status/estimate/apply/save/frontier/
   frontier-select/mlflow-log routes, ratebook solve, solve-with-history, scenario-value stats,
@@ -721,12 +728,14 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   `/estimate`); the frontier-touching tests in these classes all go through
   `run_frontier_and_wait` and assert on the polled `result` payload rather than an immediate
   response body.
-- **`tests/test_optimiser_service_coverage.py`** — scenario-expander/optimiser-input streaming
-  contiguity, slim-projection column pruning, ratebook non-source-banding-input preservation
-  across a checkpoint, ratebook factor extraction under a low memory limit, non-finite/null
-  rejection in `_validate_and_project`, quote-block interleaving rejection in grid building, and
-  explicit-frontier-range rejection both at the schema layer and the route layer before the
-  solver is invoked.
+- **`tests/test_optimiser_service_coverage.py`** — apply-result and ratebook-factor artifact
+  handles: validation of kind, version, format, filename, directory containment and null bytes;
+  persistence returning `None` for non-dataframe inputs and cleaning its directory when a write
+  or lazy sink fails; loading and scanning that report a missing artifact and reject a corrupt
+  Parquet file; side-input identity for online versus ratebook modes; and orphan cleanup that
+  logs and swallows failures and dispatches to the ratebook-factor cleaner. (The streaming
+  contiguity, projection, checkpoint, memory-limit, non-finite, interleaving and frontier-range
+  contracts live in `tests/test_optimiser_contracts.py`, above.)
 - **`tests/test_optimiser_service_validation.py`** — focused unit tests for
   `_validate_and_project`'s non-finite/overflow/null-quote-id detection (including float64→
   float32 overflow rejection) and end-to-end single-/multi-quote real-solver lifecycle tests
@@ -771,11 +780,25 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   that completed optimiser jobs get their heavy runtime objects slimmed and owned artifacts
   evicted (a job-store/memory-discipline test, not a wall-clock benchmark).
 
-Known coverage gap: there is no property-based/fuzz testing of the
-price-contour-emitted level-label tie-breaking logic beyond the specific fixture cases in
-`test_optimiser_ratebook_apply_agreement.py` and
-`test_optimiser_apply_trace_enrichment.py`; the dtype agreement matrix itself is exhaustive
-over the supported dtype families.
+- **`tests/test_optimiser_level_tie_properties.py`** — the generated level-tie family
+  (ENG-T11, ledger W09-S03): for generated Int64, Float64, Float32 and String levels, single
+  and composite, the generator plays price-contour's emission role (`str()` of the typed
+  value) and perturbs the spelling (`repr`, fixed and scientific notation, the widened
+  binary32 representation, the raw float). Properties: every spelling of one typed value
+  saves to one `__factor_group__` key that an independent oracle predicts, distinct typed
+  values never share a key and carry the generator's quote counts, two spellings of one value
+  in one emitted table are refused with the loud `ValueError`, the saved artifact rates every
+  typed row with its own level with the engine and the explainability mirror agreeing and no
+  miss logged, and a duplicate saved key resolves to the last entry in both. Negative
+  controls built with `hypothesis.find`: verbatim (uncanonicalised) labels let the apply
+  path silently keep the last of two rates for one value (the 3b.10 fault the loud check
+  prevents), and a first-entry-wins mirror disagrees with the engine. The real solver's
+  verbatim emission format stays pinned by the fixtures in
+  `test_optimiser_ratebook_apply_agreement.py`; it is not run per example.
+
+The generated family above covers level-label tie-breaking across the supported dtype
+families; the dtype agreement matrix in `test_optimiser_ratebook_apply_agreement.py` and
+`test_optimiser_apply_trace_enrichment.py` remains the exhaustive curated counterpart.
 
 ## Canonical frontier range implementation
 

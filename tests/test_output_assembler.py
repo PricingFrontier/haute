@@ -873,6 +873,48 @@ def test_same_level_output_frames_are_materialised_once(
     assert collect_calls == 1
 
 
+def test_same_level_join_output_follows_the_first_source_then_unmatched_later_rows() -> None:
+    """Same-level joins retain deterministic source-row order:
+
+    rows follow the sorted left/first source, followed by unmatched rows from later sources.
+    """
+    first = pl.LazyFrame(
+        {
+            "$[:].id": [30, 10, 20],
+            "$[:].a": ["a30", "a10", "a20"],
+        }
+    )
+    second = pl.LazyFrame(
+        {
+            "$[:].id": [10, 40, 30],
+            "$[:].b": ["b10", "b40", "b30"],
+        }
+    )
+
+    # When source_1 carries `first` and source_2 carries `second`, the first member
+    # in the sorted join order is source_1. Output rows follow `first`'s non-sorted
+    # order ([30, 10, 20]), followed by unmatched rows from `second` ([40]).
+    assembled = _assemble_document({"source_1": first, "source_2": second})
+    assert assembled == [
+        {"id": 30, "a": "a30", "b": "b30"},
+        {"id": 10, "a": "a10", "b": "b10"},
+        {"id": 20, "a": "a20"},
+        {"id": 40, "b": "b40"},
+    ]
+
+    # When swapped (source_1 carries `second` and source_2 carries `first`), the
+    # first member in the sorted join order is now `second`. Output rows follow
+    # `second`'s non-sorted order ([10, 40, 30]), followed by unmatched rows from
+    # `first` ([20]), proving the row order is determined by the first source.
+    assembled_swapped = _assemble_document({"source_1": second, "source_2": first})
+    assert assembled_swapped == [
+        {"id": 10, "a": "a10", "b": "b10"},
+        {"id": 40, "b": "b40"},
+        {"id": 30, "a": "a30", "b": "b30"},
+        {"id": 20, "a": "a20"},
+    ]
+
+
 def test_output_materialisation_uses_active_execution_context() -> None:
     """Terminal assembly remains observable and cancellable after Polars collection."""
     fault_points: list[str] = []

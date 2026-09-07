@@ -79,7 +79,7 @@ packages only for selected work.
 **Dependencies:** The current bounded pivot configuration/result contract plus
 representative production evidence.
 
-**Evidence:** Pivot configuration/result telemetry and support feedback.
+**Evidence:** `src/haute/routes/_pivot_service.py`; `frontend/src/panels/explore/pivotConfig.ts`; `frontend/src/panels/explore/ExplorePivotsPane.tsx`; `tests/test_explore_pivots.py`; pivot configuration/result telemetry and support feedback.
 
 ### EDA-E23 — Shared PivotChart interactions
 
@@ -105,8 +105,7 @@ isolation, keyboard interaction, and no private aggregation or filter cache.
 **Dependencies:** The current source-linked pivot/ComboChart contract plus
 representative interaction evidence; slicer work also depends on EDA-E18.
 
-**Evidence:** Pivot/chart interaction telemetry and the relevant pivot editor,
-result-store, Charts pane, and end-to-end workflow tests.
+**Evidence:** `src/haute/routes/_pivot_service.py`; `frontend/src/panels/explore/ExploreChartsPane.tsx`; `frontend/src/panels/explore/ComboChart.tsx`; `tests/test_explore_charts.py`; `frontend/src/panels/explore/__tests__/ExploreChartsPane.test.tsx`; pivot/chart interaction telemetry and the relevant pivot editor, result-store, Charts pane, and end-to-end workflow tests.
 
 ### EDA-E24 — Broader PivotChart parity
 
@@ -130,5 +129,4 @@ and never reinterpret pivot categories as row-level observations.
 **Dependencies:** The current source-linked ComboChart contract, EDA-E23 where
 the candidate crosses shared interactions, and representative use evidence.
 
-**Evidence:** Chart configuration/render telemetry, export requests, support
-feedback, and measured browser/bundle performance.
+**Evidence:** `src/haute/routes/_pivot_service.py`; `frontend/src/panels/explore/chartConfig.ts`; `frontend/src/panels/explore/ExploreChartsPane.tsx`; `tests/test_explore_charts.py`; chart configuration/render telemetry, export requests, support feedback, and measured browser/bundle performance.

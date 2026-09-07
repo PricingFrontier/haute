@@ -257,6 +257,8 @@ function sourceHandles(envelope: GraphEnvelope): (string | null | undefined)[] {
 function expectGeneratedInputIdentity(
   labels: readonly string[],
   absentLabels: readonly string[] = [],
+  parameterLabels: readonly string[] = labels,
+  inputMapping: Readonly<Record<string, string>> = {},
 ): void {
   const source = readFileSync(pipelinePath, "utf8")
   const signature = source.match(/def\s+enriched\s*\(([\s\S]*?)\)\s*->/)
@@ -265,19 +267,28 @@ function expectGeneratedInputIdentity(
     throw new Error("Generated main.py has no enriched function signature")
   }
 
+  // A coded consumer keeps the parameter names its code was authored with
+  // (ENG-T08): a renamed frame is recorded on the decorator's inputMapping as
+  // logical -> current edge name, and the connect lines carry the new name.
   const parameterNames = signature[1]
     .split(",")
     .map((parameter) => parameter.trim().split(":", 1)[0])
   expect(
     parameterNames,
-    "generated arguments preserve edge-derived names one-to-one and in edge order",
-  ).toEqual(["raw_rows", ...labels])
-  const expectedDefinition = `def enriched(${["raw_rows", ...labels]
+    "generated arguments keep the authored names one-to-one and in edge order",
+  ).toEqual(["raw_rows", ...parameterLabels])
+  const expectedDefinition = `def enriched(${["raw_rows", ...parameterLabels]
     .map((name) => `${name}: pl.LazyFrame`)
     .join(", ")}) -> pl.LazyFrame:`
   expect(source, "generated main.py exposes the exact executable signature").toContain(
     expectedDefinition,
   )
+  for (const [logical, current] of Object.entries(inputMapping)) {
+    const binding = new RegExp(
+      String.raw`inputMapping=\{[^}]*["']${logical}["']:\s*["']${current}["']`,
+    )
+    expect(source, `inputMapping binds ${logical} to ${current}`).toMatch(binding)
+  }
 
   for (const label of labels) {
     expect(source, `generated connect persists source_port ${label}`).toMatch(
@@ -385,6 +396,7 @@ async function extendStarterGraphWithFrameEdges(
           name: document.pipeline_name ?? "main",
           description: document.pipeline_description ?? "",
           source_file: document.source_file,
+          base_revision: document.source_revision,
           preamble: document.preamble ?? "",
           preserved_blocks: document.preserved_blocks,
           sources: document.sources,
@@ -712,7 +724,9 @@ test.describe("port-row alignment and API-input identity", () => {
     expect(saveResponse.status(), "pipeline save succeeds").toBe(200)
     const savedGraph = saveRequest.postDataJSON() as GraphEnvelope
     expect(sourceHandles(savedGraph)).toEqual([...renamedLabels].sort())
-    expectGeneratedInputIdentity(renamedLabels, [originalLabels[0]])
+    expectGeneratedInputIdentity(renamedLabels, [originalLabels[0]], originalLabels, {
+      [originalLabels[0]]: renamedLabels[0],
+    })
 
     const graphAfterRenameReload = await reloadAndCaptureGraph(page)
     expect(sourceHandles(graphAfterRenameReload)).toEqual([...renamedLabels].sort())

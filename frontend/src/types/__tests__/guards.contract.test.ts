@@ -1757,7 +1757,7 @@ describe("API response guards", () => {
     expect(loaded.definition_id).toBe("pricing-definition")
     expect(loaded.submodel_file).toBe("modules/pricing.py")
     expect(dissolved.source_revision).toBe("revision-dissolve-1")
-    expect(dissolved.instance_id).toBe("pricing-instance")
+    expect(dissolved.instance_id).toBe("pricing")
     expect(dissolved.definition_id).toBe("pricing-definition")
     expect(dissolved.graph.nodes).toHaveLength(2)
   })

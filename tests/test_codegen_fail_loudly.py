@@ -751,7 +751,7 @@ def test_graph_to_code_multi_refuses_parent_binding_to_unrouted_input_port() -> 
                         ],
                         "edges": [],
                     },
-                    "inputPorts": [{"portId": "policy", "label": "policy", "targets": []}],
+                    "inputPorts": [{"name": "policy", "targets": []}],
                     "outputPorts": [],
                 },
             },
@@ -765,7 +765,7 @@ def test_graph_to_code_multi_refuses_parent_binding_to_unrouted_input_port() -> 
         "edge_id": "bind",
         "instance_id": "sm-instance",
         "definition_id": "sm",
-        "port_id": "policy",
+        "port_name": "policy",
     }
 
 

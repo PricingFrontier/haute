@@ -1,6 +1,6 @@
 {
   "status": "ok",
-  "instance_id": "pricing-instance",
+  "instance_id": "pricing",
   "definition_id": "pricing-definition",
   "source_revision": "revision-dissolve-1",
   "graph": {

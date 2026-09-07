@@ -187,6 +187,7 @@ def test_multi_frame_save_build_preview_round_trips(project) -> None:
             "description": "",
             "graph": graph,
             "source_file": "multi_frame_e2e.py",
+            "base_revision": None,
         },
     )
     assert save.status_code == 200, f"STAGE 1 SAVE failed (commit 6 graph/codegen): {save.text}"

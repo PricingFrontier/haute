@@ -804,6 +804,7 @@ export function savePipeline(
     graph: GraphPayload
     preamble: string
     source_file: string
+    base_revision: string | null
     sources?: string[]
     active_source?: string
     preserved_blocks: string[]

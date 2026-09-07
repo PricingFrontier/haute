@@ -64,8 +64,9 @@ index, and the working tree. Component high/low documents, supplemental componen
 root specification-governance documents, and roadmap documents are reported separately;
 Markdown line totals use those same fingerprinted bytes. `corpus.toml` declares every supported
 component document outside the conventional high/low pair, including its closed kind and exact
-required headings. An undeclared `.md` or `.toml` anywhere below `specs/` fails inventory rather
-than disappearing. Coverage totals are derived from per-file records, and only `full` counts as a
+required headings. Root specification-governance `.md` and `.toml` files form an accepted tier, while
+undeclared component-level and nested documents fail inventory rather than disappearing. Coverage
+totals are derived from per-file records, and only `full` counts as a
 fully read file.
 
 Run the current working-tree inventory with:
@@ -161,7 +162,7 @@ The component specs cover maintained behaviour, not just the importable runtime:
 
 - Every behavioural source under `src/haute/` is named in a backend component's low-level module
   map. Generated `src/haute/static/` assets are covered as a build output rather than one component
-  per hashed file; `src/haute/py.typed` is a distribution marker.
+  per hashed file; `src/haute/py.typed` is a distribution marker; and the packaged assistant example bundles under `src/haute/assistant/assets/examples/` form an explicitly classified grouped corpus whose individual resource files are covered as a manifested tree rather than separate module-map entries.
 - Every production `.ts`, `.tsx`, and `.css` source under `frontend/src/` is named in a frontend
   component's low-level module map. Test-only directories and the vitest setup files
   (`setupTests.ts`, `setupStorageCanary.ts`) belong to the verification system rather than the
@@ -186,7 +187,8 @@ The component specs cover maintained behaviour, not just the importable runtime:
   present-tense specification.
 
 Current delivery intent lives in the flat [engineering roadmap](roadmap/README.md): the index
-links to one self-contained, non-normative improvement file per component. Roadmaps do not replace
+links to one self-contained, non-normative improvement file per component that has active packages,
+plus explicitly enumerated dated findings reports. Roadmaps do not replace
 code, tests, or behaviour specifications. Generated caches, coverage data, untracked local MLflow
 state, `site/`, and built static assets are outputs, not additional source components. Tracked root
 policy, legal, tooling, and snapshot artifacts are listed explicitly in the appropriate

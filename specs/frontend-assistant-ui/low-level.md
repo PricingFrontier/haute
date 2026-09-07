@@ -10,7 +10,7 @@
 | `frontend/src/panels/assistant/TranscriptEntryView.tsx` | Memoised renderer for one transcript entry by `kind`: user bubble, assistant markdown segment (streamed text), tool-activity row (running/ok/error states), or turn marker (completed/failed/stopped/interrupted). Owns the markdown rendering (see Control flow); scoped `.assistant-markdown` rules live in `frontend/src/index.css`. |
 | `frontend/src/panels/assistant/Composer.tsx` | Message input, send/stop split behaviour, and disabled-state messaging. Receives `isInsideSubmodel`, `currentSourceFile`, and `readOnly` from the panel and uses the store-exported send-gate reason helper, so the rendered gate and imperative `sendMessage` guard share one implementation and one set of messages. |
 | `frontend/src/stores/useAssistantStore.ts` | Zustand store owning session id + source binding, transcript entries, turn status, notice, the `view`/`sessions`/`sessionsStatus` list state, and the `sendMessage`/`stopTurn`/`newChat`/`refreshStatus`/`loadSessions`/`openSession`/`showSessionList` actions. A module-scope `activeController` owns the in-flight abort handle, and the SSE consumption loop runs inside `sendMessage`, so a turn survives panel unmounting. |
-| `frontend/src/api/assistant.ts` | Assistant-owned bundle-split endpoint module: `getAssistantStatus`, abortable `createAssistantSession`, and `streamAssistantMessage`. It requests JSON as `unknown`, validates status/session/history locally, and fully parses each SSE variant before invoking the store callback. The stream reader uses the authenticated raw-stream helper from [frontend-shared](../frontend-shared/low-level.md), cancels the reader before propagating parser/callback/transport failures, and keeps contract errors distinct from frontend-shared's ApiError. |
+| `frontend/src/api/assistant.ts` | Assistant-owned bundle-split endpoint module: `getAssistantStatus`, abortable `createAssistantSession`, `listAssistantSessions` (with per-row summary parsing), and `streamAssistantMessage`. It requests JSON as `unknown`, validates status/session/history locally, and fully parses each SSE variant before invoking the store callback. The stream reader uses the authenticated raw-stream helper from [frontend-shared](../frontend-shared/low-level.md), cancels the reader before propagating parser/callback/transport failures, and keeps contract errors distinct from frontend-shared's ApiError. |
 | `frontend/src/App.tsx` *(modified)* | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned shell with a right-panel branch: `assistantOpen` renders the lazy `AssistantPanel` inside `<ErrorBoundary name="AssistantPanel">` + `Suspense`; sits ahead of the `NodePanel` default alongside the git/utility/imports branches. Passes `isInsideSubmodel` and the central document-read-only fence into the panel because both are app-owned state unavailable to the module-scope assistant store. |
 | `frontend/src/stores/useUIStore.ts` *(modified)* | [frontend-shared](../frontend-shared/low-level.md)-owned UI state with an `assistantOpen` flag + `setAssistantOpen`, mutually exclusive by construction with `gitOpen`/`utilityOpen`/`importsOpen` (each setter clears the others, matching the existing pattern). |
 | `frontend/src/components/Toolbar.tsx` *(modified)* | [frontend-shared](../frontend-shared/low-level.md)-owned toolbar with an Assistant toggle button next to the existing utility/imports buttons, calling `setAssistantOpen`. |
@@ -24,7 +24,12 @@
   mutations_enabled: boolean; mutations_reason: string | null }`.
   `reason` (unconfigured) and `mutations_reason` (working branch not ready — the backend's
   per-state message for no-repository/unset/detached/divergent/invalid) are the backend's human-readable
-  explanations; the composer renders whichever applies verbatim.
+  explanations; the composer renders whichever applies verbatim. When `configured` is true,
+  the status parser requires `endpoint_host`, `trust`, and `max_sensitivity` to be non-null,
+  throwing otherwise.
+- **`AssistantSessionSummary`** (`api/assistant.ts`): `{ sessionId: string; title: string;
+  createdAt: number; lastUsed: number; messageCount: number }`. Backs each row on the
+  chat-list screen.
 - **`AssistantStreamEvent`** (`api/assistant.ts`, mirrored from the backend SSE contract in
   `schemas.py`) — discriminated union on `type`:
   `text_delta { text }` · `tool_started { id, name, summary }` ·
@@ -46,7 +51,8 @@
 - **`AssistantStoreState`**: `sessionId: string | null`, `pipelineSource: string | null` (the
   source-file key associated with the current in-memory session), `entries: TranscriptEntry[]`,
   `turnStatus: "idle" | "streaming"`, `status: AssistantStatus | "unknown" | "error"`,
-  `notice: string | null`, and the actions listed in the module map. The in-flight
+  `notice: string | null`, `view: "list" | "chat"`, `sessions: AssistantSessionSummary[]`,
+  `sessionsStatus: "unknown" | "loading" | "ready" | "error"`, and the actions listed in the module map. The in-flight
   `AbortController` is module state, not a Zustand field.
 
 ## Control flow
@@ -96,16 +102,17 @@ under another pipeline's canvas.
 
 **Send.** `Composer` submit → `useAssistantStore.getState().sendMessage(text)`:
 
-1. Guards, in order: `turnStatus === "idle"`; `status.configured` and
-   `status.mutations_enabled`; the current document is synchronized and not read-only; not inside
-   a submodel — `sendMessage(text, {isInsideSubmodel, currentSourceFile, readOnly})` receives these
+1. Guards, in order: `turnStatus === "idle"` (whitespace-only input is also a
+   no-op); `currentSourceFile` equals `pipelineSource` (mismatch resets session +
+   transcript first); then `assistantSendDisabledReason`: status not `"unknown"`
+   and not `"error"`; `status.configured`; `status.mutations_enabled`; not inside
+   a submodel; canvas not dirty (`useGraphStore.getState().dirty === false`);
+   document not read-only (synchronized and not degraded). `sendMessage(text, {isInsideSubmodel, currentSourceFile, readOnly})` receives these
    values as arguments because the
    view stack AND the loaded pipeline's source are hook-local state in `App`
    (`usePipelineAPI`) that a module-scope store action cannot read (App → panel →
-   composer prop chain); `currentSourceFile` equals `pipelineSource` (mismatch
-   resets session + transcript first); `useGraphStore.getState().dirty === false`. A failed
-   guard renders as composer messaging, not a thrown error; whitespace-only input is a
-   no-op.
+   composer prop chain). A failed gate helper check renders as composer messaging,
+   not a thrown error.
 2. Create the turn's `AbortController`, make it the module-scope owner, and set
    `turnStatus = "streaming"` synchronously before the first await. This is the lock
    acquisition: a second same-tick send cannot pass while session creation is pending.

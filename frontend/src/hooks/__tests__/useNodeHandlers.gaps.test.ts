@@ -197,7 +197,7 @@ describe("useNodeHandlers — handleRenameNode", () => {
 
   it("rejects an instance whose resolved identity does not match", async () => {
     const params = makeParams()
-    const source = makeNode("source", "submodel", { data: { label: "Score", nodeType: "submodel", config: { definitionId: "def", alias: "score" } } })
+    const source = makeNode("source", "submodel", { data: { label: "score", nodeType: "submodel", config: { definitionId: "def", alias: "score" } } })
     params.graphRef.current = { nodes: [source], edges: [] }
     params.resolveNodeIdentities = vi.fn(async () => [makeNode("wrong")])
     const { result } = renderHook(() => useNodeHandlers(params))

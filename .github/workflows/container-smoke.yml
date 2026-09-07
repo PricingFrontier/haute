@@ -1,0 +1,114 @@
+name: Container Smoke
+
+# Weekly build and execution of the generated scoring container image for the
+# minimal_live_quote example. The PR and package-smoke checks verify the Python
+# package, static contracts, and in-process execution. This lane builds the real
+# Docker image on ubuntu-latest, boots it, and checks /health and /quote with
+# the shipped golden request. It is deliberately NOT a required per-PR check:
+# building a Docker image and running an isolated container requires Docker and
+# adds runner overhead that would slow down every PR (ledger W13-S02, ENG-T12).
+#
+# Loud: a failure finds-or-creates a `container-watch` issue with the run URL.
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_fail:
+        description: "Fail deliberately to prove the alarm path rings"
+        type: boolean
+        default: false
+  schedule:
+    # 04:23 UTC Mondays, offset from the other Monday lanes
+    # (performance 03:17, property-exploration 03:41, dependencies 04:41, mutation 05:00).
+    - cron: "23 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  container-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # uv is pinned exactly, like the rest of the development tooling; this
+      # value is repeated in every workflow and must move together (grep
+      # `setup-uv` across .github/workflows/).
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.22"
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Build wheel for container installation
+        run: HAUTE_BUILD_FRONTEND=1 uv build --wheel --out-dir dist-smoke
+
+      - name: Forced failure (alarm-path test)
+        if: inputs.force_fail
+        run: |
+          echo "force_fail input set - failing deliberately to exercise the alarm step"
+          exit 1
+
+      - name: Process smoke (verify generated build directory before Docker)
+        run: uv run python scripts/container_smoke.py --build-dir .container-smoke --wheel dist-smoke/haute-*.whl --serve-check
+
+      - name: Build scoring container image
+        run: docker build -t haute-container-smoke .container-smoke/image
+
+      - name: Run scoring container
+        run: docker run -d --name haute-smoke -p 8080:8080 haute-container-smoke
+
+      - name: Wait for container health
+        run: |
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8080/health > /dev/null 2>&1; then
+              echo "Container healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Container failed to become healthy within 90s"
+          exit 1
+
+      - name: Check /quote with golden request
+        run: |
+          curl -fsS -H 'content-type: application/json' --data @src/haute/assistant/assets/examples/minimal_live_quote/golden_request.json http://127.0.0.1:8080/quote | tee quote.json
+          uv run python -c "import json; data = json.load(open('quote.json')); assert data.get('row_count') == 1, f'Unexpected row_count: {data}'; assert data.get('rows')[0].get('fixture_value') == 10, f'Unexpected fixture_value: {data}'"
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker logs haute-smoke
+
+      - name: Clean up container
+        if: always()
+        run: docker rm -f haute-smoke
+
+      - name: Raise the alarm (find-or-create container-watch issue)
+        if: failure() && (github.event_name == 'schedule' || inputs.force_fail)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Weekly container-smoke lane is red"
+          body="The container-smoke lane failed. Run: ${RUN_URL}
+
+          Reproduce locally (from the repository root):
+              uv run python scripts/container_smoke.py --build-dir <dir> --serve-check"
+          gh label create container-watch --color FBCA04 --force \
+            --description "Automated: weekly container-smoke lane failures"
+          existing="$(gh issue list --state open --label container-watch \
+            --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "Still red: ${RUN_URL}"
+          else
+            gh issue create --title "${title}" --label container-watch --body "${body}"
+          fi

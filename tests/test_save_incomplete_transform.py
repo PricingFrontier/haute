@@ -28,6 +28,7 @@ from haute._code_extraction import INCOMPLETE_TRANSFORM_MESSAGE
 from haute._types import PipelineGraph, SubmodelDefinition
 from haute.executor import execute_graph
 from haute.routes._save_pipeline import SavePipelineService
+from tests.conftest import current_source_revision
 
 
 @pytest.fixture
@@ -87,6 +88,7 @@ def _frame_source_node(node_id: str, label: str) -> dict[str, Any]:
 
 
 def _save(client: TestClient, graph: dict[str, Any], name: str) -> Any:
+    target_path = Path.cwd() / f"{name}.py"
     return client.post(
         "/api/pipeline/save",
         json={
@@ -94,6 +96,7 @@ def _save(client: TestClient, graph: dict[str, Any], name: str) -> Any:
             "description": "",
             "graph": graph,
             "source_file": f"{name}.py",
+            "base_revision": current_source_revision(target_path, Path.cwd()),
         },
     )
 

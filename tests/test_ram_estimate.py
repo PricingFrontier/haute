@@ -1866,7 +1866,7 @@ def test_cardinality_helpers_fail_closed_for_invalid_bindings_and_missing_nodes(
     assert missing.unavailable_reason == "node_missing"
 
 
-def test_cardinality_binding_uses_collapsed_submodel_public_output_label() -> None:
+def test_cardinality_binding_uses_collapsed_submodel_occurrence_name() -> None:
     graph = PipelineGraph.model_validate(
         {
             "nodes": [
@@ -1874,7 +1874,7 @@ def test_cardinality_binding_uses_collapsed_submodel_public_output_label() -> No
                     "id": "occurrence",
                     "type": "submodel",
                     "data": {
-                        "label": "Occurrence presentation",
+                        "label": "unrelated_alias",
                         "nodeType": "submodel",
                         "config": {
                             "definitionId": "definition_public_output",
@@ -1896,7 +1896,7 @@ def test_cardinality_binding_uses_collapsed_submodel_public_output_label() -> No
                     "id": "public-result-edge",
                     "source": "occurrence",
                     "target": "target",
-                    "sourceHandle": "out__opaque-output-id",
+                    "sourceHandle": "out__opaque_output_id",
                 }
             ],
             "submodels": {
@@ -1919,8 +1919,7 @@ def test_cardinality_binding_uses_collapsed_submodel_public_output_label() -> No
                     "inputPorts": [],
                     "outputPorts": [
                         {
-                            "portId": "opaque-output-id",
-                            "label": "public result",
+                            "name": "opaque_output_id",
                             "source": {
                                 "nodeId": "internal_result",
                                 "handleId": None,
@@ -1941,7 +1940,7 @@ def test_cardinality_binding_uses_collapsed_submodel_public_output_label() -> No
         ((edge, proof),),
     )
 
-    assert bindings == {"public_result": proof}
+    assert bindings == {"unrelated_alias": proof}
 
 
 def test_cardinality_resolution_handles_constants_and_rejects_invalid_join_arity() -> None:

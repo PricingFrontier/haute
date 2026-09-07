@@ -177,8 +177,8 @@ Out of scope (owned elsewhere, linked where relevant):
   node, row limit, source, and runtime-input state are fingerprinted; identical
   fingerprints reuse the same materialized per-node DataFrames so switching
   row/column on the same pipeline is near-instant after the first click. The
-  cache is invalidated by model retraining (`routes/_training_lifecycle.py` calls
-  `haute.trace._cache.invalidate()`) and is bounded by both entry count and
+  cache is cleared on model retraining (`src/haute/routes/_training_preparation.py`
+  calls `haute.trace._cache.clear()`) and is bounded by both entry count and
   retained bytes, evicting least-recently-used entries first. `execute_trace`
   accepts an optional caller-supplied `GraphFingerprintMemo`; the trace route
   passes in the same memo it already used to compute its supersession key, so a
@@ -285,15 +285,14 @@ Out of scope (owned elsewhere, linked where relevant):
   model-score explanation (`haute._model_explainability`, imported lazily inside
   `enrich_model_score`) and on [optimiser](../optimiser/high-level.md) for
   optimiser-apply explanation (`haute._optimiser_apply_explainability`).
-- Depends on [caching](../caching/high-level.md) for `LRUCache`,
-  `GraphFingerprintMemo`, and the shared `preview_lineage_cache_key(...)`
-  factory, which back the trace's own execution-result cache.
-- Depended on by [server-api](../server-api/high-level.md): `routes/pipeline.py`
-  is the sole production caller of `execute_trace()`, wrapping it in a response
-  timeout, request-supersession coordinator, and concurrency semaphore, and
-  mapping its exceptions to HTTP status codes. `routes/_training_lifecycle.py`
-  reaches into `haute.trace._cache` to invalidate trace results after a model
-  retrain.
+- Depends on [caching](../caching/high-level.md) for `LRUCache` and
+  `GraphFingerprintMemo`, which back the trace's own execution-result cache.
+- Depended on by [server-api](../server-api/high-level.md): `src/haute/routes/pipeline.py`
+  is the HTTP caller of `execute_trace()`, wrapping it in a response timeout,
+  request-supersession coordinator, and concurrency semaphore, and mapping its
+  exceptions to HTTP status codes; `src/haute/assistant/_assets.py` is a second
+  in-process caller. `src/haute/routes/_training_preparation.py` reaches into
+  `haute.trace._cache` to clear trace results after a model retrain.
 - Depended on by [frontend-trace-ui](../frontend-trace-ui/high-level.md), which
   consumes the `TraceResponse` JSON shape (`trace_result_to_dict()`'s output,
   validated against `haute.schemas.TraceResultResponse`) to render the trace

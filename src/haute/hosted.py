@@ -111,7 +111,8 @@ class PlatformProxyBoundary:
             headers: list[tuple[bytes, bytes]] = []
             for name, value in scope["headers"]:
                 if name == _FORWARDED_EMAIL:
-                    forwarded_user = value.decode("latin-1")
+                    cleaned = value.decode("latin-1").strip()
+                    forwarded_user = cleaned if cleaned else None
                 if name == _FORWARDED or name == _HOST or name.startswith(_FORWARDED_PREFIX):
                     continue
                 headers.append((name, value))

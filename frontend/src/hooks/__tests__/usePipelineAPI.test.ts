@@ -120,6 +120,30 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
   }
 }
 
+it("ignores an obsolete save conflict after a document reload", async () => {
+  useDocumentStatusStore.getState().reset()
+  useUIStore.setState({ syncBanner: null })
+  mockLoad.mockResolvedValue(makePipelineEditorDocument({ source_file: "test.py", source_revision: "revision-old" }))
+  let rejectSave!: (reason: unknown) => void
+  mockSave.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSave = reject }))
+  const params = makeParams()
+  const hook = renderHook(() => usePipelineAPI(params))
+  await waitFor(() => expect(hook.result.current.loading).toBe(false))
+  let pending!: Promise<boolean>
+  act(() => { pending = hook.result.current.handleSave() })
+  act(() => {
+    params.sourceRevisionRef.current = "revision-reloaded"
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ source_file: "test.py", source_revision: "revision-reloaded" }), true)
+  })
+  await act(async () => {
+    rejectSave(new ApiError("Conflict", 409, "stale_document_revision: disk moved"))
+    expect(await pending).toBe(false)
+  })
+  expect(useDocumentStatusStore.getState().graphSynchronized).toBe(true)
+  expect(useUIStore.getState().syncBanner).toBeNull()
+  cleanup()
+})
+
 type NodeUpdater = Node[] | ((nds: Node[]) => Node[])
 type NodeSetterMock = Mock<(updater: NodeUpdater) => void>
 
@@ -181,7 +205,7 @@ function makeSubmodelPortNode(id = "port_in__source"): Node {
     data: {
       label: "Source Port",
       nodeType: NODE_TYPES.SUBMODEL_PORT,
-      instanceId: "instance_primary",
+      instanceId: "pricing",
       definitionId: "definition_pricing",
       portDirection: "input",
       portName: "Source Port",
@@ -190,7 +214,7 @@ function makeSubmodelPortNode(id = "port_in__source"): Node {
 }
 
 function makeActiveSubmodelIdentity() {
-  return { instanceId: "instance_primary", definitionId: "definition_pricing" }
+  return { instanceId: "pricing", definitionId: "definition_pricing" }
 }
 
 function makeSnapshotInput(id = "snapshot-input"): Node {
@@ -544,6 +568,126 @@ describe("usePipelineAPI", () => {
     expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-save")
   })
 
+  it("sends the loaded source revision as base_revision", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({
+      nodes: [],
+      edges: [],
+      source_revision: "revision-load",
+    }))
+    mockSave.mockResolvedValue({
+      file: "pricing.py",
+      pipeline_name: "pricing",
+      source_revision: "revision-save",
+    })
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
+    await act(async () => {
+      await result.current.handleSave()
+    })
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
+      base_revision: "revision-load",
+    }))
+  })
+
+  it("sends a null base_revision for a document that was never persisted", async () => {
+    mockLoad.mockResolvedValue({
+      ...makePipelineEditorDocument({
+        nodes: [],
+        edges: [],
+        source_file: "",
+        source_revision: null,
+      }),
+      source_revision: null,
+    })
+    mockSave.mockResolvedValue({
+      file: "pricing.py",
+      pipeline_name: "pricing",
+      source_revision: "revision-save",
+    })
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    const editedNode = makeNode("n1")
+    params.graphRef.current = { nodes: [editedNode], edges: [] }
+    useGraphStore.getState().setNodes([editedNode])
+    await act(async () => {
+      await result.current.handleSave()
+    })
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
+      base_revision: null,
+    }))
+  })
+
+  it("a stale_document_revision conflict keeps the edit dirty and blocks until reload", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({
+      nodes: [],
+      edges: [],
+      source_revision: "revision-load",
+    }))
+    mockSave.mockRejectedValue(
+      new ApiError(
+        "HTTP 409",
+        409,
+        "stale_document_revision: The pipeline changed on disk after this document was loaded. Reload it before saving.",
+      ),
+    )
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(params.sourceRevisionRef.current).toBe("revision-load")
+
+    // make the graph dirty first
+    const editedNode = makeNode("n1")
+    params.graphRef.current = { nodes: [editedNode], edges: [] }
+    useGraphStore.getState().setNodes([editedNode])
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+
+    let saveResult: boolean | undefined
+    await act(async () => {
+      saveResult = await result.current.handleSave()
+    })
+
+    expect(saveResult).toBe(false)
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+    expect(useDocumentStatusStore.getState().graphSynchronized).toBe(false)
+    expect(useUIStore.getState().syncBanner).toContain("changed on disk")
+    expect(params.sourceRevisionRef.current).toBe("revision-load")
+    const toasts = useToastStore.getState().toasts
+    expect(
+      toasts.some((t) => t.type === "error" && t.text.includes("Save rejected")),
+    ).toBe(true)
+  })
+
+  it("a non-stale 409 still surfaces the generic failure toast", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({
+      nodes: [],
+      edges: [],
+      source_revision: "revision-load",
+    }))
+    mockSave.mockRejectedValue(
+      new ApiError("HTTP 409", 409, "something else"),
+    )
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    let saveResult: boolean | undefined
+    await act(async () => {
+      saveResult = await result.current.handleSave()
+    })
+
+    expect(saveResult).toBe(false)
+    const toasts = useToastStore.getState().toasts
+    expect(
+      toasts.some((t) => t.type === "error" && t.text.includes("Failed to save pipeline")),
+    ).toBe(true)
+    expect(useDocumentStatusStore.getState().graphSynchronized).toBe(true)
+  })
+
   it("acknowledges its own watcher update when the save response arrives", async () => {
     mockLoad.mockResolvedValue(makePipelineEditorDocument({
       nodes: [],
@@ -729,8 +873,8 @@ describe("usePipelineAPI", () => {
     mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save" })
     const boundaryEdge: PipelineEdge = {
       id: "e_boundary",
-      source: "instance_pricing",
-      target: "instance_scoring",
+      source: "pricing",
+      target: "scoring",
       sourceHandle: "out__priced",
       targetHandle: "in__score",
       sourcePort: "quotes",
@@ -792,7 +936,6 @@ describe("usePipelineAPI", () => {
       graph: { nodes: [child], edges: [] },
       inputPorts: [],
       outputPorts: [],
-      _inputPortInputNames: {},
     }
     const params = makeParams({
       submodelsRef: { current: { definition_pricing: definition } },
@@ -818,11 +961,9 @@ describe("usePipelineAPI", () => {
     expect(graph.nodes[0]).not.toHaveProperty("selected")
     expect(graph.nodes[0]?.data).not.toHaveProperty("_functionName")
     const sentDefinition = graph.submodels?.definition_pricing as typeof definition
-    expect(sentDefinition).not.toHaveProperty("_inputPortInputNames")
     expect(sentDefinition.graph.nodes[0]).not.toHaveProperty("selected")
     expect(sentDefinition.graph.nodes[0]?.data).not.toHaveProperty("_functionName")
     expect(root.data._functionName).toBe("root_function")
-    expect(definition._inputPortInputNames).toEqual({})
     expect(useGraphStore.getState().nodes[0]?.data._functionName).toBe("root_function")
   })
 
@@ -1449,7 +1590,7 @@ describe("usePipelineAPI", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => {
-      result.current.fetchPreview(makeNode("instance_model_stuff", nodeType), { debounceMs: 0 })
+      result.current.fetchPreview(makeNode("model_stuff", nodeType), { debounceMs: 0 })
     })
 
     expect(result.current.previewData).toBeNull()
@@ -1490,7 +1631,7 @@ describe("usePipelineAPI", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => {
-      result.current.refreshPreview(makeNode("instance_model_stuff", nodeType))
+      result.current.refreshPreview(makeNode("model_stuff", nodeType))
     })
 
     expect(result.current.previewData).toBeNull()
@@ -1524,11 +1665,11 @@ describe("usePipelineAPI", () => {
       column_count: 1,
     })
     const upstream = makeNode("upstream", NODE_TYPES.POLARS)
-    const submodel = makeNode("instance_model_stuff", NODE_TYPES.SUBMODEL)
+    const submodel = makeNode("model_stuff", NODE_TYPES.SUBMODEL)
     const params = makeParams()
     params.graphRef.current = {
       nodes: [upstream, submodel],
-      edges: [makeEdge("upstream", "instance_model_stuff")],
+      edges: [makeEdge("upstream", "model_stuff")],
     }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -1547,7 +1688,7 @@ describe("usePipelineAPI", () => {
   it("fetchPreview propagation skips downstream submodel ports typed by React Flow", async () => {
     mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockPreview.mockResolvedValue({
-      node_id: "submodel_runtime/instance_primary/upstream",
+      node_id: "submodel_runtime/pricing/upstream",
       status: "ok",
       columns: [{ name: "premium", dtype: "f64" }],
       preview: [{ premium: 100 }],
@@ -1573,7 +1714,7 @@ describe("usePipelineAPI", () => {
 
     expect(mockPreview).toHaveBeenCalledOnce()
     expect(mockPreview.mock.calls[0][0].nodeId).toBe(
-      "submodel_runtime/instance_primary/upstream",
+      "submodel_runtime/pricing/upstream",
     )
   })
 
@@ -1587,12 +1728,12 @@ describe("usePipelineAPI", () => {
       row_count: 1,
       column_count: 1,
     })
-    const submodel = makeNode("instance_model_stuff", NODE_TYPES.SUBMODEL)
+    const submodel = makeNode("model_stuff", NODE_TYPES.SUBMODEL)
     const target = makeNode("target", NODE_TYPES.POLARS)
     const params = makeParams()
     params.graphRef.current = {
       nodes: [submodel, target],
-      edges: [makeEdge("instance_model_stuff", "target")],
+      edges: [makeEdge("model_stuff", "target")],
     }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -1635,7 +1776,7 @@ describe("usePipelineAPI", () => {
 
     expect(mockPreview).toHaveBeenCalledOnce()
     expect(mockPreview.mock.calls[0][0].nodeId).toBe(
-      "submodel_runtime/instance_primary/target",
+      "submodel_runtime/pricing/target",
     )
   })
 
@@ -1647,7 +1788,7 @@ describe("usePipelineAPI", () => {
       source_revision: "revision-load",
     }))
     mockPreview.mockResolvedValue({
-      node_id: "submodel_runtime/instance_primary/nb_batch",
+      node_id: "submodel_runtime/pricing/nb_batch",
       status: "ok",
       columns: [{ name: "quote_id", dtype: "str" }],
       preview: [{ quote_id: "Q1" }],
@@ -1659,7 +1800,7 @@ describe("usePipelineAPI", () => {
       activeSubmodelIdentity: makeActiveSubmodelIdentity(),
       parentGraphRef: {
         current: {
-          nodes: [makeNode("instance_primary", NODE_TYPES.SUBMODEL)],
+          nodes: [makeNode("pricing", NODE_TYPES.SUBMODEL)],
           edges: [],
           submodels: { definition_pricing: {} },
         },
@@ -1678,7 +1819,7 @@ describe("usePipelineAPI", () => {
 
     await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
     expect(mockPreview.mock.calls.at(-1)?.[0].nodeId).toBe(
-      "submodel_runtime/instance_primary/nb_batch",
+      "submodel_runtime/pricing/nb_batch",
     )
     expect(result.current.previewData?.nodeId).toBe("nb_batch")
   })

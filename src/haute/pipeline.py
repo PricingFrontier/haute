@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Self, cast
 
@@ -14,7 +14,7 @@ from haute._edge_join import (
     normalise_edge_join_decorator_kwargs,
     resolve_edge_join_role_indices,
 )
-from haute._graph_utils import _edge_id
+from haute._graph_utils import _edge_id, _sanitize_func_name
 from haute._logging import get_logger
 from haute._types import (
     GraphEdge,
@@ -187,11 +187,8 @@ class RegisteredSubmodel:
     """One canonical file-backed submodel occurrence registered on a pipeline."""
 
     file: str
-    definition_id: str
-    instance_id: str
-    alias: str
+    name: str
     instance_of: str | None = None
-    label: str | None = None
 
 
 def _validate_port(value: str | None, name: str) -> None:
@@ -233,7 +230,7 @@ class NodeRegistry:
                 (
                     registered
                     for registered in getattr(self, "_submodel_registrations", ())
-                    if f.__name__ in {registered.alias, registered.instance_id}
+                    if f.__name__ == registered.name
                 ),
                 None,
             )
@@ -386,8 +383,8 @@ class NodeRegistry:
 
         Can be chained: ``registry.connect("a", "b").connect("b", "c")``
         """
-        submodel_aliases = {registration.alias for registration in self._submodel_registrations}
-        known_endpoints = set(self._node_map) | submodel_aliases
+        submodel_names = {registration.name for registration in self._submodel_registrations}
+        known_endpoints = set(self._node_map) | submodel_names
         if source not in known_endpoints:
             raise ValueError(
                 f"Source node '{source}' not found in pipeline. "
@@ -718,58 +715,44 @@ class Pipeline(NodeRegistry):
     def submodel(
         self,
         file: str,
+        name: str,
         *,
-        definition_id: str,
-        instance_id: str,
-        alias: str,
         instance_of: str | None = None,
-        label: str | None = None,
     ) -> Pipeline:
         """Register one occurrence of a file-backed submodel definition."""
         identities = {
             "file": file,
-            "definition_id": definition_id,
-            "instance_id": instance_id,
-            "alias": alias,
+            "name": name,
         }
         for field_name, value in identities.items():
             if not isinstance(value, str):
                 raise TypeError(f"Submodel {field_name} must be a string.")
             if not value or value != value.strip():
                 raise ValueError(f"Submodel {field_name} must be a non-empty unpadded string.")
+        sanitized_name = _sanitize_func_name(name)
+        if sanitized_name != name:
+            raise ValueError(
+                f"Submodel name must be a canonical identifier "
+                f"(got '{name}'; expected '{sanitized_name}')."
+            )
         if instance_of is not None:
             if not isinstance(instance_of, str):
                 raise TypeError("Submodel instance_of must be a string or None.")
             if not instance_of or instance_of != instance_of.strip():
                 raise ValueError("Submodel instance_of must be a non-empty unpadded string.")
-        if label is not None:
-            if not isinstance(label, str):
-                raise TypeError("Submodel label must be a string.")
-            if not label or label != label.strip():
-                raise ValueError("Submodel label must be a non-empty unpadded string.")
 
-        for field_name, value in {"alias": alias, "instance_id": instance_id}.items():
-            if value in self._node_map:
-                raise ValueError(
-                    f"Submodel {field_name} {value!r} conflicts with a registered node name."
-                )
+        if name in self._node_map:
+            raise ValueError(f"Submodel name {name!r} conflicts with a registered node name.")
 
-        if any(
-            registered.instance_id == instance_id for registered in self._submodel_registrations
-        ):
-            raise ValueError(f"Duplicate submodel instance_id {instance_id!r}.")
-        if any(registered.alias == alias for registered in self._submodel_registrations):
-            raise ValueError(f"Duplicate submodel alias {alias!r}.")
+        if any(registered.name == name for registered in self._submodel_registrations):
+            raise ValueError(f"Duplicate submodel name {name!r}.")
 
         self._submodel_files.append(file)
         self._submodel_registrations.append(
             RegisteredSubmodel(
                 file=file,
-                definition_id=definition_id,
-                instance_id=instance_id,
-                alias=alias,
+                name=name,
                 instance_of=instance_of,
-                label=label,
             )
         )
         return self
@@ -806,6 +789,16 @@ class Submodel(NodeRegistry):
 
         super().__init__(name, description)
         self._definition_id = definition_id
+        for port_field, ports in (("input_ports", input_ports), ("output_ports", output_ports)):
+            for port in ports:
+                if isinstance(port, Mapping):
+                    for key in port:
+                        if key in {"portId", "label"}:
+                            raise ValueError(
+                                f"Submodel {port_field} port declares {key!r}; "
+                                "a public port has one name: "
+                                "replace 'portId' and 'label' with 'name'."
+                            )
         self._input_ports = [SubmodelInputPort.model_validate(port) for port in input_ports]
         self._output_ports = [SubmodelOutputPort.model_validate(port) for port in output_ports]
 

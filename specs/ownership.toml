@@ -24,10 +24,16 @@ consumers = ["frontend-assistant-ui"]
 reason = "The application shell hosts the canvas and wires in the assistant panel."
 
 [[shared_file]]
+path = "frontend/src/api/client.ts"
+primary = "frontend-shared"
+consumers = ["hosted-project-storage"]
+reason = "Shared UI owns the API client; hosted-project-storage consumes it for project API calls."
+
+[[shared_file]]
 path = "frontend/src/api/types.ts"
 primary = "frontend-shared"
-consumers = ["frontend-modelling-optimiser-ui", "frontend-preview-explore", "optimiser"]
-reason = "Shared UI owns the canonical API contracts extended by modelling and optimiser responses."
+consumers = ["frontend-modelling-optimiser-ui", "frontend-preview-explore", "hosted-project-storage", "optimiser"]
+reason = "Shared UI owns the canonical API contracts extended by modelling, storage, and optimiser responses."
 
 [[shared_file]]
 path = "frontend/src/components/BranchIndicator.tsx"
@@ -120,10 +126,22 @@ consumers = ["frontend-shared"]
 reason = "Engineering quality owns the Pydantic-derived bundle; shared UI consumes its generated browser contracts."
 
 [[shared_file]]
+path = "frontend/src/nodes/PipelineNode.tsx"
+primary = "frontend-graph-canvas"
+consumers = ["frontend-node-editors"]
+reason = "Graph canvas owns pipeline node rendering; node editors describe recovery-only card availability styling."
+
+[[shared_file]]
+path = "frontend/src/nodes/UnavailablePipelineNode.tsx"
+primary = "frontend-graph-canvas"
+consumers = ["frontend-node-editors"]
+reason = "Graph canvas owns the unavailable node component; node editors describe its reserved React Flow registration."
+
+[[shared_file]]
 path = "frontend/src/panels/NodePanel.tsx"
 primary = "frontend-node-editors"
 consumers = ["frontend-modelling-optimiser-ui"]
-reason = "Node editors own routing and chrome; modelling consumes its five-pane strip and objective/job indicators."
+reason = "Node editors own routing and chrome; modelling consumes its five-pane strip and active-job indicator."
 
 [[shared_file]]
 path = "frontend/src/panels/PreviewPanelTabs.tsx"
@@ -207,13 +225,19 @@ reason = "Modelling owns typed config reads; node editors consume the shared hel
 path = "frontend/src/utils/trainingObjective.ts"
 primary = "frontend-modelling-optimiser-ui"
 consumers = ["frontend-node-editors"]
-reason = "Modelling owns objective issue codes and pane routing; NodePanel consumes them for accessible tab indicators."
+reason = "Modelling owns objective issue codes and training issue aggregation; node editors document the cross-component dependency."
 
 [[shared_file]]
 path = "pyproject.toml"
 primary = "build-and-distribution"
 consumers = ["assistant", "engineering-quality"]
 reason = "Package metadata also configures quality tools and declares the assistant dependency."
+
+[[shared_file]]
+path = "src/haute/_ast_helpers.py"
+primary = "codegen"
+consumers = ["expression-parsing"]
+reason = "Codegen owns AST utility primitives and extraction helpers consumed by the parser."
 
 [[shared_file]]
 path = "src/haute/_builders.py"
@@ -226,6 +250,12 @@ path = "src/haute/_cache.py"
 primary = "caching"
 consumers = ["explore-eda"]
 reason = "Caching owns dataframe cache-key invariants; Explore consumes the overview/pivots/charts display-field exclusions that keep dataframe and report caching independent."
+
+[[shared_file]]
+path = "src/haute/_code_extraction.py"
+primary = "codegen"
+consumers = ["assistant", "execution-engine", "pipeline-config"]
+reason = "Codegen owns boilerplate extraction and round-trip unwrapping; the config builder consumes the per-type user-code extractors, and the exec builders and assistant tools import the incomplete-transform message."
 
 [[shared_file]]
 path = "src/haute/_column_summary.py"
@@ -252,6 +282,12 @@ consumers = ["git-integration"]
 reason = "The security guard owns the deny-list; git seeding consumes its shared writer."
 
 [[shared_file]]
+path = "src/haute/_json_safe.py"
+primary = "json-shredding"
+consumers = ["tracing"]
+reason = "JSON shredding owns the row JSON converter; tracing imports it locally for row correlation."
+
+[[shared_file]]
 path = "src/haute/_local_security.py"
 primary = "sandbox-security"
 consumers = ["server-api"]
@@ -268,6 +304,12 @@ path = "src/haute/_parser_regex.py"
 primary = "expression-parsing"
 consumers = ["pipeline-config"]
 reason = "Expression parsing owns neutral textual recovery; pipeline configuration consumes its fragments only through editor recovery."
+
+[[shared_file]]
+path = "src/haute/_parser_submodels.py"
+primary = "expression-parsing"
+consumers = ["submodels"]
+reason = "Expression parsing owns submodel syntax parsing; submodels consumes it for hierarchical occurrence assembly."
 
 [[shared_file]]
 path = "src/haute/_path_resolution.py"
@@ -312,10 +354,22 @@ consumers = ["caching"]
 reason = "I/O owns source snapshot publication and leases; caching consumes the checked identity and immutable generation contract."
 
 [[shared_file]]
+path = "src/haute/_types.py"
+primary = "server-api"
+consumers = ["explore-eda", "expression-parsing"]
+reason = "Server API owns the core graph and config Pydantic models consumed across the backend."
+
+[[shared_file]]
 path = "src/haute/_worker_isolation.py"
 primary = "execution-engine"
 consumers = ["hosted-databricks-app"]
 reason = "Worker spawning also owns the interpreter resolution the hosted boot must run before changing directory."
+
+[[shared_file]]
+path = "src/haute/routes/_helpers.py"
+primary = "server-api"
+consumers = ["git-integration"]
+reason = "Server API owns route helpers; git integration consumes commit pipeline graph extraction."
 
 [[shared_file]]
 path = "src/haute/routes/_save_pipeline.py"

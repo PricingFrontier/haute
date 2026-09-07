@@ -652,7 +652,7 @@ class TestSubmodelLifecycle:
         sm_nodes = [node for node in new_graph.nodes if node.data.nodeType == NodeType.SUBMODEL]
         assert len(sm_nodes) == 1
         sm_node = sm_nodes[0]
-        assert sm_node.id.startswith("submodel_instance_")
+        assert sm_node.id == "inner_group"
         assert sm_node.data.config == {
             "definitionId": "inner_group",
             "alias": "inner_group",

@@ -159,16 +159,17 @@ calibration consistency, compatibility handling, and stable projection into the
 UI type. Strategy diagnostics retain known status fields and bounded
 unavailable/truncated detail; an unsupported version becomes unavailable, while
 a malformed matching version throws rather than being repaired by a feature panel.
-Capability order and unsupported legs remain intact, cache
-readiness/freshness/progress are separate typed values, and removed
-compatibility endpoints or legacy node types have no client wrappers.
+Capability order and unsupported legs remain intact, and cache
+readiness/freshness/progress are separate typed values.
 
 **Result caching.** `useNodeResultsStore` is the only place preview rows,
-optimiser solves, training runs, and explore reports are kept once computed.
-Each result category (`previews`, `solveResults`, `trainResults`,
-`exploreResults`) is bounded to a fixed entry count and evicted by
-least-recently-touched, except the currently pinned/open node's entry, which
-survives eviction pressure. A config-hash (`hashConfig`) lets panels detect
+optimiser solves, training runs, explore reports, and pivot matrices are kept
+once computed. Each result category (`previews`, `solveResults`, `trainResults`,
+`exploreResults`, `pivotResults`) is bounded to a fixed entry count and evicted
+by least-recently-touched. In all five caches the currently pinned/open node's
+entries survive eviction pressure; the pivot trimmer excludes the pinned node's
+entries entirely from eviction candidates. A
+config-hash (`hashConfig`) lets panels detect
 "this result is stale relative to the current node config" without deleting
 the old result. Despite its historical name, `hashConfig` is the exact
 deterministic canonical JSON identity: root-only transient fields are
@@ -194,11 +195,10 @@ named data sources plus which is active, and a 30-second file-listing cache.
 Adding a source runs the label through browser-owned `portableKey()`. Case is
 preserved; if distinct labels converge after punctuation handling, the store
 detects the occupied key and refuses the second addition. `addSource` returns a discriminated `AddSourceResult`
-(`{ok: true, key}` or `{ok: false, reason: "empty" | "duplicate", key?}`)
-rather than a bare `string | null`, so a caller like `Toolbar` can tell
-the user *why* the add was rejected — blank name vs. a label that
-sanitises onto an already-existing key — instead of the form silently
-closing with no feedback.
+(`{ok: true, key}` or `{ok: false, reason: "empty" | "duplicate", key?}`),
+allowing callers like `Toolbar` to surface *why* the add was rejected —
+blank name vs. a label that sanitises onto an already-existing key — rather
+than closing with no feedback.
 
 **Toasts.** `useToastStore` deduplicates by exact `(type, text)` match while
 an identical toast is still on screen; the toast queue is capped at 10
@@ -272,7 +272,7 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   primitives so call sites reference purpose, not shade; components use
   `var(--...)` rather than literal colours (the role-layer boundary is
   guarded by the tokenization gate in
-  `__tests__/cssColorTokenization.test.ts`). `theme/colors.ts` follows
+  `frontend/src/__tests__/cssColorTokenization.test.ts`). `theme/colors.ts` follows
   the same rule where TypeScript needs a colour value, re-exporting
   `var(--...)` strings rather than hex — except for the small
   `NODE_GROUP_COLORS`, `PIVOT_CHART_COLORS`, and
@@ -293,14 +293,10 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   its modelling train/status/estimate methods, and the bundle checker treats
   that parser chunk as lazy-only and rejects a startup modulepreload.
 - **A cached result's staleness key is `configHash` + `source` +
-  `structuralVersion`, never `configHash` alone.** `CachedExploreResult`
-  already tracked all three; solve/train results and
-  `useStaleConfigEstimate`'s cached-result contract used to compare
-  `configHash` alone, which let a cached solve/train/estimate result from
-  one data source silently read as current after switching to another —
-  same config hash, wrong source's data. Both were widened to the same
-  three-field key in one change rather than leaving two different
-  staleness definitions in the codebase.
+  `structuralVersion`, never `configHash` alone.** Cache entries (`CachedExploreResult`,
+  `CachedSolveResult`, `CachedTrainResult`) and `useStaleConfigEstimate` compare all three
+  dimensions because a matching config hash under a different data source or graph
+  revision would otherwise falsely read as current.
 
 ## Interactions
 
@@ -381,6 +377,10 @@ Recovery wire objects are never passed to canonical graph request builders.
 `useDocumentStatusStore` atomically owns the authoritative load state, capabilities, diagnostics,
 raw revision, current readable source, source-selection trust, graph-synchronisation state, and any
 current system load failure. The request-facing revision ref is updated before graph publication.
+Save requests send that revision as `base_revision`. A `409` `stale_document_revision`
+response keeps the local graph dirty, marks the document unsynchronised, and shows the sync
+banner until the user reloads or discards local edits; the client never retries with an
+overwrite.
 Authored `degraded` and `source_only` responses are successful load states and do not emit the generic
 load-failure toast; transport, permission, unreadable-file, and malformed-response failures retain an
 explicit read-only failure surface and cannot leave a retained canvas looking current.

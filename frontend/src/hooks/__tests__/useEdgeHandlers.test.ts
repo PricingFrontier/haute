@@ -1639,22 +1639,22 @@ describe("useEdgeHandlers", () => {
   it("onNodeContextMenu flags a submodel instance copy as deletable", () => {
     const params = makeParams()
     const owner = {
-      id: "instance_owner",
+      id: "scoring",
       data: {
-        label: "Scoring",
+        label: "scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
     } as unknown as Node
     const copy = {
-      id: "instance_copy",
+      id: "scoring_2",
       data: {
-        label: "Scoring instance",
+        label: "scoring_2",
         nodeType: "submodel",
         config: {
           definitionId: "definition_scoring",
           alias: "scoring_2",
-          instanceOf: "instance_owner",
+          instanceOf: "scoring",
         },
       },
     } as unknown as Node

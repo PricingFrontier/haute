@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import signal
 import socket
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -647,3 +648,62 @@ class TestServe:
         assert result.exit_code == 1
         assert "vite port 5173 already in use" in result.output.lower()
         popen.assert_not_called()
+
+    def test_registered_signal_handlers_terminate_the_vite_child_and_exit(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        fe = tmp_path / "frontend"
+        fe.mkdir()
+        (fe / "package.json").write_text("{}")
+        (fe / "node_modules").mkdir()
+
+        mock_proc = MagicMock()
+        captured_handlers: dict[int, Any] = {}
+
+        def record_signal(sig: int, handler: Any) -> Any:
+            captured_handlers[sig] = handler
+            return None
+
+        with (
+            patch("haute.cli._serve._find_frontend_dir", return_value=fe),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("uvicorn.run", side_effect=KeyboardInterrupt),
+            patch("signal.signal", side_effect=record_signal),
+        ):
+            runner.invoke(cli, ["serve", "--no-browser"])
+
+        assert signal.SIGINT in captured_handlers
+        assert signal.SIGTERM in captured_handlers
+        assert captured_handlers[signal.SIGINT] is captured_handlers[signal.SIGTERM]
+
+        # Invoke SIGTERM handler
+        mock_proc.reset_mock()
+        with pytest.raises(SystemExit) as exc_info:
+            captured_handlers[signal.SIGTERM](signal.SIGTERM, None)
+        assert exc_info.value.code == 0
+        mock_proc.terminate.assert_called_once()
+
+        # Invoke SIGINT handler
+        mock_proc.reset_mock()
+        with pytest.raises(SystemExit) as exc_info:
+            captured_handlers[signal.SIGINT](signal.SIGINT, None)
+        assert exc_info.value.code == 0
+        mock_proc.terminate.assert_called_once()
+
+    def test_serve_help_states_the_effective_host_and_port_defaults(
+        self,
+        runner: CliRunner,
+    ) -> None:
+        result = runner.invoke(cli, ["serve", "--help"])
+        assert result.exit_code == 0, result.output
+        port_lines = [line for line in result.output.splitlines() if "--port" in line]
+        assert len(port_lines) == 1
+        assert "8000" in port_lines[0]
+
+        # Click wraps option help text across lines; find the --host option description
+        host_block = result.output.split("--host", 1)[1].split("--port", 1)[0]
+        assert "localhost" in host_block

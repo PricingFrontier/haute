@@ -68,15 +68,13 @@ def _reusable_definition(
     graph._parser_definition_id = definition_id
     graph._parser_input_ports = [
         SubmodelInputPort(
-            port_id="input",
-            label="Input",
+            name="input",
             targets=[SubmodelEndpoint(node_id=input_node_id)],
         )
     ]
     graph._parser_output_ports = [
         SubmodelOutputPort(
-            port_id="output",
-            label="Output",
+            name="output",
             source=SubmodelEndpoint(node_id=output_node_id),
         )
     ]
@@ -86,9 +84,7 @@ def _reusable_definition(
 def _registration(definition_id: str) -> SubmodelRegistration:
     return SubmodelRegistration(
         path=f"modules/{definition_id}.py",
-        definition_id=definition_id,
-        instance_id=f"instance_{definition_id}",
-        alias=definition_id,
+        name=definition_id,
     )
 
 
@@ -217,6 +213,7 @@ class TestStructuralEquivalence:
             {"scoring": "modules/scoring.py"},
             parent_edges=parent_edges,
             registrations=[_registration("scoring")],
+            registration_definitions={"modules/scoring.py": "scoring"},
             flatten=True,
         )
         hierarchical = merge_submodels(
@@ -225,6 +222,7 @@ class TestStructuralEquivalence:
             {"scoring": "modules/scoring.py"},
             parent_edges=parent_edges,
             registrations=[_registration("scoring")],
+            registration_definitions={"modules/scoring.py": "scoring"},
             flatten=False,
         )
         via_flatten_graph = flatten_graph(hierarchical)
@@ -246,6 +244,7 @@ class TestStructuralEquivalence:
             {"solo": "modules/solo.py"},
             parent_edges=parent_edges,
             registrations=[_registration("solo")],
+            registration_definitions={"modules/solo.py": "solo"},
             flatten=True,
         )
         hierarchical = merge_submodels(
@@ -254,6 +253,7 @@ class TestStructuralEquivalence:
             {"solo": "modules/solo.py"},
             parent_edges=parent_edges,
             registrations=[_registration("solo")],
+            registration_definitions={"modules/solo.py": "solo"},
             flatten=False,
         )
         via_flatten_graph = flatten_graph(hierarchical)
@@ -275,6 +275,7 @@ class TestStructuralEquivalence:
             {"chain": "modules/chain.py"},
             parent_edges=parent_edges,
             registrations=[_registration("chain")],
+            registration_definitions={"modules/chain.py": "chain"},
             flatten=True,
         )
         hierarchical = merge_submodels(
@@ -283,6 +284,7 @@ class TestStructuralEquivalence:
             {"chain": "modules/chain.py"},
             parent_edges=parent_edges,
             registrations=[_registration("chain")],
+            registration_definitions={"modules/chain.py": "chain"},
             flatten=False,
         )
         via_flatten_graph = flatten_graph(hierarchical)
@@ -323,15 +325,13 @@ class TestParsePipelineFlattenRegression:
                 definition_id="scoring",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "Transform", "handleId": None}],
                     }
                 ],
                 output_ports=[
                     {
-                        "portId": "result",
-                        "label": "Result",
+                        "name": "result",
                         "source": {"nodeId": "Finalise", "handleId": None},
                     }
                 ],
@@ -364,9 +364,7 @@ class TestParsePipelineFlattenRegression:
 
             pipeline.submodel(
                 "modules/scoring.py",
-                definition_id="scoring",
-                instance_id="submodel__scoring",
-                alias="scoring",
+                "scoring",
             )
 
             pipeline.connect("Source", "scoring", target_port="source")
@@ -378,10 +376,10 @@ class TestParsePipelineFlattenRegression:
 
         node_ids = _canonical_nodes(flat_graph)
         # Placeholder is gone in flattened mode
-        assert "submodel__scoring" not in node_ids
+        assert "scoring" not in node_ids
         # Child nodes are inlined
-        assert qualified_runtime_node_id("submodel__scoring", "Transform") in node_ids
-        assert qualified_runtime_node_id("submodel__scoring", "Finalise") in node_ids
+        assert qualified_runtime_node_id("scoring", "Transform") in node_ids
+        assert qualified_runtime_node_id("scoring", "Finalise") in node_ids
         # Source node survives
         assert "Source" in node_ids
         # No leftover submodels metadata in flat graph
@@ -405,8 +403,7 @@ class TestParsePipelineFlattenRegression:
                 definition_id="scoring",
                 input_ports=[
                     {
-                        "portId": "source",
-                        "label": "Source",
+                        "name": "source",
                         "targets": [{"nodeId": "Transform", "handleId": None}],
                     }
                 ],
@@ -434,9 +431,7 @@ class TestParsePipelineFlattenRegression:
 
             pipeline.submodel(
                 "modules/scoring.py",
-                definition_id="scoring",
-                instance_id="submodel__scoring",
-                alias="scoring",
+                "scoring",
             )
 
             pipeline.connect("Source", "scoring", target_port="source")

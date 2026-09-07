@@ -648,31 +648,36 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
         }
     ).model_dump()
     captured: dict[str, object] = {}
-    launched = threading.Event()
 
     def capture_launch(ctx, *, config, quote_grid, ratebook_factors_handle, **kwargs):
         captured["job_id"] = ctx.job_id
         captured["mode"] = ctx.mode
         captured["ratebook_factors"] = ratebook_factors_handle
-        launched.set()
 
     from haute.routes import optimiser as optimiser_routes
 
     with (
+        patch.object(optimiser_routes._solve_service, "_launch_setup_background") as setup_launch,
         patch.object(optimiser_routes._solve_service, "_build_grid", return_value=MagicMock()),
         patch.object(
             optimiser_routes._solve_service,
             "_launch_background",
             side_effect=capture_launch,
-        ),
+        ) as solver_launch,
     ):
         resp = client.post(
             "/api/optimiser/solve",
             json={"graph": graph, "node_id": "opt"},
         )
-        assert launched.wait(timeout=2.0)
+        assert resp.status_code == 200
+        setup_launch.assert_called_once()
+        # This checks the data contract, so drive the queued setup to completion
+        # without making checkpoint I/O race a two-second wall-clock deadline.
+        optimiser_routes._solve_service._run_solve_setup_and_launch(
+            *setup_launch.call_args.args, **setup_launch.call_args.kwargs
+        )
+        solver_launch.assert_called_once()
 
-    assert resp.status_code == 200
     assert captured["mode"] == "ratebook"
     ratebook_factors = captured["ratebook_factors"]
     assert isinstance(ratebook_factors, dict)

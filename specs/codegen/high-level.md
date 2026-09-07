@@ -58,7 +58,8 @@ Out of scope (owned by neighbouring components):
   [expression-parsing](../expression-parsing/high-level.md). Parsed node/config conversion in
   `src/haute/_graph_builders.py` is owned by
   [pipeline-config](../pipeline-config/high-level.md). Codegen shares
-  `src/haute/_ast_helpers.py` and `src/haute/_code_extraction.py` with those read paths because
+  `src/haute/_ast_helpers.py` with those read paths, and `src/haute/_code_extraction.py`
+  with the execution builders, the config builder and the assistant tools, because
   generation and extraction are two directions of the same contract (see Interactions).
 - Declarative per-node JSON sidecar read/write and folder conventions —
   [pipeline-config](../pipeline-config/high-level.md) (`haute._config_io`).
@@ -86,8 +87,8 @@ Out of scope (owned by neighbouring components):
   deterministic unknown-node and dropped-edge evidence. It never silently removes a
   malformed connection from the generated pipeline.
 - **One function per node**, named by sanitizing the node's label
-  (`haute._graph_utils._sanitize_func_name`). Any two node labels that
-  produce the same identifier, including exact duplicate labels, are a hard error at codegen time
+  (`haute._graph_utils._sanitize_func_name`). Any two node labels or
+  submodel occurrence aliases that produce the same identifier, including exact duplicate labels, are a hard error at codegen time
   (`_error_on_name_collisions`), checked globally across the root graph and
   every submodel — not per file — because the flattened runtime graph is
   keyed by the sanitized name across module boundaries.
@@ -96,7 +97,7 @@ Out of scope (owned by neighbouring components):
   `haute._graph_utils.edge_input_name` in edge order: an `apiInput`-frame edge
   contributes its frame label verbatim (labels are validated as ASCII Python
   identifiers by the api-input schema), a submodel-output edge contributes the
-  sanitised public output label declared by its definition, and every ordinary
+  occurrence's own name (or f"{alias}__{port_id}" when declaring more than one output port), and every ordinary
   edge contributes the sanitised source-node label. A frame emitted as `quotes` is therefore callable as
   `quotes` in every downstream body — the same string the editor lists as the
   input. When a canvas topology rewrite replaces a Polars node's parent while
@@ -113,16 +114,16 @@ Out of scope (owned by neighbouring components):
 - **Submodel-aware.** A graph with no submodel occurrences produces exactly
   one file. A hierarchical graph emits each referenced definition file once,
   in first-occurrence order, plus a main file with one explicit
-  `pipeline.submodel(path, definition_id=..., instance_id=..., alias=...,
-  label=...)` registration per occurrence. Distinct definitions may not share
+  `pipeline.submodel(path, name)` registration per occurrence
+  (with `instance_of=owner_name` for copies). Distinct definitions may not share
   a file, unused registry definitions are rejected, and occurrence ids and
   aliases are never inferred. Parent connections name declared public port
-  ids; `in__<portId>`/`out__<portId>` exist only in graph JSON and are not
-  emitted as authored parameter names. Public input and output labels are the
-  semantic frame names on their respective sides of the boundary: child
-  parameters use sanitised input labels and a source occurrence contributes
-  its sanitised public output label downstream. Instance aliases and immutable
-  port ids never leak into executable frame names.
+  names; `in__<name>`/`out__<name>` exist only in graph JSON and are not
+  emitted as authored parameter names. Inside a definition, child
+  parameters use sanitised public input port names. Downstream, an occurrence
+  contributes its own name (or <alias>__<port_name> when declaring more than one
+  output port) as the executable input name; public ports declare a single
+  canonical name: portId and label are not emitted.
   `graph_to_code` refuses a hierarchical graph rather than returning an
   arbitrary file. Each definition file carries its declared
   `definition_id`, complete literal `input_ports`/`output_ports` contract,
@@ -158,10 +159,11 @@ Out of scope (owned by neighbouring components):
   `Pipeline.run()`. Removed `dataSource`/`dataSink` forms are neither emitted
   nor accepted as codegen node types.
 - **Retained sidecar inputs stay live.** API Input and External File bodies
-  contain only their sidecar path and call the shared config-driven loaders
-  with `Path(__file__).resolve().parent` as the pipeline-directory candidate.
-  They do not bake the sidecar's current data path, schema, file type, or
-  model class into source. A sidecar-only edit therefore changes the next
+  contain only their sidecar path and call the shared config-driven loaders with
+  the module-level `_HAUTE_CONFIG_BASE` (the parent pipeline directory:
+  `.parent` in a pipeline file and `.parents[N]` in a submodel file) as the
+  base directory. They do not bake the sidecar's current data path, schema, file
+  type, or model class into source. A sidecar-only edit therefore changes the next
   generated-function execution, and malformed sidecars raise the same
   validation error as canvas execution.
 - **Contract kwarg injection.** Every ordinary node gets a `contract=...` decorator kwarg
@@ -285,10 +287,12 @@ Out of scope (owned by neighbouring components):
 - **Depends on** `haute._graph_shape`, `haute._edge_join`, and
   `haute._topo` for graph-shape validation, edge-join role resolution, and
   topological ordering before any source is emitted.
-- **Shares** `src/haute/_ast_helpers.py` and `src/haute/_code_extraction.py` with the parser
+- **Shares** `src/haute/_ast_helpers.py` with the parser
   (`src/haute/parser.py`, `src/haute/_graph_builders.py`,
   `src/haute/_parser_regex.py`,
-  `src/haute/_parser_submodels.py`) — generation and extraction
+  `src/haute/_parser_submodels.py`) and `src/haute/_code_extraction.py` with
+  `src/haute/_builders.py`, `src/haute/_config_builder.py` and
+  `src/haute/assistant/_tools.py` — generation and extraction
   are two halves of one round-trip contract; a change to how codegen wraps
   user code generally requires a matching change to how extraction unwraps
   it.
@@ -332,7 +336,7 @@ execution time on a mis-wired pipeline). Concretely:
   emitted parent with different columns** → `ParseError` from
   `_format_contract_source`; ambiguous data is never silently resolved by
   "keep the last writer."
-- **Node label collisions** (two labels sanitizing to the same Python
+- **Node label collisions** (two node labels or submodel occurrence aliases sanitizing to the same Python
   identifier, including exact duplicates, anywhere in the root graph or any submodel) →
   `ParseError` enumerating every colliding bucket, from
   `_error_on_name_collisions`.

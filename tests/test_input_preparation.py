@@ -217,6 +217,72 @@ def test_a_ragged_csv_row_fails_the_build_and_keeps_the_previous_generation(
     assert not list(identity_dir.glob(".staging-*"))
 
 
+def test_a_source_truncated_to_zero_bytes_fails_the_refresh_and_keeps_the_previous_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "zero.csv"
+    frame = pl.DataFrame({"id": [1, 2], "amount": [10, 20]})
+    frame.write_csv(path)
+    config = _csv_config(path)
+    first = build_input_snapshot(config, store=store, base_dir=tmp_path)
+
+    path.write_bytes(b"")
+    context = _context()
+    try:
+        with native_memory_backend_scope("rlimit"):
+            with pytest.raises(InputPreparationError) as excinfo:
+                _prepare(config, store=store, base_dir=tmp_path, context=context)
+    finally:
+        context.release_admission()
+
+    assert excinfo.value.reason_code == "build_failed"
+    assert "Preparing this Data Input's snapshot failed." in str(excinfo.value)
+    assert "Traceback" not in str(excinfo.value)
+    assert store.open_generation(store_identity(config, tmp_path)).generation_id == (
+        first.generation_id
+    )
+    identity_dir = store.identity_path(store_identity(config, tmp_path))
+    assert not list(identity_dir.glob(".staging-*"))
+    prepared = resolve_data_input(config, store=store, base_dir=tmp_path).collect()
+    plt.assert_frame_equal(prepared, frame)
+
+
+def test_a_header_only_source_publishes_an_empty_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "header_only.csv"
+    frame = pl.DataFrame({"id": [1, 2], "amount": [10, 20]})
+    frame.write_csv(path)
+    config = _csv_config(path)
+    first = build_input_snapshot(config, store=store, base_dir=tmp_path)
+
+    path.write_text("id,amount\n", encoding="utf-8")
+    context = _context()
+    try:
+        with native_memory_backend_scope("rlimit"):
+            records = _prepare(config, store=store, base_dir=tmp_path, context=context)
+    finally:
+        context.release_admission()
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.action == "refreshed"
+    assert record.row_count == 0
+    assert record.generation_id != first.generation_id
+
+    current_gen = store.open_generation(store_identity(config, tmp_path))
+    assert current_gen.generation_id == record.generation_id
+    assert current_gen.generation_id != first.generation_id
+
+    prepared = resolve_data_input(config, store=store, base_dir=tmp_path).collect()
+    assert prepared.height == 0
+    assert prepared.columns == ["id", "amount"]
+
+
 def store_identity(config: dict[str, object], base_dir: Path) -> Any:
     from haute._input_providers import source_cache_identity
 

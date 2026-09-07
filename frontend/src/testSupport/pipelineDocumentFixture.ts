@@ -138,18 +138,6 @@ function recoverySubmodel(id: string, value: unknown): RecoverySubmodel {
   const inputPorts = Array.isArray(definition.inputPorts)
     ? structuredClone(definition.inputPorts)
     : []
-  const explicitInputNames = record(definition._inputPortInputNames)
-  const inputPortInputNames = Object.keys(explicitInputNames).length > 0
-    ? explicitInputNames as Record<string, string>
-    : Object.fromEntries(
-      inputPorts.map((port) => {
-        const portId = record(port).portId
-        if (typeof portId !== "string") {
-          throw new Error("pipeline document test fixture input port requires a string portId")
-        }
-        return [portId, portId]
-      }),
-    )
   return {
     definition_id:
       typeof definition.definitionId === "string" ? definition.definitionId : id,
@@ -162,7 +150,6 @@ function recoverySubmodel(id: string, value: unknown): RecoverySubmodel {
       submodels: record(graph.submodels),
     }),
     input_ports: inputPorts,
-    input_port_input_names: inputPortInputNames,
     output_ports: Array.isArray(definition.outputPorts)
       ? structuredClone(definition.outputPorts)
       : [],

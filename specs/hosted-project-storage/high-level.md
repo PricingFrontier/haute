@@ -56,13 +56,21 @@ The session lifecycle, from the user's chair:
    locally, the commit is pushed to `origin` asynchronously. Saves never
    wait on the network; the UI carries a small sync state — synced /
    *n* saves pending / sync failed — beside the branch indicator.
+   A publish that succeeds also refreshes the binding's *restart
+   target* to the working branch it just carried, so a later container
+   resumes the branch the user last published on.
 4. **Close**: nothing. Anything committed-and-pushed is durable;
    anything mid-edit is lost with the container, the same connection-loss
    exposure a laptop session does not have. The persistent volatile-state
    indicator makes that exposure explicit while the session is open.
 5. **Reopen (new container)**: a recorded binding restores the project
    automatically before the server accepts traffic — clone from
-   `origin`, resume on the recorded working branch.
+   `origin`, resume on the restart target: the working branch in
+   effect at the most recent successful publication. A branch
+   selected, forked, archived or deleted without a later publish is
+   clone-local and does not move the target; a target the stored
+   project no longer contains serves the project and reopens the
+   branch chooser.
 
 Invariants:
 
@@ -88,6 +96,11 @@ Invariants:
 - A restored session is USABLE, not merely present: the working branch
   and its ledger exist as local refs and the session can publish again
   without the user re-adopting a branch.
+- The restart target is only ever a published branch: it is written
+  after the transport succeeds and left untouched by a failed publish,
+  so a restore never advertises a branch the stored project lacks.
+  Binding a populated location records no target; the first successful
+  publish after the restart records the branch the user chose.
 - Local mode is untouched: every behaviour above is gated on the hosted
   environment contract.
 
@@ -134,18 +147,34 @@ the lock; the slow part — the upload — runs outside it.
   chains stay rejected until representative growth crosses one of those gates:
   their dependency, retry, recovery, and retention complexity is not justified
   by an unmeasured possibility.
-- **Pointer written last.** The Files API offers upload-with-overwrite
-  but no atomic rename, so the volume layout is generation-numbered
-  bundles plus a small `HEAD.json` pointer written only after its
-  bundle is fully uploaded and verified. A torn or partial upload is
-  therefore harmless: readers only ever follow a generation that is
-  already complete. The last five generations are retained as cheap
-  rollback; older ones are pruned best-effort.
-- **Single-writer fencing.** The pointer carries a `writer_id`.
+- **One pointer per generation, created once.** The Files API offers
+  upload-with-overwrite and a create-only upload (`overwrite=false` is
+  refused when the path exists) but no atomic rename or
+  compare-and-swap, so the volume layout is generation-numbered
+  bundles plus one small immutable pointer record per committed
+  generation, created only after its bundle is fully uploaded and
+  verified; the highest committed pointer is the head. A torn or
+  partial upload is therefore harmless: readers only ever follow a
+  generation that is already complete. The last five generations are
+  retained as cheap rollback; older ones are pruned best-effort.
+- **Single-writer fencing.** Each pointer carries a `writer_id`.
   Single-writer remains the design assumption (one container, one
-  project), but a read-before-write comparison lets a superseded
-  container stop loudly instead of silently interleaving generations
-  with its replacement.
+  project), but the create-only pointer write is the fence: two
+  writers racing to the same generation contend on one path that only
+  one of them can create, so a superseded container stops loudly
+  instead of silently interleaving generations with — or overwriting —
+  its replacement. A read-before-write comparison still runs first,
+  only to stop early without packaging when the loss is already
+  visible. The fence is only as strong as the volume's create-only
+  upload: that it admits exactly one of several simultaneous creates is
+  a provider property no offline test can prove, so it is not assumed.
+  `scripts/uc_create_only_qualification.py` is the release gate for
+  hosted publication: it must pass against an isolated volume path with
+  the workspace's own credentials, and its result be recorded in
+  `databricks_app/LEARNINGS.md`, before the guarantee is claimed for
+  production. Until then the runtime already behaves as if the provider
+  could be ambiguous (an unclear create is retried, a lost race stops
+  loudly) and the guarantee is design intent, not a proven property.
 - **A claim makes the location behave like a locally-owned file.** The
   fence prevents corruption but only fires at write time; the claim
   (`CLAIM.json` beside the pointer) is the *steering* layer that stops

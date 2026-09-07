@@ -257,10 +257,12 @@ are not the user's data, and **mutations**, which always surface an error.
   from transport/server failure. The latter records a visible, retryable error while
   retaining any previous successful status; Retry is always a user action. Pipeline Save
   remains available without a repository, while Git Commit remains unavailable.
-- **History reads** (`getMilestones`, `getPendingSaves`, `getWorkingBranches`) on the
+- **History reads** (`getMilestones`, `getPendingSaves`) on the
   panel's main `refresh()` path show an error toast on failure — this is the user's saved
   work, so a failure is not silent — but a *superseded* refresh's failure is dropped
-  without a toast (the newer refresh owns reporting).
+  without a toast (the newer refresh owns reporting). Shared branch-list loads
+  (`loadBranches()`, calling `getWorkingBranches`) record failure in `branchesError`
+  rather than toasting on the history path.
 - **Graph topology fetch** is explicitly best-effort: it is caught separately from the
   row-data fetch, never toasts on failure, and a failed refetch keeps the last-good graph
   rather than nulling it (nulling would flip the whole list between rail and no-rail

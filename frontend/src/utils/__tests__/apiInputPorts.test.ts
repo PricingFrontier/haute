@@ -299,7 +299,7 @@ describe("edgeInputName", () => {
         description: "",
         nodeType: "submodelPort",
         config: {},
-        instanceId: "instance_pricing",
+        instanceId: "pricing",
         definitionId: "definition_pricing",
         portDirection: "input",
         ports: [
@@ -339,7 +339,7 @@ describe("edgeInputName", () => {
         description: "",
         nodeType: "submodelPort",
         config: {},
-        instanceId: "instance_pricing",
+        instanceId: "pricing",
         definitionId: "definition_pricing",
         portDirection: "input",
         ports: [{ id: "row-quote", label: "quote_info" }],
@@ -829,7 +829,7 @@ describe("canonical submodel boundary resolution", () => {
         description: "",
         nodeType: "submodelPort",
         config: {},
-        instanceId: "instance_pricing",
+        instanceId: "pricing",
         definitionId: "definition_pricing",
         portDirection: "input",
         ports: [{ id: "policy_data", label: "Policy data" }],
@@ -847,7 +847,7 @@ describe("canonical submodel boundary resolution", () => {
     ).toBe("policy_data")
   })
 
-  it("resolves an arbitrary-id occurrence output through its public label", () => {
+  it("resolves a submodel occurrence output through its occurrence name", () => {
     const child: SimpleNode = {
       ...sourceNode("polars"),
       id: "child_output",
@@ -858,7 +858,7 @@ describe("canonical submodel boundary resolution", () => {
     }
     const occurrence: SimpleNode = {
       ...sourceNode("submodel"),
-      id: "instance_pricing_secondary",
+      id: "pricing_secondary",
       data: {
         ...sourceNode("submodel").data,
         config: {
@@ -866,7 +866,7 @@ describe("canonical submodel boundary resolution", () => {
           alias: "pricing_secondary",
         },
         _sourceHandleInputNames: {
-          "out__written_premium": "Written_premium",
+          "out__written_premium": "pricing_secondary",
         },
       },
     }
@@ -875,11 +875,9 @@ describe("canonical submodel boundary resolution", () => {
       file: "modules/pricing.py",
       graph: { nodes: [child], edges: [] },
       inputPorts: [],
-      _inputPortInputNames: {},
       outputPorts: [
         {
-          portId: "written_premium",
-          label: "Written premium",
+          name: "written_premium",
           source: { nodeId: child.id, handleId: null },
         },
       ],
@@ -891,7 +889,7 @@ describe("canonical submodel boundary resolution", () => {
         occurrence,
         { definition_pricing: definition },
       ),
-    ).toBe("Written_premium")
+    ).toBe("pricing_secondary")
   })
 
   it("matches every internal target of a canonical fan-out input port", () => {
@@ -904,7 +902,7 @@ describe("canonical submodel boundary resolution", () => {
     const secondTarget: SimpleNode = { ...sourceNode("polars"), id: "child_b" }
     const occurrence: SimpleNode = {
       ...sourceNode("submodel"),
-      id: "instance_pricing_secondary",
+      id: "pricing_secondary",
       data: {
         ...sourceNode("submodel").data,
         config: {
@@ -919,15 +917,13 @@ describe("canonical submodel boundary resolution", () => {
       graph: { nodes: [firstTarget, secondTarget], edges: [] },
       inputPorts: [
         {
-          portId: "policy_data",
-          label: "Policy data",
+          name: "policy_data",
           targets: [
             { nodeId: firstTarget.id, handleId: null },
             { nodeId: secondTarget.id, handleId: "base" },
           ],
         },
       ],
-      _inputPortInputNames: { policy_data: "policy_data" },
       outputPorts: [],
     }
     const edge: SimpleEdge = {

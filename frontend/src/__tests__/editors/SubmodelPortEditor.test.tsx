@@ -17,7 +17,7 @@ function inputBoundary(ports = [
       description: "",
       nodeType: "submodelPort",
       config: {},
-      instanceId: "instance_pricing",
+      instanceId: "pricing",
       definitionId: "definition_pricing",
       portDirection: "input",
       ports,

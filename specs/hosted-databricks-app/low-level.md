@@ -6,8 +6,13 @@
 | --- | --- |
 | `src/haute/hosted.py` | The component. Detects the Databricks Apps environment contract, adapts platform-proxied traffic to the loopback shape the local security middleware expects, records the forwarded workspace user on the request scope, and builds the served ASGI application. |
 | `databricks_app/app.py` | Container entry point: refreshes the vendored wheel, runs the boot probe, prepares the project, and serves `haute.hosted.create_app()` on the platform-assigned port. |
+| `databricks_app/app.yaml` | Databricks App manifest defining the container command (`python app.py`) and environment configuration (session auth disable, state volume, and git credential settings). |
 | `databricks_app/bootstrap.py` | Resolves the interpreter before changing directory, configures git credentials, restores a bound project (or seeds a volatile one), and `chdir`s into the project directory before the server is imported. |
-| `databricks_app/probe.py` | One-shot boot diagnostics — interpreter, filesystem mounts, writability, git availability — printed as a single JSON line into the platform log stream. |
+| `databricks_app/probe.py` | One-shot boot diagnostics — interpreter, filesystem mounts, writability, git availability — printed as a HAUTE_DBX_PROBE-prefixed indented JSON blob into the platform log stream. |
+| `databricks_app/requirements.txt` | App dependency manifest specifying the vendored Haute wheel with the `[databricks]` extra dependencies. |
+| `databricks_app/scripts/build_bundle.sh` | Shell script that builds the wheel, copies it into the app directory, enforces the 10 MB per-file limit, and stamps its SHA-256 digest into `requirements.txt`. |
+| `databricks_app/scripts/deploy.sh` | Shell script that runs `build_bundle.sh`, syncs `databricks_app/` to the workspace, raw-imports the vendored wheel, and triggers `databricks apps deploy`. |
+| `databricks_app/LEARNINGS.md` | Operational deployment findings, platform traps (relative interpreter, absent container-shutdown signals), and two-actor live verification log for Databricks Apps. |
 | `src/haute/_worker_isolation.py` | Owned by [execution-engine](../execution-engine/low-level.md); this component depends on its interpreter resolution. Owns worker spawning, including `ensure_spawnable_interpreter`, which absolutises a relative `sys.executable` before any directory change so `multiprocessing` can still exec it. |
 | `src/haute/routes/databricks.py` | Owned by [databricks-io](../databricks-io/low-level.md); this component only adds the hosted credential shape. Workspace-browsing endpoints; resolves either a personal access token or the service-principal client id/secret the container injects. |
 
@@ -15,21 +20,21 @@
 
 - `DatabricksAppEnvironment` — frozen dataclass `{app_name, app_url, workspace_id}`, the detected platform contract.
 - `DATABRICKS_APP_ENV_VARS` — the three variables that constitute that contract. All three present means hosted; none means local; a partial set is an environment this module was not designed for and raises rather than guessing.
-- `FORWARDED_USER_SCOPE_KEY` — the ASGI scope key under which `PlatformProxyBoundary` records `X-Forwarded-Email`, read by request logging and by the storage bind endpoint for attribution.
+- `FORWARDED_USER_SCOPE_KEY` — the ASGI scope key under which `PlatformProxyBoundary` records `X-Forwarded-Email`, read by request logging and by the storage bind and fork endpoints for attribution.
 - `PlatformProxyBoundary` — an ASGI middleware wrapping the server application.
 
 ## Control flow
 
 `create_app()` requires a complete environment contract, then records the hosted trust decision by disabling the local session gate *before* importing `haute.server`, so the middleware stack initialises with that decision already in force — and, in a deployment that restores a bound project, after the working directory is already the restored clone. It returns the server application wrapped in `PlatformProxyBoundary`.
 
-For each HTTP or WebSocket scope, the boundary records `X-Forwarded-Email` (when present) on the scope, strips `Forwarded` and every `X-Forwarded-*` header, and replaces `Host` with the loopback authority of the bound server. Non-HTTP scopes (lifespan) pass through untouched.
+For each HTTP or WebSocket scope, the boundary records `X-Forwarded-Email` (when present and non-blank, stripped of surrounding whitespace; blank or whitespace-only values are treated as absent) on the scope, strips `Forwarded` and every `X-Forwarded-*` header, and replaces `Host` with the loopback authority of the bound server. Non-HTTP scopes (lifespan) pass through untouched.
 
 ## Edge cases and invariants
 
 - A partial environment contract raises at startup; hosted mode is never inferred from one variable.
 - `create_app()` outside a recognised hosted environment raises rather than silently degrading — hosting is an explicit deployment decision, and `haute serve` remains the local entry point.
 - Header rewriting alone grants nothing: with the local session gate active, a proxied request whose headers now look local is still refused. Only the explicit hosted trust decision opens the API.
-- The forwarded-user scope key is absent rather than empty when the proxy sends no identity, so consumers cannot mistake "no identity" for a blank user.
+- The forwarded-user scope key is absent rather than empty when the proxy sends no identity or a blank or whitespace-only `X-Forwarded-Email` header (and a non-blank value is stripped of surrounding whitespace), so consumers cannot mistake "no identity" for a blank user.
 - Local mode is byte-identical: every behaviour here is gated on the environment contract.
 
 ## Error handling

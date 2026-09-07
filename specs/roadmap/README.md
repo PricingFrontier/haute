@@ -11,7 +11,9 @@ reproduced against `HEAD` before implementation. `Decision` packages require
 an explicit product or architecture choice. Remove a package when its outcome
 is covered by current specifications and ordinary regression tests.
 `Start with` names a non-deferred package; it is `—` when a component has no
-currently startable package.
+currently startable package. Priority `P1` marks a package that threatens
+persisted work, computed results, or security; `P2` a material correctness, UX,
+or maintenance issue; `P3` opportunistic work.
 
 | Component | Improvement surface | Start with |
 |---|---|---|

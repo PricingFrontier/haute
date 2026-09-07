@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -46,6 +49,7 @@ from haute._project_storage import (
 from haute.schemas import GitPushRejection, GitRemoteLeg
 
 WORKING = "pricing-dev"
+ALT = "pricing-alt"
 
 
 def _run_git(repo: Path, *args: str) -> str:
@@ -64,6 +68,17 @@ def _configure_identity(repo: Path) -> None:
     """
     _run_git(repo, "config", "user.name", "Restored Actuary")
     _run_git(repo, "config", "user.email", "restored@example.com")
+
+
+def _assert_resumed_on(root: Path, branch: str, content: str, sha: str) -> None:
+    """The restored clone is USABLE on *branch*: recorded, checked out on its
+    ledger, carrying the published save, and showing that save's bytes."""
+    from haute._git_state import read_working_branch
+
+    assert read_working_branch(root) == branch
+    assert _run_git(root, "rev-parse", "--abbrev-ref", "HEAD").strip() == f"{branch}-save"
+    assert sha in _run_git(root, "log", "--format=%H", f"{branch}-save").splitlines()
+    assert (root / "rating.py").read_text(encoding="utf-8") == content
 
 
 @pytest.fixture(autouse=True)
@@ -175,12 +190,19 @@ def _forked_project(
     return fork_root
 
 
+class _FakeAlreadyExistsError(Exception):
+    pass
+
+
 class _FakeFiles:
     """In-memory stand-in for the Databricks Files API."""
 
     def __init__(self) -> None:
         self.store: dict[str, bytes] = {}
         self.fail_with: Exception | None = None
+        self.fail_paths: dict[str, Exception] = {}
+        self.before_upload: Callable[[str], None] | None = None
+        self.after_upload: Callable[[str], None] | None = None
 
     def download(self, path: str):
         if self.fail_with is not None:
@@ -193,10 +215,18 @@ class _FakeFiles:
 
         return _Response()
 
-    def upload(self, path: str, contents, overwrite: bool = False) -> None:
+    def upload(self, path: str, contents, overwrite: bool | None = None) -> None:
+        if self.before_upload is not None:
+            self.before_upload(path)
         if self.fail_with is not None:
             raise self.fail_with
+        if path in self.fail_paths:
+            raise self.fail_paths.pop(path)
+        if overwrite is False and path in self.store:
+            raise _FakeAlreadyExistsError(path)
         self.store[path] = contents.read()
+        if self.after_upload is not None:
+            self.after_upload(path)
 
     def delete(self, path: str) -> None:
         if self.fail_with is not None:
@@ -245,6 +275,9 @@ def files_api(monkeypatch: pytest.MonkeyPatch) -> _FakeFiles:
     monkeypatch.setattr(_uc_transport, "_files_api", lambda: fake)
     monkeypatch.setattr(
         _uc_transport, "_is_not_found", lambda exc: isinstance(exc, _FakeNotFoundError)
+    )
+    monkeypatch.setattr(
+        _uc_transport, "_is_already_exists", lambda exc: isinstance(exc, _FakeAlreadyExistsError)
     )
     monkeypatch.setenv(STATE_VOLUME_ENV, "workspace.default.haute_state")
     return fake
@@ -479,10 +512,19 @@ class TestCredentialHandling:
         monkeypatch.setenv(GIT_TOKEN_ENV, "t")
         helper = _project_storage.configure_git_credentials(tmp_path / "runtime")
         assert helper is not None
-        assert stat.S_IMODE(helper.stat().st_mode) == 0o700
+        if sys.platform != "win32":
+            # NTFS carries no POSIX mode bits and chmod there only toggles the
+            # read-only flag. The helper is installed by the hosted container
+            # bootstrap alone, so owner-only is stated where it can hold; the
+            # registration below is platform-neutral and always checked.
+            assert stat.S_IMODE(helper.stat().st_mode) == 0o700
         assert os.environ["GIT_ASKPASS"] == str(helper)
         assert os.environ["GIT_TERMINAL_PROMPT"] == "0"
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the askpass helper is a #!/bin/sh script Windows cannot execute",
+    )
     def test_helper_emits_username_and_token_on_the_right_prompts(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -500,6 +542,10 @@ class TestCredentialHandling:
         assert ask("Username for 'https://github.com': ") == "x-access-token"
         assert ask("Password for 'https://x@github.com': ") == "super-secret-token"
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the askpass helper is a #!/bin/sh script Windows cannot execute",
+    )
     def test_helper_refuses_an_unrecognised_prompt_without_the_token(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -550,7 +596,14 @@ class _RecordingPush:
         self.done.set()
         if outcome is not None:
             raise outcome
-        return None
+        from haute.schemas import GitPushResponse
+
+        return GitPushResponse(
+            remote=remote,
+            working_branch=WORKING,
+            ledger_branch=_git.ledger_name(WORKING),
+            default_branch="main",
+        )
 
 
 class TestPushQueue:
@@ -624,6 +677,7 @@ class TestPushQueue:
         def slow_push(remote, project_root, cwd=None):
             calls["count"] += 1
             release.wait(timeout=5)
+            return _RecordingPush()(remote, project_root, cwd=cwd)
 
         monkeypatch.setattr(_git, "push_working_pair", slow_push)
         queue = PushQueue()
@@ -898,6 +952,206 @@ class TestContainerDeathSurvival:
         with pytest.raises(StorageConfigError, match=STATE_VOLUME_ENV):
             _project_storage.bind_remote(f"file://{bare_remote}", project)
 
+    def test_restore_resumes_the_branch_published_last(
+        self,
+        project: Path,
+        bare_remote: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The restart target is the working branch published last, not bound first."""
+        outcome = _project_storage.bind_remote(f"file://{bare_remote}", project)
+        assert outcome == "adopted"
+
+        _git.set_working_branch(ALT, project, cwd=project, create=True)
+        (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=project)
+        assert sha is not None
+        _project_storage.publish_bound_project(project)
+
+        remote_branches = _run_git(bare_remote, "branch", "--list")
+        assert ALT in remote_branches
+        assert f"{ALT}-save" in remote_branches
+
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == ALT
+
+        _replace_container(monkeypatch)
+        restored = tmp_path / "new-container"
+        assert _project_storage.restore_if_bound(restored) == "restored"
+        _assert_resumed_on(restored, ALT, "# alt priced\n", sha)
+
+        _replace_container(monkeypatch)
+        assert _project_storage.restore_if_bound(restored) == "present"
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(restored) == ALT
+
+    def test_populated_bind_then_selected_branch_becomes_the_restart_target(
+        self,
+        project: Path,
+        bare_remote: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A project lifted into a populated git remote records a restart target
+        once the user selects and publishes a working branch."""
+        other = tmp_path / "other"
+        other.mkdir()
+        _run_git(other, "init", "-b", "main")
+        _run_git(other, "config", "user.name", "Other")
+        _run_git(other, "config", "user.email", "other@example.com")
+        (other / "rating.py").write_text("# other project\n", encoding="utf-8")
+        _run_git(other, "add", "-A")
+        _run_git(other, "commit", "-m", "other project")
+        _run_git(other, "push", f"file://{bare_remote}", "main")
+        _run_git(bare_remote, "symbolic-ref", "HEAD", "refs/heads/main")
+
+        assert _project_storage.bind_remote(f"file://{bare_remote}", project) == "restart-required"
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch is None
+
+        _replace_container(monkeypatch)
+        c1 = tmp_path / "c1"
+        assert _project_storage.restore_if_bound(c1) == "restored"
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(c1) is None
+
+        _git.set_working_branch(ALT, c1, cwd=c1, create=True)
+        _configure_identity(c1)
+        (c1 / "rating.py").write_text("# chosen\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=c1)
+        assert sha is not None
+        _project_storage.publish_bound_project(c1)
+
+        refreshed = _project_storage.read_binding()
+        assert refreshed is not None
+        assert refreshed.branch == ALT
+        assert ALT in _run_git(bare_remote, "branch", "--list")
+
+        _replace_container(monkeypatch)
+        c2 = tmp_path / "c2"
+        assert _project_storage.restore_if_bound(c2) == "restored"
+        _assert_resumed_on(c2, ALT, "# chosen\n", sha)
+
+    def test_failed_publish_keeps_the_previous_restart_target_until_a_publish_succeeds(
+        self,
+        project: Path,
+        bare_remote: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed publish leaves the previous restart target advertised until
+        a publish succeeds."""
+        assert _project_storage.bind_remote(f"file://{bare_remote}", project) == "adopted"
+        _git.set_working_branch(ALT, project, cwd=project, create=True)
+        (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=project)
+        assert sha is not None
+
+        real_push = _git.push_working_pair
+        monkeypatch.setattr(_git, "push_working_pair", _RecordingPush(_git.GitError("remote down")))
+        with pytest.raises(_git.GitError):
+            _project_storage.publish_bound_project(project)
+
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == WORKING
+        active = _project_storage.active_binding()
+        assert active is not None
+        assert active.branch == WORKING
+
+        monkeypatch.setattr(_git, "push_working_pair", real_push)
+        _project_storage.publish_bound_project(project)
+
+        refreshed = _project_storage.read_binding()
+        assert refreshed is not None
+        assert refreshed.branch == ALT
+
+        _replace_container(monkeypatch)
+        c1 = tmp_path / "c1"
+        assert _project_storage.restore_if_bound(c1) == "restored"
+        _assert_resumed_on(c1, ALT, "# alt priced\n", sha)
+
+    def test_branch_switch_after_real_git_push_preserves_working_restart_target(
+        self,
+        project: Path,
+        bare_remote: Path,
+        files_api: _FakeFiles,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        assert _project_storage.bind_remote(f"file://{bare_remote}", project) == "adopted"
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == WORKING
+
+        from haute import _git
+
+        real_push = _git.push_working_pair
+
+        def wrapper(remote: str, project_root: Path, cwd: Path | None = None):
+            result = real_push(remote, project_root, cwd=cwd)
+            _git.set_working_branch(ALT, project_root, cwd=project_root, create=True)
+            return result
+
+        monkeypatch.setattr(_git, "push_working_pair", wrapper)
+        (project / "rating.py").write_text("# save 2 on working\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+
+        _project_storage.publish_bound_project(project)
+        durable = _project_storage.read_binding()
+        assert durable is not None
+        assert durable.branch == WORKING
+
+    def test_restart_target_write_failure_is_a_transport_failure_after_the_push_landed(
+        self,
+        project: Path,
+        bare_remote: Path,
+        files_api: _FakeFiles,
+    ) -> None:
+        """A restart target write failure leaves the history durable but surfaces
+        as retryable transport so the queue does not report synced over an outdated target."""
+        assert _project_storage.bind_remote(f"file://{bare_remote}", project) == "adopted"
+        _git.set_working_branch(ALT, project, cwd=project, create=True)
+        (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=project)
+        assert sha is not None
+
+        files_api.fail_with = RuntimeError("volume down")
+        with pytest.raises(StorageUnavailableError):
+            _project_storage.publish_bound_project(project)
+
+        assert sha in _run_git(bare_remote, "log", "--format=%H", f"{ALT}-save").splitlines()
+        active = _project_storage.active_binding()
+        assert active is not None
+        assert active.branch == WORKING
+
+        files_api.fail_with = None
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == WORKING
+
+        queue = _project_storage.push_queue()
+        files_api.fail_with = RuntimeError("volume down")
+        queue.enqueue()
+        _wait_until(lambda: queue.status().state == "failed")
+        assert queue.status().failure == "transport"
+
+        files_api.fail_with = None
+        queue.retry_now()
+        _wait_until(lambda: queue.status().state == "synced")
+
+        refreshed = _project_storage.read_binding()
+        assert refreshed is not None
+        assert refreshed.branch == ALT
+        queue.stop()
+
 
 # ---------------------------------------------------------------------------
 # Unity Catalog bundle transport
@@ -919,8 +1173,57 @@ def _stored_bundle_generations(files_api: _FakeFiles, root: str = _UC_ROOT) -> l
     )
 
 
+def _stored_pointer_generations(files_api: _FakeFiles, root: str = _UC_ROOT) -> list[int]:
+    prefix = f"{root}/pointers/"
+    generations: list[int] = []
+    for path in files_api.store:
+        if path.startswith(prefix) and path.endswith(".json"):
+            filename = path[len(prefix) :]
+            if len(filename) == 11 and filename[:6].isdigit():
+                generations.append(int(filename[:6]))
+    return sorted(generations)
+
+
 def _stored_head(files_api: _FakeFiles, root: str = _UC_ROOT) -> UCHead:
-    return UCHead.from_payload(json.loads(files_api.store[f"{root}/HEAD.json"]))
+    generations = _stored_pointer_generations(files_api, root=root)
+    assert len(generations) > 0, f"No pointer found under {root}/pointers/"
+    highest = generations[-1]
+    return UCHead.from_payload(json.loads(files_api.store[f"{root}/pointers/{highest:06d}.json"]))
+
+
+def _pointer_record(
+    generation: int,
+    *,
+    writer_id: str,
+    tip_sha: str = "s",
+    bundle_name: str | None = None,
+    written_at: str | None = None,
+) -> bytes:
+    if bundle_name is None:
+        bundle_name = f"{generation:06d}-{writer_id}.bundle"
+    return (
+        UCHead(
+            generation=generation,
+            tip_sha=tip_sha,
+            writer_id=writer_id,
+            bundle_name=bundle_name,
+            written_at=written_at,
+        )
+        .to_json()
+        .encode("utf-8")
+    )
+
+
+def _seed_pointer(
+    files_api: _FakeFiles,
+    generation: int,
+    *,
+    root: str = _UC_ROOT,
+    writer_id: str = "rival-app-0000",
+    **fields,
+) -> None:
+    payload = _pointer_record(generation, writer_id=writer_id, **fields)
+    files_api.store[f"{root}/pointers/{generation:06d}.json"] = payload
 
 
 def _stored_claim(files_api: _FakeFiles, root: str = _UC_ROOT) -> UCClaim | None:
@@ -1091,7 +1394,6 @@ class TestUcContainerDeathSurvival:
             "bundle_create_ms",
             "bundle_verify_ms",
             "upload_ms",
-            "publish_fence_ms",
             "pointer_write_ms",
             "local_record_ms",
             "cleanup_ms",
@@ -1103,7 +1405,6 @@ class TestUcContainerDeathSurvival:
         assert measurement["network_ms"] == pytest.approx(
             measurement["lease_fence_ms"]
             + measurement["upload_ms"]
-            + measurement["publish_fence_ms"]
             + measurement["pointer_write_ms"]
         )
         assert not {
@@ -1146,15 +1447,12 @@ class TestUcContainerDeathSurvival:
         self, project: Path, files_api: _FakeFiles
     ) -> None:
         """A location with published history is another project — never adopt it."""
-        files_api.store[f"{_UC_ROOT}/HEAD.json"] = (
-            UCHead(
-                generation=3,
-                tip_sha="s",
-                writer_id="another-app",
-                bundle_name="000003-x.bundle",
-            )
-            .to_json()
-            .encode("utf-8")
+        _seed_pointer(
+            files_api,
+            3,
+            tip_sha="s",
+            writer_id="another-app",
+            bundle_name="000003-x.bundle",
         )
 
         outcome = _project_storage.bind_remote(UC_URL, project)
@@ -1246,15 +1544,12 @@ class TestUcContainerDeathSurvival:
         monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
         _project_storage.bind_remote(UC_URL, project)
         # Another container published a generation this clone knows nothing of.
-        files_api.store[f"{_UC_ROOT}/HEAD.json"] = (
-            UCHead(
-                generation=2,
-                tip_sha="e" * 40,
-                writer_id="replacement-container",
-                bundle_name="000002-replacement.bundle",
-            )
-            .to_json()
-            .encode("utf-8")
+        _seed_pointer(
+            files_api,
+            2,
+            tip_sha="e" * 40,
+            writer_id="replacement-container",
+            bundle_name="000002-replacement.bundle",
         )
         _replace_container(monkeypatch)
 
@@ -1268,7 +1563,7 @@ class TestUcContainerDeathSurvival:
         """Pointer-written-last is the read-side contract for torn uploads.
 
         A bundle uploaded without its pointer (the container died between
-        the two writes) must be invisible: restore follows HEAD.json only.
+        the two writes) must be invisible: restore follows the pointer only.
         """
         _project_storage.bind_remote(UC_URL, project)
         sha_gen1 = _stored_head(files_api).tip_sha
@@ -1291,6 +1586,7 @@ class TestUcContainerDeathSurvival:
 
         assert _stored_head(files_api).generation == 7
         assert _stored_bundle_generations(files_api) == [3, 4, 5, 6, 7]
+        assert _stored_pointer_generations(files_api) == [1, 2, 3, 4, 5, 6, 7]
 
     def test_a_superseding_writer_stops_publishing(
         self, project: Path, files_api: _FakeFiles
@@ -1298,15 +1594,12 @@ class TestUcContainerDeathSurvival:
         """Two containers, one project: the loser stops loudly, not silently."""
         _project_storage.bind_remote(UC_URL, project)
         # A replacement container published generation 2 behind our back.
-        files_api.store[f"{_UC_ROOT}/HEAD.json"] = (
-            UCHead(
-                generation=2,
-                tip_sha="f" * 40,
-                writer_id="replacement-container",
-                bundle_name="000002-replacement.bundle",
-            )
-            .to_json()
-            .encode("utf-8")
+        _seed_pointer(
+            files_api,
+            2,
+            tip_sha="f" * 40,
+            writer_id="replacement-container",
+            bundle_name="000002-replacement.bundle",
         )
 
         with pytest.raises(StorageSupersededError, match="Another app container"):
@@ -1359,7 +1652,14 @@ class TestUcContainerDeathSurvival:
         for generation in range(2, 8):
             _project_storage.publish_bound_project(project)
 
-        def broken_listing(directory: str):
+        orig_listing = files_api.list_directory_contents
+        head_read_done = False
+
+        def broken_listing(*args, **kwargs):
+            nonlocal head_read_done
+            if not head_read_done:
+                head_read_done = True
+                return orig_listing(*args, **kwargs)
             raise RuntimeError("listing unavailable")
 
         monkeypatch.setattr(files_api, "list_directory_contents", broken_listing)
@@ -1376,12 +1676,13 @@ class TestUcContainerDeathSurvival:
         assert f"{_UC_ROOT}/bundles/{head.bundle_name}" in files_api.store
 
     def test_a_mid_flight_publish_by_another_writer_stops_before_the_pointer(
-        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+        self, project: Path, files_api: _FakeFiles
     ) -> None:
-        """The pre-pointer fence re-check: another writer landing a
-        generation while ours is packaging/uploading must not have its
-        pointer overwritten — that would silently discard its publish."""
+        """The pointer create fence: another writer landing a generation while ours
+        is packaging/uploading stops our commit and deletes our orphaned bundle."""
         _project_storage.bind_remote(UC_URL, project)
+        our_writer = _uc_transport._writer_id()
+        our_bundle = f"{_UC_ROOT}/bundles/000002-{our_writer}.bundle"
         foreign = UCHead(
             generation=2,
             tip_sha="d" * 40,
@@ -1389,20 +1690,23 @@ class TestUcContainerDeathSurvival:
             bundle_name="000002-racing-container.bundle",
         )
 
-        original_upload = files_api.upload
+        def inject_competitor(path: str) -> None:
+            if path == our_bundle:
+                _seed_pointer(
+                    files_api,
+                    2,
+                    writer_id="racing-container",
+                    tip_sha="d" * 40,
+                    bundle_name="000002-racing-container.bundle",
+                )
 
-        def interleaved_upload(path: str, contents, overwrite: bool = False) -> None:
-            original_upload(path, contents, overwrite=overwrite)
-            if "/bundles/" in path:
-                # The rival's pointer lands while our bundle bytes are in
-                # flight — after our packaging fence, before our pointer.
-                files_api.store[f"{_UC_ROOT}/HEAD.json"] = foreign.to_json().encode("utf-8")
-
-        monkeypatch.setattr(files_api, "upload", interleaved_upload)
+        files_api.before_upload = inject_competitor
         with pytest.raises(StorageSupersededError, match="Another app container"):
             _project_storage.publish_to_uc(UC_URL, project)
         # The rival's generation survives untouched.
         assert _stored_head(files_api) == foreign
+        # Our orphaned bundle was cleaned up.
+        assert our_bundle not in files_api.store
 
     def test_restore_gates_when_pointer_and_bundle_disagree(
         self, project: Path, files_api: _FakeFiles, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1411,13 +1715,13 @@ class TestUcContainerDeathSurvival:
         trace of a torn multi-writer publish — never restore it silently."""
         _project_storage.bind_remote(UC_URL, project)
         head = _stored_head(files_api)
-        torn = UCHead(
-            generation=head.generation,
-            tip_sha="a" * 40,  # not a commit in the bundle
+        _seed_pointer(
+            files_api,
+            head.generation,
+            tip_sha="a" * 40,
             writer_id=head.writer_id,
             bundle_name=head.bundle_name,
         )
-        files_api.store[f"{_UC_ROOT}/HEAD.json"] = torn.to_json().encode("utf-8")
 
         monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
         with pytest.raises(StorageUnavailableError, match="does not contain"):
@@ -1436,13 +1740,704 @@ class TestUcContainerDeathSurvival:
     ) -> None:
         """A pointer to a vanished generation is unreadable state, not 'unbound'."""
         _project_storage.write_binding(StorageBinding(remote_url=UC_URL, branch=WORKING))
-        files_api.store[f"{_UC_ROOT}/HEAD.json"] = (
-            UCHead(generation=9, tip_sha="s", writer_id="w", bundle_name="000009-w.bundle")
-            .to_json()
-            .encode("utf-8")
+        _seed_pointer(
+            files_api,
+            9,
+            tip_sha="s",
+            writer_id="w",
+            bundle_name="000009-w.bundle",
         )
         with pytest.raises(StorageUnavailableError, match="Generation 9"):
             _project_storage.restore_if_bound(tmp_path / "fresh")
+
+    def test_restore_resumes_the_branch_published_last(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The restart target is the working branch published last, not bound first."""
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        outcome = _project_storage.bind_remote(UC_URL, project)
+        assert outcome == "adopted"
+        bind_record = _project_storage.read_binding()
+        assert bind_record is not None
+        assert bind_record.branch == WORKING
+
+        _git.set_working_branch(ALT, project, cwd=project, create=True)
+        (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=project)
+        assert sha is not None
+        _project_storage.publish_bound_project(project)
+        assert _stored_head(files_api).generation == 2
+
+        durable = _project_storage.read_binding()
+        cached = _project_storage.active_binding()
+        assert durable is not None
+        assert cached is not None
+        assert durable.branch == ALT
+        assert cached.branch == ALT
+        assert durable.remote_url == bind_record.remote_url
+        assert durable.bound_by == bind_record.bound_by
+        assert durable.bound_at == bind_record.bound_at
+
+        _replace_container(monkeypatch)
+        restored = tmp_path / "new-container"
+        assert _project_storage.restore_if_bound(restored) == "restored"
+        _assert_resumed_on(restored, ALT, "# alt priced\n", sha)
+
+        # Restore twice: (a) a second boot over the same directory
+        _replace_container(monkeypatch)
+        assert _project_storage.restore_if_bound(restored) == "present"
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(restored) == ALT
+        active = _project_storage.active_binding()
+        assert active is not None
+        assert active.branch == ALT
+
+        # (b) another replacement into a different fresh directory
+        _replace_container(monkeypatch)
+        third = tmp_path / "third-container"
+        assert _project_storage.restore_if_bound(third) == "restored"
+        _assert_resumed_on(third, ALT, "# alt priced\n", sha)
+
+        # Publishing from the restored clone still works
+        _configure_identity(restored)
+        (restored / "rating.py").write_text("# alt repriced\n", encoding="utf-8")
+        next_sha = _git.commit_save(["rating.py"], ALT, cwd=restored)
+        assert next_sha is not None
+        _project_storage.publish_bound_project(restored)
+        assert _stored_head(files_api).generation == 3
+        refreshed = _project_storage.read_binding()
+        assert refreshed is not None
+        assert refreshed.branch == ALT
+
+    def test_populated_bind_then_selected_branch_becomes_the_restart_target(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A project lifted into a populated UC location records a restart target
+        once the user selects and publishes a working branch."""
+        other = tmp_path / "other"
+        other.mkdir()
+        _run_git(other, "init", "-b", "main")
+        _run_git(other, "config", "user.name", "Other Actuary")
+        _run_git(other, "config", "user.email", "other@example.com")
+        (other / "rating.py").write_text("# other project\n", encoding="utf-8")
+        _run_git(other, "add", "rating.py")
+        _run_git(other, "commit", "-m", "other project")
+        _uc_transport.publish_to_uc(UC_URL, other)
+        assert _stored_head(files_api).generation == 1
+        _replace_container(monkeypatch)
+
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "restart-required"
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch is None
+
+        _replace_container(monkeypatch)
+        c1 = tmp_path / "c1"
+        assert _project_storage.restore_if_bound(c1) == "restored"
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(c1) is None
+
+        _git.set_working_branch(ALT, c1, cwd=c1, create=True)
+        _configure_identity(c1)
+        (c1 / "rating.py").write_text("# chosen\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=c1)
+        assert sha is not None
+        _project_storage.publish_bound_project(c1)
+
+        refreshed = _project_storage.read_binding()
+        assert refreshed is not None
+        assert refreshed.branch == ALT
+
+        _replace_container(monkeypatch)
+        c2 = tmp_path / "c2"
+        assert _project_storage.restore_if_bound(c2) == "restored"
+        _assert_resumed_on(c2, ALT, "# chosen\n", sha)
+
+    def test_failed_publish_keeps_the_previous_restart_target(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed publish leaves the previous restart target advertised."""
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        captured = _project_storage.read_binding()
+        assert captured is not None
+        assert captured.branch == WORKING
+
+        _git.set_working_branch(ALT, project, cwd=project, create=True)
+        (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], ALT, cwd=project)
+        assert sha is not None
+
+        files_api.fail_with = RuntimeError("volume down")
+        with pytest.raises(StorageUnavailableError):
+            _project_storage.publish_bound_project(project)
+
+        active = _project_storage.active_binding()
+        assert active is not None
+        assert active.branch == WORKING
+
+        files_api.fail_with = None
+        assert _project_storage.read_binding() == captured
+        _replace_container(monkeypatch)
+        c1 = tmp_path / "c1"
+        assert _project_storage.restore_if_bound(c1) == "restored"
+
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(c1) == WORKING
+        assert (c1 / "rating.py").read_text(encoding="utf-8") == "# pipeline\n"
+        assert ALT not in _run_git(c1, "branch", "--format=%(refname:short)").splitlines()
+
+    def test_branch_switch_after_real_uc_publish_preserves_working_restart_target(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == WORKING
+
+        real_publish = _project_storage.publish_to_uc
+
+        def wrapper(url: str, project_root: Path):
+            result = real_publish(url, project_root)
+            _git.set_working_branch(ALT, project_root, cwd=project_root, create=True)
+            return result
+
+        monkeypatch.setattr(_project_storage, "publish_to_uc", wrapper)
+        (project / "rating.py").write_text("# save 2 on working\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+
+        _project_storage.publish_bound_project(project)
+        durable = _project_storage.read_binding()
+        assert durable is not None
+        assert durable.branch == WORKING
+
+    def test_record_naming_a_branch_the_stored_project_lacks_still_serves(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A phantom branch in the binding record falls back to an unselected chooser state."""
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        _project_storage.publish_bound_project(project)
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        _project_storage.write_binding(replace(binding, branch="pricing-gone"))
+
+        _replace_container(monkeypatch)
+        restored = tmp_path / "phantom-container"
+        assert _project_storage.restore_if_bound(restored) == "restored"
+
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(restored) is None
+        assert _project_storage.active_binding() is not None
+        remote_refs = _run_git(restored, "branch", "-r").splitlines()
+        assert any(f"origin/{WORKING}" in ref.strip() for ref in remote_refs)
+
+    def test_missing_identity_then_setup_then_save_retry(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Commit fails cleanly without identity and succeeds once configured."""
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        _replace_container(monkeypatch)
+        c1 = tmp_path / "c1"
+        assert _project_storage.restore_if_bound(c1) == "restored"
+
+        global_cfg = tmp_path / "gitconfig"
+        global_cfg.write_text("[user]\n\tuseConfigOnly = true\n", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_cfg))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        for name in (
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+            "EMAIL",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        tip_before = _run_git(c1, "rev-parse", f"{WORKING}-save")
+        commits_before = _run_git(c1, "log", "--format=%H", f"{WORKING}-save").splitlines()
+
+        (c1 / "rating.py").write_text("# repriced\n", encoding="utf-8")
+        with pytest.raises(_git.GitError):
+            _git.commit_save(["rating.py"], WORKING, cwd=c1)
+
+        assert _run_git(c1, "rev-parse", f"{WORKING}-save") == tip_before
+        assert _stored_head(files_api).generation == 1
+        assert _run_git(c1, "log", "--format=%H", f"{WORKING}-save").splitlines() == commits_before
+
+        _configure_identity(c1)
+        sha = _git.commit_save(["rating.py"], WORKING, cwd=c1)
+        assert sha is not None
+        _project_storage.publish_bound_project(c1)
+        assert _stored_head(files_api).generation == 2
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == WORKING
+
+    def test_deleting_the_published_branch_then_reselecting_moves_the_target(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Deleting a published branch clears the working branch; re-selecting
+        another branch and publishing moves the restart target."""
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+
+        _git.set_working_branch(ALT, project, cwd=project, create=True)
+        (project / "rating.py").write_text("# alt priced\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], ALT, cwd=project) is not None
+        _project_storage.publish_bound_project(project)
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == ALT
+
+        _git.delete_working_pair(ALT, project, confirm=True, cwd=project)
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(project) is None
+
+        _git.set_working_branch(WORKING, project, cwd=project, create=False)
+        (project / "rating.py").write_text("# back on dev\n", encoding="utf-8")
+        sha2 = _git.commit_save(["rating.py"], WORKING, cwd=project)
+        assert sha2 is not None
+        _project_storage.publish_bound_project(project)
+
+        refreshed = _project_storage.read_binding()
+        assert refreshed is not None
+        assert refreshed.branch == WORKING
+
+        _replace_container(monkeypatch)
+        restored = tmp_path / "fresh-container"
+        assert _project_storage.restore_if_bound(restored) == "restored"
+        _assert_resumed_on(restored, WORKING, "# back on dev\n", sha2)
+
+
+class TestUcPublicationAuthority:
+    """Authority and race semantics for uc:// pointer creation."""
+
+    def test_a_competitor_arriving_after_our_read_and_before_our_create_is_not_overwritten(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        our = _uc_transport._writer_id()
+        (project / "rating.py").write_text("# dev save 2\n", encoding="utf-8")
+        save_sha = _git.commit_save(["rating.py"], WORKING, cwd=project)
+        assert save_sha is not None
+
+        our_pointer = f"{_UC_ROOT}/pointers/000002.json"
+        our_bundle = f"{_UC_ROOT}/bundles/000002-{our}.bundle"
+        rival_bundle = "000002-rival-app-0000.bundle"
+
+        def seed_rival_before_pointer(path: str) -> None:
+            if path == our_pointer:
+                _seed_pointer(
+                    files_api,
+                    2,
+                    writer_id="rival-app-0000",
+                    bundle_name=rival_bundle,
+                )
+
+        files_api.before_upload = seed_rival_before_pointer
+        with pytest.raises(StorageSupersededError):
+            _project_storage.publish_bound_project(project)
+
+        head = _stored_head(files_api)
+        assert head.writer_id == "rival-app-0000"
+        assert head.generation == 2
+        assert _stored_pointer_generations(files_api) == [1, 2]
+        assert our_bundle not in files_api.store
+        assert _uc_transport.last_seen_generation() == 1
+        assert save_sha in _run_git(project, "log", "pricing-dev-save")
+
+    def test_a_competitor_arriving_during_our_bundle_upload_stops_at_the_create(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        our = _uc_transport._writer_id()
+        (project / "rating.py").write_text("# dev save 2\n", encoding="utf-8")
+        save_sha = _git.commit_save(["rating.py"], WORKING, cwd=project)
+        assert save_sha is not None
+
+        our_bundle = f"{_UC_ROOT}/bundles/000002-{our}.bundle"
+        rival_bundle = "000002-rival-app-0000.bundle"
+
+        def seed_rival_during_bundle(path: str) -> None:
+            if path == our_bundle:
+                _seed_pointer(
+                    files_api,
+                    2,
+                    writer_id="rival-app-0000",
+                    bundle_name=rival_bundle,
+                )
+
+        files_api.before_upload = seed_rival_during_bundle
+        with pytest.raises(StorageSupersededError):
+            _project_storage.publish_bound_project(project)
+
+        head = _stored_head(files_api)
+        assert head.writer_id == "rival-app-0000"
+        assert head.generation == 2
+        assert _stored_pointer_generations(files_api) == [1, 2]
+        assert our_bundle not in files_api.store
+        assert _uc_transport.last_seen_generation() == 1
+        assert save_sha in _run_git(project, "log", "pricing-dev-save")
+
+    def test_initial_publication_with_competing_writers_admits_exactly_one_generation_one(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        our = _uc_transport._writer_id()
+        our_bundle = f"{_UC_ROOT}/bundles/000001-{our}.bundle"
+
+        def seed_rival_on_bundle(path: str) -> None:
+            if path == our_bundle:
+                _seed_pointer(
+                    files_api,
+                    1,
+                    writer_id="rival-app-0000",
+                    bundle_name="000001-rival-app-0000.bundle",
+                )
+
+        files_api.before_upload = seed_rival_on_bundle
+        with pytest.raises(StorageSupersededError):
+            _uc_transport.publish_to_uc(UC_URL, project)
+
+        assert _stored_pointer_generations(files_api) == [1]
+        assert _stored_head(files_api).writer_id == "rival-app-0000"
+        _replace_container(monkeypatch)
+        assert _uc_transport.read_uc_head(UC_URL).writer_id == "rival-app-0000"
+
+    def test_a_stalled_predecessor_resuming_after_takeover_cannot_commit(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        p_writer = _uc_transport._writer_id()
+        assert _uc_transport.last_seen_generation() == 1
+
+        (project / "rating.py").write_text("# dev save 2\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+
+        p_bundle = f"{_UC_ROOT}/bundles/000002-{p_writer}.bundle"
+
+        def seed_rival_on_bundle(path: str) -> None:
+            if path == p_bundle:
+                _seed_pointer(
+                    files_api,
+                    2,
+                    writer_id="rival-app-0000",
+                    bundle_name="000002-rival-app-0000.bundle",
+                )
+
+        files_api.before_upload = seed_rival_on_bundle
+        with pytest.raises(StorageSupersededError):
+            _project_storage.publish_bound_project(project)
+
+        head = _stored_head(files_api)
+        assert head.generation == 2
+        assert head.writer_id == "rival-app-0000"
+        assert _uc_transport.last_seen_generation() == 1
+
+        queue = _project_storage.push_queue()
+        queue.enqueue()
+        _wait_until(lambda: queue.status().state == "failed")
+        assert queue.status().failure == "rejected"
+        queue.stop()
+
+    def test_a_rejected_publisher_keeps_its_saves_and_a_fresh_container_restores_the_winner(
+        self, project: Path, files_api: _FakeFiles, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+
+        (project / "rating.py").write_text("# our save\n", encoding="utf-8")
+        save_sha = _git.commit_save(["rating.py"], WORKING, cwd=project)
+        assert save_sha is not None
+
+        other = tmp_path / "other"
+        other.mkdir()
+        _run_git(other, "init", "-b", "main")
+        _run_git(other, "config", "user.name", "Test Actuary")
+        _run_git(other, "config", "user.email", "test@example.com")
+        (other / "rating.py").write_text("# initial\n", encoding="utf-8")
+        _run_git(other, "add", "rating.py")
+        _run_git(other, "commit", "-m", "initial pipeline")
+        _git.set_working_branch(WORKING, other, cwd=other, create=True)
+        (other / "rating.py").write_text("# rival\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=other) is not None
+
+        rival_writer = _uc_transport._WriterState()
+        head = _uc_transport.read_uc_head(UC_URL)
+        assert head is not None
+        rival_writer.last_seen_generation = head.generation
+        original_writer = _uc_transport._writer
+        try:
+            monkeypatch.setattr(_uc_transport, "_writer", rival_writer)
+            _uc_transport.publish_to_uc(UC_URL, other)
+        finally:
+            monkeypatch.setattr(_uc_transport, "_writer", original_writer)
+
+        with pytest.raises(StorageSupersededError):
+            _project_storage.publish_bound_project(project)
+
+        assert save_sha in _run_git(project, "log", "pricing-dev-save")
+        _replace_container(monkeypatch)
+        fresh = tmp_path / "fresh"
+        assert _project_storage.restore_if_bound(fresh) == "restored"
+        assert (fresh / "rating.py").read_text() == "# rival\n"
+
+    def test_pointer_create_failure_before_commit_is_retryable(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        our = _uc_transport._writer_id()
+        (project / "rating.py").write_text("# save 2\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+
+        our_pointer = f"{_UC_ROOT}/pointers/000002.json"
+        files_api.fail_paths = {our_pointer: RuntimeError("volume down")}
+
+        with pytest.raises(StorageUnavailableError):
+            _project_storage.publish_bound_project(project)
+
+        assert _stored_head(files_api).generation == 1
+        assert _stored_pointer_generations(files_api) == [1]
+
+        _project_storage.publish_bound_project(project)
+        head = _stored_head(files_api)
+        assert head.generation == 2
+        assert head.writer_id == our
+        assert _stored_pointer_generations(files_api) == [1, 2]
+
+    def test_an_ambiguous_pointer_create_is_reconciled_on_the_next_attempt(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        our = _uc_transport._writer_id()
+        (project / "rating.py").write_text("# save 2\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+
+        our_pointer_gen2 = f"{_UC_ROOT}/pointers/000002.json"
+        failed = False
+
+        def fail_after_our_pointer(path: str) -> None:
+            nonlocal failed
+            if path == our_pointer_gen2 and not failed:
+                failed = True
+                raise RuntimeError("timed out")
+
+        files_api.after_upload = fail_after_our_pointer
+
+        with pytest.raises(StorageUnavailableError):
+            _project_storage.publish_bound_project(project)
+
+        assert _stored_pointer_generations(files_api) == [1, 2]
+        gen2_pointer = UCHead.from_payload(json.loads(files_api.store[our_pointer_gen2]))
+        assert gen2_pointer.writer_id == our
+        assert _uc_transport.last_seen_generation() == 1
+
+        (project / "rating.py").write_text("# save 3\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+        _project_storage.publish_bound_project(project)
+
+        head = _stored_head(files_api)
+        assert head.generation == 3
+        assert head.writer_id == our
+        assert _stored_pointer_generations(files_api) == [1, 2, 3]
+        for gen in [1, 2, 3]:
+            pointer = UCHead.from_payload(
+                json.loads(files_api.store[f"{_UC_ROOT}/pointers/{gen:06d}.json"])
+            )
+            assert pointer.writer_id == our
+            assert f"{_UC_ROOT}/bundles/{pointer.bundle_name}" in files_api.store
+
+    def test_every_acknowledged_generation_is_ordered_and_never_replaced(
+        self, project: Path, files_api: _FakeFiles, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        writer_a = _uc_transport._writer
+        id_a = _uc_transport._writer_id()
+
+        other = tmp_path / "other"
+        other.mkdir()
+        _run_git(other, "init", "-b", "main")
+        _run_git(other, "config", "user.name", "Test Actuary")
+        _run_git(other, "config", "user.email", "test@example.com")
+        (other / "rating.py").write_text("# b repo\n", encoding="utf-8")
+        _run_git(other, "add", "rating.py")
+        _run_git(other, "commit", "-m", "b initial")
+        _git.set_working_branch(WORKING, other, cwd=other, create=True)
+
+        writer_b = _uc_transport._WriterState()
+        monkeypatch.setattr(_uc_transport, "_writer", writer_b)
+        id_b = _uc_transport._writer_id()
+        monkeypatch.setattr(_uc_transport, "_writer", writer_a)
+
+        records: list[tuple[str, str, int]] = []
+
+        # 1. A publishes gen 2 (ok)
+        (project / "rating.py").write_text("# A gen 2\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+        _project_storage.publish_bound_project(project)
+        records.append(("A", "ok", _stored_head(files_api).generation))
+
+        # 2. B (last_seen 2) publishes gen 3 (ok)
+        writer_b.last_seen_generation = 2
+        (other / "rating.py").write_text("# B gen 3\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=other) is not None
+        monkeypatch.setattr(_uc_transport, "_writer", writer_b)
+        try:
+            _uc_transport.publish_to_uc(UC_URL, other)
+            records.append(("B", "ok", _stored_head(files_api).generation))
+        finally:
+            monkeypatch.setattr(_uc_transport, "_writer", writer_a)
+
+        # 3. A (last_seen 2, stale) publishes -> StorageSupersededError
+        (project / "rating.py").write_text("# A gen 4 attempt\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+        try:
+            _project_storage.publish_bound_project(project)
+            records.append(("A", "ok", _stored_head(files_api).generation))
+        except StorageSupersededError:
+            records.append(("A", "superseded", _stored_head(files_api).generation))
+
+        # 4. A "restarts": blesses head generation (3) and publishes gen 4 (ok)
+        _uc_transport.bless_generation(_stored_head(files_api).generation)
+        (project / "rating.py").write_text("# A gen 4\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+        _project_storage.publish_bound_project(project)
+        records.append(("A", "ok", _stored_head(files_api).generation))
+
+        # 5. B (stale at 3) -> superseded
+        (other / "rating.py").write_text("# B gen 5 attempt\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=other) is not None
+        monkeypatch.setattr(_uc_transport, "_writer", writer_b)
+        try:
+            _uc_transport.publish_to_uc(UC_URL, other)
+            records.append(("B", "ok", _stored_head(files_api).generation))
+        except StorageSupersededError:
+            records.append(("B", "superseded", _stored_head(files_api).generation))
+        finally:
+            monkeypatch.setattr(_uc_transport, "_writer", writer_a)
+
+        # 6. B blesses -> gen 5 (ok)
+        writer_b.last_seen_generation = _stored_head(files_api).generation
+        (other / "rating.py").write_text("# B gen 5\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=other) is not None
+        monkeypatch.setattr(_uc_transport, "_writer", writer_b)
+        try:
+            _uc_transport.publish_to_uc(UC_URL, other)
+            records.append(("B", "ok", _stored_head(files_api).generation))
+        finally:
+            monkeypatch.setattr(_uc_transport, "_writer", writer_a)
+
+        acknowledged = [gen for (writer, outcome, gen) in records if outcome == "ok"]
+        assert acknowledged == [2, 3, 4, 5]
+
+        expected_writers = {2: id_a, 3: id_b, 4: id_a, 5: id_b}
+        for gen, expected_writer in expected_writers.items():
+            pointer = UCHead.from_payload(
+                json.loads(files_api.store[f"{_UC_ROOT}/pointers/{gen:06d}.json"])
+            )
+            assert pointer.writer_id == expected_writer
+
+        for idx, (writer, outcome, head_after) in enumerate(records):
+            if outcome == "superseded":
+                head_before = records[idx - 1][2]
+                assert head_after == head_before
+
+        assert _stored_pointer_generations(files_api) == [1, 2, 3, 4, 5]
+
+    def test_fork_target_pointer_is_created_never_overwritten(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        _bind_and_publish(project)
+
+        target_url = "uc://workspace.default.projects/pricing/copy"
+        target_root = "/Volumes/workspace/default/projects/pricing/copy"
+        our = _uc_transport._writer_id()
+        target_bundle = f"{target_root}/bundles/000001-{our}.bundle"
+
+        def seed_rival_on_target_bundle(path: str) -> None:
+            if path == target_bundle:
+                _seed_pointer(
+                    files_api,
+                    1,
+                    root=target_root,
+                    writer_id="rival-app-0000",
+                )
+
+        files_api.before_upload = seed_rival_on_target_bundle
+        with pytest.raises(StorageConfigError, match="already has a stored project"):
+            _project_storage.fork_uc_location(UC_URL, target_url, project)
+
+        assert _stored_head(files_api, root=target_root).writer_id == "rival-app-0000"
+
+    def test_stalled_create_fails_superseded_and_preserves_successor_pointer_after_prune(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        (project / "rating.py").write_text("# dev save 2\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+
+        our_pointer = f"{_UC_ROOT}/pointers/000002.json"
+        successor_id = "successor-app-0000"
+
+        def pause_create2_and_advance_successor(path: str) -> None:
+            if path == our_pointer:
+                for gen in range(2, 8):
+                    _seed_pointer(
+                        files_api,
+                        gen,
+                        writer_id=successor_id,
+                        bundle_name=f"{gen:06d}-{successor_id}.bundle",
+                    )
+                _uc_transport._prune_uc_bundles(UC_URL, 7)
+
+        files_api.before_upload = pause_create2_and_advance_successor
+        with pytest.raises(StorageSupersededError):
+            _project_storage.publish_bound_project(project)
+
+        gen2_pointer = UCHead.from_payload(json.loads(files_api.store[our_pointer]))
+        assert gen2_pointer.writer_id == successor_id
+        assert gen2_pointer.bundle_name == f"000002-{successor_id}.bundle"
 
 
 class TestBindTask:
@@ -1753,10 +2748,13 @@ class TestUcFork:
     def test_fork_refuses_a_populated_target(self, project: Path, files_api: _FakeFiles) -> None:
         """A fork never overwrites."""
         _bind_and_publish(project)
-        files_api.store[f"{_FORK_ROOT}/HEAD.json"] = (
-            UCHead(generation=1, tip_sha="s", writer_id="w", bundle_name="000001-w.bundle")
-            .to_json()
-            .encode("utf-8")
+        _seed_pointer(
+            files_api,
+            1,
+            root=_FORK_ROOT,
+            tip_sha="s",
+            writer_id="w",
+            bundle_name="000001-w.bundle",
         )
         with pytest.raises(StorageConfigError, match="already has a stored project"):
             _project_storage.fork_uc_location(UC_URL, FORK_URL, project)
@@ -1903,7 +2901,9 @@ class TestUpstreamSync:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         fork_root = _forked_project(project, tmp_path, monkeypatch)
-        del files_api.store[f"{_UC_ROOT}/HEAD.json"]
+        for path in list(files_api.store):
+            if path.startswith(f"{_UC_ROOT}/pointers/"):
+                del files_api.store[path]
         with pytest.raises(StorageConfigError, match="nothing published"):
             _project_storage.check_upstream(fork_root)
 

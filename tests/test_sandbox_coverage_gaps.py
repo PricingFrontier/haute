@@ -237,6 +237,18 @@ class TestJoblibMissingImportFallback:
         )
         f.write_bytes(payload)
 
+        # Import scikit-learn before joblib is made to look absent. The
+        # fallback runs under _estimator_version_mismatch_is_an_error, which
+        # asks sklearn for its version-mismatch warning class; a first-ever
+        # sklearn import pulls joblib in transitively, and the stub below
+        # refuses it. _sklearn_inconsistent_version_warning then re-raises,
+        # by design — a ModuleNotFoundError naming something other than
+        # sklearn is a broken install and is meant to surface, not be
+        # swallowed. That is a different contract from the allowlist blocking
+        # under test here, and which of the two a cold process reached
+        # depended only on whether something earlier had imported sklearn.
+        import sklearn.exceptions  # noqa: F401
+
         real_import = builtins.__import__
 
         def without_joblib(name, *args, **kwargs):

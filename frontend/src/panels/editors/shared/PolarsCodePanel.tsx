@@ -52,6 +52,13 @@ export default function PolarsCodePanel({
       <div className="text-[11px] font-mono shrink-0" style={{ color: "var(--text-muted)", opacity: 0.6 }}>
         return df
       </div>
+      <p
+        data-testid="polars-trust-note"
+        className="text-[11px] shrink-0"
+        style={{ color: "var(--text-muted)", opacity: 0.8 }}
+      >
+        Runs as trusted project code with the privileges of the process running haute.
+      </p>
     </div>
   )
 }

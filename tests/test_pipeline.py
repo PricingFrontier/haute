@@ -1051,8 +1051,7 @@ class TestSubmodel:
             definition_id="definition_scoring",
             input_ports=[
                 {
-                    "portId": "quotes",
-                    "label": "Quotes",
+                    "name": "quotes",
                     "targets": [{"nodeId": "transform"}],
                 }
             ],
@@ -1061,7 +1060,7 @@ class TestSubmodel:
         assert s.name == "scoring"
         assert s.description == "score sub"
         assert s.definition_id == "definition_scoring"
-        assert s.input_ports[0].port_id == "quotes"
+        assert s.input_ports[0].name == "quotes"
         assert s.output_ports == []
         assert s.nodes == []
         assert s.edges == []
@@ -1073,28 +1072,23 @@ class TestSubmodel:
             input_ports=[],
             output_ports=[
                 {
-                    "portId": "score",
-                    "label": "Score",
+                    "name": "score",
                     "source": {"nodeId": "score_node"},
                 }
             ],
         )
         returned = s.output_ports
         returned.clear()
-        assert [port.port_id for port in s.output_ports] == ["score"]
+        assert [port.name for port in s.output_ports] == ["score"]
 
     def test_submodel_chaining_records_canonical_occurrences(self):
         p = Pipeline("main")
-        result = p.submodel(
-            "a.py", definition_id="definition_a", instance_id="instance_a", alias="a"
-        ).submodel("b.py", definition_id="definition_b", instance_id="instance_b", alias="b")
+        result = p.submodel("a.py", "a").submodel("b.py", "b")
         assert result is p
         assert p.submodel_files == ["a.py", "b.py"]
-        assert [
-            (item.definition_id, item.instance_id, item.alias) for item in p.submodel_registrations
-        ] == [
-            ("definition_a", "instance_a", "a"),
-            ("definition_b", "instance_b", "b"),
+        assert [(item.file, item.name, item.instance_of) for item in p.submodel_registrations] == [
+            ("a.py", "a", None),
+            ("b.py", "b", None),
         ]
 
     def test_reusable_alias_cannot_shadow_node_registered_first(self):
@@ -1104,24 +1098,14 @@ class TestSubmodel:
         def scoring(df):
             return df
 
-        with pytest.raises(ValueError, match="alias.*node"):
-            p.submodel(
-                "modules/scoring.py",
-                definition_id="definition_scoring",
-                instance_id="instance_scoring",
-                alias="scoring",
-            )
+        with pytest.raises(ValueError, match="conflicts with a registered node name"):
+            p.submodel("modules/scoring.py", "scoring")
 
     def test_node_cannot_shadow_reusable_alias_registered_first(self):
         p = Pipeline("main")
-        p.submodel(
-            "modules/scoring.py",
-            definition_id="definition_scoring",
-            instance_id="instance_scoring",
-            alias="scoring",
-        )
+        p.submodel("modules/scoring.py", "scoring")
 
-        with pytest.raises(ValueError, match="node name.*submodel"):
+        with pytest.raises(ValueError, match="conflicts with a registered submodel identity"):
 
             @p.polars
             def scoring(df):

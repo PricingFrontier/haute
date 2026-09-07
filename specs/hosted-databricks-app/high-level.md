@@ -36,14 +36,22 @@ collaboration and running pipelines as Databricks jobs are out of scope.
   complete environment, records the hosted trust decision before the server
   middleware is imported, and returns the normal server wrapped by the proxy
   boundary. It never silently becomes the local entry point.
-- For HTTP and WebSocket traffic, the boundary records a non-empty
-  `X-Forwarded-Email` on the ASGI scope, removes `Forwarded` and every
-  `X-Forwarded-*` header, and replaces `Host` with the loopback authority that
-  the server expects. Lifespan and other non-request scopes pass through.
+- For HTTP and WebSocket traffic, the boundary records a non-blank
+  `X-Forwarded-Email` stripped of surrounding whitespace on the ASGI scope
+  (treating a blank or whitespace-only header as absent), removes `Forwarded`
+  and every `X-Forwarded-*` header, and replaces `Host` with the loopback
+  authority that the server expects. Lifespan and other non-request scopes pass
+  through.
 - The boundary alone grants no authority. If the explicit hosted trust
   decision has not disabled the local session gate, rewritten proxied traffic
   remains unauthorized. Outside the hosted entry point, local behavior is
   unchanged.
+- Project code (node text, preambles, utility modules) runs as trusted
+  first-party code with the app's own identity inside its single-tenant
+  container. The boundary adapts traffic; it does not contain code. Access to a
+  project is governed by the workspace permissions on the app, as
+  [sandbox-security](../sandbox-security/high-level.md) records under Trust
+  boundary.
 - Databricks browsing and SQL acquisition accept `DATABRICKS_HOST` plus either
   `DATABRICKS_TOKEN` or the complete
   `DATABRICKS_CLIENT_ID`/`DATABRICKS_CLIENT_SECRET` pair. The token takes
@@ -88,8 +96,9 @@ is treated as an implicit shared data plane.
 
 ## Failure model
 
-- A partial or whitespace-only hosted environment fails at startup and names
-  the missing contract variables without exposing their values.
+- Whitespace-only values count as absent, so an all-whitespace environment is
+  the local posture; an environment contract that is partial after stripping
+  fails at startup naming the missing variables without exposing their values.
 - Calling the hosted factory outside the complete environment fails rather than
   falling back to a local server.
 - Missing Databricks authentication identifies the accepted credential forms;

@@ -85,7 +85,7 @@ parent-traversal-shaped identifiers are rejected before download. A configured
 `feature_contract_path` is bundled under the canonical model-sidecar name and takes
 precedence over an adjacent downloaded sidecar.
 
-An `apiInput` is the preferred live request source. For legacy single-source graphs,
+An `apiInput` is the preferred live request source. For a graph with no `apiInput`,
 exactly one source may be promoted only when it is a `dataInput`, whose configured data
 provides schema/sample information before live requests replace it. A `constant` or any
 other source type is never promoted accidentally; deployment fails with a correction that
@@ -265,9 +265,9 @@ approving it.
   artefacts.
 - **[io-layer](../io-layer/high-level.md)** — `_bundler.py` validates retained Data
   Inputs through the canonical provider registry and snapshot cache. `_schema.py` uses
-  that path for `dataInput`; its legacy `read_data_source` bridge remains only for the
-  retained non-JSON `apiInput` compatibility path. Both respect
-  `ExecutionProfile.DEPLOY_BATCH` / `DEPLOY_LIVE` bounded-execution semantics.
+  that path for `dataInput`; it reads a non-JSON `apiInput` source through
+  `read_data_source`. Both respect `ExecutionProfile.DEPLOY_BATCH` /
+  `DEPLOY_LIVE` bounded-execution semantics.
 - **[cli](../cli/high-level.md)** — `src/haute/cli/_deploy.py`, `_smoke.py`,
   `src/haute/cli/_impact.py`, and `_status.py` are the production CLI consumers of this
   component's callable surface (`deploy_resolved()`, `resolve_config()`,

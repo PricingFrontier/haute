@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from uuid import uuid4
 
 from pydantic import ValidationError
 
-from haute._graph_utils import _edge_id, edge_input_label
+from haute._graph_utils import _edge_id, edge_input_name
+from haute._submodel_instances import rewrite_boundary_input_names
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -42,14 +42,14 @@ class SubmodelGraphResult:
     sm_name: str
 
 
-def _public_frame_label(
+def _boundary_input_name(
     edge: GraphEdge,
     source: GraphNode,
     submodels: dict[str, SubmodelDefinition] | None,
 ) -> str:
-    """Return the public label that preserves this edge's executable name."""
+    """Return the executable name a boundary edge carries, or refuse creation."""
     try:
-        return edge_input_label(edge, source, submodels=submodels)
+        return edge_input_name(edge, source, submodels=submodels)
     except ValueError as exc:
         raise SubmodelValidationError(
             code="invalid_input_binding",
@@ -59,27 +59,6 @@ def _public_frame_label(
                 "does not identify an executable source frame."
             ),
         ) from exc
-
-
-def _reject_duplicate_public_labels(
-    direction: str,
-    labels: list[str],
-) -> None:
-    """Reject public ports whose labels sanitise to the same executable name."""
-    by_name: dict[str, list[str]] = {}
-    for label in labels:
-        by_name.setdefault(_sanitize_func_name(label), []).append(label)
-    for name, colliding in by_name.items():
-        if len(colliding) > 1:
-            joined = ", ".join(repr(label) for label in colliding)
-            raise SubmodelValidationError(
-                code="duplicate_public_label",
-                status_code=400,
-                detail=(
-                    f"Cannot create submodel: {direction} labels {joined} "
-                    f"both resolve to the executable name {name!r}."
-                ),
-            )
 
 
 def _build_public_interface(
@@ -102,17 +81,27 @@ def _build_public_interface(
         else:
             output_groups.setdefault((edge.source, edge.sourceHandle), []).append(edge)
 
+    allocated_port_names: set[str] = set()
+
+    def _mint_port_name(base: str) -> str:
+        candidate = base
+        suffix = 2
+        while candidate in allocated_port_names:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        allocated_port_names.add(candidate)
+        return candidate
+
     input_ports: list[SubmodelInputPort] = []
-    input_ids: dict[tuple[str, str | None], str] = {}
-    for index, (identity, edges) in enumerate(input_groups.items(), start=1):
-        port_id = f"input_{index}"
-        input_ids[identity] = port_id
+    input_names: dict[tuple[str, str | None], str] = {}
+    for identity, edges in input_groups.items():
         source = node_map[edges[0].source]
-        label = _public_frame_label(edges[0], source, submodels)
+        base = _boundary_input_name(edges[0], source, submodels)
+        port_name = _mint_port_name(base)
+        input_names[identity] = port_name
         input_ports.append(
             SubmodelInputPort(
-                portId=port_id,
-                label=label,
+                name=port_name,
                 targets=[
                     SubmodelEndpoint(
                         nodeId=edge.target,
@@ -126,17 +115,16 @@ def _build_public_interface(
         )
 
     output_ports: list[SubmodelOutputPort] = []
-    output_ids: dict[tuple[str, str | None], str] = {}
-    for index, (identity, edges) in enumerate(output_groups.items(), start=1):
-        port_id = f"output_{index}"
-        output_ids[identity] = port_id
+    output_names: dict[tuple[str, str | None], str] = {}
+    for identity, edges in output_groups.items():
         edge = edges[0]
         source = node_map[edge.source]
-        label = _public_frame_label(edge, source, submodels)
+        base = _boundary_input_name(edge, source, submodels)
+        port_name = _mint_port_name(base)
+        output_names[identity] = port_name
         output_ports.append(
             SubmodelOutputPort(
-                portId=port_id,
-                label=label,
+                name=port_name,
                 source=SubmodelEndpoint(
                     nodeId=edge.source,
                     handleId=(
@@ -145,7 +133,7 @@ def _build_public_interface(
                 ),
             )
         )
-    return input_ports, output_ports, input_ids, output_ids
+    return input_ports, output_ports, input_names, output_names
 
 
 def _rewire_canonical_boundary_edges(
@@ -153,8 +141,8 @@ def _rewire_canonical_boundary_edges(
     *,
     instance_id: str,
     child_node_ids: set[str],
-    input_ids: dict[tuple[str, str | None], str],
-    output_ids: dict[tuple[str, str | None], str],
+    input_names: dict[tuple[str, str | None], str],
+    output_names: dict[tuple[str, str | None], str],
 ) -> list[GraphEdge]:
     rewired: list[GraphEdge] = []
     seen_input_bindings: set[tuple[str, str | None]] = set()
@@ -164,7 +152,7 @@ def _rewire_canonical_boundary_edges(
             if identity in seen_input_bindings:
                 continue
             seen_input_bindings.add(identity)
-            target_handle = f"in__{input_ids[identity]}"
+            target_handle = f"in__{input_names[identity]}"
             rewired.append(
                 GraphEdge(
                     id=_edge_id(
@@ -182,7 +170,7 @@ def _rewire_canonical_boundary_edges(
                 )
             )
         else:
-            source_handle = f"out__{output_ids[(edge.source, edge.sourceHandle)]}"
+            source_handle = f"out__{output_names[(edge.source, edge.sourceHandle)]}"
             rewired.append(
                 GraphEdge(
                     id=_edge_id(
@@ -200,6 +188,47 @@ def _rewire_canonical_boundary_edges(
                 )
             )
     return rewired
+
+
+def _preserve_consumer_input_names(
+    parent_nodes: list[GraphNode],
+    cross_edges: list[GraphEdge],
+    *,
+    child_node_ids: set[str],
+    node_map: dict[str, GraphNode],
+    occurrence: GraphNode,
+    output_names: dict[tuple[str, str | None], str],
+    submodels_before: dict[str, SubmodelDefinition] | None,
+    submodels_after: dict[str, SubmodelDefinition],
+) -> list[GraphNode]:
+    """Keep every remaining consumer bound to the frame it read before grouping.
+
+    A consumer of a grouped node used that node's own name as its input; after
+    grouping the same frame arrives from the new occurrence under the
+    occurrence's name (or ``<alias>__<port name>`` with several output ports). The
+    physical name changes, the authored code does not: record the old name as
+    the logical name through ``inputMapping`` and rewrite schema-owned
+    selectors, exactly as flattening does across the same boundary.
+    """
+    renames: dict[str, dict[str, str]] = {}
+    for edge in cross_edges:
+        if edge.source not in child_node_ids or edge.target in child_node_ids:
+            continue
+        old_name = edge_input_name(edge, node_map[edge.source], submodels=submodels_before)
+        rewired = GraphEdge(
+            id=edge.id,
+            source=occurrence.id,
+            target=edge.target,
+            sourceHandle=f"out__{output_names[(edge.source, edge.sourceHandle)]}",
+            targetHandle=edge.targetHandle,
+            targetPort=edge.targetPort,
+        )
+        new_name = edge_input_name(rewired, occurrence, submodels=submodels_after)
+        if old_name != new_name:
+            renames.setdefault(edge.target, {})[old_name] = new_name
+    if not renames:
+        return parent_nodes
+    return rewrite_boundary_input_names(parent_nodes, renames)
 
 
 def create_submodel_graph(
@@ -278,11 +307,10 @@ def create_submodel_graph(
                 detail=f"Submodel occurrence {node.id!r} has an invalid canonical config: {exc}",
             ) from exc
         existing_occurrence_aliases.add(occurrence.alias.casefold())
-    instance_id = f"submodel_instance_{uuid4().hex}"
+    instance_id = sm_name
     existing_submodel_names = {existing.casefold() for existing in existing_submodels}
     existing_parent_node_ids = {node.id.casefold() for node in parent_nodes}
-    existing_node_ids = {node_id.casefold() for node_id in graph_node_ids}
-    if sm_name.casefold() in existing_submodel_names or instance_id.casefold() in existing_node_ids:
+    if sm_name.casefold() in existing_submodel_names:
         raise SubmodelValidationError(
             code="submodel_exists",
             status_code=409,
@@ -330,14 +358,12 @@ def create_submodel_graph(
         )
         for node in child_nodes
     ]
-    input_ports, output_ports, input_ids, output_ids = _build_public_interface(
+    input_ports, output_ports, input_names, output_names = _build_public_interface(
         cross_edges,
         child_node_id_set,
         graph.node_map,
         graph.submodels,
     )
-    _reject_duplicate_public_labels("input", [port.label for port in input_ports])
-    _reject_duplicate_public_labels("output", [port.label for port in output_ports])
     sm_graph = PipelineGraph(
         nodes=local_child_nodes,
         edges=internal_edges,
@@ -376,12 +402,22 @@ def create_submodel_graph(
         cross_edges,
         instance_id=sm_node_id,
         child_node_ids=child_node_id_set,
-        input_ids=input_ids,
-        output_ids=output_ids,
+        input_names=input_names,
+        output_names=output_names,
     )
 
     # Assemble new parent graph
     existing_submodels[sm_name] = definition
+    parent_nodes = _preserve_consumer_input_names(
+        parent_nodes,
+        cross_edges,
+        child_node_ids=child_node_id_set,
+        node_map=graph.node_map,
+        occurrence=sm_node,
+        output_names=output_names,
+        submodels_before=graph.submodels,
+        submodels_after=existing_submodels,
+    )
     new_graph = graph.model_copy(
         update={
             "nodes": parent_nodes + [sm_node],

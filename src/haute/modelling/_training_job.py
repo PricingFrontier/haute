@@ -1973,7 +1973,7 @@ class TrainingJob:
             execution_context=execution_context,
         )
 
-    def _metric_stage_error(self, exc: Exception, *, evaluation_set: str) -> ValueError:
+    def _metric_stage_error(self, exc: Exception, *, evaluation_set: str) -> HauteValidationError:
         """Wrap a mandatory metric failure with the user-model objects involved.
 
         The library error alone ("continuous format is not supported") names
@@ -1989,7 +1989,7 @@ class TrainingJob:
         if self.evaluation_plan is not None:
             label = _PUBLIC_EVALUATION_SET_LABELS.get(evaluation_set, evaluation_set)
         metric_list = ", ".join(self.metrics)
-        return ValueError(
+        return HauteValidationError(
             f"Could not evaluate the trained model on the {label} data. The "
             f"metrics ({metric_list}) were computed against target column "
             f"'{self.target}' with task '{self.task}'. Check that the target's values "

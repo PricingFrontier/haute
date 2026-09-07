@@ -27,7 +27,7 @@ function makeProps(data: PortPropsData, isConnectable = true) {
   const fullData: SubmodelPortData = {
     ...typedData,
     label: data.portDirection === "input" ? "INPUT" : "OUTPUT",
-    instanceId: data.instanceId ?? "instance_test",
+    instanceId: data.instanceId ?? "test",
     definitionId: data.definitionId ?? "definition_test",
     portDirection: data.portDirection,
     ports: data.ports ?? (

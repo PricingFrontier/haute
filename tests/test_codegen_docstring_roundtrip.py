@@ -434,9 +434,9 @@ class TestPipelineNameDocstringSafety:
                         "id": "instance_sm",
                         "type": "submodel",
                         "data": {
-                            "label": sm_name,
+                            "label": "sm_alias",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "definition_sm", "alias": sm_name},
+                            "config": {"definitionId": "definition_sm", "alias": "sm_alias"},
                         },
                     }
                 ],

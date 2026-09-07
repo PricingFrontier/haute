@@ -1427,7 +1427,7 @@ describe("NodePanel", () => {
           description: "",
           nodeType: "submodelPort",
           config: {},
-          instanceId: "instance_pricing",
+          instanceId: "pricing",
           definitionId: "pricing",
           portDirection: "input",
           ports: [
@@ -1750,20 +1750,20 @@ describe("NodePanel", () => {
       expect(props.onDeleteEdge).toHaveBeenNthCalledWith(2, "edge_drivers")
     })
 
-    it("uses the authoritative public label for a submodel-fed input", () => {
+    it("uses the authoritative occurrence name for a submodel-fed input", () => {
       const target = makeNode({
         id: "target",
         data: { label: "Target", description: "", nodeType: "polars", config: {} },
       })
       const occurrence = makeNode({
-        id: "instance_pricing",
+        id: "pricing",
         data: {
-          label: "Pricing Module",
+          label: "pricing",
           description: "",
           nodeType: "submodel",
           config: { definitionId: "pricing", alias: "pricing" },
           _defaultInputName: null,
-          _sourceHandleInputNames: { "out__premium": "Written_premium" },
+          _sourceHandleInputNames: { "out__premium": "pricing" },
         },
       })
       const child = makeNode({
@@ -1791,8 +1791,7 @@ describe("NodePanel", () => {
           pricing: makeDefinition("pricing", [child], [], {
             outputPorts: [
               {
-                portId: "premium",
-                label: "Premium",
+                name: "premium",
                 source: { nodeId: "child_output", handleId: null },
               },
             ],
@@ -1803,8 +1802,8 @@ describe("NodePanel", () => {
       expect(latestTransformInputSources()).toEqual([
         expect.objectContaining({
           edgeId: "edge_child",
-          name: "Written_premium",
-          sourceLabel: "Pricing Module",
+          name: "pricing",
+          sourceLabel: "pricing",
         }),
       ])
     })
@@ -1836,7 +1835,7 @@ describe("NodePanel", () => {
         description: "",
         nodeType: "submodelPort",
         config: {},
-        instanceId: "instance_pricing",
+        instanceId: "pricing",
         definitionId: "definition_pricing",
         portDirection: "input",
         ports: [{ id: "source", label: "Source", parentEdges: [] }],
@@ -1867,7 +1866,7 @@ describe("NodePanel", () => {
           description: "",
           nodeType: "submodelPort",
           config: {},
-          instanceId: "instance_pricing",
+          instanceId: "pricing",
           definitionId: "definition_pricing",
           portDirection: "input",
           ports: [{ id: "source", label: "Source", parentEdges: [] }],
@@ -2042,7 +2041,7 @@ describe("NodePanel", () => {
       data: { label: "premium", description: "", nodeType: "scenarioExpander", config: {} },
     })
     const submodelNode = makeNode({
-      id: "instance_model_stuff",
+      id: "model_stuff",
       data: {
         label: "model_stuff",
         description: "",
@@ -2063,7 +2062,7 @@ describe("NodePanel", () => {
       {
         id: "boundary-input",
         source: "sale_flag",
-        target: "instance_model_stuff",
+        target: "model_stuff",
         targetHandle: "in__competitor",
       },
       { id: "instance-input", source: "premium", target: "competitor_features_scenarios" },
@@ -2077,8 +2076,7 @@ describe("NodePanel", () => {
         model_stuff: makeDefinition("model_stuff", [originalNode], [], {
           inputPorts: [
             {
-              portId: "competitor",
-              label: "Competitor",
+              name: "competitor",
               targets: [{ nodeId: "competitor_features", handleId: null }],
             },
           ],

@@ -274,7 +274,6 @@ _DANGEROUS_MODULE_OBJECTS = frozenset(
     }
 )
 _DANGEROUS_MODULE_NAMES = frozenset(m.__name__ for m in _DANGEROUS_MODULE_OBJECTS)
-_PREAMBLE_NO_REFRESH_FINGERPRINT = "no-refresh"
 
 
 def _is_dangerous_preamble_binding(value: Any) -> bool:
@@ -490,9 +489,9 @@ def _compile_preamble_into_cell(
 def _compile_preamble(
     preamble: str,
     *,  # pragma: no mutate
-    force_refresh: bool = True,
     pipeline_dir: str | Path | None = None,  # pragma: no mutate
     memo: GraphFingerprintMemo | None = None,  # pragma: no mutate
+    execution_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Compile user-defined preamble code into a namespace dict.
 
@@ -505,15 +504,13 @@ def _compile_preamble(
     Uses a single dict for globals/locals so preamble functions can call
     each other (they share the same ``__globals__``).
 
-    When *force_refresh* is ``True`` (default), dependency fingerprints are
+    When *execution_fingerprint* is ``None`` (default), dependency fingerprints are
     recomputed before lookup so edits to utility modules in the GUI are
     picked up without clearing unrelated cached preambles. Unchanged
-    preamble/utility inputs reuse the cached namespace. When
-    *force_refresh* is ``False`` (e.g. optimiser / sink paths that run in
-    tight loops), the caller is explicitly promising that imported helper
-    files are stable for the loop; the cache key uses the preamble text,
-    cwd, pipeline directory, and a stable no-refresh marker so hot hits
-    skip validation, AST walking, and utility-file hashing entirely.
+    preamble/utility inputs reuse the cached namespace. An operation that runs
+    many chunks resolves the fingerprint once at admission and passes it to every
+    call so chunks share one namespace without re-hashing; the next operation
+    resolves a fresh fingerprint; there is no process-lifetime marker.
 
     Caching diagnostics are exposed directly on this function via
     ``_compile_preamble.cache_info()`` and ``_compile_preamble.cache_clear()``
@@ -545,7 +542,7 @@ def _compile_preamble(
     if pipeline_dir is not None:
         pipeline_dir_str = str(Path(pipeline_dir).resolve())
 
-    if force_refresh:
+    if execution_fingerprint is None:
         execution_fingerprint = preamble_execution_fingerprint(
             preamble,
             pipeline_dir=pipeline_dir_str,
@@ -553,8 +550,6 @@ def _compile_preamble(
         )
         if execution_fingerprint is None:
             raise RuntimeError("non-empty preamble did not produce an execution fingerprint")
-    else:
-        execution_fingerprint = _PREAMBLE_NO_REFRESH_FINGERPRINT
 
     # Cell lookup under its own tiny guard (never held during exec), so a
     # hot hit returns without touching ``_preamble_lock`` — a slow compile
@@ -2016,12 +2011,16 @@ def prepare_data_output(
     retain_staging = False
 
     try:
-        # Sink path: use cached preamble (no GUI edits expected during
-        # batch runs).  Saves 50-500 ms of utility module re-import.
+        # Pin a preamble fingerprint snapshot at admission so chunk execution
+        # shares one namespace without re-hashing.
+        pinned = preamble_execution_fingerprint(
+            graph.preamble or "",
+            pipeline_dir=_pipeline_dir(graph),
+        )
         preamble_ns = _compile_preamble(
             graph.preamble or "",
-            force_refresh=False,
             pipeline_dir=_pipeline_dir(graph),
+            execution_fingerprint=pinned,
         )
 
         def _run_lazy() -> pl.LazyFrame:

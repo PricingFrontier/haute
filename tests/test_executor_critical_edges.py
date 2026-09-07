@@ -89,7 +89,6 @@ def test_utility_error_outside_cwd_keeps_absolute_source_path(
     with pytest.raises(PreambleError) as exc_info:
         _compile_preamble(
             "from utility.bad import *\n",
-            force_refresh=True,
             pipeline_dir=pipeline_dir,
         )
 
@@ -104,7 +103,7 @@ def test_non_empty_preamble_without_execution_fingerprint_fails_loudly(
     monkeypatch.setattr(executor, "preamble_execution_fingerprint", lambda *_, **__: None)
 
     with pytest.raises(RuntimeError, match="execution fingerprint"):
-        _compile_preamble("VALUE = 1\n", force_refresh=True)
+        _compile_preamble("VALUE = 1\n")
 
 
 def test_preview_cache_size_accounting_rejects_invalid_payloads(

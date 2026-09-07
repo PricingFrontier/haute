@@ -1433,7 +1433,11 @@ def test_dispersion_worker_maps_malformed_requests_to_contract_failures(
 
 @pytest.mark.parametrize(
     ("exception", "reason"),
-    [(MemoryError("full"), "memory_limited"), (RuntimeError("boom"), "error")],
+    [
+        (MemoryError("full"), "memory_limited"),
+        (RuntimeError("boom"), "error"),
+        (ValueError("continuous format is not supported"), "error"),
+    ],
 )
 def test_dispersion_worker_maps_estimator_failures(
     tmp_path: Path, exception: Exception, reason: str
@@ -1453,6 +1457,11 @@ def test_dispersion_worker_maps_estimator_failures(
     assert isinstance(result, WorkerFailurePayload)
     assert result.terminal_reason == reason
     assert result.error_type == type(exception).__name__
+    if reason == "error":
+        assert str(exception) not in result.message
+        assert type(exception).__name__ in result.message
+        assert result.message.startswith("Dispersion estimation")
+        assert result.fields["error"] == str(exception)
 
 
 def test_train_service_keeps_completed_status_when_post_commit_cleanup_is_denied(

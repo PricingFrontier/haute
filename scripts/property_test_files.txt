@@ -1,0 +1,20 @@
+# Hypothesis modules run by .github/workflows/property-exploration.yml under
+# HAUTE_PROPERTY_EXAMPLES. tests/test_workflow_coverage.py keeps this list equal
+# to the test modules that import hypothesis (tests/performance excluded).
+tests/test_cache_fingerprint_injectivity.py
+tests/test_caching_correctness.py
+tests/test_chunk_whitelist_proofs.py
+tests/test_codegen_roundtrip_property.py
+tests/test_column_lineage_properties.py
+tests/test_expression_parity_properties.py
+tests/test_job_lifecycle_properties.py
+tests/test_json_shred_properties.py
+tests/test_metrics_gini_ties.py
+tests/test_optimiser_level_tie_properties.py
+tests/test_parser_roundtrip.py
+tests/test_path_resolution_properties.py
+tests/test_property.py
+tests/test_rating_step_config_coverage.py
+tests/test_save_precondition_properties.py
+tests/test_scoring_metamorphic_properties.py
+tests/test_submodel_endpoint_properties.py

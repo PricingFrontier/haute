@@ -43,7 +43,7 @@ function SubmodelNode({
   const definitionInvalid = canonicalDefinition === undefined
   const hasInputSocket = canonicalDefinition !== undefined
   const inputAnchorIds = canonicalDefinition?.inputPorts.map(
-    (port) => `in__${port.portId}`,
+    (port) => `in__${port.name}`,
   ) ?? []
   const outputFrames = canonicalDefinition?.outputPorts.map(toOutputFrame) ?? []
   const childCount = canonicalDefinition?.graph.nodes.length ?? 0
@@ -160,7 +160,7 @@ function SubmodelNode({
 }
 
 function toOutputFrame(port: SubmodelOutputPort) {
-  return { id: `out__${port.portId}`, label: port.label, parentEdges: [] }
+  return { id: `out__${port.name}`, label: port.name, parentEdges: [] }
 }
 
 export default memo(SubmodelNode)

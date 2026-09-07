@@ -61,6 +61,89 @@ class ContainerBuildResult:
     model_version: int
 
 
+def prepare_build_directory(
+    resolved: ResolvedDeploy,
+    build_dir: Path,
+    *,
+    haute_requirement: str | None = None,
+) -> Path:
+    """Prepare the container build directory with manifest, artifacts, app.py, and Dockerfile.
+
+    Steps:
+        1. Create build directory and artifacts subdirectory
+        2. Build deployment manifest JSON
+        3. Copy artifacts into build directory
+        4. Generate FastAPI app source
+        5. Generate Dockerfile (and copy wheel if haute_requirement is a wheel path)
+
+    Args:
+        resolved: Fully resolved deployment config (from ``resolve_config()``).
+        build_dir: Destination directory for the build artefacts.
+        haute_requirement: Optional override for the ``haute`` dependency in the Dockerfile.
+            When it names a local wheel file (*.whl), the wheel is copied into ``build_dir``
+            and the Dockerfile gains ``COPY <wheel name> .`` before ``pip install ./<wheel name>``.
+
+    Returns:
+        Path to the written ``deploy_manifest.json``.
+    """
+    config = resolved.config
+    model_name = config.model_name
+    ct = config.container
+
+    _validate_base_image(ct.base_image)
+    _validate_model_name(model_name)
+
+    build_dir = Path(build_dir)
+    build_dir.mkdir(parents=True, exist_ok=True)
+    artifacts_dir = build_dir / "artifacts"
+    artifacts_dir.mkdir(exist_ok=True)
+
+    manifest = build_manifest(resolved)
+    container_artifacts: dict[str, str] = {}
+    for artifact_name in resolved.artifacts:
+        container_artifacts[artifact_name] = f"artifacts/{artifact_name}"
+
+    wheel_name: str | None = None
+    haute_pip_dep: str | None = None
+    if haute_requirement is not None:
+        if haute_requirement.lower().endswith(".whl"):
+            wheel_path = Path(haute_requirement)
+            wheel_name = wheel_path.name
+            dest_wheel = build_dir / wheel_name
+            if wheel_path.resolve() != dest_wheel.resolve():
+                shutil.copy2(wheel_path, dest_wheel)
+            haute_pip_dep = f"./{wheel_name}"
+        else:
+            haute_pip_dep = haute_requirement
+
+    manifest["artifacts"] = container_artifacts
+    manifest["container_dependencies"] = _pinned_dockerfile_deps(
+        resolved,
+        haute_requirement=haute_pip_dep,
+    )
+
+    manifest_path = build_dir / "deploy_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    for artifact_name, artifact_path in resolved.artifacts.items():
+        dest = artifacts_dir / artifact_name
+        shutil.copy2(artifact_path, dest)
+
+    app_source = _generate_app_source(config.model_name, ct.port)
+    (build_dir / "app.py").write_text(app_source, encoding="utf-8")
+
+    dockerfile = _generate_dockerfile(
+        ct.base_image,
+        ct.port,
+        resolved,
+        haute_pip_dep=haute_pip_dep,
+        wheel_name=wheel_name,
+    )
+    (build_dir / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+
+    return manifest_path
+
+
 def build_and_push_image(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
@@ -99,43 +182,12 @@ def build_and_push_image(
     build_dir.mkdir(exist_ok=True)
 
     try:
-        artifacts_dir = build_dir / "artifacts"
-        artifacts_dir.mkdir(exist_ok=True)
-
-        # 2. Build deployment manifest
         _log("Building deployment manifest...")
-        manifest = build_manifest(resolved)
-
-        # Remap artifact paths to container-relative paths
-        container_artifacts: dict[str, str] = {}
-        for artifact_name, artifact_path in resolved.artifacts.items():
-            container_artifacts[artifact_name] = f"artifacts/{artifact_name}"
-
-        manifest["artifacts"] = container_artifacts
-        # The exact ``pip install`` pins the image is built against, so a
-        # reader of the container knows which model runtime it carries.
-        manifest["container_dependencies"] = _pinned_dockerfile_deps(resolved)
-
-        manifest_path = build_dir / "deploy_manifest.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2))
+        manifest_path = prepare_build_directory(resolved, build_dir)
         _log(f"  Manifest: {manifest_path}")
-
-        # 3. Copy artifacts
         _log(f"Copying {len(resolved.artifacts)} artifacts...")
-        for artifact_name, artifact_path in resolved.artifacts.items():
-            dest = artifacts_dir / artifact_name
-            shutil.copy2(artifact_path, dest)
-            _log(f"  {artifact_name} → {dest}")
-
-        # 4. Generate FastAPI app
         _log("Generating FastAPI app...")
-        app_source = _generate_app_source(config.model_name, ct.port)
-        (build_dir / "app.py").write_text(app_source)
-
-        # 5. Generate Dockerfile
         _log("Generating Dockerfile...")
-        dockerfile = _generate_dockerfile(ct.base_image, ct.port, resolved)
-        (build_dir / "Dockerfile").write_text(dockerfile)
 
         # 6. Determine image tag
         git_sha = _git_sha_short()
@@ -797,9 +849,13 @@ def _generate_dockerfile(
     base_image: str,
     port: int,
     resolved: ResolvedDeploy,
+    *,
+    haute_pip_dep: str | None = None,
+    wheel_name: str | None = None,
 ) -> str:
     """Generate a Dockerfile for the scoring container."""
-    deps_line = " ".join(_pinned_dockerfile_deps(resolved))
+    deps_line = " ".join(_pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep))
+    copy_wheel = f"COPY {wheel_name} .\n" if wheel_name else ""
 
     return f"""\
 FROM {base_image}
@@ -811,7 +867,7 @@ WORKDIR /app
 ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server
 
 # Install Python dependencies
-RUN pip install --no-cache-dir {deps_line}
+{copy_wheel}RUN pip install --no-cache-dir {deps_line}
 
 # Copy application code and artifacts
 COPY deploy_manifest.json .
@@ -824,7 +880,11 @@ CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "{port}"]
 """
 
 
-def _pinned_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:
+def _pinned_dockerfile_deps(
+    resolved: ResolvedDeploy,
+    *,
+    haute_requirement: str | None = None,
+) -> list[str]:
     """Every ``pip install`` requirement of the scoring container, pinned.
 
     Core runtime and model runtime alike are pinned to the version installed
@@ -832,14 +892,20 @@ def _pinned_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:
     model loaded under a different scikit-learn (or LightGBM, ...) than the
     one that wrote it is silently wrong premiums, not an error.
     """
-    return [*_pinned_core_dockerfile_deps(), *_pinned_extra_dockerfile_deps(resolved)]
-
-
-def _pinned_core_dockerfile_deps() -> list[str]:
     return [
-        _pinned_dockerfile_dependency(distribution_name, install_name)
-        for distribution_name, install_name in _CORE_DOCKERFILE_DEPENDENCIES
+        *_pinned_core_dockerfile_deps(haute_requirement=haute_requirement),
+        *_pinned_extra_dockerfile_deps(resolved),
     ]
+
+
+def _pinned_core_dockerfile_deps(*, haute_requirement: str | None = None) -> list[str]:
+    deps: list[str] = []
+    for distribution_name, install_name in _CORE_DOCKERFILE_DEPENDENCIES:
+        if distribution_name == "haute" and haute_requirement is not None:
+            deps.append(haute_requirement)
+        else:
+            deps.append(_pinned_dockerfile_dependency(distribution_name, install_name))
+    return deps
 
 
 def _pinned_extra_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:

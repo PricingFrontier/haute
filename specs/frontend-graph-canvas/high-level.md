@@ -55,24 +55,30 @@ Out of scope (owned by neighbouring components, linked where they exist):
 The canvas treats a submodel definition as shared library state and each
 `SUBMODEL` node as an independent occurrence. A definition can be instantiated
 from an existing occurrence through **Create instance**. The action creates a
-new node with a fresh immutable instance id and stable source alias, copies no
-internal graph or file, starts with no bindings, and participates in the normal
+new node whose node id equals its minted alias (`node.id == data.label == config.alias`),
+copies no internal graph or file, starts with no bindings, and participates in the normal
 undo/redo snapshot. It is available only in the parent view; nesting remains
 unsupported.
 
 Each occurrence owns its label, position, selection, and incident edges.
-Renaming an occurrence never renames its definition file or changes its id or
-alias. Exactly one occurrence is the editable definition owner; created
-instances persist `instanceOf` pointing directly at it. Opening the owner
+One identity per submodel occurrence: the occurrence node id is its name
+(`node.id == data.label == config.alias`). Renaming an occurrence renames its
+alias and rebinds downstream consumers without code edits; as for an ordinary
+node, the React Flow node id stays until Save, when codegen emits the name and
+the reparse re-keys the id. It never renames the definition file. A proposed occurrence rename is refused early if
+the name is not a canonical identifier (error: `Occurrence names must be identifiers; use "<functionName>".`)
+or conflicts with an existing node id, label, or submodel alias (error: `"<name>" is already used by another node.`).
+Exactly one occurrence is the editable definition owner; created instances persist
+`instanceOf` pointing directly at the owner's occurrence name. Opening the owner
 navigates to the shared definition editor and shows that edits affect every
 occurrence. Opening an instance presents the same definition with an explicit
 read-only indicator. The panel and every canvas mutation path reject edits in
 that view while preview, trace, selection, copy, pan, and zoom remain usable.
-Removing or dissolving targets the clicked instance id, never a display name or
-definition id, and an owner cannot be dissolved while instances reference it.
+Removing or dissolving targets the clicked occurrence name, and an owner cannot
+be dissolved while instances reference it.
 
 Submodel cards render only declared public ports. Handles are
-`in__<portId>`/`out__<portId>` and labels come from the port contract; internal
+`in__<name>`/`out__<name>` and labels come from the port name; internal
 child ids are neither rendered nor accepted as parent endpoints. Each canonical
 input handle accepts at most one parent binding. A connection
 between occurrences is allowed only output-public-port to input-public-port.
@@ -89,9 +95,14 @@ Interface-preserving internal edits save once and become visible from all
 occurrences. Per-instance internal overrides are not offered.
 
 Reload, WebSocket replacement, create/dissolve response hydration, undo/redo,
-breadcrumbs, comparison views, and dirty-state tracking preserve immutable
-definition/instance/port identities, the complete definition graph metadata,
-and occurrence-specific positions and bindings.
+breadcrumbs, comparison views, and dirty-state tracking preserve occurrence
+and port identities, the complete definition graph metadata, and occurrence-specific
+positions and bindings. The document invariant requires that every submodel occurrence
+node id strictly equals its alias (`node.id === config.alias`); parsing throws
+`${PARSER}: submodel node <id> id must equal its alias` if violated. When a reloaded
+document omits the currently drilled submodel occurrence, the reload fail-safe returns
+to root view, clears `activeSubmodelIdentity`, resets the view stack to the pipeline level,
+and displays the parent graph without throwing.
 
 An output-interface edit is published only with an exact authoritative handle
 identity map on every parent occurrence. While that identity is resolving,
@@ -104,22 +115,21 @@ pending candidate and those positions and selections are merged into the
 committed view rather than reverted. Only a structural change voids the
 candidate, with the error toast.
 
-- **Node rendering.** All non-submodel pipeline node types render through one
-  component, `PipelineNode`, dispatched via a shared `nodeTypes` registry
-  (`utils/nodeTypeRegistry.ts`) so the live editor canvas and the read-only
-  comparison canvases never disagree on which component renders a given node
-  type. Every node renders at full detail at every zoom level — zoom changes
-  scale and nothing else — plus a distinct marker/pill render path for
-  edge-join nodes. Reduced zoom-dependent renderings were removed: they hid an
-  API input's emitted frames and narrowed other nodes into a truncating label
-  precisely when the whole graph was in view, which is when that structure is
-  most worth seeing. An ordinary card's body name is right-aligned on the card,
-  matching the placement of API-input and submodel output-frame names; this
-  alignment also applies when that body name is the node identity rather than a
-  labelled output handle.
+- **Node rendering.** All pipeline node types other than `submodel`,
+  `submodelPort`, and the recovery renderer render through one component,
+  `PipelineNode`, dispatched via a shared `nodeTypes` registry
+  (`frontend/src/utils/nodeTypeRegistry.ts`) so the live editor canvas and the
+  read-only comparison canvases never disagree on which component renders a
+  given node type. Every node renders at full detail at every zoom level — zoom
+  changes scale and nothing else — plus a distinct marker/pill render path for
+  edge-join nodes. Full detail at every zoom keeps an API input's emitted frames
+  and node names readable exactly when the whole graph is in view. An ordinary
+  card's body name is right-aligned on the card, matching the placement of
+  API-input and submodel output-frame names; this alignment also applies when
+  that body name is the node identity rather than a labelled output handle.
 - **Canonical data-I/O nodes.** The 19-type frontend vocabulary matches the
-  backend enum and includes `dataInput` and `dataOutput`, never historical
-  Data Source/Data Sink aliases. Data Input is source-only; Data Output is a
+  backend enum and includes `dataInput` and `dataOutput`. Data Input is
+  source-only; Data Output is a
   sink with one upstream input. Neither is a singleton. Their new-node
   defaults contain only the active discriminated branch, and an incomplete
   required choice remains visibly incomplete rather than gaining an
@@ -199,8 +209,8 @@ candidate, with the error toast.
   repeat the name. A canonical occurrence resolves `config.definitionId`
   against the typed definition registry, derives its accessible child count
   from the definition graph, renders one generic left-side `inputs` socket, and
-  renders every public output row with its `out__<portId>` handle and definition
-  label. Public `in__<portId>` targets are co-located invisibly at the generic
+  renders every public output row with its `out__<name>` handle and
+  name. Public `in__<name>` targets are co-located invisibly at the generic
   socket so stored bindings stay canonical without becoming multiple visible
   inputs. Submodel cards have no default persisted target handle: every stored
   binding names a declared port.
@@ -213,19 +223,18 @@ candidate, with the error toast.
   arrow to communicate left-to-right graph flow; handle direction remains
   source-right for Input and target-left for Output. In the canonical
   projection, Input lists one row per declared public input port and maps its
-  immutable `portId` to one or more ordered internal target endpoints. Its
-  child-side executable input name is the sanitised public input label; the
-  immutable port id remains handle identity only. Selecting the owner Input
+  immutable `name` to one or more ordered internal target endpoints. Its
+  child-side executable input name is the public input port name. Selecting the owner Input
   boundary shows those same frames in the inspector using the standard Inputs
-  chips and remove affordance. Removing a frame explicitly deletes its routes,
-  identity-map entry, and all parent bindings to that port across occurrences;
+  chips and remove affordance. Removing a frame explicitly deletes its routes
+  and all parent bindings to that port across occurrences;
   the edit is atomic and undoable. A read-only drilled occurrence renders the
   list without remove controls. Output keeps one target handle;
-  every child-to-Output mapping carries an immutable public output `portId` and
-  one internal source endpoint. A canonical occurrence contributes the
-  sanitised public output label downstream. Parent bindings stay on
-  `in__<portId>`/`out__<portId>`. Changing internal endpoints while retaining
-  a port id and direction is a compatible shared-definition edit. Incidental
+  every child-to-Output mapping carries an immutable public output `name` and
+  one internal source endpoint. A canonical occurrence contributes its
+  occurrence alias (or `<alias>__<name>` when declaring more than one output port) downstream. Parent bindings stay on
+  `in__<name>`/`out__<name>`. Changing internal endpoints while retaining
+  a port name and direction is a compatible shared-definition edit. Incidental
   removal or direction changes of a bound port are rejected atomically across
   all occurrences; only the explicit Input-inspector action performs cascading
   interface retirement. Both composite nodes remain visible when empty and
@@ -293,6 +302,7 @@ candidate, with the error toast.
   not walk or repair invalid chains.
   Creating an instance of a canonical `SUBMODEL` instead retains only its
   `definitionId`, allocates a fresh immutable node id and collision-free alias,
+  labels the copy with its alias,
   copies presentation defaults, and starts with no boundary bindings as one undo
   step. Deleting a submodel occurrence is owner-aware: an instance copy (valid
   `instanceOf`) deletes exactly like an ordinary node — together with its
@@ -446,8 +456,7 @@ candidate, with the error toast.
   The context menu's entry for an existing submodel node
   reads "Dissolve Submodel", not "Ungroup Submodel". Clicking a submodel node
   opens the standard node inspector but fetches no preview — submodel is a
-  non-previewable node type — rather than the output-port summary table that
-  was once proposed and never built. Create and dissolve are main-canvas
+  non-previewable node type. Create and dissolve are main-canvas
   operations: while a drilled submodel view is active both handlers refuse to
   run and toast an instruction to return to the main pipeline — the same
   client-side gate as save — instead of sending a mis-scoped request that the
@@ -469,6 +478,19 @@ candidate, with the error toast.
   graph before either canvas renders; persisted history is not expected to
   contain transient `_functionName`, `_defaultInputName`, or
   `_sourceHandleInputNames` metadata.
+- **Recovery canvas rendering and minimal repair.** Unavailable and blocked nodes
+  remain selectable and expose their diagnostics, source/config location, and
+  deterministic blocking path instead of a normal editor. The recovery banner
+  contains an accessible issues navigator. Unresolved connections render as
+  non-interactive dashed overlays only when the server supplies two unambiguous
+  recovery endpoints. Selection, pan, zoom, and diagnostic navigation remain
+  available while every mutation is fenced. Minimal repair is the one deliberate
+  exception to the degraded canvas's mutation fence. It is admitted only by
+  `can_repair`, targets a server recovery identity, and never mutates the in-memory
+  React Flow graph optimistically. After a confirmed removal succeeds, App validates
+  and atomically adopts the returned editor document, clears the removed selection,
+  advances the raw revision mirror, and replaces graph/history from that authoritative
+  snapshot.
 
 ## Design rationale
 
@@ -487,11 +509,10 @@ candidate, with the error toast.
   nodes and edges as separate history actions for one delete, paste, or cut
   would require two undos; one complete snapshot makes each gesture reverse
   as one action.
-- **Dirty is fully derived**, replacing an earlier imperative
-  `setDirty(true)` pattern that had a specific bug: undoing back to the
-  saved state left `dirty=true` because the boolean and the saved reference
-  could drift out of sync. Deriving it from a fingerprint comparison
-  eliminates that class of bug entirely.
+- **Dirty is fully derived from a fingerprint comparison**: comparing the live
+  graph against the saved reference ensures undoing back to the saved state
+  leaves `dirty=false` without allowing boolean state and the saved reference
+  to drift out of sync.
 - **Three separate fingerprints at three granularities** — structural,
   panel-context, and persisted — exist so that expensive recomputation only
   happens at the granularity that actually changed. A position drag never
@@ -518,8 +539,8 @@ candidate, with the error toast.
 - **Connections that would duplicate an input name are rejected at drag
   time.** Every ordinary incoming edge contributes its API frame label or
   sanitised source label. A canonical drilled Input contributes its sanitised
-  public input label, and a canonical occurrence output contributes its sanitised
-  public output label. A connection whose derived name duplicates an existing
+  public input port ID, and a canonical occurrence output contributes its
+  occurrence alias (or <alias>__<port_id> when declaring more than one output port). A connection whose derived name duplicates an existing
   executable input on the target is refused with a named toast, mirroring the
   backend's save-time `ParseError`. The
   alternative — accepting the edge and letting codegen suffix a parameter —
@@ -530,32 +551,19 @@ candidate, with the error toast.
   graph. Duplicate-name failures retain their purpose-written wording; other
   invalid-connection failures surface their supplied reason instead of silently
   discarding the gesture.
-- **API-input frame rows own both the name and the handle.** The earlier
-  layout computed the body's label column and the handle positions in two
-  unrelated coordinate systems — a stacked list inside the body vs.
-  percentages of the full node height including the header — which kept
-  the same order but drifted vertically as status/trace/label content
-  changed the body height, so a user could not tell which line left which
-  frame. Mounting each handle inside the row that names it makes the
-  alignment structural: it holds for one, two, or any number of frames
-  because there are no longer two layouts to keep in sync, and no
-  per-frame-count constants exist to go stale.
+- **API-input frame rows own both the name and the handle.** Mounting each
+  handle inside the row that names it makes the alignment structural: it holds
+  for one, two, or any number of frames without separate layout coordinate
+  systems to keep in sync or per-frame-count positioning constants.
 - **One frame-label derivation, one identity.** One ordered list of eligible
-  frame labels (with no minimum count) drives the
-  rendered handles, the body rows, downstream input chips, and the
-  generated function parameters all read from it, so none of them can
-  disagree. The earlier design split "visible names" from "multi-port
-  handle mode" (labelled handles only from two frames up, a null-id
-  default handle for one) to avoid touching persisted edge identity in a
-  presentation-only release; the convergence release deliberately retired
-  that split — a sole frame's edge now carries the frame label like any
-  other, because a name that exists on screen but not in the persisted
-  edge or the code argument is exactly the hidden-mapping class this
-  design removes.
+  frame labels (with no minimum count) drives the rendered handles, the body
+  rows, downstream input chips, and the generated function parameters, so none
+  of them can disagree. A sole frame's edge carries the frame label like any
+  other, because a name that exists on screen but not in the persisted edge or
+  the code argument is a hidden mapping.
 - **The zero-frame body states the absence explicitly** — "No emitted
   frames" beside the retained instance name — rather than rendering an
-  empty body or keeping the old name-only layout: an unconfigured
-  API-input should say what is missing.
+  empty body: an unconfigured API-input states what is missing.
 - **Comparison-view diff, trace, and hover visuals reuse the same
   border/ring element used for selection**, rather than each state owning
   its own overlay shape, so every node type — including pill-shaped
@@ -627,7 +635,7 @@ candidate, with the error toast.
   inspector panel and its per-type editors consume the graph exclusively
   through `useGraph()`/`GraphProvider`, never via props, and call back into
   `App.tsx`'s `onUpdateNode` to commit config changes. They also consume
-  this component's frame display resolution (`utils/apiInputPorts.ts`) to
+  this component's frame display resolution (`frontend/src/utils/apiInputPorts.ts`) to
   label downstream inputs and output frames by the dataframe an edge
   delivers.
 - [server-api](../server-api/high-level.md) — the backend counterpart to
@@ -655,12 +663,11 @@ candidate, with the error toast.
   apply, rollback, and dirty-gating behaviour as any external edit — nothing
   here special-cases them), and the assistant panel reads the derived dirty state
   to gate sending while local edits are unsaved.
-- `frontend-shared` — the shared node-data types (`types/node.ts`) and the
-  edge-join role/api-input-port handle-id conventions
-  (`utils/edgeJoinRoles.ts`, `utils/apiInputPorts.ts`) that this component
-  and the node editors both depend on. The node-type metadata table
-  (`utils/nodeTypes.ts`) and the default-target-handle sentinel
-  (`utils/flowHandles.ts`) are owned by *this* component (above), not
+- `frontend-shared` — the shared node-data types (`frontend/src/types/node.ts`)
+  that this component and the node editors both depend on. The node-type metadata table
+  (`frontend/src/utils/nodeTypes.ts`), the edge-join role/api-input-port handle-id conventions
+  (`frontend/src/utils/edgeJoinRoles.ts`, `frontend/src/utils/apiInputPorts.ts`), and the default-target-handle sentinel
+  (`frontend/src/utils/flowHandles.ts`) are owned by *this* component (above), not
   `frontend-shared` — both `frontend-node-editors` and other components
   import them from here.
 
@@ -728,28 +735,12 @@ candidate, with the error toast.
 - Version comparison catches a failed historical-pipeline fetch and renders a
   dedicated error state (message plus a "Back to editor" button) in place
   of the canvases, rather than crashing the comparison view.
+- When live sync reports a degraded document, a clean canvas atomically adopts the recovered snapshot; a
+  dirty canvas retains local graph/history but immediately adopts the authoritative read-only capability
+  fence. Source-only state shows the current source and diagnostics. If a renderable snapshot existed in
+  this browser session, it may remain behind an explicit stale-reference label with its own prior revision;
+  it cannot be saved, executed, or mistaken for current state. A versioned system load failure replaces
+  the editor with the dedicated failure surface and marks any retained canvas unsynchronised; the next
+  valid document update clears that failure atomically. A failed or stale repair leaves the current recovery
+  canvas unchanged; no migration or upgrade action exists.
 
-## Recovery canvas behaviour
-
-Unavailable and blocked nodes remain selectable and expose their diagnostics, source/config location,
-and deterministic blocking path instead of a normal editor. The recovery banner contains an accessible
-issues navigator. Unresolved connections render as non-interactive dashed overlays only when the server
-supplies two unambiguous recovery endpoints. Selection, pan, zoom, and diagnostic navigation remain
-available while every mutation is fenced.
-
-When live sync reports a degraded document, a clean canvas atomically adopts the recovered snapshot; a
-dirty canvas retains local graph/history but immediately adopts the authoritative read-only capability
-fence. Source-only state shows the current source and diagnostics. If a renderable snapshot existed in
-this browser session, it may remain behind an explicit stale-reference label with its own prior revision;
-it cannot be saved, executed, or mistaken for current state. A versioned system load failure replaces
-the editor with the dedicated failure surface and marks any retained canvas unsynchronised; the next
-valid document update clears that failure atomically.
-
-Minimal repair is the one deliberate exception to the degraded canvas's
-mutation fence. It is admitted only by `can_repair`, targets a server recovery
-identity, and never mutates the in-memory React Flow graph optimistically.
-After a confirmed removal succeeds, App validates and atomically adopts the
-returned editor document, clears the removed selection, advances the raw
-revision mirror, and replaces graph/history from that authoritative snapshot.
-A failed or stale repair leaves the current recovery canvas unchanged. No
-migration or upgrade action exists.

@@ -151,7 +151,6 @@ function stripGraphMetadataTransientFields(value: unknown): unknown {
 
   const stripped: Record<string, unknown> = {}
   for (const [key, child] of Object.entries(record)) {
-    if (key === "_inputPortInputNames") continue
     stripped[key] = stripGraphMetadataTransientFields(child)
   }
   return stripped

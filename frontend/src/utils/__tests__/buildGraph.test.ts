@@ -130,7 +130,6 @@ describe("buildGraph", () => {
         },
         inputPorts: [],
         outputPorts: [],
-        _inputPortInputNames: {},
       },
     }
 
@@ -144,7 +143,6 @@ describe("buildGraph", () => {
     })
     expect(result.edges[0]).not.toHaveProperty("data")
     const definition = result.submodels?.pricing as Record<string, unknown>
-    expect(definition).not.toHaveProperty("_inputPortInputNames")
     const child = (definition.graph as { nodes: Array<{ data: Record<string, unknown> }> }).nodes[0]
     expect(child.data).not.toHaveProperty("_functionName")
     expect(nodes[0].data).toHaveProperty("_functionName", "root_identity")

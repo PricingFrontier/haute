@@ -133,6 +133,10 @@ class _FakeNotFoundError(Exception):
     pass
 
 
+class _FakeAlreadyExistsError(Exception):
+    pass
+
+
 class _Reader:
     def __init__(self, payload: bytes) -> None:
         self._payload = payload
@@ -160,7 +164,9 @@ class _CountingFiles:
             raise _FakeNotFoundError(path) from None
 
     def upload(self, path: str, contents: Any, overwrite: bool = False) -> None:
-        assert overwrite is True
+        assert overwrite in (True, False)
+        if not overwrite and path in self.store:
+            raise _FakeAlreadyExistsError(path)
         time.sleep(0.002)
         payload = contents.read()
         self.store[path] = payload
@@ -254,6 +260,11 @@ def test_uc_full_bundle_history_scaling_budget(
         "_is_not_found",
         lambda exc: isinstance(exc, _FakeNotFoundError),
     )
+    monkeypatch.setattr(
+        _uc_transport,
+        "_is_already_exists",
+        lambda exc: isinstance(exc, _FakeAlreadyExistsError),
+    )
     monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
 
     samples: list[dict[str, float | int]] = []
@@ -283,7 +294,7 @@ def test_uc_full_bundle_history_scaling_budget(
         _uc_transport._writer.heartbeat.stop()
 
     bundle_uploads = [item for item in files.uploads if "/bundles/" in item[0]]
-    pointer_uploads = [item for item in files.uploads if item[0].endswith("/HEAD.json")]
+    pointer_uploads = [item for item in files.uploads if "/pointers/" in item[0]]
     bundle_sizes = [sample["bundle_bytes"] for sample in samples]
 
     assert len(bundle_uploads) == 3

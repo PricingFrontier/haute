@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 from haute.routes._helpers import invalidate_pipeline_index, parse_pipeline_to_graph, pipeline_dir
 
 DEFINITION_ID = "pricing-definition"
-INSTANCE_ID = "pricing-instance"
+INSTANCE_ID = "pricing"
 ALIAS = "pricing"
 
 
@@ -87,10 +87,7 @@ def _write_parent_with_child(
         f"""import haute
 
 pipeline = haute.Pipeline({parent.stem!r})
-pipeline.submodel(
-    {child_reference!r}, definition_id="pricing-definition",
-    instance_id="pricing-instance", alias="pricing",
-)
+pipeline.submodel({child_reference!r}, "pricing")
 """,
         encoding="utf-8",
     )
@@ -295,9 +292,7 @@ def test_dissolve_retains_child_referenced_by_another_pipeline(
 pipeline = haute.Pipeline("other")
 pipeline.submodel(
     "modules/pricing.py",
-    definition_id="pricing-definition",
-    instance_id="pricing-instance",
-    alias="pricing",
+    "pricing",
 )
 """,
         encoding="utf-8",
@@ -326,9 +321,7 @@ def test_dissolve_retains_child_when_sibling_audit_is_incomplete(
 pipeline = haute.Pipeline("broken")
 pipeline.submodel(
     "modules/missing.py",
-    definition_id="missing-definition",
-    instance_id="missing-instance",
-    alias="missing",
+    "missing",
 )
 """,
         encoding="utf-8",

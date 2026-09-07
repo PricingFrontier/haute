@@ -41,7 +41,7 @@ type NodePanelProps = {
   onUpdateNode?: (id: string, data: Record<string, unknown>) => OnUpdateConfigResult
   onRenameNode?: (id: string, label: string) => Promise<OnUpdateConfigResult>
   onDeleteEdge?: (edgeId: string) => void
-  onDeleteSubmodelInputPort?: (portId: string) => void
+  onDeleteSubmodelInputPort?: (portName: string) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
   onRefreshPreview?: () => void
   /** True when showing last-selected node while nothing is actively selected */
@@ -237,12 +237,12 @@ function resolveOriginalInputNames({
       "Cannot derive instance inputs: definition " + definitionId + " is missing or malformed",
     )
   }
-  const publicInputPortIds = new Set(
+  const publicInputPortNames = new Set(
     definition.inputPorts
       .filter((port) => port.targets.some((target) => target.nodeId === originalId))
-      .map((port) => port.portId),
+      .map((port) => port.name),
   )
-  if (publicInputPortIds.size === 0) return uniquePreservingOrder(internalInputs)
+  if (publicInputPortNames.size === 0) return uniquePreservingOrder(internalInputs)
 
   const occurrenceIds = new Set<string>()
   for (const visibleNode of Object.values(visibleNodeMap)) {
@@ -263,7 +263,7 @@ function resolveOriginalInputNames({
       if (!occurrenceIds.has(edge.target) || !edge.targetHandle?.startsWith("in__")) {
         return false
       }
-      return publicInputPortIds.has(edge.targetHandle.slice("in__".length))
+      return publicInputPortNames.has(edge.targetHandle.slice("in__".length))
     })
     .map((edge) => {
       const sourceNode = visibleNodeMap[edge.source]

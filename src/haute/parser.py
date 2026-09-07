@@ -31,6 +31,7 @@ from haute._graph_builders import (
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute._parser_bindings import assert_polars_parameters_bound
 from haute._parser_conservation import (
     assert_parser_structure_conserved,
     missing_submodel_error,
@@ -198,7 +199,10 @@ def parse_pipeline_source(
         warning=_format_load_error_warning(load_error_labels),
     )
     graph._parser_parameter_names = {
-        str(node["func_name"]): [str(name) for name in node.get("param_names", ())]
+        str(node["func_name"]): [str(name) for name in node["param_names"]] for node in raw_nodes
+    }
+    graph._parser_edge_parameter_names = {
+        str(node["func_name"]): [str(name) for name in node["edge_param_names"]]
         for node in raw_nodes
     }
 
@@ -208,8 +212,8 @@ def parse_pipeline_source(
     submodel_base_dir = _submodel_base_dir or _base_dir
     submodel_graphs: dict[str, PipelineGraph] = {}
     submodel_files: dict[str, str] = {}
-    submodel_instance_paths: list[str] | None = None
-    submodel_aliases: set[str] = set()
+    submodel_occurrence_paths: list[str] = []
+    submodel_names: set[str] = set()
     if registrations:
         if submodel_base_dir is None:
             raise ParseError(
@@ -258,28 +262,13 @@ def parse_pipeline_source(
                 existing[3].append(registration)
 
         definition_sources: dict[str, str] = {}
+        registration_definitions: dict[str, str] = {}
         for source_key, (
             rel_path,
             sm_filepath,
             sm_base_dir,
-            source_registrations,
+            _source_registrations,
         ) in by_source.items():
-            definition_ids = {registration.definition_id for registration in source_registrations}
-            if len(definition_ids) != 1:
-                raise ParseError(
-                    "One resolved submodel file is registered with conflicting definition ids.",
-                    source_file=str(sm_filepath),
-                    definition_ids=sorted(definition_ids),
-                )
-            definition_id = next(iter(definition_ids))
-            previous_source = definition_sources.get(definition_id)
-            if previous_source is not None and previous_source != source_key:
-                raise ParseError(
-                    "One submodel definition id resolves to multiple files.",
-                    definition_id=definition_id,
-                    source_files=[previous_source, source_key],
-                )
-            definition_sources[definition_id] = source_key
             child_source = (
                 _read_submodel_source(sm_filepath)
                 if _read_submodel_source is not None
@@ -290,11 +279,27 @@ def parse_pipeline_source(
                 source_file=str(sm_filepath),
                 _base_dir=sm_base_dir,
             )
+            definition_id = child_graph._parser_definition_id
+            if definition_id is None:
+                raise ParseError(
+                    "Reusable submodel definitions must declare a definition id.",
+                    source_file=str(sm_filepath),
+                )
+            previous_source = definition_sources.get(definition_id)
+            if previous_source is not None and previous_source != source_key:
+                raise ParseError(
+                    "One submodel definition id resolves to multiple files.",
+                    definition_id=definition_id,
+                    source_files=[previous_source, source_key],
+                )
+            definition_sources[definition_id] = source_key
             submodel_graphs[definition_id] = child_graph
             submodel_files[definition_id] = rel_path
+            for reg in _source_registrations:
+                registration_definitions[reg.path] = definition_id
 
-        submodel_instance_paths = list(submodel_paths)
-        submodel_aliases = {registration.alias for registration in registrations}
+        submodel_occurrence_paths = list(submodel_paths)
+        submodel_names = {registration.name for registration in registrations}
         graph = _merge_submodels(
             graph,
             submodel_graphs,
@@ -302,6 +307,7 @@ def parse_pipeline_source(
             explicit_connects,
             flatten=flatten,
             registrations=registrations,
+            registration_definitions=registration_definitions,
         )
     assert_parser_structure_conserved(
         raw_nodes=raw_nodes,
@@ -309,11 +315,10 @@ def parse_pipeline_source(
         root_nodes=rf_nodes,
         root_edges=edges,
         submodel_paths=submodel_paths,
-        submodel_graphs=submodel_graphs,
-        submodel_files=submodel_files,
-        submodel_instance_paths=submodel_instance_paths,
-        submodel_aliases=submodel_aliases,
+        submodel_occurrence_paths=submodel_occurrence_paths,
+        submodel_aliases=submodel_names,
     )
+    assert_polars_parameters_bound(graph, raw_nodes)
 
     validate_pipeline_graph_shape_contracts(
         graph,

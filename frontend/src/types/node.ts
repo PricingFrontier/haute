@@ -146,14 +146,12 @@ export interface SubmodelEndpoint {
 }
 
 export interface SubmodelInputPort {
-  portId: string
-  label: string
+  name: string
   targets: SubmodelEndpoint[]
 }
 
 export interface SubmodelOutputPort {
-  portId: string
-  label: string
+  name: string
   source: SubmodelEndpoint
 }
 
@@ -164,8 +162,6 @@ export interface SubmodelDefinition {
   graph: PipelineGraph
   inputPorts: SubmodelInputPort[]
   outputPorts: SubmodelOutputPort[]
-  /** Server-owned executable input identity for each public input port. */
-  _inputPortInputNames?: Record<string, string>
 }
 
 const isNonBlankText = (value: unknown): value is string =>
@@ -181,8 +177,9 @@ export function isSubmodelEndpoint(value: unknown): value is SubmodelEndpoint {
 export function isSubmodelInputPort(value: unknown): value is SubmodelInputPort {
   if (typeof value !== "object" || value === null) return false
   const port = value as Partial<SubmodelInputPort>
-  return isNonBlankText(port.portId)
-    && isNonBlankText(port.label)
+  return isNonBlankText(port.name)
+    && !("label" in port)
+    && !("portId" in port)
     && Array.isArray(port.targets)
     && port.targets.every(isSubmodelEndpoint)
 }
@@ -190,8 +187,9 @@ export function isSubmodelInputPort(value: unknown): value is SubmodelInputPort 
 export function isSubmodelOutputPort(value: unknown): value is SubmodelOutputPort {
   if (typeof value !== "object" || value === null) return false
   const port = value as Partial<SubmodelOutputPort>
-  return isNonBlankText(port.portId)
-    && isNonBlankText(port.label)
+  return isNonBlankText(port.name)
+    && !("label" in port)
+    && !("portId" in port)
     && isSubmodelEndpoint(port.source)
 }
 
@@ -208,11 +206,11 @@ export function isSubmodelDefinition(
   if (!Array.isArray(definition.graph.nodes) || !Array.isArray(definition.graph.edges)) return false
   if (!Array.isArray(definition.inputPorts) || !definition.inputPorts.every(isSubmodelInputPort)) return false
   if (!Array.isArray(definition.outputPorts) || !definition.outputPorts.every(isSubmodelOutputPort)) return false
-  const portIds = [
-    ...definition.inputPorts.map((port) => port.portId),
-    ...definition.outputPorts.map((port) => port.portId),
+  const portNames = [
+    ...definition.inputPorts.map((port) => port.name),
+    ...definition.outputPorts.map((port) => port.name),
   ]
-  return new Set(portIds).size === portIds.length
+  return new Set(portNames).size === portNames.length
 }
 
 export function isSubmodelInstanceConfig(value: unknown): value is SubmodelInstanceConfig {
@@ -260,11 +258,11 @@ export type SubmodelBoundaryEdgeData = {
   submodelBoundary: {
     direction: "input"
     parentEdges: PipelineEdge[]
-    portId: string
+    name: string
   } | {
     direction: "output"
     parentConsumerEdges: PipelineEdge[]
-    portId: string
+    name: string
   }
 }
 

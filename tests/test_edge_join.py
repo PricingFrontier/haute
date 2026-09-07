@@ -513,8 +513,7 @@ def _submodel_edge_join_graph() -> PipelineGraph:
                 },
                 "inputPorts": [
                     {
-                        "portId": "base",
-                        "label": "Base",
+                        "name": "base",
                         "targets": [{"nodeId": "join", "handleId": "base"}],
                     }
                 ],
@@ -621,7 +620,7 @@ def test_submodel_parent_codegen_resolves_external_edge_join_source_roles(
         node for node in result.graph.nodes if node.data.nodeType == NodeType.SUBMODEL
     )
     definition = result.graph.submodels[occurrence.data.config["definitionId"]]
-    output_port_by_source = {port.source.node_id: port.port_id for port in definition.output_ports}
+    output_port_by_source = {port.source.node_id: port.name for port in definition.output_ports}
 
     join_config = result.graph.node_map["join"].data.config
     assert "baseInput" not in join_config

@@ -1602,6 +1602,90 @@ def test_explore_worker_maps_failures_to_typed_terminal_statuses(
         assert "forced unexpected Explore failure" not in str(final)
 
 
+def _explore_timeout_sleeping_worker(*_args: object, **_kwargs: object) -> None:
+    time.sleep(5.0)
+
+
+def test_explore_timeout_marks_the_job_timed_out_and_late_completion_cannot_revive_it(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._explore_cache import ExplorePersistentCacheStore
+    from haute.routes import _explore_service as service_module
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    monkeypatch.setenv("HAUTE_EXPLORE_TIMEOUT", "1")
+    monkeypatch.setattr(
+        service_module,
+        "_run_explore_worker",
+        _explore_timeout_sleeping_worker,
+    )
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    started = client.post("/api/explore/run", json=body)
+    assert started.status_code == 200
+    job_id = started.json()["job_id"]
+
+    final = _poll_explore(client, job_id, timeout=10.0)
+    assert final["status"] == "timed_out"
+    assert final["terminal_reason"] == "timed_out"
+    expected_message = (
+        "The background process was stopped after exceeding its time limit "
+        "of 1 seconds. Try again with less data, or increase the configured timeout."
+    )
+    assert final["message"] == expected_message
+    assert "Traceback" not in final["message"]
+    assert "/" not in final["message"] and "\\" not in final["message"]
+    assert final["result"] is None
+
+    stored = _explore_service._store.require_job(job_id)
+    assert stored["status"] == "timed_out"
+    assert stored["terminal_reason"] == "timed_out"
+    assert stored["message"] == expected_message
+    assert stored.get("result") is None
+    assert stored.get("elapsed_seconds") is not None
+    assert stored["elapsed_seconds"] >= 1.0
+
+    worker_name = f"haute-explore-{job_id}"
+    for thread in threading.enumerate():
+        if thread.name == worker_name:
+            thread.join(timeout=5.0)
+            assert not thread.is_alive()
+            break
+
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    store = ExplorePersistentCacheStore(spec.project_root)
+    staging_dir = store._family_dir(spec.family_key) / "staging"
+    if staging_dir.exists():
+        assert not list(staging_dir.iterdir())
+
+    late_transition = _explore_service._lifecycle.transition(
+        job_id,
+        to="completed",
+        message="Explore cache materialisation complete",
+        fields={"progress": 1.0, "result": {"late": True}},
+        expected_status="running",
+    )
+    assert late_transition is None
+
+    stored_after = _explore_service._store.require_job(job_id)
+    assert stored_after["status"] == "timed_out"
+    assert stored_after["terminal_reason"] == "timed_out"
+    assert stored_after.get("result") is None
+    assert stored_after["message"] == expected_message
+
+    poll_after = client.get(f"/api/explore/status/{job_id}").json()
+    assert poll_after["status"] == "timed_out"
+    assert poll_after["terminal_reason"] == "timed_out"
+    assert poll_after["result"] is None
+    assert poll_after["message"] == expected_message
+
+
 def test_explore_memory_limited_input_preparation_ends_memory_limited(
     client: TestClient,
     tmp_path: Path,

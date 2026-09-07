@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import type { Edge, Node } from "@xyflow/react"
 import {
   computeNextNodeId,
   filterIncomingEdges,
@@ -34,6 +35,7 @@ interface WebSocketSyncParams {
   nodeIdCounter: React.MutableRefObject<number>
   fitView: (options?: { padding?: number }) => void
   enabled?: boolean
+  onDocumentReload?: (reloaded: { nodes: Node[]; edges: Edge[] }) => void
 }
 
 const MAX_RETRIES = 50
@@ -179,7 +181,7 @@ function retainedCanvasFor(
 
 export default function useWebSocketSync({
   preambleRef, submodelsRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
-  graphRefreshingRef, nodeIdCounter, fitView, enabled = true,
+  graphRefreshingRef, nodeIdCounter, fitView, enabled = true, onDocumentReload,
 }: WebSocketSyncParams): WsStatus {
   const { setSyncBanner } = useUIStore()
   const { addToast } = useToastStore()
@@ -233,6 +235,12 @@ export default function useWebSocketSync({
       return true
     }
 
+    // The navigation ref names the visible child while drilled. Live sync and
+    // reconnect still belong to the authoritative parent document.
+    function currentDocumentSource(): string | undefined {
+      return useDocumentStatusStore.getState().sourceFile || sourceFileRef?.current
+    }
+
     function appliedDocumentFingerprintFor(sourceFile: string): string | undefined {
       const applied = appliedDocumentFingerprintRef.current
       if (!applied || !isCurrentSourceFile(applied.sourceFile, sourceFile)) {
@@ -246,7 +254,7 @@ export default function useWebSocketSync({
       fingerprint: string,
     ) {
       const sourceFile = normalizeSourceFile(incomingSource)
-        ?? normalizeSourceFile(sourceFileRef?.current)
+        ?? normalizeSourceFile(currentDocumentSource())
       appliedDocumentFingerprintRef.current = sourceFile
         ? { sourceFile, fingerprint }
         : null
@@ -299,7 +307,7 @@ export default function useWebSocketSync({
         opened = true
         retriesRef.current = 0
         setStatus("connected")
-        const sourceFile = sourceFileRef?.current.trim()
+        const sourceFile = currentDocumentSource()?.trim()
         if (sourceFile) {
           try {
             const resyncPayload: Record<string, string | number> = {
@@ -335,7 +343,7 @@ export default function useWebSocketSync({
             addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
             return
           }
-          if (!isCurrentSourceFile(frame.sourceFile, sourceFileRef?.current)) {
+          if (!isCurrentSourceFile(frame.sourceFile, currentDocumentSource())) {
             return
           }
           const updateSeq = ++graphUpdateSeq
@@ -420,6 +428,7 @@ export default function useWebSocketSync({
             ) {
               ui.setSubmodelDialog(null)
             }
+            onDocumentReload?.({ nodes: newNodes, edges: newEdges })
 
             addToast(
               "info",
@@ -441,7 +450,7 @@ export default function useWebSocketSync({
         }
 
         if (msg.type === "parse_error") {
-          if (!isCurrentSourceFile(msg.source_file, sourceFileRef?.current)) {
+          if (!isCurrentSourceFile(msg.source_file, currentDocumentSource())) {
             return
           }
           // A parse_error frame now means one thing: the current document

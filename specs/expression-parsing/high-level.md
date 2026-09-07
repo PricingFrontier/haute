@@ -120,8 +120,9 @@ Out of scope (owned by neighbouring components, cross-linked below):
   hand-written interpreter for a constrained Polars subset, tuned to Polars' runtime semantics
   rather than Python's where implemented: null
   propagates through arithmetic and comparisons; `&`/`|` use Kleene three-valued logic when either
-  side is boolean or both are null; division/floor-division/modulo by zero yield `±inf`/`nan`
-  (float) or `null` (int) instead of raising; an integer result outside the signed-64-bit range is
+  side is boolean or both are null; true division by zero yields `±inf`/`nan` for both int and
+  float operands (Polars promotes to float); integer `//` and `%` by zero yield `null`, float `%`
+  yields `nan`; an integer result outside the signed-64-bit range is
   reported as uncomputable (`None`) rather than a wrong wraparound value; `.round()` matches
   Polars' float-scale-then-half-to-even rounding, not Python's decimal-accurate `round()`; a
   negative base raised to a non-integer float exponent is `NaN`, matching Polars' float domain.
@@ -160,12 +161,10 @@ Out of scope (owned by neighbouring components, cross-linked below):
   a curated set of operations and values against the pinned Polars runtime; it does not establish
   parity for every namespace method, dtype, malformed call, or window operation. Returning `None`
   is the current "unsupported/uncomputable" result for many of those gaps.
-- `evaluate_expression` used to fall back to the pipeline's actually-observed output value
-  (`row_values.get(target_column)`) whenever the evaluator raised. That fallback was removed: it
-  laundered evaluator bugs into a result that looked self-consistent with the trace, hiding
-  exactly the divergence a developer would need to see to fix the evaluator. The current behaviour
-  — propagate the exception — is a direct instance of this codebase's "fail loud, never guess"
-  principle (see the project's `CLAUDE.md`).
+- An evaluator exception in `evaluate_expression` propagates to the enrichment caller rather than
+  being replaced by `row_values.get(target_column)`, because a laundered result looks self-consistent
+  with the trace and hides evaluator divergence. Propagating the exception is a direct instance of
+  this codebase's "fail loud, never guess" principle (see the project's `CLAUDE.md`).
 - The module-level `_cached_parse` (an `lru_cache` over `ast.parse`) exists because
   `parse_expression`, `_compute_result`, `_evaluate_conditional_branches`, and
   `parse_expression_chain` each reparse the *same* code string for the same node; caching is safe

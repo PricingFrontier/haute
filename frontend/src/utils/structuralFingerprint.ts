@@ -51,11 +51,11 @@ export function structuralFingerprint(graph: StructuralFingerprintInput | null |
     .map(([definitionId, definition]) => {
       if (!isSubmodelDefinition(definition)) return [definitionId, null]
       const ports = (
-        list: readonly { portId: string; label: string }[],
+        list: readonly { name: string }[],
       ) =>
         list
-          .map((port) => [port.portId, port.label])
-          .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+          .map((port) => port.name)
+          .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
       return [
         definitionId,
         definition.definitionId,

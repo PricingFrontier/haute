@@ -4,13 +4,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import useSubmodelBoundaryEditing from "../useSubmodelBoundaryEditing"
 import useToastStore from "../../stores/useToastStore"
 import { makeEdge, makeNode } from "../../test-utils/factories"
-import type { PipelineEdge, SubmodelPortData } from "../../types/node"
+import type { PipelineEdge, SubmodelDefinition, SubmodelPortData } from "../../types/node"
 import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
 import { SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
 import { cloneGraphSnapshot } from "../../utils/graphSnapshot"
+import { attachEditorEdgeIdentities } from "../../utils/editorIdentities"
 
-const SUBMODEL_NAME = "Pricing"
-const PLACEHOLDER_ID = "instance_primary"
+const SUBMODEL_NAME = "pricing"
+const PLACEHOLDER_ID = "pricing"
 const DEFINITION_ID = "definition_pricing"
 
 type FixtureOptions = {
@@ -33,7 +34,7 @@ function makeFixture({
   includeInternalEdge = false,
   bindOutputConsumers = true,
 }: FixtureOptions = {}) {
-  const identify = (node: Node) => ({
+  const identify = (node: Node): Node => ({
     ...node,
     data: {
       ...node.data,
@@ -54,7 +55,7 @@ function makeFixture({
       _functionName: "pricing_function",
       _defaultInputName: null,
       _sourceHandleInputNames: Object.fromEntries(
-        outputPorts.map((portId) => [`out__${portId}`, `Public_${portId}`]),
+        outputPorts.map((name) => [`out__${name}`, `Public_${name}`]),
       ),
     },
   })
@@ -82,24 +83,18 @@ function makeFixture({
       data: { _inputName: `Public_${childId}` },
     },
   )
-  const inputPortInputNames: Record<string, string> = includeInputPort
-    ? { incoming: "Incoming_policy_data" }
-    : {}
-  const definition = {
+  const definition: SubmodelDefinition = {
     definitionId: DEFINITION_ID,
     file: "modules/pricing.py",
     graph: { nodes: childNodes, edges: childEdges },
     inputPorts: includeInputPort ? [{
-      portId: "incoming",
-      label: "Incoming policy data",
+      name: "incoming",
       targets: [{ nodeId: "child_a", handleId: null }],
     }] : [],
-    outputPorts: outputPorts.map((portId) => ({
-      portId,
-      label: `Public ${portId}`,
-      source: { nodeId: portId, handleId: null },
+    outputPorts: outputPorts.map((name) => ({
+      name,
+      source: { nodeId: name, handleId: null },
     })),
-    _inputPortInputNames: inputPortInputNames,
   }
   const submodels = { [DEFINITION_ID]: definition }
   const view = buildSubmodelViewGraph({ submodelName: SUBMODEL_NAME, instanceId: PLACEHOLDER_ID, definition, childNodes, childEdges, parentNodes, parentEdges })
@@ -156,6 +151,97 @@ function hookParams(fixture: ReturnType<typeof makeFixture>) {
 describe("useSubmodelBoundaryEditing", () => {
   beforeEach(() => useToastStore.setState({ toasts: [] }))
 
+  it.each([
+    { removing: false, logicalName: "pricing" },
+    { removing: true, logicalName: "pricing__child_a" },
+    { removing: true, logicalName: "pricing" },
+  ])("preserves code and selectors across output count changes ($removing, $logicalName)", async ({ removing, logicalName }) => {
+    const fixture = makeFixture({
+      outputPorts: removing ? ["child_a", "child_b"] : ["child_a"],
+      bindOutputConsumers: false,
+    })
+    const beforeName = removing ? "pricing__child_a" : "pricing"
+    const afterName = removing ? "pricing" : "pricing__child_a"
+    const occurrence = fixture.parentNodes.find((node) => node.id === PLACEHOLDER_ID)!
+    occurrence.data._sourceHandleInputNames = {
+      out__child_a: beforeName,
+      ...(removing ? { out__child_b: "pricing__child_b" } : {}),
+    }
+    const code = `df = ${logicalName}.with_columns(flag=pl.lit(1))`
+    fixture.parentNodes.find((node) => node.id === "consumer_a")!.data.config = {
+      code,
+      ...(logicalName !== beforeName ? { inputMapping: { [logicalName]: beforeName } } : {}),
+    }
+    fixture.parentNodes.find((node) => node.id === "consumer_b")!.data.config = {
+      data_input: beforeName, banding_source: beforeName, ratebook_input: beforeName,
+    }
+    for (const target of ["consumer_a", "consumer_b"]) fixture.parentEdges.push({
+      id: `consume-${target}`, source: PLACEHOLDER_ID, target, sourceHandle: "out__child_a", data: { _inputName: beforeName },
+    })
+    const copyBefore = removing ? "pricing_copy__child_a" : "pricing_copy"
+    const copyAfter = removing ? "pricing_copy" : "pricing_copy__child_a"
+    const copyCode = `df = ${copyBefore}`
+    fixture.parentNodes.push(
+      {
+        ...occurrence,
+        id: "pricing_copy",
+        data: {
+          ...occurrence.data,
+          label: "pricing_copy",
+          config: { definitionId: DEFINITION_ID, alias: "pricing_copy", instanceOf: PLACEHOLDER_ID },
+          _sourceHandleInputNames: {
+            out__child_a: copyBefore,
+            ...(removing ? { out__child_b: "pricing_copy__child_b" } : {}),
+          },
+        },
+      },
+      makeNode("copy_consumer", "polars", {
+        data: { nodeType: "polars", label: "copy_consumer", config: { code: copyCode } },
+      }),
+    )
+    fixture.parentEdges.push({
+      id: "copy-consume", source: "pricing_copy", target: "copy_consumer",
+      sourceHandle: "out__child_a", data: { _inputName: copyBefore },
+    })
+    const resolveGraphIdentities = vi.fn(async ({ nodes, edges, submodels }: GraphIdentityRequest) => {
+      const definition = submodels[DEFINITION_ID] as SubmodelDefinition
+      const resolved = nodes.map((node) => node.data.nodeType === "submodel" ? {
+        ...node,
+        data: {
+          ...node.data,
+          _sourceHandleInputNames: Object.fromEntries(definition.outputPorts.map((port) => [
+            `out__${port.name}`, definition.outputPorts.length > 1 ? `${node.id}__${port.name}` : node.id,
+          ])),
+        },
+      } : node)
+      return { nodes: resolved, edges: attachEditorEdgeIdentities(edges, resolved) }
+    })
+    const { result } = renderHook(() => useSubmodelBoundaryEditing({ ...hookParams(fixture), resolveGraphIdentities }))
+    const output = fixture.view.nodes.find((node) => node.type === "submodelPort" && node.data.portDirection === "output")!
+    await act(async () => {
+      if (removing) {
+        const removedEdge = fixture.view.edges.find((edge) => edge.source === "child_b" && edge.target === output.id)!
+        result.current.deleteBoundaryEdge(removedEdge.id)
+      } else {
+        result.current.commitBoundaryConnection({ source: "child_b", sourceHandle: null, target: output.id, targetHandle: null })
+      }
+    })
+    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+    const consumerConfig = (id: string) => fixture.parentGraphRef.current.nodes.find((node) => node.id === id)!.data.config
+    expect(consumerConfig("consumer_a")).toEqual({
+      code, ...(logicalName !== afterName ? { inputMapping: { [logicalName]: afterName } } : {}),
+    })
+    expect(consumerConfig("consumer_b")).toEqual({
+      data_input: afterName, banding_source: afterName, ratebook_input: afterName,
+    })
+    expect(consumerConfig("copy_consumer")).toEqual({
+      code: copyCode, inputMapping: { [copyBefore]: copyAfter },
+    })
+    expect(fixture.parentGraphRef.current.edges.every((edge) => (
+      edge.data?._inputName === (edge.source === PLACEHOLDER_ID ? afterName : copyAfter)
+    ))).toBe(true)
+  })
+
   it("atomically commits a parent-created public input and canonical edge", () => {
     const fixture = makeFixture({ includeInputPort: false })
     fixture.graphRef.current = {
@@ -184,16 +270,14 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
     expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
       inputPorts: [{
-        portId: "input_1",
-        label: "external_input",
+        name: "external_input",
         targets: [],
       }],
-      _inputPortInputNames: { input_1: "external_input" },
     })
     expect(fixture.graphRef.current.edges).toEqual([expect.objectContaining({
       source: "external",
       target: PLACEHOLDER_ID,
-      targetHandle: "in__input_1",
+      targetHandle: "in__external_input",
       data: { _inputName: "external_input" },
     })])
   })
@@ -245,7 +329,6 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(fixture.parentGraphRef.current?.edges).toEqual([])
     expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
       inputPorts: [],
-      _inputPortInputNames: {},
     })
     const input = fixture.graphRef.current.nodes.find(
       (node) => (node.data as unknown as SubmodelPortData).portDirection === "input",
@@ -378,7 +461,7 @@ describe("useSubmodelBoundaryEditing", () => {
           ...node,
           data: {
             ...node.data,
-            _sourceHandleInputNames: { out__output_1: "Public_output_1" },
+            _sourceHandleInputNames: { out__child_a_input: "Public_child_a_input" },
           },
         }
       : node)
@@ -392,10 +475,10 @@ describe("useSubmodelBoundaryEditing", () => {
       (node) => node.id === PLACEHOLDER_ID,
     )!
     expect(committedParent.data._sourceHandleInputNames).toEqual({
-      out__output_1: "Public_output_1",
+      out__child_a_input: "Public_child_a_input",
     })
     expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
-      outputPorts: [{ portId: "output_1" }],
+      outputPorts: [{ name: "child_a_input" }],
     })
   })
 
@@ -449,10 +532,10 @@ describe("useSubmodelBoundaryEditing", () => {
     )!
     const resolveGraphIdentities = vi.fn(async (request: GraphIdentityRequest) => {
       const definition = request.submodels[DEFINITION_ID] as {
-        outputPorts: Array<{ portId: string; label: string }>
+        outputPorts: Array<{ name: string }>
       }
       const mapping = Object.fromEntries(definition.outputPorts.map((port) => [
-        `out__${port.portId}`, `identity_${port.label.replaceAll(" ", "_")}`,
+        `out__${port.name}`, `identity_${port.name.replaceAll(" ", "_")}`,
       ]))
       return {
         nodes: request.nodes.map((node) => node.id === PLACEHOLDER_ID ? {
@@ -504,7 +587,7 @@ describe("useSubmodelBoundaryEditing", () => {
     await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledTimes(3))
     await vi.waitFor(() => expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledTimes(3))
     expect(fixture.parentGraphRef.current!.nodes.find((node) => node.id === PLACEHOLDER_ID)
-      ?.data._sourceHandleInputNames).toEqual({ out__output_1: "identity_Node_child_b" })
+      ?.data._sourceHandleInputNames).toEqual({ out__child_b_input: "identity_child_b_input" })
   })
 
   it("layers overlapping output gestures onto the pending boundary candidate", async () => {
@@ -529,16 +612,16 @@ describe("useSubmodelBoundaryEditing", () => {
     })
     await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledTimes(2))
     const latest = resolveGraphIdentities.mock.calls[1]![0]
-    expect((latest.submodels[DEFINITION_ID] as { outputPorts: Array<{ portId: string }> })
-      .outputPorts.map((port) => port.portId)).toEqual(["output_1", "output_2"])
+    expect((latest.submodels[DEFINITION_ID] as { outputPorts: Array<{ name: string }> })
+      .outputPorts.map((port) => port.name)).toEqual(["child_a_input", "child_b_input"])
 
     const resolvedLatestNodes = latest.nodes.map((node) => node.id === PLACEHOLDER_ID ? {
       ...node,
       data: {
         ...node.data,
         _sourceHandleInputNames: {
-          out__output_1: "identity_child_a",
-          out__output_2: "identity_child_b",
+          out__child_a_input: "identity_child_a",
+          out__child_b_input: "identity_child_b",
         },
       },
     } : node)
@@ -549,7 +632,7 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
     expect(fixture.parentGraphRef.current!.nodes.find((node) => node.id === PLACEHOLDER_ID)
       ?.data._sourceHandleInputNames).toEqual({
-        out__output_1: "identity_child_a", out__output_2: "identity_child_b",
+        out__child_a_input: "identity_child_a", out__child_b_input: "identity_child_b",
       })
     expect(useToastStore.getState().toasts).toEqual([])
   })
@@ -610,9 +693,9 @@ describe("useSubmodelBoundaryEditing", () => {
 
     expect(fixture.parentGraphRef.current?.edges).toEqual(fixture.parentEdges)
     const metadata = fixture.submodelsRef.current[DEFINITION_ID] as {
-      outputPorts: Array<{ portId: string }>
+      outputPorts: Array<{ name: string }>
     }
-    expect(metadata.outputPorts.map((port) => port.portId)).toEqual(["child_a"])
+    expect(metadata.outputPorts.map((port) => port.name)).toEqual(["child_a"])
   })
 
   it("leaves parent refs untouched when history restores a non-drilled snapshot", () => {
@@ -632,10 +715,10 @@ describe("useSubmodelBoundaryEditing", () => {
 
     const metadata = fixture.submodelsRef.current[DEFINITION_ID] as {
       graph: { nodes: Node[] }
-      outputPorts: Array<{ portId: string }>
+      outputPorts: Array<{ name: string }>
     }
     expect(metadata.graph.nodes.map((node) => node.id)).toEqual(["child_a", "child_b"])
-    expect(metadata.outputPorts.map((port) => port.portId)).toEqual(["child_a"])
+    expect(metadata.outputPorts.map((port) => port.name)).toEqual(["child_a"])
     expect((fixture.parentGraphRef.current?.edges ?? []).map((edge) => edge.id)).toEqual([
       "consumer-a-child_a",
       "consumer-b-child_a",

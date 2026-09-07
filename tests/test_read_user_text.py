@@ -63,8 +63,8 @@ class TestParsePipelineEncodingRobustness:
             b'pipeline = haute.Pipeline("test")\n\n'
             b"# This has an en-dash \x96 in a comment\n\n"
             b"@pipeline.polars\n"
-            b"def transform(df: pl.LazyFrame) -> pl.LazyFrame:\n"
-            b"    return df\n"
+            b"def transform() -> pl.LazyFrame:\n"
+            b'    return pl.LazyFrame({"x": [1]})\n'
         )
         (pipeline_dir / "main.py").write_bytes(content)
 
@@ -83,9 +83,9 @@ class TestParsePipelineEncodingRobustness:
             b"import haute\nimport polars as pl\n\n"
             b'pipeline = haute.Pipeline("test")\n\n'
             b"@pipeline.polars\n"
-            b"def transform(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+            b"def transform() -> pl.LazyFrame:\n"
             b'    """Has en-dash \x96 in docstring"""\n'
-            b"    return df\n"
+            b'    return pl.LazyFrame({"x": [1]})\n'
         )
         (pipeline_dir / "main.py").write_bytes(content)
 

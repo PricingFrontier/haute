@@ -6,6 +6,7 @@
 |---|---|
 | `src/haute/parser.py` | Strict public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates AST metadata/node/edge extraction, submodel resolution + merge, conservation, and graph-shape validation for valid pipeline source; whole-file syntax errors raise contextual `ParseError`. |
 | `src/haute/_parser_conservation.py` | Strict fail-loud acceptance gate. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
+| `src/haute/_parser_bindings.py` | Strict parameter binding gate (`assert_polars_parameters_bound`): every parsed Polars node's positional parameters must equal its connected executable input names after `inputMapping`, in parent files and definition files (public input ports bind the sanitised port ID); any other shape is a `ParseError` with `unbound_parameters`, `unconsumed_inputs`, `connected_inputs` and `remediation` (F13). |
 | `src/haute/_parser_regex.py` | Neutral syntax-recovery discovery. `recover_pipeline_fragments` locates pipeline metadata, `@pipeline.<type>` function fragments, `pipeline.connect()` declarations, and `pipeline.submodel()` registrations textually, re-parsing individual fragments with `ast` where possible. It never constructs canonical graph models. |
 | `src/haute/_parser_submodels.py` | `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: resolves explicit `pipeline.submodel("path", ...)` registrations, parses each referenced submodel file into its own `PipelineGraph`, and merges canonical occurrences into the parent (hierarchical or flattened). |
 | `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`) and to a concrete, Polars-mirroring value (`_ExprEvaluator` / `_BranchTrackingEvaluator`). |
@@ -25,9 +26,9 @@
   [server-api](../server-api/low-level.md) and produced here) — `nodes`,
   `edges`, `pipeline_name`, `pipeline_description`, `preamble`,
   `preserved_blocks`, `source_file`, `source_revision` (server-populated
-  live-document metadata), `warning`, `submodels`. Canonical structure shared
-  with the executor, codegen, deploy, and the
-  server API layer.
+  live-document metadata), `warning`, `submodels`, `sources`, `active_source`.
+  Canonical structure shared with the executor, codegen, deploy, and the server
+  API layer.
 - **`_ExprConverter`** (`_expression_parser.py`) — one AST-node-type-dispatch method per handled
   node kind; accumulates `columns`, `constants`, `expr_type`, `sub_expressions`, and an
   `_is_opaque` flag as it walks. Takes an optional `symbol_table` for top-level variable
@@ -49,9 +50,11 @@
 
 **`parse_pipeline_source`** (`parser.py`): `ast.parse(source)` → on `SyntaxError`, raise a
 contextual `ParseError` naming the source and syntax location → otherwise extract pipeline meta /
-decorated nodes / connect edges / preamble / preserved blocks by
-importing their implementation modules directly →
-collect labels from any nodes already carrying `_load_error` into a graph-level `warning` → if any
+decorated nodes / connect edges / preamble / preserved blocks using the AST
+primitives from `src/haute/_ast_helpers.py` → collect labels from any node whose
+config carries `_load_error` into a graph-level `warning` (nothing in `src/haute`
+produces that key; the config path raises `ConfigError` instead, so the step is reached
+only by tests that plant the marker) → if any
 `pipeline.submodel()` calls were found, require `_base_dir` or `_submodel_base_dir` (otherwise
 raise with every unresolved authored path), resolve registrations, group repeated paths by canonical definition id, parse
 each definition file once, and call `_parser_submodels.merge_submodels` → run
@@ -69,12 +72,14 @@ No step resolves node configuration, builds canonical nodes/edges, merges submod
 fragments into editor-only recovery DTOs.
 
 **`merge_submodels`** (`_parser_submodels.py`): validate that every parsed
-child's declared `definition_id` matches its registration and that literal
-structured input/output ports are present. Build one `SubmodelDefinition` per
-definition id and one `SUBMODEL` occurrence per registration; each occurrence
-uses its explicit immutable `instance_id`, alias, optional label, and config
-`{definitionId, alias}`. Parent connect endpoints use aliases and declared
-public port ids, which become `in__<portId>`/`out__<portId>` graph handles;
+child file has literal structured input/output ports present and extract its
+declared `definition_id`. Build one `SubmodelDefinition` per definition id and
+one `SUBMODEL` occurrence per registration; each occurrence uses its name as
+node id (`node.id == label == alias == name`), config `{definitionId, alias}`, and
+derives its node label directly from the name (registrations accept `(path, name, *, instance_of=None)`
+and reject `definition_id=`, `instance_id=`, `alias=`, and `label=`).
+Parent connect endpoints use names and declared
+public port names, which become `in__<name>`/`out__<name>` graph handles;
 internal child ids are never accepted as parent endpoints. Only when
 `flatten=True` is the canonical hierarchical graph passed to
 `flatten_graph`. A submodel file containing its own registration raises
@@ -123,6 +128,14 @@ tree/converter pass rather than re-invoking `parse_expression` per chain element
 appended before the column that depends on it) → return the parsed expressions in that order.
 
 ## Edge cases and invariants
+
+Parser internals consume only the current metadata contract. Every extracted
+node supplies `param_names` and `edge_param_names`; consumers must not infer
+missing positional-parameter metadata from the broader parameter list or an
+empty default. Missing required metadata is an internal contract failure.
+The conservation gate accepts `submodel_occurrence_paths` as its sole loaded
+occurrence manifest. Removed keywords and unknown keywords are rejected, with
+no alias or migration shim; direct test callers use the same current contract.
 
 - **Execution-order vs. walk-order**: `ast.walk` is breadth-first (parent before child), which for
   a chained `df.with_columns(A).with_columns(B)` visits the *outer* call (B) before the nested
@@ -186,14 +199,13 @@ appended before the column that depends on it) → return the parsed expressions
   `unresolved_paths` instead of returning a root-only graph. Editor recovery resolves submodel
   fragments against the explicitly supplied project and parent-pipeline roots.
 - **Repeated definition files are intentional for reusable occurrences**:
-  registrations resolving to one file are grouped and parsed once. They must
-  agree on one explicit definition id.
+  registrations resolving to one file are grouped and parsed once.
 - **Definition/file identity is one-to-one**: one definition id resolving to
-  multiple files, conflicting definition ids for one file, or a child whose
-  declared id differs from the parent registration raises `ParseError`.
+  multiple files, conflicting definition ids for one file, or an unreadable
+  child raises `ParseError`.
 - **Occurrence identity is explicit**: missing/non-literal/blank
-  `definition_id`, `instance_id`, or `alias` fields, and duplicate instance ids
-  or aliases, fail before merge. No file/name/node-id inference is attempted.
+  `file` or `name` fields, rejected legacy keywords (`definition_id=`, `instance_id=`, `alias=`, `label=`),
+  and duplicate occurrence names fail before merge. No file/name/node-id inference is attempted.
 - **Public boundary connections are explicit**: a parent `connect` endpoint
   that names an occurrence alias must also name a declared public port id.
   Function-parameter inference remains inside its owning root or definition
@@ -201,11 +213,21 @@ appended before the column that depends on it) → return the parsed expressions
   internal child id.
 - **Conservation is an acceptance gate**: the parser compares authored root
   nodes and ordered edges, registration paths and explicit identity fields,
-  occurrence aliases and public port ids, and the constructed
+  occurrence aliases and public port ids (a parent `connect` that names a
+  definition-owned child id or any other unknown endpoint is rejected as
+  dangling with its authored identity), and the constructed
   definition/occurrence registry. Each child source is conserved within its
   own definition graph. Exact duplicate `connect()` identities raise the
   dedicated diagnostic; every other difference raises `ParseError` before
   graph-shape validation or return.
+- **Polars parameter binding is strictly conserved**: every Polars node's
+  positional parameter set (after applying `inputMapping`) must equal the set
+  of executable input names contributed by incoming edges (or public input port
+  sanitised IDs for submodel definition nodes). Mismatches fail immediately
+  with `ParseError("Pipeline function parameters do not match the node's connected inputs.")`
+  naming the node, the unbound positional parameters, unconsumed inputs,
+  connected inputs, and remediation guidance.
+
 ## Error handling
 
 - **`ConfigError`** propagates from `src/haute/_config_builder.py` when a healthy parse cannot
@@ -235,10 +257,9 @@ appended before the column that depends on it) → return the parsed expressions
 - **`evaluate_expression`/`parse_expression_chain`**: evaluator/non-syntax internal exceptions
   propagate to the trace/enrichment caller by design (see the high-level Failure model).
   `parse_expression_chain` catches only `SyntaxError` and converts it to an opaque singleton/empty
-  chain. The
-  removed prior behaviour — silently falling back to
-  `row_values.get(target_column)` — is documented in the module as deliberately deleted because it
-  laundered evaluator bugs into a self-consistent-looking trace.
+  chain. An evaluator exception propagates rather than falling back to
+  `row_values.get(target_column)`, so evaluator divergence is never hidden behind a
+  self-consistent-looking trace.
 - **`ValueError`** raised (not caught) from `_ExprEvaluator._eval_concat_str` for a non-`str`
   `separator` or non-`bool` `ignore_nulls` keyword, and from `_eval_replace` for an incomplete
   `replace_strict` mapping with no `default=` — mirroring Polars' own `InvalidOperationError`
@@ -264,11 +285,32 @@ Tests live under `tests/`, split by concern:
   regression-tests one specific historical codebase-review finding.
 - **`test_parser_submodels.py`** — `extract_submodel_registrations`, `parse_submodel_source`,
   `merge_submodels`, and cross-boundary-edge reconstruction.
+- **`test_submodel_endpoint_properties.py`** — the generated graph/source family (ENG-T11):
+  generated child definitions (an identity chain behind one public input and one public
+  output port), one or two occurrences, and 1..4 authored parent connections drawn from the
+  legal public-port forms and the private child-endpoint forms. Parsing conserves exactly
+  the legal edges (occurrence instance ids with `in__`/`out__` handles) and rejects any
+  private endpoint as dangling with the authored identities in authored order; flattening a
+  fully wired legal graph yields one qualified runtime node per internal node per
+  occurrence, no dangling edge, and every sink computes the generated source rows. The
+  `hypothesis.find` negative control rewrites one legal connection into the private form and
+  shows the acceptance flip naming exactly that connection. Consumers of an occurrence
+  output name their parameter after the occurrence alias, as codegen emits; a parameter
+  named after the output port's label is rejected with unbound parameters.
 - **`test_parser_conservation.py`** — regression tests asserting that parsing (and the implicit
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node
   function shape, alias awareness, implicit-edge dedup, exact node/edge/handle/submodel identity,
   aggregated missing/unrecoverable submodel diagnostics, duplicate submodel-name rejection, and
   parity between neutral fragment discovery/editor recovery and strict authored-structure rules.
+- **`TestPolarsParameterBinding`** (`tests/test_parser_conservation.py`) -- tests
+  the strict parameter binding acceptance gate for Polars nodes: rejects unbound
+  positional parameters and unconsumed incoming edges with exact diagnostic
+  context; verifies that `inputMapping` correctly maps parameters, executes, and
+  roundtrips through codegen; confirms consumers of submodel occurrence outputs
+  bind the occurrence's own name; validates that parameter-mismatched pipelines
+  load in degraded mode for editor recovery while rejecting saves with HTTP 409;
+  and ensures definition nodes receiving public input ports bind to the sanitised
+  port ID.
 - **`test_parser_project_layout.py`**, **`test_parser_internals.py`**, and
   **`test_parser_sanitize_contracts.py`** — project-root/base-directory handling, internal
   parser invariants, and sanitisation contracts.
@@ -302,20 +344,32 @@ Tests live under `tests/`, split by concern:
   `_ExprEvaluator`'s output against real Polars computations; the source of truth for the
   documented `round()`-half-to-even and similar intentional divergences from naive Python
   semantics.
+- **`test_expression_parity_properties.py`** — the generated differential (ENG-T11): a bounded
+  grammar (depth at most three) of documented, well-formed single-row forms — arithmetic,
+  `abs`/`round`/`clip`/`fill_null`/`sqrt`/`log`, comparisons, `is_null`/`is_not_null`,
+  `is_between` with every `closed` value, `is_in`, regex and literal `str.contains`,
+  `to_lowercase`/`to_uppercase`, and `when/then/otherwise` — over int, float, tie-float and
+  null cells, each example evaluated by `_ExprEvaluator` and by real Polars on a typed one-row
+  frame (a null cell keeps its column family's dtype, so null propagation is proven through
+  every operation). It runs under the shared PR budget with retained curated edge examples, a
+  `hypothesis.find` negative control proving a naive-Python evaluator (decimal `round`,
+  substring `contains`, inclusive `is_between`, `False` for a null comparison) is caught on the
+  same grammar, and classification pins for the documented placeholders: window, `shift`,
+  `diff` and aggregation forms return the receiver value on a single row, and `cum_sum`,
+  rolling and unhandled string methods return `None`.
 
-Strategy is unit + scenario-regression throughout; no property-based/fuzz testing was found.
+Strategy is unit + scenario-regression plus the generated single-row differential above.
 Known coverage gaps:
 
 - The neutral syntax-recovery scanner is exercised only against curated malformed-input scenarios, not
   randomly-generated broken Python source.
-- `test_expression_parser_polars_parity.py` cross-checks a curated subset (notably rounding,
-  regex `str.contains`, `is_between`, `is_in`, conditionals, and a few numeric methods) against
-  real Polars. It is not an exhaustive semantic differential. Unsupported AST/method forms
-  return `None`, and defensive malformed-call branches sometimes intentionally differ from
-  Polars by ignoring an argument or avoiding an exception.
+- The differential covers documented single-row forms only. Unsupported AST/method forms
+  return `None`, defensive malformed-call branches intentionally differ from Polars by ignoring
+  an argument or avoiding an exception, and neither is generated.
 - Window result calculation is described textually using regex extraction and a row-local AST
-  evaluator; the suite does not prove full partition/window semantics against a multi-row Polars
-  frame.
+  evaluator; the single-row placeholder for window and aggregation forms is pinned as a
+  classification, not as parity, and the suite does not prove partition/window semantics
+  against a multi-row Polars frame.
 
 ## Neutral syntax-recovery fragments
 

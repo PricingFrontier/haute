@@ -108,9 +108,10 @@ class Writer:
     Within the ``with`` block the caller invokes ``write_text`` or
     ``write_bytes`` zero or more times.  Only the LAST call's payload
     is committed (last-wins buffering).  On clean exit the optional
-    ``mark_self_write`` callback fires BEFORE the rename — this lets
-    file-watcher coordination register the incoming write before the
-    fs event is emitted.
+    ``mark_self_write`` callback fires BEFORE the rename with the target
+    path and the exact committed payload — this lets file-watcher
+    coordination register the incoming write, by content identity, before
+    the fs event is emitted.
 
     On exit with an exception, no file is written, ``mark_self_write``
     is not called, and any staged temp file is removed.
@@ -119,7 +120,7 @@ class Writer:
     def __init__(
         self,
         path: Path,
-        mark_self_write: Callable[[Path], None] | None = None,
+        mark_self_write: Callable[[Path, bytes], None] | None = None,
     ) -> None:
         self._path = path
         self._mark_self_write = mark_self_write
@@ -145,5 +146,5 @@ class Writer:
         if exc_type is not None or self._payload is None:
             return
         if self._mark_self_write is not None:
-            self._mark_self_write(self._path)
+            self._mark_self_write(self._path, self._payload)
         atomic_write_bytes(self._path, self._payload)

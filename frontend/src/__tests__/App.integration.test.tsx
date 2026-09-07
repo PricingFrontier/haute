@@ -68,7 +68,7 @@ vi.mock("../api/client", async () => {
         label: string
         node_type: string
         source_handles: string[]
-        source_handle_labels: Record<string, string>
+        alias?: string
       }>
     }) => ({
       identities: payload.nodes.map((node) => {
@@ -86,9 +86,7 @@ vi.mock("../api/client", async () => {
           default_input_name: special ? null : functionName,
           source_handle_input_names: Object.fromEntries(node.source_handles.map((handle) => [
             handle,
-            node.source_handle_labels[handle] === undefined
-              ? handle
-              : identityName(node.source_handle_labels[handle]),
+            handle,
           ])),
         }
       }),
@@ -971,7 +969,7 @@ describe("App integration — add a node via drag-and-drop from the palette", ()
   })
 
   it("keeps a Quote Input inside a submodel singleton across the whole document", async () => {
-    const occurrence = makeNode("inputs", "Inputs", "submodel")
+    const occurrence = makeNode("inputs", "inputs", "submodel")
     occurrence.data.config = { definitionId: "definition_inputs", alias: "inputs" }
     const nestedApiInput = makeNode("quote_input", "Nested Quote Input", "apiInput")
 
@@ -1335,6 +1333,11 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       options.collision ? "collision name" : "Other Source",
       "polars",
     )
+    const codedConsumer = makeNode("coded_consumer", "Coded Consumer", "polars")
+    codedConsumer.data.config = {
+      code: 'df = Other_Source.select("value")',
+      untouched: "coded-consumer-config",
+    }
 
     return {
       nodes: [
@@ -1347,6 +1350,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
         firstOriginalInstance,
         secondOriginalInstance,
         liveSwitchInstance,
+        codedConsumer,
       ],
       edges: [
         {
@@ -1384,6 +1388,13 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
           sourceHandle: null,
           targetHandle: null,
         },
+        {
+          id: "e_ordinary_coded",
+          source: "ordinary_source",
+          target: "coded_consumer",
+          sourceHandle: null,
+          targetHandle: null,
+        },
       ],
       preamble: "",
       preserved_blocks: [],
@@ -1395,7 +1406,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     options: { collision?: boolean; internalCollision?: boolean } = {},
   ) {
     const base = makeApiInputGraph()
-    const boundary = makeNode("instance_pricing", "Pricing", "submodel")
+    const boundary = makeNode("pricing", "pricing", "submodel")
     boundary.data.config = { definitionId: "definition_pricing", alias: "pricing" }
     const childRouter = makeNode("child_router", "Child Router", "liveSwitch")
     childRouter.data.config = {
@@ -1479,19 +1490,16 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
           },
           inputPorts: [
             {
-              portId: "router_input",
-              label: "Router input",
+              name: "router_input",
               targets: [{ nodeId: childRouter.id, handleId: null }],
             },
             {
-              portId: "value_input",
-              label: "Value input",
+              name: "value_input",
               targets: [{ nodeId: childValueInstance.id, handleId: null }],
             },
             ...(options.collision
               ? [{
-                  portId: "ordinary_router",
-                  label: "Ordinary router input",
+                  name: "ordinary_router",
                   targets: [{ nodeId: childRouter.id, handleId: null }],
                 }]
               : []),
@@ -1680,6 +1688,11 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       inputMapping: { Renamed_Source: "Mapped_Ordinary", stable_key: "Stable_Value" },
       untouched: "live-instance-config",
     })
+    expect(configFor("coded_consumer")).toEqual({
+      code: 'df = Other_Source.select("value")',
+      inputMapping: { Other_Source: "Renamed_Source" },
+      untouched: "coded-consumer-config",
+    })
     expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore + 1)
 
     await useGraphStore.getState().undo()
@@ -1709,7 +1722,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     expect(graphCommitStateBytes()).toBe(stateBefore)
   })
 
-  it("does not overwrite a newer graph edit with a stale rename identity", async () => {
+  it("applies a rename on top of a newer graph edit instead of overwriting it", async () => {
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument(makeRenameMigrationGraph()))
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
     let resolveIdentity!: (value: Awaited<ReturnType<typeof api.resolveEditorNodeIdentities>>) => void
@@ -1744,11 +1757,16 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       })
     })
 
-    expect(await screen.findByTestId("node-panel-label-error")).toHaveTextContent(
-      /graph changed while identity resolution was running/,
-    )
-    expect(graphCommitStateBytes()).toBe(stateAfterNewerEdit)
-    expect(label).toHaveValue("Other Source")
+    // The graph moved while the first identity request was in flight, so the
+    // controller resolves again against the live graph and commits on top of
+    // the newer edit: the moved position survives and the rename lands.
+    await waitFor(() => {
+      expect(useGraphStore.getState().nodes.find((node) => node.id === "ordinary_source")?.data.label)
+        .toBe("Renamed Source")
+    })
+    expect(useGraphStore.getState().nodes.find((node) => node.id === "original_2")?.position.x)
+      .toBe(321)
+    expect(graphCommitStateBytes()).not.toBe(stateAfterNewerEdit)
   })
 
   it("leaves an API frame rename untouched when identity resolution fails", async () => {
@@ -1987,8 +2005,8 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
   it("migrates a frame rename through an arbitrary canonical occurrence and every fan-out target", async () => {
     const base = makeApiInputGraph()
     const occurrence = makeNode(
-      "instance_pricing_secondary",
-      "Pricing secondary",
+      "pricing_secondary",
+      "pricing_secondary",
       "submodel",
     )
     occurrence.data.config = {
@@ -2031,8 +2049,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
           },
           inputPorts: [
             {
-              portId: "policy_data",
-              label: "Policy data",
+              name: "policy_data",
               targets: [
                 { nodeId: childRouter.id, handleId: null },
                 { nodeId: childInstance.id, handleId: null },
@@ -2084,12 +2101,12 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
 
 describe("App integration — read-only submodel instance", () => {
   it("keeps the shared definition inspectable while disabling every exposed edit surface", async () => {
-    const owner = makeNode("instance_inputs_owner", "Inputs", "submodel")
+    const owner = makeNode("inputs", "inputs", "submodel")
     owner.data.config = {
       definitionId: "definition_inputs",
       alias: "inputs",
     }
-    const copy = makeNode("instance_inputs_copy", "Inputs instance", "submodel")
+    const copy = makeNode("inputs_2", "inputs_2", "submodel")
     copy.data.config = {
       definitionId: "definition_inputs",
       alias: "inputs_2",

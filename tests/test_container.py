@@ -351,6 +351,79 @@ class TestGenerateAppSource:
         assert response.json()["profile"] == "deploy_batch"
         assert captured == {"operation": "deploy_quote", "row_count": 2}
 
+    @pytest.mark.parametrize(
+        ("body", "expected_status", "expected_content"),
+        [
+            (
+                b"{not json",
+                422,
+                {
+                    "error_code": "invalid_json",
+                    "operation": "deploy_quote",
+                    "reason": "invalid_json",
+                },
+            ),
+            (
+                b'"not an object"',
+                400,
+                {"error": "Expected a JSON object or array of objects."},
+            ),
+            (
+                b"123",
+                400,
+                {"error": "Expected a JSON object or array of objects."},
+            ),
+            (
+                b"null",
+                400,
+                {"error": "Expected a JSON object or array of objects."},
+            ),
+            (
+                b"[]",
+                200,
+                None,
+            ),
+        ],
+    )
+    def test_quote_rejects_malformed_json_and_non_record_payloads(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        body: bytes,
+        expected_status: int,
+        expected_content: dict[str, object] | None,
+    ) -> None:
+        mock_score = MagicMock(return_value=pl.DataFrame({"premium": []}))
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [100.0]}),
+        )
+        monkeypatch.setattr(module, "score_graph", mock_score)
+
+        response = TestClient(module.app).post(
+            "/quote",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+        assert response.status_code == expected_status
+        if expected_status == 422:
+            data = response.json()
+            assert data["error_code"] == "invalid_json"
+            assert data["reason"] == "invalid_json"
+            assert "traceback" not in response.text.lower()
+            mock_score.assert_not_called()
+        elif expected_status == 400:
+            data = response.json()
+            assert data == expected_content
+            mock_score.assert_not_called()
+        elif expected_status == 200:
+            data = response.json()
+            assert data["rows"] == []
+            assert data["row_count"] == 0
+            mock_score.assert_called_once()
+
     def test_quote_maps_runtime_memory_failure_to_typed_507(
         self,
         tmp_path: Path,

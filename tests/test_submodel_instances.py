@@ -83,8 +83,7 @@ def _definition(
         if input_ports is not None
         else [
             SubmodelInputPort(
-                port_id="policy",
-                label="Policy data",
+                name="policy",
                 targets=[SubmodelEndpoint(node_id="local_input", handle_id="frame")],
             )
         ],
@@ -92,8 +91,7 @@ def _definition(
         if output_ports is not None
         else [
             SubmodelOutputPort(
-                port_id="premium",
-                label="Written premium",
+                name="premium",
                 source=SubmodelEndpoint(node_id="local_output", handle_id="scored"),
             )
         ],
@@ -102,21 +100,22 @@ def _definition(
 
 def _instance(
     instance_id: str,
-    alias: str,
+    alias: str | None = None,
     *,
     instance_of: str | None = None,
     definition_id: str = "definition_scoring",
     x: float = 0,
     y: float = 0,
 ) -> GraphNode:
-    config: dict[str, object] = {"definitionId": definition_id, "alias": alias}
+    name = alias if alias is not None else instance_id
+    config: dict[str, object] = {"definitionId": definition_id, "alias": name}
     if instance_of is not None:
         config["instanceOf"] = instance_of
     return _node(
         instance_id,
         NodeType.SUBMODEL,
         config=config,
-        label=alias.replace("_", " ").title(),
+        label=name,
         x=x,
         y=y,
     )
@@ -127,15 +126,13 @@ def test_definition_rejects_duplicate_public_port_ids() -> None:
         _definition(
             input_ports=[
                 SubmodelInputPort(
-                    port_id="shared",
-                    label="Input",
+                    name="shared",
                     targets=[SubmodelEndpoint(node_id="local_input")],
                 )
             ],
             output_ports=[
                 SubmodelOutputPort(
-                    port_id="shared",
-                    label="Output",
+                    name="shared",
                     source=SubmodelEndpoint(node_id="local_output"),
                 )
             ],
@@ -147,8 +144,7 @@ def test_definition_rejects_missing_internal_endpoint() -> None:
         _definition(
             input_ports=[
                 SubmodelInputPort(
-                    port_id="policy",
-                    label="Policy",
+                    name="policy",
                     targets=[SubmodelEndpoint(node_id="missing_child")],
                 )
             ]
@@ -156,7 +152,7 @@ def test_definition_rejects_missing_internal_endpoint() -> None:
 
 
 def test_unrouted_input_port_round_trips_and_is_legal_when_unbound() -> None:
-    port = SubmodelInputPort(port_id="policy", label="Policy", targets=[])
+    port = SubmodelInputPort(name="policy", targets=[])
     definition = _definition(input_ports=[port])
 
     restored = SubmodelDefinition.model_validate(definition.model_dump(by_alias=True))
@@ -176,9 +172,7 @@ def test_unrouted_input_port_round_trips_and_is_legal_when_unbound() -> None:
 
 
 def test_expand_rejects_parent_binding_to_unrouted_input_port() -> None:
-    definition = _definition(
-        input_ports=[SubmodelInputPort(port_id="policy", label="Policy", targets=[])]
-    )
+    definition = _definition(input_ports=[SubmodelInputPort(name="policy", targets=[])])
     graph = PipelineGraph(
         nodes=[_node("source"), _instance("instance_a", "scoring")],
         edges=[
@@ -199,7 +193,7 @@ def test_expand_rejects_parent_binding_to_unrouted_input_port() -> None:
         "edge_id": "source_to_scoring",
         "instance_id": "instance_a",
         "definition_id": "definition_scoring",
-        "port_id": "policy",
+        "port_name": "policy",
     }
 
 
@@ -575,8 +569,7 @@ def test_public_input_port_can_fan_out_to_ordered_targets() -> None:
         graph=child,
         input_ports=[
             SubmodelInputPort(
-                port_id="policy",
-                label="Policy",
+                name="policy",
                 targets=[
                     SubmodelEndpoint(node_id="left", handle_id="left_frame"),
                     SubmodelEndpoint(node_id="right", handle_id="right_frame"),
@@ -670,7 +663,7 @@ def test_flatten_rewrites_public_input_label_to_exact_external_frame_name() -> N
             _node(
                 "consumer",
                 NodeType.OPTIMISER,
-                config={"data_input": "Quote_records"},
+                config={"data_input": "quotes"},
             )
         ],
         edges=[],
@@ -679,8 +672,7 @@ def test_flatten_rewrites_public_input_label_to_exact_external_frame_name() -> N
         graph=child,
         input_ports=[
             SubmodelInputPort(
-                port_id="quotes",
-                label="Quote records",
+                name="quotes",
                 targets=[SubmodelEndpoint(node_id="consumer")],
             )
         ],
@@ -716,8 +708,7 @@ def test_flatten_rewrites_public_output_label_to_exact_internal_source_name() ->
         input_ports=[],
         output_ports=[
             SubmodelOutputPort(
-                port_id="results",
-                label="Published results",
+                name="results",
                 source=SubmodelEndpoint(node_id="output"),
             )
         ],
@@ -728,7 +719,7 @@ def test_flatten_rewrites_public_output_label_to_exact_internal_source_name() ->
             _node(
                 "consumer",
                 NodeType.OPTIMISER_APPLY,
-                config={"ratebook_input": "Published_results"},
+                config={"ratebook_input": "score"},
             ),
         ],
         edges=[
@@ -754,8 +745,7 @@ def test_flatten_rewrites_public_output_source_port_in_multi_frame_mapping() -> 
         input_ports=[],
         output_ports=[
             SubmodelOutputPort(
-                port_id="results",
-                label="Published results",
+                name="results",
                 source=SubmodelEndpoint(node_id="output"),
             )
         ],
@@ -770,7 +760,7 @@ def test_flatten_rewrites_public_output_source_port_in_multi_frame_mapping() -> 
                 config={
                     "outputMapping": [
                         {
-                            "source_port": "Published_results",
+                            "source_port": "score",
                             "source_column": "premium",
                             "output_path": "$.premium",
                             "enabled": True,
@@ -850,7 +840,7 @@ def test_flatten_preserves_public_input_label_for_ordinary_polars_code() -> None
                 "consumer",
                 NodeType.POLARS,
                 label="Child transform",
-                config={"code": "df = Policy_records"},
+                config={"code": "df = policy"},
             )
         ],
         edges=[],
@@ -859,8 +849,7 @@ def test_flatten_preserves_public_input_label_for_ordinary_polars_code() -> None
         graph=child,
         input_ports=[
             SubmodelInputPort(
-                port_id="policy",
-                label="Policy records",
+                name="policy",
                 targets=[SubmodelEndpoint(node_id="consumer")],
             )
         ],
@@ -885,10 +874,10 @@ def test_flatten_preserves_public_input_label_for_ordinary_polars_code() -> None
     result = flatten_graph(graph)
     consumer = result.node_map[qualified_runtime_node_id("instance_a", "consumer")]
 
-    assert consumer.data.config["inputMapping"] == {"Policy_records": "External_policies"}
+    assert consumer.data.config["inputMapping"] == {"policy": "External_policies"}
     generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
-    assert "def Child_transform(Policy_records: pl.LazyFrame)" in generated
-    assert "df = Policy_records" in generated
+    assert "def Child_transform(policy: pl.LazyFrame)" in generated
+    assert "df = policy" in generated
 
 
 def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> None:
@@ -898,8 +887,7 @@ def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> Non
         input_ports=[],
         output_ports=[
             SubmodelOutputPort(
-                port_id="results",
-                label="Published results",
+                name="results",
                 source=SubmodelEndpoint(node_id="output"),
             )
         ],
@@ -911,7 +899,7 @@ def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> Non
                 "consumer",
                 NodeType.POLARS,
                 label="Consumer",
-                config={"code": "df = Published_results"},
+                config={"code": "df = score"},
             ),
         ],
         edges=[
@@ -927,12 +915,10 @@ def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> Non
 
     result = flatten_graph(graph)
 
-    assert result.node_map["consumer"].data.config["inputMapping"] == {
-        "Published_results": "Internal_Output"
-    }
+    assert result.node_map["consumer"].data.config["inputMapping"] == {"score": "Internal_Output"}
     generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
-    assert "def Consumer(Published_results: pl.LazyFrame)" in generated
-    assert "df = Published_results" in generated
+    assert "def Consumer(score: pl.LazyFrame)" in generated
+    assert "df = score" in generated
 
 
 def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
@@ -942,7 +928,7 @@ def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
                 "original",
                 NodeType.POLARS,
                 label="Original",
-                config={"code": "df = Published_input"},
+                config={"code": "df = published"},
             ),
             _node(
                 "copy",
@@ -950,7 +936,7 @@ def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
                 label="Copy",
                 config={
                     "instanceOf": "original",
-                    "inputMapping": {"Published_input": "Published_input"},
+                    "inputMapping": {"published": "published"},
                 },
             ),
         ],
@@ -960,8 +946,7 @@ def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
         graph=child,
         input_ports=[
             SubmodelInputPort(
-                port_id="published",
-                label="Published input",
+                name="published",
                 targets=[
                     SubmodelEndpoint(node_id="original"),
                     SubmodelEndpoint(node_id="copy"),
@@ -990,12 +975,12 @@ def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
     original = flattened.node_map[qualified_runtime_node_id("instance_a", "original")]
     copy = flattened.node_map[qualified_runtime_node_id("instance_a", "copy")]
 
-    assert original.data.config["inputMapping"] == {"Published_input": "External_source"}
-    assert copy.data.config["inputMapping"] == {"Published_input": "External_source"}
+    assert original.data.config["inputMapping"] == {"published": "External_source"}
+    assert copy.data.config["inputMapping"] == {"published": "External_source"}
     generated = graph_to_code_multi(flattened, pipeline_name="main")["main.py"]
-    assert "def Original(Published_input: pl.LazyFrame)" in generated
+    assert "def Original(published: pl.LazyFrame)" in generated
     assert "def Copy(External_source: pl.LazyFrame)" in generated
-    assert "return Original(Published_input=External_source)" in generated
+    assert "return Original(published=External_source)" in generated
 
 
 def test_stale_schema_declared_node_reference_fails_loudly() -> None:
@@ -1005,7 +990,7 @@ def test_stale_schema_declared_node_reference_fails_loudly() -> None:
     )
     definition = _definition(graph=child, input_ports=[], output_ports=[])
     graph = PipelineGraph(
-        nodes=[_instance("instance_a", "scoring")],
+        nodes=[_instance("scoring", "scoring")],
         edges=[],
         submodels={"definition_scoring": definition},
     )
@@ -1013,7 +998,7 @@ def test_stale_schema_declared_node_reference_fails_loudly() -> None:
     with pytest.raises(ParseError, match="instanceOf") as exc_info:
         flatten_graph(graph)
 
-    assert exc_info.value.context["instance_id"] == "instance_a"
+    assert exc_info.value.context["instance_id"] == "scoring"
     assert exc_info.value.context["local_node_id"] == "consumer"
 
 
@@ -1026,8 +1011,7 @@ def test_unbound_occurrence_validates_definition_topology_from_public_interface(
         graph=child,
         input_ports=[
             SubmodelInputPort(
-                port_id="policy",
-                label="Policy",
+                name="policy",
                 targets=[SubmodelEndpoint(node_id="explore")],
             )
         ],
@@ -1067,27 +1051,20 @@ def test_registration_parser_preserves_explicit_identity_and_alias() -> None:
         """
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="definition_scoring",
-    instance_id="instance_a",
-    alias="scoring_a",
+    "scoring_a",
 ).submodel(
     "modules/scoring.py",
-    definition_id="definition_scoring",
-    instance_id="instance_b",
-    alias="scoring_b",
-    instance_of="instance_a",
+    "scoring_b",
+    instance_of="scoring_a",
 )
 """
     )
 
     registrations = extract_submodel_registrations(tree)
 
-    assert [
-        (item.path, item.definition_id, item.instance_id, item.alias, item.instance_of)
-        for item in registrations
-    ] == [
-        ("modules/scoring.py", "definition_scoring", "instance_a", "scoring_a", None),
-        ("modules/scoring.py", "definition_scoring", "instance_b", "scoring_b", "instance_a"),
+    assert [(item.path, item.name, item.instance_of) for item in registrations] == [
+        ("modules/scoring.py", "scoring_a", None),
+        ("modules/scoring.py", "scoring_b", "scoring_a"),
     ]
 
 
@@ -1099,7 +1076,7 @@ def test_parser_rejects_path_only_submodel_source(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ParseError, match="explicit stable identity|identity"):
+    with pytest.raises(ParseError, match="requires the occurrence name"):
         parse_pipeline_source(
             'import haute\npipeline = haute.Pipeline("main")\n'
             'pipeline.submodel("modules/scoring.py")\n',
@@ -1131,16 +1108,12 @@ import haute
 pipeline = haute.Pipeline("main")
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="definition_scoring",
-    instance_id="instance_a",
-    alias="scoring_a",
+    "scoring_a",
 )
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="definition_scoring",
-    instance_id="instance_b",
-    alias="scoring_b",
-    instance_of="instance_a",
+    "scoring_b",
+    instance_of="scoring_a",
 )
 """
 
@@ -1163,8 +1136,8 @@ pipeline.submodel(
     assert parse_child.call_count == 1
     assert set(graph.submodels or {}) == {"definition_scoring"}
     assert {node.id for node in graph.nodes if node.data.nodeType == NodeType.SUBMODEL} == {
-        "instance_a",
-        "instance_b",
+        "scoring_a",
+        "scoring_b",
     }
 
 
@@ -1195,12 +1168,8 @@ def test_codegen_emits_definition_once_and_two_stable_registrations() -> None:
     assert list(files).count("modules/scoring.py") == 1
     main = files["main.py"]
     assert main.count("pipeline.submodel(") == 2
-    assert 'definition_id="definition_scoring"' in main
-    assert 'instance_id="instance_a"' in main
-    assert 'instance_id="instance_b"' in main
-    assert 'alias="scoring_a"' in main
-    assert 'alias="scoring_b"' in main
-    assert 'instance_of="instance_a"' in main
+    assert 'pipeline.submodel("modules/scoring.py", "scoring_a")' in main
+    assert 'pipeline.submodel("modules/scoring.py", "scoring_b", instance_of="scoring_a")' in main
 
 
 def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Path) -> None:
@@ -1223,15 +1192,13 @@ def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Pat
             graph=PipelineGraph(nodes=[score], edges=[]),
             input_ports=[
                 SubmodelInputPort(
-                    port_id="policy",
-                    label="Policy data",
+                    name="policy",
                     targets=[SubmodelEndpoint(node_id="score")],
                 )
             ],
             output_ports=[
                 SubmodelOutputPort(
-                    port_id="scored",
-                    label="Scored",
+                    name="scored",
                     source=SubmodelEndpoint(node_id="score"),
                 )
             ],
@@ -1267,10 +1234,8 @@ def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Pat
 def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_bindings(
     tmp_path: Path,
 ) -> None:
-    primary = _instance("instance_a", "scoring_a")
-    primary.data.label = "Primary scoring"
-    secondary = _instance("instance_b", "scoring_b", instance_of="instance_a")
-    secondary.data.label = "Secondary scoring"
+    primary = _instance("scoring_a", "scoring_a")
+    secondary = _instance("scoring_b", "scoring_b", instance_of="scoring_a")
     graph = PipelineGraph(
         nodes=[
             _node("root_source", config={"code": "return pl.DataFrame()"}),
@@ -1282,19 +1247,19 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
             GraphEdge(
                 id="root_to_primary",
                 source="root_source",
-                target="instance_a",
+                target="scoring_a",
                 targetHandle="in__policy",
             ),
             GraphEdge(
                 id="primary_to_secondary",
-                source="instance_a",
-                target="instance_b",
+                source="scoring_a",
+                target="scoring_b",
                 sourceHandle="out__premium",
                 targetHandle="in__policy",
             ),
             GraphEdge(
                 id="secondary_to_sink",
-                source="instance_b",
+                source="scoring_b",
                 target="root_sink",
                 sourceHandle="out__premium",
             ),
@@ -1330,18 +1295,18 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
         )
         for instance_id, node in occurrences.items()
     } == {
-        "instance_a": ("definition_scoring", "scoring_a", "Primary scoring", None),
-        "instance_b": ("definition_scoring", "scoring_b", "Secondary scoring", "instance_a"),
+        "scoring_a": ("definition_scoring", "scoring_a", "scoring_a", None),
+        "scoring_b": ("definition_scoring", "scoring_b", "scoring_b", "scoring_a"),
     }
     definition = (reparsed.submodels or {})["definition_scoring"]
-    assert [port.port_id for port in definition.input_ports] == ["policy"]
-    assert [port.port_id for port in definition.output_ports] == ["premium"]
+    assert [port.name for port in definition.input_ports] == ["policy"]
+    assert [port.name for port in definition.output_ports] == ["premium"]
     assert {
         (edge.source, edge.target, edge.sourceHandle, edge.targetHandle) for edge in reparsed.edges
     } == {
-        ("root_source", "instance_a", None, "in__policy"),
-        ("instance_a", "instance_b", "out__premium", "in__policy"),
-        ("instance_b", "root_sink", "out__premium", None),
+        ("root_source", "scoring_a", None, "in__policy"),
+        ("scoring_a", "scoring_b", "out__premium", "in__policy"),
+        ("scoring_b", "root_sink", "out__premium", None),
     }
 
 
@@ -1392,23 +1357,22 @@ def test_grouping_creates_one_canonical_definition_and_first_occurrence() -> Non
 
     definition = (result.graph.submodels or {})["pricing"]
     assert definition.file == "modules/pricing.py"
-    assert [port.port_id for port in definition.input_ports] == ["input_1"]
+    assert [port.name for port in definition.input_ports] == ["source"]
     assert [(target.node_id, target.handle_id) for target in definition.input_ports[0].targets] == [
         ("child_a", "left"),
         ("child_b", "right"),
     ]
-    assert [port.port_id for port in definition.output_ports] == ["output_1"]
+    assert [port.name for port in definition.output_ports] == ["child_b"]
     assert definition.output_ports[0].source == SubmodelEndpoint(
         node_id="child_b",
         handle_id="priced",
     )
-    assert {"input_1", "output_1"}.isdisjoint({"child_a", "child_b"})
     assert {
         (edge.source, edge.target, edge.sourceHandle, edge.targetHandle)
         for edge in result.graph.edges
     } == {
-        ("source", occurrence.id, "policies", "in__input_1"),
-        (occurrence.id, "sink", "out__output_1", None),
+        ("source", occurrence.id, "policies", "in__source"),
+        (occurrence.id, "sink", "out__child_b", None),
     }
     assert len(result.graph.edges) == 2
 
@@ -1501,9 +1465,7 @@ def test_grouping_preserves_child_input_configs_and_uses_public_labels() -> None
     definition = (grouped.graph.submodels or {})["pricing"]
     children = definition.graph.node_map
 
-    assert [(port.port_id, port.label) for port in definition.input_ports] == [
-        ("input_1", "drivers")
-    ]
+    assert [port.name for port in definition.input_ports] == ["drivers"]
     assert children["child_router"].data.config["input_scenario_map"] == {
         "drivers": "live",
         "stable_input": "batch",
@@ -1552,8 +1514,7 @@ def test_grouping_does_not_rewrite_configs_to_opaque_public_port_ids() -> None:
     )
 
     definition = (grouped.graph.submodels or {})["pricing"]
-    assert definition.input_ports[0].port_id == "input_1"
-    assert definition.input_ports[0].label == "drivers"
+    assert definition.input_ports[0].name == "drivers"
     assert definition.graph.node_map["child_router"].data.config["input_scenario_map"] == {
         "drivers": "live",
         "input_1": "batch",
@@ -1566,19 +1527,19 @@ def test_canonical_input_port_rejects_more_than_one_parent_binding() -> None:
         nodes=[
             _node("upstream_a"),
             _node("upstream_b"),
-            _instance("instance_a", "scoring"),
+            _instance("scoring", "scoring"),
         ],
         edges=[
             GraphEdge(
                 id="binding_a",
                 source="upstream_a",
-                target="instance_a",
+                target="scoring",
                 targetHandle="in__policy",
             ),
             GraphEdge(
                 id="binding_b",
                 source="upstream_b",
-                target="instance_a",
+                target="scoring",
                 targetHandle="in__policy",
             ),
         ],
@@ -1588,8 +1549,8 @@ def test_canonical_input_port_rejects_more_than_one_parent_binding() -> None:
     with pytest.raises(ParseError, match="bound more than once") as exc_info:
         validate_submodel_instances(graph)
 
-    assert exc_info.value.context["instance_id"] == "instance_a"
-    assert exc_info.value.context["port_id"] == "policy"
+    assert exc_info.value.context["instance_id"] == "scoring"
+    assert exc_info.value.context["port_name"] == "policy"
 
 
 def test_rewrite_boundary_input_names_rejects_duplicate_output_mapping_entries() -> None:
@@ -1677,13 +1638,11 @@ def test_flatten_rejects_boundary_input_names_colliding_after_expansion() -> Non
         input_ports=[],
         output_ports=[
             SubmodelOutputPort(
-                port_id="results",
-                label="Published results",
+                name="results",
                 source=SubmodelEndpoint(node_id="output"),
             ),
             SubmodelOutputPort(
-                port_id="alternate",
-                label="Alternate results",
+                name="alternate",
                 source=SubmodelEndpoint(node_id="output"),
             ),
         ],

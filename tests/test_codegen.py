@@ -2039,8 +2039,12 @@ VALUE = 7
 pipeline = haute.Pipeline("main")
 
 @pipeline.polars
-def transform(df: pl.LazyFrame) -> pl.LazyFrame:
-    df = df.with_columns(pl.lit(1).alias("one"))
+def rows() -> pl.LazyFrame:
+    return pl.LazyFrame({"x": [1]})
+
+@pipeline.polars
+def transform(rows: pl.LazyFrame) -> pl.LazyFrame:
+    df = rows.with_columns(pl.lit(1).alias("one"))
     return df
 """
         first_graph = parse_pipeline_source(source)
@@ -2065,8 +2069,12 @@ USER_PATH = _HautePath("data")
 pipeline = haute.Pipeline("main")
 
 @pipeline.polars
-def transform(df: pl.LazyFrame) -> pl.LazyFrame:
-    return df
+def rows() -> pl.LazyFrame:
+    return pl.LazyFrame({"x": [1]})
+
+@pipeline.polars
+def transform(rows: pl.LazyFrame) -> pl.LazyFrame:
+    return rows
 """
 
         graph = parse_pipeline_source(source)
@@ -2159,11 +2167,15 @@ import haute
 pipeline = haute.Pipeline("main")
 
 @pipeline.polars
-def transform(df: pl.LazyFrame) -> pl.LazyFrame:
+def rows() -> pl.LazyFrame:
+    return pl.LazyFrame({"x": [1]})
+
+@pipeline.polars
+def transform(rows: pl.LazyFrame) -> pl.LazyFrame:
     # haute:preserve-start
     marker = 1
     # haute:preserve-end
-    return df
+    return rows
 """
         graph = parse_pipeline_source(source)
         assert graph.preserved_blocks == []
@@ -2829,15 +2841,13 @@ class TestCanonicalBindingRejection:
                         },
                         "inputPorts": [
                             {
-                                "portId": "records",
-                                "label": "Records",
+                                "name": "records",
                                 "targets": [{"nodeId": "child_a", "handleId": None}],
                             }
                         ],
                         "outputPorts": [
                             {
-                                "portId": "scored",
-                                "label": "Scored",
+                                "name": "scored",
                                 "source": {"nodeId": "child_a", "handleId": None},
                             }
                         ],
@@ -2946,8 +2956,7 @@ class TestDeclaredSubmodelOutputs:
             self._graph(
                 [
                     {
-                        "portId": "export",
-                        "label": "Export",
+                        "name": "export",
                         "source": {"nodeId": "child_export"},
                     }
                 ]
@@ -2956,7 +2965,7 @@ class TestDeclaredSubmodelOutputs:
         )
 
         assert (
-            "output_ports=[{'portId': 'export', 'label': 'Export', "
+            "output_ports=[{'name': 'export', "
             "'source': {'nodeId': 'child_export', 'handleId': None}}]" in files["modules/sm1.py"]
         )
         assert "pipeline.connect" not in files["main.py"]
@@ -2965,15 +2974,14 @@ class TestDeclaredSubmodelOutputs:
         ("ports", "error"),
         [
             (
-                [{"portId": "export", "label": "Export", "source": {"nodeId": "missing"}}],
+                [{"name": "export", "source": {"nodeId": "missing"}}],
                 "missing child",
             ),
             (
                 [
-                    {"portId": "export", "label": "Export", "source": {"nodeId": "child_export"}},
+                    {"name": "export", "source": {"nodeId": "child_export"}},
                     {
-                        "portId": "export",
-                        "label": "Duplicate",
+                        "name": "export",
                         "source": {"nodeId": "child_export"},
                     },
                 ],
@@ -3983,8 +3991,7 @@ class TestGraphToCodeSingleFileGuard:
                         "file": "modules/sm1.py",
                         "inputPorts": [
                             {
-                                "portId": "child_a",
-                                "label": "ChildA",
+                                "name": "child_a",
                                 "targets": [{"nodeId": "child_a"}],
                             }
                         ],
@@ -4094,8 +4101,7 @@ class TestSubmodelImportSafePath:
                         "file": 'modules/a"b\\c.py',
                         "inputPorts": [
                             {
-                                "portId": "child_a",
-                                "label": "ChildA",
+                                "name": "child_a",
                                 "targets": [{"nodeId": "child_a"}],
                             }
                         ],

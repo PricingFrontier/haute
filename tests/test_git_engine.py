@@ -56,6 +56,7 @@ from haute._git import (
 from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import _sanitize_func_name
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
+from tests.conftest import current_source_revision
 
 
 def _data_input_config(label: str) -> str:
@@ -456,8 +457,11 @@ class TestLedgerCaptureOnSave:
     and only when — the clone has a working branch configured."""
 
     @staticmethod
-    def _save_body() -> SavePipelineRequest:
-        return SavePipelineRequest(name="demo", source_file="demo.py")
+    def _save_body(root: Path | None = None) -> SavePipelineRequest:
+        base_revision = (
+            current_source_revision(root / "demo.py", root) if root is not None else None
+        )
+        return SavePipelineRequest(name="demo", source_file="demo.py", base_revision=base_revision)
 
     def _service_save(self, root: Path) -> SavePipelineResponse:
         from unittest.mock import patch
@@ -466,7 +470,7 @@ class TestLedgerCaptureOnSave:
 
         svc = SavePipelineService(root)
         with patch.object(svc, "_validate_api_inputs_have_schemas"):
-            return svc.save(self._save_body())
+            return svc.save(self._save_body(root))
 
     def test_no_state_no_commit(self, repo: Path) -> None:
         result = self._service_save(repo)
@@ -1731,7 +1735,12 @@ class TestRenamePreservingSaveIntegration:
             ],
             edges=[],
         )
-        body = SavePipelineRequest(name="demo", source_file="demo.py", graph=graph)
+        body = SavePipelineRequest(
+            name="demo",
+            source_file="demo.py",
+            graph=graph,
+            base_revision=current_source_revision(root / "demo.py", root),
+        )
         svc = SavePipelineService(root)
         with patch.object(svc, "_validate_api_inputs_have_schemas"):
             return svc.save(body)
@@ -1824,7 +1833,12 @@ class TestRenamePreservingSaveIntegration:
                 ],
                 edges=[],
             )
-            body = SavePipelineRequest(name="main", source_file="rating/main.py", graph=graph)
+            body = SavePipelineRequest(
+                name="main",
+                source_file="rating/main.py",
+                graph=graph,
+                base_revision=current_source_revision(repo / "rating/main.py", repo),
+            )
             svc = SavePipelineService(project_root=repo, pipeline_root=pipeline_root)
             with patch.object(svc, "_validate_api_inputs_have_schemas"):
                 return svc.save(body)

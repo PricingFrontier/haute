@@ -75,7 +75,8 @@ without validating required positional arguments.
 **`init`**: `handle_init` checks for an existing `haute.toml` (abort unless `--force`), resolves the
 project name from `pyproject.toml` (creating/patching it via `_ensure_haute_dependency`, which does
 a structural TOML edit rather than string templating so existing content survives), creates the
-`rating/` package tree and empty config/data/model/output placeholders, writes `haute.toml` via `haute._scaffold.haute_toml`,
+`rating/` package tree (including `rating/utility/__init__.py` and
+`rating/utility/features.py`) and empty config/data/models/outputs placeholders, writes `haute.toml` via `haute._scaffold.haute_toml`,
 writes `.env.example`, writes starter tests, writes CI workflow files for the chosen provider
 (pruning a *different* provider's stale files first on `--force`), installs a pre-commit hook into
 `.githooks/` and — if inside a git repo — `.git/hooks/`, and appends `.gitignore` guard entries via
@@ -108,10 +109,10 @@ write (documented as load-bearing — `click.echo(nl=False)` alone can leave the
 
 **`serve`**: `handle_serve` runs, in order: `_require_loopback_host` (rejects every non-loopback
 value before any startup side effect), `_configure_trusted_hosts` (clears any stale
-`TRUSTED_HOSTS_ENV` remote-bind policy), `_abort_if_port_in_use`
-(pre-flight socket bind/close probe — `SO_EXCLUSIVEADDRUSE` on Windows to avoid a false-negative from
-`SO_REUSEADDR`), then `_detect_dev_frontend_dir` to choose dev vs. prod mode. Dev mode also
-pre-flights the fixed Vite listener at `127.0.0.1:5173`. Frontend detection first considers the
+`TRUSTED_HOSTS_ENV` remote-bind policy), `_detect_dev_frontend_dir` to choose dev vs. prod mode,
+then `_abort_if_port_in_use` (pre-flight socket bind/close probe — `SO_EXCLUSIVEADDRUSE` on Windows
+to avoid a false-negative from `SO_REUSEADDR`; dev mode also runs `_abort_if_vite_port_in_use` to
+pre-flight the fixed Vite listener at `127.0.0.1:5173`). Frontend detection first considers the
 nearest `frontend/package.json` in the working directory's ancestor chain. If that candidate has
 no installed `node_modules`, or no such candidate exists, it considers the `frontend/` beside the
 imported package when that package is an editable source checkout. A viable working-directory
@@ -125,7 +126,8 @@ mode rather than serving source through an unrelated generated bundle.
     IPv6) without becoming client code. It schedules a background thread
     that polls both the backend TCP port and Vite's fixed TCP port and opens the browser only
     once both are accepting connections
-    (`_open_browser_after_backend_ready` → `_wait_for_tcp_ready`), then runs `uvicorn.run(...,
+    (`_open_browser_after_servers_ready` → `_wait_for_servers_then_open_browser` → `_wait_for_tcp_ready`),
+    then runs `uvicorn.run(...,
     reload=True, reload_dirs=[haute package dir])`. The Vite subprocess is terminated in a `finally`
     block on every uvicorn exit path.
   - **Prod mode** (`_run_prod_mode`): checks `static_build_ready(STATIC_DIR)`, fails loudly with a
@@ -173,7 +175,8 @@ scripting) and raises `click.ClickException` — rather than printing a misleadi
 version is registered.
 
 **`impact`**: requires `haute.toml` and `[safety].impact_dataset`; resolves the staging suffix (CLI
-flag wins, else `deploy_config.ci.staging_endpoint_suffix`, else loud error); reads and optionally
+flag wins, else `deploy_config.ci.staging_endpoint_suffix`, else loud error on Databricks transport;
+on other transports an empty suffix yields `staging_name == prod_name`); reads and optionally
 samples (`df.sample(n=..., seed=42)`) the impact dataset parquet; dispatches to
 `_impact_databricks`/`_impact_http` based on `resolve_transport(...).kind`; Databricks probes
 the production endpoint first, while HTTP treats a missing production URL as first deploy and

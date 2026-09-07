@@ -602,7 +602,7 @@ def handle_serve(config: ServeConfig) -> None:
         "if set, otherwise localhost. Only loopback hosts are accepted."
     ),
 )
-@click.option("--port", default=8000, type=int, help="Backend API port.")
+@click.option("--port", default=8000, type=int, help="Backend API port.", show_default=True)
 @click.option("--no-browser", is_flag=True, help="Don't open browser automatically.")
 def serve(host: str | None, port: int, no_browser: bool) -> None:
     """Start the Haute UI server.

@@ -290,17 +290,21 @@ export default function useNodeHandlers({
     }
 
     let newId: string
-    do {
-      nodeIdCounterRef.current += 1
-      newId = `${origNodeType}_${nodeIdCounterRef.current}`
-    } while (occupiedIdentities.has(newId))
+    if (isSubmodel) {
+      newId = String(instanceConfig.alias)
+    } else {
+      do {
+        nodeIdCounterRef.current += 1
+        newId = `${origNodeType}_${nodeIdCounterRef.current}`
+      } while (occupiedIdentities.has(newId))
+    }
     const newNode: Node = {
       id: newId,
       type: original.type,
       position: { x: original.position.x + 60, y: original.position.y + 80 },
       selected: true,
       data: {
-        label: `${origData.label} instance`,
+        label: isSubmodel ? String(instanceConfig.alias) : `${origData.label} instance`,
         description: `Instance of ${origData.label}`,
         nodeType: origNodeType,
         config: instanceConfig,

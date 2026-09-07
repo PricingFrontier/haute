@@ -38,14 +38,14 @@ In scope:
 
 Out of scope (owned elsewhere):
 
-- Graph-wide column projection planning (`projection.py`) and the executor's
+- Graph-wide column projection planning (`src/haute/projection.py`) and the executor's
   backward column-demand analysis belong to
   [execution-engine](../execution-engine/high-level.md). This component supplies
   the shared edge-join demand-narrowing rule that planner consumes.
 - Submodel definition, boundary rewiring, and expansion into an executable graph —
   see [submodels](../submodels/high-level.md).
 - The HTTP routes that drive JSON-cache build/status/delete
-  (`routes/json_cache.py`) — see [caching](../caching/high-level.md).
+  (`src/haute/routes/json_cache.py`) — see [caching](../caching/high-level.md).
 
 ## Behaviour
 
@@ -188,8 +188,8 @@ with the paired form. The base and join frames are explicit roles, not inferred
 from edge order. Every persisted
 incoming edge carries its role as `targetHandle="base"` or `targetHandle="join"`;
 exactly one of each is required. Those handles are the sole role authority, so two different
-frame edges from one API Input are valid and no `baseInput`/`joinInput` config is stored. A
-handle-less or partially handled join is invalid, as is the removed config/decorator role form.
+frame edges from one API Input are valid. Roles come solely from `targetHandle`; no
+`baseInput`/`joinInput` config key exists. A handle-less or partially handled join is invalid.
 
 ## Design rationale
 
@@ -200,12 +200,9 @@ object never changes cardinality. Treating every nesting level as a new table wo
 produce a table explosion with mostly 1-row joins; folding 1-1 objects into dotted
 columns keeps the shredded schema close to what a user actually wants to query.
 
-**Every dropped element is counted, never silently discarded.** Earlier JSON-input
-code resolved a shape mismatch (an array where an object was expected, mid-walk)
-by silently taking the first element and dropping the rest — a conservation
-violation that lost data with no trace. The shred now either resolves the shape
-cleanly or fails loud (a genuine structural mismatch, e.g. a dotted leaf crossing a
-non-empty array) or counts the loss so a build's summary can report exactly how
+**Every dropped element is counted, never silently discarded.** Every array element resolves
+cleanly, fails loud (a genuine structural mismatch, e.g. a dotted leaf crossing a
+non-empty array), or is counted as a skip so a build's summary can report exactly how
 many records/rows were dropped and why. The cache build additionally runs a
 conservation assertion at the root level — emitted-plus-skipped
 must equal records-read — and raises `RuntimeError` if it doesn't, treating an
@@ -228,13 +225,15 @@ that surrounded its full source hash beside that hash, with a digest binding tho
 fields against accidental manifest drift. After a restart, Haute may seed its
 bounded process memo from working/committed metadata only when the current revision
 matches that persisted revision exactly and every matching candidate agrees on the
-signature. Old metadata, conflicting proofs, a revision change, or a platform or
-filesystem that cannot provide a strong token forces a complete source hash.
-After that complete hash, Haute may atomically upgrade a live legacy manifest with
-the new revision-bound proof only when the manifest's recorded size and SHA-256
-match the freshly observed source. A failed upgrade is logged and leaves serving on
-the already-safe full-hash path; it never turns a metadata write into a weaker
-validity decision.
+signature. Metadata recorded for an earlier source generation, conflicting proofs, a
+revision change, or a platform or filesystem that cannot provide a strong token forces
+a complete source hash. After that complete hash, Haute atomically rebinds each live
+manifest whose recorded size and SHA-256 match the freshly observed source but whose
+recorded proof differs (a cache built on another volume, or before this host could
+observe a revision) to the current revision-bound proof, so later processes on this
+host reuse the proof without re-hashing the source. A failed rebind is logged and
+leaves serving on the already-safe full-hash path; it never turns a metadata write
+into a weaker validity decision.
 Runtime goes further to close the hash-then-reopen race: it atomically pins each requested
 artifact to a private file-backed snapshot, verifies size/SHA-256 from that exact
 snapshot in bounded chunks, and gives its stable path to Polars. A rewrite that
@@ -343,6 +342,9 @@ strict build and raises a specific, column-named error instead.
 - A root-level conservation violation (rows lost or duplicated without accounting)
   aborts the build with `RuntimeError` rather than writing a cache with unaccounted
   data loss.
+- If the underlying structured data file changes while its cache is being built, the build
+  aborts with `SourceChangedDuringCacheBuildError` (`RuntimeError`); the JSON cache route
+  surfaces this as HTTP 409 Conflict.
 - At runtime, a v2 apiInput with no emit-true tables, or emit-true tables with no
   selected columns, raises `RuntimeError` with a message telling the user to tick
   `emit` or select a column. A stale, missing, corrupt, or schema-mismatched cache

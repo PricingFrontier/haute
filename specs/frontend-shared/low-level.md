@@ -17,7 +17,7 @@
 | `frontend/src/generated/api-contracts.schema.json`, `frontend/src/generated/api-contracts.generated.ts`, `frontend/src/generated/api-contracts.constants.generated.ts`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.mjs`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.d.mts`, `frontend/src/generated/api-contracts.explore-charts.validators.mjs`, and `frontend/src/generated/api-contracts.explore-charts.validators.d.mts` | Committed contract source, static declarations, lazy Explore constants, and split self-contained validators owned by [engineering-quality](../engineering-quality/low-level.md) and consumed by frontend trust boundaries. The execution validator co-exports its generated schema version and is eager; the Explore chart validator and option constants stay behind its lazy panel chunk. |
 | `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses. Training parsing strictly retains authoritative live-history/truncation and validates complete evaluation/tuning reports, weighted fit evidence, deterministic winner/count links, and bounded evaluation previews while remaining outside the initial JavaScript graph. |
 | `frontend/src/types/pipelineRepair.ts` | Exact-key minimal repair dry-run/apply wire types and parsers. Apply delegates its nested document to `parsePipelineEditorDocument`; no response or request type contains replacement source bytes or migration operations. |
-| `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore result caches, authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
+| `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore/pivot result and job caches, authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
 | `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, streaming chunk size, section open/closed state, MLflow status cache, data sources, file-listing cache. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
 | `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, per-node Explore/modelling selection memory (editor pane, preview pane, and the configured chart/pivot Configure-subview ids), hover highlight, node search open flag. |
@@ -48,7 +48,7 @@
 | `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs; shared by `ModelScoreEditor` and `OptimiserApplyEditor` (node-editors). |
 | `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `frontend/src/panels/editors/ApiInputEditor.tsx` and `frontend/src/panels/editors/DataInputEditor.tsx` (node-editors). |
 | `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash + source + structural version, refetch when any of the three changes" pattern, built on `hashConfig`. Takes a required `context: {source, structuralVersion}` argument alongside the cached result. |
-| `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, native-control and scrollbar defaults, React Flow interaction overrides, canonical semantic surface/status/chart/git-node tokens consumed directly by the theme module and components, and typography role tokens (`--font-data`) that alias Tailwind theme tokens rather than redeclaring them (no Tailwind theme token may be redeclared in the file's plain blocks — they are unlayered and would shadow `@layer theme`; a deliberate override belongs in an `@theme` block, which the gate exempts automatically; and components conventionally reference the role token rather than the raw Tailwind name — adoption and emission both pinned by `__tests__/cssColorTokenization.test.ts`). Also owns the `.toolbar-btn` action-button surface (resting/hover/pressed fills, engaged `aria-pressed` toggle, and a flat unavailable state that keeps its label readable) and the `.toolbar-number-input` spinner suppression. |
+| `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, native-control and scrollbar defaults, React Flow interaction overrides, canonical semantic surface/status/chart/git-node tokens consumed directly by the theme module and components, and typography role tokens (`--font-data`) that alias Tailwind theme tokens rather than redeclaring them (no Tailwind theme token may be redeclared in the file's plain blocks — they are unlayered and would shadow `@layer theme`; a deliberate override belongs in an `@theme` block, which the gate exempts automatically; and components conventionally reference the role token rather than the raw Tailwind name — adoption and emission both pinned by `frontend/src/__tests__/cssColorTokenization.test.ts`). Also owns the `.toolbar-btn` action-button surface (resting/hover/pressed fills, engaged `aria-pressed` toggle, and a flat unavailable state that keeps its label readable) and the `.toolbar-number-input` spinner suppression. |
 | `frontend/src/utils/chartHelpers.ts` | Small pure chart leaf helpers: compact K/M/scientific axis labels and inclusive evenly spaced Y ticks (a degenerate range yields one tick). |
 | `frontend/src/utils/formatTrace.ts` | Cross-surface trace-value/expression/calculation/schema-summary presentation formatting: retains date-shaped strings, represents non-finite numbers explicitly, quotes ordinary strings, escapes column names before substitution, and uses longest names first to avoid partial replacement. |
 | `frontend/src/utils/mlflowOptimiser.ts` | Pure MLflow run/model metadata classifier: the canonical `params.mode` value selects ratebook versus online; absent or invalid values yield the empty mode. |
@@ -106,7 +106,7 @@
   from) falls back to `source: ""` and `structuralVersion: -1` — sentinels
   that can never equal a real value, so the record reads as stale rather
   than silently matching whatever the caller happens to be viewing.
-- **`CachedPivotResult` / `ActivePivotJob`** (`stores/useNodeResultsStore.ts`): records keyed by
+- **`CachedExplorePivotResult` / `ActiveExplorePivotJob`** (`stores/useNodeResultsStore.ts`): records keyed by
   `${exploreNodeId}:${pivotId}`. A cached matrix stores its backend calculation identity and
   dataframe-cache key; an active job stores the same composite ownership plus job id/source.
   Completion replaces only that pivot's result, failure stays local, and disabling a card does
@@ -115,9 +115,7 @@
 - **`AddSourceResult`** (`stores/useSettingsStore.ts`): `addSource`'s
   return type — `{ok: true, key: string}` on success, or
   `{ok: false, reason: "empty"}` / `{ok: false, reason: "duplicate", key}`
-  on rejection. Replaces a bare `string | null` so a caller can surface
-  *why* the add failed rather than treating `null` as an unexplained
-  no-op.
+  on rejection, allowing callers to surface why the add failed.
 - **`DispersionParam`** (`"theta" | "var_power"`), **`DispersionEstimateStart`**
   (`{status: "started", job_id}`), **`DispersionEstimateStatus`**
   (`{status: JobStatus, progress, message, elapsed_seconds, param, value,
@@ -132,11 +130,13 @@
   execution_metrics?}` — the response from the frontier background-job
   status endpoint. `FrontierResponse` has an optional `job_id` for the
   `status === "started"` case.
-- **`NodeResultsState`**: the store's full shape — six job/result record
-  pairs (`{previews, solveResults+solveJobs, trainResults+trainJobs,
-  exploreResults+exploreJobs}`), a `columnCache` keyed
-  `"nodeId"` or `"nodeId:source"`, and a `pinnedPreviewNodeId` that is
-  exempted from LRU eviction across all four result caches.
+- **`NodeResultsState`**: the store's full shape — five result and job
+  record pairs (`previews`, `solveResults` + `solveJobs`, `trainResults` + `trainJobs`,
+  `exploreResults` + `exploreJobs`, `pivotResults` + `pivotJobs`), `pivotStartClaims`,
+  a `columnCache` keyed `"nodeId"` or `"nodeId:source"`, and a `pinnedPreviewNodeId`
+  that is exempted from LRU eviction in the four caches trimmed by
+  `trimCacheByRecency` and whose pivot entries are likewise exempted by
+  `trimExplorePivotCache`.
 - **`SettingsState.mlflow`**: `{status: "pending"|"connected"|"error",
   backend, host, installed, importable, trackingConfigured, detail}` —
   `useMlflowStatus()` (exported alongside the store) maps `"pending"` to
@@ -299,16 +299,17 @@ focus nor leaves stale callbacks.
 - **`trimCacheByRecency`** first prunes any recency-map entries whose key
   no longer exists in `records` (handles external deletion, e.g.
   `clearNode`), then evicts the least-recently-touched entries beyond
-  `maxEntries`, always excluding `pinnedKey` — if pinning would leave more
-  entries than `maxEntries`, the pinned entry is still never evicted (the
-  bound is soft in that one case).
+  `maxEntries`, always excluding `pinnedKey` (and `trimExplorePivotCache`
+  similarly excludes every pivot entry of `pinnedPreviewNodeId`) — if pinning
+  would leave more entries than `maxEntries`, the pinned entries are still never
+  evicted (the bound is soft in that one case).
 - **`addSource`** performs no state change for a blank/whitespace-only name
   (`{ok: false, reason: "empty"}`) or for a name whose sanitized key
   already exists in `sources` (`{ok: false, reason: "duplicate", key}`) —
   callers must check `result.ok` before reading `result.key` and setting
   `activeSource`. `Toolbar`'s add-source form keeps itself open and shows
-  the reason as inline error text on rejection, rather than closing
-  silently as it did when the return type was a bare `string | null`.
+  the reason as inline error text on rejection rather than closing
+  silently.
 - **`useStaleConfigEstimate` compares the complete result identity.**
   `cachedResult` carries `configHash`, `source`, and `structuralVersion`;
   any mismatch marks the estimate stale.
@@ -425,7 +426,7 @@ same Vitest config.
   the counter-not-advancing-on-suppression invariant.
 - **`useUIStore`** (`frontend/src/stores/__tests__/useUIStore.test.ts`,
   `frontend/src/stores/__tests__/useUIStore.dirty.derived.test.ts`): modal-mutual-exclusion (opening
-  utility/imports/git closes the other two) and per-node selection-map
+  utility/imports/git/assistant closes the other three) and per-node selection-map
   helpers.
 - **Chrome components**: `frontend/src/__tests__/components/ErrorBoundary.test.tsx`
   (root-level, under `frontend/src/__tests__/components/`),
@@ -449,6 +450,15 @@ same Vitest config.
   (asserts the component
   itself never re-renders its own subtree — it exists purely to host the
   hook's side effects).
+- **Save precondition**: `frontend/src/hooks/__tests__/usePipelineAPI.test.ts` proves the
+  save payload carries the loaded `source_revision` as `base_revision` (`null` for a
+  never-persisted document) and that a `409` whose detail starts with
+  `stale_document_revision` leaves the graph dirty, marks the document unsynchronised, sets
+  the sync banner, toasts the conflict, and keeps the request-facing revision ref unchanged,
+  while any other `409` still surfaces the generic failure toast.
+  `frontend/e2e/save-conflict.spec.ts` runs the two-page conflict against real routes: the
+  stale save is rejected, the local edit survives until an explicit reload, and a fresh save
+  succeeds afterwards.
 - **Generic hooks**: `frontend/src/__tests__/hooks/useClickOutside.test.ts` + `frontend/src/__tests__/hooks/useClickOutside.gaps.test.tsx`,
   `frontend/src/__tests__/hooks/useDragResize.test.ts`, `frontend/src/__tests__/hooks/useJobPolling.test.ts` (root-level, generic
   poller mechanics) plus the colocated dedup/progress-throttle variants,
@@ -565,8 +575,7 @@ error additionally retains `remediation` and nullable `estimated_peak_bytes`/
 
 `frontend/src/api/types.ts`, `client.ts`, and `types/guards.ts` own the
 versioned capability, input-cache job/status, and output-write models.
-Removed `fetchIoFormats` and legacy Databricks cache/sink clients have no
-compatibility wrappers. Settings/cache stores key remote work by safe
+Settings/cache stores key remote work by safe
 identity digest and job id, not table spelling. Guard tests cover every union
 leg, order retention, unknown versions, readiness/freshness separation,
 error/redaction fields, and malformed-payload rejection.
@@ -612,18 +621,19 @@ same node. Consumer ownership is recorded in `ownership.toml`.
 `haute.pipeline_editor_document`. Exact-key validation applies recursively to document,
 capabilities, diagnostics, spans, nodes, edges, unresolved connections, submodels, and ports;
 duplicate recovery ids, non-finite coordinates, invalid spans, and edges with missing visual
-endpoints throw at ingestion. Every node requires `function_name`, nullable
+endpoints throw at ingestion. When adapting recovery graphs, every submodel node's id and label must
+strictly equal its alias (`${PARSER}: submodel node <recovery_id> id must equal its alias` and `${PARSER}: submodel node <recovery_id> label must equal its alias`). Every node requires `function_name`, nullable
 `default_input_name`, `source_handle_input_names`, and nullable `config_reference`; every edge
-requires nullable `input_name` (ready executable edges are non-null); every submodel input port
-has exact `input_port_input_names` coverage; capabilities require the sorted reserved API-frame
+requires nullable `input_name` (ready executable edges are non-null); every submodel port
+carries exactly `name`; capabilities require the sorted reserved API-frame
 labels. `adaptPipelineEditorDocument` clones configs and maps these values to transient
 `_functionName`, `_defaultInputName`, `_sourceHandleInputNames`, `_configReference`,
-`_inputName`, and `_inputPortInputNames` metadata alongside recovery presentation state.
+and `_inputName` metadata alongside recovery presentation state.
 
 `editorIdentities.ts` sends bounded prospective nodes to
 `POST /api/pipeline/editor-identities`, requires response cardinality and order to exactly match
-the request, supplies exact public-label coverage for submodel and drilled Input handles,
-requires each returned source-handle map to cover exactly the requested handles, and enforces
+the request, sends `out__<name>` handles for occurrences and bare port names for drilled Input
+boundaries, requires each returned source-handle map to cover exactly the requested handles, and enforces
 ordinary-versus-multi-output default-identity nullability before attaching node and edge identities
 immutably. Missing, reordered, malformed, semantically mismatched, or rejected identities throw
 before callers commit graph or history state. No frontend
@@ -632,9 +642,8 @@ production module derives Python executable names or config references.
 Raw canonical graphs entering an editable surface are resolved recursively and
 atomically: the root is one identity scope, and each embedded submodel definition
 is a separate scope. A definition scope adds a synthetic Input boundary whose
-handles are its declared input-port ids and whose labels are the corresponding
-public input labels; the returned exact handle map becomes
-the definition's transient `_inputPortInputNames`, while child-node and child-edge
+handles are its declared input-port names (the handle is the executable name, so
+no identity map is kept), while child-node and child-edge
 identities are attached normally. No partially resolved root or registry is
 published. Conversely, every canonical graph request uses the shared recursive
 projection that removes these editor-only fields before schema validation.
@@ -648,6 +657,11 @@ genuinely non-mutable document blames unresolved load diagnostics. `systemFailur
 authored recovery diagnostics: setting it also marks the graph unsynchronised, while any newly
 validated document atomically clears it. Reset leaves the editor without authority until a new
 validated document arrives.
+`usePipelineAPI.handleSave` sends `sourceRevisionRef.current` as `base_revision`; the ref holds
+an empty string for a document that has never been persisted, which is sent as `null`. On a
+`409` whose `detail` string begins with
+`stale_document_revision:` it calls `setGraphSynchronized(false)`, sets the sync banner, toasts
+the conflict, leaves the saved baseline untouched, and returns `false`.
 
 `useWebSocketSync` validates version-1 editor-document frames with that same parser. It calls the
 document-status transition before considering graph dirtiness; validated document nodes always

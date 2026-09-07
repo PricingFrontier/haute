@@ -196,12 +196,12 @@ afterEach(cleanup)
 describe("BreadcrumbBar — hover is className-driven (behavioural)", () => {
   const twoLevels: ViewLevel[] = [
     { type: "pipeline", name: "Main", file: "main.py" },
-    { type: "submodel", name: "Child", file: "child.py", instanceId: "instance_child", definitionId: "definition_child", readOnly: false },
+    { type: "submodel", name: "Child", file: "child.py", instanceId: "Child", definitionId: "definition_child", readOnly: false },
   ]
   const threeLevels: ViewLevel[] = [
     { type: "pipeline", name: "Root", file: "root.py" },
-    { type: "submodel", name: "Middle", file: "middle.py", instanceId: "instance_middle", definitionId: "definition_middle", readOnly: false },
-    { type: "submodel", name: "Leaf", file: "leaf.py", instanceId: "instance_leaf", definitionId: "definition_leaf", readOnly: false },
+    { type: "submodel", name: "Middle", file: "middle.py", instanceId: "Middle", definitionId: "definition_middle", readOnly: false },
+    { type: "submodel", name: "Leaf", file: "leaf.py", instanceId: "Leaf", definitionId: "definition_leaf", readOnly: false },
   ]
 
   it("non-last crumb button does not mutate inline style on mouseEnter", () => {

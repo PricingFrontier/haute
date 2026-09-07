@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Tests for useWebSocketSync — WebSocket connection lifecycle, message handling,
  * reconnection with exponential backoff, error handling, and cleanup on unmount.
  *
@@ -179,6 +179,22 @@ function pipelineDocumentFrame(
 // ── Test suites ──────────────────────────────────────────────────
 
 describe("useWebSocketSync", () => {
+  it("resyncs and applies the authoritative parent document while drilled into a child", async () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ source_file: "main.py", source_revision: "old" }), true)
+    const onDocumentReload = vi.fn()
+    const params = { ...makeHookParams("modules/pricing.py"), onDocumentReload }
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+    expect(JSON.parse(latestWS().send.mock.calls[0][0])).toMatchObject({ source_file: "main.py" })
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(
+        makePipelineEditorDocument({ source_file: "main.py", source_revision: "new" }),
+      )) }))
+    })
+    expect(onDocumentReload).toHaveBeenCalledOnce()
+    expect(useDocumentStatusStore.getState().sourceRevision).toBe("new")
+  })
+
   let originalWebSocket: typeof globalThis.WebSocket
 
   beforeEach(() => {
@@ -509,7 +525,7 @@ describe("useWebSocketSync", () => {
     it("accepts synced submodel output handles from the canonical definition registry", async () => {
       const params = makeHookParams("rating/main.py")
       const sourceNode: Node = {
-        id: "submodel_instance_inputs",
+        id: "Inputs",
         type: "submodel",
         position: { x: 0, y: 0 },
         data: {
@@ -540,8 +556,7 @@ describe("useWebSocketSync", () => {
             graph: { nodes: [], edges: [] },
             inputPorts: [],
             outputPorts: [{
-              portId: "output_1",
-              label: "live_switch",
+              name: "output_1",
               source: { nodeId: "live_switch", handleId: null },
             }],
           },

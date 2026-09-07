@@ -416,8 +416,9 @@ class TestBugB7DissolveTargetOnly:
         )
 
         def node(node_id: str, node_type: NodeType, **config: str) -> GraphNode:
+            label = config.get("alias", node_id) if node_type == NodeType.SUBMODEL else node_id
             return GraphNode(
-                id=node_id, data=NodeData(label=node_id, nodeType=node_type, config=config)
+                id=node_id, data=NodeData(label=label, nodeType=node_type, config=config)
             )
 
         def definition(definition_id: str, first: str, second: str) -> SubmodelDefinition:
@@ -436,12 +437,8 @@ class TestBugB7DissolveTargetOnly:
                             ).model_dump()
                         ],
                     },
-                    "inputPorts": [
-                        {"portId": "base", "label": "base", "targets": [{"nodeId": first}]}
-                    ],
-                    "outputPorts": [
-                        {"portId": "quotes", "label": "quotes", "source": {"nodeId": second}}
-                    ],
+                    "inputPorts": [{"name": "base", "targets": [{"nodeId": first}]}],
+                    "outputPorts": [{"name": "quotes", "source": {"nodeId": second}}],
                 }
             )
 

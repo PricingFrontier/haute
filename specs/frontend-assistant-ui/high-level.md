@@ -53,8 +53,9 @@ re-checked on every panel open, not polled.
 
 Readiness also shows the effective provider endpoint host, asserted trust
 class, and maximum sensitivity without displaying credentials or URL query
-material. Invalid or missing egress policy disables sending with the
-field-specific backend migration reason.
+material. A missing `[assistant].egress` table renders as an unconfigured
+readiness reason in the composer; an invalid egress policy fails the status
+fetch and renders the panel's error state with retry.
 
 **A turn streams into the transcript live.** Sending a message appends the user entry,
 disables the composer, and swaps the send button for a stop button. Assistant text renders
@@ -125,7 +126,7 @@ terminal frame is a contract violation: it cancels the response and renders the 
 interrupted rather than silently preserving a false completed state.
 
 **Assistant responses are validated at the feature boundary.** Status and
-session JSON, every history row, and every field of all eight SSE variants are
+session JSON, every history row, and every field of all seven SSE variants are
 checked at runtime before they become typed values or reach a store callback.
 Required object/array/primitive shapes are closed while unrelated additional
 fields are tolerated for additive compatibility. Contract drift raises a
@@ -182,6 +183,8 @@ cannot partially append text or activity.
 
 - **Status fetch failure** renders the panel's error state with retry — an assistant of unknown
   readiness never presents an enabled composer.
+- **Session-list fetch failure** leaves the transcript untouched and renders a retryable error state on
+  the list screen; it never blanks the panel.
 - **Send-time rejections** (400 unconfigured, 404 stale session, 409 concurrent turn) map to
   distinct inline messages; the stale-session case offers starting a new chat, and none of
   them silently retry.

@@ -6,10 +6,13 @@ import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from click.testing import CliRunner
+from hypothesis import settings as hypothesis_settings
 
 from haute._config_io import config_path_for_node
 from haute._execution_context import ExecutionProfile
@@ -20,6 +23,85 @@ from haute.trace import _cache as _trace_cache
 from tests import _write_sandbox as _ws
 
 _TEST_LOCAL_SESSION_TOKEN = "pytest-haute-local-session-token"
+
+
+# Hypothesis' 200ms per-example deadline measures wall clock, so a property
+# that touches the filesystem can miss it on a loaded machine and pass on the
+# retry, which Hypothesis reports as FlakyFailure ("Unreliable test timings!").
+# Every deliberate budget in this suite already sets deadline=None (see
+# tests/_property_budget.pr_budget); making that the default means a property
+# need not restate it. A test that wants a deadline still gets one by passing
+# it to its own @settings.
+hypothesis_settings.register_profile("haute", deadline=None)
+hypothesis_settings.load_profile("haute")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_repository_source_cache(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[None]:
+    """Keep the suite's source snapshots out of the working tree.
+
+    A test that never sets its own project root inherits the repository root,
+    so ``SourceCacheStore`` publishes its snapshots into
+    ``<repo>/.haute_cache/inputs``. That store is shared by every xdist
+    worker, is never cleaned between runs, and admits at most
+    ``HAUTE_INPUT_CACHE_MAX_GENERATIONS`` (64) generations store-wide, counted
+    across every identity rather than per identity. Local runs therefore
+    accumulate generations until the cap is reached, after which any test
+    publishing a new identity fails with ``SourceCacheQuotaExceededError``.
+    CI never sees it: a fresh checkout starts with an empty cache.
+
+    Stores opened against the repository root are redirected to a per-session
+    directory — the same redirect ``_widen_sandbox_root`` applies to the
+    widened root. A store opened against a test's own tmp_path is untouched.
+    """
+    from haute._source_cache import SourceCacheStore
+
+    repository_root = Path(__file__).resolve().parents[1]
+    session_cache_root = tmp_path_factory.mktemp("source-cache")
+    original_init = SourceCacheStore.__init__
+
+    def init_off_the_working_tree(
+        self: SourceCacheStore,
+        root: str | Path,
+        **kwargs: Any,
+    ) -> None:
+        resolved = Path(root).resolve()
+        original_init(
+            self,
+            session_cache_root if resolved == repository_root else resolved,
+            **kwargs,
+        )
+
+    patch = pytest.MonkeyPatch()
+    patch.setattr(SourceCacheStore, "__init__", init_off_the_working_tree)
+    try:
+        yield
+    finally:
+        patch.undo()
+
+
+@pytest.fixture(autouse=True)
+def _patient_preparation_join(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wait longer for a preparation thread than a production shutdown does.
+
+    ``TrainService._join_preparation``'s 10s default bounds a graceful
+    shutdown. Under ``-n auto`` the suite runs one worker per core against a
+    single CPU pool, and a preparation thread that finishes well inside a
+    second can still miss that bound, failing the test with "Training
+    preparation for job ... is still running" for a reason the code under test
+    is not answerable for. Only the default moves: a test that pins the
+    timeout itself (the expiry case passes 0.01s) is handed through unchanged.
+    """
+    from haute.routes._training_lifecycle import TrainService
+
+    original = TrainService._join_preparation
+
+    def join_patiently(self: TrainService, job_id: str, *, timeout: float = 120.0) -> None:
+        original(self, job_id, timeout=timeout)
+
+    monkeypatch.setattr(TrainService, "_join_preparation", join_patiently)
 
 
 @pytest.fixture(autouse=True)
@@ -457,6 +539,16 @@ def make_output_node(nid: str, fields: list[str] | None = None) -> GraphNode:
         id=nid,
         data=NodeData(label=nid, nodeType="output", config=make_output_config(fields or [])),
     )
+
+
+def current_source_revision(path: str | Path, project_root: str | Path) -> str | None:
+    """Return the on-disk document revision a save must name, or None when the file is absent."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    target = Path(path)
+    if not target.is_file():
+        return None
+    return load_pipeline_editor_document(target, project_root=Path(project_root)).source_revision
 
 
 def make_edge(

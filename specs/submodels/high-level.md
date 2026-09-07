@@ -62,35 +62,46 @@ by one shared **definition** and any number of parent-graph **instances**:
   typed model only; it exposes no dictionary-style compatibility access or
   mutation API.
 - Every occurrence is represented solely by a `NodeType.SUBMODEL` node in the
-  parent graph. Its node id is the immutable `instanceId`; its typed config
-  contains `definitionId`, a stable source alias, and optional `instanceOf`.
+  parent graph. Its node id is the occurrence's canonical name (`node.id == label == alias == name`);
+  its typed config contains `definitionId`, the canonical identifier `alias`, and optional `instanceOf`.
   Exactly one occurrence for each definition omits `instanceOf` and is the
   editable definition owner. Every created instance points `instanceOf` at
   that owner; chains, self-references, missing owners, cross-definition owners,
-  and multiple owners are invalid. The node owns its mutable
-  display label and position, while its incident parent edges own its bindings.
+  and multiple owners are invalid. The node owns its occurrence name
+  and position, while its incident parent edges own its bindings.
+  `node.id == node.data.label == config.alias` is an invariant enforced on validation (raising `ParseError` if violated).
+  The registration signature `pipeline.submodel(file, name, *, instance_of=None)` accepts `name` as positional argument and does not accept `definition_id=`, `instance_id=`, `alias=`, or `label=`.
+  Recovery uses the alias only.
+- Renaming an occurrence changes its identity, exactly as renaming an ordinary
+  node does: in the editor the node id stays until Save (the alias and every
+  consumer binding change at once), codegen emits the name, and the reparse
+  re-keys the node id and the `submodel_runtime/<name>/...` runtime ids.
+  Accepted consequence: preview caches, trace snapshots and drilled targets
+  keyed on the old runtime id are invalidated by the rename, and a drilled
+  view whose occurrence no longer exists after a reload returns to the root
+  view.
   There is no second top-level instances map. Internal definition positions are
   occurrence-local: grouping subtracts the first occurrence's origin and each
   expansion adds the selected occurrence's position, so copies never inherit
   another occurrence's absolute canvas coordinates.
-- Definition ids, instance ids, and public port ids are structural identity, not
-  executable frame names or presentation. Renaming a definition, instance, source alias, internal node,
-  or file must not change them. Authored and generated source persists these ids
-  explicitly. Missing definition, instance, alias, or port identity is an
+- Definition ids and public port names are structural identity, not
+  executable frame names or presentation. Renaming a definition, an occurrence, an
+  internal node, or a file must not change them. Authored and generated source persists these ids
+  explicitly. Missing definition, alias, or port identity is an
   invalid document and fails during parsing; identity is never inferred from a
-  file name, node id, display label, registry key, or internal child id.
-- A public input port has an immutable `portId`, label, and zero or more ordered
+  file name, occurrence name (the alias), registry key, or internal child id.
+- A public input port has an immutable `name` and zero or more ordered
   internal targets `{nodeId, handleId}`. Each occurrence may bind that public
   input from at most one parent edge; the single binding fans out to every
   declared target. A public output port has an immutable
-  `portId`, label, and exactly one internal source `{nodeId, handleId}`.
-  Parent edges may address only `in__<portId>` and `out__<portId>` handles;
+  `name` and exactly one internal source `{nodeId, handleId}`.
+  Parent edges may address only `in__<name>` and `out__<name>` handles;
   internal child ids are never a parent-graph interface. After backend
-  sanitisation, the input label is the child-side frame name and the output
-  label is the parent-side frame name. Aliases and port ids never become
-  executable parameter names.
+  sanitisation, the public input port name is the child-side frame name.
+  Occurrence names (or `<alias>__<name>`) name submodel outputs downstream;
+  a public port has exactly one name, and it is a canonical identifier.
 - Referential integrity is checked on load, mutation, flatten, and save:
-  instance definitions must exist, public port ids must be unique, endpoints
+  instance definitions must exist, public port names must be unique, endpoints
   must exist with matching directions, and parent bindings must use a declared
   port of the correct direction. Stale or malformed declared references fail
   with the affected definition, instance, and port identified.
@@ -122,9 +133,9 @@ undoable definition edit. Every collapsed
 occurrence presents one generic `inputs` socket rather than one socket per
 public frame. Multiple parent edges may share that socket. Each drop uses the
 upstream frame's authoritative executable name to select a declared public port;
-an owner atomically allocates the first unused `input_N` id when that identity is
-new, while a copy may bind only identities already present in the shared
-definition. The stored edge targets the canonical named `in__<portId>` handle,
+an owner mints a port named after that identity (suffixing `_2`, `_3` on
+collision across both directions) when it is new, while a copy may bind only
+names already present in the shared definition. The stored edge targets the canonical named `in__<name>` handle,
 but every such handle is visually co-located at the one generic socket. The
 named frames are exposed only after drill-in, where the Input boundary renders
 them as a multi-frame output and each may be routed to one or more child targets.
@@ -159,10 +170,10 @@ Edge Join role, trace, and projection references). Unknown or stale declared
 references fail loudly; opaque config fields are never guessed. Cross-instance
 data flow is legal only from a declared public output to a declared public
 input.
-Extraction preserves the existing semantic frame name by assigning it to the
-new public port label at the same time as it rewires the edge; remaining parent
+Extraction preserves the existing executable frame name by making it the new
+public port's name at the same time as it rewires the edge; remaining parent
 consumers therefore require no generated alias/port rename. Expansion resolves
-public input and output labels to the concrete upstream or qualified child
+public input and output names to the concrete upstream or qualified child
 source names inside cloned and remaining configs. Ordinary Polars code keeps
 its public logical name through an explicit `inputMapping` whenever the physical
 expanded source name differs. Every schema-owned incoming-frame reference is
@@ -181,10 +192,10 @@ rendered boundary-port cards: definitions with no public ports (including a
 group made entirely from disconnected source nodes) must use the same qualified
 preview and trace targets.
 
-Code generation emits each definition file once and one aliased
+Code generation emits each definition file once and one
 `pipeline.submodel(...)` registration per occurrence. Parent connections use
 public ports and never name internal children. Parse -> codegen -> parse must
-preserve definition identity, instance ids, aliases, labels, positions, ports,
+preserve definition identity, occurrence names, labels, positions, ports,
 and independent bindings. Every generated config-backed node resolves its
 sidecar from the owning pipeline directory. A definition emitted under
 `modules/` must not reinterpret `config/...` relative to the module directory.
@@ -208,22 +219,18 @@ must resolve the original pipeline-owned sidecars.
   the parent graph and replaced with one `SUBMODEL` occurrence. The GUI reads
   `nodes`, `edges`, and `submodels` together from the canonical graph store at
   submission time; an effect-mirrored ref is never the source of a create
-  request. Creation
-  allocates a fresh opaque immutable instance id
-  (`submodel_instance_<uuid>`); the initial definition id and alias are the
-  sanitised name, and the occurrence config is exactly
+  request.  Creation sets the occurrence node id to the sanitised name (`node.id = sm_name`);
+  the initial definition id and alias are the sanitised name, and the occurrence config is exactly
   `{definitionId, alias}`. Cross-boundary edges are grouped into stable public
   ports: each logical input created by extraction records one or more ordered
   internal targets and each output records one internal source. Parent handles are
-  `in__<portId>`/`out__<portId>`, never internal node ids, and each logical
+  `in__<name>`/`out__<name>`, never internal node ids, and each logical
   input produces exactly one parent binding even when it fans out internally.
-  Each public label preserves the executable name that crossed that boundary
+  Each public port name preserves the executable name that crossed that boundary
   before grouping, so schema-owned selectors and Polars input mappings remain
-  unchanged; a duplicate executable label rejects creation rather than being
-  disambiguated with a generated alias or port id. That gate is applied
-  separately to the input ports and to the output ports, on the sanitised
-  label, so two boundary frames that would share one executable name fail
-  creation with `duplicate_public_label`; codegen still rejects a duplicate
+  unchanged; a duplicate executable name is disambiguated with sequential numeric
+  suffixes (`_2`, `_3`, ...) across both input and output ports. The unified port
+  name is validated as a canonical identifier. Codegen still rejects a duplicate
   derived input name at save. The
   parent registry gains one typed definition keyed by its exact definition id
   and containing the file, structured ports, and internal graph. The
@@ -290,9 +297,9 @@ must resolve the original pipeline-owned sidecars.
   identity already present in the parent under any casing is a conflict,
   matching the case-insensitive module no-clobber rule.
 - **Canonical boundary identity and executable naming are separate.** Parent edges
-  address only `in__<portId>` and `out__<portId>` handles. Public port labels
-  provide the semantic executable frame names, internal endpoint ids stay
-  definition-private, and neither may substitute for immutable port identity. Drill-down projects the
+  address only `in__<name>` and `out__<name>` handles. Public input port names
+  and occurrence names provide the executable frame names, internal endpoint ids stay
+  definition-private, and public ports have a single name field. Drill-down projects the
   definition contract as one composite Input and one composite Output card.
   Declared outputs remain visible and round-trip without consumers. Draft or
   stale boundary handles are rejected before save or execution.
@@ -327,9 +334,6 @@ must resolve the original pipeline-owned sidecars.
   validation, name sanitisation) can run as fast in-memory unit tests, and the
   route layer's only job is turning its `ValueError`s into HTTP responses and
   handing its output to the save transaction.
-- **Both mutating endpoints reuse the pipeline save transaction rather than
-  writing files directly.** This rule is replaced by the single persistence
-  boundary below.
 - **There is one persistence boundary.** Submodel endpoints only validate and
   transform graphs. `POST /api/pipeline/save` is the sole route that writes
   parent code, modules, configs, or sidecars and the sole route that deletes
@@ -371,9 +375,9 @@ must resolve the original pipeline-owned sidecars.
   [execution-engine](../execution-engine/high-level.md), tracing, deployment, expression-parsing,
   and the dissolve route; those consumers request the flat form and never execute a
   canonical occurrence node directly.
-- Depends on the codegen component through `SavePipelineService`: create emits the rewritten
-  parent plus submodel files; dissolve uses `graph_to_code` only when no submodels remain and
-  `graph_to_code_multi` when other occurrences remain.
+- Depends on [codegen](../codegen/high-level.md) through the explicit Save transaction:
+  codegen is invoked only by the explicit Save transaction (`SavePipelineService`,
+  server-api); the submodel routes neither generate nor write code.
 - Depends on [server-api](../server-api/high-level.md) for
   `SavePipelineService`, the shared `save_lock`, `pipeline_dir()` resolution,
   sidecar position loading, and the codebase-wide sanitised-error-detail
@@ -388,15 +392,17 @@ must resolve the original pipeline-owned sidecars.
   Create and dissolve return that revision unchanged; only explicit Save
   replaces it with a newly committed revision.
 - A downstream node fed across a canonical submodel boundary resolves the
-  occurrence's `out__<portId>` handle through the referenced definition to
+  occurrence's `out__<name>` handle through the referenced definition to
   that public output's internal `{nodeId, handleId}` data source. Its parent
-  input name is the sanitised public output label emitted by codegen; the
-  occurrence alias and structural port id are not part of that name. See
+  input name is the occurrence's own sanitised name (`_sanitize_func_name(alias)`),
+  or `<name>__<port_name>` when the referenced definition declares more than one
+  output port (aliases are unique among a parent's nodes by construction;
+  public ports have one name). See
   [frontend-node-editors](../frontend-node-editors/high-level.md)
   for chip derivation and [codegen](../codegen/high-level.md) for the backend
   rule.
 - A downstream `edgeJoin`'s base/join role is governed solely by each boundary edge's target
-  handle. Resolve `out__<portId>` for the edge's executable input identity before duplicate-name
+  handle. Resolve `out__<name>` for the edge's executable input identity (the occurrence name or `<name>__<port_name>`) before duplicate-name
   validation, so two public outputs of one occurrence remain distinct even though their parent
   edges share the same occurrence `source`.
 
@@ -407,10 +413,10 @@ must resolve the original pipeline-owned sidecars.
   actionable explanation. An id absent from the submitted graph, an existing
   canonical submodel name, or a changed `base_revision` returns `409`; no graph
   transform or write runs.
-- A submitted graph that cannot be generated because another node has invalid
-  configuration returns the same actionable `400` as ordinary pipeline save;
-  create never leaks that expected validation failure as `500`, and the save
-  transaction leaves every parent and child artifact unchanged.
+- Creation performs a read-only module no-clobber preflight (`validate_new_module_files`);
+  any configuration collision raises `ConfigError` mapped to `400`. Any other unexpected
+  `ValueError` during graph transformation is logged server-side and returned as a sanitised
+  `400` error, never leaking internal graph walk details or escaping as `500`.
 - If the new module path already exists under any casing, creation returns
   `409` before any file is touched.
 - A submodel name that would collide with a Windows reserved device name
@@ -433,9 +439,10 @@ must resolve the original pipeline-owned sidecars.
   containing `/` or `\`) returns `400`; a reference resolving
   outside the project returns `403`. These typed path failures are mapped
   before filesystem access rather than escaping as an uncaught `ValueError`.
-- A null target handle on an inbound submodel edge is an unassigned editor
-  draft and is omitted by `flatten_graph`. A missing outbound handle, a
-  wrong-prefixed mapped handle, or a stale child reference raises `ParseError`.
+- A null inbound handle on an occurrence raises a contextual `ParseError`
+  (matching `_port_name`) during `flatten_graph` through
+  `resolve_submodel_instances`. A missing outbound handle, a wrong-prefixed
+  mapped handle, or a stale child reference likewise raises `ParseError`.
   Because dissolve is transform-only, these failures leave the submitted
   graph unchanged and cannot touch the parent or child files.
 - Any failure partway through the later explicit Save transaction (config

@@ -1094,9 +1094,7 @@ def src() -> pl.DataFrame:
 
 pipeline.submodel(
     "sub_b.py",
-    definition_id="circular_b",
-    instance_id="submodel__circular_b",
-    alias="circular_b",
+    "circular_b",
 )
 """
         sub_b_code = f"""\
@@ -1107,9 +1105,7 @@ pipeline = haute.Pipeline("circular_b")
 
 pipeline.submodel(
     "test_pipeline.py",
-    definition_id="circular_main",
-    instance_id="submodel__circular_main",
-    alias="circular_main",
+    "circular_main",
 )
 
 @pipeline.data_input(config="{sub_src_config}")
@@ -1142,15 +1138,11 @@ def src() -> pl.DataFrame:
 
 pipeline.submodel(
     "nonexistent.py",
-    definition_id="missing_one",
-    instance_id="submodel__missing_one",
-    alias="missing_one",
+    "missing_one",
 )
 pipeline.submodel(
     "modules/also_missing.py",
-    definition_id="missing_two",
-    instance_id="submodel__missing_two",
-    alias="missing_two",
+    "missing_two",
 )
 """
         p = _write_pipeline(tmp_path, code)
@@ -1237,15 +1229,11 @@ def src() -> pl.DataFrame:
 
 pipeline.submodel(
     "sub_a.py",
-    definition_id="definition_a",
-    instance_id="instance_a",
-    alias="a",
+    "a",
 )
 pipeline.submodel(
     "sub_b.py",
-    definition_id="definition_b",
-    instance_id="instance_b",
-    alias="b",
+    "b",
 )
 """
         (tmp_path / "sub_a.py").write_text(sub_a_code)
@@ -1260,8 +1248,8 @@ pipeline.submodel(
         occurrences = {
             node.id: node.data.config for node in graph.nodes if node.data.nodeType == "submodel"
         }
-        assert occurrences["instance_a"] == {"definitionId": "definition_a", "alias": "a"}
-        assert occurrences["instance_b"] == {"definitionId": "definition_b", "alias": "b"}
+        assert occurrences["a"] == {"definitionId": "definition_a", "alias": "a"}
+        assert occurrences["b"] == {"definitionId": "definition_b", "alias": "b"}
 
 
 class TestEmptySubmodelFile:
@@ -1281,9 +1269,7 @@ def src() -> pl.DataFrame:
 
 pipeline.submodel(
     "empty_sub.py",
-    definition_id="empty_definition",
-    instance_id="empty_instance",
-    alias="empty",
+    "empty",
 )
 """
         (tmp_path / "empty_sub.py").write_text("")
@@ -1326,9 +1312,7 @@ pipeline = haute.Pipeline("submodel_only")
 
 pipeline.submodel(
     "modules/scoring.py",
-    definition_id="scoring",
-    instance_id="submodel__scoring",
-    alias="scoring",
+    "scoring",
 )
 """
         (tmp_path / "modules").mkdir()
@@ -1338,7 +1322,7 @@ pipeline.submodel(
         graph = parse_pipeline_file(p)
 
         assert graph.pipeline_name == "submodel_only"
-        assert {n.id for n in graph.nodes} == {"submodel__scoring"}
+        assert {n.id for n in graph.nodes} == {"scoring"}
         assert graph.submodels is not None
         assert "scoring" in graph.submodels
         assert graph.submodels["scoring"].file == "modules/scoring.py"
@@ -1377,9 +1361,7 @@ def src() -> pl.DataFrame:
 
 pipeline.submodel(
     "broken_sub.py",
-    definition_id="broken_sub",
-    instance_id="submodel__broken_sub",
-    alias="broken_sub",
+    "broken_sub",
 )
 """
         (tmp_path / "broken_sub.py").write_text(broken_sub_code)

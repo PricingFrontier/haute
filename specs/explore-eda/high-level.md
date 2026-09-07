@@ -400,8 +400,10 @@ Out of scope (owned elsewhere):
   status (`cancelled`/other cancellation reason, `memory_limited`, `contract_error`) with a
   message payload describing the failure; none of these are retried or silently downgraded.
 - Any other exception raised while materialising or summarising is logged
-  (`explore_cache_failed`, with traceback) and the job transitions to `error` with `str(exc)` as
-  the message — no fallback report is synthesised.
+  (`explore_cache_failed`, with traceback) and the job transitions to `error` with the fixed
+  internal-error detail as its public message; the exception type, text, and traceback are
+  server-side diagnostics only, per the low-level public-error policy — no fallback report is
+  synthesised.
 - The Explore display validators raise `ConfigError` (not a generic exception) for invalid
   top-level containers, non-string keys, wrong-typed known fields, or unknown values that are not
   round-trippable. Chart validation also rejects malformed entries and blank or duplicate ids;

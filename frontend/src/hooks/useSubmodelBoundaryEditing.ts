@@ -27,6 +27,7 @@ import {
 import useToastStore from "../stores/useToastStore"
 import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 import { structuralFingerprint } from "../utils/structuralFingerprint"
+import { reconcileGraphInputBindings } from "../utils/nodeUpdatePlan"
 
 type GraphRef = React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
 type ParentGraphRef = React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> } | null>
@@ -87,7 +88,7 @@ function mergeViewPresentation<T extends { viewNodes: Node[] }>(result: T, curre
 function parentOccurrenceHandlesAreResolved(result: SubmodelBoundaryEditResult): boolean {
   const definition = result.submodels[result.definitionId]
   if (!isSubmodelDefinition(definition, result.definitionId)) return false
-  const expectedHandles = definition.outputPorts.map((port) => `out__${port.portId}`)
+  const expectedHandles = definition.outputPorts.map((port) => `out__${port.name}`)
   return result.parentNodes.every((node) => {
     if (node.data.nodeType !== "submodel") return true
     const config = node.data.config
@@ -264,10 +265,16 @@ export default function useSubmodelBoundaryEditing({
         pendingBoundaryCandidateRef.current = null
       }
       const merged = mergeViewPresentation(result, graphRef.current.nodes)
+      const previousParent = parentGraphRef.current
+      if (!previousParent) throw new Error("The parent graph is no longer available")
+      const rebound = reconcileGraphInputBindings(previousParent, {
+        nodes: resolved.nodes, edges: resolved.edges, submodels: result.submodels,
+      })
+      if (!rebound.ok) throw new Error(rebound.error)
       commit({
         ...merged,
-        parentNodes: resolved.nodes,
-        parentEdges: resolved.edges,
+        parentNodes: rebound.nodes,
+        parentEdges: rebound.edges,
       })
       onSettled?.(true)
     }).catch((error: unknown) => {
@@ -372,11 +379,11 @@ export default function useSubmodelBoundaryEditing({
     }
   }, [state, edges, commitWithParentIdentities, reportBoundaryError])
 
-  const deleteBoundaryInputPort = useCallback((portId: string): boolean => {
+  const deleteBoundaryInputPort = useCallback((portName: string): boolean => {
     try {
       const current = state()
       if (!current) return false
-      const result = removeSubmodelInputPort(current, portId)
+      const result = removeSubmodelInputPort(current, portName)
       if (!result) return false
       commitWithParentIdentities(result)
       return true

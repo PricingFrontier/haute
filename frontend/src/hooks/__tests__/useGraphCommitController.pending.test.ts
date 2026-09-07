@@ -34,6 +34,28 @@ describe("useGraphCommitController pending commits", () => {
     vi.clearAllMocks()
   })
 
+  it.each(["document", "readOnly", "unmount"])("refuses an API-input update after %s invalidates it", async (change) => {
+    const node = makeNode("api", "apiInput")
+    const resolution = deferred<Node[]>()
+    const resolver = vi.fn(() => resolution.promise)
+    const options = controllerOptions(node, resolver)
+    const hook = renderHook(() => useGraphCommitController(options))
+    act(() => { expect(hook.result.current.onUpdateNode("api", { ...node.data })).toEqual({ ok: true }) })
+    const waiting = hook.result.current.waitForPendingCommits()
+    if (change === "unmount") hook.unmount()
+    else {
+      if (change === "document") options.readDocumentIdentity = () => "new-document"
+      else options.readOnly = true
+      hook.rerender()
+    }
+    await act(async () => {
+      resolution.resolve([node])
+      await expect(waiting).resolves.toMatchObject({ ok: false })
+    })
+    expect(options.commitGraph).not.toHaveBeenCalled()
+    expect(resolver).toHaveBeenCalledOnce()
+  })
+
   it("registers API-input updates synchronously and waits for their commit", async () => {
     const node = makeNode("api", "apiInput")
     const resolution = deferred<Node[]>()

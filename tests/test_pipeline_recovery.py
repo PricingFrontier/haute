@@ -160,21 +160,19 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                     "label": "class",
                     "node_type": "polars",
                     "source_handles": [],
-                    "source_handle_labels": {},
                 },
                 {
                     "node_id": "api",
                     "label": "Café request",
                     "node_type": "apiInput",
                     "source_handles": ["quotes", "vehicles"],
-                    "source_handle_labels": {},
                 },
                 {
                     "node_id": "pricing",
                     "label": "Pricing",
                     "node_type": "submodel",
-                    "source_handles": ["out__written-premium"],
-                    "source_handle_labels": {"out__written-premium": "Written premium"},
+                    "alias": "pricing",
+                    "source_handles": ["out__written_premium"],
                 },
             ]
         },
@@ -200,7 +198,7 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
     }
     assert payload["identities"][1]["config_reference"].startswith("config/quote_input/")
     assert payload["identities"][2]["source_handle_input_names"] == {
-        "out__written-premium": "Written_premium"
+        "out__written_premium": "pricing"
     }
 
 
@@ -213,7 +211,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Node",
                 "node_type": "polars",
                 "source_handles": [],
-                "source_handle_labels": {},
                 "unexpected": True,
             }
         ],
@@ -223,14 +220,12 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "First",
                 "node_type": "polars",
                 "source_handles": [],
-                "source_handle_labels": {},
             },
             {
                 "node_id": "same",
                 "label": "Second",
                 "node_type": "polars",
                 "source_handles": [],
-                "source_handle_labels": {},
             },
         ],
         [
@@ -239,7 +234,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Request",
                 "node_type": "apiInput",
                 "source_handles": ["quotes", "quotes"],
-                "source_handle_labels": {},
             }
         ],
         [
@@ -248,7 +242,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Request",
                 "node_type": "apiInput",
                 "source_handles": [""],
-                "source_handle_labels": {},
             }
         ],
         [
@@ -257,7 +250,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Request",
                 "node_type": "apiInput",
                 "source_handles": ["class"],
-                "source_handle_labels": {},
             }
         ],
         [
@@ -266,7 +258,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Request",
                 "node_type": "apiInput",
                 "source_handles": ["café"],
-                "source_handle_labels": {},
             }
         ],
         [
@@ -275,7 +266,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Pricing",
                 "node_type": "submodel",
                 "source_handles": ["out__result"],
-                "source_handle_labels": {},
             }
         ],
         [
@@ -283,8 +273,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "pricing",
                 "label": "Pricing",
                 "node_type": "submodel",
-                "source_handles": ["out__result"],
-                "source_handle_labels": {"out__result": " Result "},
+                "alias": "pricing",
+                "source_handles": ["out__Result "],
             }
         ],
         [
@@ -292,8 +282,7 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "pricing_port",
                 "label": "Pricing port",
                 "node_type": "submodelPort",
-                "source_handles": ["out__result"],
-                "source_handle_labels": {"out__result": " Result "},
+                "source_handles": ["out__Result "],
             }
         ],
         [
@@ -301,8 +290,8 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "node_id": "pricing",
                 "label": "Pricing",
                 "node_type": "submodel",
+                "alias": "pricing",
                 "source_handles": ["out__"],
-                "source_handle_labels": {"out__": "Result"},
             }
         ],
         [
@@ -320,7 +309,6 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
                 "label": "Ordinary",
                 "node_type": "polars",
                 "source_handles": ["unexpected"],
-                "source_handle_labels": {},
             }
         ],
     ],
@@ -349,16 +337,15 @@ def test_capabilities_reject_unsorted_or_duplicate_reserved_api_input_labels(
 
 
 @pytest.mark.parametrize(
-    ("input_ports", "input_names"),
+    "input_ports",
     [
-        ([{}], {}),
-        ([{"portId": ""}], {}),
-        ([{"portId": "input"}], {"extra": "input_name"}),
-        ([{"portId": "input"}], {"input": ""}),
+        [{}],
+        [{"name": ""}],
+        [{"name": " input "}],
     ],
 )
 def test_recovery_submodel_definition_validates_input_port_identities(
-    input_ports: list[dict[str, object]], input_names: dict[str, str]
+    input_ports: list[dict[str, object]],
 ) -> None:
     with pytest.raises(ValidationError):
         RecoverySubmodelDefinition(
@@ -367,7 +354,6 @@ def test_recovery_submodel_definition_validates_input_port_identities(
             availability="ready",
             graph=RecoveryGraphSnapshot(),
             input_ports=input_ports,
-            input_port_input_names=input_names,
         )
 
 
@@ -403,7 +389,6 @@ def test_editor_identity_route_translates_resolver_value_error(
                     "label": "Ordinary",
                     "node_type": "polars",
                     "source_handles": [],
-                    "source_handle_labels": {},
                 }
             ]
         },
@@ -855,7 +840,6 @@ def test_canonical_snapshot_rejects_unavailable_nodes_and_submodels() -> None:
         file="models/pricing.py",
         availability="unavailable",
         graph=RecoveryGraphSnapshot(),
-        input_port_input_names={},
     )
     cases = [
         ([node("broken", "unavailable")], None, "node_unavailable"),
@@ -997,9 +981,7 @@ def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child-definition",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1039,7 +1021,7 @@ def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
     assert document.source_revision != changed_on_disk
 
 
-def test_ready_document_exposes_public_submodel_labels_as_executable_names(
+def test_ready_document_exposes_submodel_occurrence_alias_as_executable_name(
     tmp_path: Path,
 ) -> None:
     from haute._pipeline_recovery import load_pipeline_editor_document
@@ -1054,20 +1036,18 @@ def test_ready_document_exposes_public_submodel_labels_as_executable_names(
             "child",
             definition_id="child-definition",
             input_ports=[{
-                "portId": "input_1",
-                "label": "raw records",
+                "name": "input_1",
                 "targets": [{"nodeId": "transform", "handleId": None}],
             }],
             output_ports=[{
-                "portId": "output_1",
-                "label": "priced records",
+                "name": "output_1",
                 "source": {"nodeId": "transform", "handleId": None},
             }],
         )
 
         @submodel.polars
-        def transform(raw_records):
-            return raw_records
+        def transform(input_1):
+            return input_1
         """,
     )
     parent = _write(
@@ -1081,14 +1061,12 @@ def test_ready_document_exposes_public_submodel_labels_as_executable_names(
             return None
 
         @pipeline.polars
-        def consumer(priced_records):
-            return priced_records
+        def consumer(unrelated_alias):
+            return unrelated_alias
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child-definition",
-            instance_id="child-occurrence",
-            alias="unrelated_alias",
+            "unrelated_alias",
         )
         pipeline.connect("source", "unrelated_alias", target_port="input_1")
         pipeline.connect("unrelated_alias", "consumer", source_port="output_1")
@@ -1098,16 +1076,15 @@ def test_ready_document_exposes_public_submodel_labels_as_executable_names(
     document = load_pipeline_editor_document(parent, project_root=tmp_path)
 
     assert document.load_status == "ready"
-    occurrence = next(node for node in document.nodes if node.authored_id == "child-occurrence")
-    assert occurrence.source_handle_input_names == {"out__output_1": "priced_records"}
+    occurrence = next(node for node in document.nodes if node.authored_id == "unrelated_alias")
+    assert occurrence.source_handle_input_names == {"out__output_1": "unrelated_alias"}
     output_edge = next(
         edge for edge in document.edges if edge.source_recovery_id == occurrence.recovery_id
     )
-    assert output_edge.input_name == "priced_records"
+    assert output_edge.input_name == "unrelated_alias"
     assert document.submodels is not None
-    assert document.submodels["child-definition"].input_port_input_names == {
-        "input_1": "raw_records"
-    }
+    child_ports = document.submodels["child-definition"].input_ports
+    assert [port["name"] for port in child_ports] == ["input_1"]
 
 
 def test_recovery_revision_authenticates_child_bytes_the_document_presents(
@@ -1149,9 +1126,7 @@ def test_recovery_revision_authenticates_child_bytes_the_document_presents(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child-definition",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1217,9 +1192,7 @@ def test_submodel_failure_codes_classify_by_exception_type_not_message(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child-definition",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1278,9 +1251,7 @@ def test_recovery_revision_tracks_child_config_from_parent_config_base(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1306,6 +1277,7 @@ def test_recovery_revision_tracks_child_config_from_parent_config_base(
             {
                 "name": "replacement",
                 "source_file": "main.py",
+                "base_revision": "posted-ready-revision",
                 "graph": {"nodes": [], "edges": []},
             },
         ),
@@ -1322,7 +1294,7 @@ def test_recovery_revision_tracks_child_config_from_parent_config_base(
         (
             "/api/submodel/dissolve",
             {
-                "instance_id": "submodel__group",
+                "instance_id": "group",
                 "source_file": "main.py",
                 "base_revision": "posted-ready-revision",
                 "graph": {"nodes": [], "edges": []},
@@ -1511,9 +1483,7 @@ def test_missing_submodel_preserves_occurrence_and_unrelated_root_nodes(
 
         pipeline.submodel(
             "models/missing.py",
-            definition_id="pricing",
-            instance_id="pricing__one",
-            alias="pricing_one",
+            "pricing_one",
         )
         pipeline.connect("healthy", "pricing_one", target_port="input")
         """,
@@ -1524,9 +1494,9 @@ def test_missing_submodel_preserves_occurrence_and_unrelated_root_nodes(
 
     assert document.load_status == "degraded"
     assert by_id["healthy"].availability == "ready"
-    assert by_id["pricing__one"].availability == "unavailable"
+    assert by_id["pricing_one"].availability == "unavailable"
     assert document.submodels is not None
-    assert document.submodels["pricing"].availability == "unavailable"
+    assert document.submodels["models/missing.py"].availability == "unavailable"
     assert any(diagnostic.code == "submodel_file_missing" for diagnostic in document.diagnostics)
     assert document.edges == []
     assert len(document.unresolved_connections) == 1
@@ -1565,9 +1535,7 @@ def test_unknown_submodel_decorator_is_rejected_strictly_and_conserved(
 
         pipeline.submodel(
             "modules/child.py",
-            definition_id="child",
-            instance_id="child__one",
-            alias="child_one",
+            "child_one",
         )
         """,
     )
@@ -1579,7 +1547,7 @@ def test_unknown_submodel_decorator_is_rejected_strictly_and_conserved(
 
     assert document.load_status == "degraded"
     assert document.submodels is not None
-    definition = document.submodels["child"]
+    definition = document.submodels["modules/child.py"]
     assert definition.availability == "unavailable"
     assert [(node.authored_id, node.availability) for node in definition.graph.nodes] == [
         ("old_child", "unavailable")
@@ -1612,15 +1580,11 @@ def test_duplicate_submodel_definition_paths_mark_every_occurrence_unavailable(
 
         pipeline.submodel(
             "models/one.py",
-            definition_id="shared",
-            instance_id="shared__one",
-            alias="shared_one",
+            "shared_one",
         )
         pipeline.submodel(
             "models/two.py",
-            definition_id="shared",
-            instance_id="shared__two",
-            alias="shared_two",
+            "shared_two",
         )
         """,
     )
@@ -1629,8 +1593,8 @@ def test_duplicate_submodel_definition_paths_mark_every_occurrence_unavailable(
 
     assert document.load_status == "degraded"
     by_authored_id = {node.authored_id: node for node in document.nodes}
-    assert by_authored_id["shared__one"].availability == "unavailable"
-    assert by_authored_id["shared__two"].availability == "unavailable"
+    assert by_authored_id["shared_one"].availability == "unavailable"
+    assert by_authored_id["shared_two"].availability == "unavailable"
     assert document.submodels is not None
     assert document.submodels["shared"].availability == "unavailable"
     duplicate_diagnostics = [
@@ -1667,15 +1631,11 @@ def test_duplicate_submodel_alias_stays_degraded_while_revision_is_computed(
 
         pipeline.submodel(
             "models/shared.py",
-            definition_id="shared",
-            instance_id="shared__one",
-            alias="same_alias",
+            "same_alias",
         )
         pipeline.submodel(
             "models/shared.py",
-            definition_id="shared",
-            instance_id="shared__two",
-            alias="same_alias",
+            "same_alias",
         )
         """,
     )
@@ -2072,9 +2032,7 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
 
         pipeline.submodel(
             "models/shared.py",
-            definition_id="shared",
-            instance_id="shared__one",
-            alias="shared_one",
+            "shared_one",
         )
         """,
     )
@@ -2091,7 +2049,7 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
 
     assert document.load_status == "degraded"
     assert document.submodels is not None
-    assert document.submodels["shared"].availability == "unavailable"
+    assert document.submodels["models/shared.py"].availability == "unavailable"
     internal = [
         diagnostic
         for diagnostic in document.diagnostics
@@ -2451,9 +2409,7 @@ def test_remove_unavailable_node_repairs_a_child_submodel_source(
 
         pipeline.submodel(
             "modules/scoring.py",
-            definition_id="scoring",
-            instance_id="scoring__one",
-            alias="scoring",
+            "scoring",
         )
         """,
     )
@@ -2461,7 +2417,9 @@ def test_remove_unavailable_node_repairs_a_child_submodel_source(
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     assert document.submodels is not None
     target = next(
-        node for node in document.submodels["scoring"].graph.nodes if node.authored_id == "obsolete"
+        node
+        for node in document.submodels["modules/scoring.py"].graph.nodes
+        if node.authored_id == "obsolete"
     )
     request = {
         "source_file": document.source_file,
@@ -2992,3 +2950,22 @@ def test_remove_position_entry_rejects_duplicate_json_identity(sidecar: bytes) -
         _remove_position_entry(sidecar, "explore")
 
     assert raised.value.code == "repair_sidecar_ambiguous"
+
+
+def test_editor_identity_route_requires_an_alias_for_submodel_nodes(client: TestClient) -> None:
+    """An occurrence's input name is its own name, so a submodel node without an alias is a 422."""
+    response = client.post(
+        "/api/pipeline/editor-identities",
+        json={
+            "nodes": [
+                {
+                    "node_id": "pricing",
+                    "label": "Pricing",
+                    "node_type": "submodel",
+                    "source_handles": ["out__written_premium"],
+                }
+            ]
+        },
+    )
+    assert response.status_code == 422
+    assert "alias" in response.text

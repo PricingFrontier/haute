@@ -37,6 +37,7 @@ from haute.executor import (
     PreparedDataOutput,
     commit_prepared_data_output,
     discard_prepared_data_output,
+    execute_graph,
     prepare_data_output,
     resolve_data_output_path,
     validate_prepared_data_output_identity,
@@ -1806,6 +1807,107 @@ class TestExecuteSinkDataOutput:
         assert calls[0][0] == "artifact"
         assert calls[0][1].name.startswith(".result.haute-stage-")
         assert calls[-1] == ("directory", out_path.parent)
+
+
+class TestPreviewNeverWrites:
+    """Output publication is explicit and contained.
+
+    dataOutput is preview pass-through; only write_data_output persists.
+    """
+
+    def test_preview_of_a_data_output_node_writes_nothing_and_passes_rows_through(
+        self,
+        haute_scratch: Path,
+        struct_frame: pl.DataFrame,
+    ) -> None:
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+
+        # Variant 1: destination path does NOT exist yet
+        out_path_new = haute_scratch / "out_new.parquet"
+        assert not out_path_new.exists()
+
+        graph_new = PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path_new),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        # Run the PREVIEW path
+        preview_results = execute_graph(graph_new, target_node_id="dout")
+        node_result = preview_results["dout"]
+        assert node_result.status == "ok"
+        assert node_result.preview == preview_results["din"].preview
+        assert node_result.preview == struct_frame.to_dicts()
+        assert not out_path_new.exists()
+        assert list(haute_scratch.glob(".*.haute-stage-*")) == []
+        assert list(haute_scratch.glob("*tmp*")) == []
+
+        # Explicit write path persists the rows
+        write_result = write_data_output(graph_new, "dout")
+        assert write_result.status == "ok"
+        assert out_path_new.exists()
+        assert_frame_equal(pl.read_parquet(out_path_new), struct_frame)
+
+        # Variant 2: destination path already exists with known bytes
+        out_path_existing = haute_scratch / "out_existing.parquet"
+        original_bytes = b"persisted-destination-original-content"
+        out_path_existing.write_bytes(original_bytes)
+        assert out_path_existing.read_bytes() == original_bytes
+
+        graph_existing = PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "din",
+                    {
+                        "inputType": "file",
+                        "format": "parquet",
+                        "path": str(src_path),
+                    },
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "outputType": "file",
+                        "format": "parquet",
+                        "path": str(out_path_existing),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        # Run the PREVIEW path
+        preview_existing = execute_graph(graph_existing, target_node_id="dout")
+        node_result_existing = preview_existing["dout"]
+        assert node_result_existing.status == "ok"
+        assert node_result_existing.preview == preview_existing["din"].preview
+        assert node_result_existing.preview == struct_frame.to_dicts()
+        assert out_path_existing.read_bytes() == original_bytes
+        assert list(haute_scratch.glob(".*.haute-stage-*")) == []
+        assert list(haute_scratch.glob("*tmp*")) == []
+
+        # Explicit write path with overwrite=True persists the rows
+        write_existing = write_data_output(graph_existing, "dout", overwrite=True)
+        assert write_existing.status == "ok"
+        assert out_path_existing.read_bytes() != original_bytes
+        assert_frame_equal(pl.read_parquet(out_path_existing), struct_frame)
 
 
 class TestResolveDataOutputPath:

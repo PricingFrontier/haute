@@ -60,9 +60,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   `scenarioExpander`, `optimiserApply`, and `OUTPUT` response-document assembly —
   the one implementation both the canvas executor and codegen-generated `.py`
   files call, so a saved pipeline's `pipeline.run()` behaves identically to the
-  GUI. Before `assemble_output_from_config` unified the two, a saved `OUTPUT`
-  node's generated code was a bare passthrough of the raw upstream frame instead
-  of the assembled document.
+  GUI.
 
 **Out of scope** (owned elsewhere, linked where relevant):
 - Static node schemas, sidecar validation, and registry configuration are owned by
@@ -75,8 +73,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   recomputation — the dataframe execution cache's storage/eviction/fingerprinting
   policy belongs to [caching](../caching/high-level.md); this component only decides
   *what* to cache and consumes the cache's `get`/`scan`/`materialize` API.
-- Sandboxing of user-written Polars/Python snippets (`code` config fields) — the
-  actual restricted-`exec` mechanism is [sandbox-security](../sandbox-security/high-level.md);
+- The accident guard for user-written Polars/Python snippets (`code` config fields);
+  node code is trusted project code and the guard's restricted-`exec` mechanism and
+  the trust boundary are [sandbox-security](../sandbox-security/high-level.md);
   this component calls it at preamble-compile and node-build time.
 - Correlating a completed run into a human-readable trace/waterfall — that is
   [tracing](../tracing/high-level.md), which is built on top of the same
@@ -396,10 +395,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
   same flattening, preamble compilation, active-source selection, node building,
   and contract enforcement as production lazy execution up to the requested
   top-level node, then calls `collect_schema()` on the preserved lazy result.
-  It never collects rows, and the declaration is now honoured end to end: an
-  OUTPUT terminal's document is *described* from its mapping and its source
-  schemas rather than assembled, so a schema-only execution never materialises a
-  document even when the requested lineage ends in an OUTPUT node.
+  It never collects rows: an OUTPUT terminal's document is *described* from its
+  mapping and its source schemas rather than assembled, so a schema-only
+  execution never materialises a document even when the requested lineage ends in
+  an OUTPUT node.
   Multi-frame results report one schema per output port.
   This is execution-plan evidence, not proof of row values or commercial
   correctness. The current assistant mutation service declares structural
@@ -415,8 +414,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
   exactly one *input name*, derived by `edge_input_name` (`_graph_utils.py`): an
   `apiInput`-frame edge's name is its frame label verbatim (frame labels are
   validated as ASCII Python identifiers by the api-input schema); a collapsed
-  submodel-output edge's name is the sanitised public output label resolved
-  through its definition; every ordinary edge's name is the sanitised source-node label.
+  submodel-output edge's name is the occurrence's own name (or f"{alias}__{port_id}"
+  when declaring more than one output port); every ordinary edge's name is the sanitised source-node label.
   Public submodel inputs likewise contribute their sanitised labels to child nodes.
   Immutable public port ids address boundary handles only and never become frame names.
   That name is simultaneously the name listed in

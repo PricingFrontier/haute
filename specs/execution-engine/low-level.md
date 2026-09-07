@@ -18,11 +18,11 @@
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
 | `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve fault, collect-count, and typed-error telemetry. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
-| `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`; owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component. |
+| `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`; owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
 | `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), explicit `topo_sort_ids_filtered` (opt-in subset traversal returning both the order and every dropped edge/endpoint), and `ancestors` (BFS over reversed edges). The default sorter never silently ignores an unknown endpoint. |
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
-| `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge→input-name derivation: apiInput-frame edge → its frame label verbatim, submodel-output edge → its sanitised public output label resolved through the definition registry, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, and edge-id construction. |
+| `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge->input-name derivation: apiInput-frame edge -> its frame label verbatim, submodel-output edge -> its occurrence name (or <name>__<port_id> when multi-output), else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, and edge-id construction. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state; the shared supervisor helpers `isolated_worker_failure_is_memory()` (RSS breach, unsupported cap, memory-looking crash exit code, or a memory-typed remote exception) and `isolated_worker_memory_detail()` (the closed memory-limit payload whose reason is one of worker_rss_limit_exceeded, native_memory_cap_unavailable, worker_may_have_exceeded_memory_limit, or worker_memory_limit) that the Data Output writer, training preparation, and the deployed batch path all map their 507 outcomes through. |
 | `src/haute/_native_memory_limit.py` | Required/best-effort native memory enforcement for isolated workers: aggregate Linux cgroup and Windows Job Object leases, single-process RLIMIT compatibility, fork-safe ownership, and the context-local active-backend proof used to prevent unaccounted descendant parallelism. |
 | `src/haute/routes/_isolated_worker_async.py` | Async route bridge for cancellable isolated-worker transactions: runs the blocking supervisor off-loop, propagates route cancellation/timeout without thread-compute fallback, drains the supervisor to termination, preserves the primary failure when cleanup also fails, and provides the shared linearizable cancellation/publication gate. |
@@ -234,13 +234,11 @@
     ("physical RAM is unavailable; configure an explicit execution memory
     limit"). Because cgroup v2 `memory.current` includes reclaimable page
     cache, a zero can be transient I/O pressure that self-heals — hence
-    retry guidance rather than a configuration change. Consumers never
-    floor a zero budget up into fabricated capacity: the training
-    estimator's refusal here is a behaviour change from the pre-#171-review
-    code, which floored a zero budget to the 500-row minimum and proceeded.
-    (A tiny-but-positive budget still floors to the minimum-safe-rows
-    constant — that is the deliberate minimum-viability floor, applied only
-    to capacity that was actually observed.) A *negative* value is a probe
+    retry guidance rather than a configuration change. Consumers never floor a
+    zero budget up into fabricated capacity: a zero observation is refused,
+    while a tiny positive budget floors to the minimum-safe-rows constant (the
+    deliberate minimum-viability floor, applied only to capacity that was
+    actually observed). A *negative* value is a probe
     defect, not exhaustion — the cgroup clamp floors real headroom at zero,
     so no honest observation is negative; the helper routes negatives to the
     defect remedy ("memory probe defect; configure an explicit execution
@@ -652,6 +650,27 @@ defaults to `process`. `thread` exists as an explicit compatibility/test mode an
 retains the documented non-killable timeout semantics—it is never an automatic
 fallback after a process failure.
 
+### Assistant interaction
+
+`src/haute/assistant/_tools.py::get_node_schema` is a cross-component caller of
+the public lazy-execution facade. It validates the target against the original
+hierarchical graph, flattens submodels for execution, compiles the saved
+preamble with the pipeline directory, selects the graph's saved active source,
+and calls `execute_lazy_graph` with `target_node_id`, `preserve_node_ids`, and
+contract enforcement. It reads only lazy schemas; a dict-shaped multi-frame
+result is rendered per port and no frame is collected.
+
+The assistant application service owns the post-save verification tiers (see
+[assistant high-level](../assistant/high-level.md)): a plan that affects
+executable flow declares `schema`, which reparses and validates the saved graph,
+evaluates the closed structural postconditions, and resolves exact lazy-schema
+evidence for the affected nodes through this component's lazy facade; only a
+mutation with no executable target may declare `structural`. Schema evidence is
+not row-level execution or model-quality proof, and a schema failure is never
+reported as successful verification. This component does not own assistant
+project revisions, plan hashes or save authority, and no assistant tool may
+present a structural or schema result as execution evidence.
+
 ## Edge cases and invariants
 
 - **Frame sources are uniform from one frame up.** An `apiInput` with ≥1
@@ -828,12 +847,17 @@ fallback after a process failure.
   tiny `_preamble_cells_guard` lock (never held during exec, so a hot cache hit never
   waits behind a slow compile in another thread) and populated under the coarser
   `_preamble_lock` with a double-check, so concurrent first-callers of the same key
-  return the *same* namespace dict rather than each compiling their own. `force_refresh=True`
-  (the default) recomputes a dependency fingerprint and evicts stale `utility` module
-  imports (plus matching `.pyc` files, since same-size/same-mtime edits can hide
-  behind bytecode-timestamp caching); `force_refresh=False` (sink/optimiser tight
-  loops) uses a fixed `"no-refresh"` fingerprint and skips validation/hashing
-  entirely, on the caller's promise that imported helper files are stable for the loop.
+  return the *same* namespace dict rather than each compiling their own. By default
+  each call recomputes the dependency fingerprint (`preamble_execution_fingerprint`) and
+  evicts stale `utility` module imports (plus matching `.pyc` files, since
+  same-size/same-mtime edits can hide behind bytecode-timestamp caching). A
+  multi-chunk operation (data-output sink, optimiser estimate/solve/auto-range) resolves
+  that fingerprint once at admission and passes it as `execution_fingerprint`, so every
+  chunk of that operation reuses one namespace without re-hashing helper files, while the
+  next operation resolves a fresh fingerprint and therefore sees helper edits. There is no
+  process-lifetime marker: a namespace is never reused across operations under a
+  dependency identity other than the one it was compiled for, and the dataframe cache key
+  of an operation is derived from the same pinned snapshot.
 - **`resolve_orig_source_names`/`build_instance_mapping` reject ambiguity rather than
   guessing.** A substring-match pairing between an instance node's upstream sources
   and the original node's parameter names that is ambiguous in either direction
@@ -849,8 +873,8 @@ fallback after a process failure.
   mappings raise `ConfigError`; they never fall back positionally. Instance nodes
   retain the existing original-node mapping path and take precedence over this
   ordinary-transform behaviour.
-- **`topo_sort_ids`** is insertion-order deterministic (via `graphlib.TopologicalSorter`,
-  not the previous heap-based sort), so callers must pass `node_ids` as an
+- **`topo_sort_ids`** is insertion-order deterministic (via `graphlib.TopologicalSorter`),
+  so callers must pass `node_ids` as an
   insertion-ordered sequence, never a `set`, or tie-break order becomes
   hash-randomisation-dependent across process runs. An unknown endpoint raises
   `UnknownEdgeEndpointError`; an intentional subset traversal must instead call
@@ -1030,7 +1054,7 @@ fallback after a process failure.
   validity are delegated to the same reader the engine executes with, so a stale cache is
   rejected here exactly as it is at execution rather than silently sizing a boundary from
   the wrong data; an unreadable or unmatched cache still yields "estimate unavailable."
-  Without this, every group-by beneath an `apiInput` was refused for want of an estimate —
+  Per-table sizing is what makes a group-by beneath an `apiInput` estimable at all,
   which is the ordinary shape of aggregating a shredded child table per quote.
 - **Demand-scoped admission is proof-sensitive.** For each materialisation boundary,
   the planner inspects every relevant incoming edge. When all edge demands are exact,
@@ -1255,10 +1279,11 @@ fallback after a process failure.
   document is never assembled. `output_document_schema` is the **single schema
   authority** — the collected path declares that same schema over the assembled
   document instead of inferring it — so a schema-only execution and a collected
-  execution report the identical OUTPUT schema by construction. Python inference
-  no longer decides OUTPUT dtypes: an all-null column keeps its source dtype
-  rather than becoming `Null`, a narrow integer is not widened, and an empty
-  document keeps the typed schema instead of reporting no columns at all.
+  execution report the identical OUTPUT schema by construction. OUTPUT dtypes come
+  from `output_document_schema`, not Python inference: an all-null column keeps
+  its source dtype rather than becoming `Null`, a narrow integer is not widened,
+  and an empty document keeps the typed schema instead of reporting no columns
+  at all.
   Rendering is unaffected, because `render_output_document` prunes the null
   padding a declared uniform schema introduces. A referenced source port or
   column that no incoming frame provides, and two entries mapping one output
@@ -1306,6 +1331,11 @@ fallback after a process failure.
   keeps its own carrier for an empty-demand edge. Pinned by `tests/test_column_lineage.py`
   (including the drop-everything program the property test falsified) and the
   projected-versus-full property tests in `tests/test_column_lineage_properties.py`.
+- **Canonical execution interfaces.** Under the
+  [canonical-only format policy](../README.md#canonical-only-format-policy),
+  maintained execution call sites use the current typed planner, admission, runtime-input, and
+  diagnostic result objects directly. No private compatibility wrappers, tuple projections, or
+  test-only call shapes remain; tests exercise the maintained interfaces.
 
 ## Error handling
 
@@ -1427,7 +1457,7 @@ fallback after a process failure.
 ## Testing
 
 - `tests/performance/test_polars_scale_scenario.py` — bounded Polars join/training projection scale generation, modelling-menu demand propagation, and CI-small execution-profile smoke contracts.
-- `tests/performance/test_execution_engine_certification.py` — isolated projected-versus-full wide-Parquet RSS comparison, per-port API-input and direct-JSONL checkpoint evidence, a fresh-interpreter restart certificate for cache-proof reuse, telemetry privacy, and snapshot-owner cleanup, and `test_global_operation_memory_policies_match_the_registry`, which measures every global operation's incremental peak RSS in a fresh process through `tests/performance/_operation_memory_probe.py` and `bounded_sink` and certifies it against the policy read from `haute._polars_operations::operation` at runtime. Its 1.5M-row fact fixture and 375k-row dimension table are written with 25,000-row row groups — 60 row groups, more than any host's thread count — so parallel Parquet decoding cannot hold the whole file resident and the control measures streaming rather than the reader. Four controls are measured in the same run: `scan` (full-width passthrough sink), `scan_head` (a 1000-row sink), `scan_narrow` (a dense two-column sink) and `scan_gaps` (the same two columns where one is nullable and carries the gap runs). A control matches the operation's input columns *and* their nullability: a dense two-column scan under-represents the validity-bitmap and gap-handling cost of the same read, so measuring a nullable-column operator against it charges the operator for a read cost the control never paid. That is a correctness requirement for the comparison, not an allowance -- `interpolate` reads the nullable gap column and is therefore floored by `scan_gaps`, while a dense narrow plan keeps `scan_narrow`. Every `streaming` or `row_local` policy is bound by its matched passthrough control -- incremental peak <= 1.3x -- because a streaming pipeline can never need more than the passthrough pipeline over the same input (decode buffers plus output buffers, and a reducing operator's output buffers are smaller); a wide plan is bound by `scan` however few rows it emits, since its output size does not change what it must read. This is the safety-critical direction, since an operator wrongly recorded as streaming is one the planner never admits. `scan_head` is used only as the matched floor for a reducing boundary operator's witness. A `materialisation_boundary` policy is certified against the planner instead of a ratio: the same fixture is planned as a `dataInput` -> `polars` graph through `plan_execution_strategy` under an ample admission, and the admission estimate must bound the observed peak. The join graph declares `validate='m:1'` because that is the practice the product asks of an analyst and because it keeps the bound this join propagates downstream realistic; the join's own estimate is sized from its input ports and does not depend on the declaration. The join probe executes that same `validate='m:1'` code, so the measurement and the estimate describe one plan rather than two. Because a *declared* join estimate is sized from its largest operand, the lane also measures `join_fanout` -- `fact.join(multi, on='key', how='inner')` against an `operation-multi.parquet` fixture holding three rows per dimension key, so the output is three times the fact rows -- as a variant of `join` against the `scan` control. That measurement is what falsified input sizing for undeclared joins (about 1.57x the input-sized figure), so `join_fanout` is certified through the planner's policy rather than against a number: planned under `native_memory_backend_scope("rlimit")` it must be `warned`/`full-width-conservative` with `proof_gap=op:join_cardinality_many_to_many`, and planned without a cap it must raise `materialisation_estimate_unavailable` naming that detail. Only the rows check and those two policy checks are asserted; the evidence payload still records its `rows_out` against the expected 3x, the incremental peak, and `exceeds_declared_join_estimate` -- whether the observed fan-out peak is above the declared `join` case's estimate. Being a variant rather than a registry name, it carries no does-not-stream witness. A fan-in Polars node also carries the declared per-parent contract production requires. `explode` is certified as the typed unavailable-estimate rejection instead, its expansion being unbounded. `sort`, `unique`, `join`, and `explode` additionally carry a does-not-stream witness at 1.25x their matched floor. Two boundaries cannot be witnessed by their own wide-frame measurement and each names the variant that does show its state: `over` is dominated by the passthrough's own buffers on a 12-column frame, so the `over_narrow` probe must reach 1.5x `scan_narrow`, where its partition state dominates; and `join_asof` buffers its right (lookup) port and streams its left, so the wide-left case sits near the floor and the `join_asof_big_right` probe (`dim.join_asof(fact, ...)`, the large frame in the buffered position) must reach 1.25x `scan_head` — the wide case still certifies the estimate and the operator factor. `group_by`, `top_k`, `bottom_k`, and `reverse` are boundaries by construction or conservatism and carry no witness. The lane is registry-complete rather than a hand-kept list: it asserts that every name `measured_operation_names` returns has a plan in the probe (modulo the registered spelling aliases `groupby` and `melt`), so a new measured entry without a measurement fails here. `interpolate`'s probe reads a dedicated `v1_gaps` column — a straight line with 50-row null runs punched across the row-group boundaries — so the measurement cannot be of a passthrough over a column with nothing to fill, and the test verifies that the sunk output has no interior nulls left and that the filled values equal the linear interpolation of their neighbours. That verification runs in the *parent*, lazily over the retained sink after `run_smoke` has returned, precisely so it cannot contaminate the measurement: every child does nothing but build its plan, sink it, and exit, because anything else a child does lands in the lifetime peak the parent attributes to the operator. Reading the result inside the child once cost `interpolate` roughly 60 MiB and made a streaming operator look like a boundary. The `join_asof` fixtures are written pre-sorted for the same reason: a leading `sort` would make the chained boundary take sort's larger factor and certify the wrong operator. The cross join is certified through the planner alone — the graph plans `how='cross'` and must report the unavailable estimate — since there is no measurement to compare it against. Every ratio in the lane is a paired mean rather than a single reading: each operation is run alternately with its control, three of each -- five for `interpolate`, whose narrow-frame ratio sits at about 1.24 against the 1.30 ceiling, close enough that three pairs let batch drift decide the result -- and the ratio is the mean operation peak over the mean control peak. The per-operation sample count is recorded in the evidence payload. A control is re-run inside the pairs that use it and never sampled once and shared, because a single fresh-process sample drifted by about 20% between batches on the development host -- enough for a single-sample ratio to straddle a threshold and for a quoted figure to be noise rather than measurement. Pairing cancels that drift. The mean rather than the median is deliberate: peak RSS is bimodal, with samples clustering around two values about 35 MiB apart -- the granularity of a streaming chunk buffer, not continuous noise -- so a median of three snaps to whichever mode won two of the three samples and jumps between modes instead of settling, while the mean is the stable estimator of average cost over a discrete allocation pattern. Medians are still recorded for information. No threshold is widened to absorb the variance and no max-of-controls bias is applied. The residual is stated rather than hidden: a run can still fail when all three operation samples land in the high mode while all three control samples land in the low one, roughly a 1-in-64 event per operation, which is the accepted noise floor of an opt-in perf lane. The lane must be run through pytest, one fresh process per run: repeating the test inside a single interpreter reuses a warm page cache for the fixture and flatters every ratio, so an in-process repeat is not a valid measurement of this lane. This roughly triples the lane's runtime, to about 70 seconds, which is affordable for an opt-in perf marker. Polars version, thread count, row-group size, fixture rows, and every operation's rows out, all six paired samples, both means, both medians, the control it was paired against, the ratio, the estimate, and each check's outcome are recorded in the test's evidence payload, so the registry cannot claim a policy the measurements contradict.
+- `tests/performance/test_execution_engine_certification.py` — isolated projected-versus-full wide-Parquet RSS comparison, per-port API-input and direct-JSONL checkpoint evidence, a fresh-interpreter restart certificate for cache-proof reuse, telemetry privacy, and snapshot-owner cleanup, and `test_global_operation_memory_policies_match_the_registry`, which measures every global operation's incremental peak RSS in a fresh process through `tests/performance/_operation_memory_probe.py` and `bounded_sink` and certifies it against the policy read from `haute._polars_operations::operation` at runtime. Its 1.5M-row fact fixture and 375k-row dimension table are written with 25,000-row row groups — 60 row groups, more than any host's thread count — so parallel Parquet decoding cannot hold the whole file resident and the control measures streaming rather than the reader. Four controls are measured in the same run: `scan` (full-width passthrough sink), `scan_head` (a 1000-row sink), `scan_narrow` (a dense two-column sink) and `scan_gaps` (the same two columns where one is nullable and carries the gap runs). A control matches the operation's input columns *and* their nullability: a dense two-column scan under-represents the validity-bitmap and gap-handling cost of the same read, so measuring a nullable-column operator against it charges the operator for a read cost the control never paid. That is a correctness requirement for the comparison, not an allowance -- `interpolate` reads the nullable gap column and is therefore floored by `scan_gaps`, while a dense narrow plan keeps `scan_narrow`. Every `streaming` or `row_local` policy is bound by its matched passthrough control -- incremental peak <= 1.3x -- because a streaming pipeline can never need more than the passthrough pipeline over the same input (decode buffers plus output buffers, and a reducing operator's output buffers are smaller); a wide plan is bound by `scan` however few rows it emits, since its output size does not change what it must read. This is the safety-critical direction, since an operator wrongly recorded as streaming is one the planner never admits. `scan_head` is used only as the matched floor for a reducing boundary operator's witness. A `materialisation_boundary` policy is certified against the planner instead of a ratio: the same fixture is planned as a `dataInput` -> `polars` graph through `plan_execution_strategy` under an ample admission, and the admission estimate must bound the observed peak. The join graph declares `validate='m:1'` because that is the practice the product asks of an analyst and because it keeps the bound this join propagates downstream realistic; the join's own estimate is sized from its input ports and does not depend on the declaration. The join probe executes that same `validate='m:1'` code, so the measurement and the estimate describe one plan rather than two. Because a *declared* join estimate is sized from its largest operand, the lane also measures `join_fanout` -- `fact.join(multi, on='key', how='inner')` against an `operation-multi.parquet` fixture holding three rows per dimension key, so the output is three times the fact rows -- as a variant of `join` against the `scan` control. That measurement is what falsified input sizing for undeclared joins (about 1.57x the input-sized figure), so `join_fanout` is certified through the planner's policy rather than against a number: planned under `native_memory_backend_scope("rlimit")` it must be `warned`/`full-width-conservative` with `proof_gap=op:join_cardinality_many_to_many`, and planned without a cap it must raise `materialisation_estimate_unavailable` naming that detail. Only the rows check and those two policy checks are asserted; the evidence payload still records its `rows_out` against the expected 3x, the incremental peak, and `exceeds_declared_join_estimate` -- whether the observed fan-out peak is above the declared `join` case's estimate. Being a variant rather than a registry name, it carries no does-not-stream witness. A fan-in Polars node also carries the declared per-parent contract production requires. `explode` is certified as the typed unavailable-estimate rejection instead, its expansion being unbounded. `sort`, `unique`, `join`, and `explode` additionally carry a does-not-stream witness at 1.25x their matched floor. Two boundaries cannot be witnessed by their own wide-frame measurement and each names the variant that does show its state: `over` is dominated by the passthrough's own buffers on a 12-column frame, so the `over_narrow` probe must reach 1.5x `scan_narrow`, where its partition state dominates; and `join_asof` buffers its right (lookup) port and streams its left, so the wide-left case sits near the floor and the `join_asof_big_right` probe (`dim.join_asof(fact, ...)`, the large frame in the buffered position) must reach 1.25x `scan_head` — the wide case still certifies the estimate and the operator factor. `group_by`, `top_k`, `bottom_k`, and `reverse` are boundaries by construction or conservatism and carry no witness. The lane is registry-complete rather than a hand-kept list: it asserts that every name `measured_operation_names` returns has a plan in the probe (modulo the registered spelling aliases `groupby` and `melt`), so a new measured entry without a measurement fails here. `interpolate`'s probe reads a dedicated `v1_gaps` column — a straight line with 50-row null runs punched across the row-group boundaries — so the measurement cannot be of a passthrough over a column with nothing to fill, and the test verifies that the sunk output has no interior nulls left and that the filled values equal the linear interpolation of their neighbours. That verification runs in the *parent*, lazily over the retained sink after `run_smoke` has returned, precisely so it cannot contaminate the measurement: every child does nothing but build its plan, sink it, and exit, because anything else a child does lands in the lifetime peak the parent attributes to the operator. The `join_asof` fixtures are written pre-sorted for the same reason: a leading `sort` would make the chained boundary take sort's larger factor and certify the wrong operator. The cross join is certified through the planner alone — the graph plans `how='cross'` and must report the unavailable estimate — since there is no measurement to compare it against. Every ratio in the lane is a paired mean rather than a single reading: each operation is run alternately with its control, three of each -- five for `interpolate`, whose narrow-frame ratio sits at about 1.24 against the 1.30 ceiling, close enough that three pairs let batch drift decide the result -- and the ratio is the mean operation peak over the mean control peak. The per-operation sample count is recorded in the evidence payload. A control is re-run inside the pairs that use it and never sampled once and shared, because a single fresh-process sample drifted by about 20% between batches on the development host -- enough for a single-sample ratio to straddle a threshold and for a quoted figure to be noise rather than measurement. Pairing cancels that drift. The mean rather than the median is deliberate: peak RSS is bimodal, with samples clustering around two values about 35 MiB apart -- the granularity of a streaming chunk buffer, not continuous noise -- so a median of three snaps to whichever mode won two of the three samples and jumps between modes instead of settling, while the mean is the stable estimator of average cost over a discrete allocation pattern. Medians are still recorded for information. No threshold is widened to absorb the variance and no max-of-controls bias is applied. The residual is stated rather than hidden: a run can still fail when all three operation samples land in the high mode while all three control samples land in the low one, roughly a 1-in-64 event per operation, which is the accepted noise floor of an opt-in perf lane. The lane must be run through pytest, one fresh process per run: repeating the test inside a single interpreter reuses a warm page cache for the fixture and flatters every ratio, so an in-process repeat is not a valid measurement of this lane. This roughly triples the lane's runtime, to about 70 seconds, which is affordable for an opt-in perf marker. Polars version, thread count, row-group size, fixture rows, and every operation's rows out, all six paired samples, both means, both medians, the control it was paired against, the ratio, the estimate, and each check's outcome are recorded in the test's evidence payload, so the registry cannot claim a policy the measurements contradict.
 - `tests/performance/_execution_resilience_probe.py` plus
   `test_execution_engine_certification.py` — fresh-interpreter worker-pool soak with
   real crash replacement and RSS/descriptor-or-handle plateau evidence; five-phase
@@ -1634,27 +1664,3 @@ tests that construct real admitted contexts. The direct suite asserts complete
 coverage of `_ADAPTIVE_MEMORY_POLICY`, `_PROFILE_MEMORY_ENV`, and
 `_PROFILE_PROCESS_RSS_ENV` for every `ExecutionProfile`, and exercises adaptive,
 fixed, strict-server, explicit-override, process-RSS, and in-flight-reservation paths.
-
-## Canonical execution interfaces
-
-Under the [canonical-only format policy](../README.md#canonical-only-format-policy),
-maintained execution call sites use the current typed planner, admission, runtime-input, and
-diagnostic result objects directly. No private compatibility wrappers, tuple projections, or
-test-only call shapes remain; tests exercise the maintained interfaces.
-
-## Assistant interaction
-
-`src/haute/assistant/_tools.py::get_node_schema` is a cross-component caller of
-the public lazy-execution facade. It validates the target against the original
-hierarchical graph, flattens submodels for execution, compiles the saved
-preamble with the pipeline directory, selects the graph's saved active source,
-and calls `execute_lazy_graph` with `target_node_id`, `preserve_node_ids`, and
-contract enforcement. It reads only lazy schemas; a dict-shaped multi-frame
-result is rendered per port and no frame is collected.
-
-The assistant application service's v1 post-save verification tier is
-`structural`: it reparses and validates the saved graph and evaluates closed
-structural postconditions. Execution-plan verification is an explicitly
-stronger future tier. This component does not own assistant project revisions,
-plan hashes or save authority, and no assistant tool may present a structural
-result as execution evidence.

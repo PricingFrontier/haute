@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import keyword
 import math
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Annotated, Any, Literal, cast
 
@@ -423,18 +424,14 @@ class RecoverySubmodelDefinition(BaseModel):
     diagnostic_ids: list[str] = Field(default_factory=list)
     graph: RecoveryGraphSnapshot
     input_ports: list[dict[str, Any]] = Field(default_factory=list)
-    input_port_input_names: dict[str, str]
     output_ports: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _input_identity_coverage(self) -> RecoverySubmodelDefinition:
-        port_ids = [port.get("portId") for port in self.input_ports]
-        if any(not isinstance(port_id, str) or not port_id for port_id in port_ids):
-            raise ValueError("Recovery submodel input ports require non-empty portId values.")
-        if set(self.input_port_input_names) != set(port_ids):
-            raise ValueError("input_port_input_names must exactly cover input_ports.")
-        if any(not value for value in self.input_port_input_names.values()):
-            raise ValueError("input_port_input_names values must be non-empty.")
+    def _validate_port_names(self) -> RecoverySubmodelDefinition:
+        for port in (*self.input_ports, *self.output_ports):
+            name = port.get("name") if isinstance(port, Mapping) else getattr(port, "name", None)
+            if not isinstance(name, str) or not name or name != name.strip():
+                raise ValueError("Recovery submodel ports require a non-empty unpadded name.")
         return self
 
 
@@ -474,14 +471,11 @@ class EditorIdentityRequestNode(BaseModel):
     node_id: str = Field(min_length=1, max_length=512)
     label: str = Field(min_length=1, max_length=2048)
     node_type: NodeType
+    alias: Annotated[str, Field(min_length=1, max_length=512)] | None = Field(default=None)
     source_handles: list[Annotated[str, Field(min_length=1, max_length=512)]] = Field(
         default_factory=list,
         max_length=1024,
     )
-    source_handle_labels: dict[
-        Annotated[str, Field(min_length=1, max_length=512)],
-        Annotated[str, Field(min_length=1, max_length=2048)],
-    ] = Field(default_factory=dict, max_length=1024)
 
     @field_validator("source_handles")
     @classmethod
@@ -493,20 +487,14 @@ class EditorIdentityRequestNode(BaseModel):
     @model_validator(mode="after")
     def _identity_inputs_match_node_type(self) -> EditorIdentityRequestNode:
         if self.node_type == NodeType.SUBMODEL:
-            if any(
-                not handle.startswith("out__") or len(handle) == len("out__")
-                for handle in self.source_handles
-            ):
-                raise ValueError("submodel source handles must use out__<port_id>.")
-        if self.node_type in {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}:
-            if set(self.source_handle_labels) != set(self.source_handles):
-                raise ValueError("source_handle_labels must exactly cover submodel source_handles.")
-            if any(label != label.strip() for label in self.source_handle_labels.values()):
-                raise ValueError("submodel public labels must be unpadded.")
-        elif self.source_handle_labels:
-            raise ValueError(
-                "source_handle_labels are only valid for submodel and submodelPort nodes."
-            )
+            for handle in self.source_handles:
+                port_name = handle[len("out__") :] if handle.startswith("out__") else ""
+                if not port_name or not port_name.isascii() or not port_name.isidentifier():
+                    raise ValueError("submodel source handles must use out__<name>.")
+        if self.node_type == NodeType.SUBMODEL_PORT:
+            for handle in self.source_handles:
+                if not handle or not handle.isascii() or not handle.isidentifier():
+                    raise ValueError("submodelPort source handles must be ASCII identifiers.")
         if self.node_type == NodeType.API_INPUT and any(
             not handle.isascii() or not handle.isidentifier() or keyword.iskeyword(handle)
             for handle in self.source_handles
@@ -649,6 +637,12 @@ class SavePipelineRequest(BaseModel):
     source_file: str = ""
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
+    base_revision: RevisionToken | None = Field(
+        description=(
+            "The source_revision the client loaded; null only when creating a file "
+            "that does not exist yet."
+        ),
+    )
 
 
 class SavePipelineResponse(BaseModel):
@@ -1529,7 +1523,12 @@ class CreateSubmodelResponse(BaseModel):
 
 
 class DissolveSubmodelRequest(BaseModel):
-    instance_id: str
+    """Request to dissolve a submodel occurrence back into parent nodes."""
+
+    # instance_id is the occurrence's node id, which is its name.
+    instance_id: str = Field(
+        description="The occurrence's node id, which is its name.",
+    )
 
     @field_validator("instance_id")
     @classmethod

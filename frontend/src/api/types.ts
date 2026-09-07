@@ -23,7 +23,7 @@ export interface EditorIdentityRequestNode {
   label: string
   node_type: NodeTypeValue
   source_handles: string[]
-  source_handle_labels: Record<string, string>
+  alias?: string
 }
 
 export interface EditorIdentityBatchRequest {

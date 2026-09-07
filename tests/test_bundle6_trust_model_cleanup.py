@@ -43,6 +43,7 @@ import pytest
 
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.schemas import SavePipelineRequest
+from tests.conftest import current_source_revision
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -77,13 +78,19 @@ def _make_scenario_expander_node(label: str) -> GraphNode:
     )
 
 
-def _make_request(nodes: list[GraphNode], source: str = "main.py") -> SavePipelineRequest:
+def _make_request(
+    nodes: list[GraphNode],
+    source: str = "main.py",
+    *,
+    project_root: Path,
+) -> SavePipelineRequest:
     return SavePipelineRequest(
         name="main",
         description="",
         graph=PipelineGraph(nodes=nodes, edges=[]),
         preamble="",
         source_file=source,
+        base_revision=current_source_revision(project_root / source, project_root),
     )
 
 
@@ -117,7 +124,7 @@ class TestSaveDoesNotDeleteUnknownConfigs:
         orphan.write_text(json.dumps({"manual": True, "preserved": "yes"}))
 
         svc = SavePipelineService(project_root)
-        req = _make_request([_make_scenario_expander_node("new_node")])
+        req = _make_request([_make_scenario_expander_node("new_node")], project_root=project_root)
         svc.save(req)
 
         assert orphan.exists(), (
@@ -139,7 +146,7 @@ class TestSaveDoesNotDeleteUnknownConfigs:
 
         # First save: haute writes config/expander/node_a.json.
         svc = SavePipelineService(project_root)
-        svc.save(_make_request([_make_scenario_expander_node("node_a")]))
+        svc.save(_make_request([_make_scenario_expander_node("node_a")], project_root=project_root))
 
         # User hand-adds an orphan in the same folder.
         orphan = project_root / "config" / "expander" / "manual_orphan.json"
@@ -147,7 +154,9 @@ class TestSaveDoesNotDeleteUnknownConfigs:
 
         # Second save: still has node_a, no other changes.
         svc2 = SavePipelineService(project_root)
-        svc2.save(_make_request([_make_scenario_expander_node("node_a")]))
+        svc2.save(
+            _make_request([_make_scenario_expander_node("node_a")], project_root=project_root)
+        )
 
         node_a_config = project_root / "config" / "expander" / "node_a.json"
         assert node_a_config.exists(), "Legitimate haute config was deleted"
@@ -172,7 +181,8 @@ class TestSaveDoesNotDeleteUnknownConfigs:
                 [
                     _make_scenario_expander_node("node_a"),
                     _make_scenario_expander_node("node_b"),
-                ]
+                ],
+                project_root=project_root,
             )
         )
 
@@ -184,7 +194,9 @@ class TestSaveDoesNotDeleteUnknownConfigs:
         # save #1) parses to include both → prev = {node_a, node_b}.
         # current = {node_a}.  stale = {node_b}.  Delete node_b only.
         svc2 = SavePipelineService(project_root)
-        svc2.save(_make_request([_make_scenario_expander_node("node_a")]))
+        svc2.save(
+            _make_request([_make_scenario_expander_node("node_a")], project_root=project_root)
+        )
 
         assert node_a_config.exists(), "Active node's config was wrongly deleted"
         assert not node_b_config.exists(), (
@@ -204,7 +216,9 @@ class TestSaveDoesNotDeleteUnknownConfigs:
 
         # First write some legitimate configs via a normal save.
         svc1 = SavePipelineService(project_root)
-        svc1.save(_make_request([_make_scenario_expander_node("node_a")]))
+        svc1.save(
+            _make_request([_make_scenario_expander_node("node_a")], project_root=project_root)
+        )
 
         # Corrupt the on-disk .py.
         py_path = project_root / "main.py"
@@ -219,7 +233,9 @@ class TestSaveDoesNotDeleteUnknownConfigs:
         # diff-deletes fire; existing orphan + the original node_a
         # config both survive (node_a is rewritten by the save).
         svc2 = SavePipelineService(project_root)
-        svc2.save(_make_request([_make_scenario_expander_node("node_a")]))
+        svc2.save(
+            _make_request([_make_scenario_expander_node("node_a")], project_root=project_root)
+        )
 
         node_a_config = project_root / "config" / "expander" / "node_a.json"
         assert node_a_config.exists(), "Active node's config not present"

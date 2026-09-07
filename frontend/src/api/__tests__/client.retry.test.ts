@@ -428,6 +428,7 @@ describe("retry: caller supplied policy", () => {
             graph: dummyGraph,
             preamble: "",
             source_file: "pipe.py",
+            base_revision: null,
             preserved_blocks: [],
           },
           // @ts-expect-error retry policies are deliberately not exposed on
@@ -617,6 +618,7 @@ describe("no retry: non-idempotent POST (default)", () => {
           graph: dummyGraph,
           preamble: "",
           source_file: "pipe.py",
+          base_revision: null,
           preserved_blocks: [],
         }),
       ).rejects.toBeInstanceOf(TypeError)

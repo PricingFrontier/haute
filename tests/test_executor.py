@@ -3502,6 +3502,70 @@ class TestPreviewCacheInvalidation:
         results2 = execute_graph(graph, target_node_id="t")
         assert results2["t"].preview[0]["y"] == 20
 
+    def test_prepare_data_output_uses_edited_helper_on_next_operation(
+        self,
+        tmp_path,
+        monkeypatch,
+        _widen_sandbox_root,
+    ):
+        from pathlib import Path
+
+        from haute.executor import commit_prepared_data_output, prepare_data_output
+        from haute.graph_utils import PipelineGraph
+
+        monkeypatch.chdir(tmp_path)
+        utility_dir = tmp_path / "utility"
+        utility_dir.mkdir()
+        (utility_dir / "__init__.py").write_text("", encoding="utf-8")
+        helper = utility_dir / "helpers.py"
+        helper.write_text("VALUE = 10\n", encoding="utf-8")
+
+        p = tmp_path / "d.parquet"
+        pl.DataFrame({"x": [1, 2]}).write_parquet(p)
+        out1 = tmp_path / "out1.parquet"
+        out2 = tmp_path / "out2.parquet"
+
+        def _make_output_graph(out_path: Path) -> PipelineGraph:
+            return _g(
+                {
+                    "nodes": [
+                        _ready_source_node("src", str(p)),
+                        _transform_node("t", "df = src.with_columns(v=pl.lit(VALUE))"),
+                        {
+                            "id": "dout",
+                            "data": {
+                                "label": "dout",
+                                "nodeType": "dataOutput",
+                                "config": {
+                                    "outputType": "file",
+                                    "format": "parquet",
+                                    "path": str(out_path),
+                                },
+                            },
+                        },
+                    ],
+                    "edges": [_edge("src", "t"), _edge("t", "dout")],
+                    "preamble": "from utility.helpers import VALUE\n",
+                    "source_file": str(tmp_path / "pipeline.py"),
+                }
+            )
+
+        graph1 = _make_output_graph(out1)
+        prepared1 = prepare_data_output(graph1, "dout")
+        commit_prepared_data_output(prepared1)
+
+        helper.write_text(
+            "VALUE = 200\n# longer content to ensure size differs\n",
+            encoding="utf-8",
+        )
+
+        graph2 = _make_output_graph(out2)
+        prepared2 = prepare_data_output(graph2, "dout")
+        commit_prepared_data_output(prepared2)
+
+        assert pl.read_parquet(out1)["v"][0] == 10
+        assert pl.read_parquet(out2)["v"][0] == 200
+
     def test_invalidate_forces_re_execution(self, tmp_path):
         """After invalidation, the same graph fingerprint triggers a
         full re-execution instead of returning stale cached results.
@@ -3593,7 +3657,7 @@ class TestPreambleLockConcurrency:
 
         def compile_slow():
             try:
-                _compile_preamble(slow_source, force_refresh=True)
+                _compile_preamble(slow_source)
             except BaseException as exc:
                 errors.append(exc)
             finally:
@@ -3601,7 +3665,7 @@ class TestPreambleLockConcurrency:
 
         def compile_fast():
             try:
-                assert _compile_preamble("FAST_VALUE = 2\n", force_refresh=True)["FAST_VALUE"] == 2
+                assert _compile_preamble("FAST_VALUE = 2\n")["FAST_VALUE"] == 2
             except BaseException as exc:
                 errors.append(exc)
             finally:
@@ -3638,7 +3702,7 @@ class TestPreambleLockConcurrency:
         monkeypatch.chdir(tmp_path)
         executor._compile_preamble.cache_clear()  # type: ignore[attr-defined]
         source = "HOT_HIT = 1\n"
-        ns_first = _compile_preamble(source, force_refresh=False)
+        ns_first = _compile_preamble(source, execution_fingerprint="pinned-hot")
 
         errors: list[BaseException] = []
         finished = threading.Event()
@@ -3648,7 +3712,7 @@ class TestPreambleLockConcurrency:
 
         def compile_worker():
             try:
-                result.append(_compile_preamble(source, force_refresh=False))
+                result.append(_compile_preamble(source, execution_fingerprint="pinned-hot"))
             except BaseException as exc:
                 errors.append(exc)
             finally:
@@ -3664,6 +3728,25 @@ class TestPreambleLockConcurrency:
 
         assert not errors
         assert result == [ns_first]
+
+    def test_compile_preamble_pinned_fingerprint_is_used_verbatim(self):
+        _compile_preamble.cache_clear()
+        try:
+            ns_a1 = _compile_preamble("X = 1\n", execution_fingerprint="pinned-a")
+            ns_a2 = _compile_preamble("X = 1\n", execution_fingerprint="pinned-a")
+            assert ns_a1 is ns_a2
+
+            ns_b = _compile_preamble("X = 1\n", execution_fingerprint="pinned-b")
+            assert ns_b is not ns_a1
+            assert ns_b["X"] == 1
+
+            misses_before = _compile_preamble.cache_info().misses
+            ns_computed = _compile_preamble("X = 1\n")
+            misses_after = _compile_preamble.cache_info().misses
+            assert misses_after > misses_before
+            assert ns_computed["X"] == 1
+        finally:
+            _compile_preamble.cache_clear()
 
     def test_concurrent_pipeline_import_keeps_active_utility_path(
         self,
@@ -3707,7 +3790,6 @@ class TestPreambleLockConcurrency:
             try:
                 results["a"] = _compile_preamble(
                     source,
-                    force_refresh=True,
                     pipeline_dir=pipeline_a,
                 )["VALUE"]
             except BaseException as exc:
@@ -3718,7 +3800,6 @@ class TestPreambleLockConcurrency:
             try:
                 results["b"] = _compile_preamble(
                     source,
-                    force_refresh=True,
                     pipeline_dir=pipeline_b,
                 )["VALUE"]
             except BaseException as exc:

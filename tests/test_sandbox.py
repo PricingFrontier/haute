@@ -216,6 +216,14 @@ class TestSafeUnpickle:
         set_project_root(tmp_path)
         f = tmp_path / "plain.pkl"
         f.write_bytes(pickle.dumps({"a": 1}))
+
+        # Warm the load path before snapshotting: the allowlist machinery
+        # imports scipy on first use, and scipy installs warnings filters of
+        # its own at import time. Those are not the promotion under test, and
+        # whether they are already installed depends on what ran earlier in
+        # this process — so let the imports settle first and compare only what
+        # a second, fully warmed load leaves behind.
+        assert safe_unpickle(str(f)) == {"a": 1}
         before = list(warnings.filters)
 
         assert safe_unpickle(str(f)) == {"a": 1}
@@ -2076,12 +2084,12 @@ class TestPreambleCacheEviction:
         info_before = _compile_preamble.cache_info()  # type: ignore[attr-defined]
         bound = info_before.maxsize
 
-        # Insert ``bound + 5`` distinct preambles with force_refresh=False
+        # Insert ``bound + 5`` distinct preambles with execution_fingerprint
         # so each is a fresh miss that populates the cache rather than a
         # cache_clear() on every call.
         for i in range(bound + 5):
             preamble = f"PREAMBLE_EVICT_TEST_{i} = {i}\n"
-            _compile_preamble(preamble, force_refresh=False)
+            _compile_preamble(preamble, execution_fingerprint=f"pin-{i}")
 
         info_after = _compile_preamble.cache_info()  # type: ignore[attr-defined]
         assert info_after.currsize <= bound
