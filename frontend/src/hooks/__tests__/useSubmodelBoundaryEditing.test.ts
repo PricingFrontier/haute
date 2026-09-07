@@ -8,6 +8,7 @@ import type { PipelineEdge, SubmodelDefinition, SubmodelPortData } from "../../t
 import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
 import { SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
 import { cloneGraphSnapshot } from "../../utils/graphSnapshot"
+import { attachEditorEdgeIdentities } from "../../utils/editorIdentities"
 
 const SUBMODEL_NAME = "pricing"
 const PLACEHOLDER_ID = "pricing"
@@ -33,7 +34,7 @@ function makeFixture({
   includeInternalEdge = false,
   bindOutputConsumers = true,
 }: FixtureOptions = {}) {
-  const identify = (node: Node) => ({
+  const identify = (node: Node): Node => ({
     ...node,
     data: {
       ...node.data,
@@ -149,6 +150,97 @@ function hookParams(fixture: ReturnType<typeof makeFixture>) {
 }
 describe("useSubmodelBoundaryEditing", () => {
   beforeEach(() => useToastStore.setState({ toasts: [] }))
+
+  it.each([
+    { removing: false, logicalName: "pricing" },
+    { removing: true, logicalName: "pricing__child_a" },
+    { removing: true, logicalName: "pricing" },
+  ])("preserves code and selectors across output count changes ($removing, $logicalName)", async ({ removing, logicalName }) => {
+    const fixture = makeFixture({
+      outputPorts: removing ? ["child_a", "child_b"] : ["child_a"],
+      bindOutputConsumers: false,
+    })
+    const beforeName = removing ? "pricing__child_a" : "pricing"
+    const afterName = removing ? "pricing" : "pricing__child_a"
+    const occurrence = fixture.parentNodes.find((node) => node.id === PLACEHOLDER_ID)!
+    occurrence.data._sourceHandleInputNames = {
+      out__child_a: beforeName,
+      ...(removing ? { out__child_b: "pricing__child_b" } : {}),
+    }
+    const code = `df = ${logicalName}.with_columns(flag=pl.lit(1))`
+    fixture.parentNodes.find((node) => node.id === "consumer_a")!.data.config = {
+      code,
+      ...(logicalName !== beforeName ? { inputMapping: { [logicalName]: beforeName } } : {}),
+    }
+    fixture.parentNodes.find((node) => node.id === "consumer_b")!.data.config = {
+      data_input: beforeName, banding_source: beforeName, ratebook_input: beforeName,
+    }
+    for (const target of ["consumer_a", "consumer_b"]) fixture.parentEdges.push({
+      id: `consume-${target}`, source: PLACEHOLDER_ID, target, sourceHandle: "out__child_a", data: { _inputName: beforeName },
+    })
+    const copyBefore = removing ? "pricing_copy__child_a" : "pricing_copy"
+    const copyAfter = removing ? "pricing_copy" : "pricing_copy__child_a"
+    const copyCode = `df = ${copyBefore}`
+    fixture.parentNodes.push(
+      {
+        ...occurrence,
+        id: "pricing_copy",
+        data: {
+          ...occurrence.data,
+          label: "pricing_copy",
+          config: { definitionId: DEFINITION_ID, alias: "pricing_copy", instanceOf: PLACEHOLDER_ID },
+          _sourceHandleInputNames: {
+            out__child_a: copyBefore,
+            ...(removing ? { out__child_b: "pricing_copy__child_b" } : {}),
+          },
+        },
+      },
+      makeNode("copy_consumer", "polars", {
+        data: { nodeType: "polars", label: "copy_consumer", config: { code: copyCode } },
+      }),
+    )
+    fixture.parentEdges.push({
+      id: "copy-consume", source: "pricing_copy", target: "copy_consumer",
+      sourceHandle: "out__child_a", data: { _inputName: copyBefore },
+    })
+    const resolveGraphIdentities = vi.fn(async ({ nodes, edges, submodels }: GraphIdentityRequest) => {
+      const definition = submodels[DEFINITION_ID] as SubmodelDefinition
+      const resolved = nodes.map((node) => node.data.nodeType === "submodel" ? {
+        ...node,
+        data: {
+          ...node.data,
+          _sourceHandleInputNames: Object.fromEntries(definition.outputPorts.map((port) => [
+            `out__${port.name}`, definition.outputPorts.length > 1 ? `${node.id}__${port.name}` : node.id,
+          ])),
+        },
+      } : node)
+      return { nodes: resolved, edges: attachEditorEdgeIdentities(edges, resolved) }
+    })
+    const { result } = renderHook(() => useSubmodelBoundaryEditing({ ...hookParams(fixture), resolveGraphIdentities }))
+    const output = fixture.view.nodes.find((node) => node.type === "submodelPort" && node.data.portDirection === "output")!
+    await act(async () => {
+      if (removing) {
+        const removedEdge = fixture.view.edges.find((edge) => edge.source === "child_b" && edge.target === output.id)!
+        result.current.deleteBoundaryEdge(removedEdge.id)
+      } else {
+        result.current.commitBoundaryConnection({ source: "child_b", sourceHandle: null, target: output.id, targetHandle: null })
+      }
+    })
+    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+    const consumerConfig = (id: string) => fixture.parentGraphRef.current.nodes.find((node) => node.id === id)!.data.config
+    expect(consumerConfig("consumer_a")).toEqual({
+      code, ...(logicalName !== afterName ? { inputMapping: { [logicalName]: afterName } } : {}),
+    })
+    expect(consumerConfig("consumer_b")).toEqual({
+      data_input: afterName, banding_source: afterName, ratebook_input: afterName,
+    })
+    expect(consumerConfig("copy_consumer")).toEqual({
+      code: copyCode, inputMapping: { [copyBefore]: copyAfter },
+    })
+    expect(fixture.parentGraphRef.current.edges.every((edge) => (
+      edge.data?._inputName === (edge.source === PLACEHOLDER_ID ? afterName : copyAfter)
+    ))).toBe(true)
+  })
 
   it("atomically commits a parent-created public input and canonical edge", () => {
     const fixture = makeFixture({ includeInputPort: false })

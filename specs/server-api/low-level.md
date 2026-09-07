@@ -491,6 +491,11 @@ generation; child code cannot write the `JobStore` or parent LRU caches.
 
 ## Edge cases and invariants
 
+Save preconditions capture artifact identities **before** validating the client's
+document revision. Revision validation must not bless bytes captured after an
+external edit. The same ordering covers a new destination appearing during save;
+later write and cleanup checks still compare against the captured identities.
+
 - **Partial frontend build never serves.** `static_build_ready()` requires both
   `index.html` *and* `assets/` to exist — an interrupted `npm run build` or a hand-created
   directory with only one of the two would otherwise pass a bare `.exists()` check, mount

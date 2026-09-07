@@ -120,6 +120,30 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
   }
 }
 
+it("ignores an obsolete save conflict after a document reload", async () => {
+  useDocumentStatusStore.getState().reset()
+  useUIStore.setState({ syncBanner: null })
+  mockLoad.mockResolvedValue(makePipelineEditorDocument({ source_file: "test.py", source_revision: "revision-old" }))
+  let rejectSave!: (reason: unknown) => void
+  mockSave.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSave = reject }))
+  const params = makeParams()
+  const hook = renderHook(() => usePipelineAPI(params))
+  await waitFor(() => expect(hook.result.current.loading).toBe(false))
+  let pending!: Promise<boolean>
+  act(() => { pending = hook.result.current.handleSave() })
+  act(() => {
+    params.sourceRevisionRef.current = "revision-reloaded"
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ source_file: "test.py", source_revision: "revision-reloaded" }), true)
+  })
+  await act(async () => {
+    rejectSave(new ApiError("Conflict", 409, "stale_document_revision: disk moved"))
+    expect(await pending).toBe(false)
+  })
+  expect(useDocumentStatusStore.getState().graphSynchronized).toBe(true)
+  expect(useUIStore.getState().syncBanner).toBeNull()
+  cleanup()
+})
+
 type NodeUpdater = Node[] | ((nds: Node[]) => Node[])
 type NodeSetterMock = Mock<(updater: NodeUpdater) => void>
 

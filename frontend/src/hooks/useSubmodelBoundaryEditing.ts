@@ -27,6 +27,7 @@ import {
 import useToastStore from "../stores/useToastStore"
 import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 import { structuralFingerprint } from "../utils/structuralFingerprint"
+import { reconcileGraphInputBindings } from "../utils/nodeUpdatePlan"
 
 type GraphRef = React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
 type ParentGraphRef = React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> } | null>
@@ -264,10 +265,16 @@ export default function useSubmodelBoundaryEditing({
         pendingBoundaryCandidateRef.current = null
       }
       const merged = mergeViewPresentation(result, graphRef.current.nodes)
+      const previousParent = parentGraphRef.current
+      if (!previousParent) throw new Error("The parent graph is no longer available")
+      const rebound = reconcileGraphInputBindings(previousParent, {
+        nodes: resolved.nodes, edges: resolved.edges, submodels: result.submodels,
+      })
+      if (!rebound.ok) throw new Error(rebound.error)
       commit({
         ...merged,
-        parentNodes: resolved.nodes,
-        parentEdges: resolved.edges,
+        parentNodes: rebound.nodes,
+        parentEdges: rebound.edges,
       })
       onSettled?.(true)
     }).catch((error: unknown) => {

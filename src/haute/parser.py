@@ -265,6 +265,7 @@ def parse_pipeline_source(
                 existing[3].append(registration)
 
         definition_sources: dict[str, str] = {}
+        registration_definitions: dict[str, str] = {}
         for source_key, (
             rel_path,
             sm_filepath,
@@ -297,6 +298,8 @@ def parse_pipeline_source(
             definition_sources[definition_id] = source_key
             submodel_graphs[definition_id] = child_graph
             submodel_files[definition_id] = rel_path
+            for reg in _source_registrations:
+                registration_definitions[reg.path] = definition_id
 
         submodel_occurrence_paths = list(submodel_paths)
         submodel_names = {registration.name for registration in registrations}
@@ -307,6 +310,7 @@ def parse_pipeline_source(
             explicit_connects,
             flatten=flatten,
             registrations=registrations,
+            registration_definitions=registration_definitions,
         )
     assert_parser_structure_conserved(
         raw_nodes=raw_nodes,

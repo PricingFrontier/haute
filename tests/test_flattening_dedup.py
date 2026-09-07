@@ -213,6 +213,7 @@ class TestStructuralEquivalence:
             {"scoring": "modules/scoring.py"},
             parent_edges=parent_edges,
             registrations=[_registration("scoring")],
+            registration_definitions={"modules/scoring.py": "scoring"},
             flatten=True,
         )
         hierarchical = merge_submodels(
@@ -221,6 +222,7 @@ class TestStructuralEquivalence:
             {"scoring": "modules/scoring.py"},
             parent_edges=parent_edges,
             registrations=[_registration("scoring")],
+            registration_definitions={"modules/scoring.py": "scoring"},
             flatten=False,
         )
         via_flatten_graph = flatten_graph(hierarchical)
@@ -242,6 +244,7 @@ class TestStructuralEquivalence:
             {"solo": "modules/solo.py"},
             parent_edges=parent_edges,
             registrations=[_registration("solo")],
+            registration_definitions={"modules/solo.py": "solo"},
             flatten=True,
         )
         hierarchical = merge_submodels(
@@ -250,6 +253,7 @@ class TestStructuralEquivalence:
             {"solo": "modules/solo.py"},
             parent_edges=parent_edges,
             registrations=[_registration("solo")],
+            registration_definitions={"modules/solo.py": "solo"},
             flatten=False,
         )
         via_flatten_graph = flatten_graph(hierarchical)
@@ -271,6 +275,7 @@ class TestStructuralEquivalence:
             {"chain": "modules/chain.py"},
             parent_edges=parent_edges,
             registrations=[_registration("chain")],
+            registration_definitions={"modules/chain.py": "chain"},
             flatten=True,
         )
         hierarchical = merge_submodels(
@@ -279,6 +284,7 @@ class TestStructuralEquivalence:
             {"chain": "modules/chain.py"},
             parent_edges=parent_edges,
             registrations=[_registration("chain")],
+            registration_definitions={"modules/chain.py": "chain"},
             flatten=False,
         )
         via_flatten_graph = flatten_graph(hierarchical)

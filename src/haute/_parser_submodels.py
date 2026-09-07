@@ -429,10 +429,10 @@ def _merge_registered_submodels(
     registrations: list[SubmodelRegistration],
     *,
     flatten: bool,
+    registration_definitions: dict[str, str],
 ) -> PipelineGraph:
     """Build one shared definition entry and one placeholder per registration."""
     definitions: dict[str, SubmodelDefinition] = {}
-    definitions_by_path: dict[str, SubmodelDefinition] = {}
     occurrences: dict[str, SubmodelDefinition] = {}
     parent_nodes = list(parent_graph.nodes)
     root_node_ids = {node.id for node in parent_graph.nodes}
@@ -453,11 +453,10 @@ def _merge_registered_submodels(
             outputPorts=child_graph._parser_output_ports,
         )
         definitions[resolved_def_id] = definition
-        if definition.file:
-            definitions_by_path[definition.file] = definition
 
     for registration in registrations:
-        matched_definition = definitions_by_path.get(registration.path)
+        def_id = registration_definitions.get(registration.path)
+        matched_definition = definitions.get(def_id) if def_id is not None else None
         if matched_definition is None:
             raise ParseError(
                 "Submodel registration references an unresolved definition.",
@@ -617,6 +616,7 @@ def merge_submodels(
     *,
     registrations: list[SubmodelRegistration],
     flatten: bool = False,
+    registration_definitions: dict[str, str],
 ) -> PipelineGraph:
     """Merge canonical definition metadata and occurrence registrations."""
     return _merge_registered_submodels(
@@ -626,4 +626,5 @@ def merge_submodels(
         parent_edges,
         registrations,
         flatten=flatten,
+        registration_definitions=registration_definitions,
     )

@@ -289,6 +289,7 @@ def _merge(
         {definition_key: "modules/pricing.py"},
         parent_edges or [],
         registrations=registrations or [_registration()],
+        registration_definitions={"modules/pricing.py": "definition_pricing"},
         flatten=flatten,
     )
 
@@ -394,6 +395,7 @@ class TestMergeSubmodels:
             {},
             [],
             registrations=[],
+            registration_definitions={},
         )
 
         assert set(result.node_map) == {"load", "output"}

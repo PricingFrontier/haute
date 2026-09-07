@@ -235,6 +235,12 @@ export default function useWebSocketSync({
       return true
     }
 
+    // The navigation ref names the visible child while drilled. Live sync and
+    // reconnect still belong to the authoritative parent document.
+    function currentDocumentSource(): string | undefined {
+      return useDocumentStatusStore.getState().sourceFile || sourceFileRef?.current
+    }
+
     function appliedDocumentFingerprintFor(sourceFile: string): string | undefined {
       const applied = appliedDocumentFingerprintRef.current
       if (!applied || !isCurrentSourceFile(applied.sourceFile, sourceFile)) {
@@ -248,7 +254,7 @@ export default function useWebSocketSync({
       fingerprint: string,
     ) {
       const sourceFile = normalizeSourceFile(incomingSource)
-        ?? normalizeSourceFile(sourceFileRef?.current)
+        ?? normalizeSourceFile(currentDocumentSource())
       appliedDocumentFingerprintRef.current = sourceFile
         ? { sourceFile, fingerprint }
         : null
@@ -301,7 +307,7 @@ export default function useWebSocketSync({
         opened = true
         retriesRef.current = 0
         setStatus("connected")
-        const sourceFile = sourceFileRef?.current.trim()
+        const sourceFile = currentDocumentSource()?.trim()
         if (sourceFile) {
           try {
             const resyncPayload: Record<string, string | number> = {
@@ -337,7 +343,7 @@ export default function useWebSocketSync({
             addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
             return
           }
-          if (!isCurrentSourceFile(frame.sourceFile, sourceFileRef?.current)) {
+          if (!isCurrentSourceFile(frame.sourceFile, currentDocumentSource())) {
             return
           }
           const updateSeq = ++graphUpdateSeq
@@ -444,7 +450,7 @@ export default function useWebSocketSync({
         }
 
         if (msg.type === "parse_error") {
-          if (!isCurrentSourceFile(msg.source_file, sourceFileRef?.current)) {
+          if (!isCurrentSourceFile(msg.source_file, currentDocumentSource())) {
             return
           }
           // A parse_error frame now means one thing: the current document

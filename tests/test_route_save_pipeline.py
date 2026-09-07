@@ -29,6 +29,42 @@ from tests.conftest import make_edge as _make_edge
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("existing", [True, False])
+def test_save_rejects_source_changed_before_artifact_capture(tmp_path, monkeypatch, existing):
+    from haute.parser import parse_pipeline_file
+    from haute.routes._save_pipeline import StaleDocumentRevisionError
+
+    source = tmp_path / "main.py"
+    source.write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("main")\n'
+        '@pipeline.polars\ndef data():\n    return pl.LazyFrame({"x": [1]})\n',
+        encoding="utf-8",
+    )
+    graph = parse_pipeline_file(source)
+    revision = current_source_revision(source, tmp_path) if existing else None
+    external = source.read_bytes() + b"\n# newer external authored work\n"
+    if not existing:
+        source.unlink()
+    original_capture = SavePipelineService._capture_artifact_identities
+
+    def drift_then_capture(self, path):
+        source.write_bytes(external)
+        return original_capture(self, path)
+
+    monkeypatch.setattr(SavePipelineService, "_capture_artifact_identities", drift_then_capture)
+    with pytest.raises(StaleDocumentRevisionError):
+        SavePipelineService(project_root=tmp_path).save(
+            SavePipelineRequest(
+                graph=graph,
+                name="main",
+                description="saved edit",
+                source_file="main.py",
+                base_revision=revision,
+            )
+        )
+    assert source.read_bytes() == external
+
+
 def _file_input_config(path: str) -> dict:
     format_name, mode = {
         ".csv": ("csv", "scan"),

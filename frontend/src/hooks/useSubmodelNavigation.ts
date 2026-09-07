@@ -365,31 +365,31 @@ export default function useSubmodelNavigation({
       (activeView?.type === "submodel" ? activeView.instanceId : null)
     if (!drilledInstanceId) return
 
-    const existsInReloaded = reloadedNodes.some((node) => node.id === drilledInstanceId)
-    if (!existsInReloaded) {
-      transformRequestSerialRef.current += 1
-      parentGraphRef.current = null
-      setActiveSubmodelIdentity(null)
-      const rootFile = viewStackRef.current[0]?.file || sourceFileRef.current
-      const rootName = viewStackRef.current[0]?.name || pipelineNameRef.current || "main"
-      sourceFileRef.current = rootFile
-      setCurrentSourceFile?.(rootFile || null)
-      const rootView: ViewLevel[] = [{
-        type: "pipeline",
-        name: rootName,
-        file: rootFile,
-      }]
-      viewStackRef.current = rootView
-      setViewStack(rootView)
-      setNodesRaw(reloadedNodes)
-      if (reloadedEdges) {
-        setEdgesRaw(normalizeEdges(reloadedEdges))
-      }
-      setSelectedNode(null)
-      setLastSelectedId?.(null)
-      setPreviewData(null)
-      setTimeout(() => fitView({ padding: 0.8 }), 100)
+    // The synchronizer has installed a new root snapshot. Drop every cached
+    // child view, even if the occurrence survives, so breadcrumbs and canvas
+    // always describe the same document.
+    transformRequestSerialRef.current += 1
+    parentGraphRef.current = null
+    setActiveSubmodelIdentity(null)
+    const rootFile = viewStackRef.current[0]?.file || sourceFileRef.current
+    const rootName = viewStackRef.current[0]?.name || pipelineNameRef.current || "main"
+    sourceFileRef.current = rootFile
+    setCurrentSourceFile?.(rootFile || null)
+    const rootView: ViewLevel[] = [{
+      type: "pipeline",
+      name: rootName,
+      file: rootFile,
+    }]
+    viewStackRef.current = rootView
+    setViewStack(rootView)
+    setNodesRaw(reloadedNodes)
+    if (reloadedEdges) {
+      setEdgesRaw(normalizeEdges(reloadedEdges))
     }
+    setSelectedNode(null)
+    setLastSelectedId?.(null)
+    setPreviewData(null)
+    setTimeout(() => fitView({ padding: 0.8 }), 100)
   }, [
     activeSubmodelIdentity,
     parentGraphRef,

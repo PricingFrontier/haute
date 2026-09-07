@@ -721,15 +721,16 @@ def publish_bound_project(project_root: Path) -> None:
     """
     binding = _session.binding
     if binding is not None and is_uc_url(binding.remote_url):
-        publish_to_uc(binding.remote_url, project_root)
+        published_branch = publish_to_uc(binding.remote_url, project_root)
     else:
         from haute import _git
 
-        _git.push_working_pair(REMOTE_NAME, project_root, cwd=project_root)
-    _record_restart_target(binding, project_root)
+        response = _git.push_working_pair(REMOTE_NAME, project_root, cwd=project_root)
+        published_branch = response.working_branch
+    _record_restart_target(binding, published_branch)
 
 
-def _record_restart_target(binding: StorageBinding | None, project_root: Path) -> None:
+def _record_restart_target(binding: StorageBinding | None, published_branch: str | None) -> None:
     """Point the durable binding at the branch a publish just carried.
 
     The restart target is the working branch in effect at the most recent
@@ -742,17 +743,12 @@ def _record_restart_target(binding: StorageBinding | None, project_root: Path) -
     queue reports a transport failure and retries instead of showing
     ``synced`` over a restart target the volume never received.
     """
-    if binding is None:
+    if binding is None or published_branch is None or published_branch == binding.branch:
         return
-    from haute._git_state import read_working_branch
-
-    working = read_working_branch(project_root)
-    if working is None or working == binding.branch:
-        return
-    refreshed = replace(binding, branch=working)
+    refreshed = replace(binding, branch=published_branch)
     write_binding(refreshed)
     _session.binding = refreshed
-    logger.info("restart_target_recorded", branch=working)
+    logger.info("restart_target_recorded", branch=published_branch)
 
 
 # ---------------------------------------------------------------------------

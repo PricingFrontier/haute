@@ -39,6 +39,40 @@ function createController(
 }
 
 describe("useGraphCommitController submodel occurrence rename", () => {
+  it.each(["document", "readOnly"] as const)("cancels a pending rename after a %s change", async (change) => {
+    const original = makeNode("source", "polars", { data: { label: "source", nodeType: "polars", config: { code: "df = source_data" } } })
+    const graphRef = { current: { nodes: [original], edges: [] as Edge[] } }
+    const commitGraph = vi.fn()
+    let finish!: (nodes: Node[]) => void
+    let candidates: Node[] = []
+    const resolveNodeIdentities = vi.fn((nodes: readonly Node[]) => {
+      candidates = [...nodes]
+      return new Promise<Node[]>((resolve) => { finish = resolve })
+    })
+    const context = { document: "a.py:1", readOnly: false }
+    const hook = renderHook(() => useGraphCommitController({
+      graphRef, submodelsRef: { current: {} },
+      readDocumentIdentity: () => context.document, readOnly: context.readOnly,
+      reservedApiInputFrameLabels: new Set(), resolveNodeIdentities,
+      commitGraph, setSelectedNode: vi.fn(), addToast: vi.fn(),
+    }))
+    let pending!: ReturnType<typeof hook.result.current.onRenameNode>
+    act(() => { pending = hook.result.current.onRenameNode("source", "renamed") })
+    if (change === "document") context.document = "b.py:1"
+    else context.readOnly = true
+    hook.rerender()
+    await act(async () => {
+      finish(candidates)
+      // Let an incorrect retry finish too, so the test detects a commit rather than timing out.
+      await Promise.resolve()
+      finish(candidates)
+      await pending
+    })
+    expect(commitGraph).not.toHaveBeenCalled()
+    expect(graphRef.current.nodes[0]).toBe(original)
+    expect(resolveNodeIdentities).toHaveBeenCalledOnce()
+  })
+
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()

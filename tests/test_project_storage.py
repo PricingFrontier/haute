@@ -596,7 +596,14 @@ class _RecordingPush:
         self.done.set()
         if outcome is not None:
             raise outcome
-        return None
+        from haute.schemas import GitPushResponse
+
+        return GitPushResponse(
+            remote=remote,
+            working_branch=WORKING,
+            ledger_branch=_git.ledger_name(WORKING),
+            default_branch="main",
+        )
 
 
 class TestPushQueue:
@@ -670,6 +677,7 @@ class TestPushQueue:
         def slow_push(remote, project_root, cwd=None):
             calls["count"] += 1
             release.wait(timeout=5)
+            return _RecordingPush()(remote, project_root, cwd=cwd)
 
         monkeypatch.setattr(_git, "push_working_pair", slow_push)
         queue = PushQueue()
@@ -1070,6 +1078,36 @@ class TestContainerDeathSurvival:
         c1 = tmp_path / "c1"
         assert _project_storage.restore_if_bound(c1) == "restored"
         _assert_resumed_on(c1, ALT, "# alt priced\n", sha)
+
+    def test_branch_switch_after_real_git_push_preserves_working_restart_target(
+        self,
+        project: Path,
+        bare_remote: Path,
+        files_api: _FakeFiles,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        assert _project_storage.bind_remote(f"file://{bare_remote}", project) == "adopted"
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == WORKING
+
+        from haute import _git
+
+        real_push = _git.push_working_pair
+
+        def wrapper(remote: str, project_root: Path, cwd: Path | None = None):
+            result = real_push(remote, project_root, cwd=cwd)
+            _git.set_working_branch(ALT, project_root, cwd=project_root, create=True)
+            return result
+
+        monkeypatch.setattr(_git, "push_working_pair", wrapper)
+        (project / "rating.py").write_text("# save 2 on working\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+
+        _project_storage.publish_bound_project(project)
+        durable = _project_storage.read_binding()
+        assert durable is not None
+        assert durable.branch == WORKING
 
     def test_restart_target_write_failure_is_a_transport_failure_after_the_push_landed(
         self,
@@ -1548,7 +1586,7 @@ class TestUcContainerDeathSurvival:
 
         assert _stored_head(files_api).generation == 7
         assert _stored_bundle_generations(files_api) == [3, 4, 5, 6, 7]
-        assert _stored_pointer_generations(files_api) == [3, 4, 5, 6, 7]
+        assert _stored_pointer_generations(files_api) == [1, 2, 3, 4, 5, 6, 7]
 
     def test_a_superseding_writer_stops_publishing(
         self, project: Path, files_api: _FakeFiles
@@ -1864,6 +1902,31 @@ class TestUcContainerDeathSurvival:
         assert read_working_branch(c1) == WORKING
         assert (c1 / "rating.py").read_text(encoding="utf-8") == "# pipeline\n"
         assert ALT not in _run_git(c1, "branch", "--format=%(refname:short)").splitlines()
+
+    def test_branch_switch_after_real_uc_publish_preserves_working_restart_target(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.branch == WORKING
+
+        real_publish = _project_storage.publish_to_uc
+
+        def wrapper(url: str, project_root: Path):
+            result = real_publish(url, project_root)
+            _git.set_working_branch(ALT, project_root, cwd=project_root, create=True)
+            return result
+
+        monkeypatch.setattr(_project_storage, "publish_to_uc", wrapper)
+        (project / "rating.py").write_text("# save 2 on working\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+
+        _project_storage.publish_bound_project(project)
+        durable = _project_storage.read_binding()
+        assert durable is not None
+        assert durable.branch == WORKING
 
     def test_record_naming_a_branch_the_stored_project_lacks_still_serves(
         self,
@@ -2345,6 +2408,36 @@ class TestUcPublicationAuthority:
             _project_storage.fork_uc_location(UC_URL, target_url, project)
 
         assert _stored_head(files_api, root=target_root).writer_id == "rival-app-0000"
+
+    def test_stalled_create_fails_superseded_and_preserves_successor_pointer_after_prune(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        (project / "rating.py").write_text("# dev save 2\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+
+        our_pointer = f"{_UC_ROOT}/pointers/000002.json"
+        successor_id = "successor-app-0000"
+
+        def pause_create2_and_advance_successor(path: str) -> None:
+            if path == our_pointer:
+                for gen in range(2, 8):
+                    _seed_pointer(
+                        files_api,
+                        gen,
+                        writer_id=successor_id,
+                        bundle_name=f"{gen:06d}-{successor_id}.bundle",
+                    )
+                _uc_transport._prune_uc_bundles(UC_URL, 7)
+
+        files_api.before_upload = pause_create2_and_advance_successor
+        with pytest.raises(StorageSupersededError):
+            _project_storage.publish_bound_project(project)
+
+        gen2_pointer = UCHead.from_payload(json.loads(files_api.store[our_pointer]))
+        assert gen2_pointer.writer_id == successor_id
+        assert gen2_pointer.bundle_name == f"000002-{successor_id}.bundle"
 
 
 class TestBindTask:

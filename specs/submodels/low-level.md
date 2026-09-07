@@ -364,6 +364,17 @@ Acquires `save_lock` and runs the body in a threadpool:
 
 ## Edge cases and invariants
 
+Registrations that resolve to the same contained source file share one definition,
+including equivalent dot-segment spellings and filesystem-normalized casing.
+The parser carries this resolved association into occurrence construction rather
+than matching the authored path strings a second time.
+
+Changing a definition's output count across the one/multiple boundary recomputes
+parent edge names for every occurrence. Existing consumer bindings are reconciled
+atomically with those identities: coded transforms retain their exact authored
+code through logical `inputMapping` bindings; input mappings, scenario maps, and
+scalar input selectors follow renamed edges. A collision refuses the entire edit.
+
 - **Duplicate/nonexistent node ids in `node_ids` fail atomically.** Duplicate
   ids return a safe `400` and any unknown id returns `409`; neither case
   extracts the valid subset.

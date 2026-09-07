@@ -262,6 +262,9 @@ class SavePipelineService:
         creation). An existing file must be reloaded first: a document that
         has no ready revision can never be overwritten through this path.
         """
+        # Never establish a new baseline after authenticating the client's
+        # revision: an external edit in that gap would otherwise be blessed.
+        self._precondition_identities = self._capture_artifact_identities(py_path)
         if py_path.is_file():
             document = load_pipeline_editor_document(py_path, project_root=self._root)
             expected = document.source_revision
@@ -275,7 +278,6 @@ class SavePipelineService:
                 expected_revision=None,
                 provided_revision=base_revision,
             )
-        self._precondition_identities = self._capture_artifact_identities(py_path)
 
     def _capture_artifact_identities(self, py_path: Path) -> dict[str, str | None]:
         """Digest every owned artifact as the precondition observes it.

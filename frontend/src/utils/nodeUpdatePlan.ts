@@ -429,6 +429,49 @@ function findInputCollision(affectedByScope: AffectedTargets): NodeUpdatePlanFai
   return null
 }
 
+/** Preserve authored consumer bindings when a graph-wide identity refresh renames edges. */
+export function reconcileGraphInputBindings(
+  previous: RenameGraphScope,
+  next: RenameGraphScope,
+): ({ ok: true } & RenameGraphScope) | NodeUpdatePlanFailure {
+  const previousEdges = new Map(previous.edges.map((edge) => [edge.id, edge]))
+  const previousNodes = new Map(previous.nodes.map((node) => [node.id, node]))
+  const nextNodes = new Map(next.nodes.map((node) => [node.id, node]))
+  const rebound: Array<{ edge: Edge; from: string; to: string }> = []
+  for (const edge of next.edges) {
+    const before = previousEdges.get(edge.id)
+    if (
+      !before || before.source !== edge.source || before.target !== edge.target
+      || before.sourceHandle !== edge.sourceHandle || before.targetHandle !== edge.targetHandle
+    ) continue
+    const from = edgeInputName(
+      before as unknown as SimpleEdge,
+      previousNodes.get(before.source) as unknown as SimpleNode,
+      previous.submodels,
+    )
+    const to = edgeInputName(
+      edge as unknown as SimpleEdge,
+      nextNodes.get(edge.source) as unknown as SimpleNode,
+      next.submodels,
+    )
+    if (from !== to) rebound.push({ edge, from, to })
+  }
+  const scope = { nodes: [...next.nodes], edges: next.edges, submodels: next.submodels }
+  const failure = reconcileConsumerBindings(scope, rebound)
+  return failure ?? { ok: true, ...scope }
+}
+
+function reconcileConsumerBindings(
+  scope: RenameGraphScope,
+  rebound: readonly { edge: Edge; from: string; to: string }[],
+): NodeUpdatePlanFailure | null {
+  const affected = collectAffectedTargets(scope, rebound)
+  const changes = collectMappingChanges(scope, affected)
+  if ("ok" in changes) return changes
+  applyMappingChanges(changes)
+  return findInputCollision(affected)
+}
+
 /**
  * Computes a complete selected-node graph update without mutating the supplied
  * graph, registry, or store. The caller owns request identity and commit.
@@ -451,12 +494,8 @@ export function prepareNodeUpdate(input: PrepareNodeUpdateInput): PrepareNodeUpd
     edges: edgeResult.edges,
     submodels: tentativeSubmodels,
   }
-  const affectedByScope = collectAffectedTargets(rootScope, edgeResult.rebound)
-  const mappingChanges = collectMappingChanges(rootScope, affectedByScope)
-  if ("ok" in mappingChanges) return mappingChanges
-  applyMappingChanges(mappingChanges)
-  const collision = findInputCollision(affectedByScope)
-  if (collision) return collision
+  const failure = reconcileConsumerBindings(rootScope, edgeResult.rebound)
+  if (failure) return failure
 
   return {
     ok: true,

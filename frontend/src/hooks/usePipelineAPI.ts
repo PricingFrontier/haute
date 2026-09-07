@@ -1172,6 +1172,7 @@ export default function usePipelineAPI({
     const savePreamble = preambleRef.current
     const saveSubmodels = structuredClone(submodelsRef.current)
     const saveSourceRevision = sourceRevisionRef.current
+    const saveSourceFile = documentStatus.sourceFile
     const savedSnapshot = captureGraphSnapshot({
       nodes: n,
       edges: e,
@@ -1199,14 +1200,17 @@ export default function usePipelineAPI({
       })
       // Mark the exact graph snapshot that reached the backend, unless a
       // newer save has already been applied.
-      if (saveRequestId > appliedSaveSeq.current) {
+      if (
+        saveRequestId > appliedSaveSeq.current &&
+        useDocumentStatusStore.getState().sourceFile === saveSourceFile
+      ) {
         const observedRevision = sourceRevisionRef.current
         const acknowledgesCurrentRevision =
           observedRevision === saveSourceRevision ||
           observedRevision === data.source_revision
-        useGraphStore.getState().markSaved(savedSnapshot)
-        appliedSaveSeq.current = saveRequestId
         if (acknowledgesCurrentRevision) {
+          useGraphStore.getState().markSaved(savedSnapshot)
+          appliedSaveSeq.current = saveRequestId
           sourceRevisionRef.current = data.source_revision
           const status = useDocumentStatusStore.getState()
           status.setSourceRevision(data.source_revision)
@@ -1244,6 +1248,11 @@ export default function usePipelineAPI({
         typeof err.detail === "string" &&
         err.detail.startsWith("stale_document_revision")
       ) {
+        if (
+          useDocumentStatusStore.getState().sourceFile !== saveSourceFile ||
+          sourceRevisionRef.current !== saveSourceRevision ||
+          saveRequestId <= appliedSaveSeq.current
+        ) return false
         // The conflict is final until the user reloads (no implicit overwrite retry).
         useDocumentStatusStore.getState().setGraphSynchronized(false)
         useUIStore

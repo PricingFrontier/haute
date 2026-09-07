@@ -179,6 +179,22 @@ function pipelineDocumentFrame(
 // ── Test suites ──────────────────────────────────────────────────
 
 describe("useWebSocketSync", () => {
+  it("resyncs and applies the authoritative parent document while drilled into a child", async () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ source_file: "main.py", source_revision: "old" }), true)
+    const onDocumentReload = vi.fn()
+    const params = { ...makeHookParams("modules/pricing.py"), onDocumentReload }
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+    expect(JSON.parse(latestWS().send.mock.calls[0][0])).toMatchObject({ source_file: "main.py" })
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(
+        makePipelineEditorDocument({ source_file: "main.py", source_revision: "new" }),
+      )) }))
+    })
+    expect(onDocumentReload).toHaveBeenCalledOnce()
+    expect(useDocumentStatusStore.getState().sourceRevision).toBe("new")
+  })
+
   let originalWebSocket: typeof globalThis.WebSocket
 
   beforeEach(() => {

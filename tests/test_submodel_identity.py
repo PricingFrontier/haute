@@ -96,6 +96,59 @@ pipeline.connect("source", "pricing_2", target_port="in_data")
     assert copy.data.config["instanceOf"] == "pricing"
 
 
+@pytest.mark.parametrize(
+    ("owner_path", "copy_path"),
+    [
+        ("modules/pricing.py", "modules/./pricing.py"),
+        ("modules/./pricing.py", "modules/pricing.py"),
+    ],
+)
+def test_parsing_owner_and_copy_with_different_path_spellings(
+    tmp_path: Path, owner_path: str, copy_path: str
+) -> None:
+    _setup_project(tmp_path)
+    main_py = tmp_path / "main.py"
+    main_py.write_text(
+        f"""\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("main")
+
+
+@pipeline.polars
+def source() -> pl.LazyFrame:
+    return pl.LazyFrame({{"x": [1, 2, 3]}})
+
+
+pipeline.submodel("{owner_path}", "pricing")
+pipeline.submodel("{copy_path}", "pricing_2", instance_of="pricing")
+
+pipeline.connect("source", "pricing", target_port="in_data")
+pipeline.connect("source", "pricing_2", target_port="in_data")
+""",
+        encoding="utf-8",
+    )
+
+    graph = parse_pipeline_file(main_py)
+    assert set(graph.submodels or {}) == {"def_pricing_declared"}
+    assert len(graph.submodels or {}) == 1
+
+    owner = graph.node_map["pricing"]
+    assert owner.id == "pricing"
+    assert owner.data.label == "pricing"
+    assert owner.data.config["alias"] == "pricing"
+    assert owner.data.config["definitionId"] == "def_pricing_declared"
+    assert "instanceOf" not in owner.data.config
+
+    copy = graph.node_map["pricing_2"]
+    assert copy.id == "pricing_2"
+    assert copy.data.label == "pricing_2"
+    assert copy.data.config["alias"] == "pricing_2"
+    assert copy.data.config["definitionId"] == "def_pricing_declared"
+    assert copy.data.config["instanceOf"] == "pricing"
+
+
 @pytest.mark.parametrize("kw", ["definition_id", "instance_id", "alias"])
 def test_rejected_keywords_raise_parse_error(kw: str) -> None:
     source = f'pipeline.submodel("modules/pricing.py", "pricing", {kw}="foo")'

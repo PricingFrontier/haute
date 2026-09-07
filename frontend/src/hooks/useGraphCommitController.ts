@@ -1,4 +1,4 @@
-import { useCallback, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react"
+import { useCallback, useLayoutEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react"
 import type { Edge, Node } from "@xyflow/react"
 
 import type { OnUpdateConfigResult } from "../panels/editors/_shared"
@@ -15,9 +15,8 @@ type ToastType = "success" | "error" | "warning" | "info"
 
 /**
  * A preview response or a sync frame may replace the graph while an identity
- * request is in flight. That is not a reason to drop the user's edit: the
- * controller resolves again against the live graph, up to this many times,
- * and refuses only a request superseded by a newer edit of the same node.
+ * request is in flight. Retry authored-field changes within the same editable
+ * document, but never carry an edit across a document or capability change.
  */
 const MAX_IDENTITY_ATTEMPTS = 3
 
@@ -26,6 +25,7 @@ type GraphCommitRequest = {
   generation: number
   editKey: string
   documentIdentity: string
+  contextGeneration: number
 }
 
 export type UseGraphCommitControllerOptions = {
@@ -68,6 +68,19 @@ export default function useGraphCommitController({
 }: UseGraphCommitControllerOptions): GraphCommitController {
   const requestGenerationsRef = useRef(new Map<string, number>())
   const pendingCommitsRef = useRef(new Set<Promise<OnUpdateConfigResult>>())
+  const documentIdentity = readDocumentIdentity()
+  const contextRef = useRef({ readOnly, readDocumentIdentity, documentIdentity, generation: 0 })
+  useLayoutEffect(() => {
+    const identity = readDocumentIdentity()
+    const context = contextRef.current
+    if (context.readOnly !== readOnly || context.documentIdentity !== identity) {
+      context.generation += 1
+    }
+    context.readOnly = readOnly
+    context.readDocumentIdentity = readDocumentIdentity
+    context.documentIdentity = identity
+  }, [readOnly, readDocumentIdentity, documentIdentity])
+  useLayoutEffect(() => () => { contextRef.current.generation += 1 }, [])
 
   const registerPendingCommit = useCallback((pending: Promise<OnUpdateConfigResult>): void => {
     pendingCommitsRef.current.add(pending)
@@ -93,11 +106,11 @@ export default function useGraphCommitController({
     nodeId,
     data,
     refreshSourceIdentity,
-    readOnly,
+    readOnly: contextRef.current.readOnly,
     graph: graphRef.current,
     submodels: submodelsRef.current,
     reservedApiInputFrameLabels,
-  }), [graphRef, readOnly, reservedApiInputFrameLabels, submodelsRef])
+  }), [graphRef, reservedApiInputFrameLabels, submodelsRef])
 
   // What an identity resolution depends on: the node's own authored fields and
   // the definition interfaces. Positions, selection and preview metadata
@@ -120,19 +133,22 @@ export default function useGraphCommitController({
       nodeId,
       generation,
       editKey: editKey(nodeId),
-      documentIdentity: readDocumentIdentity(),
+      documentIdentity: contextRef.current.readDocumentIdentity(),
+      contextGeneration: contextRef.current.generation,
     }
-  }, [editKey, readDocumentIdentity])
+  }, [editKey])
 
-  const requestSuperseded = useCallback((request: GraphCommitRequest): boolean => (
+  const requestInvalidated = useCallback((request: GraphCommitRequest): boolean => (
     requestGenerationsRef.current.get(request.nodeId) !== request.generation
+    || contextRef.current.readOnly
+    || contextRef.current.generation !== request.contextGeneration
+    || contextRef.current.readDocumentIdentity() !== request.documentIdentity
   ), [])
 
   const requestIsStale = useCallback((request: GraphCommitRequest): boolean => (
-    requestSuperseded(request)
+    requestInvalidated(request)
     || editKey(request.nodeId) !== request.editKey
-    || readDocumentIdentity() !== request.documentIdentity
-  ), [editKey, readDocumentIdentity, requestSuperseded])
+  ), [editKey, requestInvalidated])
 
   const commit = useCallback((prepared: PreparedNodeUpdate): void => {
     // Keep request-facing refs coherent immediately; the store subscription
@@ -184,10 +200,10 @@ export default function useGraphCommitController({
           if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
             throw new Error("identity resolver returned an invalid node")
           }
-          if (requestSuperseded(attemptRequest)) {
+          if (requestInvalidated(attemptRequest)) {
             return {
               ok: false,
-              error: "Node update was not applied because a newer edit of this node superseded it.",
+              error: "Node update was not applied because the document, editing capability, or a newer node edit superseded it.",
             }
           }
           if (requestIsStale(attemptRequest)) continue
@@ -212,13 +228,13 @@ export default function useGraphCommitController({
       if (!result.ok) addToast("error", result.error)
     })
     return { ok: true }
-  }, [addToast, beginRequest, commit, graphRef, prepare, registerPendingCommit, requestIsStale, requestSuperseded, resolveNodeIdentities])
+  }, [addToast, beginRequest, commit, graphRef, prepare, registerPendingCommit, requestIsStale, requestInvalidated, resolveNodeIdentities])
 
   const onRenameNode = useCallback((
     nodeId: string,
     label: string,
   ): Promise<OnUpdateConfigResult> => {
-    if (readOnly) return Promise.resolve({ ok: false, error: "This pipeline document is read-only." })
+    if (contextRef.current.readOnly) return Promise.resolve({ ok: false, error: "This pipeline document is read-only." })
     const initialNode = graphRef.current.nodes.find((node) => node.id === nodeId)
     if (!initialNode) return Promise.resolve({ ok: false, error: `Cannot rename missing node "${nodeId}".` })
     if (initialNode.data.label === label) return Promise.resolve({ ok: true })
@@ -254,10 +270,10 @@ export default function useGraphCommitController({
           if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
             throw new Error("identity resolver returned an invalid node")
           }
-          if (requestSuperseded(request)) {
+          if (requestInvalidated(request)) {
             return {
               ok: false,
-              error: "Rename was not applied because a newer edit of this node superseded it.",
+              error: "Rename was not applied because the document, editing capability, or a newer node edit superseded it.",
             }
           }
           if (requestIsStale(request)) continue
@@ -308,7 +324,7 @@ export default function useGraphCommitController({
     })()
     registerPendingCommit(pending)
     return pending
-  }, [beginRequest, commit, graphRef, prepare, readOnly, registerPendingCommit, requestIsStale, requestSuperseded, resolveNodeIdentities])
+  }, [beginRequest, commit, graphRef, prepare, registerPendingCommit, requestIsStale, requestInvalidated, resolveNodeIdentities])
 
   return { onUpdateNode, onRenameNode, waitForPendingCommits }
 }

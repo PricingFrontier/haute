@@ -745,14 +745,15 @@ def release_uc_claim() -> None:
 # ---------------------------------------------------------------------------
 
 
-def publish_to_uc(url: str, project_root: Path) -> None:
+def publish_to_uc(url: str, project_root: Path) -> str | None:
     """Publish a complete repository bundle and record bounded phase evidence."""
     work = _UCPublishWork()
     started_at = time.perf_counter()
     outcome = "failed"
     try:
-        _publish_to_uc(url, project_root, work)
+        captured_branch = _publish_to_uc(url, project_root, work)
         outcome = "published"
+        return captured_branch
     finally:
         work.total_ms = _elapsed_ms(started_at)
         logger.info(
@@ -772,7 +773,7 @@ def publish_to_uc(url: str, project_root: Path) -> None:
         )
 
 
-def _publish_to_uc(url: str, project_root: Path, work: _UCPublishWork) -> None:
+def _publish_to_uc(url: str, project_root: Path, work: _UCPublishWork) -> str | None:
     """Publish the whole repository to *url* as the next bundle generation.
 
     Order matters: hold the lease → bundle locally (the only step under
@@ -816,7 +817,12 @@ def _publish_to_uc(url: str, project_root: Path, work: _UCPublishWork) -> None:
         try:
             phase_started_at = time.perf_counter()
             try:
-                tip_sha = _git.bundle_create(bundle, cwd=project_root)
+                from haute import _git_lock
+                from haute._git_state import read_working_branch
+
+                with _git_lock.repository_mutation(project_root):
+                    captured_branch = read_working_branch(project_root)
+                    tip_sha = _git.bundle_create(bundle, cwd=project_root)
             finally:
                 work.bundle_create_ms += _elapsed_ms(phase_started_at)
             phase_started_at = time.perf_counter()
@@ -894,6 +900,7 @@ def _publish_to_uc(url: str, project_root: Path, work: _UCPublishWork) -> None:
         _prune_uc_bundles(url, generation)
     finally:
         work.cleanup_ms += _elapsed_ms(phase_started_at)
+    return captured_branch
 
 
 def _discard_orphaned_bundle(url: str, filename: str) -> None:
@@ -904,7 +911,10 @@ def _discard_orphaned_bundle(url: str, filename: str) -> None:
 
 
 def _prune_uc_bundles(url: str, newest: int) -> None:
-    """Drop generations older than the newest ``_UC_BUNDLE_RETAIN`` ones.
+    """Drop bundle payloads older than the newest ``_UC_BUNDLE_RETAIN`` ones.
+
+    Pointer records permanently reserve generations. Deleting one would let a
+    stalled predecessor acknowledge that generation after its successor pruned.
 
     Best-effort by design: retention failing must never fail a publish
     that already succeeded — it is logged, and the next publish retries
@@ -932,22 +942,6 @@ def _prune_uc_bundles(url: str, newest: int) -> None:
             api.delete(f"{directory}/{name}")
         except Exception as exc:
             logger.warning("uc_bundle_prune_failed", name=name, error=str(exc))
-
-    pointer_dir = f"{_uc_volume_path(url)}/{_UC_POINTER_DIR}"
-    try:
-        pointer_entries = list(api.list_directory_contents(pointer_dir))
-    except Exception as exc:
-        logger.warning("uc_bundle_prune_failed", error=str(exc))
-        return
-    for entry in pointer_entries:
-        name = getattr(entry, "name", None) or ""
-        if len(name) == 11 and name.endswith(".json") and name[:6].isdigit():
-            generation = int(name[:6])
-            if generation <= cutoff and generation != newest:
-                try:
-                    api.delete(f"{pointer_dir}/{name}")
-                except Exception as exc:
-                    logger.warning("uc_bundle_prune_failed", name=name, error=str(exc))
 
 
 def download_bundle(url: str, head: UCHead, dest_dir: Path, *, what: str) -> Path:

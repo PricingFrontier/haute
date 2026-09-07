@@ -786,7 +786,7 @@ describe("useSubmodelNavigation", () => {
     expect(params.setSelectedNode).not.toHaveBeenCalled()
   })
 
-  it("returns to the root view and clears active identity when a reloaded document omits the drilled occurrence", async () => {
+  it.each([false, true])("returns to the root on document reload (occurrence retained: %s)", async (retained) => {
     vi.useFakeTimers()
     mockLoad.mockResolvedValue({
       status: "ok",
@@ -809,7 +809,7 @@ describe("useSubmodelNavigation", () => {
       definitionId: DEFINITION_ID,
     })
 
-    const reloadedNodes = [makeNode("other_node", "polars")]
+    const reloadedNodes = [makeNode("other_node", "polars"), ...(retained ? [makeOccurrence()] : [])]
     act(() => {
       result.current.handleDocumentReload(reloadedNodes)
     })

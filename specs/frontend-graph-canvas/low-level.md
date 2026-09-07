@@ -335,13 +335,11 @@ reconciliation rather than dropping them or committing a second mutation.
    outgoing edge identities from the refreshed source handles, and the update
    planner rebinds downstream consumers (`inputMapping`, `input_scenario_map`,
    `data_input`, `banding_source`, `ratebook_input`) from the old alias to the
-   new one without code changes. An in-flight identity request is stale only
-   when the node's own authored fields (label, node type, config), the
-   definition interfaces or the document identity changed, or a newer request
-   for the same node superseded it; positions, selection and preview metadata
-   never invalidate it. A stale request resolves again against the live graph
-   (up to three attempts) and only then refuses, so a background update never
-   cancels a rename. The pure preflight checks
+   new one without code changes. Changed authored fields or definition
+   interfaces retry against the live graph within the same editable document
+   (up to three attempts); positions, selection and preview metadata never
+   invalidate it. A changed document, editing capability, unmount, or newer
+   request for the same node cancels the operation without retry. The pure preflight checks
    each affected executable target's post-commit input-name set — edge names
    and the logical names they resolve to — for duplicates. On a collision the commit
    returns `{ ok: false, error }` and **nothing mutates** — no snapshot, no
@@ -661,7 +659,7 @@ reconciliation rather than dropping them or committing a second mutation.
     strictly equals its alias (`node.authored_id === config.alias`; a duplicate
     name is the one case where the recovery id carries a line suffix), throwing
     `${PARSER}: submodel node <recovery_id> id must equal its alias` if violated.
-    If a reloaded document omits the currently drilled submodel occurrence,
+    If a clean external document replacement arrives while drilled,
     `useSubmodelNavigation.handleDocumentReload` returns to root view, clears
     `activeSubmodelIdentity`, resets the view stack to the pipeline level, and
     shows the parent graph without throwing.
@@ -809,6 +807,18 @@ reconciliation rather than dropping them or committing a second mutation.
     `frontend/src/types/pipelineRepair.ts`. There is no migration path.
 
 ## Edge cases and invariants
+
+Asynchronous node identity edits belong to the document and editing capability
+that admitted them. A changed document or read-only transition cancels the edit;
+only authored-field changes within that same editable document may retry.
+Obsolete save responses must not update the saved baseline, revision, or conflict
+banner of a replacement document or a newer acknowledged save.
+
+WebSocket synchronization follows the authoritative document's parent source,
+including reconnect requests while a child view is open. A clean external
+document replacement returns any drilled view to the authoritative root, clearing
+its cached parent graph, selection, and breadcrumbs together. Dirty child edits
+retain their canvas under the existing external-change fence.
 
 - **API-input handle ids never synthesize.** Zero eligible frames render no
   source handle; one eligible frame or more renders one labelled handle per
