@@ -855,6 +855,10 @@ public recovery settings remain finite JSON. Ambiguous source boundaries, non-fi
 values and filesystem aliases fail explicitly.
 Interrupted commits finish only if all written bytes and graph checks agree;
 otherwise they roll back only their own bytes or retain a conflicting journal.
+If startup reconciliation raises, the server logs
+`recovery_journal_reconcile_failed` with the exception class and remains available
+for inspection. Unresolved durable evidence is retained; the warning does not
+include the exception's potentially sensitive message.
 
 Compatibility recovery preserves valid fields across all 17 ordinary node types.
 Submodels use explicit registration/port adapters and retain definition/public-port

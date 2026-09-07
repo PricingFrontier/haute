@@ -315,3 +315,101 @@ def test_update_preserves_bom_crlf_comments_and_unrelated_sidecar_bytes(tmp_path
     assert "# café: preserve comment\r\n".encode() in parent.read_bytes()
     assert b"\n" not in parent.read_bytes().replace(b"\r\n", b"")
     assert sidecar.read_bytes() == original_sidecar.replace(b'"old_instance"', b'"Inputs"')
+
+
+def test_dry_run_stale_revision_conflict_preserves_authored_bytes(
+    tmp_path: Path, client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _legacy_demo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    before_files = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    request = _request(tmp_path, "Inputs", "update").model_dump()
+    request["source_revision"] = "0" * 64
+
+    response = client.post("/api/pipeline/repair/recover/dry-run", json=request)
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "repair_revision_conflict",
+        "message": (
+            "The pipeline changed after this recovery document loaded; reload before repairing."
+        ),
+    }
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before_files
+
+
+def test_dry_run_planner_io_error_sanitizes_message_and_preserves_artifacts(
+    tmp_path: Path, client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.routes.pipeline as pipeline_routes
+
+    parent = _legacy_demo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    sidecar = tmp_path / "main.haute.json"
+    child = tmp_path / "modules" / "Inputs.py"
+    before_parent = parent.read_bytes()
+    before_sidecar = sidecar.read_bytes()
+    before_child = child.read_bytes()
+
+    def fail_planner(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("private marker")
+
+    monkeypatch.setattr(pipeline_routes, "build_recover_unavailable_node_plan", fail_planner)
+    request = _request(tmp_path, "Inputs", "update").model_dump()
+    response = client.post("/api/pipeline/repair/recover/dry-run", json=request)
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["detail"]["code"] == "repair_artifact_unavailable"
+    assert payload["detail"]["message"] == (
+        "A repair artifact could not be read; reload and try again."
+    )
+    assert "private marker" not in response.text
+    assert parent.read_bytes() == before_parent
+    assert sidecar.read_bytes() == before_sidecar
+    assert child.read_bytes() == before_child
+
+
+def test_apply_recover_rollback_on_second_staged_write_restores_artifacts(
+    tmp_path: Path, client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.routes._save_pipeline as save_pipeline
+
+    parent = _legacy_demo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    sidecar = tmp_path / "main.haute.json"
+    child = tmp_path / "modules" / "Inputs.py"
+    before_parent = parent.read_bytes()
+    before_sidecar = sidecar.read_bytes()
+    before_child = child.read_bytes()
+
+    request = _request(tmp_path, "Inputs", "update").model_dump()
+    dry_run_response = client.post("/api/pipeline/repair/recover/dry-run", json=request)
+    assert dry_run_response.status_code == 200, dry_run_response.text
+    plan_hash = dry_run_response.json()["plan_hash"]
+
+    real_stage_write = save_pipeline._stage_artifact_write_bytes
+    staged_writes_successful = 0
+
+    def fail_second_stage_write(path: Path, payload: bytes, touched: list) -> None:
+        nonlocal staged_writes_successful
+        if staged_writes_successful == 1:
+            raise PermissionError("permission denied on second artifact")
+        real_stage_write(path, payload, touched)
+        staged_writes_successful += 1
+
+    monkeypatch.setattr(save_pipeline, "_stage_artifact_write_bytes", fail_second_stage_write)
+
+    response = client.post(
+        "/api/pipeline/repair/recover/apply",
+        json={**request, "plan_hash": plan_hash},
+    )
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["detail"]["code"] == "repair_artifact_unavailable"
+    assert payload["detail"]["message"] == (
+        "A repair artifact could not be written; original artifacts were restored."
+    )
+    assert staged_writes_successful == 1
+    assert (tmp_path / "main.py").read_bytes() == before_parent
+    assert (tmp_path / "main.haute.json").read_bytes() == before_sidecar
+    assert (tmp_path / "modules" / "Inputs.py").read_bytes() == before_child

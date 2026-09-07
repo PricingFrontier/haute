@@ -181,3 +181,84 @@ async def test_project_mutation_locks_serialize_and_cancel_cleanly(
     first.release()
     assert await second.acquire()
     second.release()
+
+
+@pytest.mark.asyncio
+async def test_server_lifespan_remains_available_after_recovery_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.deploy._config as deploy_config
+    import haute.server as server
+
+    _project(tmp_path)
+    draft = _create(tmp_path)
+    record_path = tmp_path / ".haute" / "recovery" / f"{draft.draft_id}.json"
+    expected_record_bytes = record_path.read_bytes()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(server, "_clear_bytecache", lambda: None)
+    monkeypatch.setattr(server, "configure_logging", lambda: None)
+    monkeypatch.setattr(deploy_config, "_load_env", lambda _path: None)
+    monkeypatch.setattr(server, "configure_execution_telemetry", lambda: None)
+    monkeypatch.setattr(server, "recover_json_runtime_storage", lambda: None)
+    monkeypatch.setattr(server, "_ensure_pipeline_index", lambda: None)
+    monkeypatch.setattr(server, "_artifact_stale_seconds", lambda: 86_400)
+
+    lifecycle: list[str] = []
+    monkeypatch.setattr(
+        server,
+        "start_interactive_worker_pool",
+        lambda: lifecycle.append("started"),
+    )
+    monkeypatch.setattr(
+        server,
+        "shutdown_interactive_worker_pool",
+        lambda: lifecycle.append("stopped"),
+    )
+
+    async def noop_watcher() -> None:
+        await asyncio.Event().wait()
+
+    async def noop_reaper(*_args: object, **_kwargs: object) -> None:
+        pass
+
+    monkeypatch.setattr(server, "_watcher_forever", noop_watcher)
+    monkeypatch.setattr(server, "_reap_stale_optimiser_artifacts_in_background", noop_reaper)
+
+    sensitive_marker = "sensitive-reconciliation-marker-key"
+
+    def fail_recover_pending_drafts(root: Path) -> None:
+        assert root == tmp_path.resolve()
+        raise RuntimeError(sensitive_marker)
+
+    monkeypatch.setattr(
+        "haute._pipeline_recovery_drafts.recover_pending_drafts",
+        fail_recover_pending_drafts,
+    )
+
+    warning_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def mock_warning(*args: object, **kwargs: object) -> None:
+        warning_calls.append((args, kwargs))
+
+    monkeypatch.setattr(server.logger, "warning", mock_warning)
+
+    async with server._lifespan(server.app):
+        lifecycle.append("ready")
+
+    reconcile_failures = [
+        (args, kwargs)
+        for args, kwargs in warning_calls
+        if args and args[0] == "recovery_journal_reconcile_failed"
+    ]
+    assert len(reconcile_failures) == 1
+    _args, kwargs = reconcile_failures[0]
+    assert kwargs.get("code") == "RuntimeError"
+    for args, kwargs in warning_calls:
+        assert sensitive_marker not in str(args)
+        assert sensitive_marker not in str(kwargs)
+
+    assert record_path.read_bytes() == expected_record_bytes
+    assert lifecycle == ["started", "ready", "stopped"]
+    assert server._watcher_task is None
+    assert server._optimiser_reaper_task is None
