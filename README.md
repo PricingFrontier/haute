@@ -110,3 +110,8 @@ haute serve
 `haute serve` opens the visual editor in your browser. See the [getting started guide](https://haute.dev/getting-started/) for installation and configuration.
 
 Haute is currently in alpha. The library is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+
+## Development checks
+
+For local performance, benchmark, bundle, and memory smoke commands, see
+[Local Performance Checks](docs/PERFORMANCE_CHECKS.md).
