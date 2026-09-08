@@ -598,6 +598,10 @@ def _frontend_debt_chain(
                 continue
         elif masked[index] == ".":
             index = _skip_frontend_whitespace(masked, index + 1)
+        elif masked[index] != "[":
+            # A new identifier starts another expression, not a member of
+            # this chain (frontend tests commonly omit semicolons).
+            break
 
         if index < len(masked) and masked[index] == "[":
             computed = _read_frontend_computed_property(masked, original, index)

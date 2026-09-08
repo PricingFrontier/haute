@@ -363,6 +363,10 @@
   reviewed and budgeted, and a removed site fails until its stale entry is
   deleted (ruled 2026-07-27: no calendar expiry — review is event-driven,
   triggered by the ratchet, not by dates).
+- Frontend debt chains continue only through calls or explicit member access
+  (`.`, `?.`, or `[...]`). Adjacent declarations without semicolons are separate
+  expressions: a later skip/focus marker must not be attributed to earlier
+  tests, and each earlier declaration must stop before scanning later bodies.
 - Frontend shuffled tests are a nightly monitor for within-file state leaks,
   not an ordinary PR requirement. A captured seed makes a failed ordering
   reproducible.
