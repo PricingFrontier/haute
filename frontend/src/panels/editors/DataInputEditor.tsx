@@ -9,6 +9,7 @@ import { INPUT_STYLE, SchemaPreview } from "./_shared"
 import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
 import { dataInputIsDirect } from "../../utils/dataInputMode"
+import { useIsRecoveryDraft } from "../DraftEditingContext"
 
 const INPUT_COMMON_KEYS = [
   "instanceOf",
@@ -175,6 +176,7 @@ export default function DataInputEditor({
   accentColor: string
   errorLine?: number | null
 }) {
+  const isRecoveryDraft = useIsRecoveryDraft()
   const { capabilities, error } = useIoCapabilities()
   const groups = (capabilities?.groups ?? []).filter((group) => group.input_available)
   const group = groups.find((candidate) => candidate.name === config.inputType)
@@ -199,7 +201,11 @@ export default function DataInputEditor({
     loading: schemaLoading,
     error: schemaError,
     fetchForPath: fetchSchemaForPath,
-  } = useSchemaFetch(schemaRequired && configuredPath ? configuredPath : undefined)
+  } = useSchemaFetch(
+    !isRecoveryDraft && schemaRequired && configuredPath
+      ? configuredPath
+      : undefined,
+  )
   const configuredArguments =
     typeof config.arguments === "object" && config.arguments !== null && !Array.isArray(config.arguments)
       ? config.arguments as Record<string, unknown>
@@ -321,7 +327,7 @@ export default function DataInputEditor({
         />
       ) : null}
 
-      {requiresSnapshot && group && (
+      {!isRecoveryDraft && requiresSnapshot && group && (
         <InputSnapshotCacheButton
           config={config}
           admittedEager={format?.input?.snapshot_build === "admitted_eager"}
@@ -329,7 +335,7 @@ export default function DataInputEditor({
         />
       )}
 
-      {schemaRequired && configuredPath && (
+      {!isRecoveryDraft && schemaRequired && configuredPath && (
         <section aria-label="Detected schema" className="space-y-2">
           {schemaLoading && (
             <p className="text-xs" style={{ color: "var(--text-muted)" }}>

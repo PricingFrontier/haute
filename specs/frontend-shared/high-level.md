@@ -395,10 +395,10 @@ only. A current source-only state and an optional in-memory last-renderable snap
 revisions and are never merged.
 
 Minimal repair responses cross a separate strict parser boundary. Dry-run
-validation requires the remove-only discriminator, source/target identities,
+validation requires the action-specific discriminator, source/target identities,
 64-hex plan hash, bounded artifact patches, retained artifacts, warnings, and
 predicted load state. Apply validation requires the same plan identity plus a
 complete valid editor document. The browser never accepts replacement bytes,
 source spans, migration instructions, or a recovery graph as an apply payload;
-it sends only server identities, revision, explicit config-deletion choice,
+it sends only server identities, revision, the update/reset action or explicit removal config-deletion choice,
 and the confirmed plan hash.

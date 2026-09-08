@@ -9,3 +9,33 @@ required_headings = ["Context", "Decision", "Ownership boundaries", "Rejected al
 path = "specs/optimiser/error-detail-policy.md"
 kind = "decision"
 required_headings = ["Context", "Decision", "Rejected policies", "Consequences"]
+
+[[supplemental_document]]
+path = "specs/server-api/generalised-node-recovery-plan.md"
+kind = "decision"
+required_headings = [
+  "1. Intended behaviour",
+  "2. Existing foundations and gaps",
+  "3. Make incomplete recovery editable without weakening executable contracts",
+  "4. One configuration contract per type",
+  "5. Recovery algorithm and preservation rules",
+  "6. Coverage of every node type",
+  "7. Submodels, ordinary instances and shared ownership",
+  "8. User code, source and connections",
+  "9. Storage, API, concurrency and restoration",
+  "10. Edge-case acceptance matrix",
+  "11. Implementation sequence and verification gates",
+  "12. Demo-specific final acceptance",
+]
+
+[[supplemental_document]]
+path = "specs/server-api/node-recovery-actions.md"
+kind = "decision"
+required_headings = [
+  "Recovery loading and retention",
+  "Confirmed recovery actions",
+  "Consumer error attribution",
+  "Recovery dry-run and apply API",
+  "Verification, rollback, and save-lock transactions",
+  "Acceptance evidence",
+]

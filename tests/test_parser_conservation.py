@@ -1692,10 +1692,21 @@ class TestPolarsParameterBinding:
 
         document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
         assert document.load_status == "degraded"
-        assert any(
-            diagnostic.code == "pipeline_parse_invalid"
-            and "Pipeline function parameters do not match" in diagnostic.message
+        node_a = next(node for node in document.nodes if node.authored_id == "a")
+        node_b = next(node for node in document.nodes if node.authored_id == "b")
+        assert node_a.availability == "ready"
+        assert node_b.availability == "unavailable"
+        b_diagnostics = [
+            diagnostic
             for diagnostic in document.diagnostics
+            if diagnostic.diagnostic_id in node_b.diagnostic_ids
+        ]
+        assert any(
+            diagnostic.code == "node_parse_invalid"
+            and diagnostic.scope == "node"
+            and diagnostic.element_id == node_b.recovery_id
+            and "Pipeline function parameters do not match" in diagnostic.message
+            for diagnostic in b_diagnostics
         )
 
         monkeypatch.chdir(tmp_path)

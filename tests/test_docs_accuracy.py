@@ -80,6 +80,7 @@ _BACKEND_BEHAVIOUR_ASSETS = frozenset(
         "assistant/assets/examples/config/quote_response/joined_priced.json",
         "assistant/assets/examples/config/quote_response/linear_priced.json",
         "assistant/assets/examples/config/quote_response/response.json",
+        "node_defaults.json",
     }
 )
 # These files are deliberately outside behavioral component coverage: ``py.typed``

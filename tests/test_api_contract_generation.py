@@ -39,7 +39,7 @@ def test_committed_contract_bundle_is_current_and_byte_stable() -> None:
     assert json.loads(first) == build_contract_bundle()
 
 
-def test_contract_bundle_contains_both_closed_pilot_roots() -> None:
+def test_contract_bundle_contains_closed_contract_roots() -> None:
     bundle = build_contract_bundle()
 
     assert bundle["$schema"] == "https://json-schema.org/draft/2020-12/schema"
@@ -48,10 +48,16 @@ def test_contract_bundle_contains_both_closed_pilot_roots() -> None:
     assert bundle["required"] == [
         "execution_strategy_diagnostic",
         "explore_charts",
+        "recovery_draft",
+        "recovery_draft_list",
+        "recovery_draft_preview",
     ]
     assert bundle["properties"] == {
         "execution_strategy_diagnostic": {"$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"},
         "explore_charts": {"$ref": "#/$defs/ExploreChartsConfig"},
+        "recovery_draft": {"$ref": "#/$defs/RecoveryDraft"},
+        "recovery_draft_list": {"$ref": "#/$defs/RecoveryDraftList"},
+        "recovery_draft_preview": {"$ref": "#/$defs/RecoveryDraftPreview"},
     }
 
     definitions = bundle["$defs"]
@@ -73,7 +79,24 @@ def test_contract_bundle_contains_both_closed_pilot_roots() -> None:
         "ExploreChartConfig",
         "ExploreChartsConfig",
         "JsonValue",
+        "PipelineRepairChange",
+        "RecoveryDraft",
+        "RecoveryDraftList",
+        "RecoveryDraftNode",
+        "RecoveryDraftPreview",
+        "RecoveryFieldChange",
+        "RecoveryIssue",
     }
+    for name in (
+        "RecoveryDraft",
+        "RecoveryDraftList",
+        "RecoveryDraftNode",
+        "RecoveryDraftPreview",
+        "RecoveryFieldChange",
+        "RecoveryIssue",
+    ):
+        assert definitions[name]["additionalProperties"] is False
+
     diagnostic = definitions["ExecutionStrategyDiagnosticPayload"]
     assert diagnostic["properties"]["schema_version"]["const"] == 1
     assert diagnostic["properties"]["boundaries"]["$ref"] == (

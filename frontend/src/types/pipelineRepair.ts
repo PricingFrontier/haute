@@ -24,6 +24,20 @@ export interface ApplyRemoveUnavailableNodeRequest extends RemoveUnavailableNode
   planHash: string
 }
 
+export type RecoverUnavailableNodeAction = "update" | "reset"
+
+export interface RecoverUnavailableNodeRequest {
+  sourceFile: string
+  sourceRevision: string
+  targetSourceFile: string
+  targetRecoveryId: string
+  action: RecoverUnavailableNodeAction
+}
+
+export interface ApplyRecoverUnavailableNodeRequest extends RecoverUnavailableNodeRequest {
+  planHash: string
+}
+
 function parseRequestBase(value: unknown, field: string): RemoveUnavailableNodeRequest {
   const object = expectPlainObject(PARSER, value, field)
   expectExactKeys(PARSER, object, field, ["sourceFile", "sourceRevision", "targetSourceFile", "targetRecoveryId", "deleteConfig"])
@@ -82,6 +96,21 @@ export interface RemoveUnavailableNodeApplyResponse {
   document: PipelineEditorDocument
 }
 
+export interface RecoverUnavailableNodeDryRunResponse extends Omit<RemoveUnavailableNodeDryRunResponse, "repair_kind" | "delete_config"> {
+  repair_kind: "update_node" | "reset_node"
+  delete_config: false
+}
+
+export interface RecoverUnavailableNodeApplyResponse extends Omit<RemoveUnavailableNodeApplyResponse, "repair_kind"> {
+  repair_kind: "update_node" | "reset_node"
+}
+
+type RepairKind = RemoveUnavailableNodeDryRunResponse["repair_kind"] | RecoverUnavailableNodeDryRunResponse["repair_kind"]
+type ParsedRepairDryRun<K extends readonly RepairKind[]> = Omit<RemoveUnavailableNodeDryRunResponse, "repair_kind" | "delete_config"> & {
+  repair_kind: K[number]
+  delete_config: boolean
+}
+
 function planHash(value: unknown, field: string): string {
   const hash = expectNonBlankString(PARSER, value, field)
   if (!PLAN_HASH.test(hash)) throw new Error(`${PARSER}: ${field} must be a 64-character lowercase hex hash`)
@@ -117,32 +146,7 @@ function parseChange(value: unknown, field: string): PipelineRepairChange {
 }
 
 export function parseRemoveUnavailableNodeDryRunResponse(value: unknown): RemoveUnavailableNodeDryRunResponse {
-  const object = expectPlainObject(PARSER, value, "response")
-  expectExactKeys(PARSER, object, "response", [
-    "repair_kind", "source_file", "source_revision", "target_source_file", "target_recovery_id",
-    "target_authored_id", "delete_config", "plan_hash", "changes", "retained_artifacts", "warnings",
-    "predicted_load_status",
-  ])
-  const changes = expectArray(PARSER, object.changes, "response.changes").map((item, index) =>
-    parseChange(item, `response.changes[${index}]`),
-  )
-  if (changes.length === 0) throw new Error(`${PARSER}: response.changes must not be empty`)
-  const changePaths = changes.map((change) => change.path)
-  if (new Set(changePaths).size !== changePaths.length) throw new Error(`${PARSER}: response.changes contains duplicate paths`)
-  return {
-    repair_kind: expectStringLiteral(PARSER, object.repair_kind, "response.repair_kind", ["remove_unavailable_node"]),
-    source_file: expectNonBlankString(PARSER, object.source_file, "response.source_file"),
-    source_revision: expectNonBlankString(PARSER, object.source_revision, "response.source_revision"),
-    target_source_file: expectNonBlankString(PARSER, object.target_source_file, "response.target_source_file"),
-    target_recovery_id: expectNonBlankString(PARSER, object.target_recovery_id, "response.target_recovery_id"),
-    target_authored_id: expectNonBlankString(PARSER, object.target_authored_id, "response.target_authored_id"),
-    delete_config: expectBoolean(PARSER, object.delete_config, "response.delete_config"),
-    plan_hash: planHash(object.plan_hash, "response.plan_hash"),
-    changes,
-    retained_artifacts: uniqueStrings(object.retained_artifacts, "response.retained_artifacts", true),
-    warnings: uniqueStrings(object.warnings, "response.warnings", false),
-    predicted_load_status: expectStringLiteral(PARSER, object.predicted_load_status, "response.predicted_load_status", ["ready", "degraded"]),
-  }
+  return parseRepairDryRun(value, ["remove_unavailable_node"])
 }
 
 export function parseRemoveUnavailableNodeApplyResponse(value: unknown): RemoveUnavailableNodeApplyResponse {
@@ -153,5 +157,47 @@ export function parseRemoveUnavailableNodeApplyResponse(value: unknown): RemoveU
     plan_hash: planHash(object.plan_hash, "response.plan_hash"),
     applied_artifacts: uniqueStrings(object.applied_artifacts, "response.applied_artifacts", true),
     document: parsePipelineEditorDocument(object.document),
+  }
+}
+
+export function parseRecoverUnavailableNodeDryRunResponse(value: unknown): RecoverUnavailableNodeDryRunResponse {
+  const response = parseRepairDryRun(value, ["update_node", "reset_node"])
+  if (response.delete_config !== false) throw new Error(`${PARSER}: response.delete_config must be false for recovery`)
+  return { ...response, delete_config: false }
+}
+
+export function parseRecoverUnavailableNodeApplyResponse(value: unknown): RecoverUnavailableNodeApplyResponse {
+  const object = expectPlainObject(PARSER, value, "response")
+  expectExactKeys(PARSER, object, "response", ["repair_kind", "plan_hash", "applied_artifacts", "document"])
+  return {
+    repair_kind: expectStringLiteral(PARSER, object.repair_kind, "response.repair_kind", ["update_node", "reset_node"]),
+    plan_hash: planHash(object.plan_hash, "response.plan_hash"),
+    applied_artifacts: uniqueStrings(object.applied_artifacts, "response.applied_artifacts", true),
+    document: parsePipelineEditorDocument(object.document),
+  }
+}
+
+function parseRepairDryRun<const K extends readonly RepairKind[]>(value: unknown, repairKinds: K): ParsedRepairDryRun<K> {
+  const object = expectPlainObject(PARSER, value, "response")
+  expectExactKeys(PARSER, object, "response", [
+    "repair_kind", "source_file", "source_revision", "target_source_file", "target_recovery_id",
+    "target_authored_id", "delete_config", "plan_hash", "changes", "retained_artifacts", "warnings",
+    "predicted_load_status",
+  ])
+  const changes = expectArray(PARSER, object.changes, "response.changes").map((item, index) => parseChange(item, `response.changes[${index}]`))
+  if (changes.length === 0) throw new Error(`${PARSER}: response.changes must not be empty`)
+  if (new Set(changes.map((change) => change.path)).size !== changes.length) throw new Error(`${PARSER}: response.changes contains duplicate paths`)
+  return {
+    repair_kind: expectStringLiteral(PARSER, object.repair_kind, "response.repair_kind", repairKinds),
+    source_file: expectNonBlankString(PARSER, object.source_file, "response.source_file"),
+    source_revision: expectNonBlankString(PARSER, object.source_revision, "response.source_revision"),
+    target_source_file: expectNonBlankString(PARSER, object.target_source_file, "response.target_source_file"),
+    target_recovery_id: expectNonBlankString(PARSER, object.target_recovery_id, "response.target_recovery_id"),
+    target_authored_id: expectNonBlankString(PARSER, object.target_authored_id, "response.target_authored_id"),
+    delete_config: expectBoolean(PARSER, object.delete_config, "response.delete_config"),
+    plan_hash: planHash(object.plan_hash, "response.plan_hash"), changes,
+    retained_artifacts: uniqueStrings(object.retained_artifacts, "response.retained_artifacts", true),
+    warnings: uniqueStrings(object.warnings, "response.warnings", false),
+    predicted_load_status: expectStringLiteral(PARSER, object.predicted_load_status, "response.predicted_load_status", ["ready", "degraded"]),
   }
 }

@@ -58,6 +58,11 @@
 | `frontend/src/components/form/ConfigCheckbox.tsx` | Labelled controlled checkbox using a caller id or React `useId`, disabled semantics, and shared accent/text tokens. |
 | `frontend/src/components/form/EditorLabel.tsx` | Consistent micro-label primitive; can be a correctly associated `<label>` or non-form span/div for display-only content. |
 | `frontend/src/components/form/index.ts` | Public barrel for the committed text field/area, checkbox, and editor-label primitives; editor callers import the shared contract rather than deep paths. |
+| `frontend/src/api/recoveryDrafts.ts` | Transport. |
+| `frontend/src/components/RecoveryDraftDialog.tsx` | Local draft editing/review/apply/history/restore. |
+| `frontend/src/generated/api-contracts.recovery.generated.ts` | Generated DTOs. |
+| `frontend/src/panels/DraftEditingContext.tsx` | Draft side-effect guard. |
+| `frontend/src/types/recoveryDraft.ts` | Strict runtime response parsing. |
 
 ## Key types and data structures
 
@@ -675,7 +680,7 @@ recovery objects.
 
 ## Minimal repair transport
 
-`api/client.ts` exposes remove-only dry-run and apply calls. Both send the root
+`api/client.ts` exposes removal dry-run and apply calls. Both send the root
 document source, current raw revision, target source/recovery identity, and
 explicit `delete_config`; apply adds the exact dry-run plan hash. Runtime
 parsers reject unknown keys, non-remove discriminators, malformed hashes,
@@ -685,4 +690,45 @@ The public dry-run plan contains bounded display diffs and artifact metadata,
 not the bytes that apply will write. The server recomputes those bytes. A
 config-retention toggle creates a new request and invalidates the previous plan
 hash. API errors preserve structured repair detail for the confirmation UI.
-No shared type defines a migration registry or upgrade request.
+Separate recovery calls send `action: update | reset` and no deletion option to
+`/api/pipeline/repair/recover/dry-run` and `/apply`. The shared generic plan parser
+validates exact fields and action-specific discriminators; recovery plans require
+`delete_config: false`. Requests never carry client-authored replacement source/config.
+
+## Recovery draft transport and editing
+
+`api/recoveryDrafts.ts` uses the separate recovery routes and strict generated
+runtime validators. `RecoveryDraftDialog` resumes durable proposals, supports
+explicit source-qualified groups, edits settings through `NodeConfigEditor`, and
+shows provenance, affected owners and a reviewed source diff before Apply.
+Submodels have structural controls for relinking a definition and routing ports;
+existing names are read-only. Advanced JSON is a settings-map editor, never a
+client-authored source patch. Draft edits invalidate the preview and acknowledgement.
+
+`DraftEditingContext` prevents schema/data probing, input snapshot builds, output
+writes/previews, training and solving while normal editors are used for drafts.
+The editor receives an isolated `GraphProvider` containing the selected draft node
+and read-only input-frame placeholders from its recorded input names. These names
+and Edge Join base/join ordering remain available to ordinary editor controls;
+live canvas nodes, edges and settings are not admitted to this context. Training
+RAM/dispersion estimates and other data-dependent probes also remain disabled.
+Draft state is local to the dialog and its dedicated API; graph save and undo
+history are not used. Stale and terminal records are read-only. Applied records
+offer a separate exact-byte restore preview. Unsaved changes must be saved before
+switching history, replacing targets or creating a reset proposal.
+The document adapter retains server-provided source/recovery identities even for
+ready nodes, so runtime failures can open a draft. These remain transient metadata
+and are stripped from normal graph saves.
+Apply and Restore reject a dirty canvas before requesting any source mutation,
+so adopting the resulting document cannot erase unrelated unsaved pipeline edits.
+Live undo/redo snapshots retain `_recoveryId` and `_sourceFile` for root and child
+nodes, so reverting an edit preserves recovery targeting. Canonical save payloads
+and dirty fingerprints continue to strip these server-owned identities.
+The repair/recovery dialog and its draft validators load only when a recovery
+action is opened. Its local Suspense boundary leaves the mounted canvas intact;
+recovery does not increase the initial JavaScript budget.
+The complete production bundle with recovery measures 1,341.4 KiB gzip. Its
+aggregate allowance is 1,352 KiB, retaining the existing policy of roughly
+10 KiB headroom for all features together. The 283 KiB startup allowance and
+independent vendor limits remain unchanged; recovery dialogs are also prohibited
+from appearing in startup modulepreloads.

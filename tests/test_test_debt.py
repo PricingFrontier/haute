@@ -336,6 +336,11 @@ _EXPECTED_DEBT_IDS = {
     # See tests/test_project_storage.py::TestCredentialHandling.
     "b4318bcdd014bb2e",
     "e2be584e12bb5227",
+    # Real-symlink prerequisite in
+    # tests/test_recovery_transactions.py::test_recovery_storage_rejects_lexical_and_alias_paths:
+    # Windows may lack symlink privilege; lexical and hardlink checks run before
+    # the skip, Linux runs the real-symlink assertion.
+    "a6f7beb8b7c7efd7",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

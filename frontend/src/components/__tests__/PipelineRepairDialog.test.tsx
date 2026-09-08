@@ -4,15 +4,19 @@ import { ApiError } from "../../api/client"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import PipelineRepairDialog from "../PipelineRepairDialog"
 
-const { dryRunRemoveUnavailableNode, applyRemoveUnavailableNode } = vi.hoisted(() => ({
+const { dryRunRemoveUnavailableNode, applyRemoveUnavailableNode, dryRunRecoverUnavailableNode, applyRecoverUnavailableNode } = vi.hoisted(() => ({
   dryRunRemoveUnavailableNode: vi.fn(),
   applyRemoveUnavailableNode: vi.fn(),
+  dryRunRecoverUnavailableNode: vi.fn(),
+  applyRecoverUnavailableNode: vi.fn(),
 }))
 
 vi.mock("../../api/client", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../api/client")>(),
   dryRunRemoveUnavailableNode,
   applyRemoveUnavailableNode,
+  dryRunRecoverUnavailableNode,
+  applyRecoverUnavailableNode,
 }))
 
 const hash = (letter: string) => letter.repeat(64)
@@ -110,6 +114,67 @@ describe("PipelineRepairDialog", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("repair_plan_stale: Plan changed.")
     expect(screen.getByTestId("pipeline-repair-dialog")).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it("uses the recovery endpoints for update and hides config deletion", async () => {
+    dryRunRecoverUnavailableNode.mockResolvedValueOnce(plan({ repair_kind: "update_node", delete_config: false }))
+    applyRecoverUnavailableNode.mockResolvedValueOnce({ repair_kind: "update_node", plan_hash: hash("a"), applied_artifacts: ["server-main.py"], document: makePipelineEditorDocument() })
+    const onApplied = vi.fn()
+    render(<PipelineRepairDialog target={{ sourceFile: "target.py", recoveryId: "target@1", action: "update" }} sourceFile="root.py" sourceRevision="root-rev" onClose={vi.fn()} onApplied={onApplied} />)
+    await screen.findByRole("heading", { name: "Update to current format" })
+    expect(dryRunRecoverUnavailableNode).toHaveBeenCalledWith({ sourceFile: "root.py", sourceRevision: "root-rev", targetSourceFile: "target.py", targetRecoveryId: "target@1", action: "update" }, expect.anything())
+    expect(screen.queryByRole("checkbox", { name: "Also delete config" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Update to current format" }))
+    await waitFor(() => expect(applyRecoverUnavailableNode).toHaveBeenCalledWith(expect.objectContaining({ action: "update", planHash: hash("a") })))
+  })
+
+  it("applies reset with the displayed action and hash, keeping a conflict open", async () => {
+    dryRunRecoverUnavailableNode.mockResolvedValueOnce(plan({
+      repair_kind: "reset_node",
+      delete_config: false,
+      plan_hash: hash("r"),
+    }))
+    applyRecoverUnavailableNode.mockRejectedValueOnce(new ApiError(
+      "HTTP 409",
+      409,
+      undefined,
+      undefined,
+      { code: "repair_plan_stale", message: "Plan changed." },
+    ))
+    render(<PipelineRepairDialog target={{ sourceFile: "target.py", recoveryId: "target@1", action: "reset" }} sourceFile="root.py" sourceRevision="root-rev" onClose={vi.fn()} onApplied={vi.fn()} />)
+    await screen.findByRole("heading", { name: "Reset node" })
+    fireEvent.click(screen.getByRole("button", { name: "Reset node" }))
+    await waitFor(() => expect(applyRecoverUnavailableNode).toHaveBeenCalledWith({
+      sourceFile: "server-main.py",
+      sourceRevision: "server-rev",
+      targetSourceFile: "server-main.py",
+      targetRecoveryId: "broken@10",
+      action: "reset",
+      planHash: hash("r"),
+    }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("repair_plan_stale: Plan changed.")
+    expect(screen.getByTestId("pipeline-repair-dialog")).toBeInTheDocument()
+  })
+
+  it("invalidates an update plan when the selected action changes", async () => {
+    dryRunRecoverUnavailableNode
+      .mockResolvedValueOnce(plan({ repair_kind: "update_node", plan_hash: hash("u") }))
+      .mockResolvedValueOnce(plan({ repair_kind: "reset_node", plan_hash: hash("s") }))
+    const props = {
+      sourceFile: "root.py",
+      sourceRevision: "root-rev",
+      onClose: vi.fn(),
+      onApplied: vi.fn(),
+    }
+    const { rerender } = render(<PipelineRepairDialog {...props} target={{ sourceFile: "target.py", recoveryId: "target@1", action: "update" }} />)
+    await screen.findByRole("button", { name: "Update to current format" })
+    rerender(<PipelineRepairDialog {...props} target={{ sourceFile: "target.py", recoveryId: "target@1", action: "reset" }} />)
+    await screen.findByRole("button", { name: "Reset node" })
+    fireEvent.click(screen.getByRole("button", { name: "Reset node" }))
+    await waitFor(() => expect(applyRecoverUnavailableNode).toHaveBeenCalledWith(expect.objectContaining({
+      action: "reset",
+      planHash: hash("s"),
+    })))
   })
 
   it("cannot close through Escape or the backdrop while apply is in flight", async () => {

@@ -1,5 +1,5 @@
 import { memo, useEffect } from "react"
-import { useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
+import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
 import { Package } from "lucide-react"
 import { STRUCTURE_COLORS } from "../theme/colors"
 import { nodeTypeColors } from "../utils/nodeTypes"
@@ -46,6 +46,8 @@ function SubmodelNode({
     (port) => `in__${port.name}`,
   ) ?? []
   const outputFrames = canonicalDefinition?.outputPorts.map(toOutputFrame) ?? []
+  const loadAvailability = nodeData._loadAvailability ?? "ready"
+  const showRecoveryHandles = definitionInvalid && loadAvailability !== "ready"
   const childCount = canonicalDefinition?.graph.nodes.length ?? 0
   const hasBody = hasInputSocket
     || outputFrames.length > 0
@@ -58,6 +60,7 @@ function SubmodelNode({
   const portSignature = JSON.stringify([
     inputAnchorIds,
     outputFrames.map((frame) => frame.id),
+    showRecoveryHandles,
     hasInputSocket,
     isConnectable,
   ])
@@ -68,7 +71,7 @@ function SubmodelNode({
 
   return (
     <div
-      aria-label={`Submodel node: ${nodeData.label}, ${childCount} child nodes${traceActive ? ", trace active" : ""}`}
+      aria-label={`Submodel node: ${nodeData.label}, ${childCount} child nodes${loadAvailability !== "ready" ? `, ${loadAvailability}` : ""}${traceActive ? ", trace active" : ""}`}
       role="button"
       className="relative w-[240px] cursor-pointer rounded-xl"
       style={{
@@ -113,6 +116,16 @@ function SubmodelNode({
         >
           {nodeData.label}
         </span>
+        {loadAvailability !== "ready" && (
+          <span
+            role="status"
+            data-testid="submodel-load-availability"
+            className="text-[10px] font-semibold uppercase"
+            style={{ color: loadAvailability === "unavailable" ? "var(--danger)" : "var(--warning)" }}
+          >
+            {loadAvailability}
+          </span>
+        )}
       </div>
 
       {hasBody && (
@@ -127,6 +140,7 @@ function SubmodelNode({
               Definition unavailable or invalid
             </div>
           )}
+          {showRecoveryHandles && <RecoveryHandles id={id} data={nodeData} />}
           {hasInputSocket && outputFrames.length === 0 && (
             <DefaultInputPortRow
               accent={accent}
@@ -155,6 +169,48 @@ function SubmodelNode({
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function RecoveryHandles({ id, data: nodeData }: Pick<NodeProps<SubmodelFlowNode>, "id" | "data">) {
+  const recoveryEdges = useGraphStore((state) => state.edges)
+  const inputHandleIds = [...new Set(recoveryEdges
+    .filter((edge) => edge.target === id && typeof edge.targetHandle === "string" && edge.targetHandle.startsWith("in__"))
+    .map((edge) => edge.targetHandle as string))]
+  const outputHandleIds = Object.keys(nodeData._sourceHandleInputNames ?? {})
+    .filter((handle) => handle.startsWith("out__"))
+
+  if (inputHandleIds.length === 0 && outputHandleIds.length === 0) return null
+  return (
+    <div
+      data-testid="submodel-recovery-ports"
+      className="relative mt-2 flex min-h-5 items-center justify-between text-[10px]"
+      style={{ color: "var(--text-muted)" }}
+    >
+      <span>Retained recovery connections</span>
+      {inputHandleIds.map((handleId) => (
+        <Handle
+          key={handleId}
+          id={handleId}
+          type="target"
+          position={Position.Left}
+          isConnectable={false}
+          aria-label={`Unavailable input ${handleId}`}
+          style={{ top: "50%", opacity: 0.45, pointerEvents: "none" }}
+        />
+      ))}
+      {outputHandleIds.map((handleId) => (
+        <Handle
+          key={handleId}
+          id={handleId}
+          type="source"
+          position={Position.Right}
+          isConnectable={false}
+          aria-label={`Unavailable output ${handleId}`}
+          style={{ top: "50%", opacity: 0.45, pointerEvents: "none" }}
+        />
+      ))}
     </div>
   )
 }

@@ -1,0 +1,21 @@
+{
+  "apiInput": {"path": ""},
+  "liveSwitch": {"input_scenario_map": {}},
+  "output": {"outputMapping": [], "outputFormat": ""},
+  "dataInput": {"inputType": "file", "format": "parquet", "mode": "scan", "path": "", "arguments": {}, "code": ""},
+  "dataOutput": {"outputType": "file", "format": "parquet", "mode": "sink", "path": "", "arguments": {}},
+  "explore": {},
+  "externalFile": {"path": "", "fileType": "pickle", "code": ""},
+  "constant": {"values": [{"name": "constant_1", "value": "1.0"}]},
+  "polars": {},
+  "edgeJoin": {"how": "left", "suffix": "_right"},
+  "banding": {"factors": [{"banding": "continuous", "column": "", "outputColumn": "", "rules": [], "default": null}]},
+  "scenarioExpander": {},
+  "ratingStep": {"tables": [{"factors": [], "outputColumn": "", "defaultValue": "1.0", "entries": []}], "combinedOutputs": [], "code": ""},
+  "modelling": {},
+  "modelScore": {"sourceType": "registered", "registered_model": "", "version": "latest", "task": "regression", "output_column": "prediction", "code": ""},
+  "optimiser": {"mode": "online", "objective": "", "constraints": {}, "quote_id": "quote_id", "scenario_index": "scenario_index", "scenario_value": "scenario_value", "max_iter": 50, "tolerance": 1e-6},
+  "optimiserApply": {"sourceType": "file", "artifact_path": "", "version_column": "__optimiser_version__", "optimised_value_column": "optimised_value"},
+  "submodel": {},
+  "submodelPort": {}
+}

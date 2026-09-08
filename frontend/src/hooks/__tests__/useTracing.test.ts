@@ -556,6 +556,41 @@ describe("useTracing", () => {
     })
   })
 
+  it("retains an unavailable submodel with a missing definition without tracing it", () => {
+    const inputs = makeNode("Inputs", NODE_TYPES.SUBMODEL, {
+      data: {
+        label: "Inputs",
+        nodeType: NODE_TYPES.SUBMODEL,
+        config: { definitionId: "Inputs", alias: "Inputs" },
+        _loadAvailability: "unavailable",
+      },
+    })
+    const consumer = makeNode("consumer")
+    const { result } = renderHook(() => useTracing(makeParams({
+      nodes: [inputs, consumer],
+      edges: [makeEdge("Inputs", "consumer")],
+      selectedNode: consumer,
+    })))
+
+    expect(result.current.nodesWithStatus.map((node) => node.id)).toEqual(["Inputs", "consumer"])
+    expect(result.current.edgesWithTrace.map((edge) => edge.id)).toEqual(["e_Inputs_consumer"])
+    expect(mockTraceCell).not.toHaveBeenCalled()
+  })
+
+  it.each(["ready", undefined] as const)("still rejects a %s submodel with a missing definition", (availability) => {
+    const inputs = makeNode("Inputs", NODE_TYPES.SUBMODEL, {
+      data: {
+        label: "Inputs",
+        nodeType: NODE_TYPES.SUBMODEL,
+        config: { definitionId: "Inputs", alias: "Inputs" },
+        ...(availability === undefined ? {} : { _loadAvailability: availability }),
+      },
+    })
+    expect(() => renderHook(() => useTracing(makeParams({ nodes: [inputs] })))).toThrow(
+      "Submodel instance Inputs references missing or malformed definition Inputs",
+    )
+  })
+
   it("nodesWithStatus dims nodes not in trace via _traceDimmed data flag only", async () => {
     const trace = {
       steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],

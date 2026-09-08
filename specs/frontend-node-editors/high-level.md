@@ -288,4 +288,8 @@ implicit downstream consumer, ambiguous identity/span, mixed connection
 chain, shared config, or server verification failure stays visible and leaves
 the recovery inspector open. Success adopts the returned editor document and
 closes the removed node's panel. Blocked and ready nodes never expose this
-action. No `Upgrade node` or migration action is rendered.
+action. Known unavailable submodels also offer `Update to current format`; known ordinary
+nodes offer `Reset node`. These actions follow the server-owned preview/apply contract in
+[node recovery actions](../server-api/node-recovery-actions.md). Blocked nodes expose no
+reset action. Reset confirmation explicitly describes replaced settings/code and required
+reconfiguration; updating a submodel preserves its contents and consumer code.

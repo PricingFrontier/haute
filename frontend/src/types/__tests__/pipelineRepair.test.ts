@@ -3,6 +3,8 @@ import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFi
 import {
   parseRemoveUnavailableNodeApplyResponse,
   parseRemoveUnavailableNodeDryRunResponse,
+  parseRecoverUnavailableNodeApplyResponse,
+  parseRecoverUnavailableNodeDryRunResponse,
 } from "../pipelineRepair"
 
 const hash = "a".repeat(64)
@@ -50,5 +52,13 @@ describe("pipeline repair response parsers", () => {
       ...plan,
       changes: [{ ...plan.changes[0], diff: "x".repeat(131_073) }],
     })).toThrow("diff")
+  })
+
+  it("accepts update/reset recovery responses but rejects config deletion", () => {
+    const update = { ...plan, repair_kind: "update_node", delete_config: false }
+    expect(parseRecoverUnavailableNodeDryRunResponse(update).repair_kind).toBe("update_node")
+    expect(parseRecoverUnavailableNodeApplyResponse({ repair_kind: "reset_node", plan_hash: hash, applied_artifacts: ["main.py"], document: makePipelineEditorDocument() }).repair_kind).toBe("reset_node")
+    expect(() => parseRecoverUnavailableNodeDryRunResponse({ ...update, delete_config: true })).toThrow("delete_config")
+    expect(() => parseRecoverUnavailableNodeDryRunResponse({ ...update, repair_kind: "remove_unavailable_node" })).toThrow("repair_kind")
   })
 })

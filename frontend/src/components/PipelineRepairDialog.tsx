@@ -1,16 +1,20 @@
 import { useEffect, useRef, useState } from "react"
 import {
   ApiError,
+  applyRecoverUnavailableNode,
   applyRemoveUnavailableNode,
+  dryRunRecoverUnavailableNode,
   dryRunRemoveUnavailableNode,
 } from "../api/client"
 import type { PipelineEditorDocument } from "../types/pipelineDocument"
-import type { RemoveUnavailableNodeDryRunResponse } from "../types/pipelineRepair"
+import type { RecoverUnavailableNodeDryRunResponse, RemoveUnavailableNodeDryRunResponse } from "../types/pipelineRepair"
 import ModalShell from "./ModalShell"
+import RecoveryDraftDialog from "./RecoveryDraftDialog"
 
 export interface PipelineRepairTarget {
   sourceFile: string
   recoveryId: string
+  action?: "remove" | "update" | "reset" | "recover"
 }
 
 interface PipelineRepairDialogProps {
@@ -33,15 +37,23 @@ function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-export default function PipelineRepairDialog({
+function PipelineRepairDialogContent({
   target,
   sourceFile,
   sourceRevision,
   onClose,
   onApplied,
 }: PipelineRepairDialogProps) {
+  const action = (target.action ?? "remove") as "remove" | "update" | "reset"
+  const isRemoval = action === "remove"
+  const actionTitle = action === "update"
+    ? "Update to current format"
+    : action === "reset" ? "Reset node" : "Remove unavailable node"
+  const applyLabel = action === "update"
+    ? "Update to current format"
+    : action === "reset" ? "Reset node" : "Remove node"
   const [deleteConfig, setDeleteConfig] = useState(false)
-  const [plan, setPlan] = useState<RemoveUnavailableNodeDryRunResponse | null>(null)
+  const [plan, setPlan] = useState<(RemoveUnavailableNodeDryRunResponse | RecoverUnavailableNodeDryRunResponse) | null>(null)
   const [planning, setPlanning] = useState(true)
   const [applying, setApplying] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -58,13 +70,22 @@ export default function PipelineRepairDialog({
     setPlanning(true)
     setPlan(null)
     setError(null)
-    void dryRunRemoveUnavailableNode({
-      sourceFile,
-      sourceRevision,
-      targetSourceFile: target.sourceFile,
-      targetRecoveryId: target.recoveryId,
-      deleteConfig,
-    }, { signal: controller.signal })
+    const request = isRemoval
+      ? dryRunRemoveUnavailableNode({
+          sourceFile,
+          sourceRevision,
+          targetSourceFile: target.sourceFile,
+          targetRecoveryId: target.recoveryId,
+          deleteConfig,
+        }, { signal: controller.signal })
+      : dryRunRecoverUnavailableNode({
+          sourceFile,
+          sourceRevision,
+          targetSourceFile: target.sourceFile,
+          targetRecoveryId: target.recoveryId,
+          action,
+        }, { signal: controller.signal })
+    void request
       .then((next) => {
         if (sequence.current === current) {
           setPlan(next)
@@ -79,7 +100,7 @@ export default function PipelineRepairDialog({
         if (sequence.current === current) setPlanning(false)
       })
     return () => controller.abort()
-  }, [deleteConfig, sourceFile, sourceRevision, target.recoveryId, target.sourceFile])
+  }, [action, deleteConfig, isRemoval, sourceFile, sourceRevision, target.recoveryId, target.sourceFile])
 
   const apply = async () => {
     if (!plan || planning || applyingRef.current) return
@@ -87,14 +108,23 @@ export default function PipelineRepairDialog({
     setApplying(true)
     setError(null)
     try {
-      const response = await applyRemoveUnavailableNode({
-        sourceFile: plan.source_file,
-        sourceRevision: plan.source_revision,
-        targetSourceFile: plan.target_source_file,
-        targetRecoveryId: plan.target_recovery_id,
-        deleteConfig: plan.delete_config,
-        planHash: plan.plan_hash,
-      })
+      const response = isRemoval
+        ? await applyRemoveUnavailableNode({
+            sourceFile: plan.source_file,
+            sourceRevision: plan.source_revision,
+            targetSourceFile: plan.target_source_file,
+            targetRecoveryId: plan.target_recovery_id,
+            deleteConfig: plan.delete_config,
+            planHash: plan.plan_hash,
+          })
+        : await applyRecoverUnavailableNode({
+            sourceFile: plan.source_file,
+            sourceRevision: plan.source_revision,
+            targetSourceFile: plan.target_source_file,
+            targetRecoveryId: plan.target_recovery_id,
+            action,
+            planHash: plan.plan_hash,
+          })
       onApplied(response.document)
     } catch (err) {
       setError(errorDetail(err))
@@ -116,13 +146,17 @@ export default function PipelineRepairDialog({
     if (!applyingRef.current) onClose()
   }
 
-  const canChooseConfigDeletion = retainedArtifactPaths.length > 0 || deleteConfig
+  const canChooseConfigDeletion = isRemoval && (retainedArtifactPaths.length > 0 || deleteConfig)
   return (
-    <ModalShell ariaLabel="Remove unavailable node" onClose={requestClose} width="w-[680px]" testId="pipeline-repair-dialog">
+    <ModalShell ariaLabel={actionTitle} onClose={requestClose} width="w-[680px]" testId="pipeline-repair-dialog">
       <div className="border-b px-5 py-4" style={{ borderColor: "var(--border)" }}>
-        <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Remove unavailable node</h2>
+        <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{actionTitle}</h2>
         <p className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>
-          Remove {plan?.target_authored_id ?? target.recoveryId} and the listed artifacts only.
+          {action === "reset"
+            ? "Replace this node's settings and code while preserving its identity and connections. Configuration may be needed before running."
+            : action === "update"
+              ? `Update ${plan?.target_authored_id ?? target.recoveryId} to the current submodel format while preserving its authored connections.`
+              : `Remove ${plan?.target_authored_id ?? target.recoveryId} and the listed artifacts only.`}
         </p>
       </div>
       <div className="max-h-[60vh] space-y-4 overflow-y-auto px-5 py-4 text-xs">
@@ -155,8 +189,21 @@ export default function PipelineRepairDialog({
       </div>
       <div className="flex justify-end gap-2 border-t px-5 py-3" style={{ borderColor: "var(--border)" }}>
         <button type="button" onClick={requestClose} disabled={applying} className="rounded px-3 py-1.5" style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}>Cancel</button>
-        <button type="button" onClick={() => void apply()} disabled={!plan || planning || applying} className="rounded px-3 py-1.5" style={{ color: "var(--text-on-accent)", background: "var(--danger)" }}>{applying ? "Removing…" : "Remove node"}</button>
+        <button
+          type="button"
+          onClick={() => void apply()}
+          disabled={!plan || planning || applying}
+          className="rounded px-3 py-1.5"
+          style={{ color: "var(--text-on-accent)", background: isRemoval ? "var(--danger)" : "var(--accent)" }}
+        >
+          {applying ? "Applying…" : applyLabel}
+        </button>
       </div>
     </ModalShell>
   )
+}
+
+export default function PipelineRepairDialog(props: PipelineRepairDialogProps) {
+  if (props.target.action === "recover") return <RecoveryDraftDialog sourceFile={props.sourceFile} sourceRevision={props.sourceRevision} target={{ sourceFile: props.target.sourceFile, recoveryId: props.target.recoveryId }} onClose={props.onClose} onApplied={props.onApplied} />
+  return <PipelineRepairDialogContent {...props} />
 }

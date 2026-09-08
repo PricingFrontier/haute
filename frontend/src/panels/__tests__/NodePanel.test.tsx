@@ -378,6 +378,114 @@ describe("NodePanel", () => {
     expect(screen.queryByRole("button", { name: "Remove unavailable node" })).not.toBeInTheDocument()
   })
 
+  it("offers update for unavailable submodels and reset for known ordinary nodes only", () => {
+    const onRemoveUnavailableNode = vi.fn()
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ load_status: "degraded", capabilities: { can_repair: true } }))
+    const { unmount } = renderPanel({ onRemoveUnavailableNode, node: makeNode({ data: { label: "Inputs", description: "", nodeType: "submodel", _loadAvailability: "unavailable", _sourceFile: "main.py", _recoveryId: "inputs@1" } }) })
+    fireEvent.click(screen.getByRole("button", { name: "Update to current format" }))
+    expect(onRemoveUnavailableNode).toHaveBeenCalledWith({ sourceFile: "main.py", recoveryId: "inputs@1", action: "update" })
+    unmount()
+    onRemoveUnavailableNode.mockClear()
+    renderPanel({ onRemoveUnavailableNode, node: makeNode({ data: { label: "Broken", description: "", nodeType: "polars", _loadAvailability: "unavailable", _sourceFile: "main.py", _recoveryId: "broken@1" } }) })
+    const resetButton = screen.getByRole("button", { name: "Reset node" })
+    expect(resetButton).toBeInTheDocument()
+    fireEvent.click(resetButton)
+    expect(onRemoveUnavailableNode).toHaveBeenCalledTimes(1)
+    expect(onRemoveUnavailableNode).toHaveBeenCalledWith({ sourceFile: "main.py", recoveryId: "broken@1", action: "reset" })
+  })
+
+  it("does not offer reset for an unavailable node instance", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded",
+      capabilities: { can_repair: true },
+    }))
+    renderPanel({ node: makeNode({ data: {
+      label: "Copied Polars",
+      description: "",
+      nodeType: "polars",
+      config: { instanceOf: "source-polars" },
+      _authoredDecorator: "instance",
+      _loadAvailability: "unavailable",
+      _sourceFile: "main.py",
+      _recoveryId: "copy@1",
+    } }) })
+    expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
+  })
+
+  it.each(["ready", "unavailable", "blocked"] as const)(
+    "recovers settings for a %s known polars node carrying sourceFile and recoveryId",
+    (availability) => {
+      if (availability !== "ready") {
+        useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+          load_status: "degraded",
+          capabilities: { can_repair: true },
+        }))
+      }
+      const onRemoveUnavailableNode = vi.fn()
+      const { props } = renderPanel({
+        onRemoveUnavailableNode,
+        node: makeNode({
+          id: "child_polars_id",
+          data: {
+            label: "Child Polars Label",
+            description: "",
+            nodeType: "polars",
+            _loadAvailability: availability,
+            _sourceFile: "modules/child.py",
+            _recoveryId: "authored@7",
+          },
+        }),
+      })
+
+      fireEvent.click(screen.getByRole("button", { name: "Recover settings" }))
+      expect(onRemoveUnavailableNode).toHaveBeenCalledTimes(1)
+      expect(onRemoveUnavailableNode).toHaveBeenCalledWith({
+        sourceFile: "modules/child.py",
+        recoveryId: "authored@7",
+        action: "recover",
+      })
+      expect(props.onUpdateNode).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([
+    {
+      scenario: "sourceFile missing",
+      sourceFile: undefined,
+      recoveryId: "authored@7",
+      hasCallback: true,
+    },
+    {
+      scenario: "recoveryId missing",
+      sourceFile: "modules/child.py",
+      recoveryId: undefined,
+      hasCallback: true,
+    },
+    {
+      scenario: "callback missing",
+      sourceFile: "modules/child.py",
+      recoveryId: "authored@7",
+      hasCallback: false,
+    },
+  ])("does not offer recovery button for ready node when $scenario", ({ sourceFile, recoveryId, hasCallback }) => {
+    const onRemoveUnavailableNode = hasCallback ? vi.fn() : undefined
+    renderPanel({
+      onRemoveUnavailableNode,
+      node: makeNode({
+        id: "child_polars_id",
+        data: {
+          label: "Child Polars Label",
+          description: "",
+          nodeType: "polars",
+          _loadAvailability: "ready",
+          _sourceFile: sourceFile,
+          _recoveryId: recoveryId,
+        },
+      }),
+    })
+    expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
+  })
+
   it("inspects a ready degraded sibling without mounting its normal editor", () => {
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
       load_status: "degraded",
