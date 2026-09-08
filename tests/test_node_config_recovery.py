@@ -26,11 +26,39 @@ def test_data_input_retains_valid_path_and_mode_when_argument_is_invalid() -> No
     assert any(change.path == "/arguments" for change in result.changes)
 
 
-def test_unknown_discriminant_is_not_defaulted() -> None:
-    result = reconcile_config(NodeType.DATA_INPUT, {"inputType": "oracle", "path": "x"})
+@pytest.mark.parametrize("input_type", ["oracle", 1, True, [], {}])
+def test_unknown_discriminant_is_not_defaulted(input_type: object) -> None:
+    result = reconcile_config(NodeType.DATA_INPUT, {"inputType": input_type, "path": "x"})
     assert "inputType" not in result.config
     assert "format" not in result.config
     assert any(issue.code == "unknown_discriminant" for issue in result.issues)
+
+
+@pytest.mark.parametrize(
+    ("node_type", "config"),
+    [
+        (NodeType.DATA_INPUT, {"inputType": [], "inputMapping": {"x": []}}),
+        (NodeType.DATA_OUTPUT, {"outputType": {}, "inputMapping": {"x": []}}),
+        (NodeType.MODEL_SCORE, {"sourceType": [], "inputMapping": {"x": []}}),
+        (NodeType.MODELLING, {"algorithm": {}, "inputMapping": {"x": []}}),
+        (NodeType.OPTIMISER, {"mode": [], "inputMapping": {"x": []}}),
+        (NodeType.OPTIMISER_APPLY, {"sourceType": {}, "inputMapping": {"x": []}}),
+    ],
+)
+def test_shape_invalid_discriminants_do_not_reach_semantic_validators(
+    node_type: NodeType, config: dict[str, object]
+) -> None:
+    issues = validate_recovery_config(node_type, config)
+    assert any(issue.code == "invalid_value" for issue in issues)
+    assert any(issue.code == "unknown_discriminant" for issue in issues)
+
+
+def test_invalid_nested_shape_keeps_field_errors_and_unknown_field_warnings() -> None:
+    issues = validate_recovery_config(NodeType.BANDING, {"factors": [None], "future": True})
+    assert {(issue.path, issue.code, issue.severity) for issue in issues} == {
+        ("factors", "invalid_value", "error"),
+        ("future", "unknown_field", "warning"),
+    }
 
 
 def test_live_switch_default_is_current_scenario_map() -> None:

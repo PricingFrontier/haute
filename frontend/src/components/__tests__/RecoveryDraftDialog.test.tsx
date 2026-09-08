@@ -22,11 +22,46 @@ const {
   restoreRecoveryDraft: vi.fn(),
 }))
 const { loadPipeline } = vi.hoisted(() => ({ loadPipeline: vi.fn() }))
+const {
+  estimateTrainingRam,
+  estimateOptimiserSolve,
+  fetchIoCapabilities,
+  outputAssembleDryRun,
+  previewNode,
+  resolveOutputDestination,
+  trainModel,
+  solveOptimiser,
+  writeOutput,
+} = vi.hoisted(() => ({
+  estimateTrainingRam: vi.fn(),
+  estimateOptimiserSolve: vi.fn(),
+  fetchIoCapabilities: vi.fn().mockResolvedValue({ groups: [] }),
+  outputAssembleDryRun: vi.fn(),
+  previewNode: vi.fn(),
+  resolveOutputDestination: vi.fn(),
+  trainModel: vi.fn(),
+  solveOptimiser: vi.fn(),
+  writeOutput: vi.fn(),
+}))
+const { runDispersionEstimate } = vi.hoisted(() => ({
+  runDispersionEstimate: vi.fn(),
+}))
 
 vi.mock("../../api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../api/client")>()),
   loadPipeline,
+  estimateTrainingRam,
+  estimateOptimiserSolve,
+  fetchIoCapabilities,
+  outputAssembleDryRun,
+  previewNode,
+  resolveOutputDestination,
+  trainModel,
+  solveOptimiser,
+  writeOutput,
 }))
+
+vi.mock("../../api/dispersion", () => ({ runDispersionEstimate }))
 
 vi.mock("../../api/recoveryDrafts", () => ({
   listRecoveryDrafts,
@@ -77,6 +112,7 @@ describe("RecoveryDraftDialog", () => {
     cleanup()
     vi.clearAllMocks()
     vi.restoreAllMocks()
+    useGraphStore.getState().resetForTests()
   })
 
   it("resumes a matching saved draft and saves an explicit full config map", async () => {
@@ -102,6 +138,179 @@ describe("RecoveryDraftDialog", () => {
         reviewed: true,
       }),
     )
+  })
+
+  it.each([
+    {
+      nodeType: "output",
+      config: { outputMapping: [] },
+      inputNames: ["quoted_frame"],
+      control: () => screen.getByText("Frames (1)"),
+    },
+    {
+      nodeType: "dataOutput",
+      config: {},
+      inputNames: ["quoted_frame"],
+      control: () => screen.getByLabelText("Provider"),
+    },
+    {
+      nodeType: "edgeJoin",
+      config: { how: "cross", on: [], leftOn: [], rightOn: [] },
+      inputNames: ["base_frame", "join_frame"],
+      control: () => screen.getByText("Dominant Input"),
+    },
+    {
+      nodeType: "modelling",
+      config: { algorithm: "glm" },
+      inputNames: ["training_frame"],
+      control: () => screen.getByLabelText("Selected algorithm"),
+    },
+    {
+      nodeType: "optimiser",
+      config: { objective: "objective" },
+      inputNames: ["optimiser_frame"],
+      control: () => screen.getByText("Mode"),
+    },
+  ])("mounts the real $nodeType editor in an isolated draft graph", async ({ nodeType, config, inputNames, control }) => {
+    listRecoveryDrafts.mockResolvedValue({
+      drafts: [
+        draft({
+          nodes: [{
+            ...draft().nodes[0],
+            node_type: nodeType,
+            config,
+            input_names: inputNames,
+          }],
+        }),
+      ],
+    })
+    render(
+      <RecoveryDraftDialog
+        sourceFile="main.py"
+        sourceRevision="source-1"
+        target={{ sourceFile: "main.py", recoveryId: "node@1" }}
+        onClose={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    await screen.findByRole("button", { name: "Broken node" })
+    expect(await waitFor(() => control())).toBeTruthy()
+    expect(screen.queryByText("The normal editor failed. Use Advanced draft JSON to repair this proposal.")).toBeNull()
+    expect(estimateTrainingRam).not.toHaveBeenCalled()
+    expect(estimateOptimiserSolve).not.toHaveBeenCalled()
+    expect(outputAssembleDryRun).not.toHaveBeenCalled()
+    expect(previewNode).not.toHaveBeenCalled()
+    expect(writeOutput).not.toHaveBeenCalled()
+    expect(trainModel).not.toHaveBeenCalled()
+    expect(solveOptimiser).not.toHaveBeenCalled()
+    expect(runDispersionEstimate).not.toHaveBeenCalled()
+  })
+
+  it("keeps output input frames and draft edits out of the live graph store", async () => {
+    const liveNodes = [{
+      id: "live-node",
+      type: "pipelineNode",
+      position: { x: 0, y: 0 },
+      data: { label: "Live node", description: "live", nodeType: "polars", config: { retained: true } },
+    }]
+    const liveEdges = [{ id: "live-edge", source: "live-node", target: "live-target" }]
+    const liveHistory = [{ nodes: liveNodes, edges: liveEdges, preamble: "live", submodels: {} }]
+    useGraphStore.setState({ nodes: liveNodes, edges: liveEdges, undoStack: liveHistory })
+    editRecoveryDraft.mockResolvedValue(draft({ draft_revision: "revision-2", reviewed: true }))
+    listRecoveryDrafts.mockResolvedValue({
+      drafts: [
+        draft({
+          nodes: [{
+            ...draft().nodes[0],
+            node_type: "output",
+            config: { outputMapping: [] },
+            input_names: ["quoted_frame"],
+          }],
+        }),
+      ],
+    })
+    render(
+      <RecoveryDraftDialog
+        sourceFile="main.py"
+        sourceRevision="source-1"
+        target={{ sourceFile: "main.py", recoveryId: "node@1" }}
+        onClose={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    await screen.findByText("Frames (1)")
+    expect(screen.getByText("quoted_frame")).toBeTruthy()
+    fireEvent.change(screen.getByTestId("output-format-select"), { target: { value: "json" } })
+    fireEvent.click(screen.getByRole("checkbox", { name: "I reviewed the settings and all affected owners." }))
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }))
+    await waitFor(() =>
+      expect(editRecoveryDraft).toHaveBeenCalledWith(
+        "draft-1",
+        expect.objectContaining({
+          configs: expect.objectContaining({
+            "node:1": expect.objectContaining({ outputFormat: "json" }),
+          }),
+        }),
+      ),
+    )
+    expect(useGraphStore.getState().nodes).toBe(liveNodes)
+    expect(useGraphStore.getState().edges).toBe(liveEdges)
+    expect(useGraphStore.getState().undoStack).toBe(liveHistory)
+  })
+
+  it("hides GLM dispersion estimation while preserving the recovery editor", async () => {
+    listRecoveryDrafts.mockResolvedValue({
+      drafts: [
+        draft({
+          nodes: [{
+            ...draft().nodes[0],
+            node_type: "modelling",
+            config: { algorithm: "glm", family: "tweedie" },
+            input_names: ["training_frame"],
+          }],
+        }),
+      ],
+    })
+    render(
+      <RecoveryDraftDialog
+        sourceFile="main.py"
+        sourceRevision="source-1"
+        target={{ sourceFile: "main.py", recoveryId: "node@1" }}
+        onClose={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    expect(await screen.findByText("Set variance power (required for Tweedie)")).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Estimate from data" })).toBeNull()
+    expect(runDispersionEstimate).not.toHaveBeenCalled()
+  })
+
+  it("resolves Edge Join draft input names in recorded base and join order", async () => {
+    listRecoveryDrafts.mockResolvedValue({
+      drafts: [
+        draft({
+          nodes: [{
+            ...draft().nodes[0],
+            node_type: "edgeJoin",
+            config: { how: "cross", on: [], leftOn: [], rightOn: [] },
+            input_names: ["base_frame", "join_frame"],
+          }],
+        }),
+      ],
+    })
+    render(
+      <RecoveryDraftDialog
+        sourceFile="main.py"
+        sourceRevision="source-1"
+        target={{ sourceFile: "main.py", recoveryId: "node@1" }}
+        onClose={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    expect(await screen.findByText("base_frame")).toBeTruthy()
+    expect(screen.getByText("join_frame")).toBeTruthy()
+    expect(screen.getByText("Dominant Input").parentElement).toHaveTextContent("base_frame")
+    expect(screen.getByText("Joining Input").parentElement).toHaveTextContent("join_frame")
   })
 
   it("requires a fresh displayed preview and acknowledgement before apply", async () => {

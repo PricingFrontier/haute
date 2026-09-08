@@ -264,6 +264,25 @@ def create_draft(root: Path, request: RecoveryDraftCreate) -> RecoveryDraft:
     return draft
 
 
+def _require_public_port_identities(original: dict[str, Any], candidate: dict[str, Any]) -> None:
+    for field in ("input_ports", "output_ports"):
+        previous_ports = original.get(field)
+        next_ports = candidate.get(field)
+        if isinstance(previous_ports, list) and isinstance(next_ports, list):
+            original_names = {
+                port.get("name")
+                for port in previous_ports
+                if isinstance(port, dict) and isinstance(port.get("name"), str)
+            }
+            next_names = {
+                port.get("name")
+                for port in next_ports
+                if isinstance(port, dict) and isinstance(port.get("name"), str)
+            }
+            if not original_names <= next_names:
+                raise conflict("Recovery cannot rename or remove existing public port identities.")
+
+
 def edit_draft(root: Path, draft_id: str, request: RecoveryDraftPatch) -> RecoveryDraft:
     root = root.resolve()
     record, draft = _load(root, draft_id)
@@ -286,24 +305,8 @@ def edit_draft(root: Path, draft_id: str, request: RecoveryDraftPatch) -> Recove
             for identity in ("name", "definition_id", "instance_of"):
                 if next_config.get(identity) != node.config.get(identity):
                     raise conflict(f"The submodel {identity} is immutable in a recovery draft.")
-            for field in ("input_ports", "output_ports"):
-                previous_ports = record["original_nodes"][node.key]["config"].get(field)
-                next_ports = next_config.get(field)
-                if isinstance(previous_ports, list) and isinstance(next_ports, list):
-                    original_names = {
-                        port.get("name")
-                        for port in previous_ports
-                        if isinstance(port, dict) and isinstance(port.get("name"), str)
-                    }
-                    next_names = {
-                        port.get("name")
-                        for port in next_ports
-                        if isinstance(port, dict) and isinstance(port.get("name"), str)
-                    }
-                    if not original_names <= next_names:
-                        raise conflict(
-                            "Recovery cannot rename or remove existing public port identities."
-                        )
+            original_config = record["original_nodes"][node.key]["config"]
+            _require_public_port_identities(original_config, next_config)
             if next_config.get("file") != node.config.get("file"):
                 try:
                     _reg, child, _fields, replacement = _submodel_literals(
@@ -315,8 +318,7 @@ def edit_draft(root: Path, draft_id: str, request: RecoveryDraftPatch) -> Recove
                     definition_identity = node.config.get("definition_id")
                     if definition_identity and definition_identity != replacement["definition_id"]:
                         raise conflict("The replacement file belongs to a different definition.")
-                    next_config = replacement
-                    _normalise_ports(next_config)
+                    _normalise_ports(replacement)
                     from haute._pipeline_recovery import _source_references
 
                     paths = {
@@ -332,16 +334,21 @@ def edit_draft(root: Path, draft_id: str, request: RecoveryDraftPatch) -> Recove
                         )
                     for reference in references:
                         paths.add((Path(node.source_file).parent / reference).as_posix())
-                    for relative in paths:
-                        if relative not in record["artifacts"]:
-                            record["artifacts"][relative] = encode(read_artifact(root, relative))
-                            record["extras"].append(relative)
+                    extra_artifacts = {
+                        relative: encode(read_artifact(root, relative))
+                        for relative in sorted(paths)
+                        if relative not in record["artifacts"]
+                    }
                 except (PipelineRepairError, HauteError, UnicodeError) as exc:
                     node.config = next_config
                     node.issues = [
                         RecoveryIssue(path="/file", code="invalid_definition", message=str(exc))
                     ]
                     continue
+                _require_public_port_identities(original_config, replacement)
+                next_config = replacement
+                record["artifacts"].update(extra_artifacts)
+                record["extras"].extend(extra_artifacts)
         node.config = next_config
         node.issues = validate_node(node)
     if len(record["artifacts"]) > MAX_ARTIFACTS:

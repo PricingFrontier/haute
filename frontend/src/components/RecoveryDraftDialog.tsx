@@ -24,8 +24,15 @@ import type { ExplorePane, ModellingPane } from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
 import { NodeConfigEditor } from "../panels/NodeConfigEditor"
 import { DraftEditingContext } from "../panels/DraftEditingContext"
+import { GraphProvider } from "../panels/GraphContext"
 import { ErrorBoundary } from "./ErrorBoundary"
-import type { InputSource, OnReplaceConfig, OnUpdateConfig, SimpleNode } from "../panels/editors"
+import type {
+  InputSource,
+  OnReplaceConfig,
+  OnUpdateConfig,
+  SimpleEdge,
+  SimpleNode,
+} from "../panels/editors"
 import ModalShell from "./ModalShell"
 
 export type RecoveryDraftTarget = { sourceFile: string; recoveryId: string }
@@ -85,6 +92,47 @@ function DraftNodeEditor({
     [node?.input_names],
   )
   if (!node) return null
+  return (
+    <DraftNodeEditorContent
+      nodes={nodes}
+      node={node}
+      configs={configs}
+      selectedKey={selectedKey}
+      onSelect={onSelect}
+      onChange={onChange}
+      disabled={disabled}
+      inputSources={inputSources}
+      explorePane={explorePane}
+      setExplorePane={setExplorePane}
+      modellingPane={modellingPane}
+      setModellingPane={setModellingPane}
+    />
+  )
+}
+
+type DraftNodeEditorContentProps = Omit<DraftEditorProps, "node"> & {
+  node: RecoveryDraft["nodes"][number]
+  inputSources: InputSource[]
+  explorePane: ExplorePane
+  setExplorePane: (pane: ExplorePane) => void
+  modellingPane: ModellingPane
+  setModellingPane: (pane: ModellingPane) => void
+}
+
+function DraftNodeEditorContent({
+  nodes,
+  node,
+  configs,
+  selectedKey,
+  onSelect,
+  onChange,
+  disabled,
+  inputSources,
+  explorePane,
+  setExplorePane,
+  modellingPane,
+  setModellingPane,
+}: DraftNodeEditorContentProps) {
   const config = configs[node.key] ?? node.config
   const knownType = node.node_type !== null && Object.hasOwn(NODE_TYPE_META, node.node_type)
   const update: OnUpdateConfig = (keyOrUpdates, value) => {
@@ -102,15 +150,42 @@ function DraftNodeEditor({
     onChange(node.key, next as Record<string, JsonValue>)
     return { ok: true }
   }
-  const syntheticNode: SimpleNode = {
-    id: `recovery:${node.key}`,
-    data: {
-      label: node.label,
-      description: "Recovery draft",
-      nodeType: node.node_type ?? "unknown",
-      config,
-    },
-  }
+  const syntheticNode = useMemo<SimpleNode>(
+    () => ({
+      id: `recovery:${node.key}`,
+      data: {
+        label: node.label,
+        description: "Recovery draft",
+        nodeType: node.node_type ?? "unknown",
+        config,
+      },
+    }),
+    [config, node.key, node.label, node.node_type],
+  )
+  // Ordinary editors use the graph context to resolve input frames and edge
+  // roles. Give them only the recorded draft inputs: this keeps those controls
+  // useful without admitting the live canvas into a recovery edit.
+  const draftGraph = useMemo(() => {
+    const inputNodes: SimpleNode[] = inputSources.map((input) => ({
+      id: input.sourceNodeId,
+      data: {
+        label: input.name,
+        description: "Recovery draft input",
+        nodeType: "polars",
+        config: {},
+        _defaultInputName: input.name,
+      },
+    }))
+    const edges: SimpleEdge[] = inputSources.map((input, index) => ({
+      id: input.edgeId,
+      source: input.sourceNodeId,
+      target: syntheticNode.id,
+      data: { _inputName: input.name },
+      targetHandle:
+        node.node_type === "edgeJoin" ? (index === 0 ? "base" : "join") : undefined,
+    }))
+    return { allNodes: [...inputNodes, syntheticNode], edges }
+  }, [inputSources, node.node_type, syntheticNode])
   return (
     <>
       <div className="mb-3 flex flex-wrap gap-2" aria-label="Draft nodes">
@@ -169,26 +244,28 @@ function DraftNodeEditor({
             }
           >
             <DraftEditingContext.Provider value={true}>
-              <NodeConfigEditor
-                nodeType={node.node_type as NodeTypeValue}
-                config={config}
-                configWithNodeId={{ ...config, _nodeId: syntheticNode.id }}
-                node={syntheticNode}
-                onUpdateConfig={update}
-                onReplaceConfig={replace}
-                inputSources={inputSources}
-                upstreamColumns={[]}
-                pivotColumns={[]}
-                activeExplorePane={explorePane}
-                activeModellingPane={modellingPane}
-                onShowPivots={() => setExplorePane("pivots")}
-                loadPivotFilterMembers={async () => {
-                  throw new Error("Draft recovery never loads preview data.")
-                }}
-                exploreConfigHash={null}
-                reservedApiInputFrameLabels={new Set()}
-                accentColor={NODE_TYPE_META[node.node_type as NodeTypeValue].color}
-              />
+              <GraphProvider allNodes={draftGraph.allNodes} edges={draftGraph.edges} submodels={{}} preamble="">
+                <NodeConfigEditor
+                  nodeType={node.node_type as NodeTypeValue}
+                  config={config}
+                  configWithNodeId={{ ...config, _nodeId: syntheticNode.id }}
+                  node={syntheticNode}
+                  onUpdateConfig={update}
+                  onReplaceConfig={replace}
+                  inputSources={inputSources}
+                  upstreamColumns={[]}
+                  pivotColumns={[]}
+                  activeExplorePane={explorePane}
+                  activeModellingPane={modellingPane}
+                  onShowPivots={() => setExplorePane("pivots")}
+                  loadPivotFilterMembers={async () => {
+                    throw new Error("Draft recovery never loads preview data.")
+                  }}
+                  exploreConfigHash={null}
+                  reservedApiInputFrameLabels={new Set()}
+                  accentColor={NODE_TYPE_META[node.node_type as NodeTypeValue].color}
+                />
+              </GraphProvider>
             </DraftEditingContext.Provider>
           </ErrorBoundary>
         </fieldset>

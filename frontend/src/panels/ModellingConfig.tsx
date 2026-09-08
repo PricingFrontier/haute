@@ -409,7 +409,7 @@ export default function ModellingConfig({
     cachedResult,
     estimateEndpoint,
     { source: activeSource, structuralVersion },
-    { toastLabel: "RAM estimate failed" },
+    { toastLabel: "RAM estimate failed", enabled: !isRecoveryDraft },
   )
   const onEvaluationChange = useCallback(
     (nextEvaluation: Record<string, unknown>) => (
@@ -579,7 +579,7 @@ export default function ModellingConfig({
       paneBody = trainPane
     }
   } else if (activePane === "target") {
-    paneBody = <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} onEstimateDispersion={onEstimateDispersion} />
+    paneBody = <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} onEstimateDispersion={isRecoveryDraft ? undefined : onEstimateDispersion} />
   } else if (activePane === "features") {
     paneBody = <><CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} algorithm="glm" /><GLMFactorConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} exclude={exclude} /></>
   } else if (activePane === "params") {

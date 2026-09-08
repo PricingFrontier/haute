@@ -707,6 +707,11 @@ client-authored source patch. Draft edits invalidate the preview and acknowledge
 
 `DraftEditingContext` prevents schema/data probing, input snapshot builds, output
 writes/previews, training and solving while normal editors are used for drafts.
+The editor receives an isolated `GraphProvider` containing the selected draft node
+and read-only input-frame placeholders from its recorded input names. These names
+and Edge Join base/join ordering remain available to ordinary editor controls;
+live canvas nodes, edges and settings are not admitted to this context. Training
+RAM/dispersion estimates and other data-dependent probes also remain disabled.
 Draft state is local to the dialog and its dedicated API; graph save and undo
 history are not used. Stale and terminal records are read-only. Applied records
 offer a separate exact-byte restore preview. Unsaved changes must be saved before

@@ -866,3 +866,12 @@ identity, children and connections. Projected ports belong to their definition a
 require recovery there. Unknown types, computed/custom source and ambiguous shared
 instances remain explicit manual actions. Draft completeness checks are static:
 successful recovery does not certify runtime data, services or arbitrary user code.
+
+Draft field-shape validation precedes semantic validation. Malformed discriminator
+values (including JSON arrays and objects) produce structured errors, never an
+unhandled exception or an inferred default branch. Such draft edits remain saved
+and editable, and previews cannot apply until corrected.
+Submodel relinking revalidates the replacement file's normalized public port names
+against the original per-direction identities before accepting the replacement.
+Matching definition ids do not authorize renaming or dropping an existing port,
+including an unconnected port.

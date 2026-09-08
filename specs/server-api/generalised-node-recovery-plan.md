@@ -274,6 +274,12 @@ functions, descriptions, comments and surrounding source. Additional decorators,
 computed config, unfamiliar scaffolding or ambiguous boundaries require code review;
 they are not permission to replace the whole function.
 
+For node types without a user-code slot, recovery must verify the authored body
+against the current generated scaffold before allowing regeneration. A custom or
+unrecognised body remains a manual source action; only an explicit full reset may
+replace it. Compare syntax independently of formatting, while retaining the authored
+config reference and submodel receiver. Ordinary generated bodies remain recoverable.
+
 Custom code has three outcomes: retained unchanged, updated through an explicit and
 verifiable binding adapter, or retained in the draft with a code issue for the user.
 Static syntax/binding checks cannot prove arbitrary Python behaviour. No eval, module

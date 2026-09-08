@@ -538,24 +538,32 @@ def validate_recovery_config(
         return [_issue("", "invalid_config", "Configuration must be an object.")]
     hints = _field_hints(node_type, config)
     issues: list[RecoveryIssue] = []
+    has_shape_errors = False
     for key, value in config.items():
         if key not in hints:
             issues.append(_issue(key, "unknown_field", "Unknown configuration field.", "warning"))
         elif not _valid(value, hints[key]):
             issues.append(_issue(key, "invalid_value", "Value does not match its declared shape."))
+            has_shape_errors = True
+    discriminant = _DISCRIMINANTS.get(node_type)
+    if discriminant:
+        value = config.get(discriminant[0])
+        if not isinstance(value, str) or value not in discriminant[1]:
+            issues.append(
+                _issue(
+                    discriminant[0],
+                    "unknown_discriminant",
+                    f"Select a supported {discriminant[0]}.",
+                )
+            )
+    if has_shape_errors:
+        return issues
     if "contract" in config:
         try:
             Contract.from_user_declared(config["contract"])
         except ValueError as exc:
             issues.append(_issue("contract", "invalid_value", str(exc)))
     issues.extend(_validator_issues(node_type, config, input_names))
-    discriminant = _DISCRIMINANTS.get(node_type)
-    if discriminant and config.get(discriminant[0]) not in discriminant[1]:
-        issues.append(
-            _issue(
-                discriminant[0], "unknown_discriminant", f"Select a supported {discriminant[0]}."
-            )
-        )
     return issues
 
 
@@ -601,7 +609,10 @@ def reconcile_config(
     invalid_discriminant = bool(
         discriminant_field
         and discriminant_field in source
-        and source[discriminant_field] not in discriminant[1]  # type: ignore[index]
+        and (
+            not isinstance(source[discriminant_field], str)
+            or source[discriminant_field] not in discriminant[1]  # type: ignore[index]
+        )
     )
     hints = _field_hints(node_type, source)
     for key, value in source.items():

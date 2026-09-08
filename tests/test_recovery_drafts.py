@@ -24,7 +24,7 @@ def _project(root: Path, config: str = '{"values":[{"name":"kept","value":"2"}],
     source.write_text(
         'import haute\nimport polars as pl\npipeline=haute.Pipeline("draft-test")\n\n'
         '# keep this comment\n@pipeline.constant(config="custom.json")\n'
-        "def value():\n    return None\n"
+        'def value():\n    return pl.LazyFrame({"kept": [2.0]})\n'
     )
     return source
 
@@ -302,12 +302,203 @@ def test_custom_decorator_requires_manual_action(tmp_path):
     assert not draft.nodes[0].editable
 
 
+def test_recover_custom_body_requires_manual_action_but_reset_is_explicit(tmp_path):
+    source = _project(tmp_path)
+    source.write_text(source.read_text().replace('{"kept": [2.0]}', '{"custom": [99]}'))
+    original = source.read_bytes()
+    draft, preview = _review(tmp_path, _create(tmp_path))
+    assert draft.state == "manual_action"
+    assert not draft.nodes[0].editable
+    assert any("body" in issue.message for issue in draft.nodes[0].issues)
+    assert preview.plan_hash is None
+    assert source.read_bytes() == original
+
+    reset, preview = _review(tmp_path, _create(tmp_path, mode="reset"))
+    assert preview.plan_hash, preview.issues
+    applied = _apply_review(tmp_path, reset, preview)
+    assert applied.document.load_status == "ready"
+    assert "custom" not in source.read_text().split("def value", 1)[1]
+
+
+@pytest.mark.parametrize(
+    ("kind", "config", "inputs"),
+    [
+        ("apiInput", {"path": "quotes.json"}, []),
+        ("constant", {"values": [{"name": "kept", "value": "2"}]}, []),
+        ("liveSwitch", {"input_scenario_map": {"quotes": "live"}}, ["quotes"]),
+        ("output", {"outputMapping": []}, ["quotes"]),
+        ("dataOutput", {"outputType": "file", "format": "csv", "path": "out.csv"}, ["quotes"]),
+        (
+            "banding",
+            {"factors": [{"column": "age", "outputColumn": "age_band", "rules": []}]},
+            ["quotes"],
+        ),
+        ("edgeJoin", {"how": "cross"}, ["quotes", "rates"]),
+        ("modelling", {"algorithm": "catboost", "target": "y"}, ["quotes"]),
+        ("optimiser", {"mode": "online", "data_input": "quotes"}, ["quotes"]),
+        (
+            "optimiserApply",
+            {"sourceType": "file", "artifact_path": "opt.json", "optimiser_mode": "online"},
+            ["quotes"],
+        ),
+    ],
+)
+def test_non_code_node_templates_remain_recoverable_and_custom_statements_do_not(
+    kind, config, inputs
+):
+    import ast
+
+    from haute._config_io import config_path_for_node, has_config_folder
+    from haute._python_syntax import prepend_function_statements
+    from haute._recovery_schemas import RecoveryDraftNode
+    from haute._recovery_sources import _require_generated_body
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.codegen import _node_to_code
+
+    node_type = NodeType(kind)
+    code = _node_to_code(
+        GraphNode(id="value", data=NodeData(label="value", nodeType=node_type, config=config)),
+        source_names=inputs,
+        derive_contract=False,
+    )
+    if has_config_folder(node_type):
+        code = code.replace(config_path_for_node(node_type, "value").as_posix(), "custom.json")
+    code = code.replace("pipeline", "submodel")
+    if kind == "apiInput":
+        code = prepend_function_statements(
+            code,
+            "from pathlib import Path as _HauteResetPath\n"
+            "_HAUTE_CONFIG_BASE = _HauteResetPath(__file__).resolve().parents[1]\n",
+        )
+    function = ast.parse(code).body[0]
+    node = RecoveryDraftNode(
+        key="value",
+        source_file="modules/Child.py",
+        recovery_id="value",
+        authored_id="value",
+        label="value",
+        node_type=kind,
+        config=config,
+        changes=[],
+        issues=[],
+    )
+    _require_generated_body(
+        node,
+        function,
+        params=inputs,
+        reference="custom.json",
+        receiver="submodel",
+        config_base_depth=1,
+    )
+    function.body.append(ast.parse("audit_custom_result()").body[0])
+    with pytest.raises(PipelineRepairError, match="body"):
+        _require_generated_body(
+            node,
+            function,
+            params=inputs,
+            reference="custom.json",
+            receiver="submodel",
+            config_base_depth=1,
+        )
+
+
+@pytest.mark.parametrize(
+    "signature", ["value(extra=2)", "value(*, extra=2)", "value(*args)", "value(**kwargs)"]
+)
+def test_non_generated_parameter_declarations_require_manual_body_review(tmp_path, signature):
+    source = _project(tmp_path)
+    source.write_text(source.read_text().replace("value()", signature))
+    draft = _create(tmp_path)
+    assert draft.state == "manual_action"
+    assert any("body" in issue.message for issue in draft.nodes[0].issues)
+
+
+def _relink_project(root, output_ports, input_ports=None):
+    from tests.test_pipeline_repair_actions import _legacy_demo
+
+    parent = _legacy_demo(root)
+    parent.write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n'
+        'pipeline.submodel("modules/Inputs.py", definition_id="Inputs", '
+        'instance_id="old_instance", alias="Inputs", label="Inputs")\n'
+    )
+    original_child = root / "modules/Inputs.py"
+    original_child.write_text(
+        original_child.read_text().replace(
+            "input_ports=[]", 'input_ports=[{"name": "input_1", "targets": []}]'
+        )
+    )
+    replacement = root / "modules/Replacement.py"
+    replacement_inputs = (
+        input_ports if input_ports is not None else [{"name": "input_1", "targets": []}]
+    )
+    replacement.write_text(
+        "import haute\nimport polars as pl\n"
+        'submodel = haute.Submodel("Inputs", definition_id="Inputs", '
+        f"input_ports={replacement_inputs!r}, "
+        f"output_ports={output_ports!r})\n"
+        "@submodel.polars\ndef live_switch():\n"
+        '    df = pl.LazyFrame({"premium": [1]})\n    return df\n'
+    )
+    return parent, original_child, replacement
+
+
+@pytest.mark.parametrize(
+    ("output_name", "input_name"),
+    [(None, "input_1"), ("renamed_output", "input_1"), ("output_1", "renamed_input")],
+)
+def test_relink_rejects_lost_unconnected_public_port(tmp_path, output_name, input_name):
+    from haute._pipeline_recovery_drafts import edit_draft, get_draft
+
+    outputs = (
+        []
+        if output_name is None
+        else [{"name": output_name, "source": {"nodeId": "live_switch", "handleId": None}}]
+    )
+    parent, original_child, replacement = _relink_project(
+        tmp_path, outputs, [{"name": input_name, "targets": []}]
+    )
+    draft = _create(tmp_path, "Inputs")
+    before = {path: path.read_bytes() for path in (parent, original_child, replacement)}
+    with pytest.raises(PipelineRepairError, match="public port"):
+        edit_draft(
+            tmp_path,
+            draft.draft_id,
+            RecoveryDraftPatch(
+                draft_revision=draft.draft_revision,
+                configs={
+                    draft.nodes[0].key: {**draft.nodes[0].config, "file": "modules/Replacement.py"}
+                },
+            ),
+        )
+    assert get_draft(tmp_path, draft.draft_id).model_dump() == draft.model_dump()
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_relink_preserving_public_ports_can_apply(tmp_path):
+    outputs = [{"name": "output_1", "source": {"nodeId": "live_switch", "handleId": None}}]
+    parent, original_child, _replacement = _relink_project(tmp_path, outputs)
+    original_bytes = original_child.read_bytes()
+    draft = _create(tmp_path, "Inputs")
+    draft, preview = _review(
+        tmp_path,
+        draft,
+        {draft.nodes[0].key: {**draft.nodes[0].config, "file": "modules/Replacement.py"}},
+    )
+    assert draft.nodes[0].config["output_ports"] == outputs
+    assert preview.plan_hash, preview.issues
+    applied = _apply_review(tmp_path, draft, preview)
+    assert applied.document.load_status == "ready"
+    assert "modules/Replacement.py" in parent.read_text()
+    assert original_child.read_bytes() == original_bytes
+
+
 def test_shared_config_reports_every_owner_and_preserves_both_nodes(tmp_path):
     _project(tmp_path)
     source = tmp_path / "main.py"
     source.write_text(
-        source.read_text()
-        + '\n@pipeline.constant(config="custom.json")\ndef second():\n    return None\n'
+        source.read_text() + '\n@pipeline.constant(config="custom.json")\ndef second():\n'
+        '    return pl.LazyFrame({"kept": [2.0]})\n'
     )
     draft, preview = _review(tmp_path, _create(tmp_path))
     assert any("second" in owner for owner in draft.nodes[0].affected_owners)
@@ -360,8 +551,8 @@ def test_conflicting_shared_config_candidates_cannot_be_applied(tmp_path):
     _project(tmp_path)
     source = tmp_path / "main.py"
     source.write_text(
-        source.read_text()
-        + '\n@pipeline.constant(config="custom.json")\ndef second():\n    return None\n'
+        source.read_text() + '\n@pipeline.constant(config="custom.json")\ndef second():\n'
+        '    return pl.LazyFrame({"kept": [2.0]})\n'
     )
     document = load_pipeline_editor_document(source, project_root=tmp_path)
     draft = create_draft(

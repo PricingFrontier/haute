@@ -15,8 +15,17 @@ from pydantic import ValidationError
 from haute._ast_helpers import _extract_function_bodies, _get_decorator_kwargs
 from haute._code_extraction import _extract_explore_user_code
 from haute._config_builder import _attach_code_from_body
-from haute._config_io import _normalise_loaded_config, reject_duplicate_keys_hook
-from haute._node_config_recovery import reconcile_config, validate_recovery_config
+from haute._config_io import (
+    _normalise_loaded_config,
+    config_path_for_node,
+    has_config_folder,
+    reject_duplicate_keys_hook,
+)
+from haute._node_config_recovery import (
+    node_config_schema,
+    reconcile_config,
+    validate_recovery_config,
+)
 from haute._pipeline_repair import PipelineRepairError, _iter_recovery_nodes
 from haute._pipeline_repair_actions import (
     _parse,
@@ -28,7 +37,7 @@ from haute._pipeline_repair_actions import (
 from haute._recovery_schemas import RecoveryDraftNode, RecoveryFieldChange, RecoveryIssue
 from haute._recovery_storage import conflict, digest, read_artifact, safe_path
 from haute._submodel_recovery import SubmodelRegistrationEvidence, submodel_registration_evidence
-from haute._types import NodeType, SubmodelInputPort, SubmodelOutputPort
+from haute._types import GraphNode, NodeData, NodeType, SubmodelInputPort, SubmodelOutputPort
 from haute.errors import HauteError
 from haute.schemas import PipelineEditorDocument, RecoveryPipelineNode
 
@@ -223,6 +232,86 @@ def validate_node(node: RecoveryDraftNode) -> list[RecoveryIssue]:
     )
 
 
+def _require_generated_body(
+    node: RecoveryDraftNode,
+    function: ast.FunctionDef,
+    *,
+    params: list[str],
+    reference: str | None,
+    receiver: str,
+    config_base_depth: int,
+) -> None:
+    """Only regenerate a non-code node when its body is a recognised template."""
+    from haute.codegen import _node_to_code
+
+    assert node.node_type is not None
+    node_type = NodeType(node.node_type)
+    if "code" in node_config_schema(node_type)["properties"]:
+        return
+    problem = (
+        "This node's body is not a recognised generated scaffold. Preserve it through "
+        "a manual source edit, or explicitly choose Reset all settings and code."
+    )
+    if (
+        function.args.defaults
+        or function.args.kwonlyargs
+        or function.args.vararg
+        or function.args.kwarg
+        or any(issue.code == "invalid_value" and issue.severity == "error" for issue in node.issues)
+    ):
+        raise conflict(problem)
+    config = deepcopy(node.config)
+    config.pop("contract", None)  # Matching a body never derives a runtime column contract.
+    try:
+        generated = _node_to_code(
+            GraphNode(
+                id=node.authored_id,
+                data=NodeData(label=node.authored_id, nodeType=node_type, config=config),
+            ),
+            source_names=params,
+            derive_contract=False,
+        )
+    except (HauteError, ValueError) as exc:
+        raise conflict(problem) from exc
+    expected = ast.parse(generated).body[0]
+    assert isinstance(expected, ast.FunctionDef)
+    default_reference = (
+        config_path_for_node(node_type, node.authored_id).as_posix()
+        if has_config_folder(node_type)
+        else None
+    )
+    # Generated syntax contains no user code here; adapt only its known bindings.
+    for part in ast.walk(expected):
+        if isinstance(part, ast.Name) and part.id == "pipeline":
+            part.id = receiver
+        elif isinstance(part, ast.Constant) and reference and part.value == default_reference:
+            part.value = reference
+
+    def statements(body: list[ast.stmt]) -> list[ast.stmt]:
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            return body[1:]
+        return body
+
+    def syntax(body: list[ast.stmt]) -> str:
+        return ast.dump(ast.Module(body=body, type_ignores=[]))
+
+    actual_body = statements(function.body)
+    # Recovery can have installed this exact local config-base binding previously.
+    local_base = ast.parse(
+        "from pathlib import Path as _HauteResetPath\n"
+        f"_HAUTE_CONFIG_BASE = _HauteResetPath(__file__).resolve().parents[{config_base_depth}]\n"
+    ).body
+    if syntax(actual_body[:2]) == syntax(local_base):
+        actual_body = actual_body[2:]
+    if syntax(actual_body) != syntax(statements(expected.body)):
+        raise conflict(problem)
+
+
 def make_draft_node(
     root: Path,
     document: PipelineEditorDocument,
@@ -387,6 +476,19 @@ def make_draft_node(
         node.changes.extend(result.changes)
         # Re-validate with actual connected names; initial reconciliation has no graph context.
         node.issues = validate_node(node)
+        if not reset:
+            _require_generated_body(
+                node,
+                function,
+                params=params,
+                reference=reference,
+                receiver="pipeline" if node.source_file == document.source_file else "submodel",
+                config_base_depth=len(
+                    Path(node.source_file)
+                    .parent.relative_to(Path(document.source_file).parent)
+                    .parts
+                ),
+            )
         node.changes.append(
             RecoveryFieldChange(
                 path="/code",

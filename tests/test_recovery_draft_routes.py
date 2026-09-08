@@ -26,7 +26,8 @@ def _project(root: Path) -> tuple[Path, bytes, bytes]:
     config.write_text('{"values":[{"name":"kept","value":"2"}],"retired":true}')
     source.write_text(
         'import haute\nimport polars as pl\npipeline = haute.Pipeline("route-draft")\n\n'
-        '@pipeline.constant(config="custom.json")\ndef value():\n    return None\n'
+        '@pipeline.constant(config="custom.json")\ndef value():\n'
+        '    return pl.LazyFrame({"kept": [2.0]})\n'
     )
     return source, source.read_bytes(), config.read_bytes()
 
@@ -64,6 +65,43 @@ def test_create_draft_rejects_extra_dto_fields(client: TestClient) -> None:
         },
     )
     assert response.status_code == 422
+
+
+def test_invalid_draft_discriminator_is_saved_as_an_editable_field_issue(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    source, _before_source, _before_config = _project(tmp_path)
+    source.write_text(source.read_text().replace("pipeline.constant", "pipeline.data_input"))
+    (tmp_path / "custom.json").write_text(
+        '{"inputType":"file","format":"parquet","mode":"scan","path":"quotes.parquet"}'
+    )
+    before = source.read_bytes()
+    draft = _create(client, tmp_path)
+    node = draft["nodes"][0]
+    invalid = {**node["config"], "inputType": []}
+    base = f"/api/pipeline/repair/drafts/{draft['draft_id']}"
+    response = client.post(
+        base + "/edit",
+        json={"draft_revision": draft["draft_revision"], "configs": {node["key"]: invalid}},
+    )
+    assert response.status_code == 200, response.text
+    edited = response.json()
+    assert edited["state"] == "needs_configuration"
+    assert edited["nodes"][0]["editable"]
+    assert edited["nodes"][0]["config"]["inputType"] == []
+    assert any(issue["path"] == "inputType" for issue in edited["nodes"][0]["issues"])
+    assert client.get(base).json() == edited
+    preview = client.post(base + "/preview", json={"draft_revision": edited["draft_revision"]})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["plan_hash"] is None
+    corrected = client.post(
+        base + "/edit",
+        json={"draft_revision": edited["draft_revision"], "configs": {node["key"]: node["config"]}},
+    )
+    assert corrected.status_code == 200, corrected.text
+    assert corrected.json()["nodes"][0]["issues"] == []
+    assert source.read_bytes() == before
 
 
 def test_http_draft_lifecycle_applies_idempotently_and_restores_exact_bytes(
