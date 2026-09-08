@@ -303,7 +303,8 @@ def test_custom_decorator_requires_manual_action(tmp_path):
 
 
 def test_recover_custom_body_requires_manual_action_but_reset_is_explicit(tmp_path):
-    source = _project(tmp_path)
+    _project(tmp_path)
+    source = tmp_path / "main.py"
     source.write_text(source.read_text().replace('{"kept": [2.0]}', '{"custom": [99]}'))
     original = source.read_bytes()
     draft, preview = _review(tmp_path, _create(tmp_path))
@@ -406,7 +407,8 @@ def test_non_code_node_templates_remain_recoverable_and_custom_statements_do_not
     "signature", ["value(extra=2)", "value(*, extra=2)", "value(*args)", "value(**kwargs)"]
 )
 def test_non_generated_parameter_declarations_require_manual_body_review(tmp_path, signature):
-    source = _project(tmp_path)
+    _project(tmp_path)
+    source = tmp_path / "main.py"
     source.write_text(source.read_text().replace("value()", signature))
     draft = _create(tmp_path)
     assert draft.state == "manual_action"
@@ -416,7 +418,8 @@ def test_non_generated_parameter_declarations_require_manual_body_review(tmp_pat
 def _relink_project(root, output_ports, input_ports=None):
     from tests.test_pipeline_repair_actions import _legacy_demo
 
-    parent = _legacy_demo(root)
+    _legacy_demo(root)
+    parent = root / "main.py"
     parent.write_text(
         'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n'
         'pipeline.submodel("modules/Inputs.py", definition_id="Inputs", '

@@ -71,7 +71,8 @@ def test_invalid_draft_discriminator_is_saved_as_an_editable_field_issue(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    source, _before_source, _before_config = _project(tmp_path)
+    _project(tmp_path)
+    source = tmp_path / "main.py"
     source.write_text(source.read_text().replace("pipeline.constant", "pipeline.data_input"))
     (tmp_path / "custom.json").write_text(
         '{"inputType":"file","format":"parquet","mode":"scan","path":"quotes.parquet"}'
