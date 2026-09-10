@@ -7,6 +7,7 @@
  *   - Categorical features: bar chart (one bar per category)
  */
 import { useState, useMemo, useCallback, useEffect } from "react"
+import type { PdpFeatureRow, PdpGridPoint } from "../../api/types"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
 import {
@@ -24,9 +25,6 @@ interface PdpTabProps {
 
 const LINE_COLOR = CHART_COLORS.predicted
 const BAR_COLOR = CHART_COLORS.predicted
-
-type PdpGridPoint = { value: number | string; avg_prediction: number }
-type PdpFeature = { feature: string; type: string; grid: PdpGridPoint[]; error?: string; error_type?: string }
 
 export function PdpTab({ result }: PdpTabProps) {
   const pdpData = result.pdp_data
@@ -65,7 +63,7 @@ export function PdpTab({ result }: PdpTabProps) {
     setSelectedFeature(feature)
   }, [])
 
-  const selectedData: PdpFeature | null = useMemo(() => {
+  const selectedData: PdpFeatureRow | null = useMemo(() => {
     if (!selectedFeature || !pdpData) return null
     return pdpData.find(f => f.feature === selectedFeature) ?? null
   }, [selectedFeature, pdpData])
@@ -94,7 +92,7 @@ export function PdpTab({ result }: PdpTabProps) {
 
 // ─── PDP Chart ────────────────────────────────────────────────────
 
-function PdpChart({ data }: { data: PdpFeature }) {
+function PdpChart({ data }: { data: PdpFeatureRow }) {
   const grid = data.grid
   if (data.error || data.error_type) {
     return <PdpErrorState data={data} />
@@ -123,7 +121,7 @@ function PdpChart({ data }: { data: PdpFeature }) {
   )
 }
 
-function PdpErrorState({ data }: { data: PdpFeature }) {
+function PdpErrorState({ data }: { data: PdpFeatureRow }) {
   return (
     <div
       role="alert"
@@ -294,7 +292,7 @@ function PdpBarChart({ grid }: { grid: PdpGridPoint[] }) {
           const cx = xCenter(i)
           const barH = Math.abs(p.avg_prediction - 0) / ySpan * chartH
           const barY = p.avg_prediction >= 0 ? yScale(p.avg_prediction) : zeroY
-          const label = truncLabel(String(p.value), 10)
+          const label = truncLabel(p.value === null ? "(missing)" : String(p.value), 10)
           const rotate = grid.length > 5
           return (
             <g key={i}>

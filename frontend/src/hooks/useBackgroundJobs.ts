@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef } from "react"
 import { getExplorePivotStatus, getExploreStatus, getOptimiserStatus, getTrainStatus } from "../api/client"
 import { FAILED_JOB_STATUSES } from "../api/types"
+import { ApiResponseValidationError } from "../api/responseValidation"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import type { ExplorePivotProgress, ExploreProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
@@ -39,6 +40,11 @@ function getMissingJobPollErrorMessage(error: unknown): string | undefined {
   if (typeof detail === "string" && detail.trim()) return detail
   if (typeof message === "string" && message.trim()) return message
   return "Job not found"
+}
+
+function getTrainPollErrorMessage(error: unknown): string | undefined {
+  if (error instanceof ApiResponseValidationError) return error.message
+  return getMissingJobPollErrorMessage(error)
 }
 
 export default function useBackgroundJobs() {
@@ -145,7 +151,7 @@ export default function useBackgroundJobs() {
       status: s.status,
       terminalReason: s.terminal_reason,
     }),
-    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
+    getTerminalPollErrorMessage: getTrainPollErrorMessage,
     addToast,
     successLabel: "Training complete",
     failLabel: "Training failed",

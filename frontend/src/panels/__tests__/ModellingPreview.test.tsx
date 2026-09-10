@@ -5,7 +5,7 @@
  * and useDragResize, so we mock them to keep tests focused on render logic.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import { ModellingPreview } from "../ModellingPreview"
 import type { ModellingPreviewData } from "../ModellingPreview"
 import { makeTrainResult } from "../../test-utils/factories"
@@ -94,6 +94,58 @@ describe("ModellingPreview", () => {
     })
     render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
     expect(screen.getByText("Coefficients")).toBeInTheDocument()
+  })
+
+  it.each([
+    {
+      name: "CatBoost loss",
+      result: makeTrainResult({
+        loss_history: [
+          { iteration: 0, train_rmse: 1.0 },
+          { iteration: 1, train_rmse: 0.9 },
+        ],
+      }),
+      nextTab: "Loss",
+      heading: "Training loss",
+    },
+    {
+      name: "GLM coefficients",
+      result: makeTrainResult({
+        glm_coefficients: [{ feature: "age", coefficient: 0.1, std_error: 0.01, z_value: 10, p_value: 0.001, significance: "***" }],
+      }),
+      nextTab: "Coefficients",
+      heading: "GLM coefficients",
+    },
+  ])("supports linked keyboard tabs for $name", ({ result, nextTab, heading }) => {
+    render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
+
+    const tablist = screen.getByRole("tablist", { name: "Model result panes" })
+    const summaryTab = within(tablist).getByRole("tab", { name: "Summary" })
+    expect(summaryTab).toHaveAttribute("aria-selected", "true")
+    const summaryPane = screen.getByRole("tabpanel", { name: "Summary" })
+    expect(summaryPane).toHaveAttribute("id", summaryTab.getAttribute("aria-controls"))
+
+    fireEvent.keyDown(summaryTab, { key: "ArrowRight" })
+    const selectedTab = within(tablist).getByRole("tab", { name: nextTab })
+    expect(selectedTab).toHaveFocus()
+    expect(selectedTab).toHaveAttribute("aria-selected", "true")
+    const selectedPane = screen.getByRole("tabpanel", { name: nextTab })
+    expect(selectedPane).toHaveAttribute("id", selectedTab.getAttribute("aria-controls"))
+    expect(within(selectedPane).getByRole("heading", { name: heading })).toBeInTheDocument()
+
+    fireEvent.keyDown(selectedTab, { key: "Home" })
+    expect(summaryTab).toHaveFocus()
+    expect(summaryTab).toHaveAttribute("aria-selected", "true")
+  })
+
+  it.each(["result", "node"])("resets Features to Summary when the %s changes", (change) => {
+    const data = makeData()
+    const { rerender } = render(<ModellingPreview data={data} nodeId="n1" />)
+    fireEvent.click(screen.getByRole("tab", { name: "Features" }))
+    expect(screen.getByRole("tab", { name: "Features" })).toHaveAttribute("aria-selected", "true")
+
+    rerender(<ModellingPreview data={change === "result" ? makeData() : data} nodeId={change === "node" ? "n2" : "n1"} />)
+    expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true")
   })
 
   it("can collapse and expand", () => {

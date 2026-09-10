@@ -72,13 +72,19 @@ describe("SummaryTab", () => {
 
     render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
 
-    const finalLabel = screen.getByText("Final-test metrics")
-    const diagnosticLabel = screen.getByText("Development diagnostics")
+    const finalMetrics = screen.getByRole("region", { name: "Final-test metrics" })
+    const diagnostics = screen.getByRole("region", { name: "Development diagnostics" })
+    const finalLabel = within(finalMetrics).getByText("Final-test metrics")
+    const diagnosticLabel = within(diagnostics).getByText("Development diagnostics")
     expect(finalLabel.compareDocumentPosition(diagnosticLabel)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     )
-    expect(screen.getByText("0.4567")).toBeInTheDocument()
-    expect(screen.getByText("0.1234")).toBeInTheDocument()
+    expect(within(finalMetrics).getByText("0.4567")).toBeInTheDocument()
+    expect(within(finalMetrics).getByText("Performance on the untouched final test.")).toBeInTheDocument()
+    expect(within(finalMetrics).queryByText("0.1234")).not.toBeInTheDocument()
+    expect(within(diagnostics).getByText("0.1234")).toBeInTheDocument()
+    expect(within(diagnostics).getByText("Diagnostics on development data, not held-out performance.")).toBeInTheDocument()
+    expect(within(diagnostics).queryByText("0.4567")).not.toBeInTheDocument()
   })
 
   it("does not imply final-test performance when none was reserved", () => {
@@ -93,6 +99,25 @@ describe("SummaryTab", () => {
 
     expect(screen.queryByText("Final-test metrics")).not.toBeInTheDocument()
     expect(screen.getByText("Development diagnostics")).toBeInTheDocument()
+    expect(screen.getByText("No final test was reserved for this run.")).toBeInTheDocument()
+  })
+
+  it("keeps zero-valued GLM regularization and a full model path available", () => {
+    const modelPath = "/models/" + "nested/".repeat(50) + "model.cbm"
+    const result = makeTrainResult({
+      model_path: modelPath,
+      glm_regularization_path: { selected_alpha: 0, n_nonzero: 0 },
+    })
+
+    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+
+    const regularization = screen.getByRole("region", { name: "Regularization" })
+    expect(within(regularization).getByText("Alpha")).toBeInTheDocument()
+    expect(within(regularization).getByText("0.000000")).toBeInTheDocument()
+    expect(within(regularization).getByText("Non-zero coefficients")).toBeInTheDocument()
+    expect(within(regularization).getByText("0")).toBeInTheDocument()
+    const modelInfo = screen.getByRole("region", { name: "Model Info" })
+    expect(within(modelInfo).getByTitle(modelPath)).toHaveTextContent(modelPath)
   })
 
   it("shows warning and optional diagnostic failures", () => {

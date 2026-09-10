@@ -819,6 +819,77 @@ class TestCatBoostAlgorithmPredictCoverage:
 # ---------------------------------------------------------------------------
 
 
+class TestDiagnosticProgress:
+    @pytest.fixture()
+    def metrics_inputs(self, monkeypatch):
+        from haute.modelling._training_job import TrainingJob, _SplitResult, _TrainModelResult
+
+        frame = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [2.0, 4.0, 6.0]})
+        job = TrainingJob(name="diagnostic_progress", data=frame, target="y", metrics=["rmse"])
+        monkeypatch.setattr(job, "_read_partition", lambda *args, **kwargs: frame)
+        monkeypatch.setattr("haute.modelling._metrics.compute_pdp", lambda *args, **kwargs: [])
+        monkeypatch.setattr("haute.modelling._algorithms._mem_checkpoint", lambda *args: None)
+        pool_builder = MagicMock()
+        monkeypatch.setattr("haute.modelling._algorithms._build_pool", pool_builder)
+        algo = SimpleNamespace(
+            feature_importance=lambda model: [{"feature": "x", "importance": 1.0}],
+            predict=lambda *args, **kwargs: frame["y"].to_numpy(),
+        )
+        split = _SplitResult("unused.parquet", False, len(frame), 0, 0)
+        trained = _TrainModelResult(SimpleNamespace(), algo, None, {})
+        return job, split, trained, pool_builder
+
+    @pytest.mark.parametrize("has_shap", [True, False])
+    def test_progress_names_the_diagnostic_actually_running(self, metrics_inputs, has_shap):
+        job, split, trained, pool_builder = metrics_inputs
+        progress = []
+        active_at_call = []
+        shap_rows = [{"feature": "x", "mean_abs_shap": 0.5}]
+        loss_rows = [{"feature": "x", "importance": 0.25}]
+
+        def shap(*args):
+            active_at_call.append(progress[-1])
+            return shap_rows
+
+        def loss(*args):
+            active_at_call.append(progress[-1])
+            return loss_rows
+
+        if has_shap:
+            trained.algo.shap_summary = shap
+        trained.algo.feature_importance_typed = loss
+        pool_builder.side_effect = lambda *args, **kwargs: active_at_call.append(progress[-1])
+
+        result = job._compute_metrics(
+            split, ["x"], [], trained, lambda message, fraction: progress.append(message)
+        )
+
+        expected = ["Computing SHAP values"] if has_shap else []
+        assert active_at_call == expected + ["Computing loss-based feature importance"] * 2
+        assert ("Computing SHAP values" in progress) is has_shap
+        assert result.shap_summary == (shap_rows if has_shap else [])
+        assert result.feature_importance_loss == loss_rows
+        assert result.diagnostics_errors == []
+
+    def test_cancel_between_diagnostics_stops_before_loss_pool(self, metrics_inputs):
+        from haute._execution_context import ExecutionCancelledError
+
+        job, split, trained, pool_builder = metrics_inputs
+        trained.algo.shap_summary = MagicMock(return_value=[])
+        trained.algo.feature_importance_typed = MagicMock(return_value=[])
+
+        def report(message, fraction):
+            if message == "Computing loss-based feature importance":
+                raise ExecutionCancelledError("Cancelled")
+
+        with pytest.raises(ExecutionCancelledError, match="Cancelled"):
+            job._compute_metrics(split, ["x"], [], trained, report)
+
+        trained.algo.shap_summary.assert_called_once()
+        pool_builder.assert_not_called()
+        trained.algo.feature_importance_typed.assert_not_called()
+
+
 class TestShapSummaryCoverage:
     def test_shap_1d_reshaped(self):
         """1D shap_values array is reshaped to 2D."""

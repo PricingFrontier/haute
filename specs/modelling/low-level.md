@@ -749,6 +749,17 @@ rows/features) and retry.
   `error_type`) plus a `logger.warning` — used identically for SHAP,
   `LossFunctionChange` importance, PDP, and every GLM-specific diagnostic
   (`coefficients_table`, `relativities`, `fit_statistics`, `regularization_path`).
+- Categorical PDP grids retain missing source levels as JSON `null`, with the prediction
+  computed for that missing level. The frontend response contract accepts these levels
+  and labels them `(missing)`; numeric grid values remain non-null.
+- `_compute_metrics` reports `Computing SHAP values` only immediately before an
+  available `shap_summary` call, then reports `Computing loss-based feature
+  importance` before constructing its pool/calling `feature_importance_typed`.
+  Both progress callbacks run outside the optional-diagnostic exception guards,
+  so cancellation between stages propagates rather than being recorded as an
+  optional diagnostic failure. Existing 1,000-row SHAP sampling and full-partition
+  loss importance are unchanged. Targeted tests pin stage order, the absence of
+  a SHAP stage for algorithms without it, and cancellation before loss importance.
 - **MLflow logging errors** — `_log_model_card` inside `log_experiment` is wrapped in
   `try/except Exception: logger.warning(...)`, so a model-card bug never fails an
   otherwise-successful experiment log; `build_run_url` similarly catches and returns

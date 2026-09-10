@@ -52,12 +52,23 @@ const TAB_LABELS: Record<TabKey, string> = {
   pdp: "PDP",
 }
 
+const VIEW_INTRODUCTIONS: Record<Exclude<TabKey, "summary">, { title: string; description: string }> = {
+  coefficients: { title: "GLM coefficients", description: "Inspect each term's estimate, uncertainty and statistical significance." },
+  relativities: { title: "GLM relativities", description: "Compare each term's effect relative to the baseline of 1." },
+  loss: { title: "Training loss", description: "Follow model fit across iterations and compare training and validation loss where available." },
+  lift: { title: "Lift and discrimination", description: "Explore how well predictions separate lower and higher outcomes." },
+  residuals: { title: "Residual diagnostics", description: "Inspect prediction errors and how closely predictions match actual outcomes." },
+  features: { title: "Feature importance", description: "Compare the contribution of each feature to the model's predictions." },
+  ave: { title: "Actual vs expected", description: "Compare observed and predicted outcomes across each feature's groups, alongside exposure." },
+  pdp: { title: "Partial dependence", description: "Explore how model predictions change as one feature varies." },
+}
+
 export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
   const { result } = data
   const [tab, setTab] = useState<TabKey>("summary")
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- reset tab on new training result
-  useEffect(() => setTab("summary"), [result])
+  useEffect(() => setTab("summary"), [nodeId, result])
 
   const trainProgress: TrainProgress | null = useNodeResultsStore((s) => s.trainJobs[nodeId]?.progress ?? null)
   const modellingNode = useGraphStore((s) => s.nodes.find(node => node.id === nodeId))
@@ -88,6 +99,7 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
     .join(" | ")
   const tabs = availableTabs.map((key) => ({ key, label: TAB_LABELS[key] }))
   const config = modellingNode ? nodeData(modellingNode).config ?? {} : {}
+  const introduction = activeTab === "summary" ? null : VIEW_INTRODUCTIONS[activeTab]
 
   const useBestAsFixedParameters = (params: Record<string, unknown>) => {
     if (!window.confirm(
@@ -130,15 +142,38 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
         </div>
       )}
 
-      <PreviewPanelTabs
-        tabs={tabs}
-        activeTab={activeTab}
-        onChange={setTab}
-        ariaLabel="Model result panes"
-        accentColor={MODEL_COLORS.accent}
-      />
+      <div className="shrink-0 overflow-x-auto">
+        <div style={{ minWidth: availableTabs.length * 112 }}>
+          <PreviewPanelTabs
+            tabs={tabs}
+            activeTab={activeTab}
+            onChange={setTab}
+            ariaLabel="Model result panes"
+            accentColor={MODEL_COLORS.accent}
+            idPrefix="modelling-preview"
+            equalWidth
+          />
+        </div>
+      </div>
 
-      <div className="flex-1 overflow-auto px-4 py-3">
+      <div
+        key={activeTab}
+        id={`modelling-preview-${activeTab}-pane`}
+        role="tabpanel"
+        aria-labelledby={`modelling-preview-${activeTab}-tab`}
+        tabIndex={0}
+        className="flex-1 min-h-0 overflow-auto p-3 focus-ring"
+      >
+        {introduction && (
+          <div className="mb-3">
+            <h3 className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
+              {introduction.title}
+            </h3>
+            <p className="mt-1 text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
+              {introduction.description}
+            </p>
+          </div>
+        )}
         {activeTab === "summary" && (
           <SummaryTab
             result={result}

@@ -30,6 +30,7 @@ import { explorePivotResultKey, type ExplorePivotProgress, type ExploreProgress,
 import type { ExploreCacheReport, ExplorePivotResult } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 import { makeTrainResult } from "../../test-utils/factories.ts"
+import { ApiResponseValidationError } from "../../api/responseValidation"
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -302,7 +303,7 @@ describe("useBackgroundJobs", () => {
   // ────────────────────────────────────────────────────────────────
 
   describe("train job polling", () => {
-    it("polls and completes a train job when API returns completed status", async () => {
+    it("completes diagnostic progress with a missing categorical PDP level", async () => {
       const mockGetStatus = vi.mocked(getTrainStatus)
 
       const trainResult = makeTrainResult({
@@ -311,7 +312,15 @@ describe("useBackgroundJobs", () => {
         model_path: "/m.pkl",
         development_rows: 100,
         final_test_rows: 20,
+        pdp_data: [{
+          feature: "category",
+          type: "categorical",
+          grid: [{ value: null, avg_prediction: 1.2 }],
+        }],
       })
+      mockGetStatus.mockResolvedValueOnce(
+        makeTrainProgress({ message: "Computing partial dependence" }),
+      )
       mockGetStatus.mockResolvedValueOnce(
         makeTrainProgress({ status: "completed", progress: 1.0, result: trainResult }),
       )
@@ -323,11 +332,36 @@ describe("useBackgroundJobs", () => {
       renderHook(() => useBackgroundJobs())
 
       await advance(500)
+      expect(useNodeResultsStore.getState().trainJobs.t1?.progress?.message).toBe("Computing partial dependence")
+      await advance(1000)
 
       const state = useNodeResultsStore.getState()
       expect(state.trainResults["t1"]).toBeDefined()
       expect(state.trainResults["t1"].result.final_test_metrics.rmse).toBe(0.05)
+      expect(state.trainResults["t1"].result.pdp_data[0]?.grid[0]?.value).toBeNull()
       expect(state.trainJobs["t1"]).toBeUndefined()
+    })
+
+    it("replaces stuck diagnostic progress with a response error and stops retrying", async () => {
+      const mockGetStatus = vi.mocked(getTrainStatus)
+      const cause = new Error("parseTrainResponse: invalid pdp_data")
+      const failure = new ApiResponseValidationError(`Could not read training status: ${cause.message}`, cause)
+      mockGetStatus
+        .mockResolvedValueOnce(makeTrainProgress({ message: "Computing partial dependence" }))
+        .mockRejectedValue(failure)
+
+      act(() => {
+        useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "Train Node", "th", "live", 0)
+      })
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+      expect(useNodeResultsStore.getState().trainJobs.t1?.progress?.message).toBe("Computing partial dependence")
+      await advance(1000)
+      expect(useNodeResultsStore.getState().trainJobs.t1).toBeUndefined()
+      expect(useNodeResultsStore.getState().trainResults.t1?.result.error).toBe(failure.message)
+      await advance(10_000)
+      expect(mockGetStatus).toHaveBeenCalledTimes(2)
     })
 
     it("publishes repeated running progress on the ramped train schedule", async () => {

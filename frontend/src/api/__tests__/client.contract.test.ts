@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
+import { ApiResponseValidationError } from "../responseValidation"
 import {
   applyOptimiser,
   cancelExplore,
@@ -558,7 +559,12 @@ describe("client runtime contracts", () => {
       }),
     )
 
-    await expect(getTrainStatus("job-1")).rejects.toThrow(/parseTrainResponse/i)
+    await expect(getTrainStatus("job-1")).rejects.toMatchObject({
+      name: "ApiResponseValidationError",
+      message: expect.stringMatching(/could not read training status.*parseTrainResponse/i),
+      cause: expect.any(Error),
+    })
+    await expect(getTrainStatus("job-1")).rejects.toBeInstanceOf(ApiResponseValidationError)
   })
 
   it("getOptimiserStatus rejects malformed optimiser result payloads", async () => {

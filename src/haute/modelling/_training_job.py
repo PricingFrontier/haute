@@ -2147,15 +2147,16 @@ class TrainingJob:
 
         # SHAP + LossFunctionChange importance (OPTIONAL: failures
         # surface in diagnostics_errors so the UI can flag a degraded run.)
-        _report("Computing SHAP values", 0.85)
         shap_summary: list[dict[str, float]] = []
         feature_importance_loss: list[dict[str, Any]] = []
         if hasattr(algo, "shap_summary"):
+            _report("Computing SHAP values", 0.85)
             try:
                 shap_summary = algo.shap_summary(model, diag_df, features, cat_features)
             except Exception as exc:
                 _record_diag_error(diagnostics_errors, "shap", exc)
         if hasattr(algo, "feature_importance_typed"):
+            _report("Computing loss-based feature importance", 0.855)
             try:
                 _diag_pool = _build_pool(
                     diag_df,

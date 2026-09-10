@@ -185,6 +185,8 @@ import {
   type RemoveUnavailableNodeRequest,
 } from "../types/pipelineRepair"
 
+import { ApiResponseValidationError } from "./responseValidation"
+
 export class ApiError extends Error {
   status: number
   detail?: string
@@ -1225,7 +1227,15 @@ export function getTrainStatus<T extends TrainStatusResponse = TrainStatusRespon
   options?: { signal?: AbortSignal },
 ): Promise<T> {
   return request<unknown>(`/api/modelling/train/status/${encodeURIComponent(jobId)}`, options)
-    .then(async (data) => (await import("../types/trainGuards")).parseTrainStatusResponse(data) as T)
+    .then(async (data) => {
+      const { parseTrainStatusResponse } = await import("../types/trainGuards")
+      try {
+        return parseTrainStatusResponse(data) as T
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        throw new ApiResponseValidationError(`Could not read training status: ${detail}`, error)
+      }
+    })
 }
 
 export function cancelTrain<T extends TrainStatusResponse = TrainStatusResponse>(

@@ -112,6 +112,15 @@ Only a current, accepted save response may acknowledge this revision transition.
    estimates from final-test metrics, renders ordered validation fits and tuning
    baseline/winner/improvement evidence, and exposes diagnostics rather than suppressing a
    partially successful training result.
+5. `parseTrainStatusResponse` preserves explicit `null` values in categorical PDP grids;
+   missing value fields, non-scalar values and null numeric grid values remain invalid.
+   `PdpTab` displays the null level as `(missing)` without changing its prediction or
+   conflating the payload with a literal string. `getTrainStatus` wraps parser failures
+   in `ApiResponseValidationError`, retaining the original cause and field detail.
+   Training polling treats that error as terminal for result delivery, removes the active
+   job and displays the error. Request failures and lazy-module loading failures retain
+   normal retry behavior. A running-to-completed nullable-category response must publish
+   the completed result, including its missing-level chart, and clear running progress.
 
 ### Optimiser
 
@@ -165,6 +174,24 @@ current direct-Banding candidates and renders one aggregate accessible alert
 without broadening the exactly-one-direct fallback.
 
 ## Edge cases and invariants
+
+- `ModellingPreview` uses `PreviewPanelTabs` with `equalWidth` and an ID prefix
+  connecting each tab to its `tabpanel`. The strip has a 112px minimum per view
+  inside a horizontal scroll container. Summary is selected initially and when
+  node/result identity changes; collapse/expand retains the selected view.
+- Each non-summary view has a heading and explanatory sentence above its existing
+  diagnostic component. The scrollable body remounts on view changes so a new view
+  starts at the top. View availability continues to follow actual result data.
+- `modelling/SummaryTab` groups results into bordered, elevated cards using the
+  existing theme tokens and model accent. Performance cards precede model metadata;
+  final-test metrics and diagnostic metrics retain separate names and descriptions.
+  Responsive grids follow the panel's available width. Values use tabular numerals,
+  long labels/paths wrap, and detailed tables scroll within their cards. Evaluation,
+  tuning ranking, parameter application and MLflow payloads are unchanged.
+- Focused preview tests cover labelled keyboard view switching for both algorithm
+  result shapes and reset to Summary on replacement. Summary tests cover semantic
+  metric groups, explicit no-test messaging, full paths and GLM regularisation,
+  alongside existing selection/tuning/warning evidence.
 
 - With no modelling algorithm, configuration sections that require it are not rendered. Hiding a
   GLM/regularisation/config subsection preserves its stored values for later re-selection.
