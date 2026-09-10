@@ -18,7 +18,7 @@ compensating_control = "mlflow <=3.15.2 caps cryptography <50 so no fixed releas
 approved_on = "2026-08-07"
 review_by = "2026-10-02"
 
-# CVE-2026-71211 / GHSA-h7x2-h6g9-p789: unpatched SSRF in MLflow's
+# PYSEC-2026-3865 / CVE-2026-71211 / GHSA-h7x2-h6g9-p789: unpatched SSRF in MLflow's
 # AI Gateway proxy. Haute uses MLflow tracking/model-registry clients and does
 # not start, mount, or route requests to the AI Gateway service. Keep this
 # acceptance short-lived so the locked audit forces an upgrade as soon as a
@@ -26,7 +26,7 @@ review_by = "2026-10-02"
 [[acceptance]]
 ecosystem = "python"
 package = "mlflow"
-advisory = "CVE-2026-71211"
+advisory = "PYSEC-2026-3865"
 owner = "Pricing Frontier security"
 exposure = "MLflow is installed for tracking and model-registry client operations; Haute does not expose or call the vulnerable AI Gateway proxy endpoints"
 compensating_control = "Haute starts only its own FastAPI application and never mounts the MLflow AI Gateway; the exact-advisory and unused-acceptance gates force review or removal when upstream publishes a fix"

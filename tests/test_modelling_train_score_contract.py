@@ -537,7 +537,8 @@ def test_pdp_ranking_preserves_native_prediction_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, categorical: bool, with_offset: bool
 ) -> None:
     """Chart ranking cannot swap model inputs, even when swapped types still fit."""
-    catboost = pytest.importorskip("catboost")
+    import catboost
+
     from haute.modelling._algorithms import CatBoostAlgorithm
     from haute.modelling._training_job import TrainingJob
 

@@ -977,7 +977,7 @@ describe("SummaryTab (GLM extensions)", () => {
     expect(screen.getByText("Regularization")).toBeTruthy()
     expect(screen.getByText("Alpha")).toBeTruthy()
     expect(screen.getByText("0.001234")).toBeTruthy()
-    expect(screen.getByText("Non-zero")).toBeTruthy()
+    expect(screen.getByText("Non-zero coefficients")).toBeTruthy()
     expect(screen.getByText("12")).toBeTruthy()
   })
 
@@ -986,7 +986,7 @@ describe("SummaryTab (GLM extensions)", () => {
     render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
     // "Regularization" appears as a header in GLMRegularizationConfig but not in SummaryTab
     expect(screen.queryByText("Alpha")).toBeNull()
-    expect(screen.queryByText("Non-zero")).toBeNull()
+    expect(screen.queryByText("Non-zero coefficients")).toBeNull()
   })
 })
 

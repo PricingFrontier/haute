@@ -288,7 +288,9 @@
    limit so the 30-minute worst-case test budget still leaves setup and artifact
    headroom. The merge job's `!cancelled()` status
    condition ensures dependency failures do not skip it, and it fails explicitly
-   when planning or a required shard was unsuccessful. Plan and merge artifacts
+   when planning or a required shard was unsuccessful. Plan artifacts are uploaded
+   even after a baseline or planning failure so the failing test output remains
+   available for diagnosis. Plan and merge artifacts
    retain each target's rationale beside the threshold and observed
    survival rate.
    Scheduled performance calls

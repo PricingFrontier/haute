@@ -63,6 +63,7 @@ jobs:
           echo "any=$(jq -r '.any_selected' mutation-plan/plan.json)" >> "$GITHUB_OUTPUT"
 
       - name: Upload plan (shared init sessions)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mutation-plan

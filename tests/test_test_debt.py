@@ -35,6 +35,11 @@ _PLAYWRIGHT_CI_RETRY_BUDGET = 2
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
+    # Native Windows HighQoS requires the real Windows process API. The
+    # strong-revision cache witness requires a filesystem exposing that proof;
+    # unsupported filesystems are covered separately by cache-bypass tests.
+    "b37a0e4332ab67a7",
+    "d60cb6e25d9d0a46",
     # Offset-through-serving suite — every test trains a real model, so each
     # leg importorskips its optional modelling engine (rustystats for the GLM
     # legs, catboost for the boosted / numeric-only legs), matching the

@@ -259,9 +259,9 @@ def test_execute_sink_resolves_relative_output_when_explain_fails(
         }
     )
 
-    result = write_data_output(graph, "sink")
+    result = write_data_output(graph, "sink", project_root=tmp_path)
 
-    output_path = pipeline_dir / "outputs" / "out.parquet"
+    output_path = tmp_path / "outputs" / "out.parquet"
     assert result.status == "ok"
     assert output_path.exists()
     assert pl.read_parquet(output_path)["x"].to_list() == [1, 2]
