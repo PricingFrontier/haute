@@ -717,6 +717,20 @@ def test_frontend_scanner_detects_skip_fixme_fail_only_variants() -> None:
     ]
 
 
+def test_frontend_scanner_keeps_adjacent_declarations_separate() -> None:
+    source = (
+        'test("ordinary case", () => {})\n'
+        'test.skip("skipped case", () => {})\n'
+        'it.only("focused case", () => {})\n'
+    )
+    sites = _scan_frontend_source(source, Path("frontend/src/example.test.ts"))
+
+    assert [(site.line, site.callee, site.source) for site in sites] == [
+        (2, "test.skip", 'test.skip("skipped case", () => {})'),
+        (3, "it.only", 'it.only("focused case", () => {})'),
+    ]
+
+
 def test_frontend_scanner_detects_chained_skip_fail_and_focus_variants() -> None:
     sites = _scan_frontend_source(
         """
