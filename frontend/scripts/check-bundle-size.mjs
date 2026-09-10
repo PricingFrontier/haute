@@ -95,10 +95,12 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // restores about 2 KiB of headroom.
 const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 283
 
-// Chunks that should only be fetched after a user opens a code/editor-heavy
-// surface. If one appears as a startup modulepreload, the app has likely
+// Chunks that should only be fetched when their preview or editor is needed.
+// If one appears as a startup modulepreload, the app has likely
 // reintroduced an eager import path even if the initial gzip budget still fits.
 export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
+  "ensureInputSnapshots",
+  "ModellingPreview",
   "PipelineRepairDialog",
   "RecoveryDraftDialog",
   "CodeMirrorEditor",

@@ -47,7 +47,8 @@ function quoteInputConfigs(nodes: Node[]): Record<string, unknown>[] {
     const { nodeType, config } = node.data
     if (nodeType !== NODE_TYPES.API_INPUT || !config || typeof config !== "object" || Array.isArray(config)) return []
     const value = config as Record<string, unknown>
-    return typeof value.path === "string" && /\.(json|jsonl|ndjson|xml)$/i.test(value.path)
+    return Object.prototype.hasOwnProperty.call(value, "tables") &&
+      typeof value.path === "string" && /\.(json|jsonl|ndjson|xml)$/i.test(value.path)
       ? [value] : []
   })
 }

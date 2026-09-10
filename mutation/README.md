@@ -91,8 +91,11 @@ setup, and artifact upload retain explicit headroom. The plan-stage baseline
 runs the exact materialised command on the current hosted runner and fails
 closed before scheduling shards if that calibration no longer has headroom;
 local wall time is platform-dependent because this suite deliberately exercises
-native process spawning. The planner rejects a total plan above GitHub Actions'
-256-job matrix limit instead of silently overpacking shards.
+native process spawning. The planner splits shards in stable order across a
+primary matrix and an optional overflow matrix, with at most 256 jobs in each.
+Both use identical execution steps and the same per-target caps; the merge gate
+requires every scheduled shard from both matrices. Plans above the combined
+512-job capacity fail rather than overpacking or omitting shards.
 
 Run a target sharded locally (each shard sequential, exactly as CI runs it):
 

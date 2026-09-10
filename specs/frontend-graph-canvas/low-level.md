@@ -575,10 +575,18 @@ reconciliation rather than dropping them or committing a second mutation.
     current `structuralVersion` it short-circuits with no network call,
     otherwise it shows the cached data while re-fetching in the background.
     Before any network preview is sent, the request awaits
-    `ensureInputSnapshots` on the resolved graph — missing snapshot-backed
+    the dynamically loaded `ensureInputSnapshots` on the resolved graph — its
+    cache-preparation code loads only when a preview requires it, rather than
+    during initial application startup. Missing snapshot-backed
     inputs are built or joined first (see the caching spec) — and an ensure
     failure surfaces as that node's preview error; `refreshPreview` and
     `previewNodeFrame` gate the same way.
+    Structured Quote Inputs participate in this automatic preparation only
+    after their config declares `tables`. A newly added Quote Input with a
+    path but no inferred/authored schema must not block other node previews.
+    Once `tables` is present, schema validation failures remain visible;
+    explicitly previewing an unfinished Quote Input still receives its normal
+    execution validation error.
     `previewNode()` resolves into `resultToPreview`; if the response's
     columns differ from the node's previous columns
     (`columnsEqualByFingerprint`), `propagate(nodeId)` kicks off the

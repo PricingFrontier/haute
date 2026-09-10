@@ -158,6 +158,22 @@ describe("ensureInputSnapshots", () => {
     expect(buildJsonCache).not.toHaveBeenCalled()
   })
 
+  it("skips path-only Quote Inputs while preparing configured Quote Inputs", async () => {
+    const unfinished = quoteInput("unfinished.json")
+    unfinished.data.config = { path: "unfinished.json" }
+    const configured = quoteInput("configured.json")
+    vi.mocked(getJsonCacheStatusForSchema).mockResolvedValue(jsonStatus(true))
+
+    await ensureInputSnapshots([unfinished, configured])
+
+    expect(getJsonCacheStatusForSchema).toHaveBeenCalledOnce()
+    expect(getJsonCacheStatusForSchema).toHaveBeenCalledWith({
+      path: "configured.json",
+      volatile_schema: configured.data.config,
+    })
+    expect(buildJsonCache).not.toHaveBeenCalled()
+  })
+
   it("propagates cache build errors and clears progress", async () => {
     vi.mocked(getJsonCacheStatusForSchema).mockResolvedValue(jsonStatus(false))
     vi.mocked(buildJsonCache).mockRejectedValue(new Error("Cache disk quota exceeded"))
@@ -199,14 +215,24 @@ describe("ensureInputSnapshots", () => {
     expect(onProgress).toHaveBeenLastCalledWith(null)
   })
 
-  it("does not build after a status failure or a pre-cancelled request", async () => {
-    vi.mocked(getJsonCacheStatusForSchema).mockRejectedValue(new Error("Invalid table schema"))
-    await expect(ensureInputSnapshots([quoteInput()])).rejects.toThrow("Invalid table schema")
+  it.each([null, { unexpected: true }])(
+    "propagates status failures for Quote Inputs with a declared invalid tables value: %j",
+    async (tables) => {
+      vi.mocked(getJsonCacheStatusForSchema).mockRejectedValue(new Error("Invalid table schema"))
+      const input = quoteInput()
+      input.data.config = { path: "quotes.jsonl", tables }
+      await expect(ensureInputSnapshots([input])).rejects.toThrow("Invalid table schema")
+      expect(getJsonCacheStatusForSchema).toHaveBeenCalledOnce()
+      expect(buildJsonCache).not.toHaveBeenCalled()
+    },
+  )
+
+  it("does not build after a pre-cancelled request", async () => {
     const controller = new AbortController()
     controller.abort()
     await expect(ensureInputSnapshots([quoteInput()], { signal: controller.signal }))
       .rejects.toMatchObject({ name: "AbortError" })
-    expect(getJsonCacheStatusForSchema).toHaveBeenCalledOnce()
+    expect(getJsonCacheStatusForSchema).not.toHaveBeenCalled()
     expect(buildJsonCache).not.toHaveBeenCalled()
   })
 

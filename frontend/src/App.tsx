@@ -25,7 +25,6 @@ import { GraphProvider } from "./panels/GraphContext"
 import DataPreview, { type PreviewData } from "./panels/DataPreview"
 import ExplorePreview from "./panels/ExplorePreview"
 import OptimiserDataPreview from "./panels/OptimiserDataPreview"
-import { ModellingPreview } from "./panels/ModellingPreview"
 
 import TracePanel, { TraceStatePanel } from "./panels/TracePanel"
 import ToastContainer from "./components/Toast"
@@ -105,6 +104,9 @@ const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
 const ComparisonView = lazy(() => import("./components/ComparisonView"))
 const ComparisonInspector = lazy(() => import("./components/ComparisonInspector"))
 const NodeSearch = lazy(() => import("./components/NodeSearch"))
+const ModellingPreview = lazy(() => import("./panels/ModellingPreview").then(
+  ({ ModellingPreview }) => ({ default: ModellingPreview }),
+))
 // Optimiser results are produced only after a user-triggered solve, so keep
 // the comparatively heavy charts out of the initial application bundle.
 const OptimiserPreview = lazy(() => import("./panels/OptimiserPreview"))
@@ -202,7 +204,11 @@ function ActiveNodePreview({
 
   const modellingPreview = activeNodeId ? getModellingPreview(activeNodeId) : null
   if (documentCanExecute && modellingPreview) {
-    return <ModellingPreview data={modellingPreview} nodeId={activeNodeId!} />
+    return (
+      <Suspense fallback={null}>
+        <ModellingPreview data={modellingPreview} nodeId={activeNodeId!} />
+      </Suspense>
+    )
   }
   const optimiserPreview = activeNodeId ? getOptimiserPreview(activeNodeId) : null
   if (documentCanExecute && optimiserPreview) {

@@ -1581,6 +1581,28 @@ describe("usePipelineAPI", () => {
     },
   )
 
+  it("previews normally when a disconnected path-only Quote Input is unfinished", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    const unfinished = makeNode("unfinished-quote", NODE_TYPES.API_INPUT, {
+      data: { nodeType: NODE_TYPES.API_INPUT, label: "unfinished quote", config: { path: "quotes.json" } },
+    })
+    const target = makeNode("claims")
+    const params = makeParams()
+    params.graphRef.current = { nodes: [unfinished, target], edges: [] }
+    mockPreview.mockResolvedValue({
+      node_id: "claims", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
+    })
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => { result.current.fetchPreview(target, { debounceMs: 0 }) })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    expect(mockPreview).toHaveBeenCalledOnce()
+    expect(getJsonCacheStatusForSchema).not.toHaveBeenCalled()
+    expect(buildJsonCache).not.toHaveBeenCalled()
+  })
+
   it("builds a missing input snapshot before sending the preview", async () => {
     mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))

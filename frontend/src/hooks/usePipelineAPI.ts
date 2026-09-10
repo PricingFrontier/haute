@@ -38,7 +38,6 @@ import {
   runtimeNodeIdForVisibleNode,
   type DrilledOccurrenceIdentity,
 } from "../utils/submodelRuntimeTarget"
-import { ensureInputSnapshots } from "./ensureInputSnapshots"
 import { executionWarningNodeIds } from "../utils/executionDiagnostics"
 export { columnFingerprint } from "../utils/columnFingerprint"
 
@@ -389,8 +388,9 @@ export default function usePipelineAPI({
   const activeSourceRef = useRef(activeSource)
   useEffect(() => { activeSourceRef.current = activeSource }, [activeSource])
   const ensureSnapshotsForNodes = useCallback(
-    (nodes: Node[], signal: AbortSignal) =>
-      ensureInputSnapshots(nodes, {
+    async (nodes: Node[], signal: AbortSignal) => {
+      const { ensureInputSnapshots } = await import("./ensureInputSnapshots")
+      return ensureInputSnapshots(nodes, {
         signal,
         onBuildStart: () => addToast("info", "Building input snapshot…"),
         onProgress: (message) => {
@@ -401,7 +401,8 @@ export default function usePipelineAPI({
             loading_message: message ?? undefined,
           } : previous)
         },
-      }),
+      })
+    },
     [addToast],
   )
 

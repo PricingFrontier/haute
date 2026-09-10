@@ -1425,3 +1425,8 @@ def test_iter_range_records_skips_blanks_and_counts_non_objects(tmp_path: Path) 
     first_line_end = len('{"id": 1}\n')
     assert list(_records._iter_range_records(source, 0, first_line_end)) == [{"id": 1}]
     assert list(_records._iter_range_records(source, 0, size)) == [{"id": 1}, {"id": 2}]
+
+    # Native line inference must ignore the same blank/non-object records.
+    # An end beyond EOF still stops at the file and preserves serial evidence.
+    inferred = _inference._infer_jsonl_range(source, 0, size + 1)
+    assert _assemble_inference_schema(inferred) == infer_v2_schema_from_data(source, sample_size=2)

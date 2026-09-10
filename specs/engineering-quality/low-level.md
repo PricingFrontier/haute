@@ -270,7 +270,11 @@
    `HAUTE_BUNDLE_MAX_INITIAL_GZIP_KIB` environment variable.
    User-triggered surfaces such as the Ctrl+K `NodeSearch` palette remain
    dynamically imported so their implementation is excluded from that initial
-   chunk. Canvas-assurance screenshots retain the shared 2% pixel-difference
+   chunk. Preview input-cache preparation also loads on demand, and its
+   `ensureInputSnapshots` chunk must not appear in startup modulepreloads.
+   The completed-model `ModellingPreview` and its summary/chart views likewise
+   load only when the selected node has model results.
+   Canvas-assurance screenshots retain the shared 2% pixel-difference
    ceiling. The narrow mixed-Banding and rebuilt-Rating captures and both
    selected-optimiser captures select reviewed Linux-specific baselines in
    Linux CI; the two desktop Banding/Rating captures deliberately keep the
@@ -280,8 +284,12 @@
    each isolated target/shard, downloads all artifacts, and calls `--phase merge`
    to enforce total survivor budgets. Planning uses each target's required
    `max_pending_per_shard` cap: pending means executable mutants only, shard count
-   is `max(1, ceil(pending / cap))`, and no plan may require more than GitHub
-   Actions' 256-job matrix limit. The cap is calibrated to retain timeout and
+   is `max(1, ceil(pending / cap))`. Plans are split in stable order across a
+   primary and optional overflow matrix, each respecting GitHub Actions'
+   256-job limit; plans above the combined 512-job capacity fail explicitly.
+   Every planned shard appears in exactly one matrix, and the merge gate
+   requires both matrices to succeed when overflow is present. The two jobs
+   share the same execution steps. The cap is calibrated to retain timeout and
    artifact-upload headroom; it must not be weakened by silently overpacking a
    target. The JSON shred target uses at most 20 mutants per shard against its
    90-second expanded witness ceiling, and the shard job has a 40-minute hard
