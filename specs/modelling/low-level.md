@@ -37,6 +37,12 @@
   `predict(model, df, features, offset=...)`, `feature_importance()`, `save()`.
   Training and PDP diagnostics always call the declared `predict` signature, including
   `offset=None`; reduced-arity duck-typed implementations are not another interface.
+  PDP computation receives the complete feature list in training order for every
+  prediction, including models with offsets. Feature-importance ranking controls
+  only the order of completed chart entries (including per-feature error entries);
+  it must never reorder model inputs. Regression coverage uses real CatBoost
+  predictions for both mixed categorical/numeric and numeric-only models: the
+  latter can silently produce incorrect curves when columns are swapped.
   `CatBoostAlgorithm` and `GLMAlgorithm` implement it.
   Both also expose algorithm-specific methods that `_training_job._compute_metrics`
   probes with `hasattr()` rather than an interface method — `shap_summary` /

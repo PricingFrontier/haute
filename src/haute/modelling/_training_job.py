@@ -2189,10 +2189,13 @@ class TrainingJob:
                 model,
                 algo,
                 diag_df,
-                sorted_features,
+                features,
                 cat_features,
                 offset=self.offset,
             )
+            # Importance ranks charts, never the positional inputs to prediction.
+            pdp_order = {feature: index for index, feature in enumerate(sorted_features)}
+            pdp_data.sort(key=lambda entry: pdp_order[entry["feature"]])
         except Exception as exc:
             _record_diag_error(diagnostics_errors, "pdp", exc)
 

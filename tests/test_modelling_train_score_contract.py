@@ -532,6 +532,78 @@ class TestGLMCategoricalSurvival:
 # ===========================================================================
 
 
+@pytest.mark.parametrize("categorical,with_offset", [(True, False), (False, False), (True, True)])
+def test_pdp_ranking_preserves_native_prediction_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, categorical: bool, with_offset: bool
+) -> None:
+    """Chart ranking cannot swap model inputs, even when swapped types still fit."""
+    catboost = pytest.importorskip("catboost")
+    from haute.modelling._algorithms import CatBoostAlgorithm
+    from haute.modelling._training_job import TrainingJob
+
+    monkeypatch.chdir(tmp_path)
+    features = ["first", "amount"]
+    display_order = ["amount", "first"]
+    n = 80
+    first = np.arange(n) % 2
+    amount = np.arange(n, dtype=float) % 13 + 10
+    baseline = np.log1p(np.arange(n) % 5)
+    df = pl.DataFrame(
+        {
+            "first": ["a" if value == 0 else "b" for value in first]
+            if categorical
+            else first.astype(float),
+            "amount": amount,
+            "target": 20 * amount + 10 * first + (baseline if with_offset else 0),
+        }
+    )
+    if with_offset:
+        df = df.with_columns(pl.Series("offset", baseline))
+
+    # Force a different presentation order independently of CatBoost's learned
+    # importance, while retaining real fitting, PDP computation and prediction.
+    monkeypatch.setattr(
+        CatBoostAlgorithm,
+        "feature_importance",
+        lambda _self, _model: [
+            {"feature": feature, "importance": float(100 - index)}
+            for index, feature in enumerate(display_order)
+        ],
+    )
+    monkeypatch.setattr(CatBoostAlgorithm, "shap_summary", lambda *args, **kwargs: [])
+    monkeypatch.setattr(CatBoostAlgorithm, "feature_importance_typed", lambda *args, **kwargs: [])
+    result = TrainingJob(
+        name="pdp_order",
+        data=df,
+        target="target",
+        feature_columns=features,
+        offset="offset" if with_offset else None,
+        params={"iterations": 8, "depth": 2, "verbose": 0, "thread_count": 1},
+        split={"validation_size": 0, "holdout_size": 0},
+        output_dir=str(tmp_path),
+    ).run()
+
+    assert not [error for error in result.diagnostics_errors if error["diagnostic"] == "pdp"]
+    assert [entry["feature"] for entry in result.pdp_data] == display_order
+    native_model = catboost.CatBoostRegressor()
+    native_model.load_model(result.model_path)
+    assert native_model.feature_names_ == features
+    for entry in result.pdp_data:
+        assert entry["grid"] and "error" not in entry
+        for point in entry["grid"]:
+            modified = df.with_columns(pl.lit(point["value"]).alias(entry["feature"]))
+            # Independent native oracle: use a named Pool in training order,
+            # never Haute's prediction adapter or PDP implementation.
+            pool = catboost.Pool(
+                modified.select(features).to_numpy(),
+                feature_names=features,
+                cat_features=[0] if categorical else [],
+                baseline=baseline if with_offset else None,
+            )
+            expected = float(np.mean(native_model.predict(pool)))
+            assert point["avg_prediction"] == pytest.approx(expected, abs=1e-5, rel=0)
+
+
 class TestDiagnosticsFailLoudlySplit:
     """7 sites in ``_training_job.py`` swallow every exception and log a
     warning.  Policy: split into mandatory vs optional.
