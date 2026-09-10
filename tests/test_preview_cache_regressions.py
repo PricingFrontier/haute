@@ -54,6 +54,144 @@ def _make_graph(data_path: Path, artifact_path: Path) -> PipelineGraph:
     )
 
 
+def _column_config_graph(tmp_path: Path, node_type: NodeType, selected: bool) -> PipelineGraph:
+    import polars as pl
+
+    set_project_root(tmp_path)
+    data_path = tmp_path / "rows.parquet"
+    pl.DataFrame(
+        {"_id": [1], "premium": [12.5], "segment": ["North"], "discard": [99]}
+    ).write_parquet(data_path)
+    source = GraphNode(
+        id="source",
+        data=NodeData(
+            label="source",
+            nodeType=NodeType.DATA_INPUT,
+            config=make_ready_file_input_config(data_path),
+        ),
+    )
+    config = {
+        "column_renames": {"_id": "identifier", "segment": "region"},
+        "categorical_levels": {"region": ["North", "South"]},
+        **({"selected_columns": ["_id", "premium", "segment"]} if selected else {}),
+    }
+    nodes = [source]
+    edges = []
+    if node_type is NodeType.DATA_INPUT:
+        config.update(make_ready_file_input_config(data_path))
+    else:
+        edges.append(
+            GraphEdge(
+                id="base",
+                source="source",
+                target="subject",
+                targetHandle="base" if node_type is NodeType.EDGE_JOIN else None,
+            )
+        )
+        if node_type is NodeType.POLARS:
+            config["code"] = "df = source"
+        else:
+            lookup_path = tmp_path / "lookup.parquet"
+            pl.DataFrame({"_id": [1]}).write_parquet(lookup_path)
+            nodes.append(
+                GraphNode(
+                    id="lookup",
+                    data=NodeData(
+                        label="lookup",
+                        nodeType=NodeType.DATA_INPUT,
+                        config=make_ready_file_input_config(lookup_path),
+                    ),
+                )
+            )
+            edges.append(
+                GraphEdge(id="join", source="lookup", target="subject", targetHandle="join")
+            )
+            config.update({"on": ["_id"], "how": "left"})
+    nodes.append(
+        GraphNode(id="subject", data=NodeData(label="subject", nodeType=node_type, config=config))
+    )
+    return PipelineGraph(nodes=nodes, edges=edges)
+
+
+@pytest.mark.parametrize("node_type", [NodeType.POLARS, NodeType.EDGE_JOIN, NodeType.DATA_INPUT])
+@pytest.mark.parametrize("selected", [False, True])
+@pytest.mark.parametrize("target_preview_only", [False, True])
+def test_refresh_preview_preserves_configured_column_names_and_values(
+    tmp_path: Path, node_type: NodeType, selected: bool, target_preview_only: bool
+) -> None:
+    """Refreshing with names from the first preview must not send aliases upstream."""
+    graph = _column_config_graph(tmp_path, node_type, selected)
+    expected = {"identifier": 1, "premium": 12.5, "region": "North"}
+    if not selected:
+        expected["discard"] = 99
+    first = execute_graph(graph, target_node_id="subject")["subject"]
+    assert first.status == "ok", first.error
+    assert first.preview == [expected]
+    refreshed = execute_graph(
+        graph,
+        target_node_id="subject",
+        requested_preview_columns=list(expected),
+        target_preview_only=target_preview_only,
+    )["subject"]
+    assert refreshed.status == "ok", refreshed.error
+    assert refreshed.preview == [expected]
+    assert [column.name for column in refreshed.columns] == list(expected)
+
+
+@pytest.mark.parametrize("node_type", [NodeType.POLARS, NodeType.EDGE_JOIN])
+def test_join_rename_projection_matches_lazy_execution(tmp_path: Path, node_type: NodeType) -> None:
+    from haute._execute_lazy import _execute_lazy
+    from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
+    from haute.executor import _build_node_fn
+
+    graph = _column_config_graph(tmp_path, NodeType.EDGE_JOIN, selected=True)
+    subject = graph.nodes[-1]
+    if node_type is NodeType.POLARS:
+        subject.data.nodeType = node_type
+        subject.data.config.pop("on")
+        subject.data.config.pop("how")
+        subject.data.config["code"] = "df = source.join(lookup, on='_id')"
+    eager = execute_graph(
+        graph,
+        target_node_id="subject",
+        target_preview_only=True,
+        requested_preview_columns=["region"],
+    )["subject"]
+    assert eager.status == "ok", eager.error
+    assert eager.preview == [{"region": "North"}]
+    outputs, *_ = _execute_lazy(
+        graph,
+        _build_node_fn,
+        target_node_id="subject",
+        required_columns_by_node={"subject": ["region"]},
+        execution_context=ExecutionContext(
+            operation="test_column_renames",
+            profile=ExecutionProfile.LAZY_SINK,
+            admission=ExecutionAdmission(
+                operation="test_column_renames",
+                profile=ExecutionProfile.LAZY_SINK,
+                memory_limit_bytes=1 << 30,
+                rss_at_admission_bytes=None,
+                rss_limit_bytes=None,
+                headroom_bytes=1 << 30,
+                config_key="test",
+            ),
+        ),
+    )
+    assert outputs["subject"].select("region").collect().to_dicts() == eager.preview
+
+    # An optimisation must not turn invalid authored renames into successful output.
+    subject.data.config["column_renames"] = {"_id": "premium", "segment": "region"}
+    invalid = execute_graph(
+        graph,
+        target_node_id="subject",
+        target_preview_only=True,
+        requested_preview_columns=["region"],
+    )["subject"]
+    assert invalid.status == "error"
+    assert "duplicate" in invalid.error.lower()
+
+
 def test_extend_path_clears_stale_errors_after_transient_optimiser_artifact_failure(
     tmp_path: Path,
 ) -> None:

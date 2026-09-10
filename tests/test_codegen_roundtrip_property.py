@@ -38,10 +38,12 @@ from __future__ import annotations
 import ast
 import json
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import hypothesis.strategies as st
+import pytest
 from hypothesis import HealthCheck, given, settings
 
 from haute._banding_config import expand_banding_config_from_sidecar
@@ -760,6 +762,61 @@ def test_corpus_roundtrip_semantics_and_source_bytes() -> None:
         _assert_roundtrip_invariants(graph)
 
 
+_SHARED_COLUMN_CONFIG = {
+    "selected_columns": ["_id", "premium (gross)", 'quote " and )'],
+    "column_renames": {"_id": "id", "premium (gross)": "premium net"},
+    "categorical_levels": {"_id": ["_low", "high", None]},
+}
+
+
+@pytest.mark.parametrize("node_type", sorted(ROUNDTRIPPABLE_NODE_TYPES, key=str))
+def test_shared_column_config_roundtrips_for_every_executable_node_type(
+    node_type: NodeType,
+) -> None:
+    """Shared column metadata is opaque authored configuration on every node."""
+    graph = _corpus_graphs()[0].model_copy(deep=True)
+    node = next(node for node in graph.nodes if node.data.nodeType == node_type)
+    node.data.config.update(deepcopy(_SHARED_COLUMN_CONFIG))
+    input_config = deepcopy(node.data.config)
+
+    first, parsed, second = _roundtrip(graph)
+    parsed_node = next(
+        parsed_node
+        for parsed_node in parsed.nodes
+        if _sanitize_func_name(parsed_node.data.label) == _sanitize_func_name(node.data.label)
+    )
+
+    for key, value in _SHARED_COLUMN_CONFIG.items():
+        assert parsed_node.data.config[key] == value
+    assert second == first
+    assert node.data.config == input_config
+
+
+@pytest.mark.parametrize("node_type", (NodeType.POLARS, NodeType.EXPLORE, NodeType.EDGE_JOIN))
+@pytest.mark.parametrize("selected_columns", (None, []))
+def test_inline_nodes_canonicalize_only_empty_column_selection(
+    node_type: NodeType,
+    selected_columns: list[str] | None,
+) -> None:
+    graph = _corpus_graphs()[0].model_copy(deep=True)
+    node = next(node for node in graph.nodes if node.data.nodeType == node_type)
+    for key in _SHARED_COLUMN_CONFIG:
+        node.data.config.pop(key, None)
+    if selected_columns is not None:
+        node.data.config["selected_columns"] = selected_columns
+
+    _first, parsed, _second = _roundtrip(graph)
+    parsed_node = next(
+        parsed_node
+        for parsed_node in parsed.nodes
+        if _sanitize_func_name(parsed_node.data.label) == _sanitize_func_name(node.data.label)
+    )
+
+    assert parsed_node.data.config.get("selected_columns", []) == []
+    assert "column_renames" not in parsed_node.data.config
+    assert "categorical_levels" not in parsed_node.data.config
+
+
 def test_frame_named_api_parameters_are_a_byte_identical_roundtrip_fixpoint() -> None:
     api = _node(
         "api-source",
@@ -882,6 +939,9 @@ def test_edge_join_config_does_not_contain_legacy_reference_fields() -> None:
 
 _adversarial_text = st.sampled_from(ADVERSARIAL_TEXTS)
 _adversarial_nonempty_text = st.sampled_from(tuple(text for text in ADVERSARIAL_TEXTS if text))
+_adversarial_column_name = st.sampled_from(
+    ("_id", 'quote " and )', "brace {field}", "line\nbreak", "東京 Δ")
+)
 
 
 @given(
@@ -889,6 +949,7 @@ _adversarial_nonempty_text = st.sampled_from(tuple(text for text in ADVERSARIAL_
     description=_adversarial_text,
     user_text=_adversarial_text,
     handle_text=_adversarial_text,
+    column_name=_adversarial_column_name,
 )
 @settings(
     max_examples=30,
@@ -900,6 +961,7 @@ def test_hypothesis_roundtrip_semantics_and_source_bytes(
     description: str,
     user_text: str,
     handle_text: str,
+    column_name: str,
 ) -> None:
     graph = _capstone_root_graph(
         pipeline_name=pipeline_name,
@@ -907,6 +969,15 @@ def test_hypothesis_roundtrip_semantics_and_source_bytes(
         user_text=user_text,
         handle_text=handle_text,
     )
+    for node in graph.nodes:
+        if node.data.nodeType in {NodeType.POLARS, NodeType.EXPLORE, NodeType.EDGE_JOIN}:
+            node.data.config.update(
+                {
+                    "selected_columns": [column_name],
+                    "column_renames": {column_name: f"renamed {column_name}"},
+                    "categorical_levels": {column_name: ["_low", "high", None]},
+                }
+            )
     _assert_roundtrip_invariants(graph)
 
 

@@ -155,6 +155,7 @@ describe("graphForRequestIdentity", () => {
     _availableColumns: [{ name: "available", dtype: "Int64" }],
     _schemaWarnings: [{ column: "value", status: "stale" }],
     _columnsSource: "preview",
+    _columnsStructuralVersion: 42,
     _status: "running",
     _traceActive: true,
     _traceDimmed: true,

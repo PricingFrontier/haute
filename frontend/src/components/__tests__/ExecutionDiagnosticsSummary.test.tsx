@@ -74,7 +74,7 @@ describe("ExecutionDiagnosticsSummary", () => {
       />,
     )
 
-    expect(screen.getByText("Memory pressure reached 75% of the preview budget.")).toBeInTheDocument()
+    expect(screen.getByText("Preview reached 75% of its memory allowance.")).toBeInTheDocument()
     expect(screen.getByLabelText("Technical details")).toBeInTheDocument()
     expect(screen.queryByLabelText("Execution strategy technical details")).not.toBeInTheDocument()
   })
@@ -82,7 +82,7 @@ describe("ExecutionDiagnosticsSummary", () => {
   it("renders memory pressure for running execution metrics", () => {
     render(<ExecutionDiagnosticsSummary metrics={makeExecutionMetricsFixture()} />)
 
-    expect(screen.getByText("Memory pressure reached 75% of the preview budget.")).toBeInTheDocument()
+    expect(screen.getByText("Preview reached 75% of its memory allowance.")).toBeInTheDocument()
     expect(screen.getByText("Technical details")).toBeInTheDocument()
   })
 
@@ -95,7 +95,7 @@ describe("ExecutionDiagnosticsSummary", () => {
       />,
     )
 
-    expect(screen.getByText("Memory pressure reached 75% of the preview budget.")).toBeInTheDocument()
+    expect(screen.getByText("Preview reached 75% of its memory allowance.")).toBeInTheDocument()
   })
 
   it.each(["contract_error", "timed_out", "cancelled", "superseded", "error"] as const)(
@@ -109,7 +109,7 @@ describe("ExecutionDiagnosticsSummary", () => {
         />,
       )
 
-      expect(screen.queryByText("Memory pressure reached 75% of the preview budget.")).not.toBeInTheDocument()
+      expect(screen.queryByText("Preview reached 75% of its memory allowance.")).not.toBeInTheDocument()
       expect(screen.queryByText("Technical details")).not.toBeInTheDocument()
     },
   )

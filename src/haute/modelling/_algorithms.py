@@ -242,7 +242,8 @@ class _CatBoostProgressCallback:
 
     def after_iteration(self, info: Any) -> bool:
         # Log memory every 50 iterations to track growth during training
-        it = info.iteration + 1
+        # CatBoost's callback reports completed iterations, starting at one.
+        it = info.iteration
         if it <= 5 or it % 50 == 0:
             _mem_checkpoint(f"  iteration {it}/{self._total}")
         metrics: dict[str, float] = {}
@@ -261,7 +262,7 @@ class _CatBoostProgressCallback:
                         history_entry[f"{prefix}_{metric_name}"] = values[-1]
         self._loss_history.append(history_entry)
         if self._on_iteration:
-            self._on_iteration(info.iteration + 1, self._total, metrics)
+            self._on_iteration(it, self._total, metrics)
         return True  # True = continue training
 
 

@@ -28,6 +28,7 @@ const VOLATILE_NODE_DATA_KEYS = new Set([
   "_availableColumns",
   "_schemaWarnings",
   "_columnsSource",
+  "_columnsStructuralVersion",
   "_status",
   "_traceActive",
   "_traceDimmed",

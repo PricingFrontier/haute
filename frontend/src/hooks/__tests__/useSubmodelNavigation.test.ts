@@ -865,6 +865,94 @@ describe("useSubmodelNavigation", () => {
     vi.useRealTimers()
   })
 
+  it("keeps canonical child column settings through navigation without leaking them to another definition", async () => {
+    const copyId = "pricing_copy"
+    const independentDefinition: SubmodelDefinition = {
+      ...makeDefinition([makeNode("other_child", "polars", {
+        data: {
+          label: "other_child",
+          nodeType: "polars",
+          config: { selected_columns: ["other"] },
+        },
+      })]),
+      definitionId: "definition_other",
+      file: "modules/other.py",
+    }
+    const owner = makeOccurrence()
+    const copy = makeOccurrence(copyId, owner.id)
+    const independent = makeNode("other_instance", "submodel", {
+      data: {
+        label: "other",
+        nodeType: "submodel",
+        config: { definitionId: "definition_other", alias: "other" },
+      },
+    })
+    const params = makeParams({
+      graphRef: { current: { nodes: [owner, copy, independent], edges: [] } },
+      submodelsRef: {
+        current: {
+          [DEFINITION_ID]: makeDefinition([makeNode("child1")]),
+          definition_other: independentDefinition,
+        },
+      },
+      setNodesRaw: (nodes) => useGraphStore.getState().setNodesRaw(nodes),
+      setEdgesRaw: (edges) => useGraphStore.getState().setEdgesRaw(edges),
+      setSubmodelsRaw: (submodels) => useGraphStore.getState().setSubmodelsRaw(submodels),
+    })
+    seedCanonicalGraph(params)
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+
+    await act(async () => {
+      await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
+    })
+    const canonical = params.submodelsRef.current[DEFINITION_ID] as SubmodelDefinition
+    const editedDefinition: SubmodelDefinition = {
+      ...canonical,
+      graph: {
+        ...canonical.graph,
+        nodes: canonical.graph.nodes.map((node) => node.id === "child1"
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                config: {
+                  ...(node.data.config as Record<string, unknown>),
+                  selected_columns: ["_id", "premium"],
+                  column_renames: { _id: "identifier" },
+                  categorical_levels: { premium: ["low", "high", null] },
+                },
+              },
+            }
+          : node),
+      },
+    }
+    const editedSubmodels = { ...params.submodelsRef.current, [DEFINITION_ID]: editedDefinition }
+    // This models the canonical editor commit that has already reconciled the
+    // definition; the assertions below cover the navigation boundary only.
+    params.submodelsRef.current = editedSubmodels
+    params.parentGraphRef.current = {
+      ...params.parentGraphRef.current!,
+      submodels: editedSubmodels,
+    }
+
+    act(() => {
+      result.current.handleBreadcrumbNavigate(0)
+    })
+    expect(useGraphStore.getState().submodels).toEqual(editedSubmodels)
+    expect((params.submodelsRef.current.definition_other as SubmodelDefinition)
+      .graph.nodes[0]?.data.config).toEqual({ selected_columns: ["other"] })
+
+    await act(async () => {
+      await result.current.handleDrillIntoSubmodel(copyId)
+    })
+    expect(result.current.viewStack.at(-1)).toMatchObject({ readOnly: true, instanceId: copyId })
+    expect(useGraphStore.getState().nodes.find((node) => node.id === "child1")?.data.config).toMatchObject({
+      selected_columns: ["_id", "premium"],
+      column_renames: { _id: "identifier" },
+      categorical_levels: { premium: ["low", "high", null] },
+    })
+  })
+
   it("handleBreadcrumbNavigate restores the parent source file when returning to main", async () => {
     vi.useFakeTimers()
     mockLoad.mockResolvedValue({

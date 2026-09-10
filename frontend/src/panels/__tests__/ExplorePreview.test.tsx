@@ -967,7 +967,7 @@ describe("ExplorePreview", () => {
 
     renderExplore()
 
-    expect(screen.getByText("Memory pressure reached 75% of the preview budget.")).toBeInTheDocument()
+    expect(screen.getByText("Preview reached 75% of its memory allowance.")).toBeInTheDocument()
     expect(screen.getByText("Technical details")).toBeInTheDocument()
   })
 

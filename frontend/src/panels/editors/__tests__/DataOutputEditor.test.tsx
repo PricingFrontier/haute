@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react"
 import type { IoCapabilityGroup } from "../../../api/types"
 
@@ -47,7 +48,7 @@ const groups: IoCapabilityGroup[] = [
     cache_modes: ["snapshot"],
     input_fields: [],
     output_fields: [
-      { name: "path", label: "Path", kind: "path", required: true },
+      { name: "path", label: "Filename or path", kind: "path", required: true },
     ],
     formats: [
       {
@@ -244,19 +245,17 @@ describe("DataOutputEditor", () => {
       arguments: {},
     })
 
-    const provider = await screen.findByLabelText("Provider")
+    const provider = await screen.findByRole("radiogroup", { name: "Provider" })
     expect(
-      Array.from((provider as HTMLSelectElement).options).map(
-        (option) => option.text,
-      ),
+      within(provider).getAllByRole("radio").map((option) => option.textContent),
     ).toEqual([
-      "Select a provider...",
       "File",
       "Database",
       "Lakehouse",
     ])
 
-    fireEvent.change(provider, { target: { value: "database" } })
+    expect(within(provider).getByRole("radio", { name: "File" })).toBeChecked()
+    fireEvent.click(within(provider).getByRole("radio", { name: "Database" }))
     expect(onReplaceConfig).toHaveBeenCalledWith({
       outputType: "database",
       format: "database",
@@ -264,6 +263,17 @@ describe("DataOutputEditor", () => {
       arguments: {},
       table: "",
     })
+  })
+
+  it("leaves unknown providers unselected and shows the configuration error", async () => {
+    renderEditor({ outputType: "unknown" })
+
+    const provider = await screen.findByRole("radiogroup", { name: "Provider" })
+    for (const option of within(provider).getAllByRole("radio")) {
+      expect(option).not.toBeChecked()
+    }
+    expect(screen.getByText(/Unknown Data Output provider/)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Write" })).toBeDisabled()
   })
 
   it("preserves the destination while resetting format-specific arguments", async () => {
@@ -285,6 +295,23 @@ describe("DataOutputEditor", () => {
       arguments: {},
       path: "out.csv",
     })
+  })
+
+  it("explains filename resolution while accepting a new output filename", async () => {
+    const { onUpdate } = renderEditor({
+      outputType: "file",
+      format: "csv",
+      path: "",
+      arguments: {},
+    })
+
+    const destination = await screen.findByRole("textbox", { name: "Filename or path *" })
+    expect(destination).toHaveAccessibleDescription(
+      "Filenames save in the project's outputs/ folder. Paths are relative to the project root. The selected format's extension is added if omitted.",
+    )
+    fireEvent.change(destination, { target: { value: "report.csv" } })
+    fireEvent.blur(destination)
+    expect(onUpdate).toHaveBeenCalledWith("path", "report.csv")
   })
 
   it("gates explicit writes and sends the current graph context", async () => {

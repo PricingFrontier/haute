@@ -6,8 +6,11 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from itertools import islice
 from pathlib import Path
 from typing import Any
+
+import orjson
 
 from haute._api_input_schema import (
     _RESERVED_LEAF as _SCALAR_VALUE_LEAF,
@@ -19,7 +22,10 @@ from haute._api_input_schema import (
     derive_identifier_label,
     make_table_path,
 )
-from haute._json_shred import _records
+from haute._cpu_performance import configure_process_high_qos
+from haute._json_shred import _inference_filter, _records
+from haute._json_shred._inference_cache import _INFERENCE_CACHE
+from haute._json_shred._inference_filter import InferenceFilter, InferenceSeed
 from haute._json_shred._records import _ChunkFailure
 from haute._json_shred._shred import _SCALAR_VALUE_COLUMN
 from haute._jsonpath import is_identifier_name
@@ -230,11 +236,54 @@ class _InferenceState:
         self.validated_keys.update(other.validated_keys)
 
 
-def _infer_records(records: Iterable[dict[str, Any]]) -> _InferenceState:
+def _infer_records(
+    records: Iterable[dict[str, Any]], *, seed: InferenceSeed | None = None
+) -> _InferenceState:
     state = _InferenceState()
+    known_structure = InferenceFilter(seed)
     for record in records:
-        state.walk(record)
+        if not known_structure.matches(record):
+            state.walk(record)
+            known_structure.observe(record)
     return state
+
+
+def _learn_jsonl_prefix(data_path: Path, end: int) -> tuple[_InferenceState, InferenceSeed | None]:
+    """Infer one bounded file prefix for all parallel ranges to share."""
+    state = _InferenceState()
+    known_structure = InferenceFilter()
+    for record in islice(
+        _records._iter_range_records(data_path, 0, end),
+        _inference_filter._INITIAL_SAMPLE_RECORDS,
+    ):
+        state.walk(record)
+        known_structure.observe(record)
+    return state, known_structure.snapshot()
+
+
+def _infer_jsonl_lines(
+    lines: Iterable[bytes], *, seed: InferenceSeed | None = None
+) -> _InferenceState:
+    """Collect new evidence while checking known JSON shapes in one native pass."""
+    state = _InferenceState()
+    known_structure = InferenceFilter(seed, json_mode=True)
+    for raw_line in lines:
+        if known_structure.matches_json(raw_line):
+            continue
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        record = orjson.loads(stripped)
+        if isinstance(record, dict):
+            state.walk(record)
+            known_structure.observe(record)
+    return state
+
+
+def _infer_jsonl_range(
+    data_path: Path, start: int, end: int, *, seed: InferenceSeed | None = None
+) -> _InferenceState:
+    return _infer_jsonl_lines(_records._iter_range_lines(data_path, start, end), seed=seed)
 
 
 @dataclass(frozen=True)  # pragma: no mutate - declaration metadata, not runtime logic
@@ -244,11 +293,11 @@ class _InferenceChunkResult:
     failure: _ChunkFailure | None = None  # pragma: no mutate
 
 
-def _infer_chunk(args: tuple[str, int, int, int]) -> _InferenceChunkResult:
+def _infer_chunk(args: tuple[str, int, int, int, InferenceSeed | None]) -> _InferenceChunkResult:
     """Infer one newline-delimited byte range in a spawned worker."""
-    data_path_s, start, end, index = args
+    data_path_s, start, end, index, seed = args
     try:
-        state = _infer_records(_records._iter_range_records(Path(data_path_s), start, end))
+        state = _infer_jsonl_range(Path(data_path_s), start, end, seed=seed)
         return _InferenceChunkResult(index=index, state=state)
     except Exception as exc:  # noqa: BLE001 — reconstructed in the parent
         return _InferenceChunkResult(index=index, failure=_records._failure_from_exception(exc))
@@ -259,7 +308,11 @@ def _infer_jsonl_in_parallel(data_path: Path, ranges: list[tuple[int, int]]) -> 
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
 
-    tasks = [(str(data_path), start, end, index) for index, (start, end) in enumerate(ranges)]
+    started = time.perf_counter()
+    # Prefix evidence must precede range evidence: workers may skip records
+    # covered by this seed, and column order follows first file observation.
+    merged, seed = _learn_jsonl_prefix(data_path, ranges[-1][1])
+    tasks = [(str(data_path), start, end, index, seed) for index, (start, end) in enumerate(ranges)]
     workers = _records._parallel_worker_count(len(tasks))
     logger.info(
         "json_schema_infer_parallel_start",
@@ -268,11 +321,10 @@ def _infer_jsonl_in_parallel(data_path: Path, ranges: list[tuple[int, int]]) -> 
         workers=workers,
     )
 
-    started = time.perf_counter()
-    merged = _InferenceState()
     pool = ProcessPoolExecutor(
         max_workers=workers,
         mp_context=multiprocessing.get_context("spawn"),
+        initializer=configure_process_high_qos,
     )
     try:
         for result in pool.map(_infer_chunk, tasks):
@@ -414,7 +466,8 @@ def infer_v2_schema_from_data(
     Types are inferred across the whole file by default; pass ``sample_size``
     to cap the number of records scanned. For JSONL and root JSON arrays, the
     iterator stops after the requested object records instead of reading the
-    rest of the file.
+    rest of the file. Complete results may be reused while the source's strong
+    file revision and record-size limit remain unchanged.
 
     Raises :class:`ApiInputSchemaError` for a nested array (array of arrays),
     which can't be expressed as a flat table.
@@ -423,6 +476,17 @@ def infer_v2_schema_from_data(
     the user opts in explicitly.
     """
     source_path = Path(data_path)
+    if sample_size is None or sample_size <= 0:
+        return _INFERENCE_CACHE.get(
+            source_path,
+            record_limit=_records._structured_input_record_limit(),
+            loader=lambda path: _infer_v2_schema_uncached(path, sample_size=None),
+        )
+    return _infer_v2_schema_uncached(source_path, sample_size=sample_size)
+
+
+def _infer_v2_schema_uncached(source_path: Path, *, sample_size: int | None) -> dict[str, Any]:
+    """Execute an inference scan; only the public entry point may reuse results."""
     unbounded = sample_size is None or sample_size <= 0
     if unbounded and _records._should_shred_in_parallel(source_path):
         initial_stat = source_path.stat()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +102,102 @@ class TestConfigPathForNode:
 
 
 class TestSaveAndLoad:
+    @pytest.mark.parametrize(
+        ("node_type", "config"),
+        [
+            pytest.param(
+                NodeType.DATA_INPUT,
+                {
+                    "arguments": {
+                        "schema": {
+                            "_id": "Int64",
+                            "payload": {"type": "Struct", "fields": {"_prevRules": "String"}},
+                        }
+                    }
+                },
+                id="input-schema-and-struct-fields",
+            ),
+            pytest.param(
+                NodeType.DATA_INPUT,
+                {
+                    "inputType": "inline",
+                    "format": "records",
+                    "records": [
+                        {"_id": 1, "payload": {"_cache": [{"_id": "kept"}]}},
+                    ],
+                    "arguments": {},
+                },
+                id="inline-records",
+            ),
+            pytest.param(
+                NodeType.MODELLING,
+                {
+                    "monotone_constraints": {"_id": 1},
+                    "feature_weights": {"_id": 0.5},
+                    "params": {"custom": {"_id": "parameter"}},
+                },
+                id="model-feature-maps-and-parameters",
+            ),
+            pytest.param(
+                NodeType.OPTIMISER,
+                {
+                    "constraints": {"_premium": {"min": 100.0}},
+                    "frontier_ranges": {"_premium": {"min": 100.0, "max": 200.0}},
+                },
+                id="optimiser-constraint-names",
+            ),
+            pytest.param(
+                NodeType.LIVE_SWITCH,
+                {"input_scenario_map": {"_input": "live"}},
+                id="source-switch-input-names",
+            ),
+            pytest.param(
+                NodeType.RATING_STEP,
+                {
+                    "tables": [
+                        {
+                            "factors": ["_id"],
+                            "outputColumn": "factor",
+                            "entries": [{"_id": "A", "value": 1.25, "_note": {"_id": "kept"}}],
+                        }
+                    ]
+                },
+                id="rating-factor-names-and-row-metadata",
+            ),
+        ],
+    )
+    def test_user_mapping_keys_survive_repeated_save(self, tmp_path, node_type, config):
+        original = deepcopy(config)
+        rel = _write_node_config_sidecar(node_type, "settings", config, tmp_path)
+        loaded = load_node_config(rel, base_dir=tmp_path)
+        assert loaded == original
+        first_bytes = (tmp_path / rel).read_bytes()
+        _write_node_config_sidecar(node_type, "settings", loaded, tmp_path)
+        assert (tmp_path / rel).read_bytes() == first_bytes
+        assert config == original
+
+    def test_compact_category_keys_are_data_not_editor_metadata(self, tmp_path):
+        config = {
+            "factors": [
+                {
+                    "banding": "categorical",
+                    "column": "category",
+                    "outputColumn": "band",
+                    "_prevRules": {"continuous": []},
+                    "rules": {"_id": "identifier", "_prevRules": "previous", "ordinary": "normal"},
+                }
+            ]
+        }
+        original = deepcopy(config)
+        rel = _write_node_config_sidecar(NodeType.BANDING, "categories", config, tmp_path)
+        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+        assert "_prevRules" not in saved["factors"][0]
+        assert saved["factors"][0]["rules"] == config["factors"][0]["rules"]
+        loaded = load_node_config(rel, base_dir=tmp_path)
+        _write_node_config_sidecar(NodeType.BANDING, "categories", loaded, tmp_path)
+        assert json.loads((tmp_path / rel).read_text(encoding="utf-8")) == saved
+        assert config == original
+
     def test_save_creates_directories_and_file(self, tmp_path):
         config = {
             "inputType": "file",

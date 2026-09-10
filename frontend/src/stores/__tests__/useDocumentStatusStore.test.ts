@@ -1,10 +1,41 @@
 import { describe, expect, it } from "vitest"
-import useDocumentStatusStore, { documentReadOnlyReason } from "../useDocumentStatusStore"
+import useDocumentStatusStore, { captureDocumentExecutionFence, documentReadOnlyReason, isDocumentExecutionFenceCurrent } from "../useDocumentStatusStore"
 import { parsePipelineEditorDocument } from "../../types/pipelineDocument"
 
 const loaded = parsePipelineEditorDocument({ document_kind:"haute.pipeline_editor_document",schema_version:1,load_status:"ready",pipeline_name:null,pipeline_description:null,preamble:null,preserved_blocks:[],source_file:"main.py",source_revision:"r1",source_text:"x",sources:["live"],active_source:"live",source_selection_trusted:true,has_authored_content:false,nodes:[],edges:[],unresolved_connections:[],submodels:null,diagnostics:[],diagnostics_omitted:2,capabilities:{can_mutate:true,can_save:true,can_execute:true,can_preview:true,can_manage_submodels:true,can_repair:false,reserved_api_input_frame_labels:[]} })
 
 describe("useDocumentStatusStore", () => {
+  it("keeps starting and running work valid across saves but not document replacement", () => {
+    const store = useDocumentStatusStore.getState()
+    store.loadDocumentStatus(loaded)
+    const startingRequest = captureDocumentExecutionFence()
+    store.acknowledgeSave("r2")
+    store.acknowledgeSave("r3")
+    expect(useDocumentStatusStore.getState().sourceRevision).toBe("r3")
+    expect(isDocumentExecutionFenceCurrent(startingRequest)).toBe(true)
+    // An external reload is a new execution owner even when its file/hash match.
+    store.loadDocumentStatus({ ...loaded, source_revision: "r3" })
+    expect(isDocumentExecutionFenceCurrent(startingRequest)).toBe(false)
+    const afterReload = captureDocumentExecutionFence()
+    store.reset()
+    store.loadDocumentStatus({ ...loaded, source_revision: "r3" })
+    expect(isDocumentExecutionFenceCurrent(afterReload)).toBe(false)
+    store.reset()
+  })
+
+  it.each(["external revision", "unsynchronised", "system failure", "capability loss"])("saving cannot revive a job after %s", (change) => {
+    const store = useDocumentStatusStore.getState()
+    store.loadDocumentStatus(loaded)
+    const captured = captureDocumentExecutionFence()
+    if (change === "external revision") store.setSourceRevision("external")
+    if (change === "unsynchronised") store.setGraphSynchronized(false)
+    if (change === "system failure") store.setSystemFailure("load failed")
+    if (change === "capability loss") store.loadDocumentStatus({ ...loaded, capabilities: { ...loaded.capabilities, can_execute: false } })
+    store.acknowledgeSave("saved")
+    expect(isDocumentExecutionFenceCurrent(captured)).toBe(false)
+    store.reset()
+  })
+
   it("atomically loads authoritative document state and resets it", () => {
     useDocumentStatusStore.getState().loadDocumentStatus(loaded, false)
     expect(useDocumentStatusStore.getState().graphSynchronized).toBe(false)

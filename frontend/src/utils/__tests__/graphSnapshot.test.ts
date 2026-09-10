@@ -17,6 +17,7 @@ import type { Node } from "@xyflow/react"
 import type { PipelineEdge } from "../../types/node"
 import {
   serializeSnapshot,
+  cloneGraphSnapshot,
   toCanonicalGraphPayload,
   EMPTY_SNAPSHOT,
 } from "../graphSnapshot"
@@ -96,6 +97,28 @@ const EXPECTED_FINGERPRINT =
 const EXPECTED_EMPTY = '{"edges":[],"nodes":[],"preamble":"","submodels":{}}'
 
 describe("persisted-fingerprint serialized format", () => {
+  it("preserves user dictionary keys that resemble JavaScript or editor metadata", () => {
+    const config = JSON.parse('{"arguments":{"schema":{"__proto__":"String","constructor":"String","_id":"Int64"}},"records":[{"__proto__":{"kept":1},"_id":7}]}')
+    const graph = {
+      nodes: [{ ...NODE2, data: { ...NODE2.data, config } }],
+      edges: [], preamble: "", submodels: {},
+    }
+    const copies = [
+      toCanonicalGraphPayload(graph),
+      cloneGraphSnapshot(graph),
+      JSON.parse(serializeSnapshot(graph)),
+    ]
+    for (const copy of copies) {
+      const copiedConfig = copy.nodes[0].data.config
+      expect(copiedConfig).toEqual(config)
+      expect(Object.hasOwn(copiedConfig.arguments.schema, "__proto__")).toBe(true)
+      expect(Object.getPrototypeOf(copiedConfig.records[0])).toBe(Object.prototype)
+    }
+    const before = serializeSnapshot(graph)
+    config.records[0].__proto__.kept = 2
+    expect(serializeSnapshot(graph)).not.toBe(before)
+  })
+
   it("pins the empty-workspace sentinel byte-for-byte", () => {
     expect(EMPTY_SNAPSHOT).toBe(EXPECTED_EMPTY)
   })

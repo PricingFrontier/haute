@@ -130,7 +130,7 @@ describe("TrainingProgress", () => {
       />,
     )
 
-    expect(screen.getByText("Memory pressure reached 75% of the training budget.")).toBeInTheDocument()
-    expect(screen.getByText("Headroom used 1.5 KB of 2.0 KB")).toBeInTheDocument()
+    expect(screen.getByText("Training reached 75% of its memory allowance.")).toBeInTheDocument()
+    expect(screen.getByText("Memory remaining: 2.0 KB")).toBeInTheDocument()
   })
 })

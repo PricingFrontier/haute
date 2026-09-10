@@ -9,6 +9,8 @@ from unittest.mock import patch
 import pytest
 from fastapi import HTTPException
 
+from haute._types import PipelineGraph
+from haute.parser import parse_pipeline_source
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
 from tests.conftest import current_source_revision, make_graph
@@ -37,6 +39,7 @@ def _flat_graph():
 def _managed_graph(
     definition_id: str = "child",
     module_file: str = "modules/child.py",
+    child_config: dict[str, object] | None = None,
 ):
     child = {
         "id": "child_node",
@@ -44,7 +47,7 @@ def _managed_graph(
         "data": {
             "label": "child_node",
             "nodeType": "polars",
-            "config": {"code": "return df"},
+            "config": {"code": "return df", **(child_config or {})},
         },
     }
     return make_graph(
@@ -439,6 +442,61 @@ def test_explicit_save_derives_new_definition_ownership(
     assert payload["managed_parent"] == "main.py"
     assert payload["positions"]["child_node"] == {"x": 17.0, "y": 29.0}
     assert response.source_revision
+
+
+def test_explicit_save_reloads_and_clears_child_column_metadata(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    metadata = {
+        "selected_columns": ["_id", "premium"],
+        "column_renames": {"_id": "identifier"},
+        "categorical_levels": {"premium": ["low", "high", None]},
+    }
+    service.save_graph_transactionally(
+        graph=_managed_graph(child_config=metadata),
+        name="main",
+        description="",
+        preamble="",
+        source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
+    )
+
+    def reload() -> PipelineGraph:
+        return parse_pipeline_source(
+            (tmp_path / "main.py").read_text(encoding="utf-8"),
+            source_file=str(tmp_path / "main.py"),
+            _base_dir=tmp_path,
+        )
+
+    reloaded = reload()
+    child = (reloaded.submodels or {})["child"].graph.node_map["child_node"]
+    assert {key: child.data.config[key] for key in metadata} == metadata
+
+    child.data.config.update(
+        {
+            "selected_columns": [],
+            "column_renames": {},
+            "categorical_levels": {},
+        }
+    )
+    service.save_graph_transactionally(
+        graph=reloaded,
+        name="main",
+        description="",
+        preamble="",
+        source_file="main.py",
+        base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
+    )
+
+    cleared = (reload().submodels or {})["child"].graph.node_map["child_node"]
+    assert {
+        "selected_columns": cleared.data.config.get("selected_columns", []),
+        "column_renames": cleared.data.config.get("column_renames", {}),
+        "categorical_levels": cleared.data.config.get("categorical_levels", {}),
+    } == {
+        "selected_columns": [],
+        "column_renames": {},
+        "categorical_levels": {},
+    }
 
 
 def test_explicit_save_deletes_a_removed_uniquely_owned_definition(

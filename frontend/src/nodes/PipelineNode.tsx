@@ -472,22 +472,23 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
           </>
         ) : (
           <>
-            <div
-              className={`relative flex min-w-0 items-center ${defaultInputPort ? "justify-start py-0.5 pl-3" : "justify-end"}${sourceHandle ? " pr-3" : ""}`}
-              style={{
-                ...(defaultInputPort ? { marginLeft: "-12px" } : {}),
-                ...(sourceHandle ? { marginRight: "-12px" } : {}),
-              }}
-            >
-              {defaultInputPort}
-              <div className="min-w-0 flex-1 truncate text-right text-[13px] font-semibold leading-tight" style={{ color: "var(--text-primary)" }}>
-                {nodeData.label}
-              </div>
-              {sourceHandle}
-            </div>
-            {isDeployInput && (
-              <div className="mt-1 text-[11px] leading-tight truncate" style={{ color: "var(--text-muted)" }}>
+            {isDeployInput ? (
+              <div className="text-right text-[11px] leading-tight truncate" style={{ color: "var(--text-muted)" }}>
                 No emitted frames
+              </div>
+            ) : (
+              <div
+                className={`relative flex min-w-0 items-center ${defaultInputPort ? "justify-start py-0.5 pl-3" : "justify-end"}${sourceHandle ? " pr-3" : ""}`}
+                style={{
+                  ...(defaultInputPort ? { marginLeft: "-12px" } : {}),
+                  ...(sourceHandle ? { marginRight: "-12px" } : {}),
+                }}
+              >
+                {defaultInputPort}
+                <div className="min-w-0 flex-1 truncate text-right text-[13px] font-semibold leading-tight" style={{ color: "var(--text-primary)" }}>
+                  {nodeData.label}
+                </div>
+                {sourceHandle}
               </div>
             )}
             {traceActive && traceValue !== undefined && (

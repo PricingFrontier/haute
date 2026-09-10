@@ -275,9 +275,9 @@ class TestCatBoostProgressCallback:
 
         cb = _CatBoostProgressCallback(on_iter, 100, loss_history)
 
-        # Build a mock info object with metrics
+        # Match CatBoost's one-based completed-iteration callback contract.
         info = SimpleNamespace(
-            iteration=0,
+            iteration=1,
             metrics={
                 "learn": {"RMSE": [0.5]},
                 "validation": {"RMSE": [0.6]},
@@ -298,7 +298,7 @@ class TestCatBoostProgressCallback:
         loss_history: list[dict[str, float]] = []
         cb = _CatBoostProgressCallback(None, 10, loss_history)
 
-        info = SimpleNamespace(iteration=0, metrics={})
+        info = SimpleNamespace(iteration=1, metrics={})
         result = cb.after_iteration(info)
         assert result is True
         assert len(loss_history) == 1
@@ -309,7 +309,7 @@ class TestCatBoostProgressCallback:
         loss_history: list[dict[str, float]] = []
         cb = _CatBoostProgressCallback(None, 10, loss_history)
 
-        info = SimpleNamespace(iteration=4, metrics=None)
+        info = SimpleNamespace(iteration=5, metrics=None)
         result = cb.after_iteration(info)
         assert result is True
         assert loss_history[0]["iteration"] == 5.0
@@ -321,7 +321,7 @@ class TestCatBoostProgressCallback:
         loss_history: list[dict[str, float]] = []
         cb = _CatBoostProgressCallback(None, 10, loss_history)
 
-        info = SimpleNamespace(iteration=0, metrics={"learn": {"RMSE": []}})
+        info = SimpleNamespace(iteration=1, metrics={"learn": {"RMSE": []}})
         cb.after_iteration(info)
         assert "train_RMSE" not in loss_history[0]
 
@@ -337,11 +337,11 @@ class TestCatBoostProgressCallback:
             "haute.modelling._algorithms._mem_checkpoint",
             side_effect=lambda label: checkpoints.append(label),
         ):
-            for i in range(200):
+            for i in range(1, 201):
                 info = SimpleNamespace(iteration=i, metrics=None)
                 cb.after_iteration(info)
 
-        # Iterations 1-5 (i=0..4) and every 50th (50,100,150,200)
+        # Iterations 1-5 and every 50th (50,100,150,200)
         assert len(checkpoints) == 9  # 5 + 4
 
 

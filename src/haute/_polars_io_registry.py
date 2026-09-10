@@ -951,7 +951,9 @@ def registry_capabilities() -> dict[str, Any]:
             "output_available": True,
             "cache_modes": ["direct", "snapshot"],
             "input_fields": [{"name": "path", "label": "Path", "kind": "path", "required": True}],
-            "output_fields": [{"name": "path", "label": "Path", "kind": "path", "required": True}],
+            "output_fields": [
+                {"name": "path", "label": "Filename or path", "kind": "path", "required": True}
+            ],
             "formats": [],
         },
         "database": {

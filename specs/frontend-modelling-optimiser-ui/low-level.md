@@ -1,5 +1,16 @@
 # Frontend Modelling & Optimiser UI — Low-Level Specification
 
+## Saving during background work
+
+A successful save of the current canvas advances its persisted source revision
+without replacing its execution identity. Active and starting training, optimiser,
+Explore and pivot jobs keep their handles, progress polling and result delivery.
+Their original config/source/structural-version stamps remain intact so edits made
+since launch still mark results stale. Loading another document or accepting an
+external revision replaces the execution identity; capability loss, unsynchronised
+graphs and system failures still prevent obsolete responses from publishing.
+Only a current, accepted save response may acknowledge this revision transition.
+
 ## Module map
 
 | File | Responsibility |
@@ -130,6 +141,15 @@
    can be used for the new point.
 5. `frontend/src/panels/OptimiserDataPreview.tsx` caps rows at 5,000 before grouping by quote,
    orders scenario rows, and calculates full-preview statistics only when its Statistics tab is open.
+
+Memory notices use the headline “{Profile} reached {threshold}% of its memory
+allowance.” Their details separately identify memory used, the process limit, and
+memory remaining at the recorded event. Negative remaining memory is labelled
+“Memory over limit”; remaining memory is never presented as the denominator of
+memory used. GiB-scale values use readable GB units. Common stages use plain-language
+labels (including “Caching the dataframe”), and adaptive limits are described as
+automatically set from available RAM; explicit configuration keys remain available.
+These wording changes do not change thresholds, severity, or failure precedence.
 
 `ExecutionDiagnosticsSummary` consumes the guarded versioned metrics contract
 and renders only actionable memory pressure, a rejected strategy, or a `warned`

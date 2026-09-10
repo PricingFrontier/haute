@@ -1264,7 +1264,24 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
                 sourceHandle="out__premium",
             ),
         ],
-        submodels={"definition_scoring": _definition()},
+        submodels={
+            "definition_scoring": _definition(
+                graph=PipelineGraph(
+                    nodes=[
+                        _node(
+                            "local_input",
+                            config={
+                                "selected_columns": ["_id", "premium"],
+                                "column_renames": {"_id": "identifier"},
+                                "categorical_levels": {"premium": ["low", "high", None]},
+                            },
+                        ),
+                        _node("local_output", config={"instanceOf": "local_input"}),
+                    ],
+                    edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
+                ),
+            )
+        },
     )
 
     files = graph_to_code_multi(
@@ -1299,6 +1316,14 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
         "scoring_b": ("definition_scoring", "scoring_b", "scoring_b", "scoring_a"),
     }
     definition = (reparsed.submodels or {})["definition_scoring"]
+    assert {
+        key: definition.graph.node_map["local_input"].data.config[key]
+        for key in ("selected_columns", "column_renames", "categorical_levels")
+    } == {
+        "selected_columns": ["_id", "premium"],
+        "column_renames": {"_id": "identifier"},
+        "categorical_levels": {"premium": ["low", "high", None]},
+    }
     assert [port.name for port in definition.input_ports] == ["policy"]
     assert [port.name for port in definition.output_ports] == ["premium"]
     assert {
@@ -1307,6 +1332,58 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
         ("root_source", "scoring_a", None, "in__policy"),
         ("scoring_a", "scoring_b", "out__premium", "in__policy"),
         ("scoring_b", "root_sink", "out__premium", None),
+    }
+
+    # The occurrence ids remain stable while users may rename their visible aliases.
+    reparsed.node_map["scoring_a"].data.config["alias"] = "rating_primary"
+    reparsed.node_map["scoring_a"].data.label = "rating_primary"
+    reparsed.node_map["scoring_b"].data.config["alias"] = "rating_copy"
+    reparsed.node_map["scoring_b"].data.label = "rating_copy"
+    renamed_files = graph_to_code_multi(
+        reparsed,
+        pipeline_name="main",
+        source_file="main.py",
+    )
+    for relative_path, source in renamed_files.items():
+        output = tmp_path / relative_path
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(source, encoding="utf-8")
+    renamed = parse_pipeline_source(
+        renamed_files["main.py"],
+        source_file=str(tmp_path / "main.py"),
+        _base_dir=tmp_path,
+    )
+
+    renamed_occurrences = {
+        node.id: node for node in renamed.nodes if node.data.nodeType == NodeType.SUBMODEL
+    }
+    assert {
+        instance_id: (
+            node.data.config["definitionId"],
+            node.data.config["alias"],
+            node.data.label,
+            node.data.config.get("instanceOf"),
+        )
+        for instance_id, node in renamed_occurrences.items()
+    } == {
+        "rating_primary": ("definition_scoring", "rating_primary", "rating_primary", None),
+        "rating_copy": ("definition_scoring", "rating_copy", "rating_copy", "rating_primary"),
+    }
+    renamed_definition = (renamed.submodels or {})["definition_scoring"]
+    assert {
+        key: renamed_definition.graph.node_map["local_input"].data.config[key]
+        for key in ("selected_columns", "column_renames", "categorical_levels")
+    } == {
+        "selected_columns": ["_id", "premium"],
+        "column_renames": {"_id": "identifier"},
+        "categorical_levels": {"premium": ["low", "high", None]},
+    }
+    assert {
+        (edge.source, edge.target, edge.sourceHandle, edge.targetHandle) for edge in renamed.edges
+    } == {
+        ("root_source", "rating_primary", None, "in__policy"),
+        ("rating_primary", "rating_copy", "out__premium", "in__policy"),
+        ("rating_copy", "root_sink", "out__premium", None),
     }
 
 
@@ -1380,7 +1457,16 @@ def test_grouping_creates_one_canonical_definition_and_first_occurrence() -> Non
 def test_grouping_stores_local_positions_and_flatten_restores_authored_positions() -> None:
     graph = PipelineGraph(
         nodes=[
-            _node("child_a", x=100, y=200),
+            _node(
+                "child_a",
+                x=100,
+                y=200,
+                config={
+                    "selected_columns": ["_id", "premium"],
+                    "column_renames": {"_id": "identifier"},
+                    "categorical_levels": {"premium": ["low", "high", None]},
+                },
+            ),
             _node("child_b", x=500, y=600),
         ],
         edges=[GraphEdge(id="internal", source="child_a", target="child_b")],
@@ -1401,6 +1487,11 @@ def test_grouping_stores_local_positions_and_flatten_restores_authored_positions
         "child_a": {"x": -200.0, "y": -200.0},
         "child_b": {"x": 200.0, "y": 200.0},
     }
+    assert definition.graph.node_map["child_a"].data.config == {
+        "selected_columns": ["_id", "premium"],
+        "column_renames": {"_id": "identifier"},
+        "categorical_levels": {"premium": ["low", "high", None]},
+    }
 
     dissolved = flatten_graph(
         grouped.graph,
@@ -1414,6 +1505,79 @@ def test_grouping_stores_local_positions_and_flatten_restores_authored_positions
         "child_a": {"x": 100.0, "y": 200.0},
         "child_b": {"x": 500.0, "y": 600.0},
     }
+    assert dissolved.node_map[qualified_runtime_node_id(occurrence.id, "child_a")].data.config == {
+        "selected_columns": ["_id", "premium"],
+        "column_renames": {"_id": "identifier"},
+        "categorical_levels": {"premium": ["low", "high", None]},
+    }
+
+
+def test_flattened_column_metadata_is_shared_per_definition_and_deeply_copied() -> None:
+    column_metadata = {
+        "selected_columns": ["_id", "premium"],
+        "column_renames": {"_id": "identifier"},
+        "categorical_levels": {"premium": ["low", "high", None]},
+    }
+    scoring = _definition(
+        graph=PipelineGraph(
+            nodes=[_node("local_input", config=column_metadata)],
+            edges=[],
+        ),
+        input_ports=[],
+        output_ports=[],
+    )
+    independent = SubmodelDefinition(
+        definition_id="definition_independent",
+        file="modules/independent.py",
+        graph=PipelineGraph(
+            nodes=[_node("local_input", config={"selected_columns": ["other"]})], edges=[]
+        ),
+        input_ports=[],
+        output_ports=[],
+    )
+    graph = PipelineGraph(
+        nodes=[
+            _instance("scoring_a", "scoring_a"),
+            _instance("scoring_b", "scoring_b", instance_of="scoring_a"),
+            _instance("independent", "independent", definition_id="definition_independent"),
+        ],
+        edges=[],
+        submodels={"definition_scoring": scoring, "definition_independent": independent},
+    )
+
+    flattened = flatten_graph(graph)
+    scoring_a = flattened.node_map[qualified_runtime_node_id("scoring_a", "local_input")]
+    scoring_b = flattened.node_map[qualified_runtime_node_id("scoring_b", "local_input")]
+    independent_node = flattened.node_map[qualified_runtime_node_id("independent", "local_input")]
+    assert scoring_a.data.config == column_metadata
+    assert scoring_b.data.config == column_metadata
+    assert independent_node.data.config == {"selected_columns": ["other"]}
+
+    scoring_a.data.config["categorical_levels"]["premium"].append("platinum")
+    assert scoring.graph.node_map["local_input"].data.config == column_metadata
+    assert scoring_b.data.config == column_metadata
+    assert independent_node.data.config == {"selected_columns": ["other"]}
+
+    edited_metadata = {
+        "selected_columns": ["_id", "risk_band"],
+        "column_renames": {"risk_band": "risk_tier"},
+        "categorical_levels": {"risk_band": ["low", "medium", "high", None]},
+    }
+    graph.submodels["definition_scoring"].graph.node_map[
+        "local_input"
+    ].data.config = edited_metadata
+    reflattened = flatten_graph(graph)
+    assert (
+        reflattened.node_map[qualified_runtime_node_id("scoring_a", "local_input")].data.config
+        == edited_metadata
+    )
+    assert (
+        reflattened.node_map[qualified_runtime_node_id("scoring_b", "local_input")].data.config
+        == edited_metadata
+    )
+    assert reflattened.node_map[
+        qualified_runtime_node_id("independent", "local_input")
+    ].data.config == {"selected_columns": ["other"]}
 
 
 def test_grouping_preserves_child_input_configs_and_uses_public_labels() -> None:

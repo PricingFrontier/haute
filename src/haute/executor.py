@@ -1462,7 +1462,7 @@ def execute_graph(
                     _normalise_requested_preview_columns(
                         node_data,
                         df,
-                        requested_preview_columns,
+                        requested_preview_columns if nid == target_node_id else None,
                     ),
                 )
                 preview_row_limit = _preview_row_limit_for_width(
@@ -1858,10 +1858,10 @@ def resolve_data_output_path(
 
     Returns ``(filesystem_path, display_path)``; the filesystem path is
     ``None`` for database targets (which have no local file). Bare filenames
-    land under ``outputs/``, and the default extension comes from the format registry
-    instead of the csv/parquet ternary — a ``.jsonl`` target stays ``.jsonl``.
+    land under ``outputs/``. File outputs are project-root-relative. The default
+    extension comes from the format registry; explicit extensions are preserved.
     """
-    from haute._polars_io_registry import default_output_extension, format_for_config
+    from haute._polars_io_registry import default_output_extension, format_for_config, format_group
 
     root = _infer_project_root(
         project_root=project_root,
@@ -1888,7 +1888,8 @@ def resolve_data_output_path(
     ext = default_output_extension(fmt_entry)
     if ext is not None and not Path(path).suffix:
         path = f"{path}{ext}"
-    return _contain_output_path(graph, path, project_root=root), path
+    target = str(root / _normalise_path_text(path)) if format_group(fmt_entry) == "file" else path
+    return _contain_output_path(graph, target, project_root=root), path
 
 
 def prepare_data_output(

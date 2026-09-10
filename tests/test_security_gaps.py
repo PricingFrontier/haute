@@ -1014,7 +1014,7 @@ class TestW8bLocalSessionProtection:
 
         assert resp.status_code == 403
 
-    def test_pipeline_relative_sink_output_inside_project_is_allowed(self, client):
+    def test_project_relative_sink_output_inside_project_is_allowed(self, client):
         from unittest.mock import patch
 
         from haute.schemas import WriteOutputResponse
@@ -1028,9 +1028,7 @@ class TestW8bLocalSessionProtection:
                     "data": {
                         "label": "Sink",
                         "nodeType": "dataOutput",
-                        "config": make_file_output_config(
-                            "../output/result", format_name="parquet"
-                        ),
+                        "config": make_file_output_config("output/result", format_name="parquet"),
                     },
                 },
             ],
@@ -1045,7 +1043,7 @@ class TestW8bLocalSessionProtection:
             return WriteOutputResponse(
                 status="ok",
                 row_count=0,
-                path="../output/result.parquet",
+                path="output/result.parquet",
                 format="parquet",
             )
 

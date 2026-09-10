@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from multiprocessing.process import BaseProcess
 from typing import Any, Literal, TypeVar, cast
 
+from haute._cpu_performance import configure_process_high_qos
 from haute._env import int_env
 from haute._logging import get_logger
 from haute._native_memory_limit import (
@@ -189,6 +190,7 @@ def _interactive_worker_entrypoint(
 ) -> None:
     lease = NativeMemoryLease()
     try:
+        configure_process_high_qos()
         for module_name in preload_modules:
             importlib.import_module(module_name)
         result_queue.put(pickle.dumps(("ready", os.getpid()), protocol=pickle.HIGHEST_PROTOCOL))

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import orjson
@@ -77,6 +78,39 @@ def _sample_records(n: int) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _large_inference_records() -> list[dict[str, Any]]:
+    """Enough JSONL rows to cross the real shared-prefix boundary."""
+    prefix = [
+        {
+            "id": i,
+            "amount": i,
+            "profile": {"name": f"driver-{i}"},
+            "tags": ["base"],
+        }
+        for i in range(10_000)
+    ]
+    prefix[99]["prefix_only"] = True
+    prefix[777]["profile"] = {"name": "typed", "active": False}
+    tail = [
+        {
+            "id": 10_000 + i,
+            "amount": 10_000.5 + i,
+            "profile": {"name": f"late-{i}", "late_nested": {"code": i}},
+            "tags": ["base", "late"],
+            "events": [{"score": i}],
+        }
+        for i in range(201)
+    ]
+    return [*prefix, *tail]
+
+
+def _full_walk_schema(records: list[dict[str, Any]]) -> dict[str, Any]:
+    state = _InferenceState()
+    for record in records:
+        state.walk(record)
+    return _assemble_inference_schema(state)
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +183,82 @@ def test_range_reader_stops_at_exact_and_partial_end_boundaries(tmp_path: Path) 
     p.write_bytes(b"".join(orjson.dumps({"n": i}) + b"\n" for i in range(4)))
     assert list(_iter_range_records(p, 0, 16)) == [{"n": 0}, {"n": 1}]
     assert list(_iter_range_records(p, 0, 9)) == [{"n": 0}, {"n": 1}]
+
+
+@pytest.mark.parametrize("record_limit", [64, 65_536])
+def test_range_reader_rejects_records_over_the_configured_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_limit: int
+) -> None:
+    source = tmp_path / "oversized.jsonl"
+    source.write_bytes(b'{"value":"' + b"x" * (record_limit - 12) + b'"}\n')
+    assert source.stat().st_size == record_limit + 1
+    monkeypatch.setenv("HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES", str(record_limit))
+
+    with pytest.raises(
+        ApiInputSchemaError,
+        match=f"JSONL record exceeds HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES={record_limit}",
+    ):
+        list(_iter_range_records(source, 0, source.stat().st_size))
+
+
+def test_byte_range_boundary_rejects_oversized_partial_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "oversized.jsonl"
+    source.write_bytes(b'{"value":"' + b"x" * 96 + b'"}\n')
+    monkeypatch.setenv("HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES", "64")
+
+    with pytest.raises(
+        ApiInputSchemaError,
+        match="JSONL record exceeds HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES=64",
+    ):
+        _jsonl_byte_ranges(source, 1)
+
+
+@pytest.mark.parametrize("record_limit", [64, 65_536, 65_537])
+def test_exact_limit_records_reconstruct_serial_iteration_across_ranges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_limit: int
+) -> None:
+    source = tmp_path / "exact-limit.jsonl"
+    record = b'{"value":"' + b"x" * (record_limit - 13) + b'"}\n'
+    assert len(record) == record_limit
+    source.write_bytes(record * 4)
+    monkeypatch.setenv("HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES", str(record_limit))
+
+    serial = list(_records._iter_records(source))
+    ranges = _jsonl_byte_ranges(source, record_limit + 1)
+    parallel = [row for start, end in ranges for row in _iter_range_records(source, start, end)]
+
+    assert len(ranges) > 1
+    assert parallel == serial
+
+
+def test_range_reader_does_not_request_a_line_for_an_empty_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Source:
+        def __init__(self) -> None:
+            self.readline_sizes: list[int] = []
+
+        def __enter__(self) -> Source:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def seek(self, _offset: int) -> None:
+            return None
+
+        def readline(self, size: int) -> bytes:
+            self.readline_sizes.append(size)
+            return b'{"unexpected":true}\n'
+
+    source = Source()
+    path = SimpleNamespace(open=lambda _mode, **_kwargs: source)
+    monkeypatch.setattr(_records, "_structured_input_record_limit", lambda: 64)
+
+    assert list(_iter_range_records(path, 7, 7)) == []
+    assert source.readline_sizes == []
 
 
 @pytest.mark.parametrize(
@@ -237,6 +347,78 @@ def test_chunk_skip_stats_are_summed_across_workers_and_labels() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_complete_inference_reuses_unchanged_source_with_independent_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._json_shred import _source_proof
+
+    src = _write_jsonl(tmp_path / "reuse.jsonl", [{"id": 1}])
+    revision = _source_proof._StrongFileRevision((1, 2), 10, 20, 30)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
+    infer_records = _inference._infer_records
+    scans = 0
+
+    def count_scan(*args: Any, **kwargs: Any) -> _InferenceState:
+        nonlocal scans
+        scans += 1
+        return infer_records(*args, **kwargs)
+
+    monkeypatch.setattr(_inference, "_infer_records", count_scan)
+    first = infer_v2_schema_from_data(src)
+    first["tables"][0]["columns"][0]["selected"] = False
+    second = infer_v2_schema_from_data(src)
+
+    assert scans == 1
+    assert second["tables"][0]["columns"][0]["selected"] is True
+
+
+def test_sampled_inference_never_reuses_or_populates_complete_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._json_shred import _source_proof
+
+    src = _write_jsonl(tmp_path / "sample-reuse.jsonl", [{"id": 1}, {"id": 2, "late": True}])
+    revision = _source_proof._StrongFileRevision((1, 2), 10, 20, 30)
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
+    infer_records = _inference._infer_records
+    scans = 0
+
+    def count_scan(*args: Any, **kwargs: Any) -> _InferenceState:
+        nonlocal scans
+        scans += 1
+        return infer_records(*args, **kwargs)
+
+    monkeypatch.setattr(_inference, "_infer_records", count_scan)
+    sampled = infer_v2_schema_from_data(src, sample_size=1)
+    complete = infer_v2_schema_from_data(src)
+
+    assert infer_v2_schema_from_data(src, sample_size=1) == sampled
+    assert infer_v2_schema_from_data(src) == complete
+    assert len(sampled["tables"][0]["columns"]) == 1
+    assert len(complete["tables"][0]["columns"]) == 2
+    assert scans == 3
+
+
+def test_complete_inference_detects_same_size_same_mtime_rewrite(tmp_path: Path) -> None:
+    from haute._json_shred import _source_proof
+
+    src = _write_jsonl(tmp_path / "rewritten.jsonl", [{"old": 1}])
+    if _source_proof._strong_file_revision(src) is None:
+        pytest.skip("filesystem does not provide a strong file revision")
+    initial_stat = src.stat()
+    first = infer_v2_schema_from_data(src)
+    assert len(_inference._INFERENCE_CACHE) == 1
+
+    _write_jsonl(src, [{"new": 2}])
+    os.utime(src, ns=(initial_stat.st_atime_ns, initial_stat.st_mtime_ns))
+    assert src.stat().st_size == initial_stat.st_size
+    assert src.stat().st_mtime_ns == initial_stat.st_mtime_ns
+    second = infer_v2_schema_from_data(src)
+
+    assert first["tables"][0]["columns"][0]["name"] == "old"
+    assert second["tables"][0]["columns"][0]["name"] == "new"
+
+
 def test_parallel_inference_matches_serial_with_late_schema_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -261,6 +443,7 @@ def test_parallel_inference_matches_serial_with_late_schema_changes(
     records[275]["second_null_only"] = None
     src = _write_jsonl(tmp_path / "late.jsonl", [*records, 42])
     serial = infer_v2_schema_from_data(src)
+    _inference._INFERENCE_CACHE.clear()
 
     _force_parallel(monkeypatch, chunk_bytes=400)
 
@@ -270,6 +453,81 @@ def test_parallel_inference_matches_serial_with_late_schema_changes(
     monkeypatch.setattr(_records, "_iter_records_for_inference", reject_serial_dispatch)
 
     assert infer_v2_schema_from_data(src) == serial
+
+
+def test_parallel_inference_matches_full_walk_after_the_shared_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real spawned workers retain all post-prefix schema evidence."""
+    records = _large_inference_records()
+    src = _write_jsonl(tmp_path / "large-late.jsonl", records)
+    expected = _full_walk_schema(records)
+    _force_parallel(monkeypatch, chunk_bytes=30_000)
+
+    assert infer_v2_schema_from_data(src) == expected
+
+
+def test_parallel_inference_walks_the_shared_prefix_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each range receives the same seed instead of rewalking its prefix."""
+    records = [{"id": i, "kind": "stable"} for i in range(10_250)]
+    src = _write_jsonl(tmp_path / "shared-prefix.jsonl", records)
+    _force_parallel(monkeypatch, chunk_bytes=20_000)
+    expected = _full_walk_schema(records)
+    original_walk = _InferenceState.walk
+    top_level_walks = 0
+
+    def counting_walk(
+        self: _InferenceState,
+        value: Any,
+        level: tuple[object, ...] = (),
+        obj_prefix: tuple[str, ...] = (),
+    ) -> None:
+        nonlocal top_level_walks
+        if level == () and obj_prefix == () and isinstance(value, dict):
+            top_level_walks += 1
+        original_walk(self, value, level, obj_prefix)
+
+    class InlinePool:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def map(self, function: Any, tasks: Any) -> list[Any]:
+            return [function(task) for task in tasks]
+
+        def shutdown(self, **_kwargs: Any) -> None:
+            pass
+
+    monkeypatch.setattr(_InferenceState, "walk", counting_walk)
+    monkeypatch.setattr("concurrent.futures.ProcessPoolExecutor", InlinePool)
+
+    assert infer_v2_schema_from_data(src) == expected
+    assert top_level_walks == 10_000
+
+
+def test_fused_range_skips_orjson_for_shared_prefix_shapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Known JSONL rows are admitted by the seed before the fallback parser."""
+    records = [{"id": i, "kind": "stable"} for i in range(10_000)]
+    src = _write_jsonl(tmp_path / "fused-known.jsonl", records)
+    prefix, seed = _inference._learn_jsonl_prefix(src, src.stat().st_size)
+    expected = _full_walk_schema(records)
+    original_loads = _inference.orjson.loads
+    parsed = 0
+
+    def counting_loads(raw: bytes, *args: Any, **kwargs: Any) -> Any:
+        nonlocal parsed
+        parsed += 1
+        return original_loads(raw, *args, **kwargs)
+
+    monkeypatch.setattr(_inference.orjson, "loads", counting_loads)
+    delta = _inference._infer_jsonl_range(src, 0, src.stat().st_size, seed=seed)
+    prefix.merge(delta)
+
+    assert parsed == 0
+    assert _assemble_inference_schema(prefix) == expected
 
 
 @pytest.mark.parametrize("sample_size", [1, 2])
@@ -369,57 +627,47 @@ def test_merge_widens_scalar_array_types_across_chunk_states() -> None:
     assert _scalar_table_type(_assemble_inference_schema(concrete_then_empty), "tags") == "int"
 
 
-def test_parallel_inference_preserves_late_schema_error_context(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("tail", ["invalid-key", "malformed-json"])
+def test_parallel_inference_preserves_post_prefix_error_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tail: str
 ) -> None:
-    """A late invalid key remains the exact same public contract failure."""
-    records = [{"id": i} for i in range(300)]
-    records[250]["not.addressable"] = "late"
-    src = _write_jsonl(tmp_path / "bad-key.jsonl", records)
+    """Worker-side tails preserve the unfiltered walk/parser failure exactly."""
+    prefix = [{"id": i} for i in range(10_000)]
+    src = tmp_path / f"{tail}.jsonl"
+    if tail == "invalid-key":
+        records = [*prefix, {"not.addressable": "late"}]
+        src = _write_jsonl(src, records)
+        oracle = _InferenceState()
+        with pytest.raises(ApiInputSchemaError) as expected:
+            for record in records:
+                oracle.walk(record)
+    else:
+        src.write_text(
+            "\n".join([*(json.dumps(record) for record in prefix), "{bad"]) + "\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(orjson.JSONDecodeError) as expected:
+            orjson.loads(b"{bad")
 
-    with pytest.raises(ApiInputSchemaError) as serial_exc:
-        infer_v2_schema_from_data(src)
-
-    _force_parallel(monkeypatch, chunk_bytes=300)
+    _force_parallel(monkeypatch, chunk_bytes=30_000)
 
     def reject_serial_dispatch(*_args: object, **_kwargs: object) -> Any:
         raise AssertionError("large JSONL inference unexpectedly used the serial iterator")
 
     monkeypatch.setattr(_records, "_iter_records_for_inference", reject_serial_dispatch)
-    with pytest.raises(ApiInputSchemaError) as parallel_exc:
-        infer_v2_schema_from_data(src)
-
-    assert parallel_exc.value.message == serial_exc.value.message
-    assert parallel_exc.value.context == serial_exc.value.context
-    assert str(parallel_exc.value) == str(serial_exc.value)
-
-
-def test_parallel_inference_preserves_late_json_error_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Malformed tail data reports the same parser detail as a serial scan."""
-    src = tmp_path / "bad-tail.jsonl"
-    src.write_text(
-        "\n".join([*(json.dumps({"id": i}) for i in range(300)), "{bad"]) + "\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(orjson.JSONDecodeError) as serial_exc:
-        infer_v2_schema_from_data(src)
-
-    _force_parallel(monkeypatch, chunk_bytes=300)
-
-    def reject_serial_dispatch(*_args: object, **_kwargs: object) -> Any:
-        raise AssertionError("large JSONL inference unexpectedly used the serial iterator")
-
-    monkeypatch.setattr(_records, "_iter_records_for_inference", reject_serial_dispatch)
-    with pytest.raises(orjson.JSONDecodeError) as parallel_exc:
-        infer_v2_schema_from_data(src)
-
-    assert parallel_exc.value.msg == serial_exc.value.msg
-    assert parallel_exc.value.doc == serial_exc.value.doc
-    assert parallel_exc.value.pos == serial_exc.value.pos
-    assert str(parallel_exc.value) == str(serial_exc.value)
+    if tail == "invalid-key":
+        with pytest.raises(ApiInputSchemaError) as actual:
+            infer_v2_schema_from_data(src)
+        assert actual.value.message == expected.value.message
+        assert actual.value.context == expected.value.context
+        assert str(actual.value) == str(expected.value)
+    else:
+        with pytest.raises(orjson.JSONDecodeError) as actual:
+            infer_v2_schema_from_data(src)
+        assert actual.value.msg == expected.value.msg
+        assert actual.value.doc == expected.value.doc
+        assert actual.value.pos == expected.value.pos
+        assert str(actual.value) == str(expected.value)
 
 
 @pytest.mark.parametrize("change", ["append", "truncate"])
@@ -457,8 +705,8 @@ def test_parallel_inference_runs_off_the_main_thread(
     """The HTTP route starts inference inside Starlette's worker thread."""
     from concurrent.futures import ThreadPoolExecutor
 
-    src = _write_jsonl(tmp_path / "threaded.jsonl", _sample_records(300))
-    _force_parallel(monkeypatch, chunk_bytes=300)
+    src = _write_jsonl(tmp_path / "threaded.jsonl", _large_inference_records())
+    _force_parallel(monkeypatch, chunk_bytes=30_000)
 
     with ThreadPoolExecutor(max_workers=1) as thread_pool:
         schema = thread_pool.submit(infer_v2_schema_from_data, src).result()
@@ -1144,7 +1392,7 @@ def test_infer_chunk_runs_one_range_in_process(tmp_path: Path) -> None:
     source.write_text('{"id": 1}\n{"id": 2}\n', encoding="utf-8")
     size = source.stat().st_size
 
-    result = _inference._infer_chunk((str(source), 0, size, 3))
+    result = _inference._infer_chunk((str(source), 0, size, 3, None))
 
     assert result.index == 3
     assert result.failure is None
@@ -1155,7 +1403,7 @@ def test_infer_chunk_captures_a_worker_failure_envelope(tmp_path: Path) -> None:
     source = tmp_path / "rows.jsonl"
     source.write_text("{broken\n", encoding="utf-8")
 
-    result = _inference._infer_chunk((str(source), 0, source.stat().st_size, 0))
+    result = _inference._infer_chunk((str(source), 0, source.stat().st_size, 0, None))
 
     assert result.state is None
     assert result.failure is not None and result.failure.type_name == "JSONDecodeError"

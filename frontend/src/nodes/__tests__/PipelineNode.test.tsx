@@ -258,7 +258,7 @@ describe("PipelineNode", () => {
 
   it("renders an apiInput node with API badge", () => {
     renderNode({ label: "Quote Input", nodeType: NODE_TYPES.API_INPUT, config: { row_id_column: "id" } })
-    expect(screen.getByText("Quote Input")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Quote Input node: Quote Input" })).toBeInTheDocument()
     expect(screen.getByText("API")).toBeInTheDocument()
   })
 
@@ -400,7 +400,7 @@ describe("PipelineNode", () => {
       })
     })
 
-    it("keeps the instance name and explicit empty-state hint without an output handle when no frame is visible", () => {
+    it("shows only a right-aligned empty-state hint without an output handle when no frame is visible", () => {
       const nodeLabel = "Unconfigured Input"
       const { container } = renderNode({
         label: nodeLabel,
@@ -411,10 +411,11 @@ describe("PipelineNode", () => {
       })
 
       const node = screen.getByTestId(`node-${nodeLabel}`)
-      expect(within(node).getByText(nodeLabel)).toBeInTheDocument()
+      expect(within(node).queryByText(nodeLabel)).not.toBeInTheDocument()
       const emptyHint = within(node).getByText("No emitted frames")
       expect(emptyHint).toBeInTheDocument()
       expect(emptyHint).toHaveStyle({ color: "var(--text-muted)" })
+      expect(emptyHint).toHaveClass("text-right")
       expect(within(node).queryAllByTestId(/^api-input-frame-row-/)).toHaveLength(0)
 
       expect(sourceHandles(container)).toEqual([])

@@ -17,6 +17,7 @@ Regression coverage for the multi-frame review findings:
 from __future__ import annotations
 
 import json
+import pickle
 from pathlib import Path
 from typing import Any
 
@@ -24,12 +25,14 @@ import orjson
 import pytest
 
 from haute._api_input_schema import ApiInputSchemaError
+from haute._json_shred import _inference, _inference_filter
 from haute._json_shred._cache import (
     build_per_port_cache,
     load_per_port_cache,
     read_per_port_cache_meta,
 )
 from haute._json_shred._inference import infer_v2_schema_from_data
+from haute._json_shred._inference_filter import InferenceFilter
 
 
 def _write(tmp_path: Path, records: list[dict[str, Any]]) -> Path:
@@ -49,6 +52,27 @@ def _enable_all(schema: dict[str, Any]) -> dict[str, Any]:
     for t in schema["tables"]:
         t["emit"] = True
     return schema
+
+
+def _full_walk_schema(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Reference the exact inference contract without the native fast path."""
+    state = _inference._InferenceState()
+    for record in records:
+        state.walk(record)
+    return _inference._assemble_inference_schema(state)
+
+
+def _assert_inferred_schema_matches_full_walk(records: list[dict[str, Any]]) -> None:
+    """Compare successful schemas or the public structured failure evidence."""
+    try:
+        expected = _full_walk_schema(records)
+    except ApiInputSchemaError as expected_error:
+        with pytest.raises(ApiInputSchemaError) as actual_error:
+            _inference._assemble_inference_schema(_inference._infer_records(records))
+        assert actual_error.value.message == expected_error.message
+        assert actual_error.value.context == expected_error.context
+    else:
+        assert _inference._assemble_inference_schema(_inference._infer_records(records)) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +265,330 @@ def test_inference_widens_type_past_first_records(tmp_path: Path) -> None:
     assert amount["type"] == "float"
 
     build_per_port_cache(p, schema, tmp_path / "cache")  # no crash on row 151
+
+
+# ---------------------------------------------------------------------------
+# Native shape-filter inference: exactness and relearning
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("records", "expected_top_level_walks"),
+    [
+        ([{"id": 1, "name": "same"}] * 500, 100),
+        (
+            ([{"id": 1}] * 100)
+            + ([{"id": 1, "late": "new"}] * 100)
+            + ([{"id": 1, "late": "new"}] * 300),
+            200,
+        ),
+    ],
+    ids=["unchanged_shape", "late_field_relearned"],
+)
+def test_infer_records_filters_known_shapes_and_relearns_on_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    records: list[dict[str, Any]],
+    expected_top_level_walks: int,
+) -> None:
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    original_walk = _inference._InferenceState.walk
+    top_level_walks = 0
+
+    def counting_walk(
+        self: _inference._InferenceState,
+        value: Any,
+        level: tuple[object, ...] = (),
+        obj_prefix: tuple[str, ...] = (),
+    ) -> None:
+        nonlocal top_level_walks
+        if level == () and obj_prefix == () and isinstance(value, dict):
+            top_level_walks += 1
+        original_walk(self, value, level, obj_prefix)
+
+    monkeypatch.setattr(_inference._InferenceState, "walk", counting_walk)
+
+    schema = _inference._assemble_inference_schema(_inference._infer_records(records))
+
+    assert top_level_walks == expected_top_level_walks
+    if expected_top_level_walks == 200:
+        assert "$[:].late" in _leaf_types(schema)
+
+
+def test_native_filter_learns_the_default_10000_record_prefix_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default prefix includes a field first seen on record 10,000."""
+    records = ([{"id": 1}] * 9_999) + ([{"id": 1, "late_seed": "present"}] * 102)
+    original_walk = _inference._InferenceState.walk
+    top_level_walks = 0
+
+    def counting_walk(
+        self: _inference._InferenceState,
+        value: Any,
+        level: tuple[object, ...] = (),
+        obj_prefix: tuple[str, ...] = (),
+    ) -> None:
+        nonlocal top_level_walks
+        if level == () and obj_prefix == () and isinstance(value, dict):
+            top_level_walks += 1
+        original_walk(self, value, level, obj_prefix)
+
+    monkeypatch.setattr(_inference._InferenceState, "walk", counting_walk)
+
+    schema = _inference._assemble_inference_schema(_inference._infer_records(records))
+
+    assert top_level_walks == 10_000
+    assert _leaf_types(schema) == {"$[:].id": "int", "$[:].late_seed": "str"}
+
+
+@pytest.mark.parametrize(
+    ("seed", "tail"),
+    [
+        ([{"tags": [1, None]}], [{"tags": [None]}]),
+        ([{"tags": [{}, [1]]}], [{"tags": [[1]]}]),
+        ([{"tags": []}], [{"tags": [None]}, {"tags": [1.5]}]),
+        ([{"tags": [1]}], [{"tags": [{"code": "x"}]}, {"tags": [2]}]),
+        ([{"value": True}], [{"value": 1}, {"value": 2.5}, {"value": "x"}]),
+        ([{"profile": None}], [{"profile": {"city": "Hull"}}, {"profile": "flat"}]),
+        (
+            [{"profile": {"city": "Hull"}, "left": {"value": 1}}],
+            [
+                {
+                    "profile": {"city": "Leeds", "postcode": "LS1"},
+                    "claims": [{"amount": 3}],
+                    "right": {"value": 2},
+                }
+            ],
+        ),
+    ],
+    ids=[
+        "scalar_array_nulls",
+        "mixed_object_and_nested_array_then_nested_array",
+        "empty_then_null_then_numeric_array",
+        "scalar_object_scalar_array",
+        "bool_int_float_string",
+        "null_object_scalar",
+        "late_nested_table_field_and_duplicate_leaf",
+    ],
+)
+def test_native_shape_filter_matches_full_walk_for_shape_edges(
+    monkeypatch: pytest.MonkeyPatch,
+    seed: list[dict[str, Any]],
+    tail: list[dict[str, Any]],
+) -> None:
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    _assert_inferred_schema_matches_full_walk(seed * 100 + tail)
+
+
+@pytest.mark.parametrize("bad_key", ["bad.key", "$value", "not-valid"])
+def test_native_shape_filter_relearns_late_invalid_nested_keys(
+    monkeypatch: pytest.MonkeyPatch, bad_key: str
+) -> None:
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    records = ([{"profile": {"city": "Hull"}}] * 100) + [
+        {"profile": {"city": "Hull", bad_key: "late"}}
+    ]
+
+    _assert_inferred_schema_matches_full_walk(records)
+
+
+@pytest.mark.parametrize("key", ["class", "__dict__", "__weakref__", "field_0"])
+def test_native_shape_filter_accepts_reserved_python_identifier_keys(
+    monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    records = [{key: "value"}] * 101
+
+    _assert_inferred_schema_matches_full_walk(records)
+
+
+def test_inference_filter_snapshot_round_trips_and_is_independent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    original = {"id": 1}
+    new_field = {"id": 1, "late": "new"}
+    learned = InferenceFilter()
+    for _ in range(100):
+        learned.observe(original)
+
+    snapshot = pickle.loads(pickle.dumps(learned.snapshot()))
+    first = InferenceFilter(snapshot)
+    second = InferenceFilter(snapshot)
+    for _ in range(100):
+        assert first.matches(new_field) is False
+        first.observe(new_field)
+
+    assert first.matches(new_field) is True
+    assert second.matches(new_field) is False
+    assert second.matches(original) is True
+
+
+@pytest.mark.parametrize(
+    ("tail_lines", "expected_type"),
+    [
+        ([b'{"amount":-9223372036854775809}'], "float"),
+        ([b'{"amount":-9223372036854775808}'], "int"),
+        ([b'{"amount":9223372036854775807}'], "int"),
+        ([b'{"amount":9223372036854775808}'], "int"),
+        ([b'{"amount":18446744073709551615}'], "int"),
+        ([b'{"amount":18446744073709551616}'], "float"),
+        ([b'{"amount":1.25}'], "float"),
+        ([b'{"amount":1e20}'], "float"),
+    ],
+    ids=[
+        "below-int64",
+        "min-int64",
+        "max-int64",
+        "above-int64",
+        "max-uint64",
+        "overflow-widens",
+        "decimal",
+        "exponent",
+    ],
+)
+def test_fused_json_range_matches_orjson_for_integer_bounds_and_numbers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tail_lines: list[bytes],
+    expected_type: str,
+) -> None:
+    """Integer overflow must fall back to the original parser and evidence."""
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    prefix_records = [{"amount": 1} for _ in range(100)]
+    prefix = _inference._InferenceState()
+    filter_ = InferenceFilter(json_mode=True)
+    for record in prefix_records:
+        prefix.walk(record)
+        filter_.observe(record)
+    source = tmp_path / "numeric-tail.jsonl"
+    source.write_bytes(b"\n".join(tail_lines) + b"\n")
+
+    delta = _inference._infer_jsonl_range(source, 0, source.stat().st_size, seed=filter_.snapshot())
+    prefix.merge(delta)
+    expected_records = [*prefix_records, *(orjson.loads(raw) for raw in tail_lines)]
+    expected = _full_walk_schema(expected_records)
+
+    assert _inference._assemble_inference_schema(prefix) == expected
+    root = _table(expected, "$[:]")
+    assert root is not None
+    amount = next(column for column in root["columns"] if column["name"] == "amount")
+    assert amount["type"] == expected_type
+
+
+@pytest.mark.parametrize(
+    ("raw", "seed_record"),
+    [
+        (b'{"id":"\xff"}', {"id": "seed"}),
+        (b'{"\xff":1}', {"id": 1}),
+        (b'{"id":"\\ud800"}', {"id": "seed"}),
+        (b'{"id":1e400}', {"id": 1}),
+        (b'{"id":NaN}', {"id": 1}),
+        (b'{"id":1', {"id": 1}),
+        (b'{"id":1,}', {"id": 1}),
+        (b'{"id":1} trailing', {"id": 1}),
+        (b'\xef\xbb\xbf{"id":1}', {"id": 1}),
+    ],
+    ids=[
+        "invalid-utf8-value",
+        "invalid-utf8-key",
+        "unpaired-surrogate",
+        "overflow-float",
+        "nan",
+        "missing-close",
+        "trailing-comma",
+        "trailing-junk",
+        "utf8-bom",
+    ],
+)
+def test_fused_json_range_preserves_orjson_error_evidence_for_known_shapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: bytes, seed_record: dict[str, Any]
+) -> None:
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    learned = InferenceFilter(json_mode=True)
+    for _ in range(100):
+        learned.observe(seed_record)
+    source = tmp_path / "bad-known.jsonl"
+    source.write_bytes(raw + b"\n")
+
+    with pytest.raises(orjson.JSONDecodeError) as expected:
+        orjson.loads(raw.strip())
+    with pytest.raises(orjson.JSONDecodeError) as actual:
+        _inference._infer_jsonl_range(source, 0, source.stat().st_size, seed=learned.snapshot())
+
+    assert actual.value.msg == expected.value.msg
+    assert actual.value.doc == expected.value.doc
+    assert actual.value.pos == expected.value.pos
+    assert str(actual.value) == str(expected.value)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_record"),
+    [
+        (b'{"amount":"wrong","amount":2}', {"amount": 2}),
+        (b'{"profile":{"unknown":"bad"},"profile":{"city":"Hull"}}', {"profile": {"city": "Hull"}}),
+        (b'{"na\\u006de":"wrong","name":"valid"}', {"name": "valid"}),
+    ],
+    ids=["wrong-type-overwritten", "nested-unknown-overwritten", "escaped-duplicate-key"],
+)
+def test_fused_json_range_accepts_valid_duplicate_keys_like_orjson(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw: bytes,
+    expected_record: dict[str, Any],
+) -> None:
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    prefix_record = {"amount": 1, "profile": {"city": "Hull"}, "name": "seed"}
+    prefix = _inference._InferenceState()
+    learned = InferenceFilter(json_mode=True)
+    for _ in range(100):
+        prefix.walk(prefix_record)
+        learned.observe(prefix_record)
+    source = tmp_path / "duplicates.jsonl"
+    source.write_bytes(raw + b"\n")
+
+    delta = _inference._infer_jsonl_range(source, 0, source.stat().st_size, seed=learned.snapshot())
+    prefix.merge(delta)
+
+    assert _inference._assemble_inference_schema(prefix) == _full_walk_schema(
+        [*[prefix_record] * 100, expected_record]
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_orjson_parses"),
+    [(b' \t{"id":1}\r ', 0), (b'\v{"id":1}\f', 1)],
+    ids=["json-whitespace", "strip-only-whitespace"],
+)
+def test_fused_json_range_keeps_strip_framing_for_known_shapes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw: bytes,
+    expected_orjson_parses: int,
+) -> None:
+    """Raw decoder misses must retain the historical ``raw.strip()`` parse."""
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    learned = InferenceFilter(json_mode=True)
+    prefix = _inference._InferenceState()
+    for _ in range(100):
+        learned.observe({"id": 1})
+        prefix.walk({"id": 1})
+    source = tmp_path / "framing.jsonl"
+    source.write_bytes(raw + b"\n")
+    original_loads = _inference.orjson.loads
+    parsed = 0
+
+    def counting_loads(value: bytes, *args: Any, **kwargs: Any) -> Any:
+        nonlocal parsed
+        parsed += 1
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(_inference.orjson, "loads", counting_loads)
+    state = _inference._infer_jsonl_range(source, 0, source.stat().st_size, seed=learned.snapshot())
+    prefix.merge(state)
+
+    assert parsed == expected_orjson_parses
+    assert _inference._assemble_inference_schema(prefix) == _full_walk_schema([{"id": 1}])
 
 
 def test_infer_returns_root_and_object_child_tables_with_types(tmp_path: Path) -> None:

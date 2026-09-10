@@ -83,7 +83,19 @@ process exit because Haute cannot observe the lifetime of every derived Polars
 plan. A cache miss shreds only the requested tables and columns. Calls without a
 proven demand retain the complete bundle. Schema inference can sniff a v2 config from a data file
 directly, sampling optionally, widening column types across every record seen and
-naming collision-free bare leaf keys as their own column names. Inferred table
+naming collision-free bare leaf keys as their own column names. Complete inference
+learns a structural filter from an initial 10,000 records and checks the remaining
+records in native code; differences still extend the schema or produce the same
+errors as the full inference walk. This optimization never omits the rest of the
+file or treats a sampled schema as complete. Parallel JSONL inference learns
+this initial prefix once and shares its structure across workers. Discovery on
+parallel JSONL ranges combines parsing and structural checking for
+known records; records outside the fast path retain the original parser and
+inference rules, including their errors. Results from complete scans are reused
+within the running process only when
+the source's strong file identity/change token and record-size limit still
+match. Concurrent requests share one inference, and callers receive independent
+schema values. Changed or unverifiable files require a new scan. Inferred table
 labels are readable identifiers derived from the source key names — the root
 table is `quote_info`, `$[:].proposer.claims[:]` becomes `claims`, and two levels
 sharing a key name qualify symmetrically (`a_items`/`b_items`) — never raw path
@@ -345,6 +357,13 @@ strict build and raises a specific, column-named error instead.
 - If the underlying structured data file changes while its cache is being built, the build
   aborts with `SourceChangedDuringCacheBuildError` (`RuntimeError`); the JSON cache route
   surfaces this as HTTP 409 Conflict.
+- Before Studio previews a ready pipeline using a structured Quote Input
+  (JSON/JSONL/NDJSON/XML), it checks the cache against the current in-memory
+  schema. A missing or invalid cache is built in full before preview executes,
+  with visible cache-building progress. A matching cache is reused. Build
+  failures stop the preview and surface their error; cancelling or superseding
+  the preview cannot launch a late preview or display stale progress. Runtime
+  execution outside Studio retains the direct-source path described below.
 - At runtime, a v2 apiInput with no emit-true tables, or emit-true tables with no
   selected columns, raises `RuntimeError` with a message telling the user to tick
   `emit` or select a column. A stale, missing, corrupt, or schema-mismatched cache

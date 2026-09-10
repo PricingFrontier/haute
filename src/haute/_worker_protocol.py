@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal, cast
 
+from haute._cpu_performance import configure_process_high_qos
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
@@ -536,6 +537,7 @@ def _protocol_entrypoint(
 ) -> None:
     runtime = WorkerRuntime(progress_queue, artifact_root)
     try:
+        configure_process_high_qos()
         if memory_limit_bytes is not None and address_space_caps_supported():
             _apply_address_space_limit(memory_limit_bytes)
         result = function(runtime, request)

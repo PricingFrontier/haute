@@ -881,8 +881,8 @@ class TrainingJob:
             split_result = self._split_data(prepared, report, execution_context=execution_context)
 
             def selection_iteration(
-                _iteration: int,
-                _total: int,
+                iteration: int,
+                total: int,
                 _metrics: dict[str, float],
             ) -> None:
                 if check_cancelled is not None:
@@ -891,6 +891,11 @@ class TrainingJob:
                     execution_context,
                     label="evaluation_selection_iteration",
                 )
+                if total > 0:
+                    report(
+                        f"Iteration {iteration} of {total}",
+                        0.3 + 0.5 * min(iteration / total, 1.0),
+                    )
 
             trained = self._train_model(
                 split_result,
@@ -898,12 +903,15 @@ class TrainingJob:
                 prepared.cat_features,
                 (
                     selection_iteration
-                    if check_cancelled is not None or execution_context is not None
+                    if progress is not None
+                    or check_cancelled is not None
+                    or execution_context is not None
                     else None
                 ),
                 report,
                 execution_context=execution_context,
             )
+            report("Evaluating validation predictions", 0.85)
             validation = self._read_partition(
                 split_result.split_path,
                 PARTITION_VALIDATION,
@@ -930,7 +938,7 @@ class TrainingJob:
                     exc,
                     evaluation_set=f"validation fit {self.evaluation_fit_index}",
                 ) from exc
-            return EvaluationFitResult(
+            result = EvaluationFitResult(
                 1,
                 self.evaluation_fit_index,
                 split_result.n_train,
@@ -938,6 +946,8 @@ class TrainingJob:
                 metrics,
                 trained.fit_result.best_iteration,
             )
+            report("Validation complete", 1.0)
+            return result
         finally:
             self._cleanup_owned_temp_parquets(prepared, split_result)
 
@@ -1299,7 +1309,7 @@ class TrainingJob:
                 with tempfile.TemporaryDirectory(prefix="haute_evaluation_fits_") as root:
                     for fit_index in range(selection_fit_count):
                         report(
-                            f"Evaluation: fit {fit_index + 1}/{total}",
+                            f"Fit {fit_index + 1} of {total} (validation)",
                             fit_index / total,
                         )
                         child = self._new_evaluation_job(
@@ -1312,8 +1322,18 @@ class TrainingJob:
                             params=self.params,
                             source_sha256=source_digest,
                         )
+
+                        def fit_progress(
+                            message: str, fraction: float, *, fit_index: int = fit_index
+                        ) -> None:
+                            report(
+                                f"Fit {fit_index + 1} of {total} (validation): {message}",
+                                (fit_index + fraction) / total,
+                            )
+
                         ordinary_fits.append(
                             child.run_evaluation_fit(
+                                progress=fit_progress,
                                 check_cancelled=check_cancelled,
                                 execution_context=execution_context,
                             )

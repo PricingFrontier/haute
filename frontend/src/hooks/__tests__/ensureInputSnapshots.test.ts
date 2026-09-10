@@ -1,10 +1,12 @@
 import type { Node } from "@xyflow/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type {
   InputCacheBuildResponse,
   InputCacheJobStatusResponse,
   InputCacheSnapshotResponse,
   JobStatus,
+  JsonCacheBuildResponse,
+  JsonCacheStatusResponse,
 } from "../../api/types"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 
@@ -15,6 +17,9 @@ vi.mock("../../api/client", async (importOriginal) => {
     buildInputCache: vi.fn(),
     getInputCacheJob: vi.fn(),
     getInputCacheStatus: vi.fn(),
+    buildJsonCache: vi.fn(),
+    getJsonCacheStatusForSchema: vi.fn(),
+    getJsonCacheProgress: vi.fn(),
   }
 })
 
@@ -23,8 +28,18 @@ import {
   buildInputCache,
   getInputCacheJob,
   getInputCacheStatus,
+  buildJsonCache,
+  getJsonCacheStatusForSchema,
+  getJsonCacheProgress,
 } from "../../api/client"
 import { ensureInputSnapshots } from "../ensureInputSnapshots"
+
+const jsonBuild: JsonCacheBuildResponse = {
+  path: "cache", data_path: "quotes.jsonl", row_count: 10, column_count: 1,
+  columns: {}, size_bytes: 100, cached_at: 1, cache_seconds: 2,
+  skipped_records: 0, skipped_rows: {},
+}
+const jsonStatus = (cached: boolean): JsonCacheStatusResponse => ({ ...jsonBuild, cached })
 
 function dataInput(id: string): Node {
   return {
@@ -93,6 +108,106 @@ function job(
 describe("ensureInputSnapshots", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+  afterEach(() => vi.useRealTimers())
+
+  function quoteInput(path = "quotes.jsonl"): Node {
+    return {
+      id: "quote", position: { x: 0, y: 0 },
+      data: { nodeType: NODE_TYPES.API_INPUT, config: { path, tables: [] } },
+    }
+  }
+
+  it("checks the live Quote Input schema and awaits its full cache build", async () => {
+    const node = quoteInput()
+    vi.mocked(getJsonCacheStatusForSchema).mockResolvedValue(jsonStatus(false))
+    let finish!: (value: JsonCacheBuildResponse) => void
+    vi.mocked(buildJsonCache).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    const onProgress = vi.fn()
+    const onBuildStart = vi.fn()
+    let completed = false
+    const pending = ensureInputSnapshots([node], { onProgress, onBuildStart })
+      .then(() => { completed = true })
+    await vi.waitFor(() => expect(buildJsonCache).toHaveBeenCalledOnce())
+    expect(completed).toBe(false)
+    expect(getJsonCacheStatusForSchema).toHaveBeenCalledWith({
+      path: "quotes.jsonl", volatile_schema: node.data.config,
+    })
+    expect(buildJsonCache).toHaveBeenCalledWith({
+      path: "quotes.jsonl", volatile_schema: node.data.config,
+    }, { signal: expect.any(AbortSignal) })
+    expect(onBuildStart).toHaveBeenCalledOnce()
+    expect(onProgress).toHaveBeenCalledWith(expect.stringContaining("Caching Quote Input"))
+    finish(jsonBuild)
+    await pending
+    expect(onProgress).toHaveBeenLastCalledWith(null)
+  })
+
+  it.each(["quotes.JSON", "quotes.jsonl", "quotes.ndjson", "quotes.xml"])(
+    "reuses a matching Quote Input cache for %s", async (path) => {
+      vi.mocked(getJsonCacheStatusForSchema).mockResolvedValue(jsonStatus(true))
+      await ensureInputSnapshots([quoteInput(path)])
+      expect(getJsonCacheStatusForSchema).toHaveBeenCalledOnce()
+      expect(buildJsonCache).not.toHaveBeenCalled()
+    },
+  )
+
+  it("does not cache flat-file Quote Inputs", async () => {
+    await ensureInputSnapshots([quoteInput("quotes.parquet")])
+    expect(getJsonCacheStatusForSchema).not.toHaveBeenCalled()
+    expect(buildJsonCache).not.toHaveBeenCalled()
+  })
+
+  it("propagates cache build errors and clears progress", async () => {
+    vi.mocked(getJsonCacheStatusForSchema).mockResolvedValue(jsonStatus(false))
+    vi.mocked(buildJsonCache).mockRejectedValue(new Error("Cache disk quota exceeded"))
+    const onProgress = vi.fn()
+    await expect(ensureInputSnapshots([quoteInput()], { onProgress }))
+      .rejects.toThrow("Cache disk quota exceeded")
+    expect(onProgress).toHaveBeenLastCalledWith(null)
+  })
+
+  it("cancels a pending cache build and stops reporting progress", async () => {
+    vi.mocked(getJsonCacheStatusForSchema).mockResolvedValue(jsonStatus(false))
+    vi.mocked(buildJsonCache).mockImplementation((_payload, options) => new Promise((_resolve, reject) => {
+      options?.signal?.addEventListener("abort", () => reject(new DOMException("Cancelled", "AbortError")))
+    }))
+    const controller = new AbortController()
+    const onProgress = vi.fn()
+    const pending = ensureInputSnapshots([quoteInput()], { signal: controller.signal, onProgress })
+    const rejection = expect(pending).rejects.toMatchObject({ name: "AbortError" })
+    await vi.waitFor(() => expect(buildJsonCache).toHaveBeenCalledOnce())
+    controller.abort()
+    await rejection
+    expect(getJsonCacheProgress).not.toHaveBeenCalled()
+  })
+
+  it("reports build progress and stops polling when publication completes", async () => {
+    vi.useFakeTimers()
+    vi.mocked(getJsonCacheStatusForSchema).mockResolvedValue(jsonStatus(false))
+    vi.mocked(getJsonCacheProgress).mockResolvedValue({ active: true, rows: 1234, elapsed: 12.8 })
+    let finish!: (value: JsonCacheBuildResponse) => void
+    vi.mocked(buildJsonCache).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    const onProgress = vi.fn()
+    const pending = ensureInputSnapshots([quoteInput()], { onProgress })
+    await vi.advanceTimersByTimeAsync(800)
+    expect(onProgress).toHaveBeenLastCalledWith("Caching Quote Input as Parquet… · 1,234 rows · 12s")
+    finish(jsonBuild)
+    await pending
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(getJsonCacheProgress).toHaveBeenCalledOnce()
+    expect(onProgress).toHaveBeenLastCalledWith(null)
+  })
+
+  it("does not build after a status failure or a pre-cancelled request", async () => {
+    vi.mocked(getJsonCacheStatusForSchema).mockRejectedValue(new Error("Invalid table schema"))
+    await expect(ensureInputSnapshots([quoteInput()])).rejects.toThrow("Invalid table schema")
+    const controller = new AbortController()
+    controller.abort()
+    await expect(ensureInputSnapshots([quoteInput()], { signal: controller.signal }))
+      .rejects.toMatchObject({ name: "AbortError" })
+    expect(getJsonCacheStatusForSchema).toHaveBeenCalledOnce()
+    expect(buildJsonCache).not.toHaveBeenCalled()
   })
 
   it("builds a missing snapshot with the lazy profile and waits for completion", async () => {

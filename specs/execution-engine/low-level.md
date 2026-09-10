@@ -537,6 +537,33 @@ filename-suffix switch and execution never starts a cache build or remote fetch.
 Post-read input code is accepted only when the shared AST proof establishes row-local
 semantics and is applied exactly once after provider resolution.
 
+**Windows CPU performance policy.** Haute requests HighQoS for its CLI process,
+server lifespan, and every isolated, protocol, warm interactive, and parallel JSON
+inference/shredding worker before work begins. JSON process pools install the
+same helper as their process initializer. The shared `configure_process_high_qos()` helper in
+`_cpu_performance.py` operates on the current process only. Windows startup reads
+`ProcessPowerThrottling`, sets the `PROCESS_POWER_THROTTLING_EXECUTION_SPEED`
+control bit and clears its state bit, preserving all unrelated control/state
+bits. It verifies the resulting policy before reporting `high`; an already
+HighQoS process requires no write. This prevents automatic background-window
+power policies from slowing previews, caching, Explore, optimisation, training,
+and other Haute work. The policy lasts for that Haute process; it does not change
+the parent application's policy, scheduling priority, CPU affinity, machine power
+plan, or registry. Importing the Python package does not change host policy.
+
+Linux/macOS (including Databricks Apps) return `not_applicable` without loading
+Windows APIs. HighQoS is a performance enhancement, not an execution prerequisite:
+an unavailable API, rejected native call, or unsuccessful read-back returns
+`unavailable` with a structured warning containing the operation/reason and native
+error code when available. Work continues under the host policy, with no elevation
+attempt or claim that HighQoS succeeded. Unexpected programming errors propagate.
+Successful configuration is logged with the process ID. HighQoS requests CPU
+performance; it cannot guarantee throughput or override host resource/thermal
+limits. Each spawned process configures itself; inheritance is not relied upon.
+The cross-platform CI smoke job includes CPU-policy unit/startup coverage and
+Windows-only native spawn tests, which first reset the child's execution-speed
+policy to automatic and verify HighQoS from within the actual worker workload.
+
 **Worker isolation (`run_isolated_worker`).** Starts a `spawn`-context child process
 running `_isolated_worker_entrypoint`. Before user work begins, Linux prefers a
 delegated cgroup-v2 child with a finite `memory.max` and otherwise applies
@@ -756,6 +783,15 @@ present a structural or schema result as execution evidence.
   Declared annotations are not used as forward-schema evidence for arbitrary user
   code; missing input schemas, opaque registered contracts, and multi-input nodes
   remain unproven.
+- **Configured output shaping participates in projection planning.** Exact output
+  schemas apply the same optional selection and simultaneous renames as execution.
+  Preview demands use final output names. A configured rename is an explicit
+  full-width incoming boundary until its pre-rename schema is proven: propagating
+  the new names upstream is invalid, and pruning can conceal rename collisions.
+  The boundary is reported as `configured_column_renames`; target output projection
+  remains available. Empty and identity-only rename mappings do not add a boundary.
+  Runtime join refinement obeys the same boundary. Requested preview columns apply
+  only to the target, even when the caller also requests ancestor preview rows.
 - **Unowned fan-in never uses ordinary contract algebra.** After the dedicated
   optimiser, edge-join, and compositional Polars fan-in rules have had an
   opportunity to assign columns to individual incoming edges, any remaining node

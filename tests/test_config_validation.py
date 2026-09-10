@@ -17,6 +17,7 @@ from haute._types import (
     OPTIMISER_APPLY_CONFIG_KEYS,
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
+    EdgeJoinConfig,
     ExploreChartAxes,
     ExploreChartCategory,
     ExploreChartConfig,
@@ -531,25 +532,34 @@ class TestBuildNodeConfigProducesValidKeys:
 # ---------------------------------------------------------------------------
 
 
-class TestSelectedColumnsUniversal:
-    """Verify selected_columns doesn't trigger false positives on any node type."""
+class TestSharedColumnSettingsUniversal:
+    """Shared authored column settings are accepted consistently across nodes."""
 
-    def test_selected_columns_in_universal_keys(self):
-        """selected_columns should be in the universal keys set."""
-        assert "selected_columns" in _UNIVERSAL_KEYS
+    def test_shared_column_settings_in_universal_keys(self):
+        assert {"selected_columns", "column_renames", "categorical_levels"} <= _UNIVERSAL_KEYS
 
     @pytest.mark.parametrize("node_type", list(VALID_KEYS.keys()))
-    def test_selected_columns_valid_for_all_node_types(self, node_type):
-        """selected_columns should be accepted for every node type with validation."""
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("selected_columns", ["_id", "premium"]),
+            ("column_renames", {"_id": "identifier"}),
+            ("categorical_levels", {"_category": ["low", "high", None]}),
+        ],
+    )
+    def test_shared_column_settings_valid_for_all_node_types(self, node_type, key, value):
         bad = warn_unrecognized_config_keys(
             node_type,
-            {"selected_columns": ["a", "b"]},
+            {key: value},
         )
-        assert bad == [], f"selected_columns flagged as unrecognized for {node_type}"
+        assert bad == [], f"{key} flagged as unrecognized for {node_type}"
 
-    def test_selected_columns_in_transform_typed_dict(self):
-        """TransformConfig TypedDict should declare selected_columns."""
-        assert "selected_columns" in TransformConfig.__annotations__
+    @pytest.mark.parametrize("config_type", [TransformConfig, EdgeJoinConfig, ExploreConfig])
+    def test_shared_column_settings_in_inline_typed_dicts(self, config_type):
+        hints = get_type_hints(config_type)
+        assert hints["selected_columns"] == list[str]
+        assert hints["column_renames"] == dict[str, str]
+        assert hints["categorical_levels"] == dict[str, list[str | None]]
 
     def test_explore_config_allows_polars_code(self):
         """Explore can store the Polars snippet used to prepare analysis data."""
@@ -559,6 +569,9 @@ class TestSelectedColumnsUniversal:
             "pivot_formulas": list[ExplorePivotFormula],
             "pivots": list[ExplorePivotPersistedConfig],
             "charts": list[ExploreChartConfig],
+            "selected_columns": list[str],
+            "column_renames": dict[str, str],
+            "categorical_levels": dict[str, list[str | None]],
         }
         assert get_type_hints(ExploreChartConfig) == {
             "version": Literal[1],

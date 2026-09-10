@@ -1,5 +1,11 @@
 # Frontend Graph Canvas — Low-Level Specification
 
+Authored configuration dictionaries retain every user key through request
+serialization, undo/redo cloning and dirty-state fingerprints. In particular,
+`__proto__`, `constructor`, and underscore-prefixed column names are own data
+properties, never prototype setters or editor metadata inside config payloads.
+Changing only such a field must change the persisted fingerprint.
+
 ## Module map
 
 | File | Responsibility |
@@ -434,8 +440,8 @@ reconciliation rather than dropping them or committing a second mutation.
     absolutely positioned at the row's vertical midline with its dot
     centred on the node's right border. The instance name is
     suppressed in that body; the trace-value pill, when active, renders
-    above the rows. Zero eligible frames keeps the instance name, adds a
-    muted "No emitted frames" line, and renders no source handle.
+    above the rows. Zero eligible frames suppresses the instance name, shows a
+    muted, right-aligned "No emitted frames" line, and renders no source handle.
     `_SourceHandle` supplies every output-producing ordinary node's single
     right-edge handle and is mounted inside the relative body-name row; that row
     reserves the same 12px source-side inset used by `FramePortRows`, so the

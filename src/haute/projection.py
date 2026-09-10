@@ -53,6 +53,7 @@ __all__ = [
     "UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME",
     "api_input_port_columns_by_node",
     "builder_required_output_columns_by_node",
+    "has_configured_column_renames",
     "explain",
     "model_score_required_output_columns",
     "plan",
@@ -1357,6 +1358,12 @@ def source_scan_projection(
         columns=frozenset(physical),
         validate_columns=selected_set,
     )
+
+
+def has_configured_column_renames(node: GraphNode) -> bool:
+    """Whether output shaping changes the builder's column namespace."""
+    renames = node.data.config.get("column_renames") or {}
+    return any(source != target for source, target in renames.items())
 
 
 _SOURCE_PROJECTION_TRANSPARENT_METHODS = frozenset({"limit", "head", "tail", "slice"})
@@ -3376,7 +3383,11 @@ def _exact_structural_outputs(
         if analysed is not None:
             result, _bindings = analysed
             if result.supported and result.exact_output_columns is not None:
-                exact[node_id] = result.exact_output_columns
+                shaped = _configured_output_schema(
+                    node_map[node_id].data.config, result.exact_output_columns
+                )
+                if shaped is not None:
+                    exact[node_id] = shaped
                 continue
 
         if len(incoming) != 1:
@@ -3393,8 +3404,23 @@ def _exact_structural_outputs(
             input_columns,
         )
         if output_columns is not None:
-            exact[node_id] = output_columns
+            shaped = _configured_output_schema(node_map[node_id].data.config, output_columns)
+            if shaped is not None:
+                exact[node_id] = shaped
     return exact
+
+
+def _configured_output_schema(
+    config: Mapping[str, Any], columns: frozenset[str]
+) -> frozenset[str] | None:
+    """Apply executor output shaping to a proven schema, without hiding collisions."""
+    selected = set(config.get("selected_columns") or [])
+    kept = columns & selected
+    if kept:
+        columns = frozenset(kept)
+    renames = config.get("column_renames") or {}
+    renamed = frozenset(renames.get(column, column) for column in columns)
+    return renamed if len(renamed) == len(columns) else None
 
 
 def compute_prepared_plan(
@@ -3578,6 +3604,22 @@ def compute_prepared_plan(
                 message="known full schema from structural contract transfer",
             )
         parent_ids = {edge.source for edge in incoming}
+
+        if incoming and has_configured_column_renames(node):
+            # Config renames run AFTER the builder/user code and optional selection.
+            # Builder contracts and code lineage therefore describe a different
+            # namespace. Keep inputs intact: inverse mapping without the full
+            # pre-rename schema can also prune away a real duplicate-name error.
+            store_parent_result(
+                incoming,
+                ParentDemandResult(
+                    default=None,
+                    by_parent={},
+                    rule_name="configured_column_renames",
+                ),
+                message="configured output renames require intact builder inputs",
+            )
+            continue
 
         lineage = _analyse_polars_node_lineage(
             node,

@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import { expect, test, type Locator, type Page, type Request } from "@playwright/test"
@@ -305,9 +305,138 @@ function expectJoinTopology(graph: NormalizedGraph, join: GraphNode, base: strin
   expect(graph.edges.find((edge) => edge.source === join.id && edge.target === downstream), "split downstream edge").toBeDefined()
 }
 
-test.describe.configure({ mode: "serial" })
+const columnMetadata = {
+  column_renames: { _id: "identifier", segment: "region" },
+  categorical_levels: { region: ["North", "South"] },
+}
+
+function seedColumnSettingsPipeline(nodeType: "polars" | "edgeJoin" | "dataInput"): void {
+  mkdirSync(dataInputDir, { recursive: true })
+  mkdirSync(resolve(ratingDir, "data"), { recursive: true })
+  writeFileSync(resolve(ratingDir, "data", "columns.csv"), "_id,premium,segment,discard\n1,12.5,North,99\n2,25.0,South,88\n", "utf8")
+  writeFileSync(resolve(ratingDir, "data", "keys.csv"), "_id\n1\n2\n", "utf8")
+  const inputConfig = {
+    inputType: "file", format: "csv", mode: "read", path: "data/columns.csv",
+    arguments: { schema: { _id: "Int64", premium: "Float64", segment: "String", discard: "Int64" } },
+    contract: "opaque",
+  }
+  for (const name of ["raw_rows", "subject"]) {
+    writeFileSync(resolve(dataInputDir, `${name}.json`), JSON.stringify({
+      ...inputConfig, ...(name === "subject" ? columnMetadata : {}),
+    }), "utf8")
+  }
+  writeFileSync(resolve(dataInputDir, "lookup_rows.json"), JSON.stringify({
+    ...inputConfig, path: "data/keys.csv", arguments: { schema: { _id: "Int64" } },
+  }), "utf8")
+  const inputFunction = (name: string) => [
+    `@pipeline.data_input(config="config/data_input/${name}.json")`,
+    `def ${name}() -> pl.LazyFrame:`,
+    `    return resolve_data_input_from_config("config/data_input/${name}.json", base_dir=Path(__file__).parent)`, "",
+  ]
+  // Renames and category declarations are authored configuration without a
+  // dedicated Columns-tab editor. Seed them, then verify real UI selection
+  // edits preserve them across saves and reloads.
+  const metadataArgs = `column_renames=${JSON.stringify(columnMetadata.column_renames)}, categorical_levels=${JSON.stringify(columnMetadata.categorical_levels)}, contract="opaque"`
+  const subjectFunction = nodeType === "dataInput" ? inputFunction("subject") : nodeType === "edgeJoin" ? [
+    `@pipeline.edge_join(how="left", on=["_id"], ${metadataArgs})`,
+    "def subject(raw_rows: pl.LazyFrame, lookup_rows: pl.LazyFrame) -> pl.LazyFrame:",
+    '    return pipeline._apply_edge_join("subject", raw_rows, lookup_rows)', "",
+  ] : [
+    `@pipeline.polars(${metadataArgs})`,
+    "def subject(raw_rows: pl.LazyFrame) -> pl.LazyFrame:",
+    "    return raw_rows", "",
+  ]
+  writeFileSync(pipelinePath, [
+    '"""Column persistence browser fixture."""', "from pathlib import Path", "import polars as pl", "import haute",
+    "from haute.graph_utils import resolve_data_input_from_config", 'pipeline = haute.Pipeline("columns_e2e")', "",
+    ...inputFunction("raw_rows"), ...inputFunction("lookup_rows"), ...subjectFunction,
+    ...(nodeType === "dataInput" ? [] : nodeType === "edgeJoin" ? [
+      'pipeline.connect("raw_rows", "subject", target_port="base")',
+      'pipeline.connect("lookup_rows", "subject", target_port="join")',
+    ] : ['pipeline.connect("raw_rows", "subject")']), "",
+  ].join("\n"), "utf8")
+}
+
+test.describe("Authored column settings survive the complete browser persistence path", () => {
+  test.describe.configure({ mode: "default" })
+  for (const nodeType of ["polars", "edgeJoin", "dataInput"] as const) {
+    test(`${nodeType}: deselect, navigate, undo/redo, save, reload and select all`, async ({ page }) => {
+      test.slow()
+      page.setDefaultTimeout(15_000)
+      resetE2eProject()
+      seedColumnSettingsPipeline(nodeType)
+      await captureInitialGraph(page)
+      const openSubject = async () => {
+        await page.getByTestId("rf__node-subject").click()
+        await page.getByRole("button", { name: /^columns$/i }).click()
+        // Undo clears derived schema metadata. Recompute it through the UI
+        // before asserting the restored authored selection.
+        await page.getByRole("button", { name: "Refresh", exact: true }).click()
+        await expect(page.getByTestId("node-panel-editor").getByRole("checkbox")).toHaveCount(4)
+      }
+      const discardCheckbox = () => page.getByTestId("node-panel-editor").getByRole("row").filter({ hasText: "discard" }).getByRole("checkbox")
+      const assertPreview = async (includesDiscard: boolean) => {
+        // Configuration edits mark the preview stale; the user explicitly
+        // refreshes before inspecting the newly computed result.
+        await page.getByRole("button", { name: "Refresh", exact: true }).click()
+        const table = page.getByTestId("data-preview-table")
+        await expect(table.locator("thead th > div:first-child")).toHaveText(
+          includesDiscard ? ["identifier", "premium", "region", "discard"] : ["identifier", "premium", "region"],
+        )
+        await expect(table.locator("tbody tr").first().getByRole("cell")).toHaveText(
+          includesDiscard ? ["1", "1", "12.5", "North", "99"] : ["1", "1", "12.5", "North"],
+        )
+      }
+      await openSubject()
+      await assertPreview(true)
+      await discardCheckbox().uncheck()
+      await assertPreview(false)
+      // Undo and redo the same authored setting through the real app shortcuts.
+      await page.getByTestId("rf__node-subject").click()
+      await dispatchAppShortcut(page, "z")
+      await openSubject()
+      await expect(discardCheckbox()).toBeChecked()
+      await assertPreview(true)
+      await dispatchAppShortcut(page, "y")
+      await openSubject()
+      await expect(discardCheckbox()).not.toBeChecked()
+      await assertPreview(false)
+      await page.getByTestId("rf__node-lookup_rows").click()
+      await openSubject()
+      await expect(discardCheckbox()).not.toBeChecked()
+
+      await saveAndCapture(page)
+      const diskGraph = await reloadAndCaptureGraph(page)
+      expect(diskGraph.nodes.find((node) => node.id === "subject")?.data.config).toMatchObject({
+        ...columnMetadata, selected_columns: ["_id", "premium", "segment"],
+      })
+      await openSubject()
+      await expect(discardCheckbox()).not.toBeChecked()
+      await assertPreview(false)
+      // Verify the actual artifact too: the server cannot satisfy this with
+      // an in-memory response that never persisted the setting.
+      const artifact = nodeType === "dataInput"
+        ? readFileSync(resolve(dataInputDir, "subject.json"), "utf8")
+        : readFileSync(pipelinePath, "utf8")
+      expect(artifact).toContain("selected_columns")
+      expect(artifact).toContain("column_renames")
+
+      await page.getByTestId("node-panel-editor").getByRole("button", { name: "All", exact: true }).click()
+      await assertPreview(true)
+      await saveAndCapture(page)
+      const clearedGraph = await reloadAndCaptureGraph(page)
+      const cleared = clearedGraph.nodes.find((node) => node.id === "subject")?.data.config
+      expect(cleared).toMatchObject(columnMetadata)
+      expect(cleared?.selected_columns ?? []).toEqual([])
+      await openSubject()
+      await expect(discardCheckbox()).toBeChecked()
+      await assertPreview(true)
+    })
+  }
+})
 
 test.describe("Edge Join insertion workflow", () => {
+  test.describe.configure({ mode: "serial" })
   test.beforeEach(() => {
     resetE2eProject()
     seedPipeline()

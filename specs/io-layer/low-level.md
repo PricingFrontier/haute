@@ -277,6 +277,12 @@ behaviour, and `columns=None` remains full-width.
 
 ### Data Output
 
+`executor.resolve_data_output_path()` adds `outputs/` to bare filenames and the
+registry's default extension when absent. File-provider paths are anchored to the
+project root before containment, even for a nested pipeline; explicit relative paths
+are also project-relative. The returned display path and filesystem target describe
+the same destination. Destination preview and explicit writes share this resolver.
+
 `validate_data_output_config()` and registry mode resolution select the Polars sink.
 `write_polars_output()` validates arguments/engines, applies the output target, and uses the
 bounded sink discipline. Sidecar loading and parent-directory preparation are owned by the

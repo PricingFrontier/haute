@@ -425,7 +425,7 @@ describe("ApiInputEditor", () => {
     await waitFor(() => {
       expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledTimes(2)
       expect(screen.getByText("Cache as Parquet")).toBeTruthy()
-      expect(screen.getByText(/Runs directly from JSON.*faster repeat runs/)).toBeTruthy()
+      expect(screen.getByText(/Preview automatically caches this input/)).toBeTruthy()
       expect(screen.queryByText("10 rows")).toBeNull()
     })
     expect(mockGetJsonCacheStatusForSchema).toHaveBeenLastCalledWith(
@@ -486,7 +486,7 @@ describe("ApiInputEditor", () => {
     render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json" }} />)
 
     await waitFor(() => {
-      expect(screen.getByText(/Runs directly from JSON.*faster repeat runs/)).toBeTruthy()
+      expect(screen.getByText(/Preview automatically caches this input/)).toBeTruthy()
     })
   })
 

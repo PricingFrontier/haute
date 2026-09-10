@@ -159,7 +159,17 @@ def _compact_rule_rows(
 
 
 def _compact_banding_factor_for_sidecar(factor: dict[str, Any]) -> dict[str, Any]:
-    result = deepcopy(factor)
+    # Factors and expanded rule rows have editor properties (_prevRules and
+    # _id). A compact rules dictionary instead has user category keys, which
+    # must survive even when named exactly like one of those properties.
+    result = {key: deepcopy(value) for key, value in factor.items() if not key.startswith("_")}
+    if isinstance(result.get("rules"), list):
+        result["rules"] = [
+            {key: value for key, value in rule.items() if not key.startswith("_")}
+            if isinstance(rule, dict)
+            else rule
+            for rule in result["rules"]
+        ]
     banding_type = _banding_type(result)
     if banding_type not in _COMPACT_RULE_TYPES:
         return result

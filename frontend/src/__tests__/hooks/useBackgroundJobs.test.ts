@@ -767,7 +767,7 @@ describe("useBackgroundJobs", () => {
       await advance(500)
 
       expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe(
-        "Memory pressure reached 75% of the optimiser budget. RSS 1.7 KB of 2.9 KB limit.",
+        "Optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )
       expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.status).toBe("memory_limited")
       expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.execution_metrics).toBeDefined()
@@ -775,7 +775,7 @@ describe("useBackgroundJobs", () => {
         (toast) =>
           toast.type === "error" &&
           toast.text.includes(
-            "Memory pressure reached 75% of the optimiser budget. RSS 1.7 KB of 2.9 KB limit.",
+            "Optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
           ),
       )).toBe(true)
     })
@@ -808,7 +808,7 @@ describe("useBackgroundJobs", () => {
         (toast) =>
           toast.type === "error" &&
           toast.text.includes("Projection contract failed") &&
-          !toast.text.includes("Memory pressure reached"),
+          !toast.text.includes("of its memory allowance"),
       )).toBe(true)
     })
   })

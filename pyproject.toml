@@ -54,6 +54,8 @@ dependencies = [
     "numpy>=2.0,<3",
     "structlog>=25.5.0,<26",
     "orjson>=3.11.7,<4",
+    # Native structural filter for exact, complete structured-input inference.
+    "msgspec>=0.21.1,<0.22",
     "price-contour>=0.4.1,<0.5",
     "rustystats>=0.7.0,<0.8",
     # Core: Model Scoring and the MLflow registry are first-class palette

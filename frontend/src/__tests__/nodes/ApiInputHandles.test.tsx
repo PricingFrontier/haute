@@ -231,7 +231,7 @@ describe("apiInput handle identity across zoom levels", () => {
 
     expect(sourceHandleIds(container)).toEqual([])
     const node = screen.getByTestId("node-quotes")
-    expect(within(node).getByText("quotes")).toBeInTheDocument()
+    expect(within(node).queryByText("quotes")).not.toBeInTheDocument()
     expect(within(node).getByText("No emitted frames")).toBeInTheDocument()
     expect(within(node).queryAllByTestId(/^api-input-frame-row-/)).toHaveLength(0)
   })

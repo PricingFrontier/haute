@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from multiprocessing.process import BaseProcess
 from typing import Any, Literal, TypeVar, cast
 
+from haute._cpu_performance import configure_process_high_qos
 from haute._logging import get_logger
 from haute._native_memory_limit import (
     NativeMemoryLease,
@@ -781,6 +782,7 @@ def _isolated_worker_entrypoint(
     lease = NativeMemoryLease()
     applied = False
     try:
+        configure_process_high_qos()
         if memory_limit_bytes is not None:
             applied = lease.apply(memory_limit_bytes, required=require_memory_limit)
     except BaseException as exc:

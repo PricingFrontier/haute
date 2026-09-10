@@ -70,6 +70,14 @@ pressure reclaim immediately, the latter logged. Quota pressure rejects the inco
 never silently evicts another input's current snapshot. Users must clear an
 unused snapshot or raise the configured quota before retrying.
 
+Studio also prepares structured Quote Inputs (JSON/JSONL/NDJSON/XML) before
+preview. It checks the existing working/committed cache against the current
+in-memory schema, builds a missing or invalid full cache through the existing
+JSON-cache build endpoint, and awaits publication before execution. The preview
+panel shows cache preparation and elapsed build time. Build or status failures
+stop preview with an actionable error; cancellation prevents stale progress or
+late execution. A valid cache is reused without rebuilding.
+
 Before Studio sends a preview that uses snapshot-backed Data Inputs, it checks
 each required snapshot through the existing status endpoint. A missing,
 corrupt, failed, or already-building snapshot starts or joins the existing

@@ -164,8 +164,12 @@ function resultToPreview(
   })
 }
 
-function previewColumnNamesForNode(node: Node): string[] | undefined {
-  const columns = nodeData(node)._columns
+function previewColumnNamesForNode(node: Node, source: string, structuralVersion: number): string[] | undefined {
+  const data = nodeData(node)
+  // A remembered preview layout is only a valid projection for the graph that
+  // produced it. After an edit, let the server discover the current schema.
+  if (data._columnsSource !== source || data._columnsStructuralVersion !== structuralVersion) return undefined
+  const columns = data._columns
   return columns && columns.length > 0
     ? columns.slice(0, PREVIEW_INITIAL_COLUMN_LIMIT).map((column) => column.name)
     : undefined
@@ -231,7 +235,7 @@ function isPreviewDocumentFenceCurrent(
     current.graphSynchronized
 }
 
-function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: ColumnDef[], result: NodeResult, source: string): Node[] {
+function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: ColumnDef[], result: NodeResult, source: string, structuralVersion: number): Node[] {
   return nodes.map((n) =>
     n.id === nodeId
       ? {
@@ -242,13 +246,14 @@ function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: Colu
           _availableColumns: result.available_columns ?? columns,
           _schemaWarnings: result.schema_warnings ?? [],
           _columnsSource: source,
+          _columnsStructuralVersion: structuralVersion,
         },
       }
       : n,
   )
 }
 
-function applyPreviewSchemaMapsToNodes(nodes: Node[], result: NodeResult, source: string): Node[] {
+function applyPreviewSchemaMapsToNodes(nodes: Node[], result: NodeResult, source: string, structuralVersion: number): Node[] {
   const nodeColumns = result.node_columns ?? {}
   if (Object.keys(nodeColumns).length === 0) return nodes
   const nodeAvailableColumns = result.node_available_columns ?? {}
@@ -264,15 +269,16 @@ function applyPreviewSchemaMapsToNodes(nodes: Node[], result: NodeResult, source
         _availableColumns: nodeAvailableColumns[n.id] ?? columns,
         _schemaWarnings: nodeSchemaWarnings[n.id] ?? [],
         _columnsSource: source,
+        _columnsStructuralVersion: structuralVersion,
       },
     }
   })
 }
 
-function applyPreviewResultColumnsToNodes(nodes: Node[], nodeId: string, result: NodeResult, source: string): Node[] {
-  const mapped = applyPreviewSchemaMapsToNodes(nodes, result, source)
+function applyPreviewResultColumnsToNodes(nodes: Node[], nodeId: string, result: NodeResult, source: string, structuralVersion: number): Node[] {
+  const mapped = applyPreviewSchemaMapsToNodes(nodes, result, source, structuralVersion)
   if (!result.columns || result.node_columns?.[nodeId]) return mapped
-  return applyPreviewColumnsToNodes(mapped, nodeId, result.columns as ColumnDef[], result, source)
+  return applyPreviewColumnsToNodes(mapped, nodeId, result.columns as ColumnDef[], result, source, structuralVersion)
 }
 
 function canvasNodeStatuses(result: NodeResult, requestedNodeId: string): Record<string, NodeStatus> {
@@ -318,8 +324,8 @@ function invalidateStaleColumnStashes(nodes: Node[], activeSource: string): Node
   if (!nodes.some(isStale)) return nodes
   return nodes.map((n) => {
     if (!isStale(n)) return n
-    const { _columns, _availableColumns, _schemaWarnings, _columnsSource, ...rest } = n.data
-    void _columns; void _availableColumns; void _schemaWarnings; void _columnsSource
+    const { _columns, _availableColumns, _schemaWarnings, _columnsSource, _columnsStructuralVersion, ...rest } = n.data
+    void _columns; void _availableColumns; void _schemaWarnings; void _columnsSource; void _columnsStructuralVersion
     return { ...n, data: rest }
   })
 }
@@ -387,6 +393,14 @@ export default function usePipelineAPI({
       ensureInputSnapshots(nodes, {
         signal,
         onBuildStart: () => addToast("info", "Building input snapshot…"),
+        onProgress: (message) => {
+          if (signal.aborted || previewAbort.current?.signal !== signal) return
+          setPreviewData((previous) => previous ? {
+            ...previous,
+            ...(message ? { status: "loading" as const } : {}),
+            loading_message: message ?? undefined,
+          } : previous)
+        },
       }),
     [addToast],
   )
@@ -664,7 +678,7 @@ export default function usePipelineAPI({
             ),
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
-            requestedPreviewColumns: dsNode ? previewColumnNamesForNode(dsNode) : undefined,
+            requestedPreviewColumns: dsNode ? previewColumnNamesForNode(dsNode, snapshotSource, structuralVersion) : undefined,
             portLabel: previewPortLabel(dsNode),
             streamingChunkSize: snapshotChunkSize,
             signal: controller.signal,
@@ -676,8 +690,8 @@ export default function usePipelineAPI({
                 return
               }
               const newColumns = result.columns as ColumnDef[]
-              cascadeNodes = applyPreviewResultColumnsToNodes(cascadeNodes, nodeId, result, snapshotSource)
-              setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, nodeId, result, snapshotSource))
+              cascadeNodes = applyPreviewResultColumnsToNodes(cascadeNodes, nodeId, result, snapshotSource, structuralVersion)
+              setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, nodeId, result, snapshotSource, structuralVersion))
               settleNode(nodeId, !columnsEqual(oldColumns, newColumns))
             })
             .catch((err: unknown) => {
@@ -722,7 +736,7 @@ export default function usePipelineAPI({
           targetRecoveryId: node.id,
           rowLimit: snapshotRowLimit,
           source: snapshotSource,
-          requestedPreviewColumns: previewColumnNamesForNode(node),
+          requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion),
           portLabel,
           streamingChunkSize: snapshotChunkSize,
           signal: controller.signal,
@@ -737,7 +751,7 @@ export default function usePipelineAPI({
           ),
           rowLimit: snapshotRowLimit,
           source: snapshotSource,
-          requestedPreviewColumns: previewColumnNamesForNode(node),
+          requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion),
           portLabel,
           streamingChunkSize: snapshotChunkSize,
           signal: controller.signal,
@@ -787,8 +801,8 @@ export default function usePipelineAPI({
         if (result.columns) {
           const oldColumns = nodeData(node)._columns
           const newColumns = result.columns as ColumnDef[]
-          cascadeNodes = applyPreviewResultColumnsToNodes(cascadeNodes, node.id, result, snapshotSource)
-          setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, node.id, result, snapshotSource))
+          cascadeNodes = applyPreviewResultColumnsToNodes(cascadeNodes, node.id, result, snapshotSource, structuralVersion)
+          setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, node.id, result, snapshotSource, structuralVersion))
           // Cascade to downstream nodes if columns changed.
           if (!recoveryPreview && !columnsEqual(oldColumns, newColumns)) {
             propagationDone = propagate(node.id)
@@ -994,7 +1008,7 @@ export default function usePipelineAPI({
             ),
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
-            requestedPreviewColumns: previewColumnNamesForNode(upstream),
+            requestedPreviewColumns: previewColumnNamesForNode(upstream, snapshotSource, structuralVersion),
             portLabel: previewPortLabel(upstream),
             streamingChunkSize: snapshotChunkSize,
             signal: controller.signal,
@@ -1002,7 +1016,7 @@ export default function usePipelineAPI({
             .then((result) => {
               if (!requestStillCurrent()) return
               if (result.columns) {
-                setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result, snapshotSource))
+                setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result, snapshotSource, structuralVersion))
               }
             })
             .catch((err: unknown) => {
@@ -1213,7 +1227,7 @@ export default function usePipelineAPI({
           appliedSaveSeq.current = saveRequestId
           sourceRevisionRef.current = data.source_revision
           const status = useDocumentStatusStore.getState()
-          status.setSourceRevision(data.source_revision)
+          status.acknowledgeSave(data.source_revision)
           status.setGraphSynchronized(true)
           useUIStore.getState().setSyncBanner(null)
         }

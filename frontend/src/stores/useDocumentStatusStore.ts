@@ -13,6 +13,7 @@ interface DocumentStatusState {
   diagnostics: PipelineDiagnostic[]
   diagnosticsOmitted: number
   sourceRevision: string | null
+  executionGeneration: number
   sourceText: string
   sourceFile: string
   sources: string[]
@@ -36,7 +37,7 @@ export interface RetainedPipelineCanvas {
  */
 export interface DocumentExecutionFence {
   sourceFile: string
-  sourceRevision: string | null
+  executionGeneration: number
   loadStatus: PipelineLoadStatus | null
   canExecute: boolean
 }
@@ -54,6 +55,7 @@ export interface DocumentStatusStore extends DocumentStatusState {
   setGraphSynchronized: (graphSynchronized: boolean) => void
   setSystemFailure: (systemFailure: string) => void
   setSourceRevision: (sourceRevision: string | null) => void
+  acknowledgeSave: (sourceRevision: string) => void
   reset: () => void
 }
 
@@ -64,6 +66,7 @@ function initialState(): DocumentStatusState {
     diagnostics: [],
     diagnosticsOmitted: 0,
     sourceRevision: null,
+    executionGeneration: 0,
     sourceText: "",
     sourceFile: "",
     sources: [],
@@ -80,6 +83,7 @@ function documentState(
   document: PipelineEditorDocument,
   retainedCanvas: RetainedPipelineCanvas | null,
   graphSynchronized: boolean,
+  executionGeneration: number,
 ): DocumentStatusState {
   return {
     loadStatus: document.load_status,
@@ -90,6 +94,7 @@ function documentState(
     })),
     diagnosticsOmitted: document.diagnostics_omitted,
     sourceRevision: document.source_revision,
+    executionGeneration,
     sourceText: document.source_text,
     sourceFile: document.source_file,
     sources: [...document.sources],
@@ -105,13 +110,19 @@ function documentState(
 const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
   ...initialState(),
   loadDocumentStatus: (document, graphSynchronized = true) =>
-    set(documentState(document, null, graphSynchronized)),
+    set((state) => documentState(document, null, graphSynchronized, state.executionGeneration + 1)),
   loadLiveDocumentStatus: (document, retainedCanvas, graphSynchronized) =>
-    set(documentState(document, retainedCanvas, graphSynchronized)),
+    set((state) => documentState(document, retainedCanvas, graphSynchronized, state.executionGeneration + 1)),
   setGraphSynchronized: (graphSynchronized) => set({ graphSynchronized }),
   setSystemFailure: (systemFailure) => set({ systemFailure, graphSynchronized: false }),
-  setSourceRevision: (sourceRevision) => set({ sourceRevision }),
-  reset: () => set(initialState()),
+  setSourceRevision: (sourceRevision) => set((state) => ({
+    sourceRevision,
+    executionGeneration: state.executionGeneration + Number(sourceRevision !== state.sourceRevision),
+  })),
+  // Persisting this canvas doesn't replace the document that owns running jobs.
+  // Keep their original config/version stamps so edited results still read stale.
+  acknowledgeSave: (sourceRevision) => set({ sourceRevision }),
+  reset: () => set((state) => ({ ...initialState(), executionGeneration: state.executionGeneration + 1 })),
 }))
 
 /**
@@ -133,7 +144,7 @@ export function documentReadOnlyReason(): string {
 function executionFence(state: DocumentStatusState): DocumentExecutionFence {
   return {
     sourceFile: state.sourceFile,
-    sourceRevision: state.sourceRevision,
+    executionGeneration: state.executionGeneration,
     loadStatus: state.loadStatus,
     canExecute: state.capabilities?.can_execute === true,
   }
@@ -150,7 +161,7 @@ export function isDocumentExecutionFenceCurrent(
   const current = executionFence(currentState)
   return (captured.loadStatus === null || captured.canExecute) &&
     current.sourceFile === captured.sourceFile &&
-    current.sourceRevision === captured.sourceRevision &&
+    current.executionGeneration === captured.executionGeneration &&
     current.loadStatus === captured.loadStatus &&
     current.canExecute === captured.canExecute &&
     // A null status is the standalone-component/test state. Once a real

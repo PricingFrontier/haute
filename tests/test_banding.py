@@ -1213,14 +1213,14 @@ class TestBreakpointsMode:
 
 
 # ---------------------------------------------------------------------------
-# Config I/O — _strip_internal_keys
+# Config I/O — banding editor metadata
 # ---------------------------------------------------------------------------
 
 
-class TestStripInternalKeys:
+class TestBandingEditorMetadata:
     def test_strips_nested_underscore_keys(self):
-        """_strip_internal_keys removes _prevRules from nested factor objects."""
-        from haute._config_io import _strip_internal_keys
+        """Only factor and rule records contain nested editor properties."""
+        from haute._config_io import _prepare_config_for_sidecar
 
         config = {
             "factors": [
@@ -1234,17 +1234,17 @@ class TestStripInternalKeys:
                 }
             ]
         }
-        result = _strip_internal_keys(config)
+        result = _prepare_config_for_sidecar(NodeType.BANDING, config)
         assert "_prevRules" not in result["factors"][0]
         assert "_id" not in result["factors"][0]["rules"][0]
         assert result["factors"][0]["banding"] == "continuous"
         assert result["factors"][0]["rules"][0]["op1"] == ">"
 
     def test_preserves_non_underscore_keys(self):
-        from haute._config_io import _strip_internal_keys
+        from haute._config_io import _prepare_config_for_sidecar
 
         config = {"factors": [{"column": "x", "rules": []}]}
-        result = _strip_internal_keys(config)
+        result = _prepare_config_for_sidecar(NodeType.BANDING, config)
         assert result == config
 
 

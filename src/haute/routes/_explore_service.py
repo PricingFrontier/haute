@@ -113,6 +113,7 @@ _VALUE_DISPLAY_MAX_CHARS = 80
 _VALUE_DISPLAY_TRUNCATION_MARKER = "…"
 _SUMMARY_NAME_LIMIT = 3
 _CATEGORICAL_VALUE_COUNT_LIMIT = 50
+_PROFILE_COLUMN_BATCH_SIZE = 8
 _CATEGORICAL_VALUE_FIELD = "__haute_categorical_value"
 _TEXT_DTYPE_BASES = (pl.String, pl.Categorical, pl.Enum, pl.Binary)
 _LEXICAL_MIN_MAX_DTYPE_BASES = (pl.String, pl.Categorical, pl.Enum)
@@ -602,19 +603,21 @@ def _build_frame_stats(
 ) -> ExploreFrameStats:
     """Compute row count and per-column schema stats for an Explore frame.
 
-    Runs one batched ``streaming_collect`` for core column stats and bounded
-    categorical value counts. Object columns skip ``n_unique`` (their
+    Runs sequential column batches for core stats and bounded categorical
+    value counts. Object columns skip ``n_unique`` (their
     distinct_count stays ``None``).
     """
 
     column_names = list(schema.names())
     aggregations: list[pl.Expr] = [pl.len().alias("row_count")]
+    aggregation_batches = [aggregations]
     can_count_unique_rows = bool(column_names) and all(
         not is_unhashable_dtype(schema[name]) for name in column_names
     )
-    if can_count_unique_rows:
-        aggregations.append(pl.struct(column_names).n_unique().alias("unique_rows"))
-    for name in column_names:
+    for index, name in enumerate(column_names):
+        if index and index % _PROFILE_COLUMN_BATCH_SIZE == 0:
+            aggregations = []
+            aggregation_batches.append(aggregations)
         dtype = schema[name]
         aggregations.append(pl.col(name).null_count().alias(f"null::{name}"))
         if not is_unhashable_dtype(dtype):
@@ -660,15 +663,29 @@ def _build_frame_stats(
                 )
             )
 
-    aggregate_row = cancellable_streaming_collect(
-        lf.select(aggregations),
-        execution_context=execution_context,
-    ).row(0, named=True)
+    # Exact quantiles and distinct counts retain state even in streaming mode.
+    # Project only a few columns per query so wide frames do not multiply that state.
+    aggregate_row: dict[str, Any] = {}
+    for batch in aggregation_batches:
+        aggregate_row.update(
+            cancellable_streaming_collect(
+                lf.select(batch), execution_context=execution_context
+            ).row(0, named=True)
+        )
 
     row_count = int(aggregate_row["row_count"])
-    duplicate_row_count = (
-        row_count - int(aggregate_row["unique_rows"]) if can_count_unique_rows else None
-    )
+    duplicate_row_count = None
+    if can_count_unique_rows:
+        if any(int(aggregate_row[f"unique::{name}"]) == row_count for name in column_names):
+            duplicate_row_count = 0
+        elif len(column_names) == 1:
+            duplicate_row_count = row_count - int(aggregate_row[f"unique::{column_names[0]}"])
+        else:
+            unique_rows = cancellable_streaming_collect(
+                lf.select(pl.struct(column_names).n_unique().alias("unique_rows")),
+                execution_context=execution_context,
+            ).item()
+            duplicate_row_count = row_count - int(unique_rows)
     stats: list[ExploreColumnStat] = []
     categorical_values_by_column: dict[str, list[ExploreDistinctValueCount]] = {}
     categorical_label_group_counts: dict[str, int] = {}

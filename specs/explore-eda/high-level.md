@@ -343,11 +343,13 @@ Out of scope (owned elsewhere):
   dataframe cache key + node id + source + report schema version) are deliberately independent.
   This lets an `overview`, `pivots`, or `charts` config change reuse the same materialised dataframe while still
   invalidating only the report if the report schema itself changes (`EXPLORE_CACHE_VERSION`).
-- **One batched cancellable streaming collect.** All column stats (min/max, quartiles,
+- **Sequential cancellable profiling batches.** Exact column stats (min/max, quartiles,
   null/zero/negative counts, bounded categorical value counts, display-label group counts,
-  text lengths, temporal spans, and whole-row distinct count) are computed in one Polars
-  aggregation. Explore runs it as a native streaming background query so checkpoints can cancel
-  the query itself while retaining one-pass cost.
+  text lengths, and temporal spans) are computed in batches of at most eight columns
+  against the cached Parquet frame. This avoids retaining all columns' aggregation state
+  simultaneously. Each batch remains a cancellable native streaming query. Whole-row
+  distinct counting runs separately when needed; an exactly unique column proves zero
+  duplicate rows, and a one-column frame reuses its column distinct count.
 - **Bounded categorical value counts.** Value counts are capped at the top 50 by count
   (`_CATEGORICAL_VALUE_COUNT_LIMIT`) so a high-cardinality column cannot make the report
   unbounded in size. `values_truncated` follows the number of display-label groups emitted by
@@ -355,7 +357,7 @@ Out of scope (owned elsewhere):
   example, `List` columns).
 - **Lenient text formatting for Binary/Duration.** A strict `cast(pl.String)` on `Binary` raises
   on the first non-UTF-8 byte sequence, and Polars cannot `cast` `Duration` to `String` at all;
-  either would abort the single batched collect and take down the whole report, not just that
+  either would abort profiling and take down the whole report, not just that
   column. Both are formatted element-wise instead so one problematic column cannot break the
   report for every other column.
 - **Round-trippable unknown display keys.** The Explore display validators preserve unrecognised

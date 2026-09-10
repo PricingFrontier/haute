@@ -44,7 +44,7 @@ function getMissingJobPollErrorMessage(error: unknown): string | undefined {
 export default function useBackgroundJobs() {
   const addToast = useToastStore((s) => s.addToast)
   const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
-  const documentSourceRevision = useDocumentStatusStore((s) => s.sourceRevision)
+  const documentExecutionGeneration = useDocumentStatusStore((s) => s.executionGeneration)
   const documentLoadStatus = useDocumentStatusStore((s) => s.loadStatus)
   const documentCanExecute = useDocumentStatusStore(
     (s) => s.capabilities?.can_execute === true,
@@ -55,7 +55,7 @@ export default function useBackgroundJobs() {
   const discardActiveJobs = useNodeResultsStore((s) => s.discardActiveJobs)
   const documentFenceKey = JSON.stringify([
     documentSourceFile,
-    documentSourceRevision,
+    documentExecutionGeneration,
     documentLoadStatus,
     documentCanExecute,
     documentGraphSynchronized,

@@ -930,3 +930,58 @@ def test_projection_explain_handles_empty_node_and_edge_collections() -> None:
         edge_demands={},
     )
     assert explain(node_only) == ("source: projection_demand: projection demand [a]",)
+
+
+@pytest.mark.parametrize("node_type", ["modelling", "polars"])
+@pytest.mark.parametrize(
+    ("config", "expected", "boundary"),
+    [
+        ({"column_renames": {"a": "value"}}, {"value", "sort_key", "unused"}, True),
+        (
+            {"selected_columns": ["a", "a", "missing"], "column_renames": {"a": "value"}},
+            {"value"},
+            True,
+        ),
+        (
+            {"selected_columns": ["missing"], "column_renames": {"missing": "value"}},
+            {"a", "sort_key", "unused"},
+            True,
+        ),
+        ({"column_renames": {"a": "sort_key", "sort_key": "a"}}, {"a", "sort_key", "unused"}, True),
+        ({"column_renames": {"a": "unused"}}, None, True),
+        ({"selected_columns": ["a"], "column_renames": {"a": "unused"}}, {"unused"}, True),
+        ({"selected_columns": ["a"]}, {"a"}, False),
+        ({"selected_columns": [], "column_renames": {}}, {"a", "sort_key", "unused"}, False),
+        ({"column_renames": {"a": "a"}}, {"a", "sort_key", "unused"}, False),
+    ],
+)
+def test_configured_output_schema_and_projection_boundary(
+    node_type: str, config: dict, expected: set[str] | None, boundary: bool
+) -> None:
+    subject = _polars_node("subject", "df = rows" if node_type == "polars" else "")
+    subject["data"]["nodeType"] = node_type
+    subject["data"]["config"].update(config)
+    graph = make_graph(
+        {
+            "nodes": [_api_node(), subject],
+            "edges": [{"id": "rows", "source": "api", "target": "subject", "sourceHandle": "rows"}],
+        }
+    )
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="subject",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+    )
+    assert projection.needed_by_node["subject"] == (
+        None if expected is None else frozenset(expected)
+    )
+    if boundary:
+        assert projection.demand_for_edge(graph.edges[0]) is None
+        assert (
+            projection.diagnostics.edge_reasons[ProjectionEdgeKey.from_edge(graph.edges[0])].rule
+            == "configured_column_renames"
+        )
+    else:
+        assert projection.demand_for_edge(graph.edges[0]) == frozenset(expected)

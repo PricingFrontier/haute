@@ -16,6 +16,7 @@ import polars as pl
 from haute._api_input_schema import (
     sanitise_label_for_filesystem as _sanitise_label,
 )
+from haute._cpu_performance import configure_process_high_qos
 from haute._env import int_env
 from haute._execution_context import (
     current_execution_context,
@@ -467,6 +468,7 @@ def _write_tables_in_parallel(
     pool = ProcessPoolExecutor(
         max_workers=workers,
         mp_context=multiprocessing.get_context("spawn"),
+        initializer=configure_process_high_qos,
     )
     try:
         # ``map`` yields in submission order, which is file order.

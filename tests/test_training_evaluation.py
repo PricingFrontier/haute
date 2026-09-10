@@ -364,3 +364,45 @@ def test_failure_cleans_all_staged_evaluation_artifacts(
         (tmp_path / filename).exists()
         for filename in evaluation_artifact_filenames("model").values()
     )
+
+
+@pytest.mark.parametrize(
+    "validation",
+    [{"method": "single", "size": 0.2}, {"method": "cross_validation", "fold_count": 2}],
+)
+def test_real_selection_fits_report_iterations_without_mixing_final_loss_history(
+    tmp_path: Path, validation: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
+    job = TrainingJob(
+        name="progress",
+        data=pl.DataFrame({"y": range(30), "feature": range(30)}),
+        target="y",
+        output_dir=str(tmp_path),
+        metrics=["rmse"],
+        params={"iterations": 6, "depth": 2, "thread_count": 1, "random_seed": 9},
+        evaluation=evaluation(validation=validation),
+    )
+    events: list[tuple[str, float]] = []
+    final_iterations: list[int] = []
+    result = job.run(
+        progress=lambda message, fraction: events.append((message, fraction)),
+        on_iteration=lambda iteration, *_: final_iterations.append(iteration),
+    )
+    fit_count = result.evaluation["fit_count"]
+    for fit in range(1, fit_count):
+        prefix = f"Fit {fit} of {fit_count} (validation): Iteration "
+        updates = [
+            (message, fraction) for message, fraction in events if message.startswith(prefix)
+        ]
+        assert len(updates) == 6, "The UI must receive updates while each validation fit runs"
+        assert [message for message, _ in updates] == [f"{prefix}{i} of 6" for i in range(1, 7)]
+        assert all((fit - 1) / fit_count <= fraction <= fit / fit_count for _, fraction in updates)
+        assert updates[-1][1] > updates[0][1]
+    assert len(final_iterations) == 6, (
+        "Validation losses must not enter the final model's loss chart"
+    )
+    assert final_iterations == list(range(1, 7))
+    fractions = [fraction for _, fraction in events]
+    assert fractions == sorted(fractions)
+    assert fractions[-1] == 1.0

@@ -358,6 +358,15 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
    feature contract, MLflow run, SHAP/PDP, or full diagnostics. No-validation performs
    zero selection fits. Internal clones skip `_prepare_data`'s target/task/metric re-scan —
    the outer job already gated the shared prepared source.
+   Ordinary validation fits forward preparation, iteration and metric-stage progress
+   to the outer job. Messages identify the current fit, total fits (including the
+   final model), and current iteration/total when the algorithm supplies them.
+   Fit-local fractions map into monotonically increasing overall progress. Selection
+   metrics never enter the final model's iteration callback or loss chart. Progress
+   callbacks retain cancellation and memory checkpoints; a progress-only caller
+   receives iteration updates even without an execution context.
+   CatBoost callback iteration numbers are already one-based; the displayed count
+   and loss-history iteration retain that value, ending at the configured limit.
 4. **Run bounded tuning when configured** — `_run_tuning_trials` writes/reloads the
    tuning plan, uses one seeded Optuna `TPESampler` through sequential ask/tell, runs
    every baseline/sampled candidate on the exact same validation fits, persists every
