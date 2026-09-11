@@ -16,7 +16,7 @@ import {
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 
-import { ApiError, moveToVersion, saveNodeScoped } from "./api/client"
+import { moveToVersion } from "./api/client"
 import { nodeTypes } from "./utils/nodeTypeRegistry"
 import NodePalette from "./panels/NodePalette"
 import NodePanel from "./panels/NodePanel"
@@ -80,7 +80,7 @@ import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import type { DrilledOccurrenceIdentity } from "./utils/submodelRuntimeTarget"
 import { isSubmodelInstanceConfig, nodeData } from "./types/node"
 import type { HauteNodeData } from "./types/node"
-import { otherScopedEditedNodes, scopedSaveResponseFenceError } from "./utils/scopedSaveGuards"
+import { useScopedNodeSave } from "./hooks/useScopedNodeSave"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
@@ -928,90 +928,27 @@ function FlowEditor() {
     typeof selectedNodeData?._sourceFile === "string" &&
     typeof selectedNodeData?._recoveryId === "string"
 
-  // Per-document set of nodes edited through the scoped-editing override;
-  // cleared whenever the authoritative document identity moves.
-  const scopedEditedNodeIdsRef = useRef<Set<string>>(new Set())
-  const selectedNodeRef = useRef<Node | null>(null)
-  useEffect(() => {
-    selectedNodeRef.current = selectedNode ?? null
-  }, [selectedNode])
-  const scopedEditingActiveRef = useRef(false)
-  useEffect(() => {
-    scopedEditingActiveRef.current = scopedEditingActive
-  }, [scopedEditingActive])
-  useEffect(() => {
-    scopedEditedNodeIdsRef.current.clear()
-  }, [documentSourceFile, documentSourceRevision])
-
-  const handleScopedSave = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
-    const target = graphRef.current.nodes.find((item) => item.id === selectedNode?.id)
-    const data = target?.data as HauteNodeData | undefined
-    if (
-      !target ||
-      typeof data?._sourceFile !== "string" ||
-      typeof data?._recoveryId !== "string" ||
-      !documentSourceRevision
-    ) {
-      return { ok: false, error: "This node cannot be saved in isolation right now." }
-    }
-    // One node at a time: adopting the response replaces the canvas, so a
-    // save while another node holds unsaved scoped edits would discard them.
-    const others = otherScopedEditedNodes(scopedEditedNodeIdsRef.current, target.id)
-    if (others.length > 0) {
-      const labels = others.map((id) => {
-        const other = graphRef.current.nodes.find((item) => item.id === id)
-        return String((other?.data as HauteNodeData | undefined)?.label ?? id)
-      })
-      return {
-        ok: false,
-        error: `Save the other edited node first: ${labels.join(", ")}.`,
-      }
-    }
-    const requestSourceFile = documentSourceFile
-    const requestRevision = documentSourceRevision
-    try {
-      const document = await saveNodeScoped({
-        sourceFile: requestSourceFile,
-        sourceRevision: requestRevision,
-        targetSourceFile: data._sourceFile,
-        targetRecoveryId: data._recoveryId,
-        config: (data.config ?? {}) as Record<string, unknown>,
-      })
-      const state = useDocumentStatusStore.getState()
-      const fenceError = scopedSaveResponseFenceError({
-        requestSourceFile,
-        requestRevision,
-        currentSourceFile: state.sourceFile,
-        currentRevision: state.sourceRevision,
-      })
-      if (fenceError) return { ok: false, error: fenceError }
-      const savedId = target.id
-      const selectionUnchanged = selectedNodeRef.current?.id === savedId
-      scopedEditedNodeIdsRef.current.delete(savedId)
+  const applyScopedSaveDocument = useCallback(
+    (document: import("./types/pipelineDocument").PipelineEditorDocument, savedNodeId: string) => {
+      const selectionUnchanged = selectedNodeRef.current?.id === savedNodeId
       adoptPipelineDocument(document)
       resetToAuthoritativeRoot(document.source_file, document.pipeline_name ?? "main")
       if (selectionUnchanged) {
-        const restored = graphRef.current.nodes.find((item) => item.id === savedId)
+        const restored = graphRef.current.nodes.find((item) => item.id === savedNodeId)
         if (restored) {
           setSelectedNode(restored)
-          setLastSelectedId(savedId)
+          setLastSelectedId(savedNodeId)
         } else {
           closePanel()
         }
       }
-      return { ok: true }
-    } catch (error) {
-      const detail = error instanceof ApiError ? error.detail ?? error.message : String(error)
-      return { ok: false, error: detail }
-    }
-  }, [
-    adoptPipelineDocument,
-    closePanel,
-    documentSourceFile,
-    documentSourceRevision,
-    resetToAuthoritativeRoot,
-    selectedNode?.id,
-  ])
+    },
+    [adoptPipelineDocument, closePanel, resetToAuthoritativeRoot],
+  )
+  const selectedNodeRef = useRef<Node | null>(null)
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode ?? null
+  }, [selectedNode])
 
   const {
     commitBoundaryConnection,
@@ -1084,10 +1021,16 @@ function FlowEditor() {
     addToast,
   })
 
-  const handlePanelUpdateNode = useCallback<typeof onUpdateNode>((id, data) => {
-    if (scopedEditingActiveRef.current) scopedEditedNodeIdsRef.current.add(id)
-    return onUpdateNode(id, data)
-  }, [onUpdateNode])
+  const {
+    handlePanelUpdateNode,
+    handleScopedSave,
+  } = useScopedNodeSave({
+    scopedEditingActive,
+    selectedNodeId: selectedNode?.id ?? null,
+    graphRef,
+    onUpdateNode,
+    applyDocument: applyScopedSaveDocument,
+  })
 
   const saveWithPendingCommits = useCallback(async (): Promise<boolean> => {
     const pending = await waitForPendingCommits()

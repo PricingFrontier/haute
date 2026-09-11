@@ -60,6 +60,7 @@
 | `frontend/src/components/form/EditorLabel.tsx` | Consistent micro-label primitive; can be a correctly associated `<label>` or non-form span/div for display-only content. |
 | `frontend/src/components/form/index.ts` | Public barrel for the committed text field/area, checkbox, and editor-label primitives; editor callers import the shared contract rather than deep paths. |
 | `frontend/src/utils/scopedSaveGuards.ts` | Pure node-scoped-save guards: one-node-at-a-time edit fencing and the stale-response document-identity fence. |
+| `frontend/src/hooks/useScopedNodeSave.ts` | App-lifetime scoped-save coordination: per-document edited-node tracking, edit refusal while a save is in flight or another node is dirty, the response fence, and adoption hand-off. |
 | `frontend/src/stores/useRecoverySummaryStore.ts` | Transient per-session recovery summary (field outcomes, completeness, previous config, diffs) keyed by recovery id. |
 
 ## Key types and data structures
@@ -723,11 +724,15 @@ their execution blockers reported alongside the editor rather than replacing
 it. The panel offers a node-scoped save that posts the node's current
 configuration through `saveNodeScoped`, adopts the returned authoritative
 document, retains the target selection, and surfaces the document's remaining
-completeness entries for that node. Scoped edits save one node at a time: the
-save is refused while another node holds unsaved scoped edits (adoption would
-discard them), the editor freezes while the request is in flight, and a late
-response is discarded whenever the on-screen document identity (source file
-and revision) moved after submission (`utils/scopedSaveGuards.ts`).
+completeness entries for that node. Scoped edits save one node at a time, coordinated for the App's lifetime by
+`hooks/useScopedNodeSave.ts` so no guarantee dies with a panel unmount:
+starting to edit a second node is refused while the first holds unsaved
+scoped edits (the deadlocked two-dirty-node state is unreachable), every
+scoped edit on any node is refused while a save is in flight, the saving
+panel's editor freezes for the flight, and a late response is discarded
+whenever the on-screen document identity (source file and revision) moved
+after submission (`utils/scopedSaveGuards.ts`). Reloading the pipeline clears
+the edited-node tracking.
 Whole-graph mutation, save and undo fences
 stay exactly as the capability model dictates; the scoped save never widens
 them. Ready nodes that are not `scoped_editable` keep the static JSON

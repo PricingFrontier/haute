@@ -573,9 +573,8 @@ def test_recover_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path):
     # Recovering a damaged downstream node must not require healthy upstreams:
     # its authored bindings stay trustworthy, and the applied node may remain
     # blocked solely by the still-broken upstream.
-    from haute._pipeline_repair import build_recover_unavailable_node_plan
-
     from haute._config_io import config_path_for_node
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
     from haute._types import GraphNode, NodeData, NodeType
     from haute.codegen import _node_to_code
 
