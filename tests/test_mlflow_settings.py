@@ -107,6 +107,11 @@ class TestClassifyTrackingUri:
         assert mode == "server"
         assert uri == "https://alice:secret@mlflow.example.com"
 
+    def test_redaction_preserves_ipv6_brackets(self) -> None:
+        from haute.modelling._mlflow_settings import redact_uri
+
+        assert redact_uri("https://alice:pw@[::1]:5000/base") == "https://[::1]:5000/base"
+
     def test_invalid_port_is_config_error_without_echoing_credentials(self) -> None:
         with pytest.raises(MlflowConfigError) as excinfo:
             classify_tracking_uri("https://alice:hunter2xyz@mlflow.example.com:70000")

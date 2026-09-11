@@ -372,7 +372,8 @@ class TestProbeMechanics:
         import haute.routes.mlflow as mlflow_routes
         from haute.routes.mlflow import _ProbeBusyError, _run_probe_bounded
 
-        monkeypatch.setattr(mlflow_routes, "_PROBE_SLOTS", threading.BoundedSemaphore(2))
+        fresh = threading.BoundedSemaphore(2)
+        monkeypatch.setattr(mlflow_routes, "_PROBE_SLOTS", fresh)
         gate_one, gate_two = threading.Event(), threading.Event()
         try:
             with pytest.raises(TimeoutError):
@@ -398,8 +399,15 @@ class TestProbeMechanics:
         finally:
             gate_one.set()
             gate_two.set()
-            # Let the daemon workers drain before monkeypatch restores.
-            time.sleep(0.05)
+            # Deterministically drain: both slots must return to the fresh
+            # semaphore (proving the workers finished their release) before
+            # monkeypatch restores the module-level one.
+            drained = 0
+            deadline = time.monotonic() + 5
+            while drained < 2 and time.monotonic() < deadline:
+                if fresh.acquire(timeout=0.05):
+                    drained += 1
+            assert drained == 2, "probe workers did not release their slots"
 
     def test_search_probe_request_shape_and_no_global_mutation(self) -> None:
         from unittest.mock import MagicMock

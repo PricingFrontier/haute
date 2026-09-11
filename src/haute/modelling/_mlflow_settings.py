@@ -98,18 +98,20 @@ def _parse_http_uri(value: str, *, source: str) -> SplitResult:
 
 
 def redact_uri(value: str) -> str:
-    """Strip any userinfo credentials from a URI for display purposes."""
+    """Strip any userinfo credentials from a URI for display purposes.
+
+    The host/port authority is kept byte-for-byte (IPv6 brackets included)
+    by splitting the raw netloc on its final ``@`` rather than
+    reconstructing it from parsed components.
+    """
     try:
         parts = urlsplit(value)
         if "@" not in parts.netloc:
             return value
-        host = parts.hostname or ""
-        if parts.port is not None:
-            host = f"{host}:{parts.port}"
-        return urlunsplit(parts._replace(netloc=host))
+        return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[-1]))
     except ValueError:
-        # Never let a malformed netloc (e.g. an out-of-range port) surface
-        # the original — it may carry the very credentials being stripped.
+        # Never let an unparseable value surface — it may carry the very
+        # credentials being stripped.
         return "<unparseable URI>"
 
 
