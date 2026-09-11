@@ -3402,5 +3402,3 @@ class TestClearModelCacheDirect:
             mock.assert_called_once_with("run_xyz")
             assert result.removed == 2
             assert result.run_id == "run_xyz"
-
-
