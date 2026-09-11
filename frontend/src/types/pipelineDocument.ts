@@ -770,6 +770,7 @@ function adaptRecoveryGraph(
               _loadAvailability: node.availability,
               _loadDiagnosticIds: [...node.diagnostic_ids],
               _loadBlockingPath: [...node.blocking_path],
+              _scopedEditable: node.scoped_editable,
               _authoredId: node.authored_id,
               _authoredDecorator: node.decorator_name,
               _authoredReceiver: receiver,

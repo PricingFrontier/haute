@@ -9,7 +9,7 @@ import {
 import type { PipelineEditorDocument } from "../types/pipelineDocument"
 import type { RecoverUnavailableNodeDryRunResponse, RemoveUnavailableNodeDryRunResponse } from "../types/pipelineRepair"
 import ModalShell from "./ModalShell"
-import RecoveryDraftDialog from "./RecoveryDraftDialog"
+import { useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
 
 export interface PipelineRepairTarget {
   sourceFile: string
@@ -44,14 +44,17 @@ function PipelineRepairDialogContent({
   onClose,
   onApplied,
 }: PipelineRepairDialogProps) {
-  const action = (target.action ?? "remove") as "remove" | "update" | "reset"
+  const action = (target.action ?? "remove") as "remove" | "update" | "reset" | "recover"
   const isRemoval = action === "remove"
+  const isRecover = action === "recover"
   const actionTitle = action === "update"
     ? "Update to current format"
-    : action === "reset" ? "Reset node" : "Remove unavailable node"
+    : action === "reset" ? "Reset node"
+    : isRecover ? "Recover settings" : "Remove unavailable node"
   const applyLabel = action === "update"
     ? "Update to current format"
-    : action === "reset" ? "Reset node" : "Remove node"
+    : action === "reset" ? "Reset node"
+    : isRecover ? "Recover settings" : "Remove node"
   const [deleteConfig, setDeleteConfig] = useState(false)
   const [plan, setPlan] = useState<(RemoveUnavailableNodeDryRunResponse | RecoverUnavailableNodeDryRunResponse) | null>(null)
   const [planning, setPlanning] = useState(true)
@@ -125,6 +128,17 @@ function PipelineRepairDialogContent({
             action,
             planHash: plan.plan_hash,
           })
+      if (isRecover) {
+        // Transient session record for the panel's dismissible summary; the
+        // dry-run plan owns the bounded diffs, the apply response the report.
+        useRecoverySummaryStore.getState().recordSummary({
+          recoveryId: plan.target_recovery_id,
+          fieldChanges: response.field_changes,
+          completeness: response.completeness,
+          previousConfig: response.previous_config,
+          changes: plan.changes,
+        })
+      }
       onApplied(response.document)
     } catch (err) {
       setError(errorDetail(err))
@@ -156,7 +170,9 @@ function PipelineRepairDialogContent({
             ? "Replace this node's settings and code while preserving its identity and connections. Configuration may be needed before running."
             : action === "update"
               ? `Update ${plan?.target_authored_id ?? target.recoveryId} to the current submodel format while preserving its authored connections.`
-              : `Remove ${plan?.target_authored_id ?? target.recoveryId} and the listed artifacts only.`}
+              : isRecover
+                ? `Rebuild ${plan?.target_authored_id ?? target.recoveryId} against the current definitions. Valid settings and code are retained; anything missing stays highlighted in the normal editor afterwards.`
+                : `Remove ${plan?.target_authored_id ?? target.recoveryId} and the listed artifacts only.`}
         </p>
       </div>
       <div className="max-h-[60vh] space-y-4 overflow-y-auto px-5 py-4 text-xs">
@@ -170,7 +186,12 @@ function PipelineRepairDialogContent({
               {plan.changes.map((change) => <li key={change.path} className="rounded p-3" style={{ border: "1px solid var(--border)" }}>
                 <div className="font-mono" style={{ color: "var(--text-primary)" }}>{change.operation}: {change.path}</div>
                 <p className="mt-1" style={{ color: "var(--text-secondary)" }}>{change.description}</p>
-                {change.diff && <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)" }}>{change.diff}</pre>}
+                {change.diff && (isRecover
+                  ? <details className="mt-2">
+                      <summary className="cursor-pointer text-[11px]" style={{ color: "var(--text-secondary)" }}>Show source diff</summary>
+                      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)" }}>{change.diff}</pre>
+                    </details>
+                  : <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)" }}>{change.diff}</pre>)}
                 {change.diff_truncated && <p className="mt-1" style={{ color: "var(--warning)" }}>Diff truncated.</p>}
               </li>)}
             </ul>
@@ -204,6 +225,5 @@ function PipelineRepairDialogContent({
 }
 
 export default function PipelineRepairDialog(props: PipelineRepairDialogProps) {
-  if (props.target.action === "recover") return <RecoveryDraftDialog sourceFile={props.sourceFile} sourceRevision={props.sourceRevision} target={{ sourceFile: props.target.sourceFile, recoveryId: props.target.recoveryId }} onClose={props.onClose} onApplied={props.onApplied} />
   return <PipelineRepairDialogContent {...props} />
 }

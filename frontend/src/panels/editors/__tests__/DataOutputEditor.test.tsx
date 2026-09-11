@@ -31,7 +31,6 @@ import {
   writeOutput,
 } from "../../../api/client"
 import { GraphProvider } from "../../GraphContext"
-import { DraftEditingContext } from "../../DraftEditingContext"
 import DataOutputEditor from "../DataOutputEditor"
 import { resetIoCapabilitiesRequestForTests } from "../_ioFormats"
 import useOutputWriteStore, {
@@ -187,20 +186,17 @@ function renderEditor(
   onUpdate = vi.fn(),
   onReplaceConfig = vi.fn(),
   allNodes: SimpleNode[] = [],
-  isRecoveryDraft = false,
 ) {
   const element = (nextConfig = config, nextNodes = allNodes) => (
-    <DraftEditingContext.Provider value={isRecoveryDraft}>
-      <GraphProvider allNodes={nextNodes} edges={[]}>
-        <DataOutputEditor
-          config={nextConfig}
-          onUpdate={onUpdate}
-          onReplaceConfig={onReplaceConfig}
-          accentColor="#123456"
-          nodeId="output-node"
-        />
-      </GraphProvider>
-    </DraftEditingContext.Provider>
+    <GraphProvider allNodes={nextNodes} edges={[]}>
+      <DataOutputEditor
+        config={nextConfig}
+        onUpdate={onUpdate}
+        onReplaceConfig={onReplaceConfig}
+        accentColor="#123456"
+        nodeId="output-node"
+      />
+    </GraphProvider>
   )
   return {
     ...render(element()),
@@ -338,21 +334,6 @@ describe("DataOutputEditor", () => {
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Wrote output. | 2 rows | out.csv",
     )
-  })
-
-  it("does not write output while rendered inside a recovery draft", async () => {
-    renderEditor({
-      outputType: "file",
-      format: "csv",
-      path: "out.csv",
-      arguments: {},
-    }, vi.fn(), vi.fn(), [], true)
-
-    const write = await screen.findByRole("button", { name: "Write" })
-    expect(write).toBeDisabled()
-    fireEvent.click(write)
-    await Promise.resolve()
-    expect(writeOutput).not.toHaveBeenCalled()
   })
 
   it("shows the resolved destination and warns on an incompatible suffix", async () => {

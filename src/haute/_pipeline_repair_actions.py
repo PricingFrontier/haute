@@ -564,8 +564,7 @@ def _recover_node(
 ]:
     """Rebuild one node's settings with the recovery engine and regenerate its source."""
     from haute._node_config_recovery import reconcile_config
-    from haute._recovery_schemas import RecoveryDraftNode
-    from haute._recovery_sources import _require_generated_body, read_raw_node_settings
+    from haute._recovery_sources import read_raw_node_settings, require_generated_body
 
     if target.node_type is None or target.node_type in {NodeType.SUBMODEL, "submodelPort"}:
         raise _unsupported(
@@ -578,20 +577,11 @@ def _recover_node(
     result = reconcile_config(node_type, raw)
     # The guard only decides whether the body is recognised generated
     # scaffolding; engine issues are completeness for a direct recover, never
-    # a plan gate, so they are deliberately not forwarded here.
-    carrier = RecoveryDraftNode(
-        key="recover",
-        source_file=_wire_path(path, root),
-        recovery_id=target.recovery_id,
-        authored_id=target.authored_id,
-        label=target.label,
-        node_type=target.node_type,
-        config=result.config,
-        changes=[],
-        issues=[],
-    )
-    _require_generated_body(
-        carrier,
+    # a plan gate.
+    require_generated_body(
+        node_type,
+        target.authored_id,
+        result.config,
         function,
         params=params,
         reference=reference,

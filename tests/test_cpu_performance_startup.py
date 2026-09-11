@@ -106,7 +106,6 @@ def test_child_entrypoints_apply_unavailable_qos_before_work(
 def test_server_lifespan_applies_unavailable_qos_before_worker_pool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import haute._pipeline_recovery_drafts as drafts
     import haute.deploy._config as deploy_config
     import haute.server as server
 
@@ -133,7 +132,6 @@ def test_server_lifespan_applies_unavailable_qos_before_worker_pool(
     monkeypatch.setattr(deploy_config, "_load_env", lambda _path: None)
     monkeypatch.setattr(server, "configure_execution_telemetry", lambda: None)
     monkeypatch.setattr(server, "recover_json_runtime_storage", lambda: None)
-    monkeypatch.setattr(drafts, "recover_pending_drafts", lambda _path: None)
     monkeypatch.setattr(server, "_artifact_stale_seconds", lambda: 1)
     monkeypatch.setattr(server, "_ensure_pipeline_index", lambda: None)
     monkeypatch.setattr(server, "start_interactive_worker_pool", lambda: events.append("pool"))

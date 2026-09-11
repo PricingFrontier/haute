@@ -523,8 +523,9 @@ writing a failing test before the fix.
 > the live `Pipeline.run()` API. That API only records `pipeline.submodel(...)` paths, so runtime
 > equivalence is intentionally established after static parse/flatten, not through live module
 > registration.
-## Recovery draft generation
+## Recovery single-node generation
 
-Single-node generation for a recovery draft preserves an explicit authored column
-contract but does not derive a new contract from external model artifacts. This
-explicit offline mode emits the current scaffold without contacting external services.
+Single-node generation for a recovery candidate preserves an explicit authored
+column contract but does not derive a new contract from external model artifacts.
+This explicit offline mode emits the current scaffold without contacting external
+services.

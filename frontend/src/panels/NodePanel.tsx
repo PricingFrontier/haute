@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { X, Link2, AlertTriangle, RefreshCw, Lock } from "lucide-react"
 import { fetchExplorePivotMembers } from "../api/client"
 import { NODE_TYPES, NODE_TYPE_META } from "../utils/nodeTypes"
@@ -22,6 +22,7 @@ import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useU
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
+import { useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
 import { buildExploreCacheIdentity } from "./explore/cacheIdentity"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
@@ -57,6 +58,8 @@ type NodePanelProps = {
   readOnly?: boolean
   /** True when the current pipeline document is not executable/mutable. */
   documentReadOnly?: boolean
+  /** Node-scoped save for a `scoped_editable` node while the document stays fenced. */
+  scopedSave?: () => Promise<{ ok: boolean; error?: string }>
   /** Opens an explicitly confirmed document-level recovery action. */
   onRemoveUnavailableNode?: (target: { sourceFile: string; recoveryId: string; action?: "remove" | "update" | "reset" | "recover" }) => void
 }
@@ -671,6 +674,158 @@ function clearCachedResultShape(
   return next
 }
 
+
+type NodeRecoveryStatusProps = {
+  recoveryId: string | null
+  blockedPath: string[] | null
+  scopedSave?: () => Promise<{ ok: boolean; error?: string }>
+}
+
+/** Recovery summary, completeness gaps, blockers, and the node-scoped save. */
+function NodeRecoveryStatus({ recoveryId, blockedPath, scopedSave }: NodeRecoveryStatusProps) {
+  const summary = useRecoverySummaryStore((s) => (recoveryId ? s.summaries[recoveryId] : undefined))
+  const dismissSummary = useRecoverySummaryStore((s) => s.dismissSummary)
+  const completeness = useDocumentStatusStore((s) => s.completeness)
+  const entries = useMemo(
+    () => (recoveryId ? completeness.filter((entry) => entry.element_id === recoveryId) : []),
+    [completeness, recoveryId],
+  )
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  if (!summary && entries.length === 0 && blockedPath === null && !scopedSave) return null
+  const counts = summary
+    ? {
+        retained: summary.fieldChanges.filter((change) => change.outcome === "retained").length,
+        defaulted: summary.fieldChanges.filter((change) => change.outcome === "defaulted").length,
+        needsInput: summary.fieldChanges.filter((change) => change.outcome === "needs_input").length,
+        removed: summary.fieldChanges.filter((change) => change.outcome === "removed").length,
+      }
+    : null
+  return (
+    <div
+      data-testid="node-recovery-status"
+      className="shrink-0 space-y-2 px-3 py-2 text-[11px]"
+      style={{ borderBottom: "1px solid var(--border)" }}
+    >
+      {blockedPath !== null && (
+        <p style={{ color: "var(--warning)" }}>
+          Blocked by an unavailable upstream node
+          {blockedPath.length > 0 ? `: ${blockedPath.join(" → ")}` : ""}. You can still edit
+          and save this node.
+        </p>
+      )}
+      {summary && counts && (
+        <section
+          aria-label="Recovery summary"
+          className="rounded p-2"
+          style={{ background: "var(--bg-elevated)" }}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <p style={{ color: "var(--text-primary)" }}>
+              Recovered: {counts.retained} retained, {counts.defaulted} defaulted,{" "}
+              {counts.needsInput} need input, {counts.removed} removed.
+            </p>
+            <button
+              type="button"
+              aria-label="Dismiss recovery summary"
+              onClick={() => dismissSummary(summary.recoveryId)}
+              style={{ color: "var(--text-muted)" }}
+            >
+              <X size={12} />
+            </button>
+          </div>
+          <details className="mt-1">
+            <summary className="cursor-pointer" style={{ color: "var(--text-secondary)" }}>
+              Field details
+            </summary>
+            <ul className="mt-1 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
+              {summary.fieldChanges.map((change, index) => (
+                <li key={`${change.path}:${index}`}>
+                  <span className="font-mono">{change.path || "settings"}</span>: {change.outcome}{" "}
+                  — {change.reason}
+                </li>
+              ))}
+            </ul>
+          </details>
+          {summary.previousConfig !== null && (
+            <details className="mt-1">
+              <summary className="cursor-pointer" style={{ color: "var(--text-secondary)" }}>
+                Previous configuration
+              </summary>
+              <pre
+                className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded p-2 text-[10px]"
+                style={{ background: "var(--bg-input)", color: "var(--text-secondary)" }}
+              >
+                {JSON.stringify(summary.previousConfig, null, 2)}
+              </pre>
+            </details>
+          )}
+          {summary.changes.some((change) => change.diff) && (
+            <details className="mt-1">
+              <summary className="cursor-pointer" style={{ color: "var(--text-secondary)" }}>
+                Source diff
+              </summary>
+              {summary.changes.map((change) =>
+                change.diff ? (
+                  <pre
+                    key={change.path}
+                    className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded p-2 text-[10px]"
+                    style={{ background: "var(--bg-input)", color: "var(--text-secondary)" }}
+                  >
+                    {change.diff}
+                  </pre>
+                ) : null,
+              )}
+            </details>
+          )}
+        </section>
+      )}
+      {entries.length > 0 && (
+        <section aria-label="Missing required values">
+          <p style={{ color: "var(--warning)" }}>Missing required values:</p>
+          <ul className="mt-0.5" style={{ color: "var(--text-secondary)" }}>
+            {entries.map((entry) => (
+              <li key={`${entry.path}:${entry.code}`}>
+                <span className="font-mono">{entry.path}</span> — {entry.message}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {scopedSave && (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-testid="node-scoped-save"
+            disabled={saving}
+            onClick={() => {
+              setSaving(true)
+              setSaveError(null)
+              void scopedSave()
+                .then((result) => {
+                  if (!result.ok) setSaveError(result.error ?? "Save failed.")
+                })
+                .finally(() => setSaving(false))
+            }}
+            className="rounded px-2 py-1 font-medium"
+            style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}
+          >
+            {saving ? "Saving…" : "Save node"}
+          </button>
+          <span style={{ color: "var(--text-muted)" }}>
+            Saves only this node while the pipeline stays read-only.
+          </span>
+        </div>
+      )}
+      {saveError && (
+        <p role="alert" style={{ color: "var(--danger)" }}>
+          {saveError}
+        </p>
+      )}
+    </div>
+  )
+}
+
 type NodePanelHeaderProps = {
   nodeId: string
   label: string
@@ -679,7 +834,6 @@ type NodePanelHeaderProps = {
   showRefreshPreview: boolean
   refreshTitle: string
   onRefreshPreview?: () => void
-  onRecoverSettings?: () => void
   onClose: () => void
 }
 
@@ -691,7 +845,6 @@ function NodePanelHeader({
   showRefreshPreview,
   refreshTitle,
   onRefreshPreview,
-  onRecoverSettings,
   onClose,
 }: NodePanelHeaderProps) {
   const rename = useNodeRenameSession(nodeId)
@@ -725,11 +878,6 @@ function NodePanelHeader({
           >
             <RefreshCw size={11} />
             Refresh
-          </button>
-        )}
-        {onRecoverSettings && (
-          <button type="button" onClick={onRecoverSettings} className="px-2 py-1 rounded shrink-0 text-[11px] font-medium" style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}>
-            Recover settings
           </button>
         )}
         <button
@@ -791,13 +939,14 @@ function RecoveryNodePanel({
     && hasRecoveryTarget
   const nodeType = effectiveNodeType(node)
   const canUpdate = canRemove && nodeType === NODE_TYPES.SUBMODEL
-  const canRecover = hasRecoveryTarget && (Object.hasOwn(NODE_TYPE_META, nodeType) || nodeType === NODE_TYPES.SUBMODEL_PORT)
   const canReset = canRemove
     && Object.hasOwn(NODE_TYPE_META, nodeType)
     && nodeType !== NODE_TYPES.SUBMODEL
     && nodeType !== NODE_TYPES.SUBMODEL_PORT
     && !(typeof recoveryData.config?.instanceOf === "string")
     && recoveryData._authoredDecorator !== "instance"
+  // Recover and Reset share eligibility: unavailable, known ordinary, owned.
+  const canRecover = canReset
 
   return (
     <PanelShell testId="node-panel">
@@ -1176,6 +1325,7 @@ function NodePanelContent({
   selectedPreviewLoading = false,
   readOnly = false,
   documentReadOnly = false,
+  scopedSave,
   onRemoveUnavailableNode,
 }: ActiveNodePanelProps) {
   const { allNodes, edges, submodels, preamble } = useGraph()
@@ -1317,7 +1467,11 @@ function NodePanelContent({
       : upstreamColumns
   }, [cachedExploreResult, exploreConfigHash, upstreamColumns])
   const recoveryAvailability = (node.data as HauteNodeData)._loadAvailability ?? "ready"
-  if (recoveryAvailability !== "ready") {
+  const scopedEditable = (node.data as HauteNodeData)._scopedEditable === true
+  if (
+    recoveryAvailability === "unavailable" ||
+    (recoveryAvailability === "blocked" && !(scopedEditable && scopedSave))
+  ) {
     return (
       <RecoveryNodePanel
         node={node}
@@ -1403,18 +1557,22 @@ function NodePanelContent({
         key={String(node.data.label)}
         nodeId={node.id}
         label={String(node.data.label)}
-        readOnly={readOnly}
+        readOnly={readOnly || Boolean(scopedSave)}
         onRenameNode={onRenameNode}
         showRefreshPreview={showRefreshPreview}
         refreshTitle={refreshTitle}
         onRefreshPreview={onRefreshPreview}
-        onRecoverSettings={(() => {
-          const data = node.data as HauteNodeData
-          return typeof data._sourceFile === "string" && typeof data._recoveryId === "string" && onRemoveUnavailableNode
-            ? () => onRemoveUnavailableNode({ sourceFile: data._sourceFile!, recoveryId: data._recoveryId!, action: "recover" })
-            : undefined
-        })()}
         onClose={onClose}
+      />
+
+      <NodeRecoveryStatus
+        recoveryId={(node.data as HauteNodeData)._recoveryId ?? null}
+        blockedPath={
+          recoveryAvailability === "blocked"
+            ? ((node.data as HauteNodeData)._loadBlockingPath ?? [])
+            : null
+        }
+        scopedSave={scopedSave}
       />
 
       <NodeEditorTabStrip

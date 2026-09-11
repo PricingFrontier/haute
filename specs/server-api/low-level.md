@@ -32,14 +32,12 @@
 | `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. |
 | `src/haute/routes/_runtime_path_errors.py` | Closed HTTP mapping for runtime-path failures: malformed path → 400, project-root escape → 403, selected by concrete exception type rather than message text. |
 | `src/haute/_node_config_recovery.py` | Current contracts and field reconciliation. |
-| `src/haute/_pipeline_recovery_drafts.py` | Durable draft lifecycle and transactions. |
-| `src/haute/_recovery_sources.py` | Literal source evidence and isolated generation. |
-| `src/haute/_recovery_schemas.py` | Strict DTOs and finite bounded JSON. |
-| `src/haute/_recovery_storage.py` | Contained evidence snapshots and canonical_json digests. |
+| `src/haute/_artifact_paths.py` | Contained project-relative artifact paths (traversal/alias/reparse-point rejection) and bounded artifact reads shared by recovery and the mutation lock. |
+| `src/haute/_recovery_sources.py` | Raw authored settings/code evidence and scaffold matching for the recover action. |
+| `src/haute/_recovery_schemas.py` | Engine field-outcome and issue types. |
 | `src/haute/_project_mutation_lock.py` | Cross-process project writer lock. |
 | `src/haute/_file_lock.py` | Shared OS file-lock primitives. |
 | `src/haute/node_defaults.json` | Shared palette/reset defaults. |
-| `src/haute/routes/recovery.py` | Draft API and authoritative document notifications. |
 
 ## Key types and data structures
 
@@ -839,49 +837,14 @@ declared-incomplete locators (`require_complete=False`), so a loadable incomplet
 round-trips through save. `POST /api/pipeline/node/save` provides the node-scoped save
 for `scoped_editable` nodes in degraded documents, per the same specification.
 
-## Persistent recovery drafts
+## No persistent recovery state
 
-The accepted [generalised recovery specification](generalised-node-recovery-plan.md)
-is implemented by `_node_config_recovery.py`, `_recovery_sources.py`,
-`_pipeline_recovery_drafts.py` and `_recovery_storage.py`. The separate, strict
-`RecoveryDraft` DTO is never admitted as an executable graph. Source generation
-and validation run against an artifact-only temporary copy, without data probes.
-
-`routes/recovery.py` exposes `/api/pipeline/repair/contracts` and
-`/api/pipeline/repair/drafts` (GET/POST), then `/{draft_id}` (GET) and POST actions
-`edit`, `preview`, `apply`, `discard`, `restore-preview`, and `restore`. Edits and
-previews require `draft_revision`; apply/restore also require `source_revision`,
-the exact preview `plan_hash`, and an idempotent `operation_id`.
-
-The project mutation lock is shared with existing save/submodel writers and uses
-both asyncio and an OS file lock. Exact source/config/position bytes and a durable
-apply journal live under `.haute/recovery/`; active drafts and restoration evidence
-are retained after discard. Original evidence is never included in graph payloads.
-Limits are 200 records, 512 artifacts, 16 MiB per artifact and 64 MiB per snapshot.
-The lock rendezvous uses a resolved-project-path hash in the user's temporary
-directory, so read-only previews and rejected mutations do not create project files.
-Recovery proposal and snapshot digests reuse `haute._cache.canonical_json`;
-public recovery settings remain finite JSON. Ambiguous source boundaries, non-finite
-values and filesystem aliases fail explicitly.
-Interrupted commits finish only if all written bytes and graph checks agree;
-otherwise they roll back only their own bytes or retain a conflicting journal.
-If startup reconciliation raises, the server logs
-`recovery_journal_reconcile_failed` with the exception class and remains available
-for inspection. Unresolved durable evidence is retained; the warning does not
-include the exception's potentially sensitive message.
-
-Compatibility recovery preserves valid fields across all 17 ordinary node types.
-Submodels use explicit registration/port adapters and retain definition/public-port
-identity, children and connections. Projected ports belong to their definition and
-require recovery there. Unknown types, computed/custom source and ambiguous shared
-instances remain explicit manual actions. Draft completeness checks are static:
-successful recovery does not certify runtime data, services or arbitrary user code.
-
-Draft field-shape validation precedes semantic validation. Malformed discriminator
-values (including JSON arrays and objects) produce structured errors, never an
-unhandled exception or an inferred default branch. Such draft edits remain saved
-and editable, and previews cannot apply until corrected.
-Submodel relinking revalidates the replacement file's normalized public port names
-against the original per-direction identities before accepting the replacement.
-Matching definition ids do not authorize renaming or dropping an existing port,
-including an unconnected port.
+Recovery has no server-side draft store, journal, restore records, or history:
+the repair actions and the node-scoped save are the entire mutation surface,
+each computed fresh from the authoritative artifacts under the shared save and
+project mutation locks. Any `.haute/recovery/` contents left by earlier
+releases are ignored without migration; git history is the durability and undo
+layer. The cross-process project mutation lock remains shared by every project
+writer, and its rendezvous uses a resolved-project-path hash in the user's
+temporary directory, so read-only previews and rejected mutations do not create
+project files.

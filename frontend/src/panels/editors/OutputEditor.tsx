@@ -23,7 +23,6 @@ import {
 import { parsePath } from "./jsonpath"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 import { apiInputFrameColumns, authoritativeSourceHandles, edgeInputName } from "../../utils/apiInputPorts"
-import { useIsRecoveryDraft } from "../DraftEditingContext"
 
 // ─── Preview chunk size ───────────────────────────────────────────
 //
@@ -219,7 +218,6 @@ export default function OutputEditor({
   onUpdate: OnUpdateConfig
   nodeId: string
 }) {
-  const isRecoveryDraft = useIsRecoveryDraft()
   const { allNodes, edges, submodels, preamble } = useGraph()
 
   // Incoming edges = the frames mapped into the response. One block each.
@@ -322,8 +320,6 @@ export default function OutputEditor({
   const outputReqSeq = useRef(0)
 
   const runOutputPreview = useCallback(() => {
-    if (isRecoveryDraft) return
-    if (isRecoveryDraft) return
     const reqId = ++outputReqSeq.current
     setOutputLoading(true)
     setOutputError(null)
@@ -369,7 +365,7 @@ export default function OutputEditor({
         setOutputError(message)
         setOutputLoading(false)
       })
-  }, [allNodes, edges, submodels, preamble, nodeId, v2, isRecoveryDraft])
+  }, [allNodes, edges, submodels, preamble, nodeId, v2])
 
   // Expanding the preview for the first time (no doc yet, not already loading)
   // kicks off a run; the refresh button re-runs on demand.
@@ -403,7 +399,6 @@ export default function OutputEditor({
       const sourceNode = nodeById[edge.source]
       if (!sourceNode) throw new ApiError("Frame source node not found", 404)
       const graph = buildGraph(allNodes, edges, submodels, preamble)
-      if (isRecoveryDraft) return { rows: [], total: 0 }
       const res = await previewNode({
         graph,
         nodeId: edge.source,
@@ -425,7 +420,7 @@ export default function OutputEditor({
           : (res.preview ?? []).length
       return { rows, total }
     },
-    [allNodes, edges, submodels, preamble, nodeById, isRecoveryDraft],
+    [allNodes, edges, submodels, preamble, nodeById],
   )
 
   // Rows for a given frame, with their absolute index into v2.outputMapping so

@@ -80,6 +80,8 @@ export interface HauteNodeData extends Record<string, unknown> {
   _loadDiagnosticIds?: string[]
   /** Authored node path from the nearest unavailable dependency through this node. */
   _loadBlockingPath?: string[]
+  /** Server-derived: this loadable node may be saved in isolation while the document stays fenced. */
+  _scopedEditable?: boolean
   /** Editor-only identity and source metadata supplied by the recovery adapter. */
   _recoveryId?: string
   _authoredId?: string

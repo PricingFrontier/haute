@@ -10,8 +10,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import BinaryIO, Literal
 
+from haute._artifact_paths import safe_path
 from haute._file_lock import _acquire_file_lock, _release_file_lock
-from haute._recovery_storage import safe_path
 
 
 class ProjectMutationLock(asyncio.Lock):

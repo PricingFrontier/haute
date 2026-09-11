@@ -748,10 +748,14 @@ include that value.
 
 `frontend/src/panels/NodePanel.tsx` subscribes to the central document diagnostics and, after all
 hooks have executed, branches to a recovery inspector whenever the selected node's load
-availability is not `ready`. It never instantiates a normal node editor for that element. For a
-document-wide recovery read-only state, a ready node renders a static JSON configuration inspector
-instead of mounting the normal editor tree; this prevents editor effects as well as user events
-from starting preview/train/cache/schema/publication actions behind the App-level capability fence.
+availability is `unavailable`. A `blocked` node whose server-derived `scoped_editable` flag is
+true mounts its normal editor with its blocking path and diagnostics reported in a banner above
+it; a blocked node without that flag keeps the recovery inspector. For a document-wide recovery
+read-only state, a ready `scoped_editable` node also mounts its normal editor together with the
+node-scoped save affordance and the document's completeness entries for that node; a ready node
+without the flag renders the static JSON configuration inspector instead of the normal editor
+tree, which prevents editor effects as well as user events from starting
+preview/train/cache/schema/publication actions behind the App-level capability fence.
 Created read-only submodel instances retain the normal inert editor presentation, and all read-only
 update handlers reject calls.
 
@@ -761,11 +765,15 @@ update handlers reject calls.
 node when `useDocumentStatusStore.capabilities.can_repair` is true. It passes
 the node's `_recoveryId` and server-supplied `_sourceFile` to the document-level
 repair flow; it never derives or submits source spans.
-Known unavailable submodels offer `Update to current format`; supported ordinary
-nodes offer `Reset node`. Instances, unknown types and blocked nodes cannot reset.
-`PipelineRepairTarget.action` chooses the dialog transport and confirmation labels.
-Reset explicitly warns that settings/custom code are replaced and configuration may
-be needed. The palette and reset service share `src/haute/node_defaults.json`.
+Known unavailable ordinary nodes offer `Recover settings` as the primary action
+and `Reset node` as the destructive alternative; known unavailable submodels
+offer `Update to current format`. Instances, unknown types and blocked nodes
+cannot reset or recover. `PipelineRepairTarget.action` chooses the dialog
+transport and confirmation labels. Reset explicitly warns that settings/custom
+code are replaced and configuration may be needed; recover explains that valid
+settings and code are retained and remaining gaps surface as completeness. The
+palette and reset service share `src/haute/node_defaults.json`. Healthy-node
+panel headers carry no recovery affordance.
 
 The confirmation dialog requests a strict dry-run plan, displays each touched
 artifact and bounded unified diff, and distinguishes retained config from an

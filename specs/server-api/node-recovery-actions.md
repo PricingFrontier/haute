@@ -81,6 +81,19 @@ completeness entries, and the exact previous configuration (`previous_config`) f
 optional display; dry-run and apply return the same shapes. Existing removal routes
 retain their contract. No request accepts replacement bytes or source spans.
 
+## Engine coverage and limits
+
+Configuration recovery preserves valid fields across all 17 ordinary node
+types. Submodels use explicit registration/port adapters through Update to
+current format and retain definition/public-port identity, children and
+connections. Projected ports belong to their definition and require recovery
+there. Unknown types, computed or custom source, and ambiguous shared
+instances remain explicit manual actions. Completeness checks are static:
+successful recovery does not certify runtime data, services or arbitrary user
+code. Field-shape reconciliation precedes semantic validation, and malformed
+discriminator values (including JSON arrays and objects) produce structured
+outcomes, never an unhandled exception or an inferred default branch.
+
 ## Node-scoped save in degraded documents
 
 Whole-document mutation and save remain fenced by `PipelineDocumentCapabilities` while
