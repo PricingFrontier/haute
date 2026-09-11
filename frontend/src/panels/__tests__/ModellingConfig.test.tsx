@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
+import { act, render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import ModellingConfig from "../ModellingConfig"
 import { GraphProvider } from "../GraphContext"
 import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
@@ -1611,13 +1611,18 @@ describe("ModellingConfig", () => {
         expect(mockGetExperiments).toHaveBeenCalledTimes(1)
 
         // Destination changes while the first fetch is still in flight.
-        useSettingsStore.setState({
-          mlflow: { ...CONNECTED, mode: "server", destination: "http://localhost:5000" },
+        act(() => {
+          useSettingsStore.setState({
+            mlflow: { ...CONNECTED, mode: "server", destination: "http://localhost:5000" },
+          })
         })
-        resolveFirst!([{ experiment_id: "9", name: "stale-exp" }])
-        await waitFor(() => {
-          expect(document.querySelector("datalist option[value='stale-exp']")).toBeNull()
+        // Resolve the stale request and let every resulting update settle
+        // BEFORE asserting absence — a not-yet-rendered option must not be
+        // what makes this pass.
+        await act(async () => {
+          resolveFirst!([{ experiment_id: "9", name: "stale-exp" }])
         })
+        expect(document.querySelector("datalist option[value='stale-exp']")).toBeNull()
 
         mockGetExperiments.mockResolvedValueOnce([
           { experiment_id: "2", name: "fresh-exp" },
@@ -1627,6 +1632,26 @@ describe("ModellingConfig", () => {
           expect(mockGetExperiments).toHaveBeenCalledTimes(2)
           expect(document.querySelector("datalist option[value='fresh-exp']")).toBeTruthy()
         })
+        expect(document.querySelector("datalist option[value='stale-exp']")).toBeNull()
+      })
+
+      it("clears already populated suggestions when the destination changes", async () => {
+        useSettingsStore.setState({ mlflow: CONNECTED })
+        mockGetExperiments.mockResolvedValueOnce([
+          { experiment_id: "1", name: "old-exp" },
+        ])
+        renderConfig({ activePane: "train" })
+        fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
+        await waitFor(() => {
+          expect(document.querySelector("datalist option[value='old-exp']")).toBeTruthy()
+        })
+
+        act(() => {
+          useSettingsStore.setState({
+            mlflow: { ...CONNECTED, mode: "server", destination: "http://localhost:5000" },
+          })
+        })
+        expect(document.querySelector("datalist option[value='old-exp']")).toBeNull()
       })
 
       it("lists existing experiments in a datalist on focus", async () => {
