@@ -280,3 +280,25 @@ class TestJoblibMissingImportFallback:
 
         with pytest.raises(RuntimeError, match="[Ii]nstalled joblib is incompatible"):
             safe_joblib_load(artifact)
+
+
+def test_project_root_lazy_capture_uses_cwd_at_first_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The server relies on the first _get_project_root() call capturing cwd.
+
+    Tests normally pin the root eagerly (conftest baseline), so this is the
+    only place the lazy branch runs; it pins the production startup semantic.
+    """
+    import haute._sandbox as sandbox
+
+    original = sandbox._get_project_root()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sandbox, "_PROJECT_ROOT", None)
+    try:
+        assert sandbox._get_project_root() == tmp_path.resolve()
+        # The captured value is cached; a later cwd change does not move it.
+        monkeypatch.chdir(tmp_path.parent)
+        assert sandbox._get_project_root() == tmp_path.resolve()
+    finally:
+        sandbox.set_project_root(original)
