@@ -608,7 +608,7 @@ class PipelineRepairRecoverRequest(BaseModel):
     source_revision: RevisionToken
     target_source_file: str = Field(min_length=1)
     target_recovery_id: str = Field(min_length=1)
-    action: Literal["update", "reset"]
+    action: Literal["update", "reset", "recover"]
 
 
 class PipelineRepairRecoverApplyRequest(PipelineRepairRecoverRequest):
@@ -627,12 +627,22 @@ class PipelineRepairChange(BaseModel):
     diff_truncated: bool
 
 
+class PipelineRepairFieldChange(BaseModel):
+    """One engine decision about a recovered field, for optional display."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = ""
+    outcome: Literal["retained", "defaulted", "needs_input", "needs_review", "removed", "blocked"]
+    reason: str = Field(min_length=1, max_length=1024)
+
+
 class PipelineRepairPlanResponse(BaseModel):
     """Read-only remove-node plan presented for explicit confirmation."""
 
     model_config = ConfigDict(extra="forbid")
 
-    repair_kind: Literal["remove_unavailable_node", "update_node", "reset_node"] = (
+    repair_kind: Literal["remove_unavailable_node", "update_node", "reset_node", "recover_node"] = (
         "remove_unavailable_node"
     )
     source_file: str = Field(min_length=1)
@@ -646,6 +656,9 @@ class PipelineRepairPlanResponse(BaseModel):
     retained_artifacts: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     predicted_load_status: Literal["ready", "degraded"]
+    field_changes: list[PipelineRepairFieldChange] = Field(default_factory=list)
+    completeness: list[PipelineNodeCompleteness] = Field(default_factory=list)
+    previous_config: dict[str, Any] | None = None
 
 
 class PipelineRepairApplyResponse(BaseModel):
@@ -653,12 +666,15 @@ class PipelineRepairApplyResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    repair_kind: Literal["remove_unavailable_node", "update_node", "reset_node"] = (
+    repair_kind: Literal["remove_unavailable_node", "update_node", "reset_node", "recover_node"] = (
         "remove_unavailable_node"
     )
     plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     applied_artifacts: list[str] = Field(min_length=1)
     document: PipelineEditorDocument
+    field_changes: list[PipelineRepairFieldChange] = Field(default_factory=list)
+    completeness: list[PipelineNodeCompleteness] = Field(default_factory=list)
+    previous_config: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------

@@ -422,3 +422,98 @@ def test_apply_recover_rollback_on_second_staged_write_restores_artifacts(
     assert (tmp_path / "main.py").read_bytes() == before_parent
     assert (tmp_path / "main.haute.json").read_bytes() == before_sidecar
     assert (tmp_path / "modules" / "Inputs.py").read_bytes() == before_child
+
+
+def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
+        '@pipeline.data_input(config="in.json")\ndef source():\n    return None\n'
+    )
+    (tmp_path / "in.json").write_text(
+        json.dumps(
+            {
+                "inputType": "file",
+                "format": "json",
+                "path": "quotes.json",
+                "arguments": {},
+                "code": "df = df.head(5)",
+                "cacheMode": "snapshot",
+            }
+        )
+    )
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "source")
+    assert target.availability == "unavailable"
+    request = _request(tmp_path, "source", "recover")
+    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
+    assert plan.response.repair_kind == "recover_node"
+    assert plan.response.previous_config is not None
+    assert plan.response.previous_config["cacheMode"] == "snapshot"
+    outcomes = {(change.path, change.outcome) for change in plan.response.field_changes}
+    assert ("/cacheMode", "removed") in outcomes
+    assert ("/path", "retained") in outcomes
+    assert plan.response.completeness == []
+    result = _apply(tmp_path, request, plan)
+    assert result.repair_kind == "recover_node"
+    assert result.previous_config is not None
+    assert result.document.load_status == "ready"
+    written = json.loads((tmp_path / "in.json").read_text())
+    assert written["path"] == "quotes.json"
+    assert written["format"] == "json"
+    assert "mode" not in written
+    assert "cacheMode" not in written
+
+
+def test_recover_empty_locator_applies_as_incomplete(tmp_path):
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
+        '@pipeline.data_input(config="in.json")\ndef source():\n    return None\n'
+    )
+    (tmp_path / "in.json").write_text(
+        json.dumps(
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "path": "",
+                "arguments": {},
+                "code": "",
+                "cacheMode": "snapshot",
+            }
+        )
+    )
+    request = _request(tmp_path, "source", "recover")
+    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
+    assert [(entry.path, entry.code) for entry in plan.response.completeness] == [
+        ("path", "required")
+    ]
+    result = _apply(tmp_path, request, plan)
+    assert result.document.load_status == "ready"
+    node = next(item for item in result.document.nodes if item.authored_id == "source")
+    assert node.availability == "ready"
+    assert [(entry.element_id, entry.path) for entry in result.document.completeness] == [
+        (node.recovery_id, "path")
+    ]
+
+
+def test_recover_rejects_custom_body_for_non_code_types(tmp_path):
+    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
+        '@pipeline.constant(config="custom.json")\ndef source():\n'
+        "    surprise = 1\n    return surprise\n"
+    )
+    (tmp_path / "custom.json").write_text("{bad json")
+    request = _request(tmp_path, "source", "recover")
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    with pytest.raises(PipelineRepairError, match="scaffold|manual"):
+        build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
+    assert {p: p.read_bytes() for p in before} == before

@@ -38,7 +38,9 @@ from haute._types import GraphNode, NodeData, NodeType
 from haute.errors import HauteError
 from haute.schemas import (
     PipelineEditorDocument,
+    PipelineNodeCompleteness,
     PipelineRepairChange,
+    PipelineRepairFieldChange,
     PipelineRepairPlanResponse,
     PipelineRepairRecoverRequest,
     RecoveryGraphSnapshot,
@@ -316,6 +318,7 @@ def _reset_node(
     *,
     replacement_config: dict[str, Any] | None = None,
     shared_config_confirmed: bool = False,
+    recover: bool = False,
 ) -> tuple[list[RepairArtifactEdit], list[str]]:
     from haute._graph_utils import executable_input_name
     from haute.codegen import _node_to_code
@@ -487,7 +490,9 @@ def _reset_node(
                 root,
                 config_path.read_bytes() if config_path.is_file() else None,
                 after,
-                "Replace this node's settings with the current palette defaults.",
+                "Recover this node's settings against the current contract."
+                if recover
+                else "Replace this node's settings with the current palette defaults.",
             )
         )
     if receiver == "submodel":
@@ -508,14 +513,106 @@ def _reset_node(
             root,
             before,
             updated,
-            f"Recreate {target.authored_id!r} using the current {node_type.value} template.",
+            f"Regenerate {target.authored_id!r} from its recovered {node_type.value} settings."
+            if recover
+            else f"Recreate {target.authored_id!r} using the current {node_type.value} template.",
         ),
     )
+    if recover:
+        return edits, [
+            "Recover settings retains valid values and code. "
+            "Its identity, position and connections are retained.",
+            "Complete any remaining highlighted settings before running.",
+        ]
     return edits, [
         "Reset replaces this node's settings and custom code. "
         "Its identity, position and connections are retained.",
         "Configure the node before running it. An empty Polars node requires code "
         "and deliberately raises until configured.",
+    ]
+
+
+def _recover_node(
+    root: Path,
+    root_path: Path,
+    path: Path,
+    target: RecoveryPipelineNode,
+    document: PipelineEditorDocument,
+) -> tuple[
+    list[RepairArtifactEdit],
+    list[str],
+    dict[str, Any],
+    list[PipelineRepairFieldChange],
+    list[PipelineNodeCompleteness],
+]:
+    """Rebuild one node's settings with the recovery engine and regenerate its source."""
+    from haute._node_config_recovery import reconcile_config
+    from haute._recovery_schemas import RecoveryDraftNode
+    from haute._recovery_sources import _require_generated_body, read_raw_node_settings
+
+    if target.node_type is None or target.node_type in {NodeType.SUBMODEL, "submodelPort"}:
+        raise _unsupported(
+            "Only supported ordinary nodes can be recovered; "
+            "submodels keep Update to current format."
+        )
+    node_type, raw, raw_changes, function, params, reference = read_raw_node_settings(
+        root, document, target
+    )
+    result = reconcile_config(node_type, raw)
+    # The guard only decides whether the body is recognised generated
+    # scaffolding; engine issues are completeness for a direct recover, never
+    # a plan gate, so they are deliberately not forwarded here.
+    carrier = RecoveryDraftNode(
+        key="recover",
+        source_file=_wire_path(path, root),
+        recovery_id=target.recovery_id,
+        authored_id=target.authored_id,
+        label=target.label,
+        node_type=target.node_type,
+        config=result.config,
+        changes=[],
+        issues=[],
+    )
+    _require_generated_body(
+        carrier,
+        function,
+        params=params,
+        reference=reference,
+        receiver="pipeline" if path == root_path else "submodel",
+        config_base_depth=len(path.parent.relative_to(root_path.parent).parts),
+    )
+    edits, warnings = _reset_node(
+        root, root_path, path, target, document, replacement_config=result.config, recover=True
+    )
+    field_changes = [
+        PipelineRepairFieldChange(path=change.path, outcome=change.outcome, reason=change.reason)
+        for change in (*raw_changes, *result.changes)
+    ]
+    return (
+        edits,
+        warnings,
+        raw,
+        field_changes,
+        _recover_completeness(node_type, result.config, target.recovery_id),
+    )
+
+
+def _recover_completeness(
+    node_type: NodeType, config: dict[str, Any], recovery_id: str
+) -> list[PipelineNodeCompleteness]:
+    from haute._polars_io_registry import data_input_completeness, data_output_completeness
+
+    if node_type is NodeType.DATA_INPUT:
+        gaps = data_input_completeness(config)
+    elif node_type is NodeType.DATA_OUTPUT:
+        gaps = data_output_completeness(config)
+    else:
+        return []
+    return [
+        PipelineNodeCompleteness(
+            element_id=recovery_id, path=gap.path, code=gap.code, message=gap.message
+        )
+        for gap in gaps
     ]
 
 
@@ -563,8 +660,15 @@ def build_recovery_action_plan(
         target_source_file=_wire_path(path, root),
         target_recovery_id=request.target_recovery_id,
     )
+    field_changes: list[PipelineRepairFieldChange] = []
+    completeness: list[PipelineNodeCompleteness] = []
+    previous_config: dict[str, Any] | None = None
     if request.action == "update":
         edits, warnings = _update_submodel(root, path, target, document)
+    elif request.action == "recover":
+        edits, warnings, previous_config, field_changes, completeness = _recover_node(
+            root, root_path, path, target, document
+        )
     else:
         edits, warnings = _reset_node(root, root_path, path, target, document)
     edits = [edit for edit in edits if edit.before != edit.after]
@@ -595,8 +699,12 @@ def build_recovery_action_plan(
     after_ids = {(node.source_file, node.authored_id) for node in _iter_recovery_nodes(preview)}
     if not before_ids <= after_ids:
         raise _unsupported("The proposed repair would lose an existing node identity.")
-    kind: Literal["update_node", "reset_node"] = (
-        "update_node" if request.action == "update" else "reset_node"
+    kind: Literal["update_node", "reset_node", "recover_node"] = (
+        "update_node"
+        if request.action == "update"
+        else "recover_node"
+        if request.action == "recover"
+        else "reset_node"
     )
     response = PipelineRepairPlanResponse(
         repair_kind=kind,
@@ -627,6 +735,9 @@ def build_recovery_action_plan(
         ],
         warnings=warnings,
         predicted_load_status=preview.load_status,
+        field_changes=field_changes,
+        completeness=completeness,
+        previous_config=previous_config,
     )
     return PipelineRepairPlan(
         response=response,

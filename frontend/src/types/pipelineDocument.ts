@@ -565,7 +565,7 @@ function parseDiagnostic(value: unknown, field: string): PipelineDiagnostic {
   }
 }
 
-function parseCompleteness(value: unknown, field: string): PipelineNodeCompleteness {
+export function parseNodeCompleteness(value: unknown, field: string): PipelineNodeCompleteness {
   const object = expectPlainObject(PARSER, value, field)
   exactKeys(object, field, ["element_id", "path", "code", "message"])
   return {
@@ -639,7 +639,7 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
     )
   }
   const completeness = expectArray(PARSER, object.completeness, "document.completeness").map(
-    (item, index) => parseCompleteness(item, `document.completeness[${index}]`),
+    (item, index) => parseNodeCompleteness(item, `document.completeness[${index}]`),
   )
   const completenessOmitted = expectNumber(
     PARSER,

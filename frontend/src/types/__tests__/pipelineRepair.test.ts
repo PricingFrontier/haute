@@ -21,6 +21,9 @@ const plan = {
   retained_artifacts: ["config/broken.json"],
   warnings: ["Config retained."],
   predicted_load_status: "ready",
+  field_changes: [],
+  completeness: [],
+  previous_config: null,
 }
 
 describe("pipeline repair response parsers", () => {
@@ -31,6 +34,9 @@ describe("pipeline repair response parsers", () => {
       plan_hash: hash,
       applied_artifacts: ["main.py"],
       document: makePipelineEditorDocument(),
+      field_changes: [],
+      completeness: [],
+      previous_config: null,
     }).document.document_kind).toBe("haute.pipeline_editor_document")
     expect(parseRemoveUnavailableNodeDryRunResponse({
       ...plan,
@@ -43,6 +49,7 @@ describe("pipeline repair response parsers", () => {
     expect(() => parseRemoveUnavailableNodeDryRunResponse({ ...plan, unexpected: true })).toThrow("unexpected")
     expect(() => parseRemoveUnavailableNodeApplyResponse({
       repair_kind: "remove_unavailable_node", plan_hash: hash, applied_artifacts: ["main.py", "main.py"], document: makePipelineEditorDocument(),
+      field_changes: [], completeness: [], previous_config: null,
     })).toThrow("duplicate")
     expect(() => parseRemoveUnavailableNodeDryRunResponse({
       ...plan,
@@ -57,8 +64,34 @@ describe("pipeline repair response parsers", () => {
   it("accepts update/reset recovery responses but rejects config deletion", () => {
     const update = { ...plan, repair_kind: "update_node", delete_config: false }
     expect(parseRecoverUnavailableNodeDryRunResponse(update).repair_kind).toBe("update_node")
-    expect(parseRecoverUnavailableNodeApplyResponse({ repair_kind: "reset_node", plan_hash: hash, applied_artifacts: ["main.py"], document: makePipelineEditorDocument() }).repair_kind).toBe("reset_node")
+    expect(parseRecoverUnavailableNodeApplyResponse({ repair_kind: "reset_node", plan_hash: hash, applied_artifacts: ["main.py"], document: makePipelineEditorDocument(), field_changes: [], completeness: [], previous_config: null }).repair_kind).toBe("reset_node")
     expect(() => parseRecoverUnavailableNodeDryRunResponse({ ...update, delete_config: true })).toThrow("delete_config")
     expect(() => parseRecoverUnavailableNodeDryRunResponse({ ...update, repair_kind: "remove_unavailable_node" })).toThrow("repair_kind")
+  })
+
+  it("accepts recover responses carrying the field-outcome report", () => {
+    const recover = {
+      ...plan,
+      repair_kind: "recover_node",
+      field_changes: [
+        { path: "/path", outcome: "retained", reason: "Valid under the current configuration contract." },
+        { path: "/cacheMode", outcome: "removed", reason: "Unknown or retired configuration field retained only in recovery evidence." },
+      ],
+      completeness: [
+        { element_id: "broken@10", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." },
+      ],
+      previous_config: { inputType: "file", cacheMode: "snapshot" },
+    }
+    const parsed = parseRecoverUnavailableNodeDryRunResponse(recover)
+    expect(parsed.repair_kind).toBe("recover_node")
+    expect(parsed.field_changes).toHaveLength(2)
+    expect(parsed.completeness[0].path).toBe("path")
+    expect(parsed.previous_config).toEqual({ inputType: "file", cacheMode: "snapshot" })
+    expect(() =>
+      parseRecoverUnavailableNodeDryRunResponse({
+        ...recover,
+        field_changes: [{ path: "/x", outcome: "vanished", reason: "?" }],
+      }),
+    ).toThrow("outcome")
   })
 })

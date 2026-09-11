@@ -943,6 +943,9 @@ def _commit_repair_plan(
         plan_hash=plan.response.plan_hash,
         applied_artifacts=[edit.wire_path for edit in plan.edits],
         document=document,
+        field_changes=plan.response.field_changes,
+        completeness=plan.response.completeness,
+        previous_config=plan.response.previous_config,
     )
 
 
