@@ -44,12 +44,14 @@ export function MlflowExportSection({ trainJobId, config, onMlflowResult }: Mlfl
   const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
   const [loggingToMlflow, setLoggingToMlflow] = useState(false)
   const [mlflowResult, setMlflowResult] = useState<MlflowResult | null>(null)
+  const [copyFeedback, setCopyFeedback] = useState<"" | "copied" | "failed">("")
 
   const available = mlflowStatus === "connected"
 
   const handleLogExperiment = useCallback(async () => {
     setLoggingToMlflow(true)
     setMlflowResult(null)
+    setCopyFeedback("")
     onMlflowResult?.(null)
     try {
       const result = await logToMlflow({
@@ -118,7 +120,7 @@ export function MlflowExportSection({ trainJobId, config, onMlflowResult }: Mlfl
           {!mlflowResult.run_url && (
             <div className="space-y-1" style={{ color: "var(--text-muted)" }}>
               <div>Run ID: {mlflowResult.run_id}</div>
-              {localCommand && (
+              {mlflowResult.backend === "local" && localCommand ? (
                 <>
                   <div>Browse your runs by starting the MLflow UI from a terminal:</div>
                   <div className="flex items-center gap-1.5">
@@ -131,14 +133,34 @@ export function MlflowExportSection({ trainJobId, config, onMlflowResult }: Mlfl
                     <button
                       aria-label="Copy command"
                       title="Copy command"
-                      onClick={() => void navigator.clipboard?.writeText(localCommand)}
+                      onClick={async () => {
+                        try {
+                          if (!navigator.clipboard) throw new Error("clipboard unavailable")
+                          await navigator.clipboard.writeText(localCommand)
+                          setCopyFeedback("copied")
+                        } catch {
+                          setCopyFeedback("failed")
+                        }
+                      }}
                       className="rounded p-1"
                       style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
                     >
                       <Copy size={12} aria-hidden="true" />
                     </button>
                   </div>
+                  {copyFeedback === "copied" && (
+                    <div style={{ color: "var(--success)" }}>Copied</div>
+                  )}
+                  {copyFeedback === "failed" && (
+                    <div style={{ color: "var(--warning-strong)" }}>
+                      Copy failed — select the command text manually.
+                    </div>
+                  )}
                 </>
+              ) : (
+                <div>
+                  Run link unavailable — search for this run ID in your MLflow UI.
+                </div>
               )}
             </div>
           )}

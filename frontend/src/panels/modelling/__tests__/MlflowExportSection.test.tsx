@@ -141,6 +141,97 @@ describe("MlflowExportSection", () => {
     )
   })
 
+  it("keeps remote successes without a run link free of local-viewer instructions", async () => {
+    mockLogToMlflow.mockResolvedValue({
+      status: "ok",
+      backend: "server",
+      experiment_name: "freq",
+      run_id: "run_remote_1",
+      run_url: null,
+      tracking_uri: "http://mlflow.example.com:5000",
+      error: null,
+    })
+    render(<MlflowExportSection {...makeProps()} />)
+    fireEvent.click(screen.getByRole("button", { name: /log run to mlflow/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/run_remote_1/)).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/mlflow ui --backend-store-uri/)).toBeNull()
+    expect(screen.getByText(/run link unavailable/i)).toBeInTheDocument()
+  })
+
+  it("reports a copy failure when the clipboard is unavailable", async () => {
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true })
+    mockLogToMlflow.mockResolvedValue({
+      status: "ok",
+      backend: "local",
+      experiment_name: "freq",
+      run_id: "run_local_2",
+      run_url: null,
+      tracking_uri: "file:///C:/proj/mlruns",
+      error: null,
+    })
+    render(<MlflowExportSection {...makeProps()} />)
+    fireEvent.click(screen.getByRole("button", { name: /log run to mlflow/i }))
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /copy command/i })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: /copy command/i }))
+    await waitFor(() => {
+      expect(screen.getByText(/copy failed/i)).toBeInTheDocument()
+    })
+  })
+
+  it("reports a copy failure when the clipboard write rejects", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("denied"))
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
+    mockLogToMlflow.mockResolvedValue({
+      status: "ok",
+      backend: "local",
+      experiment_name: "freq",
+      run_id: "run_local_3",
+      run_url: null,
+      tracking_uri: "file:///C:/proj/mlruns",
+      error: null,
+    })
+    render(<MlflowExportSection {...makeProps()} />)
+    fireEvent.click(screen.getByRole("button", { name: /log run to mlflow/i }))
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /copy command/i })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: /copy command/i }))
+    await waitFor(() => {
+      expect(screen.getByText(/copy failed/i)).toBeInTheDocument()
+    })
+  })
+
+  it("confirms a successful copy", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
+    mockLogToMlflow.mockResolvedValue({
+      status: "ok",
+      backend: "local",
+      experiment_name: "freq",
+      run_id: "run_local_4",
+      run_url: null,
+      tracking_uri: "file:///C:/proj/mlruns",
+      error: null,
+    })
+    render(<MlflowExportSection {...makeProps()} />)
+    fireEvent.click(screen.getByRole("button", { name: /log run to mlflow/i }))
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /copy command/i })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: /copy command/i }))
+    await waitFor(() => {
+      expect(screen.getByText(/^copied$/i)).toBeInTheDocument()
+    })
+  })
+
   it("shows error result on failure", async () => {
     mockLogToMlflow.mockResolvedValue({ status: "error", backend: "databricks", experiment_name: "", run_id: null, run_url: null, tracking_uri: "", error: "Experiment not found" })
     render(<MlflowExportSection {...makeProps()} />)

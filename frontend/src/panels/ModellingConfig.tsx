@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { cancelTrain, estimateTrainingRam, getExperiments, trainModel } from "../api/client"
 import { runDispersionEstimate } from "../api/dispersion"
 import {
@@ -195,15 +195,29 @@ function TrainPane({
   const defaultExperimentName =
     mlflowMode === "databricks" ? `/Shared/haute/${nodeLabel}` : nodeLabel
   const [experimentOptions, setExperimentOptions] = useState<string[]>([])
-  const fetchedExperimentsRef = useRef(false)
+  // Suggestions belong to one tracking destination: key the fetch guard by
+  // it, clear stale options when it changes, and discard in-flight
+  // responses that arrive after a switch.
+  const destinationKey = `${mlflowMode}|${mlflowDestination}`
+  const currentDestinationRef = useRef(destinationKey)
+  currentDestinationRef.current = destinationKey
+  const fetchedForRef = useRef("")
+  useEffect(() => {
+    setExperimentOptions([])
+    fetchedForRef.current = ""
+  }, [destinationKey])
   const loadExperimentOptions = () => {
-    if (!mlflowConnected || fetchedExperimentsRef.current) return
-    fetchedExperimentsRef.current = true
+    if (!mlflowConnected || fetchedForRef.current === destinationKey) return
+    fetchedForRef.current = destinationKey
+    const requestedFor = destinationKey
     getExperiments()
-      .then((experiments) => setExperimentOptions(experiments.map((e) => e.name)))
+      .then((experiments) => {
+        if (currentDestinationRef.current !== requestedFor) return
+        setExperimentOptions(experiments.map((e) => e.name))
+      })
       .catch(() => {
         // Suggestions only — the field stays free text; retry on next focus.
-        fetchedExperimentsRef.current = false
+        if (fetchedForRef.current === requestedFor) fetchedForRef.current = ""
       })
   }
 

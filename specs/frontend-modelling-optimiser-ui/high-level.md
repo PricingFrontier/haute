@@ -53,7 +53,11 @@ results are supplied by API and result-store layers.
   MLflow settings dialog) when it is not. Success shows an "Open in
   Databricks" / "Open run" link for databricks/server backends; a local
   log shows the run ID plus a copyable `mlflow ui --backend-store-uri`
-  command instead of a dead end.
+  command (with explicit copied/failed feedback — a failed clipboard
+  write never passes silently) instead of a dead end. The command is
+  local-only: a remote success whose run link could not be built keeps
+  the run ID and says the link is unavailable rather than issuing
+  local-viewer instructions against a remote URI.
 - Optimiser config selects input/objective/mode, banding/ratebook factors, constraints, solver
   options and frontier ranges; it can auto-range constraints and submit solves. Starting another
   auto-range request or unmounting best-effort cancels that auto-range job; this panel has no
@@ -212,7 +216,9 @@ strip; it never falls through to CatBoost. Pane ownership:
   one-line resolved-destination status, or the off-reason with a "Configure MLflow" link; the
   experiment field's placeholder is the real computed default — `/Shared/haute/{node label}`
   for Databricks, the bare node label otherwise — and offers existing experiment names
-  through a lazily fetched datalist while connected),
+  through a lazily fetched datalist while connected; the suggestions are keyed to the
+  resolved tracking destination, so a destination switch clears them, refetches on the next
+  focus, and discards any in-flight response from the previous destination),
   staleness banner, Train/Cancel actions, click-time validation banner, live progress, completion
   badge and error card. Its checkbox and text/number controls use the same visible themed borders,
   backgrounds, typography and spacing as the rest of the modelling editor; labels never collapse

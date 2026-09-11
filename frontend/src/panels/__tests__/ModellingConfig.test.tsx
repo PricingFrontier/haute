@@ -1598,6 +1598,37 @@ describe("ModellingConfig", () => {
         )
       })
 
+      it("invalidates suggestions and discards stale responses on a destination switch", async () => {
+        useSettingsStore.setState({ mlflow: CONNECTED })
+        let resolveFirst: (value: { experiment_id: string; name: string }[]) => void
+        mockGetExperiments.mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveFirst = resolve
+          }),
+        )
+        renderConfig({ activePane: "train" })
+        fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
+        expect(mockGetExperiments).toHaveBeenCalledTimes(1)
+
+        // Destination changes while the first fetch is still in flight.
+        useSettingsStore.setState({
+          mlflow: { ...CONNECTED, mode: "server", destination: "http://localhost:5000" },
+        })
+        resolveFirst!([{ experiment_id: "9", name: "stale-exp" }])
+        await waitFor(() => {
+          expect(document.querySelector("datalist option[value='stale-exp']")).toBeNull()
+        })
+
+        mockGetExperiments.mockResolvedValueOnce([
+          { experiment_id: "2", name: "fresh-exp" },
+        ])
+        fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
+        await waitFor(() => {
+          expect(mockGetExperiments).toHaveBeenCalledTimes(2)
+          expect(document.querySelector("datalist option[value='fresh-exp']")).toBeTruthy()
+        })
+      })
+
       it("lists existing experiments in a datalist on focus", async () => {
         useSettingsStore.setState({ mlflow: CONNECTED })
         mockGetExperiments.mockResolvedValue([
