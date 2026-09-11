@@ -125,7 +125,10 @@
    user changes, normalise only at their documented conversion/update boundary, then invoke the
    panel callback. Rating factor changes filter `factorDtypes` atomically with `factors` and
    `entries`; removing a factor removes its descriptor, while new descriptors are never invented.
-   Clipboard/drag/dialog operations remain local until that callback.
+   Clipboard/drag/dialog operations remain local until that callback. `BandingRulesGrid` derives
+   stable local keys for legacy rules without `_id` when it opens or rerenders, but this view-only
+   work never calls `onUpdateFactor`; generated keys enter persisted rules only with a subsequent
+   user edit, paste, or delete operation.
 5. Format, file, catalog and MLflow controls issue their own API calls. I/O capabilities are
    fetched for each later editor mount, while consumers mounting during one pending fetch share
    that request. Request state is local to the editor; the editor never assumes an out-of-order response still describes a
@@ -154,11 +157,13 @@ only concurrent pending requests coalesce. Test seam:
 the module's only state. `_IoFormatEditor` renders one
 selected group/direction, while dedicated provider sections cover file,
 database, lakehouse, Databricks, and inline fields. `OnReplaceConfig` constructs
-and commits one fresh active branch for a provider change. Data Input provider
-choices are an accent-coloured `radiogroup` of toggle buttons in backend
-capability order; an unknown or not-yet-selected provider leaves every toggle
-inactive while retaining the explicit configuration error for unknown values.
-The editor derives its cache surface from the config through the shared
+and commits one fresh active branch for a provider change. Data Input and Data
+Output share the same provider layout: an accent-coloured `radiogroup` of toggle
+buttons above the format and provider fields, in backend capability order and
+filtered to the supported direction. An unknown or not-yet-selected provider
+leaves every toggle inactive while retaining the explicit configuration error
+for unknown values.
+The input editor derives its cache surface from the config through the shared
 `dataInputIsDirect` predicate (`frontend/src/utils/dataInputMode.ts`), which
 mirrors the backend's `data_input_is_direct`: a file-backed Parquet scan
 renders no cache control; every other branch renders the shared
@@ -176,8 +181,11 @@ selected capability requires a bounded schema, merging detected dtypes into
 no code panel. Its per-node Zustand entry carries request id, semantic request
 identity, phase, and structured result/error; request-id checks reject late
 results. Test seam: `resetOutputWriteStoreForTests()` clears every per-node
-write entry and the request-id counter. Destination preview comes from `/api/pipeline/output-destination`,
-and write identity is projected from the semantic flattened graph, output
+write entry and the request-id counter. Destination preview comes from `/api/pipeline/output-destination`.
+The File provider labels its destination **Filename or path**, with help explaining
+that bare filenames go under the project root's `outputs/` folder and explicit paths
+are project-relative. The resolved destination remains visible before writing.
+Write identity is projected from the semantic flattened graph, output
 node, execution source, and streaming settings. A 409 becomes
 `confirm_overwrite`; only that action retries with `overwrite=true`.
 
@@ -595,10 +603,9 @@ diagnostics; no generic editor fabricates a replacement config.
 
 ## Testing
 
-- `frontend/src/panels/editors/shared/__tests__/PolarsCodePanel.test.tsx` — the trust
-  statement under the Polars code editor ("Runs as trusted project code with the
-  privileges of the process running haute", ENG-T04) renders on every Polars node
-  panel; the statement is the execution UX half of the trust decision recorded in
+- `frontend/src/panels/editors/shared/__tests__/PolarsCodePanel.test.tsx` — the Polars
+  code editor retains its code hint and `return df` footer without displaying a
+  trust statement. The execution trust boundary remains documented in
   [sandbox-security](../sandbox-security/high-level.md).
 
 React/Vitest tests cover editor interaction under `frontend/src/__tests__/editors/`,

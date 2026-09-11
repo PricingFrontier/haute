@@ -1,11 +1,22 @@
 # Frontend Modelling & Optimiser UI — Low-Level Specification
 
+## Saving during background work
+
+A successful save of the current canvas advances its persisted source revision
+without replacing its execution identity. Active and starting training, optimiser,
+Explore and pivot jobs keep their handles, progress polling and result delivery.
+Their original config/source/structural-version stamps remain intact so edits made
+since launch still mark results stale. Loading another document or accepting an
+external revision replaces the execution identity; capability loss, unsynchronised
+graphs and system failures still prevent obsolete responses from publishing.
+Only a current, accepted save response may acknowledge this revision transition.
+
 ## Module map
 
 | File | Responsibility |
 | --- | --- |
 | `frontend/src/panels/ModellingConfig.tsx` | Modelling form orchestration, early training-job registration/cancellation, RAM estimate and GLM estimate wiring. |
-| `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset. |
+| `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset. Loaded on demand by the app when the active node has model results, through the same Suspense boundary pattern as optimiser results. |
 | `frontend/src/panels/NodePanel.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Five-pane hosting owned by [frontend-node-editors](../frontend-node-editors/low-level.md) and the accessible tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md), both consumed by modelling. |
 | `frontend/src/panels/OptimiserConfig.tsx` | Optimiser form, solve submission, and source/constraint configuration. It delegates auto-range request identity and terminal presentation to `useOptimiserAutoRange`. |
 | `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | Constraint-bound, efficient-frontier, range, and step controls. It composes `useOptimiserAutoRange` beside the fields whose current constraint scope it owns, keeping request state out of the parent form. |
@@ -101,6 +112,15 @@
    estimates from final-test metrics, renders ordered validation fits and tuning
    baseline/winner/improvement evidence, and exposes diagnostics rather than suppressing a
    partially successful training result.
+5. `parseTrainStatusResponse` preserves explicit `null` values in categorical PDP grids;
+   missing value fields, non-scalar values and null numeric grid values remain invalid.
+   `PdpTab` displays the null level as `(missing)` without changing its prediction or
+   conflating the payload with a literal string. `getTrainStatus` wraps parser failures
+   in `ApiResponseValidationError`, retaining the original cause and field detail.
+   Training polling treats that error as terminal for result delivery, removes the active
+   job and displays the error. Request failures and lazy-module loading failures retain
+   normal retry behavior. A running-to-completed nullable-category response must publish
+   the completed result, including its missing-level chart, and clear running progress.
 
 ### Optimiser
 
@@ -131,6 +151,15 @@
 5. `frontend/src/panels/OptimiserDataPreview.tsx` caps rows at 5,000 before grouping by quote,
    orders scenario rows, and calculates full-preview statistics only when its Statistics tab is open.
 
+Memory notices use the headline “{Profile} reached {threshold}% of its memory
+allowance.” Their details separately identify memory used, the process limit, and
+memory remaining at the recorded event. Negative remaining memory is labelled
+“Memory over limit”; remaining memory is never presented as the denominator of
+memory used. GiB-scale values use readable GB units. Common stages use plain-language
+labels (including “Caching the dataframe”), and adaptive limits are described as
+automatically set from available RAM; explicit configuration keys remain available.
+These wording changes do not change thresholds, severity, or failure precedence.
+
 `ExecutionDiagnosticsSummary` consumes the guarded versioned metrics contract
 and renders only actionable memory pressure, a rejected strategy, or a `warned`
 conservative strategy, with technical collections behind disclosure. Memory
@@ -145,6 +174,24 @@ current direct-Banding candidates and renders one aggregate accessible alert
 without broadening the exactly-one-direct fallback.
 
 ## Edge cases and invariants
+
+- `ModellingPreview` uses `PreviewPanelTabs` with `equalWidth` and an ID prefix
+  connecting each tab to its `tabpanel`. The strip has a 112px minimum per view
+  inside a horizontal scroll container. Summary is selected initially and when
+  node/result identity changes; collapse/expand retains the selected view.
+- Each non-summary view has a heading and explanatory sentence above its existing
+  diagnostic component. The scrollable body remounts on view changes so a new view
+  starts at the top. View availability continues to follow actual result data.
+- `modelling/SummaryTab` groups results into bordered, elevated cards using the
+  existing theme tokens and model accent. Performance cards precede model metadata;
+  final-test metrics and diagnostic metrics retain separate names and descriptions.
+  Responsive grids follow the panel's available width. Values use tabular numerals,
+  long labels/paths wrap, and detailed tables scroll within their cards. Evaluation,
+  tuning ranking, parameter application and MLflow payloads are unchanged.
+- Focused preview tests cover labelled keyboard view switching for both algorithm
+  result shapes and reset to Summary on replacement. Summary tests cover semantic
+  metric groups, explicit no-test messaging, full paths and GLM regularisation,
+  alongside existing selection/tuning/warning evidence.
 
 - With no modelling algorithm, configuration sections that require it are not rendered. Hiding a
   GLM/regularisation/config subsection preserves its stored values for later re-selection.

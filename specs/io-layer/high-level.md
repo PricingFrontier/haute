@@ -144,6 +144,15 @@ Outputs overwrite existing targets when the registered Polars sink has overwrite
 semantics. Authoring-time publication of a new output sidecar is conflict-safe: an
 unexpected existing sidecar is reported as a conflict rather than silently replaced.
 
+File Data Output destinations are relative to the project root, independent of the
+pipeline's directory and process working directory. A bare filename goes in the root's
+`outputs/` folder: `output` or `output.parquet` with Parquet selected resolves to
+`outputs/output.parquet`. An explicit relative path such as `exports/output.parquet`
+is project-relative; an absolute path must remain inside the project. Missing extensions
+come from the selected format; explicit extensions are preserved. Destination preview
+and writing use the same resolution, and writing creates missing parent directories.
+Database and lakehouse locators retain their provider-specific resolution.
+
 ## Design rationale
 
 The registry is the single capability source for validation, editor metadata, and Polars

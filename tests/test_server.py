@@ -730,7 +730,7 @@ class TestExecuteSinkEndpoint:
         unrelated_cwd.mkdir()
         monkeypatch.chdir(unrelated_cwd)
         graph = {
-            "source_file": str(pipeline_dir / "test_pipeline.py"),
+            "source_file": str(pipeline_dir / "rating" / "test_pipeline.py"),
             "nodes": [
                 {
                     "id": "sink",

@@ -34,6 +34,7 @@ from haute._explore_overview import validate_explore_overview
 from haute._explore_pivots import validate_explore_pivot_state
 from haute._logging import get_logger
 from haute._types import (
+    COLUMN_CONFIG_KEYS,
     MODEL_SCORE_CONFIG_KEYS,
     MODELLING_CONFIG_KEYS,
     OPTIMISER_APPLY_CONFIG_KEYS,
@@ -211,10 +212,7 @@ def _build_node_config(
     else:
         # transform
         config["code"] = _extract_user_code(body, param_names) if body else ""
-        if "selected_columns" in decorator_kwargs:
-            config["selected_columns"] = decorator_kwargs["selected_columns"]
-        if "categorical_levels" in decorator_kwargs:
-            config["categorical_levels"] = decorator_kwargs["categorical_levels"]
+    _copy_config_keys(config, decorator_kwargs, COLUMN_CONFIG_KEYS)
     # Instance reference (works for any node type)
     if "of" in decorator_kwargs:
         config["instanceOf"] = decorator_kwargs["of"]

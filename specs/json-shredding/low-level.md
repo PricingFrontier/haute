@@ -2,6 +2,23 @@
 
 ## Module map
 
+Studio's preview preflight checks structured Quote Inputs with
+`POST /api/json-cache/status`, passing the current node config as
+`volatile_schema`. When `cached` is false it awaits `POST /api/json-cache/build`
+before sending the preview request. It uses the existing full-cache publication
+and progress endpoints, and shows the building phase until completion. Status
+and build errors propagate through the normal preview error surface. All
+requests and progress callbacks respect the owning preview's AbortSignal.
+Ready caches are not refreshed; recovery-document previews retain their
+server-planned, read-only execution boundary.
+
+Cache status probes acquire each publication lock without blocking. A busy
+layer is unavailable for that probe; the committed layer may still satisfy it.
+If neither layer can be verified immediately, status reports `cached: false`
+and the build request waits on the normal publication lock, reusing a matching
+generation after the current writer completes. Status never waits for the
+duration of a full build just to decide whether preview should prepare a cache.
+
 | File | Responsibility |
 |---|---|
 | `src/haute/_api_input_schema.py` | V2 apiInput schema codec: `TypedDict` shapes, extension recognition, canonical table and column path semantics, filesystem label sanitisation, and fail-loud validation. |
@@ -14,6 +31,8 @@
 | `src/haute/_json_shred/_source_proof.py` | Strong native file revisions (Windows USN/file-id, POSIX stat) and SHA-256 content signatures with persisted-proof reuse and rebinding. |
 | `src/haute/_json_shred/_runtime_storage.py` | Process-owned runtime storage: the disk budget, spill-directory leases, and verified parquet snapshots with their bounded cache. |
 | `src/haute/_json_shred/_inference.py` | v2 schema inference from data: bounded sampling, type widening, and deterministic column naming. |
+| `src/haute/_json_shred/_inference_filter.py` | Bounded learning of strict native structural filters; matching records skip repeated evidence collection while mismatches retain the complete inference walk. |
+| `src/haute/_json_shred/_inference_cache.py` | Process-local, bounded complete-schema reuse behind strong source revisions, with concurrent request sharing and independent response values. |
 | `src/haute/_json_shred/_cache.py` | Per-port cache lifecycle (prepare/commit/discard/build, manifest and bundle validation, load) and the runtime apiInput source loader. |
 | `src/haute/_json_flatten.py` | Dual-layer (`working/`/`committed/`) cache-directory infrastructure for structured apiInput sources: process-CWD-rooted path resolution, delete, save-time promotion, and preview-cache fingerprint contribution. |
 | `src/haute/_json_safe.py` | Recursively converts Python/pipeline values into JSON-safe representations for API responses and preview rows. |
@@ -528,6 +547,52 @@ different source generation behind an optimistic estimate.
    a `$value`-colliding or dot-containing source key before it can be silently
    mis-addressed later. Each distinct key is validated once per accumulator;
    repeated records do not rerun the same identifier checks.
+   After a bounded prefix of 10,000 records, a native structural filter may skip
+   repeated Python evidence collection for records already covered by the
+   accumulated observations. It must reject unknown keys at every object depth
+   and avoid scalar coercion; new fields/types and ambiguous array forms still
+   pass through the ordinary walker. The filter is an optimization, never a
+   completeness limit: every record is parsed and checked, and the complete
+   schema, ordering, naming and structured errors match the ordinary walk.
+   The filter uses strict `msgspec.convert` on already-parsed records, with
+   wire aliases for generated attributes and `forbid_unknown_fields=True` at
+   every object depth. Parallel JSONL ranges also use a strict typed
+   `msgspec.json.Decoder` to combine parsing and known-structure checking without
+   first building a separate dictionary tree. Successful checks discard the
+   decoded value; only records decoded by the existing `orjson` parser supply
+   new inference evidence. Decoder shape/syntax failures and invalid UTF-8
+   return the original bytes to the ordinary parser/walker, preserving its
+   accepted input, duplicate-key behavior, scalar types and structured errors.
+   Native integer fields in this JSON fast path are limited to signed 64-bit
+   values: larger JSON integers must use `orjson`, which can parse them as
+   unsigned integers or floating-point values. A parser mismatch never becomes
+   a user-facing error or silently discards an input record. It recompiles
+   after each 100 records requiring the ordinary walker, at most eight times
+   per stream; after that, mismatches still receive complete inference without
+   further filter learning. Mixed object/scalar/nested-list array forms and
+   nullable scalar arrays without prior null-only evidence deliberately remain
+   on the ordinary walk to preserve array-mode semantics and errors.
+   Shapes deeper than 64 levels use the ordinary walk without native filtering
+   so native type construction cannot impose a new input nesting limit.
+   Depth starts at zero for the root object and increases at each object field
+   and object-array item. A supported shape exactly at depth 64 remains eligible
+   for native filtering. Learned scalar/object arrays accept their known forms;
+   empty and null-only arrays become eligible only after those forms were observed.
+   Parallel JSONL inference learns the first 10,000 object records once before
+   dispatch. It merges that prefix's exact evidence first and sends a picklable
+   snapshot of the learned structure to each range. Each range makes its own
+   copy and compiles its own native type; later learning cannot mutate another
+   range's starting structure. The initial compilation counts toward the eight
+   compilation limit. Existing byte ranges are retained, so the short prefix
+   is parsed again during the parallel scan without repeating its full inference
+   walk when it matches. This avoids learning 10,000 records independently in
+   every range, while preserving first-observation ordering and complete input
+   validation. Serial and explicitly sampled inference learn from up to 10,000
+   records within their existing scan limit. Filters remain local to each stream;
+   only exact inference evidence is merged between ranges. Bounded raw range
+   reads are shared with the ordinary JSONL record reader, retaining record byte
+   limits, newline boundaries and file-order error reporting. Other input formats
+   and explicit sample limits retain their existing parser path.
 3. `_InferenceState.merge` unions container/null evidence and applies the same
    associative `_widen_type` operation to scalar and object leaves. States are
    merged in range order and dictionaries keep first-observation order, making
@@ -569,6 +634,40 @@ widening of a declared column; the subsequent build legitimately ignores that
 unknown field, so it cannot act as a completeness backstop. Bounded inference
 therefore remains an explicit programmatic opt-in whose caller owns the
 incomplete-schema trade-off.
+
+Complete inference results use the existing native source revision proof
+(`_source_proof._strong_file_revision`), never size/mtime alone. The cache key
+includes the absolute source path (preserving its parser-selecting extension)
+and the configured record-byte limit; only unbounded inference participates.
+Positive explicit samples bypass the cache. An unchanged strong revision may
+reuse a successful full result; a missing/unreadable file still fails normally,
+and an unavailable revision uses the ordinary scan without retaining its result.
+A miss checks the revision before and after inference; a changed or lost proof
+raises the existing structured changed-during-inference error and retains no
+result. Waiters revalidate after an in-progress result becomes available.
+
+The process-local cache reuses the common `LRUCache` with bounds of 32 entries
+and 16 MiB of serialized schema payloads. An oversized schema is returned but
+not retained. Serialized payloads are immutable and each caller receives a
+fresh decoded mapping, so editor changes cannot alter cached inference.
+Concurrent requests for the same path/settings/revision share one active scan,
+including its failure; failed scans are not retained and a later request can
+retry. Active request coordination is released on success or failure. Clearing
+retained results does not split an active request, and forked processes replace
+inherited cache/coordination locks rather than acquiring them. This cache is
+not persisted across server restarts and does not store or modify source data
+or node configuration.
+
+JSONL range readers and newline-boundary discovery obey the same configured
+record byte limit as serial reads. Their line reads are bounded to the limit
+plus one byte; an oversized record/remaining line fragment raises the same
+structured record-limit error instead of allocating an unbounded line. Range
+readers stop at their end boundary before requesting the next record.
+Sequential JSONL reads, including parallel range readers, use a fixed 64 KiB
+binary read buffer to amortize filesystem calls. This is read-ahead only:
+logical records still obey the configured byte limit, and a record spanning
+multiple buffer fills is yielded intact. Boundary discovery keeps its small
+default buffer because its reads are sparse seeks rather than a sequential scan.
 
 **Edge-join execution** — `execute_edge_join(base, join, config,
 collect_eager=False)`: normalises both frames to `LazyFrame`, calls

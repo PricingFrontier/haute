@@ -150,12 +150,14 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
     mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
 
     const seenSources: string[] = []
+    let finishRootPreview!: () => void
+    const rootPreviewPending = new Promise<void>((resolve) => { finishRootPreview = resolve })
     mockPreview.mockImplementation(async ({ nodeId, source }) => {
       seenSources.push(source ?? "<none>")
-      // Simulate a slow root preview so we have time to switch the source
-      // between root and downstream.
+      // Hold the root response until the source switches, independently of
+      // how long loading the preview preparation module takes.
       if (nodeId === "root") {
-        await new Promise((r) => setTimeout(r, 60))
+        await rootPreviewPending
         return {
           node_id: nodeId,
           status: "ok",
@@ -190,21 +192,16 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
 
     useSettingsStore.setState({ activeSource: "live" })
 
-    vi.useFakeTimers()
-
-    act(() => { result.current.fetchPreview(root) })
-
-    // Let debounce fire (200ms)
-    await advanceTimers(200)
+    act(() => { result.current.fetchPreview(root, { debounceMs: 0 }) })
+    await waitFor(() => expect(seenSources).toEqual(["live"]))
 
     // While root preview is mid-flight, the user flips the active source.
     act(() => {
       useSettingsStore.setState({ activeSource: "staging" })
     })
 
-    // Wait for root preview + cascade to complete
-    await advanceTimers(60)
-    expect(seenSources.length).toBeGreaterThanOrEqual(3)
+    await act(async () => { finishRootPreview() })
+    await waitFor(() => expect(seenSources).toHaveLength(3))
 
     // CORRECT behaviour: all three previews used the same source
     // captured when fetchPreview was invoked ("live").  Under the

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useId, useState } from "react"
 import { Check } from "lucide-react"
 import { CommittedTextField } from "../../../components/form"
 import { FileBrowser } from "../_shared"
@@ -6,6 +6,7 @@ import { FileBrowser } from "../_shared"
 export default function PathPickerField({
   label,
   sublabel,
+  description,
   value,
   onSelect,
   extensions,
@@ -14,6 +15,7 @@ export default function PathPickerField({
 }: {
   label: string
   sublabel?: string
+  description?: string
   value: string
   onSelect: (path: string) => void
   extensions?: string
@@ -22,6 +24,7 @@ export default function PathPickerField({
   testIdPrefix?: string
 }) {
   const [expanded, setExpanded] = useState(false)
+  const descriptionId = useId()
   const showBrowser = !value || expanded
 
   return (
@@ -30,6 +33,11 @@ export default function PathPickerField({
         {label}
         {sublabel && <span className="ml-1.5 normal-case tracking-normal font-normal">{sublabel}</span>}
       </label>
+      {description && (
+        <p id={descriptionId} className="mb-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
+          {description}
+        </p>
+      )}
       {value && (
         <div
           className="px-2.5 py-2 rounded-lg flex items-center gap-2"
@@ -55,6 +63,7 @@ export default function PathPickerField({
           {manualEntry && (
             <CommittedTextField
               aria-label={label}
+              aria-describedby={description ? descriptionId : undefined}
               value={value}
               onCommit={(next) => {
                 onSelect(next)

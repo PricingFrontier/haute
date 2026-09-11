@@ -1,5 +1,43 @@
 # Codegen — Low-Level Specification
 
+## Authored configuration preservation
+
+- Persistence assurance covers the complete browser edit/save/reload path,
+  generated edit/undo/redo/save sequences against an independent state model,
+  delayed preview/save/watcher responses, and shared submodel definitions plus
+  independent occurrences. Assertions compare authored settings, dirty/history
+  state where applicable, and resulting data rather than only successful calls.
+- Every declared persisted configuration field must be represented by an explicit
+  round-trip example or a documented non-persisted/structural field policy. Adding
+  a declared field without extending the inventory fails the coverage gate.
+- Mutation witnesses deliberately remove persisted settings or overwrite newer
+  state and must be rejected by the same assertions used for healthy results.
+  They run without modifying production source files.
+
+- Every executable node type preserves the shared `selected_columns`,
+  `column_renames`, and `categorical_levels` settings through graph -> generated
+  source plus sidecars -> parsed graph -> repeated save. Inline nodes (Polars,
+  Edge Join, Explore) use the same shared field definition as sidecar validation.
+  Empty column selection may canonicalize to absence; both mean all columns.
+  Non-empty selections retain their order, and mapping keys/values remain exact.
+- JSON serialization removes underscore-prefixed editor properties only at
+  defined configuration-record boundaries. Arbitrary user mappings and data
+  payloads are opaque: column names, category labels, model parameters, input
+  records, nested schemas, and rating-table row keys may start with underscores,
+  including names that coincide with editor properties such as `_id`.
+- Nested transient banding properties on factors and expanded rule records are
+  removed without mutating the input graph. Compact categorical rule mappings
+  are user data, not editor records, and retain every category key.
+- Regression coverage exercises shared settings across every non-container node
+  type, absent/empty/populated settings, unusual names, sidecar and inline
+  storage, repeated saves, and execution of representative reloaded pipelines.
+  Property tests must generate underscore-prefixed user names rather than
+  excluding inputs that expose serialization defects.
+- Repository safety checks discover tracked and unignored Python source files
+  through Git, including new files awaiting commit. They do not scan local
+  caches or temporary projects, and discovery runs during the check rather
+  than while importing the test module.
+
 ## Module map
 
 | File | Responsibility |

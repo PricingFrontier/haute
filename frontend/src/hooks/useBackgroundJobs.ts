@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef } from "react"
 import { getExplorePivotStatus, getExploreStatus, getOptimiserStatus, getTrainStatus } from "../api/client"
 import { FAILED_JOB_STATUSES } from "../api/types"
+import { ApiResponseValidationError } from "../api/responseValidation"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import type { ExplorePivotProgress, ExploreProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
@@ -41,10 +42,15 @@ function getMissingJobPollErrorMessage(error: unknown): string | undefined {
   return "Job not found"
 }
 
+function getTrainPollErrorMessage(error: unknown): string | undefined {
+  if (error instanceof ApiResponseValidationError) return error.message
+  return getMissingJobPollErrorMessage(error)
+}
+
 export default function useBackgroundJobs() {
   const addToast = useToastStore((s) => s.addToast)
   const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
-  const documentSourceRevision = useDocumentStatusStore((s) => s.sourceRevision)
+  const documentExecutionGeneration = useDocumentStatusStore((s) => s.executionGeneration)
   const documentLoadStatus = useDocumentStatusStore((s) => s.loadStatus)
   const documentCanExecute = useDocumentStatusStore(
     (s) => s.capabilities?.can_execute === true,
@@ -55,7 +61,7 @@ export default function useBackgroundJobs() {
   const discardActiveJobs = useNodeResultsStore((s) => s.discardActiveJobs)
   const documentFenceKey = JSON.stringify([
     documentSourceFile,
-    documentSourceRevision,
+    documentExecutionGeneration,
     documentLoadStatus,
     documentCanExecute,
     documentGraphSynchronized,
@@ -145,7 +151,7 @@ export default function useBackgroundJobs() {
       status: s.status,
       terminalReason: s.terminal_reason,
     }),
-    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
+    getTerminalPollErrorMessage: getTrainPollErrorMessage,
     addToast,
     successLabel: "Training complete",
     failLabel: "Training failed",

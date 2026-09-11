@@ -438,6 +438,10 @@ jobs:
           tests/test_write_sandbox_guard.py
           tests/test_data_io_roundtrips.py
           tests/test_process_memory.py
+          tests/test_cpu_performance.py
+          tests/test_cpu_performance_startup.py
+          tests/test_cpu_performance_json_pools.py
+          tests/test_cpu_performance_windows.py
           tests/test_worker_isolation.py
           tests/test_interactive_worker_pool.py
           tests/test_interactive_route_isolation.py

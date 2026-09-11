@@ -275,9 +275,9 @@ class TestCatBoostProgressCallback:
 
         cb = _CatBoostProgressCallback(on_iter, 100, loss_history)
 
-        # Build a mock info object with metrics
+        # Match CatBoost's one-based completed-iteration callback contract.
         info = SimpleNamespace(
-            iteration=0,
+            iteration=1,
             metrics={
                 "learn": {"RMSE": [0.5]},
                 "validation": {"RMSE": [0.6]},
@@ -298,7 +298,7 @@ class TestCatBoostProgressCallback:
         loss_history: list[dict[str, float]] = []
         cb = _CatBoostProgressCallback(None, 10, loss_history)
 
-        info = SimpleNamespace(iteration=0, metrics={})
+        info = SimpleNamespace(iteration=1, metrics={})
         result = cb.after_iteration(info)
         assert result is True
         assert len(loss_history) == 1
@@ -309,7 +309,7 @@ class TestCatBoostProgressCallback:
         loss_history: list[dict[str, float]] = []
         cb = _CatBoostProgressCallback(None, 10, loss_history)
 
-        info = SimpleNamespace(iteration=4, metrics=None)
+        info = SimpleNamespace(iteration=5, metrics=None)
         result = cb.after_iteration(info)
         assert result is True
         assert loss_history[0]["iteration"] == 5.0
@@ -321,7 +321,7 @@ class TestCatBoostProgressCallback:
         loss_history: list[dict[str, float]] = []
         cb = _CatBoostProgressCallback(None, 10, loss_history)
 
-        info = SimpleNamespace(iteration=0, metrics={"learn": {"RMSE": []}})
+        info = SimpleNamespace(iteration=1, metrics={"learn": {"RMSE": []}})
         cb.after_iteration(info)
         assert "train_RMSE" not in loss_history[0]
 
@@ -337,11 +337,11 @@ class TestCatBoostProgressCallback:
             "haute.modelling._algorithms._mem_checkpoint",
             side_effect=lambda label: checkpoints.append(label),
         ):
-            for i in range(200):
+            for i in range(1, 201):
                 info = SimpleNamespace(iteration=i, metrics=None)
                 cb.after_iteration(info)
 
-        # Iterations 1-5 (i=0..4) and every 50th (50,100,150,200)
+        # Iterations 1-5 and every 50th (50,100,150,200)
         assert len(checkpoints) == 9  # 5 + 4
 
 
@@ -817,6 +817,77 @@ class TestCatBoostAlgorithmPredictCoverage:
 # ---------------------------------------------------------------------------
 # CatBoostAlgorithm.shap_summary — subsampling and 1D edge case
 # ---------------------------------------------------------------------------
+
+
+class TestDiagnosticProgress:
+    @pytest.fixture()
+    def metrics_inputs(self, monkeypatch):
+        from haute.modelling._training_job import TrainingJob, _SplitResult, _TrainModelResult
+
+        frame = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [2.0, 4.0, 6.0]})
+        job = TrainingJob(name="diagnostic_progress", data=frame, target="y", metrics=["rmse"])
+        monkeypatch.setattr(job, "_read_partition", lambda *args, **kwargs: frame)
+        monkeypatch.setattr("haute.modelling._metrics.compute_pdp", lambda *args, **kwargs: [])
+        monkeypatch.setattr("haute.modelling._algorithms._mem_checkpoint", lambda *args: None)
+        pool_builder = MagicMock()
+        monkeypatch.setattr("haute.modelling._algorithms._build_pool", pool_builder)
+        algo = SimpleNamespace(
+            feature_importance=lambda model: [{"feature": "x", "importance": 1.0}],
+            predict=lambda *args, **kwargs: frame["y"].to_numpy(),
+        )
+        split = _SplitResult("unused.parquet", False, len(frame), 0, 0)
+        trained = _TrainModelResult(SimpleNamespace(), algo, None, {})
+        return job, split, trained, pool_builder
+
+    @pytest.mark.parametrize("has_shap", [True, False])
+    def test_progress_names_the_diagnostic_actually_running(self, metrics_inputs, has_shap):
+        job, split, trained, pool_builder = metrics_inputs
+        progress = []
+        active_at_call = []
+        shap_rows = [{"feature": "x", "mean_abs_shap": 0.5}]
+        loss_rows = [{"feature": "x", "importance": 0.25}]
+
+        def shap(*args):
+            active_at_call.append(progress[-1])
+            return shap_rows
+
+        def loss(*args):
+            active_at_call.append(progress[-1])
+            return loss_rows
+
+        if has_shap:
+            trained.algo.shap_summary = shap
+        trained.algo.feature_importance_typed = loss
+        pool_builder.side_effect = lambda *args, **kwargs: active_at_call.append(progress[-1])
+
+        result = job._compute_metrics(
+            split, ["x"], [], trained, lambda message, fraction: progress.append(message)
+        )
+
+        expected = ["Computing SHAP values"] if has_shap else []
+        assert active_at_call == expected + ["Computing loss-based feature importance"] * 2
+        assert ("Computing SHAP values" in progress) is has_shap
+        assert result.shap_summary == (shap_rows if has_shap else [])
+        assert result.feature_importance_loss == loss_rows
+        assert result.diagnostics_errors == []
+
+    def test_cancel_between_diagnostics_stops_before_loss_pool(self, metrics_inputs):
+        from haute._execution_context import ExecutionCancelledError
+
+        job, split, trained, pool_builder = metrics_inputs
+        trained.algo.shap_summary = MagicMock(return_value=[])
+        trained.algo.feature_importance_typed = MagicMock(return_value=[])
+
+        def report(message, fraction):
+            if message == "Computing loss-based feature importance":
+                raise ExecutionCancelledError("Cancelled")
+
+        with pytest.raises(ExecutionCancelledError, match="Cancelled"):
+            job._compute_metrics(split, ["x"], [], trained, report)
+
+        trained.algo.shap_summary.assert_called_once()
+        pool_builder.assert_not_called()
+        trained.algo.feature_importance_typed.assert_not_called()
 
 
 class TestShapSummaryCoverage:

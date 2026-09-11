@@ -25,7 +25,7 @@
   derived `report_cache_key`, and a `family_key` tuple (`("explore", source_file, node_id,
   source)`) used to detect superseding runs of "the same" Explore node.
 - **`ExploreFrameStats`** (`_explore_service.py`, frozen dataclass) — the intermediate result of
-  one batched aggregation: `row_count`, `columns: list[ExploreColumnStat]`, and
+  sequential column batches: `row_count`, `columns: list[ExploreColumnStat]`, and
   `overview_summary: ExploreOverviewSummary`.
 - **`ExploreColumnStat`** (`schemas.py`) — per-column stats. `distinct_count` is `None` exactly
   when the dtype is unhashable (`pl.Object`, per `UNHASHABLE_DTYPES`); otherwise it counts only
@@ -408,13 +408,12 @@ is logged via `logger.error("explore_cache_failed", ...)` with `exc_info=True`, 
    completed generation, and returns a populated `ExploreCacheReport` plus its immutable
    publication descriptor. Selection remains exclusively a parent operation.
 
-### `_build_frame_stats` — the single batched aggregation
+### `_build_frame_stats` — sequential column profiling
 
 Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
 
-1. Builds one `aggregations: list[pl.Expr]` list: `pl.len().alias("row_count")`, plus
-   `pl.struct(all columns).n_unique().alias("unique_rows")` when the schema is non-empty and
-   every dtype is hashable, then per column `name`/`dtype`:
+1. Builds aggregation batches of at most eight source columns, with
+   `pl.len().alias("row_count")` in the first batch, then per column `name`/`dtype`:
    - `null_count().alias(f"null::{name}")` always.
    - `n_unique().alias(f"unique::{name}")` unless `is_unhashable_dtype(dtype)`.
    - min/max (via `_min_max_column_expr`, casting text-like/boolean bases to `String`) when
@@ -434,8 +433,14 @@ Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
    checkpoints before starting native work, then calls
    `collect(engine="streaming", background=True)`, polls `InProcessQuery.fetch()` at a bounded
    interval, checkpoints between polls, and calls `query.cancel()` before re-raising a checkpoint
-   failure. It is still exactly one native Polars collection for the entire frame.
-3. Iterates columns again to build `ExploreColumnStat` entries from the single aggregate row,
+   failure. Batches run sequentially against the materialised Parquet frame, letting projection
+   limit each scan and avoiding simultaneous distinct/quantile state for every column.
+   Results remain exact; this is not sampling. Duplicate rows are counted separately when
+   every dtype is hashable: a raw column distinct count equal to the row count proves zero
+   duplicates; a one-column frame reuses its distinct count; otherwise an isolated
+   `pl.struct(all columns).n_unique()` query provides the exact count. It never overlaps
+   the column-statistic queries. Unsupported duplicate profiling remains unknown.
+3. Iterates columns again to build `ExploreColumnStat` entries from the merged aggregate row,
    plus a `categorical_values_by_column` dict for columns with
    `_has_categorical_value_counts(dtype)`, parsed via `_parse_categorical_value_counts` (which
    sorts by descending count, then `value is None` last, then value ascending). `distinct_count`
@@ -450,7 +455,8 @@ Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
    at least two rows, no missing/NaN values, one distinct value per row, and an id/key/uuid/guid
    name shape.
 5. `row_count = int(aggregate_row["row_count"])`; `duplicate_row_count` is
-   `row_count - unique_rows` when the whole-row expression was available, otherwise `None`.
+   `row_count - unique_rows` when every column is hashable, using the unique-column
+   proof or one-column reuse where possible; otherwise it remains `None`.
 6. Returns `ExploreFrameStats(row_count, columns, overview_summary=_build_overview_summary(...))`.
 
 ### Data-quality summary (`_build_data_quality_summary`)
@@ -643,7 +649,7 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
     the full data-quality summary issue set and ordering, bounded categorical value counts
     (including exactly-50 and >50 truncation boundaries), unsupported (nested/list) categorical
     profiles, the `count`-named-column aliasing collision guard, Binary/Duration lenient
-    formatting, and the single-batched-collect invariant (call-count assertion plus query-plan
+    formatting, and sequential bounded-width batches (call-count assertion plus query-plan
     inspection for absence of `UNION`/`CACHE`). The three-way missingness split added: NaN counts
     populated only for float columns (`test_build_frame_stats_reports_nan_counts_for_float_columns_only`),
     the NaN data-quality issue and its danger/warning severity threshold

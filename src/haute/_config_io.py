@@ -16,8 +16,9 @@ This module provides:
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from haute._banding_config import (
     compact_banding_config_for_sidecar,
@@ -57,24 +58,6 @@ FOLDER_TO_NODE_TYPE: dict[str, NodeType] = {v: k for k, v in NODE_TYPE_TO_FOLDER
 
 # Keys that live in the .py function body, NOT in the JSON config file.
 _CODE_KEYS: frozenset[str] = frozenset({"code"})
-
-
-def _strip_internal_keys(obj: Any) -> Any:
-    """Recursively strip keys starting with ``_`` from dicts.
-
-    Frontend-only state (e.g. ``_prevRules``, ``_id``) may be nested inside
-    arrays of objects (like ``factors[].rules[]``).  A top-level-only filter
-    misses these; this function walks the full structure.
-    """
-    if isinstance(obj, dict):
-        return {
-            k: _strip_internal_keys(v)
-            for k, v in obj.items()
-            if not isinstance(k, str) or not k.startswith("_")
-        }
-    if isinstance(obj, list):
-        return [_strip_internal_keys(item) for item in obj]
-    return obj
 
 
 def reject_duplicate_keys_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -128,9 +111,12 @@ def _prepare_config_for_sidecar(node_type: NodeType, config: dict[str, Any]) -> 
 
     reject_removed_config_keys(node_type, config)
 
-    # Drop user-code keys and internal `_*` keys before the typed allowlist.
-    filtered = {k: v for k, v in config.items() if k not in _CODE_KEYS and not k.startswith("_")}
-    filtered = cast(dict[str, Any], _strip_internal_keys(filtered))
+    # Only the config record's own underscore properties are editor state.
+    # Nested mappings may contain arbitrary column names or user records.
+    # Type-specific serializers own cleanup of their nested editor records.
+    filtered = {
+        k: deepcopy(v) for k, v in config.items() if k not in _CODE_KEYS and not k.startswith("_")
+    }
 
     # Persist only fields declared by the current node config TypedDict.
     # Unknown fields are logged and omitted so UI save failures are visible

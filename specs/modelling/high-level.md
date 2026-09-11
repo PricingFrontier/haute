@@ -423,6 +423,12 @@ diagnostic was a real memory cost, not a theoretical one. The same memory discip
 cleanup net) runs throughout the pipeline, and an admission/RAM-estimation system gates
 whether a job is even allowed to start.
 
+Post-fit progress names the diagnostic currently running. SHAP summary and
+loss-based feature importance are separate stages: the SHAP message must end
+before the full-partition loss-importance calculation starts. Algorithms without
+SHAP never announce that stage. This presentation change preserves diagnostic
+values, sampling, and training parameters.
+
 Optional diagnostics occupy a deliberate middle ground: neither "abort the whole run if
 SHAP fails" nor "silently drop it and say nothing." Each optional block is wrapped so a
 failure is recorded in `TrainResult.diagnostics_errors` with the failing diagnostic
@@ -579,4 +585,3 @@ error is logged without relabelling the already durable model as failed. Dispers
 - Preflight enforces hard bounds on tuning fit counts: `trial_fit_count = trial_count * validation_fit_count <= 200`
   (with `total_fit_count = trial_fit_count + 1`). A candidate-fit error aborts with the trial index,
   sampled parameters and original actionable exception; it is never skipped.
-

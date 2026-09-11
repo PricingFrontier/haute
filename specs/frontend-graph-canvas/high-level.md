@@ -186,8 +186,8 @@ candidate, with the error toast.
   label still drives the accessible name, `data-testid`, editor,
   selection, codegen, and tracing identities). Exactly one visible frame
   shows that frame's name the same way, on its own labelled handle. Zero
-  eligible frames keeps the
-  instance name and adds a muted "No emitted frames" hint. Visibility
+  eligible frames suppresses the instance name and shows only a muted,
+  right-aligned "No emitted frames" hint. Visibility
   mirrors runtime eligibility — `emit: true`, at least one selected
   column, and a valid (non-blank, non-duplicate) raw label — and a long
   name truncates with the full name available as a tooltip. Frame labels
@@ -743,4 +743,3 @@ candidate, with the error toast.
   the editor with the dedicated failure surface and marks any retained canvas unsynchronised; the next
   valid document update clears that failure atomically. A failed or stale repair leaves the current recovery
   canvas unchanged; no migration or upgrade action exists.
-

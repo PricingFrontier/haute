@@ -136,6 +136,14 @@ describe("DataPreview", () => {
     expect(screen.getByText("Executing pipeline...")).toBeInTheDocument()
   })
 
+  it("shows cache preparation progress while the preview waits", () => {
+    render(<DataPreview data={makePreview({
+      status: "loading", loading_message: "Caching Quote Input as Parquet… · 12s",
+    })} />)
+    expect(screen.getByRole("status")).toHaveTextContent("Caching Quote Input as Parquet… · 12s")
+    expect(screen.queryByText("Executing pipeline...")).not.toBeInTheDocument()
+  })
+
   it("renders as an embedded table body without duplicating the outer frame's title", () => {
     render(<DataPreview data={makePreview()} embedded />)
 
@@ -157,7 +165,7 @@ describe("DataPreview", () => {
     expect(screen.getByText(/3 rows/).compareDocumentPosition(warning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     fireEvent.click(warning)
     expect(screen.getByText("Preview memory pressure")).toBeInTheDocument()
-    expect(screen.getByText("Memory pressure reached 75% of the preview budget.")).toBeInTheDocument()
+    expect(screen.getByText("Preview reached 75% of its memory allowance.")).toBeInTheDocument()
   })
 
   it("explains a projection boundary beside the preview dimensions without raw planner JSON", () => {
@@ -363,7 +371,7 @@ describe("DataPreview", () => {
     // strategy stays in the details rather than taking the title.
     expect(screen.getByText("Preview memory pressure")).toBeInTheDocument()
     expect(screen.queryByText("Execution ran without a memory estimate")).not.toBeInTheDocument()
-    expect(screen.getAllByText(/Memory pressure reached 75% of the preview budget\./)).toHaveLength(1)
+    expect(screen.getAllByText(/Preview reached 75% of its memory allowance\./)).toHaveLength(1)
   })
 
   it("cell click calls onCellClick with row index and column", () => {

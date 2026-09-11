@@ -80,4 +80,26 @@ describe("PdpTab", () => {
     expect(screen.getByText("CardinalityError")).toBeInTheDocument()
     expect(screen.getByText("too many distinct categories")).toBeInTheDocument()
   })
+
+  it("labels a null categorical level as missing without rendering null", () => {
+    const result = makeTrainResult({
+      feature_importance: [{ feature: "territory", importance: 10 }],
+      pdp_data: [
+        {
+          feature: "territory",
+          type: "categorical",
+          grid: [
+            { value: "north", avg_prediction: 1.2 },
+            { value: null, avg_prediction: 1.4 },
+          ],
+        },
+      ],
+    })
+
+    const { container } = render(<PdpTab result={result} />)
+
+    expect(container.querySelector("svg")).toBeInTheDocument()
+    expect(screen.getByText("(missing)")).toBeInTheDocument()
+    expect(screen.queryByText("null")).not.toBeInTheDocument()
+  })
 })

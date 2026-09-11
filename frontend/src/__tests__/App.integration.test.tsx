@@ -775,6 +775,44 @@ describe("App integration — load a pipeline with nodes", () => {
     })
   })
 
+  it("retains deselected edge join columns when switching nodes and returning", async () => {
+    const columns = ["quote_id", "first_name", "last_name", "premium"].map((name) => ({ name, dtype: "String" }))
+    const join = makeNode("join", "Competitor Join", "edgeJoin")
+    join.data.config = { how: "left", on: ["quote_id"] }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makePipelineEditorDocument({
+      nodes: [join, makeNode("other", "Other Step")],
+      edges: [],
+      source_revision: "revision-test",
+    }))
+    vi.mocked(api.previewNode).mockImplementation(async ({ nodeId, graph }) => {
+      const config = graph.nodes.find((node) => node.id === nodeId)?.data.config as Record<string, unknown> | undefined
+      const selected = config?.selected_columns as string[] | undefined
+      const output = selected?.length ? columns.filter((column) => selected.includes(column.name)) : columns
+      return { node_id: nodeId, status: "ok", columns: output, available_columns: columns, preview: [], row_count: 0, column_count: output.length }
+    })
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByTestId("rf__node-join"))
+    const panel = within(await screen.findByTestId("node-panel"))
+    fireEvent.click(panel.getByRole("button", { name: /^columns$/i }))
+    await waitFor(() => expect(panel.getAllByRole("checkbox")).toHaveLength(4))
+    fireEvent.click(panel.getByText("first_name"))
+    fireEvent.click(panel.getByText("last_name"))
+    const savedSelection = () => useGraphStore.getState().nodes.find((node) => node.id === "join")?.data.config
+    expect(savedSelection()).toMatchObject({ selected_columns: ["quote_id", "premium"] })
+    fireEvent.click(screen.getByText("Other Step"))
+    fireEvent.click(screen.getByTestId("rf__node-join"))
+    const returnedPanel = within(await screen.findByTestId("node-panel"))
+    fireEvent.click(returnedPanel.getByRole("button", { name: /^columns$/i }))
+    await waitFor(() => {
+      const refreshedJoin = useGraphStore.getState().nodes.find((node) => node.id === "join")!
+      expect(refreshedJoin.data._columns).toEqual([columns[0], columns[3]])
+      expect(returnedPanel.getAllByRole("checkbox")).toHaveLength(4)
+    })
+    expect(returnedPanel.getAllByRole("checkbox").map((checkbox) => (checkbox as HTMLInputElement).checked)).toEqual([true, false, false, true])
+    expect(savedSelection()).toMatchObject({ selected_columns: ["quote_id", "premium"] })
+  })
+
   it("selecting an Explore node previews the post-code dataframe in the Explore lower panel", async () => {
     const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
     // Direct Parquet by derivation, so the pre-preview snapshot-ensure stage

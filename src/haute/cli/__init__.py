@@ -2,6 +2,7 @@
 
 import click
 
+from haute._cpu_performance import configure_process_high_qos
 from haute.cli._deploy import deploy
 from haute.cli._impact import impact
 from haute.cli._init_cmd import init
@@ -17,6 +18,7 @@ from haute.cli._train import train
 @click.version_option(package_name="haute")
 def cli() -> None:
     """Haute - Open-source pricing engine for insurance teams on Databricks."""
+    configure_process_high_qos()
 
 
 cli.add_command(deploy)

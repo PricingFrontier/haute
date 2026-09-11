@@ -31,7 +31,9 @@ jobs:
     timeout-minutes: 15
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      overflow_matrix: ${{ steps.plan.outputs.overflow_matrix }}
       any: ${{ steps.plan.outputs.any }}
+      any_overflow: ${{ steps.plan.outputs.any_overflow }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,10 +61,13 @@ jobs:
           else
             uv run python scripts/run_mutation_suite.py --phase plan --output-dir mutation-plan
           fi
-          echo "matrix=$(jq -c '{include: .shards}' mutation-plan/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(jq -c '.matrix' mutation-plan/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "overflow_matrix=$(jq -c '.overflow_matrix' mutation-plan/plan.json)" >> "$GITHUB_OUTPUT"
           echo "any=$(jq -r '.any_selected' mutation-plan/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "any_overflow=$(jq -r '.any_overflow' mutation-plan/plan.json)" >> "$GITHUB_OUTPUT"
 
       - name: Upload plan (shared init sessions)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mutation-plan
@@ -82,7 +87,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    steps:
+    steps: &shard_steps
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -126,6 +131,16 @@ jobs:
           path: mutation-shard
           retention-days: 7
 
+  shard-overflow:
+    needs: plan
+    if: needs.plan.outputs.any_overflow == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.overflow_matrix) }}
+    steps: *shard_steps
+
   # 3) Gate: union every shard's results back onto the shared init session per
   #    target and check TOTAL survival against the checked-in threshold. Because
   #    every mutant was executed exactly once with the identical test-command
@@ -133,7 +148,7 @@ jobs:
   #    survival — the per-target budgets in mutation/targets.json stay valid.
   #    Named `mutation` so it remains the single pass/fail gate check.
   mutation:
-    needs: [plan, shard]
+    needs: [plan, shard, shard-overflow]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -145,7 +160,7 @@ jobs:
           exit 1
 
       - name: Require successful mutation shards
-        if: ${{ needs.plan.result == 'success' && needs.plan.outputs.any == 'true' && needs.shard.result != 'success' }}
+        if: ${{ needs.plan.result == 'success' && needs.plan.outputs.any == 'true' && (needs.shard.result != 'success' || (needs.plan.outputs.any_overflow == 'true' && needs['shard-overflow'].result != 'success')) }}
         run: |
           echo "::error::One or more mutation shards failed; the gate cannot be evaluated."
           exit 1

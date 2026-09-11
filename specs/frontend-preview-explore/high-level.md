@@ -1,5 +1,10 @@
 # Frontend Preview & Explore — High-Level Specification
 
+After an upstream column selection changes, downstream previews automatically
+discover the current output columns. Users do not need to restore deselected
+columns merely to satisfy a remembered preview layout. A calculation that uses
+a removed column still requires the user to update it or restore that column.
+
 ## Purpose
 
 This component presents pipeline output before and after an Explore cache run: a large-table

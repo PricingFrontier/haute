@@ -15,18 +15,24 @@ pin the structural guarantees that are easy to regress silently:
 from __future__ import annotations
 
 import json
+from itertools import repeat
 from pathlib import Path
 from typing import Any
 
+import orjson
+import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from haute._api_input_schema import ApiInputSchemaError
+from haute._json_shred import _inference, _inference_filter
 from haute._json_shred._inference import (
     _assemble_inference_schema,
     _infer_records,
     _InferenceState,
     infer_v2_schema_from_data,
 )
+from haute._json_shred._inference_filter import InferenceFilter
 from haute._json_shred._records import ShredSkipStats
 from haute._json_shred._shred import shred_to_buffers
 
@@ -37,6 +43,96 @@ _scalars = st.one_of(
     st.text(max_size=6),
     st.booleans(),
 )
+
+_inference_values = st.recursive(
+    st.one_of(_scalars, st.none()),
+    lambda children: st.one_of(
+        st.lists(children, max_size=3),
+        st.dictionaries(st.sampled_from(["a", "b", "class", "field_0"]), children, max_size=3),
+    ),
+    max_leaves=12,
+)
+
+
+@given(
+    st.lists(
+        st.dictionaries(st.sampled_from(["a", "b", "c"]), _inference_values, max_size=3),
+        min_size=2,
+        max_size=5,
+    )
+)
+@settings(max_examples=150, deadline=None)
+def test_native_filter_matches_full_walk_across_shape_changes(phases: list[dict[str, Any]]) -> None:
+    # Each phase crosses the learning boundary, so later phases exercise both
+    # strict mismatch handling and the rebuilt native type.
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+        records = [record for phase in phases for record in repeat(phase, 125)]
+        exact = _InferenceState()
+        try:
+            for record in records:
+                exact.walk(record)
+        except ApiInputSchemaError as expected:
+            with pytest.raises(ApiInputSchemaError) as native_actual:
+                _infer_records(records)
+            assert native_actual.value.message == expected.message
+            assert native_actual.value.context == expected.context
+            with pytest.raises(ApiInputSchemaError) as fused_actual:
+                _inference._infer_jsonl_lines(orjson.dumps(record) for record in records)
+            assert fused_actual.value.message == expected.message
+            assert fused_actual.value.context == expected.context
+        else:
+            native_schema = _assemble_inference_schema(_infer_records(records))
+            assert native_schema == _assemble_inference_schema(exact)
+            prefix_records = records[:125]
+            prefix = _InferenceState()
+            filter_ = InferenceFilter(json_mode=True)
+            for record in prefix_records:
+                prefix.walk(record)
+                filter_.observe(record)
+            prefix.merge(
+                _inference._infer_jsonl_lines(
+                    (orjson.dumps(record) for record in records[125:]),
+                    seed=filter_.snapshot(),
+                )
+            )
+            assert _assemble_inference_schema(prefix) == _assemble_inference_schema(exact)
+
+
+def test_native_filter_leaves_deep_valid_objects_on_full_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    value: Any = 1
+    for _ in range(150):
+        value = {"nested": value}
+    records = [value] * 101
+    exact = _InferenceState()
+    for record in records:
+        exact.walk(record)
+    assert _assemble_inference_schema(_infer_records(records)) == _assemble_inference_schema(exact)
+
+
+def test_native_filter_bounds_compilation_while_preserving_late_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import msgspec
+
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    compile_type = msgspec.defstruct
+    compilations = 0
+
+    def count_compile(*args: Any, **kwargs: Any) -> type:
+        nonlocal compilations
+        compilations += 1
+        return compile_type(*args, **kwargs)
+
+    monkeypatch.setattr(msgspec, "defstruct", count_compile)
+    records = [{f"field_{i}": i} for i in range(1000)]
+    actual = _assemble_inference_schema(_infer_records(records))
+    assert compilations == 8
+    assert len(actual["tables"][0]["columns"]) == 1000
+    assert actual["tables"][0]["columns"][-1]["path"] == "$[:].field_999"
 
 
 def _root_table(columns: list[dict[str, Any]]) -> dict[str, Any]:

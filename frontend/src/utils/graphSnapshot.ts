@@ -151,11 +151,9 @@ function stripGraphMetadataTransientFields(value: unknown): unknown {
     return stripNodeUiFields(record as unknown as Node)
   }
 
-  const stripped: Record<string, unknown> = {}
-  for (const [key, child] of Object.entries(record)) {
-    stripped[key] = stripGraphMetadataTransientFields(child)
-  }
-  return stripped
+  return Object.fromEntries(
+    Object.entries(record).map(([key, child]) => [key, stripGraphMetadataTransientFields(child)]),
+  )
 }
 
 function stripGraphHistoryTransientFields(value: unknown): unknown {
@@ -194,7 +192,15 @@ function cloneGraphValue<T>(value: T, seen = new WeakMap<object, unknown>()): T 
   const clone: Record<string, unknown> = {}
   seen.set(objectValue, clone)
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    clone[key] = cloneGraphValue(child, seen)
+    const clonedChild = cloneGraphValue(child, seen)
+    // JSON keys are data, including the legacy Object prototype setter name.
+    if (key === "__proto__") {
+      Object.defineProperty(clone, key, {
+        value: clonedChild, enumerable: true, configurable: true, writable: true,
+      })
+    } else {
+      clone[key] = clonedChild
+    }
   }
   return clone as T
 }
@@ -217,11 +223,7 @@ export function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize)
   const entries = Object.entries(value as Record<string, unknown>)
   entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-  const out: Record<string, unknown> = {}
-  for (const [k, v] of entries) {
-    out[k] = canonicalize(v)
-  }
-  return out
+  return Object.fromEntries(entries.map(([key, child]) => [key, canonicalize(child)]))
 }
 
 // ---------------------------------------------------------------------------

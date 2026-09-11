@@ -852,6 +852,9 @@ def compute_pdp(
 ) -> list[dict[str, Any]]:
     """Compute partial dependence plots for all features.
 
+    *features* must contain the complete model inputs in training order.
+    Callers may reorder the returned chart entries for presentation afterward.
+
     For each feature:
 
     - *Numeric*: create a grid of *n_grid* values (percentile-spaced from

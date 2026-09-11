@@ -34,13 +34,46 @@ function warnedMetrics(overrides: Parameters<typeof makeExecutionMetricsFixture>
 }
 
 describe("executionDiagnostics", () => {
+  it("explains an adaptive Explore memory notice using clear units and labels", () => {
+    const metrics = makeExecutionMetricsFixture({ profile: "explore_analysis" })
+    Object.assign(metrics.memory_pressure_events[0], {
+      threshold_percent: 50,
+      rss_bytes: 11131 * 1024 ** 2,
+      rss_limit_bytes: 22125.6 * 1024 ** 2,
+      headroom_bytes: 10994.6 * 1024 ** 2,
+      headroom_used_bytes: 11041.1 * 1024 ** 2,
+      stage: "lazy_dataframe_cache_materialize",
+      config_key: "adaptive:explore_analysis",
+    })
+
+    const diagnostic = buildMemoryPressureDiagnostic(metrics)
+
+    expect(diagnostic?.message).toBe("Explore analysis reached 50% of its memory allowance.")
+    expect(diagnostic?.details).toEqual([
+      "Memory used: 10.9 GB; limit: 21.6 GB",
+      "Memory remaining: 10.7 GB",
+      "During: Caching the dataframe",
+      "Limit source: set automatically from available RAM",
+    ])
+  })
+
+  it("labels exceeded memory separately and retains an explicit limit setting", () => {
+    const metrics = makeExecutionMetricsFixture()
+    metrics.memory_pressure_events[0].headroom_bytes = -1024
+
+    const diagnostic = buildMemoryPressureDiagnostic(metrics)
+
+    expect(diagnostic?.details).toContain("Memory over limit: 1.0 KB")
+    expect(diagnostic?.details).toContain("Limit source: HAUTE_PREVIEW_MEMORY_LIMIT_MB")
+  })
+
   it("builds a concise memory-pressure summary with technical details", () => {
     const diagnostic = buildExecutionDiagnostic(makeExecutionMetricsFixture())
 
-    expect(diagnostic?.message).toBe("Memory pressure reached 75% of the preview budget.")
-    expect(diagnostic?.details).toContain("RSS 1.7 KB of 2.9 KB limit")
-    expect(diagnostic?.details).toContain("Headroom used 1.5 KB of 2.0 KB")
-    expect(diagnostic?.details).toContain("Stage collect")
+    expect(diagnostic?.message).toBe("Preview reached 75% of its memory allowance.")
+    expect(diagnostic?.details).toContain("Memory used: 1.7 KB; limit: 2.9 KB")
+    expect(diagnostic?.details).toContain("Memory remaining: 2.0 KB")
+    expect(diagnostic?.details).toContain("During: Collecting results")
   })
 
   it("builds a warned strategy diagnostic naming the blocking node and reserved envelope", () => {
@@ -85,7 +118,7 @@ describe("executionDiagnostics", () => {
 
     const pressureDiagnostic = buildExecutionDiagnostic(withPressure)
     expect(pressureDiagnostic?.kind).toBe("pressure")
-    expect(pressureDiagnostic?.message).toBe("Memory pressure reached 75% of the preview budget.")
+    expect(pressureDiagnostic?.message).toBe("Preview reached 75% of its memory allowance.")
 
     expect(buildMemoryPressureDiagnostic(withoutPressure)).toBeNull()
     expect(buildMemoryPressureDiagnostic(withPressure)?.kind).toBe("pressure")
@@ -96,7 +129,7 @@ describe("executionDiagnostics", () => {
         warnedMetrics({ status: "memory_limited", terminal_reason: "memory_limited" }),
         { prefix: "Preview failed" },
       ),
-    ).toBe("Preview failed: memory pressure reached 75% of the preview budget. RSS 1.7 KB of 2.9 KB limit.")
+    ).toBe("Preview failed: preview reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.")
   })
 
   it("marks the requested and blocking nodes as warned for a warned strategy", () => {
@@ -133,7 +166,7 @@ describe("executionDiagnostics", () => {
       terminal_reason: "memory_limited",
     }))
 
-    expect(diagnostic?.message).toBe("Memory pressure reached 75% of the preview budget.")
+    expect(diagnostic?.message).toBe("Preview reached 75% of its memory allowance.")
   })
 
   it("derives a useful memory-limited failure message from execution metrics", () => {
@@ -144,7 +177,7 @@ describe("executionDiagnostics", () => {
     )
 
     expect(message).toBe(
-      "Auto range failed: memory pressure reached 75% of the auto-range budget. RSS 1.7 KB of 2.9 KB limit.",
+      "Auto range failed: auto-range reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
     )
   })
 
@@ -203,7 +236,7 @@ describe("executionDiagnostics", () => {
     )
 
     expect(message).toBe(
-      "Optimisation failed: memory pressure reached 75% of the optimiser budget. RSS 1.7 KB of 2.9 KB limit.",
+      "Optimisation failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
     )
   })
 

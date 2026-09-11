@@ -718,6 +718,8 @@ def _runtime_join_demands(
     """Resolve a safe join projection from lazy parent schemas."""
     if projection is None or len(incoming_edges) < 2:
         return {}
+    if projection_planner.has_configured_column_renames(node):
+        return {}
     if any(
         existing_edge_demands.get(projection_planner.ProjectionEdgeKey.from_edge(edge)) is not None
         for edge in incoming_edges

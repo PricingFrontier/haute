@@ -70,6 +70,8 @@ export interface HauteNodeData extends Record<string, unknown> {
    *  was captured under — set by usePipelineAPI. A stash whose source no longer
    *  matches the active source is stale and gets invalidated, never served. */
   _columnsSource?: string
+  /** Graph structural version that produced the preview column schema. */
+  _columnsStructuralVersion?: number
   /** Node execution status — set by useTracing */
   _status?: NodeStatus
   /** Persisted editor-load availability; independent of transient execution status. */

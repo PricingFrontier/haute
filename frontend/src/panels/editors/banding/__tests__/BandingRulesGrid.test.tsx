@@ -73,8 +73,6 @@ describe("BandingRulesGrid", () => {
       { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old" },
     ]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    // First call is the id-assignment call (ensureRuleIds); clear it
-    onUpdate.mockClear()
     // Click the first delete button
     const deleteButtons = screen.getAllByRole("button")
     fireEvent.click(deleteButtons[0])
@@ -90,24 +88,31 @@ describe("BandingRulesGrid", () => {
       { value: "Car", assignment: "Vehicle" },
     ]
     render(<BandingRulesGrid factor={makeFactor({ banding: "categorical", rules })} onUpdateFactor={onUpdate} />)
-    // First call is the id-assignment call, clear it
-    onUpdate.mockClear()
     const inputs = screen.getAllByRole("textbox")
     fireEvent.change(inputs[0], { target: { value: "Truck" } })
-    // The update call should include the _id field from ensureRuleIds
     const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
     expect(lastCall.rules[0].value).toBe("Truck")
     expect(lastCall.rules[0].assignment).toBe("Vehicle")
   })
 
-  it("assigns stable _id keys to rules without them", () => {
+  it("keeps generated row keys local until a user edit", () => {
     const onUpdate = vi.fn()
     const rules: ContinuousRule[] = [
       { op1: "<", val1: "25", op2: "", val2: "", assignment: "young" },
     ]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    // Should have been called with rules that now have _id
-    expect(onUpdate).toHaveBeenCalled()
+    const factor = makeFactor({ rules })
+    const { rerender } = render(<BandingRulesGrid factor={factor} onUpdateFactor={onUpdate} />)
+    const textbox = screen.getByLabelText("Rule 1 lower value")
+    textbox.focus()
+
+    expect(onUpdate).not.toHaveBeenCalled()
+    rerender(<BandingRulesGrid factor={factor} onUpdateFactor={onUpdate} />)
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(screen.getByLabelText("Rule 1 lower value")).toBe(textbox)
+    expect(document.activeElement).toBe(textbox)
+
+    fireEvent.change(textbox, { target: { value: "30" } })
+    expect(onUpdate).toHaveBeenCalledOnce()
     const assignedRules = onUpdate.mock.calls[0][0].rules
     expect(assignedRules[0]._id).toBeDefined()
     expect(typeof assignedRules[0]._id).toBe("string")
@@ -120,11 +125,9 @@ describe("BandingRulesGrid", () => {
       { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "existing_id" },
     ] as unknown as ContinuousRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    // onUpdateFactor should NOT be called for id assignment since _id already exists
-    // Either not called at all, or called with the same _id preserved
-    if (onUpdate.mock.calls.length > 0 && onUpdate.mock.calls[0][0].rules) {
-      expect(onUpdate.mock.calls[0][0].rules[0]._id).toBe("existing_id")
-    }
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText("Rule 1 lower value"), { target: { value: "30" } })
+    expect(onUpdate.mock.calls[0][0].rules[0]._id).toBe("existing_id")
   })
 
   it("each rule gets a unique _id", () => {
@@ -134,7 +137,8 @@ describe("BandingRulesGrid", () => {
       { op1: ">=", val1: "25", op2: "", val2: "", assignment: "old" },
     ]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    expect(onUpdate).toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText("Rule 1 lower value"), { target: { value: "30" } })
+    expect(onUpdate).toHaveBeenCalledOnce()
     const assignedRules = onUpdate.mock.calls[0][0].rules
     expect(assignedRules[0]._id).not.toBe(assignedRules[1]._id)
   })

@@ -56,6 +56,7 @@ from haute._registry import (
     set_codegen as _set_codegen_in_registry,
 )
 from haute._types import (
+    COLUMN_CONFIG_KEYS,
     OPTIMISER_APPLY_CONFIG_KEYS,
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
@@ -754,14 +755,20 @@ def _gen_optimiser_apply(node: GraphNode, source_names: list[str]) -> str:
 # Explore uses nested decorator kwargs for presentation configuration, rather
 # than flat snake_case kwargs. These opaque values let the UI evolve without
 # coupling code generation to every presentation-specific field.
-def _explore_decorator_args(overview: Any, pivot_formulas: Any, pivots: Any, charts: Any) -> str:
+def _explore_decorator_args(
+    overview: Any,
+    pivot_formulas: Any,
+    pivots: Any,
+    charts: Any,
+    column_config: dict[str, Any],
+) -> str:
     """Build the decorator argument string for ``@pipeline.explore(...)``.
 
     Returns ``""`` when all values are empty (so the decorator stays bare).
     Non-empty values are emitted in stable
-    overview-then-pivot_formulas-then-pivots-then-charts order using
-    :func:`repr`, making valid Python literals which round-trip through
-    :mod:`ast`.
+    overview-then-pivot_formulas-then-pivots-then-charts order, followed by
+    shared column metadata, using :func:`repr` to make valid Python literals
+    that round-trip through :mod:`ast`.
     """
     overview = validate_explore_overview(overview, context="explore node config")
     pivot_formulas, pivots = validate_explore_pivot_state(
@@ -777,6 +784,7 @@ def _explore_decorator_args(overview: Any, pivot_formulas: Any, pivots: Any, cha
         args.append(f"pivots={pivots!r}")
     if charts:
         args.append(f"charts={charts!r}")
+    args.extend(_build_extra_kwargs(column_config, COLUMN_CONFIG_KEYS))
     return ", ".join(args)
 
 
@@ -798,7 +806,7 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
     pivot_formulas = config.get("pivot_formulas")
     pivots = config["pivots"] if "pivots" in config else []
     charts = config["charts"] if "charts" in config else []
-    decorator_args = _explore_decorator_args(overview, pivot_formulas, pivots, charts)
+    decorator_args = _explore_decorator_args(overview, pivot_formulas, pivots, charts, config)
     if code:
         user_body = _wrap_user_code(code, ["df"])
         return (
@@ -917,11 +925,7 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
             node_label=node.data.label,
         )
     params = _build_params(logical_source_names, default_df=False)
-    sel = config.get("selected_columns", [])
-
-    decorator_args: list[str] = []
-    if sel:
-        decorator_args.append(f"selected_columns={sel!r}")
+    decorator_args = _build_extra_kwargs(config, COLUMN_CONFIG_KEYS)
     if input_mapping is not None:
         # ``resolve_input_mapping_names`` validated the persisted value before
         # it reaches source interpolation.

@@ -13,13 +13,14 @@ afterEach(() => {
   cleanup()
 })
 
-describe("PolarsCodePanel trust statement", () => {
-  it("states that node code runs as trusted project code (ENG-T04)", () => {
+describe("PolarsCodePanel", () => {
+  it("renders the editor and code hints without a trust statement", () => {
     render(
       <PolarsCodePanel config={{ code: "df = rows" }} onUpdate={vi.fn()} inputSources={[]} hint="assign to df" />,
     )
-    expect(screen.getByTestId("polars-trust-note")).toHaveTextContent(
-      "Runs as trusted project code with the privileges of the process running haute.",
-    )
+    expect(screen.getByTestId("code-editor")).toBeInTheDocument()
+    expect(screen.getByText("assign to df")).toBeInTheDocument()
+    expect(screen.getByText("return df")).toBeInTheDocument()
+    expect(screen.queryByTestId("polars-trust-note")).not.toBeInTheDocument()
   })
 })

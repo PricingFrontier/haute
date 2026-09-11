@@ -41,6 +41,20 @@ function profileLabel(profile: string): string {
   return PROFILE_LABELS[profile] ?? profile.replace(/_/g, " ")
 }
 
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+function formatMemory(bytes: number): string {
+  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : formatBytes(bytes)
+}
+
+const MEMORY_STAGE_LABELS: Record<string, string> = {
+  lazy_dataframe_cache_materialize: "Caching the dataframe",
+  explore_frame_stats: "Calculating column statistics",
+  collect: "Collecting results",
+}
+
 function pressurePercent(event: ExecutionMemoryPressureEvent): number {
   if (Number.isFinite(event.threshold_percent)) return Math.round(event.threshold_percent)
   if (Number.isFinite(event.pressure_ratio)) return Math.round(event.pressure_ratio * 100)
@@ -307,14 +321,26 @@ export function buildMemoryPressureDiagnostic(
   if (!event) return null
 
   const details = [
-    `RSS ${formatBytes(event.rss_bytes)} of ${formatBytes(event.rss_limit_bytes)} limit`,
-    `Headroom used ${formatBytes(event.headroom_used_bytes)} of ${formatBytes(event.headroom_bytes)}`,
+    `Memory used: ${formatMemory(event.rss_bytes)}; limit: ${formatMemory(event.rss_limit_bytes)}`,
+    event.headroom_bytes < 0
+      ? `Memory over limit: ${formatMemory(-event.headroom_bytes)}`
+      : `Memory remaining: ${formatMemory(event.headroom_bytes)}`,
   ]
-  if (event.stage) details.push(`Stage ${event.stage}`)
-  if (event.config_key) details.push(`Budget ${event.config_key}`)
+  if (event.stage) {
+    const stage = MEMORY_STAGE_LABELS[event.stage] ?? capitalise(event.stage.replace(/_/g, " "))
+    details.push(`During: ${stage}`)
+  }
+  if (event.config_key) {
+    const source = event.config_key.startsWith("adaptive:")
+      ? "set automatically from available RAM"
+      : event.config_key.startsWith("default:")
+        ? "default memory allowance"
+        : event.config_key
+    details.push(`Limit source: ${source}`)
+  }
 
   return {
-    message: `Memory pressure reached ${pressurePercent(event)}% of the ${profileLabel(metrics.profile)} budget.`,
+    message: `${capitalise(profileLabel(metrics.profile))} reached ${pressurePercent(event)}% of its memory allowance.`,
     details,
     kind: "pressure",
   }

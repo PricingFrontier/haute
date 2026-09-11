@@ -150,8 +150,8 @@ describe("TrainingActionsAndResults", () => {
       terminalMetrics: makeExecutionMetricsFixture({ profile: "training_prep", terminal_reason: "memory_limited" }),
     })} />)
 
-    expect(screen.getByText("Memory pressure reached 75% of the training budget.")).toBeInTheDocument()
-    expect(screen.getByText("RSS 1.7 KB of 2.9 KB limit")).toBeInTheDocument()
+    expect(screen.getByText("Training reached 75% of its memory allowance.")).toBeInTheDocument()
+    expect(screen.getByText("Memory used: 1.7 KB; limit: 2.9 KB")).toBeInTheDocument()
   })
 
   it("does not imply memory caused non-memory terminal training failures", () => {
@@ -168,7 +168,7 @@ describe("TrainingActionsAndResults", () => {
 
     expect(screen.getByText("Training failed")).toBeInTheDocument()
     expect(screen.getByText("Feature contract mismatch")).toBeInTheDocument()
-    expect(screen.queryByText("Memory pressure reached 75% of the training budget.")).not.toBeInTheDocument()
+    expect(screen.queryByText("Training reached 75% of its memory allowance.")).not.toBeInTheDocument()
     expect(screen.queryByText("Technical details")).not.toBeInTheDocument()
   })
 

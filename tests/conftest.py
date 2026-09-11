@@ -112,15 +112,19 @@ def _interactive_execution_test_mode(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture(autouse=True)
 def _clear_trace_caches():
-    """Invalidate the global trace and preview caches between tests.
+    """Invalidate global trace, preview and inference caches between tests.
 
     The preview and trace caches are module-level singletons. Without clearing them,
     a prior test's cached DataFrames can bleed into the next test if they
     happen to share the same fingerprint (e.g., same node ids, same code).
     """
+    from haute._json_shred._inference_cache import _INFERENCE_CACHE
+
+    _INFERENCE_CACHE.clear()
     _trace_cache.clear()
     _preview_cache.clear()
     yield
+    _INFERENCE_CACHE.clear()
     _trace_cache.clear()
     _preview_cache.clear()
 

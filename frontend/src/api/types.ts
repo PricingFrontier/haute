@@ -634,7 +634,7 @@ export interface LorenzCurvePoint {
 }
 
 export interface PdpGridPoint {
-  value: number | string
+  value: number | string | null
   avg_prediction: number
 }
 

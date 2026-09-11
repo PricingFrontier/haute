@@ -18,7 +18,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from haute._types import GraphNode, NodeData, PipelineGraph, SubmodelDefinition
+from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
 from tests.conftest import current_source_revision, make_output_config
@@ -525,6 +525,91 @@ class TestResolveSourceFile:
 
 
 class TestSaveSimpleGraph:
+    @pytest.mark.parametrize("node_type", ["polars", "edgeJoin", "explore"])
+    def test_saved_column_settings_preserve_preview_results(self, tmp_path, monkeypatch, node_type):
+        from haute.executor import execute_graph
+        from haute.parser import parse_pipeline_file
+
+        monkeypatch.chdir(tmp_path)
+        source = _make_node(
+            "source",
+            "source",
+            "dataInput",
+            {
+                "inputType": "inline",
+                "format": "records",
+                "mode": "read",
+                "records": [{"_id": 1, "_category": "low", "unused": 9}],
+                "arguments": {"schema": {"_id": "Int64", "_category": "String", "unused": "Int64"}},
+                "contract": "opaque",
+            },
+        )
+        metadata = {
+            "selected_columns": ["_category", "_id"],
+            "column_renames": {"_category": "category", "_id": "id"},
+            "categorical_levels": {"category": ["low", "high", None]},
+        }
+        config = {**metadata, "contract": "opaque"}
+        nodes = [source, _make_node("result", "result", node_type, config)]
+        edges = [GraphEdge(id="input", source="source", target="result")]
+        if node_type == "edgeJoin":
+            config.update({"how": "left", "on": ["_id"]})
+            nodes.append(
+                _make_node(
+                    "lookup",
+                    "lookup",
+                    "dataInput",
+                    {
+                        "inputType": "inline",
+                        "format": "records",
+                        "mode": "read",
+                        "records": [{"_id": 1}],
+                        "arguments": {"schema": {"_id": "Int64"}},
+                        "contract": "opaque",
+                    },
+                )
+            )
+            edges[0].targetHandle = "base"
+            edges.append(
+                GraphEdge(id="lookup_input", source="lookup", target="result", targetHandle="join")
+            )
+        else:
+            config["code"] = "df = source"
+        # NodeData validates/copies config, so assign the completed settings.
+        nodes[1].data.config = config
+        graph = PipelineGraph(nodes=nodes, edges=edges)
+        expected_preview = [{"category": "low", "id": 1}]
+        before = execute_graph(graph, target_node_id="result")["result"]
+        assert before.status == "ok", before.error
+        assert before.preview == expected_preview
+
+        service = SavePipelineService(tmp_path)
+        path = tmp_path / "main.py"
+        for save_index in range(3):
+            if save_index == 2:
+                # Clearing saved settings must remove their old effects, too.
+                metadata = {"selected_columns": [], "column_renames": {}, "categorical_levels": {}}
+                graph.node_map["result"].data.config.update(metadata)
+                expected_preview = source.data.config["records"]
+            saved = service.save(
+                SavePipelineRequest(
+                    graph=graph,
+                    name="main",
+                    source_file="main.py",
+                    base_revision=current_source_revision(path, tmp_path),
+                )
+            )
+            assert saved.status == "saved"
+            graph = parse_pipeline_file(path)
+            for key, value in metadata.items():
+                default = [] if key == "selected_columns" else None
+                assert graph.node_map["result"].data.config.get(key, default) == value
+            assert graph.node_map["source"].data.config["records"] == source.data.config["records"]
+            after = execute_graph(graph, target_node_id="result")["result"]
+            assert after.status == "ok", after.error
+            assert after.preview == expected_preview
+            assert [column.name for column in after.columns] == list(expected_preview[0])
+
     def test_save_single_file_graph(self, tmp_path: Path) -> None:
         """save() generates code, writes .py and .haute.json sidecar."""
         svc = SavePipelineService(tmp_path)

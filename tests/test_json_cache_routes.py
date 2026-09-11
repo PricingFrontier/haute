@@ -1028,6 +1028,31 @@ class TestJsonCacheProgress:
 
 
 class TestJsonCacheStatus:
+    def test_status_does_not_wait_for_an_active_cache_build(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from haute._json_flatten import _json_cache_dir
+        from haute._json_shred._publication import _build_lock_for
+        from haute.routes.json_cache import _v2_status_response
+
+        monkeypatch.chdir(tmp_path)
+        data = tmp_path / "quotes.jsonl"
+        data.write_text('{"a": 1}\n', encoding="utf-8")
+        cache_dir = _json_cache_dir(data, "working")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with _build_lock_for(cache_dir):
+                result = pool.submit(
+                    _v2_status_response,
+                    str(data),
+                    _minimal_root_schema(),
+                    str(data),
+                ).result(timeout=5)
+                assert result.cached is False
+
     def test_missing_path_returns_422(self, client: TestClient) -> None:
         resp = client.get("/api/json-cache/status")
         assert resp.status_code == 422

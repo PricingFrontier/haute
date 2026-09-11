@@ -460,9 +460,21 @@ def test_parallel_assembly_tolerates_consumed_part_disappearance_and_logs_elapse
 def test_parallel_inference_merges_in_order_shuts_down_and_logs_elapsed_time(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    prefix_record = {"prefix": True}
+    first_record = {"value": 1, "first": True}
+    second_record = {"value": 2.5, "second": True}
+    lines = [
+        (json.dumps(record) + "\n").encode()
+        for record in (prefix_record, first_record, second_record)
+    ]
+    source = tmp_path / "source.jsonl"
+    source.write_bytes(b"".join(lines))
+    boundary = len(lines[0]) + len(lines[1])
+    ranges = [(0, boundary), (boundary, source.stat().st_size)]
+    monkeypatch.setattr(_inference._inference_filter, "_INITIAL_SAMPLE_RECORDS", 1)
     first, second = _inference._InferenceState(), _inference._InferenceState()
-    first.walk({"value": 1})
-    second.walk({"value": 2.5})
+    first.walk(first_record)
+    second.walk(second_record)
     results = [
         _inference._InferenceChunkResult(index=0, state=first),
         _inference._InferenceChunkResult(index=1, state=second),
@@ -476,11 +488,12 @@ def test_parallel_inference_merges_in_order_shuts_down_and_logs_elapsed_time(
         _inference.logger, "info", lambda event, **fields: events.append((event, fields))
     )
 
-    merged = _inference._infer_jsonl_in_parallel(tmp_path / "source.jsonl", [(0, 1), (1, 2)])
+    merged = _inference._infer_jsonl_in_parallel(source, ranges)
 
     expected = _inference._InferenceState()
-    expected.walk({"value": 1})
-    expected.walk({"value": 2.5})
+    expected.walk(prefix_record)
+    expected.walk(first_record)
+    expected.walk(second_record)
     assert _inference._assemble_inference_schema(merged) == _inference._assemble_inference_schema(
         expected
     )

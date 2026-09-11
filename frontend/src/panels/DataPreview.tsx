@@ -12,6 +12,8 @@ export interface PreviewData {
   nodeId: string
   nodeLabel: string
   status: "ok" | "error" | "loading"
+  /** Cache preparation progress while waiting to execute the preview. */
+  loading_message?: string
   row_count: number
   column_count: number
   columns: ColumnInfo[]
@@ -342,7 +344,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
   ) : null
   const previewContent = data.status === "loading" ? (
     <div className="flex-1 flex items-center justify-center">
-      <div className="text-xs animate-pulse" style={{ color: 'var(--text-muted)' }}>Executing pipeline...</div>
+      <div role="status" className="text-xs animate-pulse" style={{ color: 'var(--text-muted)' }}>{data.loading_message ?? "Executing pipeline..."}</div>
     </div>
   ) : data.status === "error" ? (
     <div className="flex-1 flex items-center justify-center p-4">

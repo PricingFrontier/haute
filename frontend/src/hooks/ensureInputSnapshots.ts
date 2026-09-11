@@ -4,6 +4,9 @@ import {
   buildInputCache,
   getInputCacheJob,
   getInputCacheStatus,
+  buildJsonCache,
+  getJsonCacheStatusForSchema,
+  getJsonCacheProgress,
 } from "../api/client"
 import { TERMINAL_JOB_STATUSES } from "../api/types"
 import { dataInputIsDirect } from "../utils/dataInputMode"
@@ -15,6 +18,8 @@ export interface EnsureInputSnapshotsOptions {
   /** Called at most once when this ensure pass starts or joins any build. */
   onBuildStart?: () => void
   signal?: AbortSignal
+  /** Current Quote Input cache preparation phase; null when preparation ends. */
+  onProgress?: (message: string | null) => void
 }
 
 function snapshotConfigs(nodes: Node[]): Record<string, unknown>[] {
@@ -35,6 +40,70 @@ function snapshotConfigs(nodes: Node[]): Record<string, unknown>[] {
     if (dataInputIsDirect(config)) return []
     return [config]
   })
+}
+
+function quoteInputConfigs(nodes: Node[]): Record<string, unknown>[] {
+  return nodes.flatMap((node) => {
+    const { nodeType, config } = node.data
+    if (nodeType !== NODE_TYPES.API_INPUT || !config || typeof config !== "object" || Array.isArray(config)) return []
+    const value = config as Record<string, unknown>
+    return Object.prototype.hasOwnProperty.call(value, "tables") &&
+      typeof value.path === "string" && /\.(json|jsonl|ndjson|xml)$/i.test(value.path)
+      ? [value] : []
+  })
+}
+
+async function ensureQuoteInputCache(
+  config: Record<string, unknown>,
+  options: EnsureInputSnapshotsOptions,
+  notifyBuildStart: () => void,
+): Promise<void> {
+  if (options.signal?.aborted) throw abortError()
+  const path = config.path as string
+  const payload = { path, volatile_schema: config }
+  const report = (message: string | null) => {
+    if (!options.signal?.aborted) options.onProgress?.(message)
+  }
+  report("Checking Quote Input cache…")
+  try {
+    const status = options.signal
+      ? await getJsonCacheStatusForSchema(payload, { signal: options.signal })
+      : await getJsonCacheStatusForSchema(payload)
+    if (options.signal?.aborted) throw abortError()
+    if (status.cached) return
+    notifyBuildStart()
+    report("Caching Quote Input as Parquet…")
+    const controller = new AbortController()
+    const onAbort = () => controller.abort()
+    options.signal?.addEventListener("abort", onAbort, { once: true })
+    const pollProgress = async () => {
+      try {
+        for (;;) {
+          await waitForNextPoll(controller.signal)
+          const progress = await getJsonCacheProgress(path, { signal: controller.signal })
+          if (!controller.signal.aborted && progress.active) {
+            const rowCount = progress.rows ?? 0
+            const rows = rowCount > 0 ? ` · ${rowCount.toLocaleString()} rows` : ""
+            report(`Caching Quote Input as Parquet…${rows} · ${Math.floor(progress.elapsed ?? 0)}s`)
+          }
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) throw error
+      }
+    }
+    try {
+      await Promise.all([
+        buildJsonCache(payload, { signal: controller.signal }).finally(() => controller.abort()),
+        pollProgress(),
+      ])
+      if (options.signal?.aborted) throw abortError()
+    } finally {
+      controller.abort()
+      options.signal?.removeEventListener("abort", onAbort)
+    }
+  } finally {
+    report(null)
+  }
 }
 
 function abortError(): DOMException {
@@ -116,13 +185,20 @@ export async function ensureInputSnapshots(
   options: EnsureInputSnapshotsOptions = {},
 ): Promise<void> {
   const configs = snapshotConfigs(nodes)
-  if (configs.length === 0) return
+  const quotes = quoteInputConfigs(nodes)
+  if (configs.length === 0 && quotes.length === 0) return
 
   let buildNotified = false
   const notifyBuildStart = () => {
     if (buildNotified) return
     buildNotified = true
     options.onBuildStart?.()
+  }
+
+  // Structured Quote Inputs use the existing per-frame full-cache builder.
+  // Keep these sequential so each schema owns its progress and publication.
+  for (const config of quotes) {
+    await ensureQuoteInputCache(config, options, notifyBuildStart)
   }
 
   await Promise.all(

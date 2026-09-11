@@ -37,6 +37,12 @@
   `predict(model, df, features, offset=...)`, `feature_importance()`, `save()`.
   Training and PDP diagnostics always call the declared `predict` signature, including
   `offset=None`; reduced-arity duck-typed implementations are not another interface.
+  PDP computation receives the complete feature list in training order for every
+  prediction, including models with offsets. Feature-importance ranking controls
+  only the order of completed chart entries (including per-feature error entries);
+  it must never reorder model inputs. Regression coverage uses real CatBoost
+  predictions for both mixed categorical/numeric and numeric-only models: the
+  latter can silently produce incorrect curves when columns are swapped.
   `CatBoostAlgorithm` and `GLMAlgorithm` implement it.
   Both also expose algorithm-specific methods that `_training_job._compute_metrics`
   probes with `hasattr()` rather than an interface method — `shap_summary` /
@@ -358,6 +364,15 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
    feature contract, MLflow run, SHAP/PDP, or full diagnostics. No-validation performs
    zero selection fits. Internal clones skip `_prepare_data`'s target/task/metric re-scan —
    the outer job already gated the shared prepared source.
+   Ordinary validation fits forward preparation, iteration and metric-stage progress
+   to the outer job. Messages identify the current fit, total fits (including the
+   final model), and current iteration/total when the algorithm supplies them.
+   Fit-local fractions map into monotonically increasing overall progress. Selection
+   metrics never enter the final model's iteration callback or loss chart. Progress
+   callbacks retain cancellation and memory checkpoints; a progress-only caller
+   receives iteration updates even without an execution context.
+   CatBoost callback iteration numbers are already one-based; the displayed count
+   and loss-history iteration retain that value, ending at the configured limit.
 4. **Run bounded tuning when configured** — `_run_tuning_trials` writes/reloads the
    tuning plan, uses one seeded Optuna `TPESampler` through sequential ask/tell, runs
    every baseline/sampled candidate on the exact same validation fits, persists every
@@ -734,6 +749,17 @@ rows/features) and retry.
   `error_type`) plus a `logger.warning` — used identically for SHAP,
   `LossFunctionChange` importance, PDP, and every GLM-specific diagnostic
   (`coefficients_table`, `relativities`, `fit_statistics`, `regularization_path`).
+- Categorical PDP grids retain missing source levels as JSON `null`, with the prediction
+  computed for that missing level. The frontend response contract accepts these levels
+  and labels them `(missing)`; numeric grid values remain non-null.
+- `_compute_metrics` reports `Computing SHAP values` only immediately before an
+  available `shap_summary` call, then reports `Computing loss-based feature
+  importance` before constructing its pool/calling `feature_importance_typed`.
+  Both progress callbacks run outside the optional-diagnostic exception guards,
+  so cancellation between stages propagates rather than being recorded as an
+  optional diagnostic failure. Existing 1,000-row SHAP sampling and full-partition
+  loss importance are unchanged. Targeted tests pin stage order, the absence of
+  a SHAP stage for algorithms without it, and cancellation before loss importance.
 - **MLflow logging errors** — `_log_model_card` inside `log_experiment` is wrapped in
   `try/except Exception: logger.warning(...)`, so a model-card bug never fails an
   otherwise-successful experiment log; `build_run_url` similarly catches and returns

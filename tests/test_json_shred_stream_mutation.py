@@ -371,7 +371,7 @@ def test_record_iterator_jsonl_requests_one_byte_past_record_limit(
             return next(self._lines)
 
     source = Source()
-    path = SimpleNamespace(suffix=".jsonl", open=lambda _mode: source)
+    path = SimpleNamespace(suffix=".jsonl", open=lambda _mode, **_kwargs: source)
     monkeypatch.setattr(_records, "_structured_input_record_limit", lambda: 7)
     assert list(_records._iter_records(path)) == [{"a": 1}]
     assert source.readline_sizes == [8, 8]

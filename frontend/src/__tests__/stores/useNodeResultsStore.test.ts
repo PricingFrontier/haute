@@ -110,6 +110,33 @@ describe("useNodeResultsStore", () => {
     resetStore()
   })
 
+  it("preserves every active job type across saves and rejects a later external revision", () => {
+    const document = useDocumentStatusStore.getState()
+    document.loadDocumentStatus(makePipelineEditorDocument({ source_file: "main.py", source_revision: "r1" }))
+    const store = useNodeResultsStore.getState()
+    store.startTrainJob("n1", "train", "Train", "config", "live", 7)
+    store.startSolveJob("n1", "solve", "Solve", {}, "config", "live", 7)
+    store.startExploreJob("n1", "explore", "Explore", "config", "live", 7)
+    store.startExplorePivotJob("n1", "pivot", "n1", "p1", "Explore", "Pivot", "calculation", "live", 7)
+    const progress = { status: "running" as const, progress: 0.5, message: "Still working", elapsed_seconds: 5, iteration: 3, total_iterations: 6, train_loss: {}, failure: null, terminal_reason: null, execution_metrics: null }
+    const update = () => {
+      store.updateTrainProgress("n1", progress)
+      store.updateSolveProgress("n1", progress)
+      store.updateExploreProgress("n1", { ...progress, result: null })
+      store.updateExplorePivotProgress("n1", { ...progress, result: null })
+    }
+    const collections = ["trainJobs", "solveJobs", "exploreJobs", "pivotJobs"] as const
+    document.acknowledgeSave("r2")
+    document.acknowledgeSave("r3")
+    update()
+    for (const key of collections) {
+      expect(useNodeResultsStore.getState()[key].n1).toMatchObject({ progress, source: "live", structuralVersion: 7 })
+    }
+    document.setSourceRevision("external")
+    update()
+    for (const key of collections) expect(useNodeResultsStore.getState()[key].n1).toBeUndefined()
+  })
+
   // ────────────────────────────────────────────────────────────────
   // Solve job lifecycle
   // ────────────────────────────────────────────────────────────────

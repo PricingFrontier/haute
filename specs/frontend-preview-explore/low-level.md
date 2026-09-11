@@ -1,5 +1,21 @@
 # Frontend Preview & Explore — Low-Level Specification
 
+## Preview column freshness
+
+- Column metadata captured by `usePipelineAPI` records the request's structural
+  version as `_columnsStructuralVersion`, alongside `_columnsSource`. Both are
+  transient result metadata and do not change graph identity or persisted state.
+- Preview requests may seed `requestedPreviewColumns` from cached columns only
+  when their structural version and source match the request. Missing provenance
+  or a mismatch requires schema discovery by omitting that optional projection.
+  This applies to direct, recovery, downstream propagation and upstream refresh
+  requests. Fresh schemas retain the initial preview column limit.
+- Deselecting join columns must therefore let downstream pass-through previews
+  discover the remaining columns without requesting the old schema. Actual code
+  and join dependencies retain the backend's strict missing-column validation.
+- Result-shape invalidation clears the structural version tag along with the
+  source tag; selection-only edits still preserve the pre-filter column choices.
+
 ## Module map
 
 | File | Responsibility |

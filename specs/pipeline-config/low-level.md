@@ -165,10 +165,17 @@ clobbering it), preserves exact incoming-edge names in Optimiser and Optimiser A
 without node-id remapping. Before allowlist filtering, known removed identity fields are rejected:
 Edge Join's `baseInput`/`joinInput` and Optimiser's `scored_input`/`factors_input` never become a
 silent write-time migration. Each accepted config is then filtered through
-`_prepare_config_for_sidecar` (strips `code`/`_`-prefixed keys recursively via
-`_strip_internal_keys`, applies the `VALID_KEYS` allowlist — logging any dropped keys at
+`_prepare_config_for_sidecar` (strips `code` and `_`-prefixed properties of the top-level
+config record, applies the `VALID_KEYS` allowlist — logging any dropped keys at
 WARNING — then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result
 to `{relative_path: json_string}`. Rating-step canonicalisation always emits ordered entry rows.
+Banding canonicalisation removes transient properties from factor records and expanded rule
+records, including `_prevRules` and `_id`. Compact category maps are data and retain those
+same keys. All other nested dictionaries and payloads retain user keys verbatim, including
+underscore-prefixed schema fields, inline records, rating factors and row metadata, feature
+maps, constraints, and category declarations. Serialization does not mutate the input graph.
+Shared column settings (`COLUMN_CONFIG_KEYS`) are accepted and parsed consistently across
+node types; inline decorators and JSON sidecars preserve the same authored values.
 Any validation error is raised while collecting/staging content, before an existing sidecar is
 replaced.
 

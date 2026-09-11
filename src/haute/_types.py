@@ -196,6 +196,15 @@ DATA_OUTPUT_CONFIG_TYPES = (
 )
 
 
+# Authored column metadata that may be attached to every executable node.
+# Keep this order stable because inline decorators use it as their source form.
+COLUMN_CONFIG_KEYS: tuple[str, ...] = (
+    "selected_columns",
+    "column_renames",
+    "categorical_levels",
+)
+
+
 class TransformConfig(TypedDict, total=False):
     """Config for transform nodes."""
 
@@ -203,6 +212,8 @@ class TransformConfig(TypedDict, total=False):
     instanceOf: str
     inputMapping: dict[str, str]
     selected_columns: list[str]
+    column_renames: dict[str, str]
+    categorical_levels: dict[str, list[str | None]]
 
 
 class EdgeJoinConfig(TypedDict, total=False):
@@ -216,6 +227,9 @@ class EdgeJoinConfig(TypedDict, total=False):
     coalesce: bool
     validate: str
     maintainOrder: str
+    selected_columns: list[str]
+    column_renames: dict[str, str]
+    categorical_levels: dict[str, list[str | None]]
 
 
 EDGE_JOIN_CONFIG_KEYS: tuple[str, ...] = (
@@ -519,6 +533,9 @@ class ExploreConfig(TypedDict, total=False):
     pivot_formulas: list[ExplorePivotFormula]
     pivots: list[ExplorePivotPersistedConfig]
     charts: list[ExploreChartConfig]
+    selected_columns: list[str]
+    column_renames: dict[str, str]
+    categorical_levels: dict[str, list[str | None]]
 
 
 class ExternalFileConfig(TypedDict, total=False):

@@ -1095,6 +1095,53 @@ describe("API response guards", () => {
     })
   })
 
+  it("preserves null categorical PDP levels from completed training status", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_status_response")
+    const result = fixture.result as Record<string, unknown>
+    const pdpData = result.pdp_data as Array<Record<string, unknown>>
+    pdpData[0] = {
+      feature: "category",
+      type: "categorical",
+      grid: [
+        { value: "known", avg_prediction: 1.1 },
+        { value: null, avg_prediction: 1.2 },
+      ],
+    }
+
+    const parsed = parseTrainStatusResponse(fixture)
+
+    expect(parsed.result?.pdp_data?.[0]?.grid[1]).toEqual({
+      value: null,
+      avg_prediction: 1.2,
+    })
+  })
+
+  it.each([
+    ["missing", undefined],
+    ["boolean", true],
+    ["object", { category: "missing" }],
+  ])("rejects invalid categorical PDP grid value: %s", (_name, value) => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
+
+    expect(() =>
+      parseTrainResponse({
+        ...fixture,
+        pdp_data: [{ feature: "category", type: "categorical", grid: [{ value, avg_prediction: 1.2 }] }],
+      }),
+    ).toThrow(/pdp_data.*value/i)
+  })
+
+  it("rejects a null numeric PDP grid value", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
+
+    expect(() =>
+      parseTrainResponse({
+        ...fixture,
+        pdp_data: [{ feature: "age", type: "numeric", grid: [{ value: null, avg_prediction: 1.2 }] }],
+      }),
+    ).toThrow(/pdp_data.*value/i)
+  })
+
   it("rejects malformed per-feature PDP diagnostics errors", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
 

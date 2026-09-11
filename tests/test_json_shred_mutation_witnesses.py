@@ -18,7 +18,14 @@ import pytest
 
 from haute._api_input_schema import _RESERVED_LEAF as _SCALAR_VALUE_LEAF
 from haute._api_input_schema import ApiInputSchemaError
-from haute._json_shred import _cache, _records, _runtime_storage, _source_proof, _writer
+from haute._json_shred import (
+    _cache,
+    _inference_cache,
+    _records,
+    _runtime_storage,
+    _source_proof,
+    _writer,
+)
 from haute._json_shred._inference import _assign_column_names, _infer_type, _widen_type
 from haute._json_shred._records import ShredSkipStats
 from haute._json_shred._shred import (
@@ -46,6 +53,9 @@ def test_json_shred_resource_defaults_are_explicit_contracts() -> None:
     assert _runtime_storage._RUNTIME_STORAGE_ORPHAN_GRACE_DEFAULT_SECONDS == 60 * 60
     assert _runtime_storage.RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES == 64
     assert _runtime_storage.RUNTIME_SNAPSHOT_CACHE_MAX_BYTES == 512 * 1024 * 1024
+    inference_cache = _inference_cache.InferenceCache()
+    assert inference_cache._max_entries == 32
+    assert inference_cache._max_bytes == 16 * 1024 * 1024
 
 
 def test_json_shred_internal_value_objects_preserve_mutability_contracts() -> None:

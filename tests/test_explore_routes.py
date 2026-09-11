@@ -3515,6 +3515,44 @@ def test_build_frame_stats_happy_path(explore_execution_context) -> None:
     assert [s.max_value for s in stats] == ["3", "beta", "3.5"]
 
 
+@pytest.mark.parametrize("has_unique_column", [True, False])
+def test_wide_frame_profiles_columns_in_bounded_sequential_batches(
+    explore_execution_context, monkeypatch, has_unique_column
+) -> None:
+    from haute.routes import _explore_service as service_mod
+
+    calls = []
+    collect = service_mod.cancellable_streaming_collect
+
+    def checked_collect(query, **kwargs):
+        names = query.collect_schema().names()
+        calls.append(names)
+        assert sum(name.startswith("null::") for name in names) <= 8
+        if "unique_rows" in names:
+            assert names == ["unique_rows"]
+        return collect(query, **kwargs)
+
+    monkeypatch.setattr(service_mod, "cancellable_streaming_collect", checked_collect)
+    data = {f"value_{index}": [1.0, 1.0, None, 3.0] for index in range(17)}
+    if has_unique_column:
+        data["value_16"] = [1.0, 2.0, None, 4.0]
+    lf = pl.DataFrame(data).lazy()
+
+    result = service_mod._build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    )
+
+    assert result.row_count == 4
+    assert [column.name for column in result.columns] == list(data)
+    assert all(column.null_count == 1 for column in result.columns)
+    assert result.columns[0].median_value == "1"
+    assert result.columns[0].distinct_count == 2
+    assert result.overview_summary.data_quality.duplicate_row_count == (
+        0 if has_unique_column else 1
+    )
+    assert len(calls) == (3 if has_unique_column else 4)
+
+
 def test_build_explore_frame_stats_uses_one_streaming_collect_without_categorical_counts(
     explore_execution_context,
     monkeypatch,

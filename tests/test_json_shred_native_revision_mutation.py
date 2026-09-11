@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import orjson
 import pytest
 
 from haute._json_shred import _source_proof
@@ -16,6 +17,28 @@ from haute._json_shred import _source_proof
 @pytest.mark.parametrize(
     ("revision", "expected"),
     [
+        (
+            _source_proof._StrongFileRevision((0, 1), 0, 0, 1),
+            {
+                "schema_version": 1,
+                "kind": "posix_ctime_v1",
+                "file_identity": [0, 1],
+                "size": 0,
+                "mtime_ns": 0,
+                "change_token": 1,
+            },
+        ),
+        (
+            _source_proof._StrongFileRevision((0, b"x" * 16), 0, 0, 1),
+            {
+                "schema_version": 1,
+                "kind": "windows_usn_v1",
+                "file_identity": [0, "78" * 16],
+                "size": 0,
+                "mtime_ns": 0,
+                "change_token": 1,
+            },
+        ),
         (
             _source_proof._StrongFileRevision((7, 11), 13, 17, 19),
             {
@@ -47,6 +70,10 @@ def test_native_revision_record_has_exact_platform_shape_and_round_trips(
 
     assert record == expected
     assert _source_proof._parse_native_revision_record(record) == revision
+    # Persisted metadata supplies fresh strings rather than interned literals.
+    assert (
+        _source_proof._parse_native_revision_record(orjson.loads(orjson.dumps(record))) == revision
+    )
 
 
 @pytest.mark.parametrize(
@@ -66,6 +93,7 @@ def test_native_revision_record_has_exact_platform_shape_and_round_trips(
         lambda record: record.__setitem__("file_identity", [1, True]),
         lambda record: record.__setitem__("file_identity", [1, 1.0]),
         lambda record: record.__setitem__("file_identity", [1, 0]),
+        lambda record: record.__setitem__("file_identity", [1, -1]),
         lambda record: record.__setitem__("size", True),
         lambda record: record.__setitem__("size", 1.0),
         lambda record: record.__setitem__("size", -1),
@@ -88,12 +116,22 @@ def test_parse_native_revision_record_rejects_invalid_common_and_posix_values(
     assert _source_proof._parse_native_revision_record(record) is None
 
 
-@pytest.mark.parametrize("file_id", [2, "short", "z" * 32, "0" * 32])
+@pytest.mark.parametrize("file_id", [2, "a" * 30, "a" * 34, "z" * 32, "0" * 32])
 def test_parse_native_revision_record_rejects_invalid_windows_id(file_id: Any) -> None:
     record = _source_proof._native_revision_record(
         _source_proof._StrongFileRevision((1, b"x" * 16), 3, 4, 5)
     )
     record["file_identity"][1] = file_id
+
+    assert _source_proof._parse_native_revision_record(record) is None
+
+
+@pytest.mark.parametrize("kind", ["windows_usn_v0", "windows_usn_v2"])
+def test_parse_native_revision_record_rejects_unknown_windows_version(kind: str) -> None:
+    record = _source_proof._native_revision_record(
+        _source_proof._StrongFileRevision((1, b"x" * 16), 3, 4, 5)
+    )
+    record["kind"] = kind
 
     assert _source_proof._parse_native_revision_record(record) is None
 

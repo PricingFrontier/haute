@@ -681,27 +681,35 @@ class TestRatingTableRowCount:
 # ---------------------------------------------------------------------------
 
 
+column_name_strategy = st.one_of(
+    st.sampled_from(["_id", "_prevRules", "__typename", 'quote " and )', "line\nbreak", "Δ"]),
+    st.text(alphabet=string.ascii_letters + string.digits + "_ (){}", min_size=1, max_size=20),
+)
+
+
 class TestConfigRoundtrip:
     @given(
         # Bundle 2.α — keys must be in the per-node-type allowlist or in
         # _UNIVERSAL_KEYS to survive `_prepare_config_for_sidecar`.
         # Using universal keys ensures the property holds across any
         # node_type. The keys below all appear in _UNIVERSAL_KEYS:
-        # `selected_columns` (list[str]), `column_renames` (dict[str,str]),
-        # `contract` (str). Strategy avoids leading underscores in
-        # nested string values because `_strip_internal_keys` recurses
-        # and strips `_*` keys at every level — those would not
-        # roundtrip (by design).
+        # User dictionary keys are opaque data, including names that look
+        # like editor metadata. Generate those names explicitly.
         config=st.fixed_dictionaries(
             {
                 "selected_columns": st.lists(
-                    st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True),
+                    column_name_strategy,
                     max_size=5,
                 ),
                 "column_renames": st.dictionaries(
-                    keys=st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True),
-                    values=st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,19}", fullmatch=True),
+                    keys=column_name_strategy,
+                    values=column_name_strategy,
                     max_size=5,
+                ),
+                "categorical_levels": st.dictionaries(
+                    keys=column_name_strategy,
+                    values=st.lists(st.one_of(st.none(), column_name_strategy), max_size=4),
+                    max_size=4,
                 ),
                 "contract": st.text(
                     alphabet=string.ascii_letters + string.digits + "-",
@@ -728,11 +736,8 @@ class TestConfigRoundtrip:
         from haute.graph_utils import NodeType
 
         base_dir = tmp_path_factory.mktemp("cfg")
-        # OUTPUT has a config folder and no per-type compactor —
-        # BANDING and RATING_STEP have compactors that strip universal
-        # keys, POLARS has no folder (transforms store code inline).
-        # OUTPUT is the cleanest target for testing the pure JSON+α
-        # roundtrip of universal keys.
+        # Exercise JSON mapping preservation here; the codegen roundtrip
+        # suite separately covers the same settings across all node types.
         rel = config_path_for_node(NodeType.OUTPUT, "test_node")
         path = base_dir / rel
         path.parent.mkdir(parents=True, exist_ok=True)

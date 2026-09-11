@@ -10,5 +10,7 @@ its concern name and there are no aggregating re-exports:
 - ``_source_proof`` — strong native revisions and SHA-256 content signatures.
 - ``_runtime_storage`` — disk budget, spill leases, and runtime snapshots.
 - ``_inference`` — v2 schema inference from data.
+- ``_inference_filter`` — bounded native checks for already-observed structures.
+- ``_inference_cache`` — complete schema reuse behind strong source revisions.
 - ``_cache`` — cache build/validate/load lifecycle and the apiInput loader.
 """

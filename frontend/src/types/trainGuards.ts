@@ -96,10 +96,18 @@ function parseLorenzCurvePoint(value: unknown, field: string): NonNullable<Train
   }
 }
 
-function parsePdpGridPoint(value: unknown, field: string): NonNullable<NonNullable<TrainResponse["pdp_data"]>[number]["grid"]>[number] {
+function parsePdpGridPoint(
+  value: unknown,
+  field: string,
+  featureType: string,
+): NonNullable<NonNullable<TrainResponse["pdp_data"]>[number]["grid"]>[number] {
   const obj = expectPlainObject("parseTrainResponse", value, field)
   const rawValue = obj.value
-  if (typeof rawValue !== "string" && typeof rawValue !== "number") {
+  if (
+    typeof rawValue !== "string"
+    && typeof rawValue !== "number"
+    && !(rawValue === null && featureType === "categorical")
+  ) {
     throw new Error(`parseTrainResponse: expected ${field}.value to be a string or number, got ${rawValue === undefined ? "missing" : typeName(rawValue)}`)
   }
   return {
@@ -111,10 +119,15 @@ function parsePdpGridPoint(value: unknown, field: string): NonNullable<NonNullab
 function parsePdpFeatureRow(value: unknown, field: string): NonNullable<TrainResponse["pdp_data"]>[number] {
   const obj = expectPlainObject("parseTrainResponse", value, field)
   const hasDiagnosticError = obj.error !== undefined || obj.error_type !== undefined
+  const featureType = expectString("parseTrainResponse", obj.type, `${field}.type`)
   return {
     feature: expectString("parseTrainResponse", obj.feature, `${field}.feature`),
-    type: expectString("parseTrainResponse", obj.type, `${field}.type`),
-    grid: obj.grid === undefined ? [] : parseArray("parseTrainResponse", obj.grid, `${field}.grid`, parsePdpGridPoint),
+    type: featureType,
+    grid: obj.grid === undefined
+      ? []
+      : parseArray("parseTrainResponse", obj.grid, `${field}.grid`, (gridPoint, gridField) =>
+          parsePdpGridPoint(gridPoint, gridField, featureType),
+        ),
     ...(hasDiagnosticError
       ? {
           error: expectString("parseTrainResponse", obj.error, `${field}.error`),

@@ -1,5 +1,11 @@
 # Frontend Graph Canvas — Low-Level Specification
 
+Authored configuration dictionaries retain every user key through request
+serialization, undo/redo cloning and dirty-state fingerprints. In particular,
+`__proto__`, `constructor`, and underscore-prefixed column names are own data
+properties, never prototype setters or editor metadata inside config payloads.
+Changing only such a field must change the persisted fingerprint.
+
 ## Module map
 
 | File | Responsibility |
@@ -434,8 +440,8 @@ reconciliation rather than dropping them or committing a second mutation.
     absolutely positioned at the row's vertical midline with its dot
     centred on the node's right border. The instance name is
     suppressed in that body; the trace-value pill, when active, renders
-    above the rows. Zero eligible frames keeps the instance name, adds a
-    muted "No emitted frames" line, and renders no source handle.
+    above the rows. Zero eligible frames suppresses the instance name, shows a
+    muted, right-aligned "No emitted frames" line, and renders no source handle.
     `_SourceHandle` supplies every output-producing ordinary node's single
     right-edge handle and is mounted inside the relative body-name row; that row
     reserves the same 12px source-side inset used by `FramePortRows`, so the
@@ -569,10 +575,23 @@ reconciliation rather than dropping them or committing a second mutation.
     current `structuralVersion` it short-circuits with no network call,
     otherwise it shows the cached data while re-fetching in the background.
     Before any network preview is sent, the request awaits
-    `ensureInputSnapshots` on the resolved graph — missing snapshot-backed
+    the dynamically loaded `ensureInputSnapshots` on the resolved graph — its
+    cache-preparation code loads only when a preview requires it, rather than
+    during initial application startup. Missing snapshot-backed
     inputs are built or joined first (see the caching spec) — and an ensure
     failure surfaces as that node's preview error; `refreshPreview` and
     `previewNodeFrame` gate the same way.
+    If the graph changes during this preparation, an otherwise current node
+    preview must stop with a visible instruction to refresh; it must not
+    execute the obsolete graph or leave the loading placeholder stranded.
+    A newer request, changed document fence, or deleted node retains ownership
+    of its current panel state, so late preparation cannot restore that node.
+    Structured Quote Inputs participate in this automatic preparation only
+    after their config declares `tables`. A newly added Quote Input with a
+    path but no inferred/authored schema must not block other node previews.
+    Once `tables` is present, schema validation failures remain visible;
+    explicitly previewing an unfinished Quote Input still receives its normal
+    execution validation error.
     `previewNode()` resolves into `resultToPreview`; if the response's
     columns differ from the node's previous columns
     (`columnsEqualByFingerprint`), `propagate(nodeId)` kicks off the

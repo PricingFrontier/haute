@@ -249,6 +249,7 @@ class TestRegistrySchemaCompleteness:
         payload = registry_capabilities()
         assert payload["schema_version"] == 1
         groups = {group["name"]: group for group in payload["groups"]}
+        assert groups["file"]["output_fields"][0]["label"] == "Filename or path"
         assert groups["file"]["cache_modes"] == ["direct", "snapshot"]
         assert all(
             group["cache_modes"] == ["snapshot"] for name, group in groups.items() if name != "file"

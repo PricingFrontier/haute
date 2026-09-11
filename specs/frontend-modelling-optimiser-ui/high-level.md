@@ -30,6 +30,22 @@ results are supplied by API and result-store layers.
   exists, presents remaining tabs (coefficients/relativities, loss, lift, residuals,
   feature importance, AVE and PDP) only when backed by non-empty result data, and resets
   selection to summary when the result changes.
+- Completed training accepts missing categorical PDP levels as JSON `null` and labels
+  them `(missing)` in the chart. Numeric PDP levels remain non-null. Invalid training
+  status responses stop polling with a visible response error; network failures remain
+  retryable, so a rejected result cannot leave the last diagnostic stage running forever.
+- CatBoost and RustyStats/GLM results use Explore's full-width, equal-width preview
+  buttons, with keyboard navigation and an explicitly labelled active pane. Narrow
+  panels scroll the button strip horizontally rather than clipping view names.
+  Diagnostic views introduce their chart or table with a plain-language title and
+  short explanation; AvE and PDP are expanded in those introductions.
+- The completed summary uses responsive, themed cards with final-test performance
+  first, separately labelled diagnostics, model information, and optional GLM fit
+  statistics/regularisation. Metric values are prominent and model paths remain
+  readable in full. No reserved final test is stated explicitly without presenting
+  development diagnostics as held-out performance. Candidate selection and tuning
+  retain their complete evidence in separately headed cards; warnings remain visible
+  above the summary and MLflow logging remains available when connected.
 - Optimiser config selects input/objective/mode, banding/ratebook factors, constraints, solver
   options and frontier ranges; it can auto-range constraints and submit solves. Starting another
   auto-range request or unmounting best-effort cancels that auto-range job; this panel has no

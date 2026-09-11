@@ -33,6 +33,7 @@ from starlette.routing import Route
 
 from haute import __version__
 from haute._cache import canonical_json
+from haute._cpu_performance import configure_process_high_qos
 from haute._event_bus import default_bus
 from haute._execution_context import configure_execution_telemetry
 from haute._interactive_workers import (
@@ -412,6 +413,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     _clear_bytecache()
     configure_logging()
+    configure_process_high_qos()
     _load_env(Path.cwd())
     configure_execution_telemetry()
     recover_json_runtime_storage()

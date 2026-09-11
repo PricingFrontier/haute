@@ -1560,8 +1560,8 @@ describe("OptimiserConfig", () => {
         config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
       }))
 
-      expect(screen.getByText("Memory pressure reached 75% of the optimiser budget.")).toBeInTheDocument()
-      expect(screen.getByText("RSS 1.7 KB of 2.9 KB limit")).toBeInTheDocument()
+      expect(screen.getByText("Optimiser reached 75% of its memory allowance.")).toBeInTheDocument()
+      expect(screen.getByText("Memory used: 1.7 KB; limit: 2.9 KB")).toBeInTheDocument()
     })
   })
 
@@ -1922,7 +1922,7 @@ describe("OptimiserConfig", () => {
       expect(await screen.findByText(
         "Fan-in projection contract does not cover columns required by the node.",
       )).toBeInTheDocument()
-      expect(screen.queryByText("Memory pressure reached 75% of the auto-range budget.")).not.toBeInTheDocument()
+      expect(screen.queryByText("Auto-range reached 75% of its memory allowance.")).not.toBeInTheDocument()
       expect(screen.queryByText("Technical details")).not.toBeInTheDocument()
       expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
@@ -1994,10 +1994,10 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
 
       expect(await screen.findByText(
-        "Auto range failed: memory pressure reached 75% of the auto-range budget. RSS 1.7 KB of 2.9 KB limit.",
+        "Auto range failed: auto-range reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )).toBeInTheDocument()
       expect(screen.getByText("Technical details")).toBeInTheDocument()
-      expect(screen.getByText("Stage collect")).toBeInTheDocument()
+      expect(screen.getByText("During: Collecting results")).toBeInTheDocument()
       expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
 
@@ -2032,7 +2032,7 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
 
       expect(await screen.findByText(
-        "Auto range failed: memory pressure reached 75% of the auto-range budget. RSS 1.7 KB of 2.9 KB limit.",
+        "Auto range failed: auto-range reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )).toBeInTheDocument()
       expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
@@ -2072,10 +2072,10 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
 
       expect(await screen.findByText(
-        "Auto range failed: memory pressure reached 75% of the auto-range budget. RSS 1.7 KB of 2.9 KB limit.",
+        "Auto range failed: auto-range reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )).toBeInTheDocument()
       expect(screen.getByText("Technical details")).toBeInTheDocument()
-      expect(screen.getByText("Stage collect")).toBeInTheDocument()
+      expect(screen.getByText("During: Collecting results")).toBeInTheDocument()
       expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
 

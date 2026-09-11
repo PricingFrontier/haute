@@ -10,6 +10,7 @@ import type {
   OutputDestinationResponse,
 } from "../../api/types"
 import { EditorLabel } from "../../components/form"
+import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useOutputWriteStore from "../../stores/useOutputWriteStore"
 import { buildGraph, graphForRequestIdentity } from "../../utils/buildGraph"
@@ -17,7 +18,6 @@ import { useGraph } from "../useGraph"
 import { useIsRecoveryDraft } from "../DraftEditingContext"
 import IoFormatEditor from "./_IoFormatEditor"
 import { useIoCapabilities } from "./_ioFormats"
-import { INPUT_STYLE } from "./_shared"
 import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
 
 const OUTPUT_COMMON_KEYS = [
@@ -318,26 +318,22 @@ export default function DataOutputEditor({
       )}
 
       <div>
-        <EditorLabel>Provider</EditorLabel>
-        <select
-          aria-label="Provider"
-          value={group?.name ?? ""}
-          onChange={(event) => {
-            const next = groups.find(
-              (candidate) => candidate.name === event.target.value,
-            )
-            if (next) onReplaceConfig(outputBranchConfig(config, next))
-          }}
-          className="mt-1 w-full px-2.5 py-1.5 text-xs rounded-lg"
-          style={INPUT_STYLE}
-        >
-          <option value="">Select a provider...</option>
-          {groups.map((candidate) => (
-            <option key={candidate.name} value={candidate.name}>
-              {candidate.label}
-            </option>
-          ))}
-        </select>
+        <EditorLabel as="div">Provider</EditorLabel>
+        <div className="mt-1">
+          <ToggleButtonGroup
+            value={group?.name ?? ""}
+            onChange={(name) => {
+              const next = groups.find((candidate) => candidate.name === name)
+              if (next) onReplaceConfig(outputBranchConfig(config, next))
+            }}
+            options={groups.map((candidate) => ({
+              key: candidate.name,
+              label: candidate.label,
+            }))}
+            accentColor={accentColor}
+            ariaLabel="Provider"
+          />
+        </div>
       </div>
 
       {group && (

@@ -1911,6 +1911,58 @@ class TestPreviewNeverWrites:
 
 
 class TestResolveDataOutputPath:
+    def test_nested_pipeline_writes_bare_filename_to_project_outputs(
+        self, haute_scratch: Path, struct_frame: pl.DataFrame
+    ) -> None:
+        source = haute_scratch / "input.parquet"
+        struct_frame.write_parquet(source)
+        graph = PipelineGraph(
+            source_file=str(haute_scratch / "rating" / "main.py"),
+            nodes=[
+                _ready_data_input_node(
+                    "din", {"inputType": "file", "format": "parquet", "path": str(source)}
+                ),
+                _data_output_node(
+                    "dout", {"outputType": "file", "format": "parquet", "path": "output"}
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        result = write_data_output(graph, "dout", project_root=haute_scratch)
+
+        assert result.path == "outputs/output.parquet"
+        assert_frame_equal(pl.read_parquet(haute_scratch / result.path), struct_frame)
+        assert not (haute_scratch / "rating" / "outputs").exists()
+        assert not (haute_scratch / "output.parquet").exists()
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("output", "outputs/output.parquet"),
+            ("output.parquet", "outputs/output.parquet"),
+            ("exports/output", "exports/output.parquet"),
+            ("exports\\output.parquet", "exports/output.parquet"),
+        ],
+    )
+    def test_file_destinations_use_project_root_for_nested_pipeline(
+        self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch, path: str, expected: str
+    ) -> None:
+        nested = haute_scratch / "rating"
+        nested.mkdir()
+        monkeypatch.chdir(nested)
+        graph = PipelineGraph(nodes=[], edges=[], source_file="rating/main.py")
+
+        resolved, display = resolve_data_output_path(
+            graph,
+            {"outputType": "file", "format": "parquet", "path": path},
+            project_root=haute_scratch,
+        )
+
+        assert resolved == haute_scratch / expected
+        assert display.replace("\\", "/") == expected
+        assert not (haute_scratch / "outputs").exists()
+
     def test_bare_filename_lands_under_outputs_with_format_extension(self) -> None:
         graph = PipelineGraph(nodes=[], edges=[])
         resolved, display = resolve_data_output_path(
@@ -1960,15 +2012,16 @@ class TestResolveDataOutputPath:
                 project_root=haute_scratch,
             )
 
-    def test_project_root_containment_is_enforced(self, haute_scratch) -> None:
-        graph = PipelineGraph(nodes=[], edges=[])
+    @pytest.mark.parametrize("path", ["/somewhere/else/out.parquet", "../out.parquet"])
+    def test_project_root_containment_is_enforced(self, haute_scratch, path: str) -> None:
+        graph = PipelineGraph(nodes=[], edges=[], source_file="rating/main.py")
         with pytest.raises(ValueError, match="outside the project root"):
             resolve_data_output_path(
                 graph,
                 {
                     "outputType": "file",
                     "format": "parquet",
-                    "path": "/somewhere/else/out.parquet",
+                    "path": path,
                 },
                 project_root=haute_scratch,
             )

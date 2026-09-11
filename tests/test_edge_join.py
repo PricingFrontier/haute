@@ -194,7 +194,11 @@ pipeline.connect("quotes", "join_rates", target_port="base")
     }
 
 
-def test_codegen_emits_edge_join_with_base_first_params_and_connects(tmp_path: Path) -> None:
+@pytest.mark.parametrize("selected_columns", [None, [], ["factor"]])
+def test_codegen_emits_edge_join_with_base_first_params_and_connects(
+    tmp_path: Path,
+    selected_columns: list[str] | None,
+) -> None:
     graph = PipelineGraph(
         nodes=[
             GraphNode(
@@ -223,6 +227,11 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(tmp_path: P
                     "how": "left",
                     "on": ["region"],
                     "suffix": "_lookup",
+                    **(
+                        {"selected_columns": selected_columns}
+                        if selected_columns is not None
+                        else {}
+                    ),
                 }
             ),
         ],
@@ -268,6 +277,10 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(tmp_path: P
     parsed = parse_pipeline_file(_write_pipeline(tmp_path, code))
     parsed_join = parsed.node_map["Join_Rates"]
     assert parsed_join.data.nodeType is NodeType.EDGE_JOIN
+    assert parsed_join.data.config.get("selected_columns", []) == (selected_columns or [])
+    assert _edge_join_decorator_line(
+        graph_to_code(parsed, pipeline_name="joins")
+    ) == _edge_join_decorator_line(code)
     assert "baseInput" not in parsed_join.data.config
     assert "joinInput" not in parsed_join.data.config
     parsed_edges = {(edge.source, edge.target): edge for edge in parsed.edges}
@@ -278,6 +291,9 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(tmp_path: P
     exec(compile(code, str(tmp_path / "pipeline.py"), "exec"), namespace)
     result = namespace["pipeline"].run()
     assert result.collect()["factor"].to_list() == [1.1]
+    preview = execute_graph(parsed)["Join_Rates"]
+    assert preview.status == "ok"
+    assert [column.name for column in preview.columns] == (selected_columns or ["region", "factor"])
 
 
 def _edge_join_decorator_line(code: str) -> str:

@@ -52,6 +52,10 @@ vi.mock("../../utils/buildGraph", () => ({
   resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
+vi.mock("../ensureInputSnapshots", () => ({
+  ensureInputSnapshots: vi.fn(async () => {}),
+}))
+
 vi.mock("../../utils/makePreviewData", () => ({
   makePreviewData: vi.fn((nodeId: string, label: string, opts: Record<string, unknown>) => ({
     nodeId,
@@ -71,6 +75,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 }))
 
 import { loadPipeline, previewNode } from "../../api/client"
+import { ensureInputSnapshots } from "../ensureInputSnapshots"
 import { makeNode } from "../../test-utils/factories"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
@@ -132,12 +137,51 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
+    vi.mocked(ensureInputSnapshots).mockReset().mockResolvedValue(undefined)
   })
 
   afterEach(() => {
     vi.useRealTimers()
     cleanup()
     vi.restoreAllMocks()
+  })
+
+  it.each([false, true])("finishes interrupted input preparation without reviving a deleted node (deleted=%s)", async (deleted) => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    let finishPreparation!: () => void
+    vi.mocked(ensureInputSnapshots).mockImplementationOnce(() => new Promise<void>((resolve) => {
+      finishPreparation = resolve
+    }))
+    const node = makeNode("browser_apply", "optimiserApply")
+    const params = makeParams()
+    params.graphRef.current = { nodes: [node], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => result.current.fetchPreview(node, { debounceMs: 0 }))
+    await waitFor(() => expect(ensureInputSnapshots).toHaveBeenCalledTimes(1))
+    expect(result.current.previewData?.status).toBe("loading")
+    act(() => {
+      useGraphStore.setState((state) => ({ structuralVersion: state.structuralVersion + 1 }))
+      if (deleted) {
+        params.graphRef.current = { nodes: [], edges: [] }
+        result.current.setPreviewData(null)
+      }
+    })
+    await act(async () => finishPreparation())
+    await waitFor(() => expect(result.current.previewBusy).toBe(false))
+
+    if (deleted) {
+      expect(result.current.previewData).toBeNull()
+    } else {
+      expect(result.current.previewData).toMatchObject({
+        nodeId: node.id,
+        status: "error",
+        error: "The pipeline changed while preparing this preview. Refresh to preview the updated pipeline.",
+      })
+    }
+    expect(mockPreview).not.toHaveBeenCalled()
+    expect(useNodeResultsStore.getState().getPreview(node.id)).toBeNull()
   })
 
   it("renders a preview response that arrives after a mid-flight structuralVersion bump", async () => {

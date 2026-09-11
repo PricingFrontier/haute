@@ -135,7 +135,7 @@ function JsonCacheButton({
       timestampField="cached_at"
       labels={{
         ...PARQUET_CACHE_LABELS,
-        notCachedHint: "Runs directly from JSON — cache as Parquet for faster repeat runs",
+        notCachedHint: "Preview automatically caches this input as Parquet before running",
       }}
       disabled={disabled}
       disabledReason={disabledReason}

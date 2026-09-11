@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
 from pathlib import Path
 
 import polars as pl
@@ -1136,12 +1137,21 @@ class TestLiveSwitchCodegen:
 
 
 def _find_pipeline_files() -> list[Path]:
-    """Find .py files containing live_switch=True (excluding tests and venv)."""
+    """Find versionable pipelines without traversing local caches or environments."""
+    inventory = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.py"],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
     results = []
-    for py_file in PROJECT_ROOT.rglob("*.py"):
-        rel = py_file.relative_to(PROJECT_ROOT)
+    for relative in sorted(set(inventory.stdout.split("\0")) - {""}):
+        rel = Path(relative)
         if rel.parts[0] in (".venv", "tests"):
             continue
+        py_file = PROJECT_ROOT / rel
         try:
             text = py_file.read_text()
         except (OSError, UnicodeDecodeError):
@@ -1159,21 +1169,33 @@ class TestLiveSwitchSafety:
     active_scenario on a non-live value — reset it to 'live' before committing.
     """
 
-    @pytest.mark.parametrize(
-        "pipeline_file", _find_pipeline_files(), ids=lambda p: str(p.relative_to(PROJECT_ROOT))
-    )
-    def test_active_scenario_is_live(self, pipeline_file: Path):
+    def test_discovery_ignores_local_artifacts(self, tmp_path, monkeypatch):
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        (tmp_path / ".gitignore").write_text("cache/\n", encoding="utf-8")
+        tracked = tmp_path / "tracked.py"
+        tracked.write_text("live_switch = True\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "tracked.py"], check=True)
+        untracked = tmp_path / "new.py"
+        untracked.write_text("live_switch = True\n", encoding="utf-8")
+        for folder in ("cache", "tests"):
+            (tmp_path / folder).mkdir()
+            (tmp_path / folder / "fixture.py").write_text("live_switch = True\n", encoding="utf-8")
+        monkeypatch.setattr(f"{__name__}.PROJECT_ROOT", tmp_path)
+        assert set(_find_pipeline_files()) == {tracked, untracked}
+
+    def test_active_scenario_is_live(self):
         import json
 
-        sidecar = pipeline_file.with_suffix(".haute.json")
-        if not sidecar.exists():
-            return  # no sidecar → defaults to "live", nothing to check
-        data = json.loads(sidecar.read_text())
-        active = data.get("active_source", "live")
-        assert active == "live", (
-            f"{sidecar.relative_to(PROJECT_ROOT)}: active_source is "
-            f"'{active}' — must be 'live' before committing."
-        )
+        for pipeline_file in _find_pipeline_files():
+            sidecar = pipeline_file.with_suffix(".haute.json")
+            if not sidecar.exists():
+                continue  # no sidecar → defaults to "live", nothing to check
+            data = json.loads(sidecar.read_text())
+            active = data.get("active_source", "live")
+            assert active == "live", (
+                f"{sidecar.relative_to(PROJECT_ROOT)}: active_source is "
+                f"'{active}' — must be 'live' before committing."
+            )
 
 
 # ---------------------------------------------------------------------------

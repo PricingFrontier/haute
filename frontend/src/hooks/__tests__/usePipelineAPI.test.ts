@@ -12,6 +12,7 @@ import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useUIStore from "../../stores/useUIStore"
+import useBackgroundJobs from "../useBackgroundJobs"
 import type { PipelineEdge } from "../../types/node"
 import type {
   InputCacheJobStatusResponse,
@@ -27,9 +28,16 @@ vi.mock("../../api/client", () => ({
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
+  getTrainStatus: vi.fn(),
+  getOptimiserStatus: vi.fn(),
+  getExploreStatus: vi.fn(),
+  getExplorePivotStatus: vi.fn(),
   buildInputCache: vi.fn(),
   getInputCacheJob: vi.fn(),
   getInputCacheStatus: vi.fn(),
+  buildJsonCache: vi.fn(),
+  getJsonCacheStatusForSchema: vi.fn(),
+  getJsonCacheProgress: vi.fn(),
   ApiError: class ApiError extends Error {
     status: number
     detail?: string
@@ -82,13 +90,16 @@ import {
   buildInputCache,
   getInputCacheJob,
   getInputCacheStatus,
+  buildJsonCache,
+  getJsonCacheStatusForSchema,
   loadPipeline,
   previewNode,
   previewRecoveryNode,
   savePipeline,
+  getTrainStatus,
 } from "../../api/client"
 import { resolveGraphFromRefs } from "../../utils/buildGraph"
-import { makeEdge, makeNode } from "../../test-utils/factories"
+import { makeEdge, makeNode, makeTrainResult } from "../../test-utils/factories"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 const mockRecoveryPreview = vi.mocked(previewRecoveryNode)
@@ -286,13 +297,15 @@ describe("usePipelineAPI", () => {
       undoStack: [],
       redoStack: [],
     })
-    useNodeResultsStore.setState({ previews: {}, columnCache: {} })
+    useNodeResultsStore.setState({ previews: {}, columnCache: {}, trainJobs: {}, trainResults: {}, solveJobs: {}, exploreJobs: {}, pivotJobs: {}, pivotStartClaims: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
     mockRecoveryPreview.mockReset()
     mockBuildInputCache.mockReset()
     mockGetInputCacheJob.mockReset()
     mockGetInputCacheStatus.mockReset()
+    vi.mocked(buildJsonCache).mockReset()
+    vi.mocked(getJsonCacheStatusForSchema).mockReset()
     mockResolveGraphFromRefs.mockReset()
     mockResolveGraphFromRefs.mockImplementation((graphRef, parentGraphRef, submodelsRef, preambleRef) => {
       if (parentGraphRef.current) {
@@ -318,6 +331,25 @@ describe("usePipelineAPI", () => {
     vi.useRealTimers()
     cleanup()
     vi.restoreAllMocks()
+  })
+
+  it("keeps training attached through Save and accepts its pending completion", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ source_file: "test.py", source_revision: "revision-old" }))
+    mockSave.mockResolvedValue({ file: "test.py", pipeline_name: "test", source_revision: "revision-saved" })
+    let finish!: (value: Awaited<ReturnType<typeof getTrainStatus>>) => void
+    vi.mocked(getTrainStatus).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const params = makeParams()
+    const api = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(api.result.current.loading).toBe(false))
+    renderHook(() => useBackgroundJobs())
+    act(() => useNodeResultsStore.getState().startTrainJob("model", "training-1", "Model", "original-config", "live", 7))
+    await waitFor(() => expect(getTrainStatus).toHaveBeenCalled())
+    await act(async () => { expect(await api.result.current.handleSave()).toBe(true) })
+    expect(useNodeResultsStore.getState().trainJobs.model).toMatchObject({ jobId: "training-1", configHash: "original-config", structuralVersion: 7 })
+    const result = makeTrainResult()
+    await act(async () => finish({ status: "completed", progress: 1, message: "Done", elapsed_seconds: 5, iteration: 6, total_iterations: 6, train_loss: {}, result }))
+    await waitFor(() => expect(useNodeResultsStore.getState().trainResults.model?.result).toEqual(result))
+    expect(useNodeResultsStore.getState().trainResults.model).toMatchObject({ jobId: "training-1", configHash: "original-config", structuralVersion: 7 })
   })
 
   it("loads the complete pipeline atomically as the clean history baseline", async () => {
@@ -779,6 +811,58 @@ describe("usePipelineAPI", () => {
     expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-external")
     expect(useDocumentStatusStore.getState().graphSynchronized).toBe(false)
     expect(useUIStore.getState().syncBanner).toBe("External change is waiting.")
+  })
+
+  it("keeps the newest column-config save baseline when an older save resolves last", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], source_revision: "revision-load" }))
+    const resolvers: Array<(value: { file: string; pipeline_name: string; source_revision: string }) => void> = []
+    mockSave.mockImplementation(() => new Promise((resolve) => { resolvers.push(resolve) }))
+    const params = makeParams()
+    wireGraphStoreNodeSetters(params)
+    const first = makeNode("columns", "polars", { data: { label: "Columns", nodeType: "polars", config: { selected_columns: ["city"], column_renames: { city: "City" }, categorical_levels: { city: ["London"] } } } })
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => {
+      params.graphRef.current = { nodes: [first], edges: [] }
+      useGraphStore.getState().setNodesRaw([first])
+    })
+    let older!: Promise<boolean>
+    act(() => { older = result.current.handleSave() })
+    await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1))
+
+    const second = { ...first, data: { ...first.data, config: { selected_columns: ["country"], column_renames: { country: "Country" }, categorical_levels: { country: ["GB", "FR"] } } } }
+    let newer!: Promise<boolean>
+    act(() => {
+      params.graphRef.current = { nodes: [second], edges: [] }
+      useGraphStore.getState().setNodes([second])
+      newer = result.current.handleSave()
+    })
+    await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(2))
+    const oldSavedSnapshot = structuredClone(useGraphStore.getState().undoStack[0])
+    if (!("nodes" in oldSavedSnapshot)) throw new Error("Expected the first save snapshot in graph history")
+    await act(async () => { resolvers[1]({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-new" }); await newer })
+    const newestSavedConfig = { selected_columns: ["country"], column_renames: { country: "Country" }, categorical_levels: { country: ["GB", "FR"] } }
+    const liveConfig = { ...newestSavedConfig, categorical_levels: { country: ["GB", "FR", "DE"] } }
+    act(() => {
+      const live = { ...second, data: { ...second.data, config: liveConfig } }
+      params.graphRef.current = { nodes: [live], edges: [] }
+      useGraphStore.getState().setNodes([live])
+    })
+    const assertNewestSaveState = () => {
+      const state = useGraphStore.getState()
+      expect(state.nodes[0].data.config).toEqual(liveConfig)
+      expect(state.lastSavedSnapshot!.nodes[0].data.config).toEqual(newestSavedConfig)
+      expect(state.dirty).toBe(true)
+      expect(params.sourceRevisionRef.current).toBe("revision-new")
+      expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-new")
+    }
+    await act(async () => { resolvers[0]({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-old" }); await older })
+    assertNewestSaveState()
+
+    // Mutation witness: accepting the old response at the production saved
+    // baseline boundary must violate the same postcondition.
+    act(() => { useGraphStore.getState().markSaved(oldSavedSnapshot) })
+    expect(assertNewestSaveState).toThrowError()
   })
 
   it("blocks save when a dirty canvas did not accept the latest ready document graph", async () => {
@@ -1448,6 +1532,77 @@ describe("usePipelineAPI", () => {
     expect(result.current.previewData?.columns).toEqual([])
   })
 
+  it.each(["completed", "failed", "cancelled"])(
+    "waits for the Quote Input cache before preview: %s", async (outcome) => {
+      mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+      vi.mocked(getJsonCacheStatusForSchema).mockResolvedValue({
+        cached: false, data_path: "quotes.jsonl", row_count: 0, column_count: 0,
+        size_bytes: 0, cached_at: 0, skipped_records: 0, skipped_rows: {},
+      })
+      let complete!: (value: Awaited<ReturnType<typeof buildJsonCache>>) => void
+      let fail!: (reason: Error) => void
+      vi.mocked(buildJsonCache).mockImplementation(() => new Promise((resolve, reject) => {
+        complete = resolve
+        fail = reject
+      }))
+      const input = makeNode("quote", NODE_TYPES.API_INPUT, {
+        data: { nodeType: NODE_TYPES.API_INPUT, label: "quote", config: { path: "quotes.jsonl", tables: [] } },
+      })
+      const target = makeNode("claims")
+      const params = makeParams()
+      params.graphRef.current = { nodes: [input, target], edges: [makeEdge(input.id, target.id)] }
+      mockPreview.mockResolvedValue({
+        node_id: "claims", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
+      })
+      const { result } = renderHook(() => usePipelineAPI(params))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+      act(() => { result.current.fetchPreview(target, { debounceMs: 0 }) })
+      await waitFor(() => expect(buildJsonCache).toHaveBeenCalledOnce())
+      expect(mockPreview).not.toHaveBeenCalled()
+      expect(result.current.previewData?.loading_message).toContain("Caching Quote Input")
+      if (outcome === "cancelled") act(() => result.current.cancelPreview())
+      act(() => {
+        if (outcome === "failed") fail(new Error("Cache disk quota exceeded"))
+        else complete({
+          path: "cache", data_path: "quotes.jsonl", row_count: 10, column_count: 1,
+          columns: {}, size_bytes: 100, cached_at: 1, cache_seconds: 2,
+          skipped_records: 0, skipped_rows: {},
+        })
+      })
+      await waitFor(() => expect(result.current.previewBusy).toBe(false))
+      if (outcome === "completed") {
+        expect(mockPreview).toHaveBeenCalledOnce()
+        expect(result.current.previewData?.status).toBe("ok")
+        expect(result.current.previewData?.loading_message).toBeUndefined()
+      } else {
+        expect(mockPreview).not.toHaveBeenCalled()
+        if (outcome === "failed") expect(result.current.previewData?.error).toContain("Cache disk quota exceeded")
+      }
+    },
+  )
+
+  it("previews normally when a disconnected path-only Quote Input is unfinished", async () => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [] }))
+    const unfinished = makeNode("unfinished-quote", NODE_TYPES.API_INPUT, {
+      data: { nodeType: NODE_TYPES.API_INPUT, label: "unfinished quote", config: { path: "quotes.json" } },
+    })
+    const target = makeNode("claims")
+    const params = makeParams()
+    params.graphRef.current = { nodes: [unfinished, target], edges: [] }
+    mockPreview.mockResolvedValue({
+      node_id: "claims", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
+    })
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => { result.current.fetchPreview(target, { debounceMs: 0 }) })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    expect(mockPreview).toHaveBeenCalledOnce()
+    expect(getJsonCacheStatusForSchema).not.toHaveBeenCalled()
+    expect(buildJsonCache).not.toHaveBeenCalled()
+  })
+
   it("builds a missing input snapshot before sending the preview", async () => {
     mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))
@@ -1824,6 +1979,56 @@ describe("usePipelineAPI", () => {
     expect(result.current.previewData?.nodeId).toBe("nb_batch")
   })
 
+  it.each(["direct", "propagation"])("discovers downstream columns after join deselection (%s)", async (mode) => {
+    mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
+    const remainingColumns = [{ name: "quote_id", dtype: "i64" }]
+    const oldColumns = [...remainingColumns, { name: "first_name", dtype: "str" }]
+    mockPreview.mockImplementation(async (request) => {
+      if (request.requestedPreviewColumns?.includes("first_name")) {
+        throw new Error("Eager projection references columns missing from the node output schema.")
+      }
+      return {
+        node_id: request.nodeId,
+        status: "ok",
+        columns: remainingColumns,
+        available_columns: request.nodeId === "join" ? oldColumns : remainingColumns,
+        preview: [{ quote_id: 1 }],
+        row_count: 1,
+        column_count: 1,
+      }
+    })
+    const params = makeParams()
+    wireGraphStoreNodeSetters(params)
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => {
+      params.graphRef.current = {
+        nodes: [makeNode("join", NODE_TYPES.EDGE_JOIN), makeNode("downstream", NODE_TYPES.POLARS)],
+        edges: [makeEdge("join", "downstream")],
+      }
+      useGraphStore.getState().setNodes(params.graphRef.current.nodes)
+      const capturedVersion = useGraphStore.getState().structuralVersion
+      params.setNodesRaw((nodes: Node[]) => nodes.map((node) => ({
+        ...node,
+        data: { ...node.data, _columns: oldColumns, _columnsSource: "live", _columnsStructuralVersion: capturedVersion },
+      })))
+      params.setNodes((nodes: Node[]) => nodes.map((node) => node.id === "join"
+        ? { ...node, data: { ...node.data, config: { selected_columns: ["quote_id"] } } }
+        : node))
+    })
+    act(() => {
+      const target = params.graphRef.current.nodes.find((node) => node.id === (mode === "direct" ? "downstream" : "join"))!
+      result.current.fetchPreview(target, { debounceMs: 0 })
+    })
+    await waitFor(() => {
+      const downstream = params.graphRef.current.nodes.find((node) => node.id === "downstream")!
+      expect(downstream.data._columns).toEqual(remainingColumns)
+      expect(downstream.data._columnsStructuralVersion).toBe(useGraphStore.getState().structuralVersion)
+    })
+    expect(mockPreview.mock.calls.find(([request]) => request.nodeId === "downstream")?.[0].requestedPreviewColumns).toBeUndefined()
+    expect(useToastStore.getState().toasts).toEqual([])
+  })
+
   it("fetchPreview requests known preview columns for nodes with cached schema", async () => {
     mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockPreview.mockResolvedValue({
@@ -1843,6 +2048,8 @@ describe("usePipelineAPI", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
     const node = makeNode("n1", "polars", {
       data: {
+        _columnsSource: "live",
+        _columnsStructuralVersion: useGraphStore.getState().structuralVersion,
         _columns: [
           { name: "age", dtype: "i64" },
           { name: "premium", dtype: "f64" },
@@ -1878,7 +2085,11 @@ describe("usePipelineAPI", () => {
     act(() => {
       result.current.fetchPreview(
         makeNode("wide", "polars", {
-          data: { _columns: columns },
+          data: {
+            _columns: columns,
+            _columnsSource: "live",
+            _columnsStructuralVersion: useGraphStore.getState().structuralVersion,
+          },
         }),
         { debounceMs: 0 },
       )
@@ -1891,7 +2102,7 @@ describe("usePipelineAPI", () => {
     expect(requested?.at(-1)).toBe(`col_${PREVIEW_INITIAL_COLUMN_LIMIT - 1}`)
   })
 
-  it("fetchPreview preserves full preview fetch when schema is not known yet", async () => {
+  it.each(["missing schema", "missing version", "different source"])("fetchPreview discovers columns with %s", async (scenario) => {
     mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockPreview.mockResolvedValue({
       node_id: "n1",
@@ -1905,7 +2116,14 @@ describe("usePipelineAPI", () => {
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
 
-    act(() => { result.current.fetchPreview(makeNode("n1"), { debounceMs: 0 }) })
+    const node = makeNode("n1", "polars", {
+      data: scenario === "missing schema" ? {} : {
+        _columns: [{ name: "old_column", dtype: "str" }],
+        _columnsSource: scenario === "different source" ? "batch" : "live",
+        _columnsStructuralVersion: scenario === "missing version" ? undefined : useGraphStore.getState().structuralVersion,
+      },
+    })
+    act(() => { result.current.fetchPreview(node, { debounceMs: 0 }) })
 
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
     expect(mockPreview.mock.calls.at(-1)?.[0].requestedPreviewColumns).toBeUndefined()
@@ -2199,6 +2417,7 @@ describe("usePipelineAPI", () => {
       { name: "region", dtype: "str" },
     ])
     expect(state.nodes[0].data._schemaWarnings).toEqual([{ column: "region", status: "missing" }])
+    expect(state.nodes[0].data._columnsStructuralVersion).toBe(structuralVersion)
     expect(state.undoStack).toHaveLength(0)
     expect(state.redoStack).toHaveLength(0)
     expect(state.persistedFingerprint).toBe(persistedFingerprint)
@@ -2243,7 +2462,9 @@ describe("usePipelineAPI", () => {
   it("refreshPreview ignores in-flight upstream results after graph structure changes", async () => {
     mockLoad.mockResolvedValue(makePipelineEditorDocument({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
 
-    const upstream = makeNode("upstream")
+    const upstream = makeNode("upstream", "polars", {
+      data: { label: "Upstream", nodeType: "polars", config: { selected_columns: ["old"], column_renames: { old: "Old" }, categorical_levels: { old: ["x"] } } },
+    })
     const target = makeNode("target")
     const params = makeParams()
     params.graphRef.current = {
@@ -2270,6 +2491,7 @@ describe("usePipelineAPI", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.getState().setNodesRaw([upstream, target])
 
     act(() => {
       result.current.refreshPreview(target)
@@ -2279,6 +2501,9 @@ describe("usePipelineAPI", () => {
     expect(mockPreview.mock.calls[0][0].nodeId).toBe("upstream")
 
     act(() => {
+      const edited = { ...upstream, data: { ...upstream.data, config: { selected_columns: ["new"], column_renames: { new: "New" }, categorical_levels: { new: ["y"] } } } }
+      params.graphRef.current = { nodes: [edited, target], edges: params.graphRef.current.edges }
+      useGraphStore.getState().setNodes([edited, target])
       useGraphStore.setState((state) => ({
         structuralVersion: state.structuralVersion + 1,
       }))
@@ -2299,6 +2524,8 @@ describe("usePipelineAPI", () => {
 
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(mockPreview).toHaveBeenCalledTimes(1)
+    expect(useGraphStore.getState().nodes[0].data.config).toEqual({ selected_columns: ["new"], column_renames: { new: "New" }, categorical_levels: { new: ["y"] } })
+    expect(useGraphStore.getState().nodes[0].data._columns).toBeUndefined()
   })
 
   it("refreshPreview applies upstream schema through the raw node setter", async () => {

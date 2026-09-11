@@ -12,6 +12,7 @@ from typing import Any, Literal, overload
 
 from haute._logging import get_logger
 from haute._types import (
+    COLUMN_CONFIG_KEYS,
     DATA_INPUT_CONFIG_TYPES,
     DATA_OUTPUT_CONFIG_TYPES,
     ApiInputConfig,
@@ -69,12 +70,9 @@ _UNIVERSAL_KEYS: frozenset[str] = frozenset(
     {
         "instanceOf",
         "inputMapping",
-        "selected_columns",
-        "column_renames",
-        "categorical_levels",
         "contract",
     }
-)
+) | frozenset(COLUMN_CONFIG_KEYS)
 
 
 def _valid_keys_for(node_type: NodeType) -> frozenset[str] | None:
