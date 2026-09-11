@@ -35,13 +35,13 @@ document-wide mutation/save permissions.
 |---|---|---:|---|
 | REC-R02 | Planned | P2 | Direct recovery and completion in the normal editor; the persistent-draft apparatus is deleted. |
 
-`REC-R01` (loadable partial configs, branch-respecting engine recovery, the
-direct `recover` action, and node-scoped saves in degraded documents) was
-delivered on 11 September 2026 and is now covered by the
-[node recovery actions](../server-api/node-recovery-actions.md) specification
-and its regression tests (`test_incomplete_config_loadability.py`,
-`test_node_config_recovery.py`, `test_pipeline_repair_actions.py`,
-`test_node_scoped_save.py`).
+The backend contracts this package builds on — loadable partial
+configurations, the branch-respecting recovery engine, the direct `recover`
+action, and node-scoped saves in degraded documents — are shipped behaviour,
+specified in [node recovery actions](../server-api/node-recovery-actions.md)
+and proven by `test_incomplete_config_loadability.py`,
+`test_node_config_recovery.py`, `test_pipeline_repair_actions.py`, and
+`test_node_scoped_save.py`.
 
 ## Planned improvements
 
@@ -64,7 +64,7 @@ expanders for the field details, the previous configuration, and the source
 diff. Keep this summary in transient session state through document adoption
 and panel reselection; it is not a persisted recovery record.
 
-Wire the normal editor and save flow to REC-R01's per-node eligibility and
+Wire the normal editor and save flow to the shipped per-node eligibility and
 scoped save contract when the document remains degraded. Highlight the
 server's completeness diagnostics on the corresponding fields. Loadable
 nodes blocked by upstream failures keep their editor and show those
@@ -102,8 +102,9 @@ selection retention (including submodel children), and stale-save failures;
 retain transaction and lock regression coverage for the surviving shared
 infrastructure. Backend and frontend suites pass.
 
-**Dependencies:** The delivered `REC-R01` contracts — the `recover` action,
-the document completeness channel, and the node-scoped save.
+**Dependencies:** The shipped `recover` action, document completeness
+channel, and node-scoped save contracts in
+[node recovery actions](../server-api/node-recovery-actions.md).
 
 **Evidence:** `frontend/src/components/RecoveryDraftDialog.tsx`;
 `frontend/src/components/PipelineRepairDialog.tsx`;
