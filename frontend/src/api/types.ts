@@ -529,6 +529,40 @@ export interface MlflowStatusResponse {
   detail?: string
 }
 
+export interface MlflowResolvedDestination {
+  mode: "databricks" | "server" | "local"
+  destination: string
+  config_source: "toml" | "env" | "default"
+}
+
+export interface MlflowSettingsResponse {
+  section_present: boolean
+  mode: string
+  tracking_uri: string
+  folder: string
+  resolved: MlflowResolvedDestination | null
+  detail?: string
+}
+
+export interface MlflowSettingsUpdateRequest {
+  mode: "databricks" | "server" | "local"
+  tracking_uri?: string
+  folder?: string
+}
+
+export interface MlflowTestConnectionResponse {
+  ok: boolean
+  category:
+    | ""
+    | "authentication"
+    | "permission"
+    | "missing_resource"
+    | "connectivity"
+    | "configuration"
+    | "unknown"
+  detail?: string
+}
+
 export interface EvaluationDateRange {
   start: string
   end: string

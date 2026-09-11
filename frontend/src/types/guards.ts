@@ -112,7 +112,10 @@ import type {
   FileListItem,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
+  MlflowResolvedDestination,
+  MlflowSettingsResponse,
   MlflowStatusResponse,
+  MlflowTestConnectionResponse,
   MlflowExperiment,
   MlflowLogResponse,
   MlflowModel,
@@ -2344,6 +2347,71 @@ export function parseMlflowStatusResponse(value: unknown): MlflowStatusResponse 
     destination: optionalString("parseMlflowStatusResponse", obj, "destination"),
     config_source: configSource as MlflowStatusResponse["config_source"],
     detail: optionalString("parseMlflowStatusResponse", obj, "detail"),
+  }
+}
+
+const MLFLOW_RESOLVED_MODES = ["databricks", "server", "local"] as const
+const MLFLOW_RESOLVED_SOURCES = ["toml", "env", "default"] as const
+const MLFLOW_TEST_CATEGORIES = [
+  "",
+  "authentication",
+  "permission",
+  "missing_resource",
+  "connectivity",
+  "configuration",
+  "unknown",
+] as const
+
+function parseMlflowResolvedDestination(value: unknown): MlflowResolvedDestination {
+  const obj = expectPlainObject("parseMlflowSettingsResponse", value)
+  const mode = optionalString("parseMlflowSettingsResponse", obj, "mode")
+  if (!(MLFLOW_RESOLVED_MODES as readonly string[]).includes(mode)) {
+    throw new Error(`parseMlflowSettingsResponse: unexpected resolved mode \`${mode}\``)
+  }
+  const configSource = optionalString("parseMlflowSettingsResponse", obj, "config_source")
+  if (!(MLFLOW_RESOLVED_SOURCES as readonly string[]).includes(configSource)) {
+    throw new Error(
+      `parseMlflowSettingsResponse: unexpected resolved config_source \`${configSource}\``,
+    )
+  }
+  return {
+    mode: mode as MlflowResolvedDestination["mode"],
+    destination: optionalString("parseMlflowSettingsResponse", obj, "destination"),
+    config_source: configSource as MlflowResolvedDestination["config_source"],
+  }
+}
+
+export function parseMlflowSettingsResponse(value: unknown): MlflowSettingsResponse {
+  const obj = expectPlainObject("parseMlflowSettingsResponse", value)
+  return {
+    section_present: expectBoolean(
+      "parseMlflowSettingsResponse",
+      obj.section_present,
+      "field `section_present`",
+    ),
+    mode: optionalString("parseMlflowSettingsResponse", obj, "mode"),
+    tracking_uri: optionalString("parseMlflowSettingsResponse", obj, "tracking_uri"),
+    folder: optionalString("parseMlflowSettingsResponse", obj, "folder"),
+    resolved:
+      obj.resolved === null || obj.resolved === undefined
+        ? null
+        : parseMlflowResolvedDestination(obj.resolved),
+    detail: optionalString("parseMlflowSettingsResponse", obj, "detail"),
+  }
+}
+
+export function parseMlflowTestConnectionResponse(value: unknown): MlflowTestConnectionResponse {
+  const obj = expectPlainObject("parseMlflowTestConnectionResponse", value)
+  const category = optionalString("parseMlflowTestConnectionResponse", obj, "category")
+  if (!(MLFLOW_TEST_CATEGORIES as readonly string[]).includes(category)) {
+    throw new Error(
+      `parseMlflowTestConnectionResponse: unexpected category \`${category}\``,
+    )
+  }
+  return {
+    ok: expectBoolean("parseMlflowTestConnectionResponse", obj.ok, "field `ok`"),
+    category: category as MlflowTestConnectionResponse["category"],
+    detail: optionalString("parseMlflowTestConnectionResponse", obj, "detail"),
   }
 }
 

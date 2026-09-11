@@ -37,7 +37,9 @@ import {
   parseJsonCacheSchemaInferenceResponse,
   parseFileListResponse,
   parseMlflowExperiments,
+  parseMlflowSettingsResponse,
   parseMlflowStatusResponse,
+  parseMlflowTestConnectionResponse,
   parseMlflowLogResponse,
   parseMlflowModels,
   parseMlflowModelVersions,
@@ -2145,6 +2147,45 @@ describe("API response guards", () => {
         },
       }),
     ).toThrow(/nodes/i)
+  })
+
+  it("parses mlflow settings and test-connection payloads", () => {
+    const settings = parseMlflowSettingsResponse(loadUiContractFixture("mlflow_settings_response"))
+    expect(settings.section_present).toBe(true)
+    expect(settings.mode).toBe("server")
+    expect(settings.tracking_uri).toBe("http://localhost:5000")
+    expect(settings.resolved).toEqual({
+      mode: "server",
+      destination: "http://localhost:5000",
+      config_source: "toml",
+    })
+
+    const probe = parseMlflowTestConnectionResponse(
+      loadUiContractFixture("mlflow_test_connection_response"),
+    )
+    expect(probe.ok).toBe(false)
+    expect(probe.category).toBe("connectivity")
+  })
+
+  it("rejects malformed mlflow settings and test-connection payloads", () => {
+    const settings = loadUiContractFixture<Record<string, unknown>>("mlflow_settings_response")
+    expect(() =>
+      parseMlflowSettingsResponse({ ...settings, section_present: "yes" }),
+    ).toThrow(/section_present/i)
+    expect(() =>
+      parseMlflowSettingsResponse({
+        ...settings,
+        resolved: { mode: "filesystem", destination: "x", config_source: "toml" },
+      }),
+    ).toThrow(/mode/i)
+
+    const probe = loadUiContractFixture<Record<string, unknown>>(
+      "mlflow_test_connection_response",
+    )
+    expect(() => parseMlflowTestConnectionResponse({ ...probe, ok: "no" })).toThrow(/`ok`/i)
+    expect(() =>
+      parseMlflowTestConnectionResponse({ ...probe, category: "offline" }),
+    ).toThrow(/category/i)
   })
 
   it("rejects malformed mlflow status payloads", () => {

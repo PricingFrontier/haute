@@ -1,0 +1,12 @@
+{
+  "section_present": true,
+  "mode": "server",
+  "tracking_uri": "http://localhost:5000",
+  "folder": "",
+  "resolved": {
+    "mode": "server",
+    "destination": "http://localhost:5000",
+    "config_source": "toml"
+  },
+  "detail": ""
+}

@@ -1,7 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+
+vi.mock("../MlflowSettingsModal", () => ({
+  default: () => <div data-testid="mlflow-modal-stub" />,
+}))
+
 import Toolbar from "../Toolbar"
 import useSettingsStore from "../../stores/useSettingsStore"
+
+const MLFLOW_CONNECTED = {
+  status: "connected" as const,
+  mode: "databricks",
+  destination: "https://adb.example.net",
+  configSource: "env",
+  installed: true,
+  importable: true,
+  configured: true,
+  detail: "",
+}
 
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
@@ -44,6 +60,55 @@ describe("Toolbar", () => {
   it("renders Haute brand name", () => {
     render(<Toolbar {...makeProps()} />)
     expect(screen.getByText("Haute")).toBeInTheDocument()
+  })
+
+  describe("MLflow chip", () => {
+    it("shows the connected mode with the destination as tooltip", () => {
+      useSettingsStore.setState({ mlflow: MLFLOW_CONNECTED })
+      render(<Toolbar {...makeProps()} />)
+      const chip = screen.getByTestId("toolbar-mlflow-chip")
+      expect(chip).toHaveTextContent("MLflow: Databricks")
+      expect(chip).toHaveAttribute("title", "https://adb.example.net")
+    })
+
+    it("shows MLflow off with the reason as tooltip on error", () => {
+      useSettingsStore.setState({
+        mlflow: {
+          ...MLFLOW_CONNECTED,
+          status: "error",
+          mode: "",
+          destination: "",
+          configured: false,
+          detail: "Databricks tracking is selected but DATABRICKS_TOKEN is not set in the environment (.env).",
+        },
+      })
+      render(<Toolbar {...makeProps()} />)
+      const chip = screen.getByTestId("toolbar-mlflow-chip")
+      expect(chip).toHaveTextContent("MLflow off")
+      expect(chip.getAttribute("title")).toContain("DATABRICKS_TOKEN")
+    })
+
+    it("shows a pending label while the status is loading", () => {
+      useSettingsStore.setState({
+        mlflow: {
+          ...MLFLOW_CONNECTED,
+          status: "pending",
+          mode: "",
+          destination: "",
+          configured: null,
+        },
+      })
+      render(<Toolbar {...makeProps()} />)
+      expect(screen.getByTestId("toolbar-mlflow-chip")).toHaveTextContent("MLflow…")
+    })
+
+    it("opens the settings modal on click", () => {
+      useSettingsStore.setState({ mlflow: MLFLOW_CONNECTED })
+      render(<Toolbar {...makeProps()} />)
+      expect(screen.queryByTestId("mlflow-modal-stub")).toBeNull()
+      fireEvent.click(screen.getByTestId("toolbar-mlflow-chip"))
+      expect(screen.getByTestId("mlflow-modal-stub")).toBeInTheDocument()
+    })
   })
 
   it("renders the package-derived browser version", () => {

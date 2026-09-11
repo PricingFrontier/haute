@@ -7,7 +7,9 @@ import {
   cancelExplore,
   cancelExplorePivot,
   cancelOptimiserFrontierAutoRange,
+  getMlflowSettings,
   getMlflowStatus,
+  testMlflowConnection,
   createSubmodel,
   createUtilityFile,
   deleteUtilityFile,
@@ -807,6 +809,18 @@ describe("next-wave client runtime contracts", () => {
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_status_response"), mlflow_installed: "yes" },
       call: () => getMlflowStatus(),
       error: /parseMlflowStatusResponse/i,
+    },
+    {
+      name: "getMlflowSettings",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_settings_response"), section_present: "yes" },
+      call: () => getMlflowSettings(),
+      error: /parseMlflowSettingsResponse/i,
+    },
+    {
+      name: "testMlflowConnection",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_test_connection_response"), ok: "no" },
+      call: () => testMlflowConnection(),
+      error: /parseMlflowTestConnectionResponse/i,
     },
     {
       name: "estimateTrainingRam",
