@@ -928,6 +928,10 @@ function FlowEditor() {
     typeof selectedNodeData?._sourceFile === "string" &&
     typeof selectedNodeData?._recoveryId === "string"
 
+  const selectedNodeRef = useRef<Node | null>(null)
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode ?? null
+  }, [selectedNode])
   const applyScopedSaveDocument = useCallback(
     (document: import("./types/pipelineDocument").PipelineEditorDocument, savedNodeId: string) => {
       const selectionUnchanged = selectedNodeRef.current?.id === savedNodeId
@@ -945,10 +949,6 @@ function FlowEditor() {
     },
     [adoptPipelineDocument, closePanel, resetToAuthoritativeRoot],
   )
-  const selectedNodeRef = useRef<Node | null>(null)
-  useEffect(() => {
-    selectedNodeRef.current = selectedNode ?? null
-  }, [selectedNode])
 
   const {
     commitBoundaryConnection,

@@ -50,11 +50,13 @@ export function useScopedNodeSave({
   useEffect(() => {
     scopedEditingActiveRef.current = scopedEditingActive
   }, [scopedEditingActive])
-  const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
-  const documentSourceRevision = useDocumentStatusStore((s) => s.sourceRevision)
+  // executionGeneration advances on EVERY authoritative document load —
+  // including re-adopting an unchanged revision after discarding local edits
+  // — so "reload the pipeline" always releases the tracking.
+  const documentGeneration = useDocumentStatusStore((s) => s.executionGeneration)
   useEffect(() => {
     editedNodeIdsRef.current.clear()
-  }, [documentSourceFile, documentSourceRevision])
+  }, [documentGeneration])
 
   const nodeLabel = useCallback(
     (id: string): string => {
