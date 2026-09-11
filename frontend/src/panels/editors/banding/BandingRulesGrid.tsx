@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo, useCallback } from "react"
+import { useMemo, useCallback } from "react"
 import { Copy, Trash } from "lucide-react"
 import { CHART_COLORS } from "../../../theme/colors"
 import useToastStore from "../../../stores/useToastStore"
@@ -197,23 +197,7 @@ export function BandingRulesGrid({
   const addToast = useToastStore(s => s.addToast)
   const rawRules = useMemo(() => factor.rules || [], [factor.rules])
 
-  // Ensure rules have stable _id keys (assign on first render, persist via onUpdateFactor)
-  const didAssignIds = useRef(false)
-  const prevRulesRef = useRef(rawRules)
-  useEffect(() => {
-    if (prevRulesRef.current !== rawRules) {
-      didAssignIds.current = false
-      prevRulesRef.current = rawRules
-    }
-  }, [rawRules])
-  const rules = ensureRuleIds(rawRules)
-  useEffect(() => {
-    if (rules !== rawRules && !didAssignIds.current) {
-      didAssignIds.current = true
-      // Persist the assigned ids back so subsequent renders have them
-      onUpdateFactor({ rules })
-    }
-  }) // intentionally no deps — runs on every render to catch first assignment
+  const rules = useMemo(() => ensureRuleIds(rawRules), [rawRules])
 
   const bt = factor.banding || "continuous"
 

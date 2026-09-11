@@ -727,8 +727,11 @@ export default function usePipelineAPI({
 
     const portLabel = previewPortLabel(node)
     const executePreview = () => {
-      if (!requestStillCurrent() || controller.signal.aborted) {
+      if (previewRequestSeq.current !== requestId || !documentStillCurrent() || controller.signal.aborted) {
         throw new DOMException("Preview request was superseded.", "AbortError")
+      }
+      if (useGraphStore.getState().structuralVersion !== structuralVersion) {
+        throw new Error("The pipeline changed while preparing this preview. Refresh to preview the updated pipeline.")
       }
       if (recoveryPreview) {
         return previewRecoveryNode({

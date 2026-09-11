@@ -131,6 +131,9 @@ test.describe("frontend canvas assurance", () => {
       "vehicle_age_band",
     )
     await expect(bandingPanel.getByTestId("banding-summary")).toBeVisible()
+    await expect(page.getByTitle("Unsaved changes", { exact: true })).toHaveCount(0)
+    await expect(bandingPanel.getByRole("img", { name: "Distribution histogram" })).toBeVisible()
+    await expect(bandingPanel.getByRole("combobox", { name: "Input Column", exact: true })).toHaveValue("vehicle_age")
     await stabiliseCanvasScreenshot(page)
 
     await expectCanvasScreenshot(

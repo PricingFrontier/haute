@@ -125,7 +125,10 @@
    user changes, normalise only at their documented conversion/update boundary, then invoke the
    panel callback. Rating factor changes filter `factorDtypes` atomically with `factors` and
    `entries`; removing a factor removes its descriptor, while new descriptors are never invented.
-   Clipboard/drag/dialog operations remain local until that callback.
+   Clipboard/drag/dialog operations remain local until that callback. `BandingRulesGrid` derives
+   stable local keys for legacy rules without `_id` when it opens or rerenders, but this view-only
+   work never calls `onUpdateFactor`; generated keys enter persisted rules only with a subsequent
+   user edit, paste, or delete operation.
 5. Format, file, catalog and MLflow controls issue their own API calls. I/O capabilities are
    fetched for each later editor mount, while consumers mounting during one pending fetch share
    that request. Request state is local to the editor; the editor never assumes an out-of-order response still describes a

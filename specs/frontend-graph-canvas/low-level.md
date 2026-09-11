@@ -581,6 +581,11 @@ reconciliation rather than dropping them or committing a second mutation.
     inputs are built or joined first (see the caching spec) — and an ensure
     failure surfaces as that node's preview error; `refreshPreview` and
     `previewNodeFrame` gate the same way.
+    If the graph changes during this preparation, an otherwise current node
+    preview must stop with a visible instruction to refresh; it must not
+    execute the obsolete graph or leave the loading placeholder stranded.
+    A newer request, changed document fence, or deleted node retains ownership
+    of its current panel state, so late preparation cannot restore that node.
     Structured Quote Inputs participate in this automatic preparation only
     after their config declares `tables`. A newly added Quote Input with a
     path but no inferred/authored schema must not block other node previews.
