@@ -239,3 +239,32 @@ def test_scoped_save_route_maps_io_failures_without_leaking_details(client, monk
         "A save artifact could not be written; original artifacts were restored."
     )
     assert "private marker" not in response.text
+
+
+def test_scoped_save_route_rejects_malformed_discriminant_shapes(client, monkeypatch, tmp_path):
+    # JSON arrays/objects in discriminator positions must produce a structured
+    # 4xx, never an unhandled TypeError, and must write nothing.
+    _two_inputs(tmp_path)
+    _recover(tmp_path, "source_b")
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "source_b")
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    for config in (
+        {**BROKEN_INPUT, "inputType": ["file"]},
+        {**BROKEN_INPUT, "inputType": {"kind": "file"}},
+    ):
+        response = client.post(
+            "/api/pipeline/node/save",
+            json={
+                "source_file": document.source_file,
+                "source_revision": document.source_revision,
+                "target_source_file": target.source_file,
+                "target_recovery_id": target.recovery_id,
+                "config": config,
+            },
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "repair_action_unsupported"
+        assert "Unknown inputType" in response.json()["detail"]["message"]
+    assert {p: p.read_bytes() for p in before} == before

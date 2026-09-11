@@ -410,7 +410,13 @@ def _validated_data_input(
     result = dict(config)
     gaps: list[IoCompletenessGap] = []
     input_type = result.get("inputType")
-    if input_type not in {"file", "database", "lakehouse", "databricks", "inline"}:
+    if not isinstance(input_type, str) or input_type not in {
+        "file",
+        "database",
+        "lakehouse",
+        "databricks",
+        "inline",
+    }:
         raise PolarsIoConfigError(f"Unknown inputType {input_type!r}.")
 
     common = {
@@ -560,7 +566,7 @@ def _validated_data_output(
     result = dict(config)
     gaps: list[IoCompletenessGap] = []
     output_type = result.get("outputType")
-    if output_type not in {"file", "database", "lakehouse"}:
+    if not isinstance(output_type, str) or output_type not in {"file", "database", "lakehouse"}:
         raise PolarsIoConfigError(f"Unknown outputType {output_type!r}.")
     fmt = format_for_config(result)
     group = format_group(fmt)

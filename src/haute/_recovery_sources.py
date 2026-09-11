@@ -80,7 +80,7 @@ def read_raw_node_settings(
                 RecoveryFieldChange(
                     path="",
                     outcome="needs_review",
-                    reason="Missing config file: the draft starts from current defaults.",
+                    reason="Missing config file: recovery starts from current defaults.",
                 )
             )
         else:
@@ -96,16 +96,13 @@ def read_raw_node_settings(
                 if node_type == NodeType.BANDING:
                     raw = _normalise_loaded_config(raw, node_type)
             except (ValueError, UnicodeError) as exc:
-                changes.append(
-                    RecoveryFieldChange(
-                        path="",
-                        outcome="needs_review",
-                        reason=(
-                            "Unreadable configuration is archived unchanged. "
-                            f"Re-enter its settings: {exc}"
-                        ),
-                    )
-                )
+                # There is no archive to fall back to: replacing an unreadable
+                # sidecar from decorator evidence alone would silently discard
+                # its contents. Reset is the explicit destructive path.
+                raise conflict(
+                    f"The node's configuration file {reference!r} is unreadable ({exc}). "
+                    "Correct the file manually, or use Reset node to replace it."
+                ) from exc
     params = [arg.arg for arg in (*function.args.posonlyargs, *function.args.args)]
     body = _extract_function_bodies(source, tree=tree)[function.name]
     raw = _attach_code_from_body(raw, node_type, body, params)

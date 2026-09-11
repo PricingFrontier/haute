@@ -22,7 +22,7 @@ import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useU
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
-import { useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
+import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
 import { buildExploreCacheIdentity } from "./explore/cacheIdentity"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
@@ -679,18 +679,27 @@ type NodeRecoveryStatusProps = {
   recoveryId: string | null
   blockedPath: string[] | null
   scopedSave?: () => Promise<{ ok: boolean; error?: string }>
+  scopedSaving: boolean
 }
 
 /** Recovery summary, completeness gaps, blockers, and the node-scoped save. */
-function NodeRecoveryStatus({ recoveryId, blockedPath, scopedSave }: NodeRecoveryStatusProps) {
-  const summary = useRecoverySummaryStore((s) => (recoveryId ? s.summaries[recoveryId] : undefined))
+function NodeRecoveryStatus({
+  recoveryId,
+  blockedPath,
+  scopedSave,
+  scopedSaving,
+}: NodeRecoveryStatusProps) {
+  const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
+  const summary = useRecoverySummaryStore((s) =>
+    recoveryId ? s.summaries[recoverySummaryKey(documentSourceFile, recoveryId)] : undefined,
+  )
   const dismissSummary = useRecoverySummaryStore((s) => s.dismissSummary)
   const completeness = useDocumentStatusStore((s) => s.completeness)
   const entries = useMemo(
     () => (recoveryId ? completeness.filter((entry) => entry.element_id === recoveryId) : []),
     [completeness, recoveryId],
   )
-  const [saving, setSaving] = useState(false)
+  const saving = scopedSaving
   const [saveError, setSaveError] = useState<string | null>(null)
   if (!summary && entries.length === 0 && blockedPath === null && !scopedSave) return null
   const counts = summary
@@ -728,7 +737,7 @@ function NodeRecoveryStatus({ recoveryId, blockedPath, scopedSave }: NodeRecover
             <button
               type="button"
               aria-label="Dismiss recovery summary"
-              onClick={() => dismissSummary(summary.recoveryId)}
+              onClick={() => dismissSummary(summary.sourceFile, summary.recoveryId)}
               style={{ color: "var(--text-muted)" }}
             >
               <X size={12} />
@@ -799,13 +808,10 @@ function NodeRecoveryStatus({ recoveryId, blockedPath, scopedSave }: NodeRecover
             data-testid="node-scoped-save"
             disabled={saving}
             onClick={() => {
-              setSaving(true)
               setSaveError(null)
-              void scopedSave()
-                .then((result) => {
-                  if (!result.ok) setSaveError(result.error ?? "Save failed.")
-                })
-                .finally(() => setSaving(false))
+              void scopedSave().then((result) => {
+                if (!result.ok) setSaveError(result.error ?? "Save failed.")
+              })
             }}
             className="rounded px-2 py-1 font-medium"
             style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}
@@ -1328,6 +1334,23 @@ function NodePanelContent({
   scopedSave,
   onRemoveUnavailableNode,
 }: ActiveNodePanelProps) {
+  const [scopedSaving, setScopedSaving] = useState(false)
+  // The editor freezes while a scoped save is in flight so keystrokes cannot
+  // race the adoption of the authoritative response.
+  const runScopedSave = useMemo(
+    () =>
+      scopedSave
+        ? async () => {
+            setScopedSaving(true)
+            try {
+              return await scopedSave()
+            } finally {
+              setScopedSaving(false)
+            }
+          }
+        : undefined,
+    [scopedSave],
+  )
   const { allNodes, edges, submodels, preamble } = useGraph()
   const config = useMemo(() => (node.data.config || {}) as Record<string, unknown>, [node.data.config])
   const {
@@ -1387,8 +1410,9 @@ function NodePanelContent({
     [exploreConfigHash, streamingChunkSize],
   )
 
+  const effectiveReadOnly = readOnly || scopedSaving
   const handleConfigUpdate = useCallback<OnUpdateConfig>((keyOrUpdates, value) => {
-    if (readOnly) {
+    if (readOnly || scopedSaving) {
       return {
         ok: false,
         error: documentReadOnly
@@ -1415,10 +1439,10 @@ function NodePanelContent({
         { preserveAvailableColumns: selectionOnlyUpdate },
       ),
     )
-  }, [config, documentReadOnly, node, onUpdateNode, readOnly])
+  }, [config, documentReadOnly, node, onUpdateNode, readOnly, scopedSaving])
 
   const handleConfigReplace = useCallback<OnReplaceConfig>((nextConfig) => {
-    if (readOnly) {
+    if (readOnly || scopedSaving) {
       return {
         ok: false,
         error: documentReadOnly
@@ -1428,7 +1452,7 @@ function NodePanelContent({
     }
     if (!onUpdateNode) return { ok: false, error: "Node update handler is unavailable." }
     return onUpdateNode(node.id, clearCachedResultShape({ ...node.data, config: nextConfig }))
-  }, [documentReadOnly, node, onUpdateNode, readOnly])
+  }, [documentReadOnly, node, onUpdateNode, readOnly, scopedSaving])
 
   const configWithNodeId = useMemo(
     () => ({ ...config, _nodeId: node.id }),
@@ -1572,7 +1596,8 @@ function NodePanelContent({
             ? ((node.data as HauteNodeData)._loadBlockingPath ?? [])
             : null
         }
-        scopedSave={scopedSave}
+        scopedSave={runScopedSave}
+        scopedSaving={scopedSaving}
       />
 
       <NodeEditorTabStrip
@@ -1616,7 +1641,7 @@ function NodePanelContent({
 
       <NodeEditorBody
         documentReadOnly={documentReadOnly}
-        readOnly={readOnly}
+        readOnly={effectiveReadOnly}
         config={config}
         activeTab={activeTab}
         showPolarsTab={showPolarsTab}

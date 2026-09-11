@@ -59,9 +59,14 @@ The recovery inspector extends removal with three explicitly confirmed actions:
   is regenerated. The applied node must load (available, or blocked only by an upstream
   failure) — completeness and execution-readiness are explicitly not plan gates.
   Identity, description, position, connections, and exclusively owned config references
-  follow the Reset rules. Unknown types, node instances, submodels, and ambiguous or
-  shared artifacts cannot be recovered by this action; submodels keep Update to current
-  format.
+  follow the Reset rules, except that recover never requires healthy upstream nodes: a
+  damaged chain recovers in any order, binding inputs from authored identities, and the
+  applied node may remain blocked solely by an unrepaired upstream. An unreadable
+  configuration sidecar (malformed JSON, duplicate keys, bad encoding) refuses the
+  action with a manual-repair error and changes no bytes — there is no draft archive,
+  and Reset is the explicit destructive replacement. Unknown types, node instances,
+  submodels, and ambiguous or shared artifacts cannot be recovered by this action;
+  submodels keep Update to current format.
 
 ## Consumer error attribution
 

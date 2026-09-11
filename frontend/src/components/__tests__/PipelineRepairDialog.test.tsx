@@ -206,7 +206,7 @@ describe("PipelineRepairDialog", () => {
   })
 
   it("recovers with a collapsed diff and records the session summary on apply", async () => {
-    const { useRecoverySummaryStore } = await import("../../stores/useRecoverySummaryStore")
+    const { recoverySummaryKey, useRecoverySummaryStore } = await import("../../stores/useRecoverySummaryStore")
     useRecoverySummaryStore.getState().reset()
     dryRunRecoverUnavailableNode.mockResolvedValueOnce(plan({
       repair_kind: "recover_node",
@@ -244,7 +244,7 @@ describe("PipelineRepairDialog", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Recover settings" }))
     await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1))
-    const recorded = useRecoverySummaryStore.getState().summaries["target@1"]
+    const recorded = useRecoverySummaryStore.getState().summaries[recoverySummaryKey("server-main.py", "target@1")]
     expect(recorded).toBeDefined()
     expect(recorded.fieldChanges).toHaveLength(2)
     expect(recorded.completeness[0].path).toBe("path")

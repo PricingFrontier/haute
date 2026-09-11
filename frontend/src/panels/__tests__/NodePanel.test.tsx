@@ -3128,6 +3128,24 @@ describe("scoped editing in degraded documents", () => {
     expect(screen.getByTestId("node-recovery-diagnostics")).toBeInTheDocument()
   })
 
+  it("freezes the editor while a scoped save is in flight", async () => {
+    let release!: (value: { ok: boolean }) => void
+    const scopedSave = vi.fn(
+      () => new Promise<{ ok: boolean }>((resolve) => { release = resolve }),
+    )
+    renderPanel({ scopedSave, node: scopedNode() })
+    const editor = screen.getByTestId("node-panel-editor")
+    expect(editor).toHaveAttribute("aria-readonly", "false")
+    fireEvent.click(screen.getByTestId("node-scoped-save"))
+    expect(screen.getByTestId("node-scoped-save")).toBeDisabled()
+    expect(editor).toHaveAttribute("aria-readonly", "true")
+    await act(async () => {
+      release({ ok: true })
+    })
+    expect(screen.getByTestId("node-scoped-save")).toBeEnabled()
+    expect(editor).toHaveAttribute("aria-readonly", "false")
+  })
+
   it("runs the scoped save and surfaces a failed save", async () => {
     const scopedSave = vi.fn(async () => ({ ok: false as const, error: "stale revision" }))
     renderPanel({ scopedSave, node: scopedNode() })
@@ -3153,8 +3171,11 @@ describe("scoped editing in degraded documents", () => {
 
   it("shows and dismisses the transient recovery summary", async () => {
     const { useRecoverySummaryStore } = await import("../../stores/useRecoverySummaryStore")
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument())
+    const documentSourceFile = useDocumentStatusStore.getState().sourceFile
     useRecoverySummaryStore.getState().reset()
     useRecoverySummaryStore.getState().recordSummary({
+      sourceFile: documentSourceFile,
       recoveryId: "scoped@1",
       fieldChanges: [
         { path: "/path", outcome: "retained", reason: "Valid under the current contract." },
@@ -3173,7 +3194,7 @@ describe("scoped editing in degraded documents", () => {
     expect(status).toHaveTextContent("Previous configuration")
     expect(status).toHaveTextContent("Source diff")
     fireEvent.click(screen.getByRole("button", { name: "Dismiss recovery summary" }))
-    expect(useRecoverySummaryStore.getState().summaries["scoped@1"]).toBeUndefined()
+    expect(Object.keys(useRecoverySummaryStore.getState().summaries)).toHaveLength(0)
     expect(screen.queryByText(/Recovered: 1 retained/)).not.toBeInTheDocument()
   })
 })

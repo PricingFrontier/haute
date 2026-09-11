@@ -430,7 +430,8 @@ def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     (tmp_path / "main.py").write_text(
         'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
-        '@pipeline.data_input(config="in.json")\ndef source():\n    return None\n'
+        '@pipeline.data_input(config="in.json")\ndef source():\n'
+        '    df = df.filter(pl.col("premium") > 1234)\n    return df\n'
     )
     (tmp_path / "in.json").write_text(
         json.dumps(
@@ -439,7 +440,7 @@ def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):
                 "format": "json",
                 "path": "quotes.json",
                 "arguments": {},
-                "code": "df = df.head(5)",
+                "code": "",
                 "cacheMode": "snapshot",
             }
         )
@@ -465,6 +466,13 @@ def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):
     assert written["format"] == "json"
     assert "mode" not in written
     assert "cacheMode" not in written
+    # Authored code survives byte-for-byte into the emitted source and the
+    # reloaded configuration; an implementation dropping user code fails here.
+    assert 'pl.col("premium") > 1234' in (tmp_path / "main.py").read_text()
+    node = next(item for item in result.document.nodes if item.authored_id == "source")
+    assert 'pl.col("premium") > 1234' in str((node.config or {}).get("code", ""))
+    # The sidecar never stores the code slot: the .py body is authoritative.
+    assert "code" not in written
 
 
 def test_recover_empty_locator_applies_as_incomplete(tmp_path):
@@ -502,18 +510,122 @@ def test_recover_empty_locator_applies_as_incomplete(tmp_path):
     ]
 
 
+def test_recover_refuses_unreadable_config_sidecars(tmp_path):
+    # There is no draft archive: replacing an unreadable sidecar would discard
+    # its contents, so recover fails loudly and leaves every byte unchanged.
+    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
+        '@pipeline.constant(config="custom.json")\ndef source():\n    return None\n'
+    )
+    (tmp_path / "custom.json").write_text("{bad json")
+    request = _request(tmp_path, "source", "recover")
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    with pytest.raises(PipelineRepairError, match="unreadable"):
+        build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
+    assert {p: p.read_bytes() for p in before} == before
+
+
 def test_recover_rejects_custom_body_for_non_code_types(tmp_path):
     from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
 
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     (tmp_path / "main.py").write_text(
         'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
-        '@pipeline.constant(config="custom.json")\ndef source():\n'
+        '@pipeline.data_input(config="a.json")\ndef source_a():\n    return None\n'
+        '@pipeline.data_output(config="out.json")\ndef sink(source_a):\n'
         "    surprise = 1\n    return surprise\n"
     )
-    (tmp_path / "custom.json").write_text("{bad json")
-    request = _request(tmp_path, "source", "recover")
+    (tmp_path / "a.json").write_text(
+        json.dumps(
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "path": "quotes.parquet",
+                "arguments": {},
+                "code": "",
+            }
+        )
+    )
+    (tmp_path / "out.json").write_text(
+        json.dumps(
+            {
+                "outputType": "file",
+                "format": "parquet",
+                "mode": "sink",
+                "path": "out.parquet",
+                "arguments": {},
+                "cacheMode": "snapshot",
+            }
+        )
+    )
+    request = _request(tmp_path, "sink", "recover")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     with pytest.raises(PipelineRepairError, match="scaffold|manual"):
         build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
     assert {p: p.read_bytes() for p in before} == before
+
+
+def test_recover_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path):
+    # Recovering a damaged downstream node must not require healthy upstreams:
+    # its authored bindings stay trustworthy, and the applied node may remain
+    # blocked solely by the still-broken upstream.
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+
+    from haute._config_io import config_path_for_node
+    from haute._types import GraphNode, NodeData, NodeType
+    from haute.codegen import _node_to_code
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    sink_config = {
+        "outputType": "file",
+        "format": "parquet",
+        "mode": "sink",
+        "path": "out.parquet",
+        "arguments": {},
+    }
+    generated_sink = _node_to_code(
+        GraphNode(
+            id="sink",
+            data=NodeData(label="sink", nodeType=NodeType.DATA_OUTPUT, config=sink_config),
+        ),
+        source_names=["source_a"],
+        derive_contract=False,
+    )
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
+        '@pipeline.data_input(config="a.json")\ndef source_a():\n    return None\n' + generated_sink
+    )
+    broken_input = {
+        "inputType": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "path": "quotes.parquet",
+        "arguments": {},
+        "code": "",
+        "cacheMode": "snapshot",
+    }
+    (tmp_path / "a.json").write_text(json.dumps(broken_input))
+    sink_reference = tmp_path / config_path_for_node(NodeType.DATA_OUTPUT, "sink")
+    sink_reference.parent.mkdir(parents=True, exist_ok=True)
+    sink_reference.write_text(json.dumps({**sink_config, "cacheMode": "snapshot"}))
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    by_id = {node.authored_id: node for node in document.nodes}
+    assert by_id["source_a"].availability == "unavailable"
+    assert by_id["sink"].availability == "unavailable"
+    upstream_bytes = (tmp_path / "a.json").read_bytes()
+
+    request = _request(tmp_path, "sink", "recover")
+    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
+    result = _apply(tmp_path, request, plan)
+    node = next(item for item in result.document.nodes if item.authored_id == "sink")
+    assert node.availability == "blocked"
+    written = json.loads(sink_reference.read_text())
+    assert written["path"] == "out.parquet"
+    assert "cacheMode" not in written
+    assert (tmp_path / "a.json").read_bytes() == upstream_bytes
+    sibling = next(item for item in result.document.nodes if item.authored_id == "source_a")
+    assert sibling.availability == "unavailable"

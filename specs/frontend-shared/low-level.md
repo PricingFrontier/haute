@@ -59,6 +59,7 @@
 | `frontend/src/components/form/ConfigCheckbox.tsx` | Labelled controlled checkbox using a caller id or React `useId`, disabled semantics, and shared accent/text tokens. |
 | `frontend/src/components/form/EditorLabel.tsx` | Consistent micro-label primitive; can be a correctly associated `<label>` or non-form span/div for display-only content. |
 | `frontend/src/components/form/index.ts` | Public barrel for the committed text field/area, checkbox, and editor-label primitives; editor callers import the shared contract rather than deep paths. |
+| `frontend/src/utils/scopedSaveGuards.ts` | Pure node-scoped-save guards: one-node-at-a-time edit fencing and the stale-response document-identity fence. |
 | `frontend/src/stores/useRecoverySummaryStore.ts` | Transient per-session recovery summary (field outcomes, completeness, previous config, diffs) keyed by recovery id. |
 
 ## Key types and data structures
@@ -708,8 +709,9 @@ actions (remove, update, reset, recover) with one Apply click over the strict
 dry-run plan; for recover the per-artifact source diffs are collapsed by
 default behind an expander. Applying a recover stores the response's field
 outcomes, completeness entries, previous configuration and bounded diffs in
-`useRecoverySummaryStore`, keyed by the target's recovery id — transient
-session state, never persisted. The node panel shows a dismissible summary for
+`useRecoverySummaryStore`, keyed by the owning source file plus the target's
+recovery id (ids repeat across documents) — transient session state, never
+persisted. The node panel shows a dismissible summary for
 the selected recovered node with retained/defaulted/needs-input/removed counts
 and on-demand expanders for the field details, the previous configuration and
 the source diff.
@@ -721,7 +723,12 @@ their execution blockers reported alongside the editor rather than replacing
 it. The panel offers a node-scoped save that posts the node's current
 configuration through `saveNodeScoped`, adopts the returned authoritative
 document, retains the target selection, and surfaces the document's remaining
-completeness entries for that node. Whole-graph mutation, save and undo fences
+completeness entries for that node. Scoped edits save one node at a time: the
+save is refused while another node holds unsaved scoped edits (adoption would
+discard them), the editor freezes while the request is in flight, and a late
+response is discarded whenever the on-screen document identity (source file
+and revision) moved after submission (`utils/scopedSaveGuards.ts`).
+Whole-graph mutation, save and undo fences
 stay exactly as the capability model dictates; the scoped save never widens
 them. Ready nodes that are not `scoped_editable` keep the static JSON
 inspector in read-only documents.

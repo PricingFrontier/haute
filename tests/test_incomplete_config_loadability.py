@@ -127,6 +127,8 @@ def test_complete_configs_report_no_gaps():
         {"inputType": "file", "format": "parquet", "path": 123},
         {"inputType": "portal", "format": "parquet", "path": ""},
         {"inputType": "inline", "format": "records", "records": "nope"},
+        {"inputType": ["file"], "format": "parquet", "path": "x.parquet"},
+        {"inputType": {"kind": "file"}, "format": "parquet", "path": "x.parquet"},
     ],
     ids=[
         "invalid-mode",
@@ -137,6 +139,8 @@ def test_complete_configs_report_no_gaps():
         "non-string-path",
         "unknown-input-type",
         "records-not-list",
+        "array-discriminant",
+        "object-discriminant",
     ],
 )
 def test_structural_violations_stay_strict_in_tolerant_mode(config: dict[str, Any]):
@@ -157,12 +161,14 @@ def test_structural_violations_stay_strict_in_tolerant_mode(config: dict[str, An
         },
         {"outputType": "file", "format": "parquet", "path": None},
         {"outputType": "elsewhere", "format": "parquet", "path": ""},
+        {"outputType": ["file"], "format": "parquet", "path": "x.parquet"},
     ],
     ids=[
         "invalid-mode",
         "both-locators",
         "null-path-is-incomplete-not-structural",
         "unknown-output-type",
+        "array-discriminant",
     ],
 )
 def test_output_structural_violations_stay_strict(config: dict[str, Any]):

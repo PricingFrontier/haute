@@ -132,6 +132,7 @@ function PipelineRepairDialogContent({
         // Transient session record for the panel's dismissible summary; the
         // dry-run plan owns the bounded diffs, the apply response the report.
         useRecoverySummaryStore.getState().recordSummary({
+          sourceFile: plan.source_file,
           recoveryId: plan.target_recovery_id,
           fieldChanges: response.field_changes,
           completeness: response.completeness,

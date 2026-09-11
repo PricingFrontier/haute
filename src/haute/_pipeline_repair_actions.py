@@ -589,7 +589,17 @@ def _recover_node(
         config_base_depth=len(path.parent.relative_to(root_path.parent).parts),
     )
     edits, warnings = _reset_node(
-        root, root_path, path, target, document, replacement_config=result.config, recover=True
+        root,
+        root_path,
+        path,
+        target,
+        document,
+        replacement_config=result.config,
+        recover=True,
+        # A damaged chain recovers bottom-up or top-down: upstream identities
+        # stay trustworthy through their authored bindings, and the applied
+        # node may legitimately remain blocked by an unrepaired upstream.
+        allow_blocked_sources=True,
     )
     field_changes = [
         PipelineRepairFieldChange(path=change.path, outcome=change.outcome, reason=change.reason)
