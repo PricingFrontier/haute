@@ -19,11 +19,34 @@ vi.mock("../../stores/useNodeResultsStore", () => {
 })
 
 vi.mock("../../stores/useSettingsStore", () => {
+  const mlflow = {
+    status: "error",
+    mode: "",
+    destination: "",
+    configSource: "",
+    installed: null,
+    importable: null,
+    configured: null,
+    detail: "",
+  }
   const store = Object.assign(
-    vi.fn(() => ({ status: "disconnected", backend: "", host: "" })),
-    { getState: vi.fn(() => ({ mlflow: { status: "disconnected", backend: "", host: "" } })) },
+    vi.fn(() => mlflow),
+    { getState: vi.fn(() => ({ mlflow })) },
   )
-  return { default: store, __esModule: true }
+  return {
+    default: store,
+    __esModule: true,
+    useMlflowStatus: () => ({
+      mlflowStatus: mlflow.status,
+      mlflowMode: mlflow.mode,
+      mlflowDestination: mlflow.destination,
+      mlflowConfigSource: mlflow.configSource,
+      mlflowInstalled: mlflow.installed,
+      mlflowImportable: mlflow.importable,
+      mlflowConfigured: mlflow.configured,
+      mlflowDetail: mlflow.detail,
+    }),
+  }
 })
 
 // Mock useDragResize to avoid DOM measurement issues (PreviewPanelFrame consumes it transitively)

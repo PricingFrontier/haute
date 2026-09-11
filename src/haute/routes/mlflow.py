@@ -143,7 +143,8 @@ def _ensure_tracking() -> tuple[_types.ModuleType, MlflowClient]:
     """Import mlflow, configure tracking URI, and return ``(mlflow, client)``.
 
     Raises ``HTTPException(503)`` if mlflow is not installed, or
-    ``HTTPException(502)`` if the tracking backend cannot be resolved.
+    ``HTTPException(502)`` if the tracking backend cannot be resolved — a
+    tracking misconfiguration surfaces its own (non-secret) reason.
     """
     try:
         import mlflow
@@ -165,9 +166,38 @@ def _ensure_tracking() -> tuple[_types.ModuleType, MlflowClient]:
         return mlflow, client
     except HTTPException:
         raise
+    except MlflowConfigError as exc:
+        # Our own configuration messages are actionable and never secret.
+        raise HTTPException(status_code=502, detail=str(exc))
     except Exception as exc:
         logger.error("mlflow_tracking_setup_failed", error=str(exc))
         raise HTTPException(status_code=502, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# Actionable, non-leaking details for expected discovery failures. The
+# underlying error text never reaches the client (it may carry tokens or
+# infrastructure detail); the category-mapped message does.
+_DISCOVERY_CATEGORY_DETAILS = {
+    "authentication": (
+        "MLflow authentication failed. Check the credentials in your .env file."
+    ),
+    "permission": "MLflow denied access. Check your workspace permissions.",
+    "missing_resource": "The requested MLflow resource was not found.",
+    "connectivity": (
+        "Could not reach the MLflow tracking server. Check that it is running "
+        "and that the tracking destination in the MLflow settings is right."
+    ),
+}
+
+
+def _discovery_http_error(exc: BaseException, event: str) -> HTTPException:
+    """Map a discovery failure to a 502 with a categorised, non-secret detail."""
+    category = _classify_probe_error(exc)
+    logger.error(event, category=category, error=str(exc))
+    return HTTPException(
+        status_code=502,
+        detail=_DISCOVERY_CATEGORY_DETAILS.get(category, _INTERNAL_ERROR_DETAIL),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -445,8 +475,7 @@ def list_experiments() -> list[MlflowExperimentSummary]:
     try:
         experiments = mlflow.search_experiments()
     except Exception as exc:
-        logger.error("mlflow_list_experiments_failed", error=str(exc))
-        raise HTTPException(status_code=502, detail=_INTERNAL_ERROR_DETAIL)
+        raise _discovery_http_error(exc, "mlflow_list_experiments_failed")
 
     return [
         MlflowExperimentSummary(
@@ -490,8 +519,7 @@ def list_runs(
     except Exception as exc:
         measurement.record_search(search_started_at, perf_counter())
         measurement.emit(outcome="search_failed")
-        logger.error("mlflow_list_runs_failed", error=str(exc))
-        raise HTTPException(status_code=502, detail=_INTERNAL_ERROR_DETAIL)
+        raise _discovery_http_error(exc, "mlflow_list_runs_failed")
     measurement.record_search(search_started_at, perf_counter())
 
     try:
@@ -517,8 +545,7 @@ def list_models(
             page_token=page_token if page_token else None,
         )
     except Exception as exc:
-        logger.error("mlflow_list_models_failed", error=str(exc))
-        raise HTTPException(status_code=502, detail=_INTERNAL_ERROR_DETAIL)
+        raise _discovery_http_error(exc, "mlflow_list_models_failed")
 
     return [
         MlflowModelSummary(
@@ -568,8 +595,7 @@ def list_model_versions(
     try:
         versions = search_versions(client, model_name)
     except Exception as exc:
-        logger.error("mlflow_list_versions_failed", error=str(exc))
-        raise HTTPException(status_code=502, detail=_INTERNAL_ERROR_DETAIL)
+        raise _discovery_http_error(exc, "mlflow_list_versions_failed")
 
     return [
         MlflowModelVersionSummary(

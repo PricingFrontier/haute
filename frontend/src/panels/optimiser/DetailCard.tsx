@@ -193,21 +193,20 @@ export default function DetailCard({
           {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
           Save Result
         </button>
-        {mlflowAvailable && (
-          <button
-            onClick={onLogMlflow}
-            disabled={actionsDisabled}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
-            style={{
-              background: actionsDisabled ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
-              color: actionsDisabled ? "var(--text-muted)" : MODEL_COLORS.accent,
-              border: `1px solid ${MODEL_COLORS.accentSoft}`,
-            }}
-          >
-            {logging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
-            Log to MLflow
-          </button>
-        )}
+        <button
+          onClick={onLogMlflow}
+          disabled={actionsDisabled || !mlflowAvailable}
+          title={mlflowAvailable ? undefined : "MLflow is off — open the MLflow chip in the toolbar to configure tracking"}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors disabled:opacity-60"
+          style={{
+            background: actionsDisabled || !mlflowAvailable ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
+            color: actionsDisabled || !mlflowAvailable ? "var(--text-muted)" : MODEL_COLORS.accent,
+            border: `1px solid ${MODEL_COLORS.accentSoft}`,
+          }}
+        >
+          {logging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
+          Log to MLflow
+        </button>
       </div>
 
       {/* Action feedback */}

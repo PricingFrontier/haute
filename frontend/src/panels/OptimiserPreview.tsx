@@ -19,7 +19,8 @@ import {
 } from "../api/client"
 import { formatNumber } from "../utils/formatValue"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
-import useSettingsStore from "../stores/useSettingsStore"
+import useSettingsStore, { useMlflowStatus } from "../stores/useSettingsStore"
+import useUIStore from "../stores/useUIStore"
 import { MODEL_COLORS } from "../theme/colors"
 import { bandingLevelOrderForOptimiser } from "../utils/banding"
 import { NODE_TYPES } from "../utils/nodeTypes"
@@ -656,6 +657,60 @@ function RatebookRatesPending({ detail }: { detail: RatesDetailState }) {
   )
 }
 
+function ExportMlflowSection({
+  onLogMlflow,
+  logging,
+  terminalActionBusy,
+  mlflowAvailable,
+}: {
+  onLogMlflow: () => void
+  logging: boolean
+  terminalActionBusy: boolean
+  mlflowAvailable: boolean
+}) {
+  const { mlflowStatus, mlflowDetail } = useMlflowStatus()
+  const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
+  const disabled = terminalActionBusy || !mlflowAvailable
+  return (
+    <div className="space-y-1">
+      <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+        Log to MLflow
+      </label>
+      <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+        Log the optimisation result, convergence history, and metadata to MLflow for tracking and comparison.
+      </p>
+      {!mlflowAvailable && (
+        <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+          {mlflowStatus === "loading"
+            ? "Checking MLflow…"
+            : `MLflow is off${mlflowDetail ? ` — ${mlflowDetail}` : ""}. `}
+          {mlflowStatus !== "loading" && (
+            <button
+              onClick={() => setMlflowSettingsOpen(true)}
+              className="underline"
+              style={{ color: "var(--text-accent)" }}
+            >
+              Configure MLflow
+            </button>
+          )}
+        </p>
+      )}
+      <button
+        onClick={onLogMlflow}
+        disabled={disabled}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors mt-1.5 disabled:opacity-60"
+        style={{
+          background: disabled ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
+          color: disabled ? "var(--text-muted)" : MODEL_COLORS.accent,
+        }}
+      >
+        {logging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
+        Log to MLflow
+      </button>
+    </div>
+  )
+}
+
 function ExportTab({
   result,
   onSave,
@@ -725,28 +780,12 @@ function ExportTab({
         </button>
       </div>
 
-      {mlflowAvailable && (
-        <div className="space-y-1">
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-            Log to MLflow
-          </label>
-          <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
-            Log the optimisation result, convergence history, and metadata to MLflow for tracking and comparison.
-          </p>
-          <button
-            onClick={onLogMlflow}
-            disabled={terminalActionBusy}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors mt-1.5"
-            style={{
-              background: terminalActionBusy ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
-              color: terminalActionBusy ? "var(--text-muted)" : MODEL_COLORS.accent,
-            }}
-          >
-            {logging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
-            Log to MLflow
-          </button>
-        </div>
-      )}
+      <ExportMlflowSection
+        onLogMlflow={onLogMlflow}
+        logging={logging}
+        terminalActionBusy={terminalActionBusy}
+        mlflowAvailable={mlflowAvailable}
+      />
 
       {actionMsg && (
         <div className="text-xs px-2 py-1.5 rounded" style={{ background: "var(--bg-input)", color: "var(--text-secondary)" }}>

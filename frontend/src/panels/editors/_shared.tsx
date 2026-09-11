@@ -5,6 +5,7 @@ import { listFiles } from "../../api/client"
 import type { FileListItem } from "../../api/types"
 import ColumnTable from "../../components/ColumnTable"
 import useSettingsStore, { useMlflowStatus } from "../../stores/useSettingsStore"
+import useUIStore from "../../stores/useUIStore"
 import { formatValue } from "../../utils/formatValue"
 
 // ─── Shared Styles ───────────────────────────────────────────────
@@ -155,11 +156,14 @@ export function MlflowStatusBadge() {
             ? "MLflow tracking not configured"
           : "MLflow status unavailable"
 
+  const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
+
   return (
-    <div
-      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px]"
-      role="status"
-      title={mlflowDetail || label}
+    <button
+      className="flex w-full items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-[11px]"
+      aria-label={`MLflow status: ${label}. Open MLflow settings`}
+      onClick={() => setMlflowSettingsOpen(true)}
+      title={`${mlflowDetail || label} — click to open MLflow settings`}
       style={{
         background,
         border: `1px solid ${border}`,
@@ -172,7 +176,7 @@ export function MlflowStatusBadge() {
       ) : (
         <><AlertTriangle size={11} style={{ color: iconColor }} /><span style={{ color: labelColor }}>{label}</span></>
       )}
-    </div>
+    </button>
   )
 }
 

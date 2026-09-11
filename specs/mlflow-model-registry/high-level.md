@@ -345,11 +345,14 @@ Out of scope (owned elsewhere):
   mode that does not use it) with `400` and a field-naming detail, writing
   nothing. `POST /api/mlflow/test-connection` reports `ok=false` with a
   category and non-secret detail rather than raising for expected failures.
-- Discovery-route failures: `mlflow` not installed → `503`; tracking
-  backend resolution failure → `502`; an MLflow search call
-  (`search_experiments` / `search_runs` / `search_registered_models` /
-  `search_model_versions`) failing → `502` with a non-leaking generic
-  detail message (the real error is logged server-side). A registered
+- Discovery-route failures: `mlflow` not installed → `503`; a tracking
+  misconfiguration → `502` carrying its own actionable, secret-free
+  reason; an MLflow search call (`search_experiments` / `search_runs` /
+  `search_registered_models` / `search_model_versions`) failing → `502`
+  with a category-mapped, non-leaking detail (authentication naming
+  `.env`, permission, missing resource, connectivity) — the raw error is
+  only logged server-side, and unclassified failures keep the generic
+  detail. A registered
   model version whose backing run has been deleted or is otherwise
   inaccessible does not fail the whole `/model-versions` response — its
   run-derived params are reported as empty and the failure is logged,

@@ -46,7 +46,14 @@ results are supplied by API and result-store layers.
   readable in full. No reserved final test is stated explicitly without presenting
   development diagnostics as held-out performance. Candidate selection and tuning
   retain their complete evidence in separately headed cards; warnings remain visible
-  above the summary and MLflow logging remains available when connected.
+  above the summary. The MLflow log action ("Log run to MLflow") stays
+  visible in every backend state: enabled with the resolved destination
+  named beneath it when tracking is connected, and disabled with the
+  actionable reason plus a "Configure MLflow" link (opening the shared
+  MLflow settings dialog) when it is not. Success shows an "Open in
+  Databricks" / "Open run" link for databricks/server backends; a local
+  log shows the run ID plus a copyable `mlflow ui --backend-store-uri`
+  command instead of a dead end.
 - Optimiser config selects input/objective/mode, banding/ratebook factors, constraints, solver
   options and frontier ranges; it can auto-range constraints and submit solves. Starting another
   auto-range request or unmounting best-effort cancels that auto-range job; this panel has no
@@ -56,7 +63,12 @@ results are supplied by API and result-store layers.
   same update; range fields never inherit the removed global frontier bounds.
 - Optimiser preview renders summary, convergence, detail, frontier, ratebook/rates and export
   flows. Selecting another frontier point clears stale materialised detail before enabling Save
-  or MLflow actions, and structured API details are preferred on failures. The data preview
+  or MLflow actions, and structured API details are preferred on failures. The Export tab's
+  "Log to MLflow" action stays visible in every backend state — disabled with the off-reason
+  and a "Configure MLflow" link when tracking is unavailable — and the frontier detail card
+  keeps its log button visible but disabled with an explanatory tooltip. The optimiser
+  config's collapsible MLflow section opens with the same manual-logging explainer the
+  modelling Train pane uses. The data preview
   groups and charts bounded scenario samples and can calculate statistics.
 - Modelling and optimiser action areas render actionable memory-pressure and
   rejected-strategy diagnostics with profile, blocking node/operator, cost,
@@ -195,7 +207,12 @@ strip; it never falls through to CatBoost. Pane ownership:
   bounds, plus group counts or date ranges. The pane uses only **development data**,
   **validation**, and **final test** terminology.
 - **Train** — the GPU toggle (CatBoost only, still stored as the GPU task-type parameter), row
-  limit beside the RAM/VRAM estimate it modulates, MLflow experiment/model-name logging fields,
+  limit beside the RAM/VRAM estimate it modulates, MLflow experiment/model-name logging fields
+  (headed by an explainer that logging is manual — nothing is logged automatically — plus a
+  one-line resolved-destination status, or the off-reason with a "Configure MLflow" link; the
+  experiment field's placeholder is the real computed default — `/Shared/haute/{node label}`
+  for Databricks, the bare node label otherwise — and offers existing experiment names
+  through a lazily fetched datalist while connected),
   staleness banner, Train/Cancel actions, click-time validation banner, live progress, completion
   badge and error card. Its checkbox and text/number controls use the same visible themed borders,
   backgrounds, typography and spacing as the rest of the modelling editor; labels never collapse

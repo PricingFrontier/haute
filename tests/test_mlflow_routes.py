@@ -98,7 +98,7 @@ class TestListExperiments:
         assert resp.status_code == 503
 
     def test_connection_error_502(self, client):
-        """Returns 502 when MLflow tracking server is unreachable."""
+        """Returns 502 with the connectivity category when unreachable."""
         mock_mlflow = MagicMock()
         mock_mlflow.search_experiments.side_effect = ConnectionError("refused")
 
@@ -106,7 +106,72 @@ class TestListExperiments:
             resp = client.get("/api/mlflow/experiments")
 
         assert resp.status_code == 502
-        assert "Check the server logs" in resp.json()["detail"]
+        assert "Could not reach the MLflow tracking server" in resp.json()["detail"]
+        assert "refused" not in resp.json()["detail"]
+
+    def test_authentication_failure_names_env_credentials(self, client):
+        """RestException auth codes map to an actionable, non-leaking detail."""
+        from mlflow.exceptions import RestException
+
+        mock_mlflow = MagicMock()
+        mock_mlflow.search_experiments.side_effect = RestException(
+            {"error_code": "UNAUTHENTICATED", "message": "bad token dapi-secret"}
+        )
+
+        with _mock_tracking(mlflow=mock_mlflow):
+            resp = client.get("/api/mlflow/experiments")
+
+        assert resp.status_code == 502
+        detail = resp.json()["detail"]
+        assert "authentication" in detail.lower()
+        assert ".env" in detail
+        assert "dapi-secret" not in detail
+
+    def test_permission_failure_is_categorised(self, client):
+        from mlflow.exceptions import RestException
+
+        mock_mlflow = MagicMock()
+        mock_mlflow.search_experiments.side_effect = RestException(
+            {"error_code": "PERMISSION_DENIED", "message": "nope"}
+        )
+
+        with _mock_tracking(mlflow=mock_mlflow):
+            resp = client.get("/api/mlflow/experiments")
+
+        assert resp.status_code == 502
+        assert "denied access" in resp.json()["detail"].lower()
+
+    def test_wrapped_transport_failure_is_connectivity(self, client):
+        """MlflowException-wrapped transport errors classify via the chain."""
+        import requests
+        from mlflow.exceptions import MlflowException
+
+        wrapped = MlflowException("API request failed")
+        wrapped.__cause__ = requests.exceptions.ConnectionError("refused")
+        mock_mlflow = MagicMock()
+        mock_mlflow.search_experiments.side_effect = wrapped
+
+        with _mock_tracking(mlflow=mock_mlflow):
+            resp = client.get("/api/mlflow/experiments")
+
+        assert resp.status_code == 502
+        assert "Could not reach the MLflow tracking server" in resp.json()["detail"]
+
+    def test_misconfiguration_detail_is_actionable(self, client):
+        """A tracking misconfiguration surfaces its own reason, not a generic 502."""
+        from haute.errors import MlflowConfigError
+
+        with patch(
+            "haute.modelling._mlflow_log.resolve_tracking_backend",
+            side_effect=MlflowConfigError(
+                "Databricks tracking is selected but DATABRICKS_TOKEN is not set "
+                "in the environment (.env)."
+            ),
+        ):
+            resp = client.get("/api/mlflow/experiments")
+
+        assert resp.status_code == 502
+        assert "DATABRICKS_TOKEN" in resp.json()["detail"]
 
     def test_multiple_experiments(self, client):
         """Returns multiple experiments in correct structure."""
@@ -477,7 +542,7 @@ class TestListRuns:
             resp = client.get("/api/mlflow/runs?experiment_id=1")
 
         assert resp.status_code == 502
-        assert "Check the server logs" in resp.json()["detail"]
+        assert "Could not reach the MLflow tracking server" in resp.json()["detail"]
 
     def test_missing_experiment_id_422(self, client):
         """Missing required experiment_id returns 422."""
@@ -640,7 +705,7 @@ class TestListModels:
             resp = client.get("/api/mlflow/models")
 
         assert resp.status_code == 502
-        assert "Check the server logs" in resp.json()["detail"]
+        assert "Could not reach the MLflow tracking server" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -756,7 +821,7 @@ class TestListModelVersions:
             resp = client.get("/api/mlflow/model-versions?model_name=my-model")
 
         assert resp.status_code == 502
-        assert "Check the server logs" in resp.json()["detail"]
+        assert "Could not reach the MLflow tracking server" in resp.json()["detail"]
 
     def test_version_missing_optional_fields(self, client):
         """Versions with missing optional fields default gracefully."""

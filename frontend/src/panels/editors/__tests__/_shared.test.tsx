@@ -241,6 +241,14 @@ describe("InputSourcesBar", () => {
 describe("MlflowStatusBadge", () => {
   afterEach(cleanup)
 
+  it("activating the badge opens the MLflow settings dialog", async () => {
+    const { default: useUIStore } = await import("../../../stores/useUIStore")
+    useUIStore.setState({ mlflowSettingsOpen: false })
+    render(<MlflowStatusBadge />)
+    fireEvent.click(screen.getByRole("button", { name: /mlflow status/i }))
+    expect(useUIStore.getState().mlflowSettingsOpen).toBe(true)
+  })
+
   beforeEach(() => {
     mockMlflowStatus.current = {
       mlflowStatus: "connected",
@@ -255,7 +263,7 @@ describe("MlflowStatusBadge", () => {
   it("shows configured tracking backend when MLflow tracking config is healthy", () => {
     render(<MlflowStatusBadge />)
 
-    expect(screen.getByRole("status")).toHaveTextContent("MLflow tracking configured (local)")
+    expect(screen.getByRole("button", { name: /mlflow status/i })).toHaveTextContent("MLflow tracking configured (local)")
   })
 
   it("does not imply scoring is unavailable when only tracking is not configured", () => {
@@ -270,9 +278,12 @@ describe("MlflowStatusBadge", () => {
 
     render(<MlflowStatusBadge />)
 
-    const badge = screen.getByRole("status")
+    const badge = screen.getByRole("button", { name: /mlflow status/i })
     expect(badge).toHaveTextContent("MLflow tracking not configured")
-    expect(badge).toHaveAttribute("title", "tracking backend misconfigured")
+    expect(badge).toHaveAttribute(
+      "title",
+      "tracking backend misconfigured — click to open MLflow settings",
+    )
     expect(badge).not.toHaveTextContent("MLflow not available")
   })
 
@@ -288,7 +299,7 @@ describe("MlflowStatusBadge", () => {
 
     render(<MlflowStatusBadge />)
 
-    expect(screen.getByRole("status")).toHaveTextContent("MLflow package failed to load")
+    expect(screen.getByRole("button", { name: /mlflow status/i })).toHaveTextContent("MLflow package failed to load")
   })
 
   it("distinguishes a missing MLflow package from tracking failures", () => {
@@ -303,7 +314,7 @@ describe("MlflowStatusBadge", () => {
 
     render(<MlflowStatusBadge />)
 
-    expect(screen.getByRole("status")).toHaveTextContent("MLflow package missing")
+    expect(screen.getByRole("button", { name: /mlflow status/i })).toHaveTextContent("MLflow package missing")
   })
 
   it("reports status check failures without claiming MLflow itself is absent", () => {
@@ -318,7 +329,7 @@ describe("MlflowStatusBadge", () => {
 
     render(<MlflowStatusBadge />)
 
-    expect(screen.getByRole("status")).toHaveTextContent("MLflow status unavailable")
+    expect(screen.getByRole("button", { name: /mlflow status/i })).toHaveTextContent("MLflow status unavailable")
   })
 })
 

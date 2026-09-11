@@ -17,7 +17,6 @@ import { MlflowExportSection } from "./MlflowExportSection"
 interface SummaryTabProps {
   result: TrainResult
   jobId: string
-  mlflowBackend: { installed: boolean; backend: string; host: string } | null
   config: Record<string, unknown>
   onUseBestParameters?: (params: Record<string, unknown>) => void
   elapsedSeconds?: number | null
@@ -183,7 +182,6 @@ function SelectionMetricsTable({
 export function SummaryTab({
   result,
   jobId,
-  mlflowBackend,
   config,
   onUseBestParameters,
   elapsedSeconds,
@@ -551,12 +549,11 @@ export function SummaryTab({
         </SummaryCard>
       )}
 
-      {mlflowBackend?.installed && jobId && (
+      {jobId && (
         <SummaryCard title="Experiment tracking" icon={FlaskConical} description="Log this trained model and its results to MLflow.">
           <div className="max-w-sm">
             <MlflowExportSection
               trainJobId={jobId}
-              mlflowBackend={mlflowBackend}
               config={config}
             />
           </div>

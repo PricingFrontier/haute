@@ -9,7 +9,6 @@ import { useEffect, useState } from "react"
 import type { TrainProgress, TrainResult } from "../stores/useNodeResultsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useGraphStore from "../stores/useGraphStore"
-import useSettingsStore from "../stores/useSettingsStore"
 import { MODEL_COLORS } from "../theme/colors"
 import { nodeData } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
@@ -72,8 +71,6 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
 
   const trainProgress: TrainProgress | null = useNodeResultsStore((s) => s.trainJobs[nodeId]?.progress ?? null)
   const modellingNode = useGraphStore((s) => s.nodes.find(node => node.id === nodeId))
-  const mlflow = useSettingsStore((s) => s.mlflow)
-  const mlflowBackend = mlflow.status === "connected" ? { installed: true, backend: mlflow.mode, host: mlflow.destination } : null
 
   const availableTabs = TAB_KEYS.filter(t => {
     switch (t) {
@@ -178,7 +175,6 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
           <SummaryTab
             result={result}
             jobId={data.jobId}
-            mlflowBackend={mlflowBackend}
             config={config}
             onUseBestParameters={useBestAsFixedParameters}
             elapsedSeconds={trainProgress?.elapsed_seconds}

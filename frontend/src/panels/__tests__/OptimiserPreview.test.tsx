@@ -39,11 +39,32 @@ vi.mock("../../stores/useNodeResultsStore", () => ({
     }),
 }))
 
+const mlflowMockState = vi.hoisted(() => ({
+  current: {
+    status: "connected",
+    mode: "local",
+    destination: "C:/proj/mlruns",
+    configSource: "default",
+    installed: true,
+    importable: true,
+    configured: true,
+    detail: "",
+  },
+}))
+
 vi.mock("../../stores/useSettingsStore", () => ({
   default: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      mlflow: { status: "connected", backend: "local", host: "" },
-    }),
+    selector({ mlflow: mlflowMockState.current }),
+  useMlflowStatus: () => ({
+    mlflowStatus: mlflowMockState.current.status === "pending" ? "loading" : mlflowMockState.current.status,
+    mlflowMode: mlflowMockState.current.mode,
+    mlflowDestination: mlflowMockState.current.destination,
+    mlflowConfigSource: mlflowMockState.current.configSource,
+    mlflowInstalled: mlflowMockState.current.installed,
+    mlflowImportable: mlflowMockState.current.importable,
+    mlflowConfigured: mlflowMockState.current.configured,
+    mlflowDetail: mlflowMockState.current.detail,
+  }),
 }))
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -972,6 +993,30 @@ describe("OptimiserPreview", () => {
       fireEvent.click(screen.getByText("Export"))
       const mlflowElements = screen.getAllByText("Log to MLflow")
       expect(mlflowElements.length).toBeGreaterThanOrEqual(2)
+    })
+
+    it("keeps the MLflow action visible but disabled with the reason when off", async () => {
+      const previous = { ...mlflowMockState.current }
+      mlflowMockState.current = {
+        ...previous,
+        status: "error",
+        mode: "",
+        destination: "",
+        configured: false,
+        detail: "MLflow package is not installed. Install it with: pip install mlflow",
+      }
+      const { default: useUIStore } = await import("../../stores/useUIStore")
+      useUIStore.setState({ mlflowSettingsOpen: false })
+      try {
+        renderPreview()
+        fireEvent.click(screen.getByText("Export"))
+        expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
+        expect(screen.getByText(/MLflow is off/)).toBeInTheDocument()
+        fireEvent.click(screen.getByRole("button", { name: /configure mlflow/i }))
+        expect(useUIStore.getState().mlflowSettingsOpen).toBe(true)
+      } finally {
+        mlflowMockState.current = previous
+      }
     })
 
     it("shows on-demand result detail loading state", async () => {

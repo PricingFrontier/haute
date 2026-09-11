@@ -38,6 +38,17 @@ describe("useUIStore", () => {
     })
   })
 
+  describe("setMlflowSettingsOpen", () => {
+    it("toggles the dialog flag without touching the panel exclusivity group", () => {
+      useUIStore.getState().setUtilityOpen(true)
+      useUIStore.getState().setMlflowSettingsOpen(true)
+      expect(useUIStore.getState().mlflowSettingsOpen).toBe(true)
+      expect(useUIStore.getState().utilityOpen).toBe(true)
+      useUIStore.getState().setMlflowSettingsOpen(false)
+      expect(useUIStore.getState().mlflowSettingsOpen).toBe(false)
+    })
+  })
+
   describe("setShortcutsOpen", () => {
     it("accepts a boolean", () => {
       useUIStore.getState().setShortcutsOpen(true)

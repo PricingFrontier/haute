@@ -63,6 +63,11 @@ describe("Toolbar", () => {
   })
 
   describe("MLflow chip", () => {
+    beforeEach(async () => {
+      const { default: useUIStore } = await import("../../stores/useUIStore")
+      useUIStore.setState({ mlflowSettingsOpen: false })
+    })
+
     it("shows the connected mode with the destination as tooltip", () => {
       useSettingsStore.setState({ mlflow: MLFLOW_CONNECTED })
       render(<Toolbar {...makeProps()} />)

@@ -1,12 +1,20 @@
 /**
- * MLflow log-experiment button + result display.
- * Extracted from ModellingConfig.tsx for readability.
+ * Manual "Log run to MLflow" action + result display.
+ *
+ * Logging is deliberately manual — training never logs automatically — so
+ * this section states where a log would go, stays visible (disabled, with
+ * the reason and a Configure MLflow link) when tracking is unavailable,
+ * and gives every backend a useful success surface: run links for
+ * Databricks/server, and the run ID, folder, and a copyable `mlflow ui`
+ * command for the local file store.
  */
 import { useState, useCallback } from "react"
-import { Loader2, FlaskConical } from "lucide-react"
+import { Loader2, FlaskConical, Copy } from "lucide-react"
 import { logToMlflow } from "../../api/client"
 import { configField } from "../../utils/configField"
 import { MODEL_COLORS } from "../../theme/colors"
+import { useMlflowStatus } from "../../stores/useSettingsStore"
+import useUIStore from "../../stores/useUIStore"
 
 type MlflowResult = {
   status: string
@@ -18,17 +26,26 @@ type MlflowResult = {
   error?: string | null
 }
 
+const MODE_NAMES: Record<string, string> = {
+  databricks: "Databricks",
+  server: "MLflow server",
+  local: "Local folder",
+}
+
 type MlflowExportSectionProps = {
   trainJobId: string
-  mlflowBackend: { installed: boolean; backend: string; host: string }
   config: Record<string, unknown>
   /** Called before logging to clear any previous MLflow result in the parent */
   onMlflowResult?: (result: MlflowResult | null) => void
 }
 
-export function MlflowExportSection({ trainJobId, mlflowBackend, config, onMlflowResult }: MlflowExportSectionProps) {
+export function MlflowExportSection({ trainJobId, config, onMlflowResult }: MlflowExportSectionProps) {
+  const { mlflowStatus, mlflowMode, mlflowDestination, mlflowDetail } = useMlflowStatus()
+  const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
   const [loggingToMlflow, setLoggingToMlflow] = useState(false)
   const [mlflowResult, setMlflowResult] = useState<MlflowResult | null>(null)
+
+  const available = mlflowStatus === "connected"
 
   const handleLogExperiment = useCallback(async () => {
     setLoggingToMlflow(true)
@@ -51,12 +68,16 @@ export function MlflowExportSection({ trainJobId, mlflowBackend, config, onMlflo
     }
   }, [trainJobId, config, onMlflowResult])
 
+  const localCommand = mlflowResult?.tracking_uri
+    ? `mlflow ui --backend-store-uri "${mlflowResult.tracking_uri}"`
+    : ""
+
   return (
     <div className="space-y-1.5">
       <button
         onClick={handleLogExperiment}
-        disabled={loggingToMlflow}
-        className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
+        disabled={!available || loggingToMlflow}
+        className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors disabled:opacity-60"
         style={{
           background: loggingToMlflow ? "var(--chrome-hover)" : "var(--accent-soft-strong)",
           color: loggingToMlflow ? "var(--text-muted)" : MODEL_COLORS.logAction,
@@ -64,18 +85,62 @@ export function MlflowExportSection({ trainJobId, mlflowBackend, config, onMlflo
         }}
       >
         {loggingToMlflow ? <Loader2 size={14} className="animate-spin" /> : <FlaskConical size={14} />}
-        {loggingToMlflow ? "Logging..." : `Log to MLflow (${mlflowBackend.backend})`}
+        {loggingToMlflow ? "Logging..." : "Log run to MLflow"}
       </button>
+      {available ? (
+        <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+          Destination: {MODE_NAMES[mlflowMode] ?? mlflowMode} — {mlflowDestination}
+        </p>
+      ) : (
+        <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+          {mlflowStatus === "loading"
+            ? "Checking MLflow…"
+            : `MLflow is off${mlflowDetail ? ` — ${mlflowDetail}` : ""}. `}
+          {mlflowStatus !== "loading" && (
+            <button
+              onClick={() => setMlflowSettingsOpen(true)}
+              className="underline"
+              style={{ color: "var(--text-accent)" }}
+            >
+              Configure MLflow
+            </button>
+          )}
+        </p>
+      )}
       {mlflowResult && mlflowResult.status === "ok" && (
-        <div className="px-3 py-2 rounded-lg text-xs space-y-0.5" style={{ background: "var(--accent-soft-subtle)", border: "1px solid var(--accent-soft-hover)" }}>
+        <div className="px-3 py-2 rounded-lg text-xs space-y-1" style={{ background: "var(--accent-soft-subtle)", border: "1px solid var(--accent-soft-hover)" }}>
           <div style={{ color: MODEL_COLORS.logAction }}>Logged to {mlflowResult.experiment_name}</div>
           {mlflowResult.run_url && (
             <a href={mlflowResult.run_url} target="_blank" rel="noreferrer" className="underline" style={{ color: "var(--text-accent)" }}>
-              Open in Databricks
+              {mlflowResult.backend === "databricks" ? "Open in Databricks" : "Open run"}
             </a>
           )}
-          {!mlflowResult.run_url && mlflowResult.tracking_uri && (
-            <div style={{ color: "var(--text-muted)" }}>Run ID: {mlflowResult.run_id}</div>
+          {!mlflowResult.run_url && (
+            <div className="space-y-1" style={{ color: "var(--text-muted)" }}>
+              <div>Run ID: {mlflowResult.run_id}</div>
+              {localCommand && (
+                <>
+                  <div>Browse your runs by starting the MLflow UI from a terminal:</div>
+                  <div className="flex items-center gap-1.5">
+                    <code
+                      className="flex-1 break-all rounded px-1.5 py-1 font-mono text-[10px]"
+                      style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
+                    >
+                      {localCommand}
+                    </code>
+                    <button
+                      aria-label="Copy command"
+                      title="Copy command"
+                      onClick={() => void navigator.clipboard?.writeText(localCommand)}
+                      className="rounded p-1"
+                      style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+                    >
+                      <Copy size={12} aria-hidden="true" />
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
       )}

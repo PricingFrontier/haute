@@ -103,8 +103,9 @@ export default function Toolbar({
   const wsConfig = WS_STATUS_CONFIG[wsStatus]
 
   const { mlflowStatus, mlflowMode, mlflowDestination, mlflowDetail } = useMlflowStatus()
-  const [mlflowSettingsOpen, setMlflowSettingsOpen] = useState(false)
-  const closeMlflowSettings = useCallback(() => setMlflowSettingsOpen(false), [])
+  const mlflowSettingsOpen = useUIStore((s) => s.mlflowSettingsOpen)
+  const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
+  const closeMlflowSettings = useCallback(() => setMlflowSettingsOpen(false), [setMlflowSettingsOpen])
   const mlflowChipLabel =
     mlflowStatus === "loading"
       ? "MLflow…"
