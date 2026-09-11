@@ -573,8 +573,9 @@ alternatives: routing the optimiser's MLflow logging through this component's `l
 through one function would need fake empty metadata or `if is_optimiser:` branches); moving
 `resolve_tracking_backend()` itself into `_mlflow_utils.py` (rejected as a large-diff,
 zero-behaviour-change move not worth it standalone); auto-detecting a running local MLflow
-server or spawning one as a managed viewer process (rejected as a product decision — see
-`specs/roadmap/mlflow-ux.md`).
+server or spawning one as a managed viewer process (rejected as a product decision — local
+mode's viewing surface is deliberately just the run ID, folder path, and a copyable
+`mlflow ui` command; no subprocess lifecycle is owned by haute).
 
 ### MLflow-log-after-the-fact
 
