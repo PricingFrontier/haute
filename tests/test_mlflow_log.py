@@ -11,6 +11,10 @@ from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
 
 
 class TestResolveTrackingBackend:
+    @pytest.fixture(autouse=True)
+    def _clean_tracking_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+
     def test_databricks_when_env_vars_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
         monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
@@ -49,6 +53,40 @@ class TestResolveTrackingBackend:
 
         uri, backend = resolve_tracking_backend()
         assert backend == "local"
+
+    def test_env_tracking_uri_selects_server(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+
+        from haute.modelling._mlflow_log import resolve_tracking_backend
+
+        uri, backend = resolve_tracking_backend()
+        assert uri == "http://localhost:5000"
+        assert backend == "server"
+
+    def test_toml_local_mode_overrides_databricks_credentials(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
+        (tmp_path / "haute.toml").write_text('[mlflow]\nmode = "local"\n', encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        from haute.modelling._mlflow_log import resolve_tracking_backend
+
+        uri, backend = resolve_tracking_backend()
+        assert backend == "local"
+        assert uri.startswith("file://")
+
+    def test_unsupported_env_scheme_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
+
+        from haute.errors import MlflowConfigError
+        from haute.modelling._mlflow_log import resolve_tracking_backend
+
+        with pytest.raises(MlflowConfigError, match="sqlite"):
+            resolve_tracking_backend()
 
 
 def test_decimal_signature_error_happens_before_pyfunc_model_logging(tmp_path: Path) -> None:
@@ -190,6 +228,28 @@ class TestBuildRunUrl:
 
             url = build_run_url("databricks", "/Shared/haute/freq", "run123")
             assert "databricks.com//" not in url  # no double slash
+
+    def test_returns_url_for_server(self) -> None:
+        mock_experiment = MagicMock()
+        mock_experiment.experiment_id = "42"
+
+        with (
+            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
+            patch("mlflow.get_tracking_uri", return_value="http://localhost:5000/"),
+        ):
+            from haute.modelling._mlflow_log import build_run_url
+
+            url = build_run_url("server", "freq", "run123")
+            assert url == "http://localhost:5000/#/experiments/42/runs/run123"
+
+    def test_server_returns_none_when_experiment_not_found(self) -> None:
+        with (
+            patch("mlflow.get_experiment_by_name", return_value=None),
+            patch("mlflow.get_tracking_uri", return_value="http://localhost:5000"),
+        ):
+            from haute.modelling._mlflow_log import build_run_url
+
+            assert build_run_url("server", "freq", "run123") is None
 
 
 class TestLogExperiment:

@@ -958,19 +958,6 @@ class TestTrainStatusEndpoint:
             _assert_json_finite(bad)
 
 
-class TestMlflowCheckEndpoint:
-    def test_mlflow_check_response_shape(self, client):
-        resp = client.get("/api/modelling/mlflow/check")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "mlflow_installed" in data
-        assert "mlflow_importable" in data
-        assert "tracking_configured" in data
-        assert "backend" in data
-        assert "databricks_host" in data
-        assert "detail" in data
-
-
 class TestMlflowLogEndpoint:
     def test_mlflow_log_job_not_found(self, client):
         resp = client.post(
@@ -1593,21 +1580,6 @@ class TestMlflowLogSuccess:
             assert "no result" in resp.json()["detail"].lower()
         finally:
             _store.delete_job("no_result")
-
-
-class TestMlflowCheckImportError:
-    """Test /mlflow/check when mlflow is not installed."""
-
-    def test_mlflow_import_error(self, client):
-        """Simulate mlflow not being installed via sys.modules patch."""
-        import sys
-
-        # patch.dict automatically restores sys.modules on exit
-        with patch.dict(sys.modules, {"mlflow": None}):
-            resp = client.get("/api/modelling/mlflow/check")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["mlflow_installed"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -3174,87 +3146,6 @@ class TestDispersionErrorPaths:
 
 
 # ---------------------------------------------------------------------------
-# /mlflow/check backend resolution tests
-# ---------------------------------------------------------------------------
-
-
-class TestMlflowCheckBackend:
-    def test_mlflow_installed_detected(self, client):
-        with (
-            patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                return_value=("file:///mlruns", "local"),
-            ),
-            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
-            patch("importlib.import_module", return_value=SimpleNamespace()),
-        ):
-            resp = client.get("/api/modelling/mlflow/check")
-        assert resp.status_code == 200
-        assert resp.json()["mlflow_installed"] is True
-        assert resp.json()["mlflow_importable"] is True
-        assert resp.json()["tracking_configured"] is True
-
-    def test_local_backend(self, client):
-        with (
-            patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                return_value=("file:///mlruns", "local"),
-            ),
-            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
-            patch("importlib.import_module", return_value=SimpleNamespace()),
-        ):
-            resp = client.get("/api/modelling/mlflow/check")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["mlflow_installed"] is True
-        assert data["mlflow_importable"] is True
-        assert data["tracking_configured"] is True
-        assert data["backend"] == "local"
-        assert data["databricks_host"] == ""
-        assert data["detail"] == ""
-
-    def test_databricks_backend(self, client):
-        with (
-            patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                return_value=("databricks", "databricks"),
-            ),
-            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
-            patch.dict("os.environ", {"DATABRICKS_HOST": "https://my.cloud.databricks.com"}),
-            patch("importlib.import_module", return_value=SimpleNamespace()),
-        ):
-            resp = client.get("/api/modelling/mlflow/check")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["mlflow_installed"] is True
-        assert data["mlflow_importable"] is True
-        assert data["tracking_configured"] is True
-        assert data["backend"] == "databricks"
-        assert data["databricks_host"] == "https://my.cloud.databricks.com"
-
-    def test_backend_resolution_failure_keeps_package_available(self, client):
-        with (
-            patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                side_effect=RuntimeError("tracking backend misconfigured"),
-            ),
-            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
-            patch("importlib.import_module", return_value=SimpleNamespace()),
-        ):
-            resp = client.get("/api/modelling/mlflow/check")
-
-        assert resp.status_code == 200
-        assert resp.json() == {
-            "mlflow_installed": True,
-            "mlflow_importable": True,
-            "tracking_configured": False,
-            "backend": "",
-            "databricks_host": "",
-            "detail": "tracking backend misconfigured",
-        }
-
-
-# ---------------------------------------------------------------------------
 # /model-cache endpoint tests
 # ---------------------------------------------------------------------------
 
@@ -3513,63 +3404,3 @@ class TestClearModelCacheDirect:
             assert result.run_id == "run_xyz"
 
 
-class TestMlflowCheckDirect:
-    """Test mlflow_check route function directly."""
-
-    @pytest.mark.asyncio
-    async def test_mlflow_installed(self):
-        from haute.routes.modelling import mlflow_check
-
-        result = await mlflow_check()
-        assert result.mlflow_installed is True
-
-    @pytest.mark.asyncio
-    async def test_mlflow_not_installed(self):
-        """When mlflow import fails, returns mlflow_installed=False."""
-        from haute.routes.modelling import mlflow_check
-
-        with patch("importlib.util.find_spec", return_value=None):
-            result = await mlflow_check()
-
-        assert result.mlflow_installed is False
-        assert result.mlflow_importable is False
-        assert result.tracking_configured is False
-        assert result.detail == "MLflow package is not installed"
-
-    @pytest.mark.asyncio
-    async def test_mlflow_import_failure_keeps_package_available(self):
-        from haute.routes.modelling import mlflow_check
-
-        with (
-            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
-            patch("importlib.import_module", side_effect=ImportError("broken dependency")),
-        ):
-            result = await mlflow_check()
-
-        assert result.mlflow_installed is True
-        assert result.mlflow_importable is False
-        assert result.tracking_configured is False
-        assert result.backend == ""
-        assert result.databricks_host == ""
-        assert result.detail == "MLflow package import failed: broken dependency"
-
-    @pytest.mark.asyncio
-    async def test_backend_resolution_failure_returns_tracking_unavailable(self):
-        from haute.routes.modelling import mlflow_check
-
-        with (
-            patch(
-                "haute.modelling._mlflow_log.resolve_tracking_backend",
-                side_effect=RuntimeError("tracking backend misconfigured"),
-            ),
-            patch("importlib.util.find_spec", return_value=SimpleNamespace()),
-            patch("importlib.import_module", return_value=SimpleNamespace()),
-        ):
-            result = await mlflow_check()
-
-        assert result.mlflow_installed is True
-        assert result.mlflow_importable is True
-        assert result.tracking_configured is False
-        assert result.backend == ""
-        assert result.databricks_host == ""
-        assert result.detail == "tracking backend misconfigured"

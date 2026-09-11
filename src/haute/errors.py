@@ -89,6 +89,18 @@ class ConfigError(HauteError):
     """Configuration loading or validation failure."""
 
 
+class MlflowConfigError(ConfigError):
+    """Invalid or incomplete MLflow tracking-destination configuration.
+
+    Raised for an explicitly selected mode with a missing prerequisite, an
+    unsupported tracking-URI form, or a malformed ``[mlflow]`` table. It is
+    never downgraded to a silent fallback mode; only the MLflow
+    status/settings endpoints catch it, to report the reason.
+    """
+
+    error_code = "mlflow_config_invalid"
+
+
 class ParseError(HauteError):
     """Pipeline source parsing failure."""
 

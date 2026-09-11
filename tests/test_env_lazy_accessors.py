@@ -480,15 +480,35 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "DATABRICKS_HOST",
         "os.getenv",
     ),
+    # Tracking-destination resolution: each read happens per resolve call so
+    # the selected backend always reflects the current environment.
     (
-        "src/haute/modelling/_mlflow_log.py",
-        "<module>.resolve_tracking_backend",
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>.resolve_tracking_config",
+        "MLFLOW_TRACKING_URI",
+        "os.getenv",
+    ),
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>.resolve_tracking_config",
         "DATABRICKS_HOST",
         "os.getenv",
     ),
     (
-        "src/haute/modelling/_mlflow_log.py",
-        "<module>.resolve_tracking_backend",
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>.resolve_tracking_config",
+        "DATABRICKS_TOKEN",
+        "os.getenv",
+    ),
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._databricks_config",
+        "DATABRICKS_HOST",
+        "os.getenv",
+    ),
+    (
+        "src/haute/modelling/_mlflow_settings.py",
+        "<module>._databricks_config",
         "DATABRICKS_TOKEN",
         "os.getenv",
     ),
@@ -536,7 +556,6 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "HAUTE_GIT_ALLOWED_HOSTS",
         "os.environ.get",
     ),
-    ("src/haute/routes/modelling.py", "<module>.mlflow_check", "DATABRICKS_HOST", "os.getenv"),
     # String, boolean, mapping, or custom validation semantics.
     (
         "src/haute/_execution_admission.py",

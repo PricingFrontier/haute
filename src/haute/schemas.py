@@ -2540,23 +2540,68 @@ class LogExperimentResponse(MlflowLogResponse):
     pass
 
 
-class MlflowCheckResponse(BaseModel):
-    mlflow_installed: bool
-    mlflow_importable: bool
-    tracking_configured: bool
-    backend: str = ""
-    databricks_host: str = ""
-    detail: str = ""
-
-
 class ModelCacheClearResponse(BaseModel):
     removed: int
     run_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
-# /api/mlflow/* (discovery for Model Score node)
+# /api/mlflow/* (discovery for Model Score node + connection surface)
 # ---------------------------------------------------------------------------
+
+
+class MlflowStatusResponse(BaseModel):
+    """Resolved tracking-connection status for the UI.
+
+    Package presence, importability, and resolution are independent facts;
+    none is inferred from another. A misconfigured selection is reported as
+    ``configured=False`` plus an actionable ``detail`` — never a 5xx.
+    """
+
+    mlflow_installed: bool
+    mlflow_importable: bool
+    configured: bool
+    mode: Literal["", "databricks", "server", "local"] = ""
+    destination: str = ""
+    config_source: Literal["", "toml", "env", "default"] = ""
+    detail: str = ""
+
+
+class MlflowResolvedDestination(BaseModel):
+    mode: Literal["databricks", "server", "local"]
+    destination: str
+    config_source: Literal["toml", "env", "default"]
+
+
+class MlflowSettingsResponse(BaseModel):
+    """The stored ``[mlflow]`` table verbatim plus its current resolution."""
+
+    section_present: bool
+    mode: str = ""
+    tracking_uri: str = ""
+    folder: str = ""
+    resolved: MlflowResolvedDestination | None = None
+    detail: str = ""
+
+
+class MlflowSettingsUpdateRequest(BaseModel):
+    mode: Literal["databricks", "server", "local"]
+    tracking_uri: str = ""
+    folder: str = ""
+
+
+class MlflowTestConnectionResponse(BaseModel):
+    ok: bool
+    category: Literal[
+        "",
+        "authentication",
+        "permission",
+        "missing_resource",
+        "connectivity",
+        "configuration",
+        "unknown",
+    ] = ""
+    detail: str = ""
 
 
 class MlflowExperimentSummary(BaseModel):

@@ -142,10 +142,18 @@
   `trimCacheByRecency` and whose pivot entries are likewise exempted by
   `trimExplorePivotCache`.
 - **`SettingsState.mlflow`**: `{status: "pending"|"connected"|"error",
-  backend, host, installed, importable, trackingConfigured, detail}` —
+  mode, destination, configSource, installed, importable, configured,
+  detail}` — populated from `GET /api/mlflow/status`
+  (`parseMlflowStatusResponse`); `status` is `"connected"` exactly when the
+  response reports installed, importable, and configured all true. `mode`
+  (`""|"databricks"|"server"|"local"`), the human-readable `destination`,
+  and `configSource` (`""|"toml"|"env"|"default"`) mirror the wire fields.
   `useMlflowStatus()` (exported alongside the store) maps `"pending"` to
   `"loading"` for display purposes only; the store itself never uses the
-  word "loading".
+  word "loading". `invalidateMlflow()` resets `status` to `"pending"` and
+  triggers a refetch — the settings modal calls it after a successful
+  `PUT /api/mlflow/settings`, so a configuration change is reflected
+  without a page reload.
 - **`ToastMessage`** (`components/Toast.tsx`): `{id, type: "success"|
   "error"|"info"|"warning", text}`. `id` is a monotonically increasing
   string counter, not a UUID.
@@ -342,7 +350,10 @@ focus nor leaves stale callbacks.
 re-entrancy with a module-level `let _mlflowFetchingGuard` rather than store
 state. The guard is shared across every store instance in the process, so tests
 that create fresh instances must retain process-wide concurrency semantics
-rather than assume per-instance isolation.
+rather than assume per-instance isolation. `invalidateMlflow()` cooperates
+with the guard rather than bypassing it: it resets the cached status to
+`"pending"` and calls `fetchMlflow`, and an invalidation issued while a fetch
+is already in flight still results in exactly one follow-up fetch.
 
 ## Error handling
 

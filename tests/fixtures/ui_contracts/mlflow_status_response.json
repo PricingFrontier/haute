@@ -1,0 +1,9 @@
+{
+  "mlflow_installed": true,
+  "mlflow_importable": true,
+  "configured": true,
+  "mode": "databricks",
+  "destination": "https://adb-12345.azuredatabricks.net",
+  "config_source": "env",
+  "detail": ""
+}

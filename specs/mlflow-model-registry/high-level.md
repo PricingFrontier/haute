@@ -22,7 +22,11 @@ contribution decomposition for RustyStats) for trace enrichment. A small
 set of read-only discovery HTTP endpoints lets the pipeline-builder GUI
 browse experiments, runs, registered models, and versions to configure a
 MODEL_SCORE node without the user needing to know MLflow identifiers by
-heart.
+heart. The same router also owns the connection surface the GUI uses to
+understand and choose *where* tracking goes: a status endpoint reporting the
+resolved backend mode and destination, settings endpoints that read and
+persist the `[mlflow]` section of `haute.toml`, and a bounded test-connection
+probe — credentials stay in `.env` and never pass through this surface.
 
 ## Scope
 
@@ -53,13 +57,21 @@ In scope:
 - Read-only MLflow discovery endpoints (`/api/mlflow/experiments`,
   `/runs`, `/models`, `/model-versions`) that populate the MODEL_SCORE
   node's configuration UI.
+- The MLflow connection surface: `GET /api/mlflow/status` (resolved mode,
+  human-readable destination, config source, actionable detail),
+  `GET`/`PUT /api/mlflow/settings` (the `[mlflow]` section of `haute.toml`,
+  written via a layout-preserving tomlkit round trip), and
+  `POST /api/mlflow/test-connection` (a bounded probe with categorised,
+  non-secret error reporting).
 
 Out of scope (owned elsewhere):
 - Logging *new* MLflow runs — training diagnostics, SHAP summaries, model
   cards, and optimiser artifacts — is a write path owned by
   [modelling](../modelling/high-level.md) (`_mlflow_log.py`) and, for the
   optimiser's own run logging, the [optimiser](../optimiser/high-level.md)
-  component. This component only ever reads.
+  component. Against the tracking backend itself this component only ever
+  reads; the one write it owns is the `[mlflow]` table of `haute.toml`
+  through the settings endpoint.
 - Deriving the train-time feature contract itself (declared features,
   offset column, categorical value domains) — owned by
   [modelling](../modelling/high-level.md) (`_feature_contract.py`); this
@@ -166,6 +178,16 @@ Out of scope (owned elsewhere):
 - The discovery endpoints only ever read from the configured MLflow
   tracking server; they never touch the model cache and have no
   side effects on it.
+- The status endpoint truthfully reports the resolved backend in all three
+  modes (databricks / server / local) including where runs will actually go,
+  and reports a misconfigured selection (for example Databricks chosen with
+  no token in `.env`) as an actionable reason rather than a silent fallback.
+  Saving settings persists the resolved local folder, so a save of an
+  unchanged env-derived local configuration never redirects tracking to
+  `./mlruns`. The test-connection probe is bounded in time and classifies
+  failures (authentication, permission, missing resource, connectivity,
+  configuration) from MLflow's structured error codes and transport errors —
+  never by guessing from exception class alone.
 
 ## Design rationale
 
@@ -316,6 +338,13 @@ Out of scope (owned elsewhere):
   doesn't reconstruct the model's own prediction, non-finite values, an
   unsupported multi-output model, or an unexpected result shape):
   `ModelExplanationError`.
+- Connection-surface failures: `GET /api/mlflow/status` never raises for an
+  unconfigured or misconfigured backend — it reports `configured=false` with
+  the actionable reason. `PUT /api/mlflow/settings` rejects an invalid
+  update (unknown mode, non-`http(s)` server URI, a field supplied for a
+  mode that does not use it) with `400` and a field-naming detail, writing
+  nothing. `POST /api/mlflow/test-connection` reports `ok=false` with a
+  category and non-secret detail rather than raising for expected failures.
 - Discovery-route failures: `mlflow` not installed → `503`; tracking
   backend resolution failure → `502`; an MLflow search call
   (`search_experiments` / `search_runs` / `search_registered_models` /

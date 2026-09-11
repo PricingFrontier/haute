@@ -32,28 +32,31 @@ logger = get_logger(component="mlflow_log")
 class MLflowLogResult:
     """Result of logging an experiment to MLflow."""
 
-    backend: str  # "databricks" or "local"
+    backend: str  # "databricks", "server", or "local"
     experiment_name: str
     run_id: str
     tracking_uri: str
-    run_url: str | None  # Databricks URL to the run, or None for local
+    run_url: str | None  # Databricks/server URL to the run, or None for local
 
 
 def resolve_tracking_backend() -> tuple[str, str]:
-    """Detect whether to use Databricks MLflow or local file-based MLflow.
+    """Resolve the tracking destination to ``(tracking_uri, backend)``.
 
-    Returns:
-        (tracking_uri, backend_label) — e.g. ("databricks", "databricks")
-        or ("file:///path/to/mlruns", "local").
+    Thin wrapper over
+    :func:`haute.modelling._mlflow_settings.resolve_tracking_config` —
+    ``[mlflow]`` in ``haute.toml`` first, environment second
+    (``MLFLOW_TRACKING_URI`` classified by form, then
+    ``DATABRICKS_HOST``/``DATABRICKS_TOKEN``), local ``./mlruns`` last.
+    ``backend`` is ``"databricks"``, ``"server"``, or ``"local"``.
+
+    Raises:
+        MlflowConfigError: for a misconfigured explicit selection or an
+            unsupported tracking-URI form — never a silent fallback.
     """
-    host = os.getenv("DATABRICKS_HOST", "")
-    token = os.getenv("DATABRICKS_TOKEN", "")
+    from haute.modelling._mlflow_settings import resolve_tracking_config
 
-    if host and token:
-        return "databricks", "databricks"
-
-    mlruns_dir = Path.cwd() / "mlruns"
-    return mlruns_dir.as_uri(), "local"
+    config = resolve_tracking_config()
+    return config.tracking_uri, config.mode
 
 
 def resolve_experiment_name(
@@ -69,7 +72,7 @@ def resolve_experiment_name(
       1. *explicit* — user override from the UI request body.
       2. *config_value* — ``mlflow_experiment`` from the node config.
       3. Backend-aware default — ``/Shared/haute/{node_label}`` for
-         Databricks, ``{node_label}`` for local.
+         Databricks, the bare ``{node_label}`` for server and local modes.
 
     If *backend* is not supplied the current backend is detected via
     :func:`resolve_tracking_backend`.
@@ -117,18 +120,25 @@ def build_run_url(
     experiment_name: str,
     run_id: str,
 ) -> str | None:
-    """Build a Databricks run URL, or return ``None`` for local backends.
+    """Build a Databricks/server run URL, or return ``None`` for local mode.
 
     Uses ``mlflow.get_experiment_by_name`` to resolve the experiment ID
-    (Databricks URLs require the numeric ID, not the name).
+    (run URLs require the numeric ID, not the name). Databricks URLs point
+    at the workspace host; server URLs point at the configured tracking
+    server's own UI.
     """
-    if backend != "databricks":
+    if backend not in ("databricks", "server"):
         return None
 
     import mlflow
 
-    host = os.getenv("DATABRICKS_HOST", "").rstrip("/")
-    if not host:
+    if backend == "databricks":
+        base = os.getenv("DATABRICKS_HOST", "").rstrip("/")
+        path = "#mlflow/experiments"
+    else:
+        base = mlflow.get_tracking_uri().rstrip("/")
+        path = "#/experiments"
+    if not base:
         return None
     try:
         exp = mlflow.get_experiment_by_name(experiment_name)
@@ -138,7 +148,7 @@ def build_run_url(
                 experiment_name=experiment_name,
             )
             return None
-        return f"{host}/#mlflow/experiments/{exp.experiment_id}/runs/{run_id}"
+        return f"{base}/{path}/{exp.experiment_id}/runs/{run_id}"
     except Exception:
         logger.debug("run_url_build_failed", exc_info=True)
         return None

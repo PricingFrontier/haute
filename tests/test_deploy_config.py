@@ -350,6 +350,20 @@ class TestValidateTomlKeys:
         with pytest.raises(ValueError, match=r"unknown top-level section \[bogus\]"):
             _validate_toml_keys(data, tmp_path / "haute.toml")
 
+    def test_mlflow_section_is_recognised(self, tmp_path: Path) -> None:
+        # [mlflow] is owned by the MLflow settings endpoint, not deploy, but
+        # deploy's whole-file validation must accept the file it writes.
+        data = {
+            "project": {"name": "foo"},
+            "mlflow": {"mode": "server", "tracking_uri": "http://localhost:5000"},
+        }
+        _validate_toml_keys(data, tmp_path / "haute.toml")
+
+    def test_unknown_key_in_mlflow_section_is_rejected(self, tmp_path: Path) -> None:
+        data = {"mlflow": {"mode": "local", "experiment": "nope"}}
+        with pytest.raises(ValueError, match=r"\[mlflow\] unknown key 'experiment'"):
+            _validate_toml_keys(data, tmp_path / "haute.toml")
+
     def test_unknown_key_in_project(self, tmp_path: Path) -> None:
         data = {"project": {"name": "foo", "unknown_key": "bar"}}
         with pytest.raises(ValueError, match=r"\[project\] unknown key 'unknown_key'"):
