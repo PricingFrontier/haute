@@ -26,7 +26,7 @@ import {
   createSubmodel,
   dissolveSubmodel,
   loadSubmodel,
-  checkMlflow,
+  getMlflowStatus,
   getTrainStatus,
   cancelTrain,
   estimateTrainingRam,
@@ -480,7 +480,7 @@ describe("request() core via loadPipeline", () => {
       detail: "Missing or invalid Haute session token",
     }))
 
-    await expect(checkMlflow()).rejects.toThrow(ApiError)
+    await expect(getMlflowStatus()).rejects.toThrow(ApiError)
 
     expect(listener).toHaveBeenCalledTimes(1)
     const event = listener.mock.calls[0][0] as CustomEvent<{ reason: string }>
@@ -513,8 +513,8 @@ describe("request() core via loadPipeline", () => {
   it("uses statusText as detail when response body is not JSON", async () => {
     mockFetch.mockReturnValue(errorResponse(503))
     try {
-      // Use checkMlflow as it doesn't catch errors like loadPipeline
-      await checkMlflow()
+      // Use getMlflowStatus as it doesn't catch errors like loadPipeline
+      await getMlflowStatus()
     } catch (err) {
       expect(err).toBeInstanceOf(ApiError)
       expect((err as ApiError).detail).toBe("Error")
@@ -523,7 +523,7 @@ describe("request() core via loadPipeline", () => {
 
   it("handles network error (fetch throws)", async () => {
     mockFetch.mockRejectedValue(new TypeError("Failed to fetch"))
-    await expect(checkMlflow()).rejects.toThrow("Failed to fetch")
+    await expect(getMlflowStatus()).rejects.toThrow("Failed to fetch")
   })
 
   it("passes AbortController signal to fetch", async () => {

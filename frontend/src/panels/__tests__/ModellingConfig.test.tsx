@@ -122,11 +122,12 @@ beforeEach(() => {
   useSettingsStore.setState({
     mlflow: {
       status: "pending",
-      backend: "",
-      host: "",
+      mode: "",
+      destination: "",
+      configSource: "",
       installed: null,
       importable: null,
-      trackingConfigured: null,
+      configured: null,
       detail: "",
     },
     openSections: {},

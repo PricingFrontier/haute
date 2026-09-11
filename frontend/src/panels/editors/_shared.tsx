@@ -93,10 +93,10 @@ export type SimpleEdge = {
 export function MlflowStatusBadge() {
   const {
     mlflowStatus,
-    mlflowBackend,
+    mlflowMode,
     mlflowInstalled,
     mlflowImportable,
-    mlflowTrackingConfigured,
+    mlflowConfigured,
     mlflowDetail,
   } = useMlflowStatus()
 
@@ -109,7 +109,7 @@ export function MlflowStatusBadge() {
     mlflowStatus === "error" &&
     mlflowInstalled === true &&
     mlflowImportable !== false &&
-    mlflowTrackingConfigured === false
+    mlflowConfigured === false
   const tone = isConnected
     ? "success"
     : isPackageMissing || isPackageLoadFailed
@@ -146,7 +146,7 @@ export function MlflowStatusBadge() {
   const label = isLoading
     ? "Checking MLflow..."
     : isConnected
-      ? `MLflow tracking configured (${mlflowBackend || "local"})`
+      ? `MLflow tracking configured (${mlflowMode || "local"})`
       : isPackageMissing
         ? "MLflow package missing"
         : isPackageLoadFailed

@@ -37,7 +37,7 @@ import {
   parseJsonCacheSchemaInferenceResponse,
   parseFileListResponse,
   parseMlflowExperiments,
-  parseMlflowCheckResponse,
+  parseMlflowStatusResponse,
   parseMlflowLogResponse,
   parseMlflowModels,
   parseMlflowModelVersions,
@@ -1837,13 +1837,16 @@ describe("API response guards", () => {
   })
 
   it("parses modelling preflight payloads", () => {
-    const mlflow = parseMlflowCheckResponse(loadUiContractFixture("mlflow_check_response"))
+    const mlflow = parseMlflowStatusResponse(loadUiContractFixture("mlflow_status_response"))
     const estimate = parseTrainEstimateResponse(loadUiContractFixture("train_estimate_response"))
     const log = parseMlflowLogResponse(loadUiContractFixture("mlflow_log_response"))
 
     expect(mlflow.mlflow_installed).toBe(true)
     expect(mlflow.mlflow_importable).toBe(true)
-    expect(mlflow.tracking_configured).toBe(true)
+    expect(mlflow.configured).toBe(true)
+    expect(mlflow.mode).toBe("databricks")
+    expect(mlflow.destination).toBe("https://adb-12345.azuredatabricks.net")
+    expect(mlflow.config_source).toBe("env")
     expect(mlflow.detail).toBe("")
     expect(estimate.estimated_mb).toBe(12.5)
     expect(log.run_id).toBe("run-123")
@@ -2144,22 +2147,36 @@ describe("API response guards", () => {
     ).toThrow(/nodes/i)
   })
 
-  it("rejects malformed mlflow check payloads", () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("mlflow_check_response")
+  it("rejects malformed mlflow status payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("mlflow_status_response")
 
     expect(() =>
-      parseMlflowCheckResponse({
+      parseMlflowStatusResponse({
         ...fixture,
         mlflow_installed: "yes",
       }),
     ).toThrow(/mlflow_installed/i)
 
     expect(() =>
-      parseMlflowCheckResponse({
+      parseMlflowStatusResponse({
         ...fixture,
-        tracking_configured: "yes",
+        configured: "yes",
       }),
-    ).toThrow(/tracking_configured/i)
+    ).toThrow(/configured/i)
+
+    expect(() =>
+      parseMlflowStatusResponse({
+        ...fixture,
+        mode: "filesystem",
+      }),
+    ).toThrow(/mode/i)
+
+    expect(() =>
+      parseMlflowStatusResponse({
+        ...fixture,
+        config_source: "registry",
+      }),
+    ).toThrow(/config_source/i)
   })
 
   it("rejects malformed utility write payloads", () => {

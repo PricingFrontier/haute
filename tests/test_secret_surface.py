@@ -122,7 +122,10 @@ _REVIEWED_SECRET_ENV_REFERENCES: set[tuple[str, str]] = {
     ("_databricks_credentials.py", "DATABRICKS_TOKEN"),
     ("_databricks_credentials.py", "DATABRICKS_CLIENT_SECRET"),
     ("_input_providers.py", "DATABRICKS_TOKEN"),
-    ("modelling/_mlflow_log.py", "DATABRICKS_TOKEN"),
+    # Tracking-destination resolution reads the token only for a presence
+    # check; TrackingConfig carries host/URI destinations and the
+    # missing-prerequisite error lists variable names, never values.
+    ("modelling/_mlflow_settings.py", "DATABRICKS_TOKEN"),
     ("deploy/_mlflow.py", "DATABRICKS_RATING_TOKEN"),
     ("assistant/_config.py", "ANTHROPIC_API_KEY"),
     ("assistant/_config.py", "OPENAI_API_KEY"),

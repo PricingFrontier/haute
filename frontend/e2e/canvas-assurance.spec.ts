@@ -218,14 +218,15 @@ test.describe("frontend canvas assurance", () => {
     await page.setViewportSize(desktopViewport)
 
     let mlflowLogRequest: JsonObject | null = null
-    await page.route("**/api/modelling/mlflow/check", async (route) => {
+    await page.route("**/api/mlflow/status", async (route) => {
       await route.fulfill({
         json: {
           mlflow_installed: true,
           mlflow_importable: true,
-          tracking_configured: true,
-          backend: "browser-contract",
-          databricks_host: "",
+          configured: true,
+          mode: "local",
+          destination: "mlruns",
+          config_source: "default",
           detail: "Deterministic Playwright boundary",
         },
       })

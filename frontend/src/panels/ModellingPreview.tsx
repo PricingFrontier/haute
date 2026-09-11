@@ -73,7 +73,7 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
   const trainProgress: TrainProgress | null = useNodeResultsStore((s) => s.trainJobs[nodeId]?.progress ?? null)
   const modellingNode = useGraphStore((s) => s.nodes.find(node => node.id === nodeId))
   const mlflow = useSettingsStore((s) => s.mlflow)
-  const mlflowBackend = mlflow.status === "connected" ? { installed: true, backend: mlflow.backend, host: mlflow.host } : null
+  const mlflowBackend = mlflow.status === "connected" ? { installed: true, backend: mlflow.mode, host: mlflow.destination } : null
 
   const availableTabs = TAB_KEYS.filter(t => {
     switch (t) {

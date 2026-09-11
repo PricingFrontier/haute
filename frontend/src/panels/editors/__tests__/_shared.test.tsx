@@ -21,19 +21,19 @@ const mockGetFileListCache = vi.fn<(key: string) => unknown[] | null>().mockRetu
 const mockSetFileListCache = vi.fn()
 type MockMlflowStatus = {
   mlflowStatus: "loading" | "connected" | "error"
-  mlflowBackend: string
+  mlflowMode: string
   mlflowInstalled: boolean | null
   mlflowImportable: boolean | null
-  mlflowTrackingConfigured: boolean | null
+  mlflowConfigured: boolean | null
   mlflowDetail: string
 }
 const mockMlflowStatus = vi.hoisted(() => ({
   current: {
     mlflowStatus: "connected",
-    mlflowBackend: "local",
+    mlflowMode: "local",
     mlflowInstalled: true,
     mlflowImportable: true,
-    mlflowTrackingConfigured: true,
+    mlflowConfigured: true,
     mlflowDetail: "",
   } as MockMlflowStatus,
 }))
@@ -244,10 +244,10 @@ describe("MlflowStatusBadge", () => {
   beforeEach(() => {
     mockMlflowStatus.current = {
       mlflowStatus: "connected",
-      mlflowBackend: "local",
+      mlflowMode: "local",
       mlflowInstalled: true,
       mlflowImportable: true,
-      mlflowTrackingConfigured: true,
+      mlflowConfigured: true,
       mlflowDetail: "",
     }
   })
@@ -261,10 +261,10 @@ describe("MlflowStatusBadge", () => {
   it("does not imply scoring is unavailable when only tracking is not configured", () => {
     mockMlflowStatus.current = {
       mlflowStatus: "error",
-      mlflowBackend: "",
+      mlflowMode: "",
       mlflowInstalled: true,
       mlflowImportable: true,
-      mlflowTrackingConfigured: false,
+      mlflowConfigured: false,
       mlflowDetail: "tracking backend misconfigured",
     }
 
@@ -279,10 +279,10 @@ describe("MlflowStatusBadge", () => {
   it("distinguishes an import failure from tracking configuration failures", () => {
     mockMlflowStatus.current = {
       mlflowStatus: "error",
-      mlflowBackend: "",
+      mlflowMode: "",
       mlflowInstalled: true,
       mlflowImportable: false,
-      mlflowTrackingConfigured: false,
+      mlflowConfigured: false,
       mlflowDetail: "MLflow package import failed: broken dependency",
     }
 
@@ -294,10 +294,10 @@ describe("MlflowStatusBadge", () => {
   it("distinguishes a missing MLflow package from tracking failures", () => {
     mockMlflowStatus.current = {
       mlflowStatus: "error",
-      mlflowBackend: "",
+      mlflowMode: "",
       mlflowInstalled: false,
       mlflowImportable: false,
-      mlflowTrackingConfigured: false,
+      mlflowConfigured: false,
       mlflowDetail: "MLflow package is not installed",
     }
 
@@ -309,10 +309,10 @@ describe("MlflowStatusBadge", () => {
   it("reports status check failures without claiming MLflow itself is absent", () => {
     mockMlflowStatus.current = {
       mlflowStatus: "error",
-      mlflowBackend: "",
+      mlflowMode: "",
       mlflowInstalled: null,
       mlflowImportable: null,
-      mlflowTrackingConfigured: null,
+      mlflowConfigured: null,
       mlflowDetail: "MLflow check timed out after 5s",
     }
 

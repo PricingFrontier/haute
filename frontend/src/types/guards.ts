@@ -112,7 +112,7 @@ import type {
   FileListItem,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
-  MlflowCheckResponse,
+  MlflowStatusResponse,
   MlflowExperiment,
   MlflowLogResponse,
   MlflowModel,
@@ -2315,25 +2315,35 @@ export function parseExplorePivotMembersResponse(value: unknown): ExplorePivotMe
   }
 }
 
-export function parseMlflowCheckResponse(value: unknown): MlflowCheckResponse {
-  const obj = expectPlainObject("parseMlflowCheckResponse", value)
-  const mlflowInstalled = expectBoolean("parseMlflowCheckResponse", obj.mlflow_installed, "field `mlflow_installed`")
-  const mlflowImportable = expectBoolean(
-    "parseMlflowCheckResponse",
-    obj.mlflow_importable,
-    "field `mlflow_importable`",
-  )
+const MLFLOW_MODES = ["", "databricks", "server", "local"] as const
+const MLFLOW_CONFIG_SOURCES = ["", "toml", "env", "default"] as const
+
+export function parseMlflowStatusResponse(value: unknown): MlflowStatusResponse {
+  const obj = expectPlainObject("parseMlflowStatusResponse", value)
+  const mode = optionalString("parseMlflowStatusResponse", obj, "mode")
+  if (!(MLFLOW_MODES as readonly string[]).includes(mode)) {
+    throw new Error(`parseMlflowStatusResponse: unexpected mode \`${mode}\``)
+  }
+  const configSource = optionalString("parseMlflowStatusResponse", obj, "config_source")
+  if (!(MLFLOW_CONFIG_SOURCES as readonly string[]).includes(configSource)) {
+    throw new Error(`parseMlflowStatusResponse: unexpected config_source \`${configSource}\``)
+  }
   return {
-    mlflow_installed: mlflowInstalled,
-    mlflow_importable: mlflowImportable,
-    tracking_configured: expectBoolean(
-      "parseMlflowCheckResponse",
-      obj.tracking_configured,
-      "field `tracking_configured`",
+    mlflow_installed: expectBoolean(
+      "parseMlflowStatusResponse",
+      obj.mlflow_installed,
+      "field `mlflow_installed`",
     ),
-    backend: optionalString("parseMlflowCheckResponse", obj, "backend"),
-    databricks_host: optionalString("parseMlflowCheckResponse", obj, "databricks_host"),
-    detail: optionalString("parseMlflowCheckResponse", obj, "detail"),
+    mlflow_importable: expectBoolean(
+      "parseMlflowStatusResponse",
+      obj.mlflow_importable,
+      "field `mlflow_importable`",
+    ),
+    configured: expectBoolean("parseMlflowStatusResponse", obj.configured, "field `configured`"),
+    mode: mode as MlflowStatusResponse["mode"],
+    destination: optionalString("parseMlflowStatusResponse", obj, "destination"),
+    config_source: configSource as MlflowStatusResponse["config_source"],
+    detail: optionalString("parseMlflowStatusResponse", obj, "detail"),
   }
 }
 

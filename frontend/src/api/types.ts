@@ -519,12 +519,13 @@ export interface OutputAssembleDryRunResponse {
 // Modelling types
 // ---------------------------------------------------------------------------
 
-export interface MlflowCheckResponse {
+export interface MlflowStatusResponse {
   mlflow_installed: boolean
   mlflow_importable: boolean
-  tracking_configured: boolean
-  backend: string
-  databricks_host: string
+  configured: boolean
+  mode: "" | "databricks" | "server" | "local"
+  destination: string
+  config_source: "" | "toml" | "env" | "default"
   detail?: string
 }
 

@@ -20,7 +20,7 @@ const mockGetExploreCacheSnapshot = vi.fn()
 const mockCancelExplore = vi.fn()
 
 vi.mock("../../api/client", () => ({
-  checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
+  getMlflowStatus: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
   runExplore: (...args: unknown[]) => mockRunExplore(...args),
   getExploreStatus: (...args: unknown[]) => mockGetExploreStatus(...args),
   getExploreCacheSnapshot: (...args: unknown[]) => mockGetExploreCacheSnapshot(...args),

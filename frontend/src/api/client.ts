@@ -62,7 +62,7 @@ import type {
   JsonCacheBuildResponse,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
-  MlflowCheckResponse,
+  MlflowStatusResponse,
   MlflowExperiment,
   MlflowLogResponse,
   MlflowModel,
@@ -143,7 +143,7 @@ import {
   parseJsonCacheProgressResponse,
   parseJsonCacheSchemaInferenceResponse,
   parseJsonCacheStatusResponse,
-  parseMlflowCheckResponse,
+  parseMlflowStatusResponse,
   parseMlflowExperiments,
   parseMlflowLogResponse,
   parseMlflowModels,
@@ -1242,10 +1242,10 @@ export function fetchExplorePivotMembers(
 // Modelling endpoints
 // ---------------------------------------------------------------------------
 
-export function checkMlflow(
+export function getMlflowStatus(
   options?: { signal?: AbortSignal },
-): Promise<MlflowCheckResponse> {
-  return request<unknown>("/api/modelling/mlflow/check", options).then(parseMlflowCheckResponse)
+): Promise<MlflowStatusResponse> {
+  return request<unknown>("/api/mlflow/status", options).then(parseMlflowStatusResponse)
 }
 
 export function getTrainStatus<T extends TrainStatusResponse = TrainStatusResponse>(
