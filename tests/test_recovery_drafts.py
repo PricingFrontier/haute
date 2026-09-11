@@ -116,18 +116,19 @@ def test_draft_apply_and_restore_are_exact_and_idempotent(tmp_path):
     assert {p: p.read_bytes() for p in before} == before
 
 
-def test_required_blank_is_editable_but_cannot_apply(tmp_path):
-    from haute._pipeline_recovery_drafts import edit_draft, preview_draft
+def test_required_blank_is_editable_and_reviewable_as_incomplete(tmp_path):
+    # A blank required locator is completeness, not an error: the draft is
+    # immediately reviewable and the incomplete config stays loadable.
+    from haute._pipeline_recovery_drafts import edit_draft
 
     _project(tmp_path, '{"inputType":"file","format":"parquet","mode":"scan","path":""}')
     source = tmp_path / "main.py"
     source.write_text(source.read_text().replace("pipeline.constant", "pipeline.data_input"))
     before = source.read_bytes()
     draft = _create(tmp_path)
-    assert draft.state == "needs_configuration"
+    assert draft.state == "review_required"
     assert draft.nodes[0].editable
-    preview = preview_draft(tmp_path, draft.draft_id, draft.draft_revision)
-    assert preview.plan_hash is None
+    assert not [issue for issue in draft.nodes[0].issues if issue.severity == "error"]
     edited = edit_draft(
         tmp_path,
         draft.draft_id,
@@ -137,6 +138,7 @@ def test_required_blank_is_editable_but_cannot_apply(tmp_path):
             reviewed=True,
         ),
     )
+    assert edited.state == "ready_to_apply"
     assert edited.nodes[0].config["path"] == "data/example.parquet"
     assert source.read_bytes() == before
 

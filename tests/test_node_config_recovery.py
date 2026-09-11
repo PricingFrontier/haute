@@ -305,3 +305,68 @@ def test_representative_ordinary_configs_are_valid(
         for change in recovered.changes
     )
     assert not validate_recovery_config(node_type, recovered.config, input_names=inputs)
+
+
+def test_recover_preserves_valid_absence_of_optional_fields() -> None:
+    # A JSON file input legitimately omits mode; recovery must not inject the
+    # parquet-oriented palette default and break the config (json cannot scan).
+    raw = {
+        "inputType": "file",
+        "format": "json",
+        "path": "quotes.json",
+        "arguments": {},
+        "code": "",
+    }
+    result = reconcile_config(NodeType.DATA_INPUT, dict(raw))
+    assert result.config == raw
+    assert not [change for change in result.changes if change.outcome == "defaulted"]
+    assert not [issue for issue in result.issues if issue.severity == "error"]
+
+
+def test_recover_does_not_backfill_absent_keys_from_palette() -> None:
+    raw = {"inputType": "file", "format": "parquet", "path": "quotes.parquet"}
+    result = reconcile_config(NodeType.DATA_INPUT, dict(raw))
+    assert result.config == raw
+
+
+def test_recover_missing_required_locator_is_incomplete_not_an_error() -> None:
+    raw = {"inputType": "file", "format": "parquet", "mode": "read", "arguments": {}, "code": ""}
+    result = reconcile_config(NodeType.DATA_INPUT, dict(raw))
+    assert "path" not in result.config
+    assert not [issue for issue in result.issues if issue.severity == "error"]
+
+
+def test_reset_still_seeds_the_full_palette_default() -> None:
+    result = reconcile_config(
+        NodeType.DATA_INPUT, {"inputType": "file", "path": "keep.parquet"}, reset=True
+    )
+    assert result.config["format"] == "parquet"
+    assert result.config["mode"] == "scan"
+    assert result.config["path"] == ""
+
+
+def test_unrecoverable_list_entries_are_excluded_not_null() -> None:
+    first = {
+        "banding": "continuous",
+        "column": "age",
+        "outputColumn": "age_band",
+        "rules": [{"lt": 30, "value": "young"}],
+        "default": "other",
+        "rightClosed": True,
+    }
+    last = {
+        "banding": "categorical",
+        "column": "region",
+        "outputColumn": "region_band",
+        "rules": {"north": "N"},
+        "default": None,
+        "rightClosed": False,
+    }
+    result = reconcile_config(NodeType.BANDING, {"factors": [first, "corrupt", last]})
+    assert result.config["factors"] == [first, last]
+    assert None not in result.config["factors"]
+    (removed,) = [change for change in result.changes if change.path == "/factors/1"]
+    assert removed.outcome == "removed"
+    assert "corrupt" in removed.reason
+    (issue,) = [item for item in result.issues if item.path == "/factors/1"]
+    assert issue.severity == "warning"

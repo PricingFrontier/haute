@@ -246,6 +246,15 @@ def _pointer(path: str, segment: str | int) -> str:
     return f"{path}/{escaped}" if path else f"/{escaped}"
 
 
+# Distinguishes "nothing recoverable" from a legitimately recovered ``None``.
+_UNRECOVERED: Any = object()
+
+
+def _short_repr(value: Any) -> str:
+    text = repr(value)
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
 def _reconcile_value(
     value: Any,
     annotation: Any,
@@ -253,6 +262,8 @@ def _reconcile_value(
     path: str,
     changes: list[RecoveryFieldChange],
     issues: list[RecoveryIssue],
+    *,
+    in_collection: bool = False,
 ) -> Any:
     """Recursively retain independent leaves, including dynamic map keys."""
     origin, args = get_origin(annotation), get_args(annotation)
@@ -275,7 +286,7 @@ def _reconcile_value(
             recovered = _reconcile_value(
                 item, hints[key], child_default, child_path, changes, issues
             )
-            if recovered is not None or item is None and _valid(item, hints[key]):
+            if recovered is not _UNRECOVERED:
                 object_result[key] = recovered
         return object_result
     if origin is list and isinstance(value, list):
@@ -285,11 +296,17 @@ def _reconcile_value(
             child_default = None
             if isinstance(default, list) and index < len(default):
                 child_default = default[index]
-            list_result.append(
-                _reconcile_value(
-                    item, item_type, child_default, _pointer(path, index), changes, issues
-                )
+            recovered = _reconcile_value(
+                item,
+                item_type,
+                child_default,
+                _pointer(path, index),
+                changes,
+                issues,
+                in_collection=True,
             )
+            if recovered is not _UNRECOVERED:
+                list_result.append(recovered)
         return list_result
     if origin is dict and isinstance(value, dict):
         value_type = args[1] if len(args) > 1 else Any
@@ -304,7 +321,11 @@ def _reconcile_value(
                 )
                 issues.append(_issue(child_path, "invalid_value", "Map key needs correction."))
                 continue
-            map_result[key] = _reconcile_value(item, value_type, None, child_path, changes, issues)
+            recovered = _reconcile_value(
+                item, value_type, None, child_path, changes, issues, in_collection=True
+            )
+            if recovered is not _UNRECOVERED:
+                map_result[key] = recovered
         return map_result
     if _valid(value, annotation):
         changes.append(
@@ -332,13 +353,35 @@ def _reconcile_value(
             )
         )
         return deepcopy(default)
+    if in_collection:
+        # Never emit a null placeholder into a collection: exclude the entry
+        # and keep its original value in the recovery report.
+        changes.append(
+            RecoveryFieldChange(
+                path=path,
+                outcome="removed",
+                reason="Unrecoverable entry was excluded from the candidate; "
+                f"original: {_short_repr(value)}",
+            )
+        )
+        issues.append(
+            _issue(
+                path,
+                "invalid_value",
+                "Entry was excluded from the candidate; restore it explicitly if needed.",
+                "warning",
+            )
+        )
+        return _UNRECOVERED
     changes.append(
         RecoveryFieldChange(
-            path=path, outcome="needs_input", reason="Invalid value has no safe default."
+            path=path,
+            outcome="needs_input",
+            reason=f"Invalid value has no safe default; original: {_short_repr(value)}",
         )
     )
     issues.append(_issue(path, "invalid_value", "Value needs explicit correction."))
-    return None
+    return _UNRECOVERED
 
 
 def _validator_issues(
@@ -348,9 +391,10 @@ def _validator_issues(
         if node_type is NodeType.API_INPUT and "tables" in config:
             validate_v2_schema(config)
         elif node_type is NodeType.DATA_INPUT:
-            validate_data_input_config(config)
+            # Missing locators are completeness, not a recovery error.
+            validate_data_input_config(config, require_complete=False)
         elif node_type is NodeType.DATA_OUTPUT:
-            validate_data_output_config(config)
+            validate_data_output_config(config, require_complete=False)
         elif node_type is NodeType.BANDING:
             validate_banding_config(config)
         elif node_type is NodeType.RATING_STEP:
@@ -648,15 +692,9 @@ def reconcile_config(
             continue
         default = defaults.get(key) if key != discriminant_field else None
         recovered = _reconcile_value(value, hints[key], default, _pointer("", key), changes, issues)
-        if recovered is not None or value is None and _valid(value, hints[key]):
+        if recovered is not _UNRECOVERED:
             candidate[key] = recovered
-    for key, value in defaults.items():
-        if key not in candidate and not invalid_discriminant:
-            candidate[key] = deepcopy(value)
-            changes.append(
-                RecoveryFieldChange(
-                    path=key, outcome="defaulted", reason="Current palette default."
-                )
-            )
+    # Absent fields stay absent: recovery never inserts a palette value for a
+    # field the author omitted. Only an explicit reset seeds the full default.
     issues.extend(validate_recovery_config(node_type, candidate))
     return ConfigRecoveryResult(candidate, changes, issues)
