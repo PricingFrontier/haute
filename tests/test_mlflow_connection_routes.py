@@ -291,6 +291,20 @@ class TestTestConnection:
         assert body["category"] == "configuration"
         assert "tracking_uri" in body["detail"]
 
+    def test_local_candidate_probes_the_folder_a_save_would_keep(
+        self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        team_runs = project_root / "team-runs"
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", team_runs.as_uri())
+        probed: list[str] = []
+        with patch(
+            "haute.routes.mlflow._search_experiments_probe",
+            side_effect=lambda uri: probed.append(uri),
+        ):
+            body = client.post("/api/mlflow/test-connection", json={"mode": "local"}).json()
+        assert body["ok"] is True
+        assert probed == [team_runs.as_uri()]
+
     def test_candidate_server_draft_inherits_matching_env_credentials(
         self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

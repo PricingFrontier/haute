@@ -227,11 +227,7 @@ def save_mlflow_settings(settings: MlflowSettings, project_root: Path | None = N
     """
     import tomlkit
 
-    _validate_settings(settings)
-
-    effective = settings
-    if settings.mode == "local" and not settings.folder:
-        effective = MlflowSettings(mode="local", folder=_folder_to_persist(project_root))
+    effective = _effective_settings(settings, project_root)
 
     toml_path = _toml_path(project_root)
     write_target = _project_write_target(toml_path, project_root)
@@ -271,6 +267,20 @@ def _project_write_target(toml_path: Path, project_root: Path | None) -> Path:
             "Refusing to write MLflow settings: haute.toml resolves outside the project root."
         )
     return resolved
+
+
+def _effective_settings(settings: MlflowSettings, project_root: Path | None) -> MlflowSettings:
+    """Validate *settings* and normalize a bare local selection.
+
+    Local mode with an empty ``folder`` becomes the currently *resolved*
+    local folder — the single rule both a save and a candidate probe apply,
+    so a draft is always tested as exactly the configuration a save would
+    persist.
+    """
+    _validate_settings(settings)
+    if settings.mode == "local" and not settings.folder:
+        return MlflowSettings(mode="local", folder=_folder_to_persist(project_root))
+    return settings
 
 
 def _folder_to_persist(project_root: Path | None) -> str:
@@ -365,15 +375,16 @@ def candidate_tracking_config(
 ) -> TrackingConfig:
     """Resolve a *candidate* (unsaved) selection exactly as a save would.
 
-    Validates with the same rules as :func:`save_mlflow_settings` and
-    resolves through the same branches — env-credential re-attachment
-    included — without reading or writing ``haute.toml``. Used by the
-    connection-test endpoint so a draft selection is probed as the
-    configuration it would become.
+    Validates and normalizes with the same rules as
+    :func:`save_mlflow_settings` (a bare local selection keeps the
+    currently resolved folder) and resolves through the same branches —
+    env-credential re-attachment included — without writing
+    ``haute.toml``. Used by the connection-test endpoint so a draft
+    selection is probed as exactly the configuration it would become.
     """
     root = project_root if project_root is not None else _project_root_default()
-    _validate_settings(settings)
-    return _config_from_settings(settings, root, config_source="toml")
+    effective = _effective_settings(settings, project_root)
+    return _config_from_settings(effective, root, config_source="toml")
 
 
 def _databricks_config(uri: str, *, config_source: str) -> TrackingConfig:

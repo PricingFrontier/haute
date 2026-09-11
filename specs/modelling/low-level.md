@@ -509,10 +509,11 @@ the stored URI, the env value wins for connecting (destination stays
 redacted). Saving the displayed configuration therefore never silently
 drops working authentication — the toml carries the non-secret selection,
 `.env` carries the secret. `candidate_tracking_config(settings, root)`
-resolves an *unsaved* selection through exactly the same validation and
-branches (env re-attachment included) without touching `haute.toml`; the
-connection-test endpoint uses it so a draft is probed as the configuration
-it would become.
+resolves an *unsaved* selection through exactly the same validation,
+normalization (a bare local selection keeps the currently resolved folder,
+via the shared `_effective_settings()`), and branches (env re-attachment
+included) without writing `haute.toml`; the connection-test endpoint uses
+it so a draft is probed as exactly the configuration a save would produce.
 
 `load_mlflow_settings()` reads the stored section (tomllib);
 `save_mlflow_settings()` validates the same rules and rewrites only the

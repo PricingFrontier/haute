@@ -415,6 +415,37 @@ class TestResolvePrecedence:
         assert config.tracking_uri == "https://mlflow.example.com"
         assert "hunter2xyz" not in config.tracking_uri
 
+    def test_local_candidate_matches_what_a_save_would_produce_env_folder(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A bare local draft must probe the same folder a save would keep —
+        # here the env-selected custom store, not the default ./mlruns.
+        from haute.modelling._mlflow_settings import candidate_tracking_config
+
+        team_runs = project_root / "team-runs"
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", team_runs.as_uri())
+
+        candidate = candidate_tracking_config(MlflowSettings(mode="local"), project_root)
+        save_mlflow_settings(MlflowSettings(mode="local"), project_root)
+        saved = resolve_tracking_config(project_root)
+
+        assert candidate.tracking_uri == saved.tracking_uri
+        assert Path(candidate.destination) == team_runs
+
+    def test_local_candidate_matches_what_a_save_would_produce_toml_folder(
+        self, project_root: Path
+    ) -> None:
+        from haute.modelling._mlflow_settings import candidate_tracking_config
+
+        _write_mlflow_section(project_root, 'mode = "local"\nfolder = "team-runs"\n')
+
+        candidate = candidate_tracking_config(MlflowSettings(mode="local"), project_root)
+        save_mlflow_settings(MlflowSettings(mode="local"), project_root)
+        saved = resolve_tracking_config(project_root)
+
+        assert candidate.tracking_uri == saved.tracking_uri
+        assert Path(candidate.destination) == project_root / "team-runs"
+
     def test_env_credentialed_server_uri_has_redacted_destination(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
