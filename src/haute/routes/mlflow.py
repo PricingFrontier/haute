@@ -8,7 +8,10 @@ connection surface — tracking status, ``[mlflow]`` settings read/write in
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
+from queue import Empty, Queue
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
@@ -190,33 +193,33 @@ def _mlflow_availability() -> tuple[bool, bool, str]:
 
 @router.get("/status", response_model=MlflowStatusResponse)
 def mlflow_status() -> MlflowStatusResponse:
-    """Report tracking-connection status; misconfiguration is data, not a 5xx."""
+    """Report tracking-connection status; misconfiguration is data, not a 5xx.
+
+    Package presence, importability, and configuration are independent
+    facts: resolution needs no mlflow package, so a missing package never
+    forces ``configured=false``. ``detail`` carries the package problem
+    when there is one, else the configuration problem.
+    """
     from haute.modelling._mlflow_settings import resolve_tracking_config
 
-    installed, importable, detail = _mlflow_availability()
-    if not (installed and importable):
-        return MlflowStatusResponse(
-            mlflow_installed=installed,
-            mlflow_importable=importable,
-            configured=False,
-            detail=detail,
-        )
+    installed, importable, package_detail = _mlflow_availability()
     try:
         config = resolve_tracking_config(_get_project_root())
     except MlflowConfigError as exc:
         return MlflowStatusResponse(
-            mlflow_installed=True,
-            mlflow_importable=True,
+            mlflow_installed=installed,
+            mlflow_importable=importable,
             configured=False,
-            detail=str(exc),
+            detail=package_detail or str(exc),
         )
     return MlflowStatusResponse(
-        mlflow_installed=True,
-        mlflow_importable=True,
+        mlflow_installed=installed,
+        mlflow_importable=importable,
         configured=True,
         mode=config.mode,  # type: ignore[arg-type]
         destination=config.destination,
         config_source=config.config_source,  # type: ignore[arg-type]
+        detail=package_detail,
     )
 
 
@@ -276,48 +279,85 @@ def put_mlflow_settings(body: MlflowSettingsUpdateRequest) -> MlflowSettingsResp
     return _settings_response()
 
 
-def _search_experiments_probe(tracking_uri: str) -> None:
-    """Run one bounded ``search_experiments`` call against *tracking_uri*.
+# At most this many probe workers may exist at once. A worker slot is
+# released when its thread finishes; a probe abandoned on timeout keeps its
+# slot until the underlying call returns, so stalled backends cannot
+# accumulate unbounded threads — later probes report busy instead.
+_PROBE_SLOTS = threading.BoundedSemaphore(2)
 
-    Runs in a worker thread so a hung connection cannot block the route
-    beyond the probe timeout; the worker is abandoned (``wait=False``) on
-    timeout. Classifying any raised error is the caller's concern.
+
+class _ProbeBusyError(Exception):
+    """All probe worker slots are occupied by still-running probes."""
+
+
+def _run_probe_bounded(
+    probe: Callable[[], object], timeout: float = _PROBE_TIMEOUT_SECONDS
+) -> None:
+    """Run *probe* on a daemon worker thread under a hard deadline.
+
+    Raises whatever *probe* raised, ``TimeoutError`` when the deadline
+    passes first (the daemon worker is abandoned; its slot frees when the
+    call eventually returns and the thread cannot delay process exit), or
+    :class:`_ProbeBusyError` when no worker slot is free.
     """
-    from concurrent.futures import ThreadPoolExecutor
+    if not _PROBE_SLOTS.acquire(blocking=False):
+        raise _ProbeBusyError
+    outcome: Queue[BaseException | None] = Queue(maxsize=1)
 
-    import mlflow
-    from mlflow.tracking import MlflowClient
+    def _worker() -> None:
+        try:
+            probe()
+            outcome.put(None)
+        except BaseException as exc:
+            outcome.put(exc)
+        finally:
+            _PROBE_SLOTS.release()
 
-    def _probe() -> None:
-        allow_file_store_if_local(tracking_uri)
-        mlflow.set_tracking_uri(tracking_uri)
-        MlflowClient(tracking_uri=tracking_uri).search_experiments(max_results=1)
-
-    pool = ThreadPoolExecutor(max_workers=1)
+    threading.Thread(target=_worker, name="mlflow-probe", daemon=True).start()
     try:
-        pool.submit(_probe).result(timeout=_PROBE_TIMEOUT_SECONDS)
-    finally:
-        pool.shutdown(wait=False)
+        result = outcome.get(timeout=timeout)
+    except Empty:
+        raise TimeoutError(f"MLflow connection probe exceeded {timeout} seconds.") from None
+    if result is not None:
+        raise result
+
+
+def _search_experiments_probe(tracking_uri: str) -> None:
+    """One ``search_experiments`` call against *tracking_uri* (the real
+    network body of the connection test; bounding runs in the caller).
+
+    Deliberately never calls ``mlflow.set_tracking_uri``: probing a
+    candidate destination must not mutate the process-global tracking URI
+    other consumers read.
+    """
+    import mlflow.tracking
+
+    allow_file_store_if_local(tracking_uri)
+    mlflow.tracking.MlflowClient(tracking_uri=tracking_uri).search_experiments(max_results=1)
+
+
+def _iter_exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
 
 
 def _classify_probe_error(exc: BaseException) -> str:
     """Map a probe failure to a stable category.
 
     Uses MLflow's structured ``RestException.error_code`` plus transport
-    exception types — never the exception class alone.
+    exception types, inspected across the whole ``__cause__``/``__context__``
+    chain — MLflow wraps transport failures in ``MlflowException``, so the
+    outer type alone is never trusted.
     """
     import requests
     from mlflow.exceptions import RestException
 
-    if isinstance(exc, RestException):
-        code = getattr(exc, "error_code", "")
-        if code in ("UNAUTHENTICATED", "INVALID_LOGIN", "CUSTOMER_UNAUTHORIZED"):
-            return "authentication"
-        if code == "PERMISSION_DENIED":
-            return "permission"
-        if code in ("RESOURCE_DOES_NOT_EXIST", "ENDPOINT_NOT_FOUND"):
-            return "missing_resource"
-        return "unknown"
     connectivity_types = (
         TimeoutError,
         ConnectionError,
@@ -325,8 +365,18 @@ def _classify_probe_error(exc: BaseException) -> str:
         requests.exceptions.ConnectionError,
         requests.exceptions.Timeout,
     )
-    if isinstance(exc, connectivity_types):
-        return "connectivity"
+    for link in _iter_exception_chain(exc):
+        if isinstance(link, RestException):
+            code = getattr(link, "error_code", "")
+            if code in ("UNAUTHENTICATED", "INVALID_LOGIN", "CUSTOMER_UNAUTHORIZED"):
+                return "authentication"
+            if code == "PERMISSION_DENIED":
+                return "permission"
+            if code in ("RESOURCE_DOES_NOT_EXIST", "ENDPOINT_NOT_FOUND"):
+                return "missing_resource"
+            return "unknown"
+        if isinstance(link, connectivity_types):
+            return "connectivity"
     return "unknown"
 
 
@@ -343,7 +393,13 @@ def mlflow_test_connection() -> MlflowTestConnectionResponse:
     except MlflowConfigError as exc:
         return MlflowTestConnectionResponse(ok=False, category="configuration", detail=str(exc))
     try:
-        _search_experiments_probe(config.tracking_uri)
+        _run_probe_bounded(lambda: _search_experiments_probe(config.tracking_uri))
+    except _ProbeBusyError:
+        return MlflowTestConnectionResponse(
+            ok=False,
+            category="unknown",
+            detail="Another connection test is still running; try again shortly.",
+        )
     except BaseException as exc:
         category = _classify_probe_error(exc)
         logger.warning(

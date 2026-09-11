@@ -2585,7 +2585,9 @@ class MlflowSettingsResponse(BaseModel):
 
 
 class MlflowSettingsUpdateRequest(BaseModel):
-    mode: Literal["databricks", "server", "local"]
+    # ``mode`` is a plain string so an unknown mode flows into the settings
+    # validator and returns the documented field-naming 400 (not a 422).
+    mode: str
     tracking_uri: str = ""
     folder: str = ""
 

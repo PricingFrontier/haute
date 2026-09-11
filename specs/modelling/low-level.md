@@ -481,13 +481,18 @@ which returns a `TrackingConfig` (`mode`, `tracking_uri`, human-readable
 `MlflowConfigError` with an actionable, non-secret reason. Precedence:
 
 1. **`[mlflow]` in `haute.toml`** (keys: `mode`, required; `tracking_uri`,
-   server mode only, must be `http(s)://`; `folder`, local mode only,
-   optional). Mode `databricks` additionally requires `DATABRICKS_HOST` +
-   `DATABRICKS_TOKEN` in the environment; a missing prerequisite raises
-   `MlflowConfigError` naming the missing variable or field — never a silent
-   fallback to another mode. A `folder`/`tracking_uri` supplied for a mode
-   that does not use it is a validation error, not silently ignored. Local
-   mode without `folder` uses `./mlruns`.
+   server mode only, must be an `http(s)://` URL with a non-empty host and
+   **no embedded credentials** — secrets belong in `.env`, never in the
+   checked-in toml; `folder`, local mode only, optional). Mode `databricks`
+   additionally requires `DATABRICKS_HOST` + `DATABRICKS_TOKEN` in the
+   environment; a missing prerequisite raises `MlflowConfigError` naming
+   the missing variable or field — never a silent fallback to another
+   mode. A `folder`/`tracking_uri` supplied for a mode that does not use
+   it is a validation error, not silently ignored. Local mode without
+   `folder` uses `./mlruns`. Validation errors never echo a rejected URI —
+   a malformed or credential-bearing value must not leak through its own
+   error message. An unparseable URI (from toml or env) is an
+   `MlflowConfigError`, never an uncaught `ValueError`.
 2. **Environment fallback** (no `[mlflow]` section): `MLFLOW_TRACKING_URI`
    is classified by form via `classify_tracking_uri()` — `databricks` or a
    `databricks://` profile URI → databricks mode; `http://`/`https://` →
@@ -503,7 +508,21 @@ which returns a `TrackingConfig` (`mode`, `tracking_uri`, human-readable
 layout byte-for-byte. Saving local mode with an empty `folder` persists the
 currently *resolved* local folder, so saving an unchanged env-derived local
 configuration (a `file:` `MLFLOW_TRACKING_URI`) can never silently redirect
-logging or discovery to `./mlruns`.
+logging or discovery to `./mlruns` — and the runs already logged in that
+folder stay discoverable through `/api/mlflow/experiments` after the save.
+Before writing, the resolved target path must remain inside the project
+root (case-folded, fully resolved containment, mirroring
+`haute._sandbox.validate_project_path`): a `haute.toml` that is a symlink
+escaping the project is refused with `MlflowConfigError`, and the external
+target is left untouched. When no explicit `project_root` is passed, every
+entry point (load/save/resolve) uses `haute._sandbox._get_project_root()`,
+so the settings surface, the discovery routes, and the logging paths all
+agree on which `haute.toml` and default runs folder they mean. A
+credential-bearing env `MLFLOW_TRACKING_URI` (userinfo in an `http(s)` URL)
+still *functions* — the full URI is passed to the MLflow client — but every
+displayed field derives from `redact_uri()`, which strips userinfo, so
+`TrackingConfig.destination` and everything built from it never contain a
+secret.
 
 **`_mlflow_log.py` wrappers** (call-site shapes unchanged):
 

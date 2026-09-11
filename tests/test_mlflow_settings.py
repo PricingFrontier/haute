@@ -92,6 +92,21 @@ class TestClassifyTrackingUri:
         with pytest.raises(MlflowConfigError, match=scheme):
             classify_tracking_uri(value)
 
+    @pytest.mark.parametrize("value", ["http://", "https:example.com"])
+    def test_http_uri_without_a_host_is_rejected(self, value: str) -> None:
+        with pytest.raises(MlflowConfigError, match="host"):
+            classify_tracking_uri(value)
+
+    def test_unparseable_uri_is_config_error_without_echoing_the_value(self) -> None:
+        with pytest.raises(MlflowConfigError) as excinfo:
+            classify_tracking_uri("https://user:secret@[")
+        assert "secret" not in str(excinfo.value)
+
+    def test_credentialed_env_uri_still_classifies_as_server(self) -> None:
+        mode, uri = classify_tracking_uri("https://alice:secret@mlflow.example.com")
+        assert mode == "server"
+        assert uri == "https://alice:secret@mlflow.example.com"
+
 
 # ---------------------------------------------------------------------------
 # load / save round trip
@@ -182,6 +197,47 @@ class TestLoadSaveSettings:
             f.write('\n[mlflow]\nmode = "filesystem"\n')
         with pytest.raises(MlflowConfigError, match="filesystem"):
             load_mlflow_settings(project_root)
+
+    def test_save_rejects_credentialed_server_uri_without_echoing_secret(
+        self, project_root: Path
+    ) -> None:
+        with pytest.raises(MlflowConfigError) as excinfo:
+            save_mlflow_settings(
+                MlflowSettings(
+                    mode="server",
+                    tracking_uri="https://alice:hunter2xyz@mlflow.example.com",
+                ),
+                project_root,
+            )
+        message = str(excinfo.value)
+        assert "credential" in message.lower() or ".env" in message
+        assert "hunter2xyz" not in message
+        assert "mlflow" not in tomllib.loads(
+            (project_root / "haute.toml").read_text(encoding="utf-8")
+        )
+
+    def test_server_validation_error_does_not_echo_the_uri(self, project_root: Path) -> None:
+        with pytest.raises(MlflowConfigError) as excinfo:
+            save_mlflow_settings(
+                MlflowSettings(mode="server", tracking_uri="ftp://user:hunter2@x"),
+                project_root,
+            )
+        assert "hunter2" not in str(excinfo.value)
+
+    def test_save_refuses_symlinked_haute_toml_escaping_the_project(self, tmp_path: Path) -> None:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        victim = outside / "haute.toml"
+        victim.write_text('[project]\nname = "victim"\n', encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir()
+        try:
+            (project / "haute.toml").symlink_to(victim)
+        except OSError:
+            pytest.skip("symlink creation not permitted in this environment")
+        with pytest.raises(MlflowConfigError, match="outside the project"):
+            save_mlflow_settings(MlflowSettings(mode="local", folder="mlruns"), project)
+        assert victim.read_text(encoding="utf-8") == '[project]\nname = "victim"\n'
 
 
 # ---------------------------------------------------------------------------
@@ -316,3 +372,23 @@ class TestResolvePrecedence:
         config = resolve_tracking_config(project_root)
         assert config.mode == "local"
         assert config.config_source == "toml"
+
+    def test_env_credentialed_server_uri_has_redacted_destination(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(
+            "MLFLOW_TRACKING_URI", "https://alice:secret@mlflow.example.com:8443/base"
+        )
+        config = resolve_tracking_config(project_root)
+        assert config.mode == "server"
+        # The client keeps the full URI; every displayed field is redacted.
+        assert config.tracking_uri == "https://alice:secret@mlflow.example.com:8443/base"
+        assert config.destination == "https://mlflow.example.com:8443/base"
+        assert "secret" not in config.destination
+
+    def test_env_malformed_uri_is_config_error_not_crash(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://[")
+        with pytest.raises(MlflowConfigError):
+            resolve_tracking_config(project_root)

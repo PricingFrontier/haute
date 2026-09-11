@@ -68,10 +68,12 @@ class TestResolveTrackingBackend:
     def test_toml_local_mode_overrides_databricks_credentials(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        from haute._sandbox import set_project_root
+
         monkeypatch.setenv("DATABRICKS_HOST", "https://myhost.databricks.com")
         monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
         (tmp_path / "haute.toml").write_text('[mlflow]\nmode = "local"\n', encoding="utf-8")
-        monkeypatch.chdir(tmp_path)
+        set_project_root(tmp_path)  # conftest restores the original root
 
         from haute.modelling._mlflow_log import resolve_tracking_backend
 
