@@ -6,7 +6,7 @@ import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import type { OnUpdateConfigResult } from "../../panels/editors"
 import type { HauteNodeData } from "../../types/node"
-import type { PipelineEditorDocument } from "../../types/pipelineDocument"
+import type { PipelineEditorDocument, RecoveryNode } from "../../types/pipelineDocument"
 import { useScopedNodeSave } from "../useScopedNodeSave"
 
 const { saveNodeScoped } = vi.hoisted(() => ({ saveNodeScoped: vi.fn() }))
@@ -15,44 +15,74 @@ vi.mock("../../api/client", async (importOriginal) => ({
   saveNodeScoped,
 }))
 
-function scopedNode(id: string, label: string, code: string): Node {
+const NODE_LABELS: Record<string, string> = { "a@1": "A", "b@1": "B" }
+
+function recoveryNode(id: string, config: Record<string, unknown>): RecoveryNode {
   return {
-    id,
-    position: { x: 0, y: 0 },
-    data: {
-      label,
-      nodeType: "polars",
-      config: { code },
-      _sourceFile: "main.py",
-      _recoveryId: id,
-      _scopedEditable: true,
-    },
-  } as unknown as Node
-}
-
-function documentWithRevision(revision: string) {
-  return makePipelineEditorDocument({ source_revision: revision })
-}
-
-type SavedDocument = PipelineEditorDocument & {
-  saved_node?: { id: string; config: Record<string, unknown> }
+    recovery_id: id,
+    authored_id: id.split("@")[0],
+    label: NODE_LABELS[id],
+    decorator_name: "polars",
+    node_type: "polars",
+    description: "",
+    availability: "ready",
+    display_position: { x: 0, y: 0 },
+    config: structuredClone(config) as RecoveryNode["config"],
+    config_reference: null,
+    function_name: NODE_LABELS[id],
+    default_input_name: NODE_LABELS[id],
+    source_handle_input_names: {},
+    source_file: "main.py",
+    source_span: null,
+    diagnostic_ids: [],
+    blocking_path: [],
+    scoped_editable: true,
+  }
 }
 
 describe("useScopedNodeSave", () => {
+  // The simulated backend's persisted per-node configurations: saves write
+  // here, and every authoritative document is built from this state alone.
+  let serverConfigs: Map<string, Record<string, unknown>>
+  let revisionCounter: number
   let graphRef: { current: { nodes: Node[]; edges: never[] } }
   let onUpdateNode: Mock<(id: string, data: Record<string, unknown>) => OnUpdateConfigResult>
   let applyDocument: Mock<(document: PipelineEditorDocument, savedNodeId: string) => void>
-  let revisionCounter: number
+
+  function serverDocument(revision: string): PipelineEditorDocument {
+    return makePipelineEditorDocument({
+      source_revision: revision,
+      recoveryNodes: [...serverConfigs.entries()].map(([id, config]) => recoveryNode(id, config)),
+    })
+  }
+
+  function canvasFromDocument(document: PipelineEditorDocument): Node[] {
+    return document.nodes.map(
+      (node) =>
+        ({
+          id: node.recovery_id,
+          position: { ...node.display_position },
+          data: {
+            label: node.label,
+            nodeType: node.node_type,
+            config: structuredClone(node.config ?? {}),
+            _sourceFile: node.source_file,
+            _recoveryId: node.recovery_id,
+            _scopedEditable: node.scoped_editable,
+          },
+        }) as unknown as Node,
+    )
+  }
 
   beforeEach(() => {
     vi.clearAllMocks()
     revisionCounter = 1
-    graphRef = {
-      current: {
-        nodes: [scopedNode("a@1", "A", "authored-a"), scopedNode("b@1", "B", "authored-b")],
-        edges: [],
-      },
-    }
+    serverConfigs = new Map([
+      ["a@1", { code: "authored-a" }],
+      ["b@1", { code: "authored-b" }],
+    ])
+    const initial = serverDocument("rev-1")
+    graphRef = { current: { nodes: canvasFromDocument(initial), edges: [] } }
     // Accepted edits mutate the live graph, exactly as the commit controller
     // does — the hook must send the edited values, not the authored ones.
     onUpdateNode = vi.fn((id: string, data: Record<string, unknown>) => {
@@ -61,31 +91,23 @@ describe("useScopedNodeSave", () => {
       )
       return { ok: true as const }
     })
-    // The backend echoes the saved configuration in the authoritative
-    // document; adoption replaces both the document status and the canvas.
+    // The backend persists the submitted configuration and returns a full
+    // authoritative document built from its own state.
     saveNodeScoped.mockImplementation(
       async (args: { targetRecoveryId: string; config: Record<string, unknown> }) => {
+        serverConfigs.set(args.targetRecoveryId, structuredClone(args.config))
         revisionCounter += 1
-        return {
-          ...documentWithRevision(`rev-${revisionCounter}`),
-          saved_node: { id: args.targetRecoveryId, config: args.config },
-        }
+        return serverDocument(`rev-${revisionCounter}`)
       },
     )
+    // Adoption replaces the whole canvas from the response's nodes — if the
+    // response omitted or reset another node, the canvas now shows it.
     applyDocument = vi.fn((document: PipelineEditorDocument) => {
-      const withSaved = document as SavedDocument
-      if (withSaved.saved_node) {
-        const saved = withSaved.saved_node
-        graphRef.current.nodes = graphRef.current.nodes.map((node) =>
-          node.id === saved.id
-            ? ({ ...node, data: { ...(node.data as HauteNodeData), config: saved.config } } as Node)
-            : node,
-        )
-      }
+      graphRef.current.nodes = canvasFromDocument(document)
       useDocumentStatusStore.getState().loadDocumentStatus(document)
     })
     act(() => {
-      useDocumentStatusStore.getState().loadDocumentStatus(documentWithRevision("rev-1"))
+      useDocumentStatusStore.getState().loadDocumentStatus(initial)
     })
   })
 
@@ -141,7 +163,7 @@ describe("useScopedNodeSave", () => {
     expect(nodeConfig("b@1")).toEqual({ code: "authored-b" })
 
     await act(async () => {
-      release(documentWithRevision("rev-2"))
+      release(serverDocument("rev-2"))
       await pending
     })
     expect(hook.result.current.handlePanelUpdateNode("b@1", editedData("b@1", "b-edit")).ok).toBe(
@@ -165,12 +187,14 @@ describe("useScopedNodeSave", () => {
     await act(async () => {
       await expect(hook.result.current.handleScopedSave()).resolves.toEqual({ ok: true })
     })
-    // The request carried A's edited value, and adoption kept it on canvas.
+    // The request carried A's edited value; the canvas was rebuilt from the
+    // authoritative response, which persisted it and preserved B.
     expect(saveNodeScoped).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({ targetRecoveryId: "a@1", config: { code: "a-edit-1" } }),
     )
     expect(nodeConfig("a@1")).toEqual({ code: "a-edit-1" })
+    expect(nodeConfig("b@1")).toEqual({ code: "authored-b" })
     await waitFor(() => expect(useDocumentStatusStore.getState().sourceRevision).toBe("rev-2"))
 
     hook.rerender({ selectedNodeId: "b@1" })
@@ -184,9 +208,14 @@ describe("useScopedNodeSave", () => {
       2,
       expect.objectContaining({ targetRecoveryId: "b@1", config: { code: "b-edit-2" } }),
     )
-    // Neither node's saved work was discarded anywhere in the sequence.
+    // The final canvas is exactly the simulated backend's persisted state:
+    // both saves survived whole-document replacement, nothing was discarded
+    // and no node was lost.
+    expect(graphRef.current.nodes.map((node) => node.id).sort()).toEqual(["a@1", "b@1"])
     expect(nodeConfig("a@1")).toEqual({ code: "a-edit-1" })
     expect(nodeConfig("b@1")).toEqual({ code: "b-edit-2" })
+    expect(serverConfigs.get("a@1")).toEqual({ code: "a-edit-1" })
+    expect(serverConfigs.get("b@1")).toEqual({ code: "b-edit-2" })
   })
 
   it("releases edit tracking when an unchanged document is re-adopted", async () => {
@@ -201,7 +230,7 @@ describe("useScopedNodeSave", () => {
     // Reloading the pipeline re-adopts the SAME revision (local edits are
     // discarded); tracking must release even though the revision is unchanged.
     act(() => {
-      useDocumentStatusStore.getState().loadDocumentStatus(documentWithRevision("rev-1"))
+      useDocumentStatusStore.getState().loadDocumentStatus(serverDocument("rev-1"))
     })
     await waitFor(() =>
       expect(hook.result.current.handlePanelUpdateNode("b@1", editedData("b@1", "b-edit")).ok).toBe(
@@ -220,11 +249,11 @@ describe("useScopedNodeSave", () => {
     })
     // Something else replaced the document while the request was in flight.
     act(() => {
-      useDocumentStatusStore.getState().loadDocumentStatus(documentWithRevision("rev-external"))
+      useDocumentStatusStore.getState().loadDocumentStatus(serverDocument("rev-external"))
     })
     let result!: { ok: boolean; error?: string }
     await act(async () => {
-      release(documentWithRevision("rev-9"))
+      release(serverDocument("rev-9"))
       result = await pending
     })
     expect(result.ok).toBe(false)
@@ -245,7 +274,7 @@ describe("useScopedNodeSave", () => {
       error: expect.stringContaining("already in flight"),
     })
     await act(async () => {
-      release(documentWithRevision("rev-2"))
+      release(serverDocument("rev-2"))
       await pending
     })
     expect(saveNodeScoped).toHaveBeenCalledTimes(1)
