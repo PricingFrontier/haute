@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import math
+
 import pytest
 
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
@@ -351,7 +353,7 @@ class TestLocalRegistrationEndToEnd:
             )
             predictions = scoring.raw_model.predict(frame)
             assert len(predictions) == 4
-            assert all(float(p) == float(p) for p in predictions)  # finite
+            assert all(math.isfinite(float(p)) for p in predictions)
         finally:
             mlflow.set_tracking_uri(None)
             mlflow.set_registry_uri(None)
