@@ -2,6 +2,7 @@ import type { Edge, Node } from "@xyflow/react"
 
 import type {
   PipelineDiagnostic,
+  PipelineNodeCompleteness,
   PipelineDocumentCapabilities,
   PipelineEditorDocument,
   PipelineElementAvailability,
@@ -33,6 +34,8 @@ export interface PipelineDocumentFixture extends CanonicalGraphFixture {
   has_authored_content?: boolean
   diagnostics?: PipelineDiagnostic[]
   diagnostics_omitted?: number
+  completeness?: PipelineNodeCompleteness[]
+  completeness_omitted?: number
   capabilities?: Partial<PipelineDocumentCapabilities>
   recoveryNodes?: RecoveryNode[]
   recoveryEdges?: RecoveryEdge[]
@@ -227,6 +230,8 @@ export function makePipelineEditorDocument(
     submodels,
     diagnostics: fixture.diagnostics ?? [],
     diagnostics_omitted: fixture.diagnostics_omitted ?? 0,
+    completeness: fixture.completeness ?? [],
+    completeness_omitted: fixture.completeness_omitted ?? 0,
     capabilities: capabilitiesFor(status, trusted, fixture.capabilities),
   }
 }

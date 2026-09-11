@@ -305,6 +305,22 @@ class PipelineRecoveryDiagnostic(BaseModel):
     )
 
 
+class PipelineNodeCompleteness(BaseModel):
+    """A required value missing from an otherwise loadable node's config.
+
+    Completeness is not a load failure: entries never mark a node
+    unavailable, never degrade the document, and never appear in
+    ``diagnostics``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    element_id: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    code: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
+    message: str = Field(min_length=1, max_length=1024)
+
+
 class PipelineDocumentCapabilities(BaseModel):
     """Server-derived admission fence for one loaded editor document."""
 
@@ -460,6 +476,8 @@ class PipelineEditorDocument(BaseModel):
     submodels: dict[str, RecoverySubmodelDefinition] | None = None
     diagnostics: list[PipelineRecoveryDiagnostic] = Field(default_factory=list)
     diagnostics_omitted: int = Field(default=0, ge=0)
+    completeness: list[PipelineNodeCompleteness] = Field(default_factory=list)
+    completeness_omitted: int = Field(default=0, ge=0)
     capabilities: PipelineDocumentCapabilities
 
 

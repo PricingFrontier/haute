@@ -126,6 +126,13 @@ export interface PipelineDiagnostic {
   incident_id: string | null
 }
 
+export interface PipelineNodeCompleteness {
+  element_id: string
+  path: string
+  code: string
+  message: string
+}
+
 export interface PipelineDocumentCapabilities {
   can_mutate: boolean
   can_save: boolean
@@ -153,6 +160,8 @@ export interface PipelineEditorDocument extends RecoveryGraph {
   has_authored_content: boolean
   diagnostics: PipelineDiagnostic[]
   diagnostics_omitted: number
+  completeness: PipelineNodeCompleteness[]
+  completeness_omitted: number
   capabilities: PipelineDocumentCapabilities
 }
 
@@ -556,6 +565,17 @@ function parseDiagnostic(value: unknown, field: string): PipelineDiagnostic {
   }
 }
 
+function parseCompleteness(value: unknown, field: string): PipelineNodeCompleteness {
+  const object = expectPlainObject(PARSER, value, field)
+  exactKeys(object, field, ["element_id", "path", "code", "message"])
+  return {
+    element_id: expectNonBlankString(PARSER, object.element_id, `${field}.element_id`),
+    path: expectNonBlankString(PARSER, object.path, `${field}.path`),
+    code: expectNonBlankString(PARSER, object.code, `${field}.code`),
+    message: expectNonBlankString(PARSER, object.message, `${field}.message`),
+  }
+}
+
 export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocument {
   const object = expectPlainObject(PARSER, value)
   exactKeys(object, "document", [
@@ -579,6 +599,8 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
     "submodels",
     "diagnostics",
     "diagnostics_omitted",
+    "completeness",
+    "completeness_omitted",
     "capabilities",
   ])
   const graph = parseRecoveryGraph(
@@ -614,6 +636,19 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
   if (!Number.isInteger(diagnosticsOmitted) || diagnosticsOmitted < 0) {
     throw new Error(
       `${PARSER}: expected document.diagnostics_omitted to be a non-negative integer`,
+    )
+  }
+  const completeness = expectArray(PARSER, object.completeness, "document.completeness").map(
+    (item, index) => parseCompleteness(item, `document.completeness[${index}]`),
+  )
+  const completenessOmitted = expectNumber(
+    PARSER,
+    object.completeness_omitted,
+    "document.completeness_omitted",
+  )
+  if (!Number.isInteger(completenessOmitted) || completenessOmitted < 0) {
+    throw new Error(
+      `${PARSER}: expected document.completeness_omitted to be a non-negative integer`,
     )
   }
   const reservedApiInputFrameLabels = stringArray(
@@ -665,6 +700,8 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
     ),
     diagnostics,
     diagnostics_omitted: diagnosticsOmitted,
+    completeness,
+    completeness_omitted: completenessOmitted,
     capabilities: {
       can_mutate: expectBoolean(PARSER, capabilities.can_mutate, "capabilities.can_mutate"),
       can_save: expectBoolean(PARSER, capabilities.can_save, "capabilities.can_save"),

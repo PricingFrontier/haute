@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import useDocumentStatusStore, { captureDocumentExecutionFence, documentReadOnlyReason, isDocumentExecutionFenceCurrent } from "../useDocumentStatusStore"
 import { parsePipelineEditorDocument } from "../../types/pipelineDocument"
 
-const loaded = parsePipelineEditorDocument({ document_kind:"haute.pipeline_editor_document",schema_version:1,load_status:"ready",pipeline_name:null,pipeline_description:null,preamble:null,preserved_blocks:[],source_file:"main.py",source_revision:"r1",source_text:"x",sources:["live"],active_source:"live",source_selection_trusted:true,has_authored_content:false,nodes:[],edges:[],unresolved_connections:[],submodels:null,diagnostics:[],diagnostics_omitted:2,capabilities:{can_mutate:true,can_save:true,can_execute:true,can_preview:true,can_manage_submodels:true,can_repair:false,reserved_api_input_frame_labels:[]} })
+const loaded = parsePipelineEditorDocument({ document_kind:"haute.pipeline_editor_document",schema_version:1,load_status:"ready",pipeline_name:null,pipeline_description:null,preamble:null,preserved_blocks:[],source_file:"main.py",source_revision:"r1",source_text:"x",sources:["live"],active_source:"live",source_selection_trusted:true,has_authored_content:false,nodes:[],edges:[],unresolved_connections:[],submodels:null,diagnostics:[],diagnostics_omitted:2,completeness:[],completeness_omitted:0,capabilities:{can_mutate:true,can_save:true,can_execute:true,can_preview:true,can_manage_submodels:true,can_repair:false,reserved_api_input_frame_labels:[]} })
 
 describe("useDocumentStatusStore", () => {
   it("keeps starting and running work valid across saves but not document replacement", () => {

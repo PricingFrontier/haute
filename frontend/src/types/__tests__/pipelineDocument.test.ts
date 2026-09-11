@@ -10,6 +10,7 @@ function document(): PipelineEditorDocument {
     has_authored_content: true, nodes: [{ recovery_id: "node:a", authored_id: "a", label: "A", function_name: "A", default_input_name: "A", source_handle_input_names: {}, decorator_name: "source", node_type: "dataInput", description: "", availability: "ready", display_position: { x: 1, y: 2 }, config: { nested: [1] }, config_reference: null, source_file: null, source_span: null, diagnostic_ids: ["d1"], blocking_path: [] }],
     edges: [], unresolved_connections: [], submodels: null,
     diagnostics: [{ diagnostic_id: "d1", code: "parse_error", severity: "warning", scope: "node", message: "warning", element_id: "node:a", source_file: null, source_span: null, remediation: null, incident_id: null }], diagnostics_omitted: 0,
+    completeness: [{ element_id: "node:a", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." }], completeness_omitted: 0,
     capabilities: { can_mutate: false, can_save: false, can_execute: false, can_preview: false, can_manage_submodels: false, can_repair: true, reserved_api_input_frame_labels: ["class", "return"] },
   }
 }

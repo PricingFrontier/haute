@@ -35,7 +35,7 @@ from __future__ import annotations
 import importlib.util
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, Literal, NamedTuple, cast
 
 import polars as pl
 
@@ -302,10 +302,24 @@ class PolarsIoConfigError(ValueError):
     """A dataInput/dataOutput config does not describe a valid invocation."""
 
 
-def _require_nonempty_string(config: Mapping[str, Any], field: str, *, subject: str) -> None:
+class IoCompletenessGap(NamedTuple):
+    """A required value that is absent or empty — completeness, not structure."""
+
+    path: str
+    code: str
+    message: str
+
+
+def _locator_gap(
+    config: Mapping[str, Any], field: str, *, subject: str
+) -> IoCompletenessGap | None:
+    """Absent or empty is a completeness gap; a non-string value is structural."""
     value = config.get(field)
-    if not isinstance(value, str) or not value.strip():
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return IoCompletenessGap(field, "required", f"{subject} requires a non-empty {field!r}.")
+    if not isinstance(value, str):
         raise PolarsIoConfigError(f"{subject} requires a non-empty {field!r}.")
+    return None
 
 
 def _validate_raw_uri(uri: str) -> None:
@@ -320,17 +334,23 @@ def _validate_raw_uri(uri: str) -> None:
         raise PolarsIoConfigError("Raw database 'uri' must not contain credentials.") from exc
 
 
-def _validate_exactly_one_locator(config: Mapping[str, Any], *, subject: str) -> None:
+def _database_locator_gap(config: Mapping[str, Any], *, subject: str) -> IoCompletenessGap | None:
+    """Both locators set (or a non-string) is structural; neither is a gap."""
     connection = config.get("connection")
     uri = config.get("uri")
+    message = f"{subject} requires exactly one non-empty 'connection' or 'uri'."
+    for value in (connection, uri):
+        if value is not None and not isinstance(value, str):
+            raise PolarsIoConfigError(message)
     has_connection = isinstance(connection, str) and bool(connection.strip())
     has_uri = isinstance(uri, str) and bool(uri.strip())
-    if has_connection == has_uri:
-        raise PolarsIoConfigError(
-            f"{subject} requires exactly one non-empty 'connection' or 'uri'."
-        )
+    if has_connection and has_uri:
+        raise PolarsIoConfigError(message)
+    if not has_connection and not has_uri:
+        return IoCompletenessGap("connection", "required", message)
     if has_uri:
         _validate_raw_uri(cast(str, uri))
+    return None
 
 
 def _reject_inactive_fields(
@@ -358,14 +378,37 @@ def data_input_is_direct(config: Mapping[str, Any]) -> bool:
     )
 
 
-def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
+def validate_data_input_config(
+    config: Mapping[str, Any], *, require_complete: bool = True
+) -> dict[str, Any]:
     """Strictly validate one persisted canonical ``dataInput`` config.
+
+    Structural, branch, mode, and argument rules always raise. Presence of
+    required locator values is a separate completeness concern: with
+    ``require_complete=False`` absent or empty locators are tolerated and
+    reported by :func:`data_input_completeness` instead; the default keeps
+    strict presence behaviour for execution-facing callers.
 
     The removed ``cacheMode`` field has no compatibility path: direct-versus-
     snapshot execution is derived by :func:`data_input_is_direct`, so a config
     still carrying the field is rejected as an inactive field.
     """
+    result, gaps = _validated_data_input(config)
+    if require_complete and gaps:
+        raise PolarsIoConfigError(gaps[0].message)
+    return result
+
+
+def data_input_completeness(config: Mapping[str, Any]) -> list[IoCompletenessGap]:
+    """Completeness gaps for a structurally valid Data Input config."""
+    return _validated_data_input(config)[1]
+
+
+def _validated_data_input(
+    config: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[IoCompletenessGap]]:
     result = dict(config)
+    gaps: list[IoCompletenessGap] = []
     input_type = result.get("inputType")
     if input_type not in {"file", "database", "lakehouse", "databricks", "inline"}:
         raise PolarsIoConfigError(f"Unknown inputType {input_type!r}.")
@@ -392,8 +435,10 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
             discriminant="inputType",
             value=input_type,
         )
-        _require_nonempty_string(result, "http_path", subject="Databricks input")
-        _require_nonempty_string(result, "table", subject="Databricks input")
+        for field in ("http_path", "table"):
+            gap = _locator_gap(result, field, subject="Databricks input")
+            if gap is not None:
+                gaps.append(gap)
         query = result.get("query")
         if query is not None and (not isinstance(query, str) or not query.strip()):
             raise PolarsIoConfigError(
@@ -413,7 +458,7 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
             or arguments["batch_size"] <= 0
         ):
             raise PolarsIoConfigError("Databricks input 'batch_size' must be a positive integer.")
-        return result
+        return result, gaps
 
     fmt = format_for_config(result)
     group = format_group(fmt)
@@ -426,12 +471,16 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
         _reject_inactive_fields(
             result, allowed=polars_common | {"path"}, discriminant="inputType", value=input_type
         )
-        _require_nonempty_string(result, "path", subject=f"Format {fmt.name!r}")
+        gap = _locator_gap(result, "path", subject=f"Format {fmt.name!r}")
+        if gap is not None:
+            gaps.append(gap)
     elif input_type == "lakehouse":
         _reject_inactive_fields(
             result, allowed=polars_common | {"path"}, discriminant="inputType", value=input_type
         )
-        _require_nonempty_string(result, "path", subject=f"Format {fmt.name!r}")
+        gap = _locator_gap(result, "path", subject=f"Format {fmt.name!r}")
+        if gap is not None:
+            gaps.append(gap)
     elif input_type == "database":
         _reject_inactive_fields(
             result,
@@ -439,8 +488,12 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
             discriminant="inputType",
             value=input_type,
         )
-        _validate_exactly_one_locator(result, subject="Database input")
-        _require_nonempty_string(result, "query", subject="Database input")
+        locator = _database_locator_gap(result, subject="Database input")
+        if locator is not None:
+            gaps.append(locator)
+        gap = _locator_gap(result, "query", subject="Database input")
+        if gap is not None:
+            gaps.append(gap)
         arguments = result.get("arguments", {})
         if not isinstance(arguments, Mapping):
             raise PolarsIoConfigError("Database input 'arguments' must be an object.")
@@ -462,21 +515,50 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
             discriminant="inputType",
             value=input_type,
         )
-        if not isinstance(result.get("records"), list):
+        records = result.get("records")
+        if records is None:
+            gaps.append(
+                IoCompletenessGap(
+                    "records", "required", "Inline input requires 'records' as a list."
+                )
+            )
+        elif not isinstance(records, list):
             raise PolarsIoConfigError("Inline input requires 'records' as a list.")
-        if not all(isinstance(record, Mapping) for record in result["records"]):
+        elif not all(isinstance(record, Mapping) for record in records):
             raise PolarsIoConfigError("Inline input 'records' must contain objects.")
 
     if input_type != "database":
         assert mode is not None
         owner, callable_name = input_callable_key(fmt, mode)
         validate_arguments(fmt, owner, callable_name, result.get("arguments") or {})
+    return result, gaps
+
+
+def validate_data_output_config(
+    config: Mapping[str, Any], *, require_complete: bool = True
+) -> dict[str, Any]:
+    """Strictly validate one persisted canonical ``dataOutput`` config.
+
+    Structural, branch, mode, and argument rules always raise. Destination
+    locator presence is completeness: ``require_complete=False`` tolerates
+    absent or empty locators, reported by :func:`data_output_completeness`.
+    """
+    result, gaps = _validated_data_output(config)
+    if require_complete and gaps:
+        raise PolarsIoConfigError(gaps[0].message)
     return result
 
 
-def validate_data_output_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Strictly validate one persisted canonical ``dataOutput`` config."""
+def data_output_completeness(config: Mapping[str, Any]) -> list[IoCompletenessGap]:
+    """Completeness gaps for a structurally valid Data Output config."""
+    return _validated_data_output(config)[1]
+
+
+def _validated_data_output(
+    config: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[IoCompletenessGap]]:
     result = dict(config)
+    gaps: list[IoCompletenessGap] = []
     output_type = result.get("outputType")
     if output_type not in {"file", "database", "lakehouse"}:
         raise PolarsIoConfigError(f"Unknown outputType {output_type!r}.")
@@ -496,17 +578,23 @@ def validate_data_output_config(config: Mapping[str, Any]) -> dict[str, Any]:
             discriminant="outputType",
             value=output_type,
         )
-        _validate_exactly_one_locator(result, subject="Database output")
-        _require_nonempty_string(result, "table", subject="Database output")
+        locator = _database_locator_gap(result, subject="Database output")
+        if locator is not None:
+            gaps.append(locator)
+        gap = _locator_gap(result, "table", subject="Database output")
+        if gap is not None:
+            gaps.append(gap)
     else:
         _reject_inactive_fields(
             result, allowed=common | {"path"}, discriminant="outputType", value=output_type
         )
-        _require_nonempty_string(result, "path", subject=f"Format {fmt.name!r} output")
+        gap = _locator_gap(result, "path", subject=f"Format {fmt.name!r} output")
+        if gap is not None:
+            gaps.append(gap)
     mode = resolve_output_mode(fmt, result)
     owner, callable_name = output_callable_key(fmt, mode)
     validate_arguments(fmt, owner, callable_name, result.get("arguments") or {})
-    return result
+    return result, gaps
 
 
 def format_for_config(config: Mapping[str, Any]) -> IoFormat:

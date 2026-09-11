@@ -291,8 +291,17 @@ def test_config_reset_ownership_and_required_settings(tmp_path, case):
         plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
         _apply(tmp_path, request, plan)
         assert (tmp_path / "custom.json").is_file()
+    elif case == "required_setting":
+        # Palette defaults with an empty required path persist as a loadable
+        # incomplete configuration; reset is never blocked by completeness.
+        plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
+        result = _apply(tmp_path, request, plan)
+        written = json.loads((tmp_path / "custom.json").read_text())
+        assert written["inputType"] == "file"
+        assert written["path"] == ""
+        assert result.document.load_status == "ready"
     else:
-        with pytest.raises(PipelineRepairError, match="shared|path"):
+        with pytest.raises(PipelineRepairError, match="shared"):
             build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
         assert {p: p.read_bytes() for p in before} == before
 
