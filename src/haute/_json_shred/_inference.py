@@ -237,7 +237,9 @@ class _InferenceState:
 
 
 def _infer_records(
-    records: Iterable[dict[str, Any]], *, seed: InferenceSeed | None = None
+    records: Iterable[dict[str, Any]],
+    *,
+    seed: InferenceSeed | None = None,  # pragma: no mutate
 ) -> _InferenceState:
     state = _InferenceState()
     known_structure = InferenceFilter(seed)
@@ -248,7 +250,9 @@ def _infer_records(
     return state
 
 
-def _learn_jsonl_prefix(data_path: Path, end: int) -> tuple[_InferenceState, InferenceSeed | None]:
+def _learn_jsonl_prefix(
+    data_path: Path, end: int
+) -> tuple[_InferenceState, InferenceSeed | None]:  # pragma: no mutate
     """Infer one bounded file prefix for all parallel ranges to share."""
     state = _InferenceState()
     known_structure = InferenceFilter()
@@ -262,7 +266,9 @@ def _learn_jsonl_prefix(data_path: Path, end: int) -> tuple[_InferenceState, Inf
 
 
 def _infer_jsonl_lines(
-    lines: Iterable[bytes], *, seed: InferenceSeed | None = None
+    lines: Iterable[bytes],
+    *,
+    seed: InferenceSeed | None = None,  # pragma: no mutate
 ) -> _InferenceState:
     """Collect new evidence while checking known JSON shapes in one native pass."""
     state = _InferenceState()
@@ -281,7 +287,11 @@ def _infer_jsonl_lines(
 
 
 def _infer_jsonl_range(
-    data_path: Path, start: int, end: int, *, seed: InferenceSeed | None = None
+    data_path: Path,
+    start: int,
+    end: int,
+    *,
+    seed: InferenceSeed | None = None,  # pragma: no mutate
 ) -> _InferenceState:
     return _infer_jsonl_lines(_records._iter_range_lines(data_path, start, end), seed=seed)
 
@@ -293,7 +303,9 @@ class _InferenceChunkResult:
     failure: _ChunkFailure | None = None  # pragma: no mutate
 
 
-def _infer_chunk(args: tuple[str, int, int, int, InferenceSeed | None]) -> _InferenceChunkResult:
+def _infer_chunk(
+    args: tuple[str, int, int, int, InferenceSeed | None],  # pragma: no mutate
+) -> _InferenceChunkResult:
     """Infer one newline-delimited byte range in a spawned worker."""
     data_path_s, start, end, index, seed = args
     try:
@@ -485,7 +497,11 @@ def infer_v2_schema_from_data(
     return _infer_v2_schema_uncached(source_path, sample_size=sample_size)
 
 
-def _infer_v2_schema_uncached(source_path: Path, *, sample_size: int | None) -> dict[str, Any]:
+def _infer_v2_schema_uncached(
+    source_path: Path,
+    *,
+    sample_size: int | None,  # pragma: no mutate
+) -> dict[str, Any]:
     """Execute an inference scan; only the public entry point may reuse results."""
     unbounded = sample_size is None or sample_size <= 0
     if unbounded and _records._should_shred_in_parallel(source_path):

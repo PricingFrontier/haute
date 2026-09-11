@@ -435,6 +435,8 @@ def test_inference_filter_snapshot_round_trips_and_is_independent(
         ([b'{"amount":18446744073709551616}'], "float"),
         ([b'{"amount":1.25}'], "float"),
         ([b'{"amount":1e20}'], "float"),
+        ([b'{"amount":"2"}'], "str"),
+        ([b'{"amount":true}'], "str"),
     ],
     ids=[
         "below-int64",
@@ -445,6 +447,8 @@ def test_inference_filter_snapshot_round_trips_and_is_independent(
         "overflow-widens",
         "decimal",
         "exponent",
+        "numeric-string-retains-string-evidence",
+        "boolean-retains-boolean-evidence",
     ],
 )
 def test_fused_json_range_matches_orjson_for_integer_bounds_and_numbers(

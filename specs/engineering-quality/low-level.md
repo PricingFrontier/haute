@@ -367,6 +367,11 @@
   with `# pragma: no mutate`; executable expressions and branch decisions must
   remain in scope and be killed by focused witnesses rather than hidden behind
   a pragma or a relaxed survivor budget.
+- The JSON-shred witness selection includes complete-inference cache isolation,
+  concurrent request sharing and revision invalidation, native-filter equivalence
+  to the full inference walk, bounded prefix learning, fused-parser error parity,
+  and exact byte-range record limits. These contracts accompany the optimized
+  inference implementation in the focused mutation command.
 - A retained skip, xfail, expected failure, focused test, flaky marker, or
   browser retry is debt even when it is justified. Exact-site fingerprints
   prevent silent growth: a new site fails the ratchet until it is explicitly

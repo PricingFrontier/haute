@@ -185,7 +185,7 @@ def test_range_reader_stops_at_exact_and_partial_end_boundaries(tmp_path: Path) 
     assert list(_iter_range_records(p, 0, 9)) == [{"n": 0}, {"n": 1}]
 
 
-@pytest.mark.parametrize("record_limit", [64, 65_536])
+@pytest.mark.parametrize("record_limit", [64, 65, 65_536])
 def test_range_reader_rejects_records_over_the_configured_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_limit: int
 ) -> None:
@@ -201,16 +201,17 @@ def test_range_reader_rejects_records_over_the_configured_limit(
         list(_iter_range_records(source, 0, source.stat().st_size))
 
 
+@pytest.mark.parametrize("record_limit", [64, 65])
 def test_byte_range_boundary_rejects_oversized_partial_line(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_limit: int
 ) -> None:
     source = tmp_path / "oversized.jsonl"
     source.write_bytes(b'{"value":"' + b"x" * 96 + b'"}\n')
-    monkeypatch.setenv("HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES", "64")
+    monkeypatch.setenv("HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES", str(record_limit))
 
     with pytest.raises(
         ApiInputSchemaError,
-        match="JSONL record exceeds HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES=64",
+        match=f"JSONL record exceeds HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES={record_limit}",
     ):
         _jsonl_byte_ranges(source, 1)
 

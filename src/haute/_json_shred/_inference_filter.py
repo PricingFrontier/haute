@@ -153,7 +153,12 @@ class InferenceFilter:
     still receive full inference; no additional observation tree is retained.
     """
 
-    def __init__(self, seed: InferenceSeed | None = None, *, json_mode: bool = False) -> None:
+    def __init__(
+        self,
+        seed: InferenceSeed | None = None,  # pragma: no mutate - postponed annotation only
+        *,
+        json_mode: bool = False,
+    ) -> None:
         observed = _ObservedValue() if seed is None else deepcopy(seed.observed)
         self._observed: _ObservedValue | None = observed
         self._json_mode = json_mode
@@ -172,7 +177,7 @@ class InferenceFilter:
             else None
         )
 
-    def snapshot(self) -> InferenceSeed | None:
+    def snapshot(self) -> InferenceSeed | None:  # pragma: no mutate - postponed annotation only
         """Share a learned prefix; each receiving stream owns its later changes."""
         if self._native_type is None or self._observed is None:
             return None
