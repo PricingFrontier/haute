@@ -210,3 +210,32 @@ def test_scoped_save_route_saves_and_rejects_stale_revisions(client, monkeypatch
     stale = client.post("/api/pipeline/node/save", json=body)
     assert stale.status_code == 409
     assert stale.json()["detail"]["code"] == "repair_revision_conflict"
+
+
+def test_scoped_save_route_maps_io_failures_without_leaking_details(client, monkeypatch, tmp_path):
+    from haute.routes import pipeline as pipeline_routes
+
+    _two_inputs(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    def fail_save(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("private marker")
+
+    monkeypatch.setattr(pipeline_routes, "apply_scoped_node_save", fail_save)
+    response = client.post(
+        "/api/pipeline/node/save",
+        json={
+            "source_file": "main.py",
+            "source_revision": "0" * 64,
+            "target_source_file": "main.py",
+            "target_recovery_id": "node@1",
+            "config": {},
+        },
+    )
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["detail"]["code"] == "repair_artifact_unavailable"
+    assert payload["detail"]["message"] == (
+        "A save artifact could not be written; original artifacts were restored."
+    )
+    assert "private marker" not in response.text
