@@ -459,8 +459,11 @@ def log_experiment(
         except Exception:
             logger.warning("model_card_generation_failed", exc_info=True)
 
-        # Register model (Databricks UC only)
-        if model_name and model_path and backend == "databricks":
+        # Register the model on any registry-capable backend (best-effort):
+        # Databricks registers into Unity Catalog via the databricks-uc
+        # registry URI; server and local registries follow the tracking
+        # store. A registry error never discards the successful run.
+        if model_name and model_path:
             _check_cancelled()
             try:
                 mlflow.register_model(f"runs:/{run.info.run_id}/model", model_name)

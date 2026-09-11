@@ -44,7 +44,8 @@ def resolve_version(
     if not versions:
         raise ValueError(f"No versions found for registered model '{model_name}'.")
     sorted_versions = sorted(versions, key=lambda v: int(v.version), reverse=True)
-    return sorted_versions[0].version
+    # int on the file store, str on Databricks — callers expect str.
+    return str(sorted_versions[0].version)
 
 
 def allow_file_store_if_local(tracking_uri: str, backend: str = "") -> None:

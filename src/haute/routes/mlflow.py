@@ -550,7 +550,9 @@ def list_models(
             name=m.name,
             latest_versions=[
                 MlflowVersionBrief(
-                    version=v.version,
+                    # The file-store registry reports versions as ints where
+                    # Databricks reports strings; the wire contract is str.
+                    version=str(v.version),
                     status=v.status,
                     run_id=v.run_id,
                 )
@@ -597,11 +599,13 @@ def list_model_versions(
 
     return [
         MlflowModelVersionSummary(
-            version=v.version,
+            # int on the file store, str on Databricks — the contract is str.
+            version=str(v.version),
             run_id=v.run_id or "",
             status=v.status,
             creation_timestamp=v.creation_timestamp,
-            description=getattr(v, "description", ""),
+            # None on the file store, absent or str on Databricks.
+            description=getattr(v, "description", "") or "",
             params=_model_version_run_params(client, v.run_id or ""),
         )
         for v in sorted(versions, key=lambda v: int(v.version), reverse=True)

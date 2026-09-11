@@ -511,6 +511,40 @@ class TestProbeMechanics:
 # ---------------------------------------------------------------------------
 
 
+class TestLocalRegistryDiscovery:
+    def test_locally_registered_model_appears_in_the_models_route(
+        self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Registry parity pin: the mlflow 3.x file store supports the model
+        # registry, so a locally registered model must surface through the
+        # Model Score picker's discovery routes exactly like a Databricks
+        # one — including the file store's int-typed versions, which the
+        # routes must serialise to the string wire contract.
+        from mlflow.tracking import MlflowClient
+
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        registry = MlflowClient(tracking_uri=(project_root / "mlruns").as_uri())
+        experiment_id = registry.create_experiment("registry-exp")
+        run = registry.create_run(experiment_id)
+        registry.create_registered_model("local-reg-model")
+        registry.create_model_version(
+            "local-reg-model",
+            source=f"{run.info.artifact_uri}/model",
+            run_id=run.info.run_id,
+        )
+
+        resp = client.get("/api/mlflow/models")
+        assert resp.status_code == 200
+        by_name = {m["name"]: m for m in resp.json()}
+        assert "local-reg-model" in by_name
+        assert [v["version"] for v in by_name["local-reg-model"]["latest_versions"]] == ["1"]
+
+        versions = client.get("/api/mlflow/model-versions?model_name=local-reg-model")
+        assert versions.status_code == 200
+        assert [v["version"] for v in versions.json()] == ["1"]
+        assert versions.json()[0]["run_id"] == run.info.run_id
+
+
 class TestSavedFolderKeepsRunsDiscoverable:
     def test_env_logged_run_survives_unchanged_local_save(
         self, client, project_root: Path, monkeypatch: pytest.MonkeyPatch

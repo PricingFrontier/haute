@@ -285,6 +285,16 @@ disagrees with the independently-computed prediction beyond
 traced `prediction_value` disagrees with the model's own response beyond
 the same tolerance.
 
+### Registry-provider representation differences
+
+The wire contracts normalise two provider quirks at the route boundary:
+the file-store registry reports model versions as **ints** where
+Databricks reports strings (`/models`, `/model-versions`, and
+`resolve_version()` all serialise to `str`), and file-store versions carry
+`description=None` where Databricks omits or supplies a string
+(coerced to `""`). A locally registered model therefore surfaces through
+the discovery routes exactly like a Databricks one.
+
 ### Routes (`routes/mlflow.py`)
 
 `_ensure_tracking()` imports mlflow (`ImportError` → `503`), resolves the
@@ -564,7 +574,11 @@ to a live MLflow tracking server.
 - **`tests/test_mlflow_utils.py`** — `search_versions` (name quoting) and
   `resolve_version` (`"latest"` resolution, explicit version passthrough,
   no-versions-found error).
-- **`tests/test_mlflow_connection_routes.py`** — the connection surface:
+- **`tests/test_mlflow_connection_routes.py`** — the connection surface plus
+  registry parity: a model registered in a real local file store surfaces
+  through `/models` and `/model-versions` with string versions and the
+  backing run id (pinning the int-version and null-description provider
+  normalisations); the connection surface itself:
   status truthfulness in all three modes, for misconfigured selections
   (`configured=false` + reason, never a 5xx), and package/configuration
   independence (missing or unimportable mlflow still reports the resolved

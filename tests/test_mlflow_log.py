@@ -271,6 +271,72 @@ class TestBuildRunUrl:
             assert "hunter2xyz" not in url
 
 
+class TestRegistrationFollowsBackend:
+    """Registration is gated on backend *capability*, not on Databricks."""
+
+    def _log(self, tmp_path: Path, *, model_name: str | None) -> MagicMock:
+        mock_run = MagicMock()
+        mock_run.info.run_id = "run_reg"
+        model_file = tmp_path / "model.cbm"
+        model_file.write_bytes(b"fake")
+
+        with (
+            patch("mlflow.set_tracking_uri"),
+            patch("mlflow.set_registry_uri"),
+            patch("mlflow.set_experiment"),
+            patch("mlflow.start_run") as m_run,
+            patch("mlflow.log_params"),
+            patch("mlflow.log_metrics"),
+            patch("mlflow.log_artifact"),
+            patch("mlflow.register_model") as m_register,
+            # build_run_url would otherwise make real lookups against the
+            # fake server URI (with mlflow's slow retry storm).
+            patch("mlflow.get_experiment_by_name", return_value=None),
+            patch("mlflow.get_tracking_uri", return_value="http://localhost:5000"),
+            patch("haute.modelling._mlflow_log._log_model_with_signature"),
+            patch("haute.modelling._mlflow_log._log_model_card"),
+        ):
+            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
+            m_run.return_value.__exit__ = MagicMock(return_value=False)
+
+            from haute.modelling._mlflow_log import log_experiment
+
+            log_experiment(
+                experiment_name="exp",
+                run_name="run",
+                metrics={"gini": 0.4},
+                params={},
+                model_path=str(model_file),
+                model_name=model_name,
+            )
+        return m_register
+
+    def test_local_backend_registers_when_model_name_given(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+        register = self._log(tmp_path, model_name="motor-pricing")
+        register.assert_called_once_with("runs:/run_reg/model", "motor-pricing")
+
+    def test_server_backend_registers_when_model_name_given(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+        register = self._log(tmp_path, model_name="motor-pricing")
+        register.assert_called_once_with("runs:/run_reg/model", "motor-pricing")
+
+    def test_no_model_name_skips_registration(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        for var in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+        register = self._log(tmp_path, model_name=None)
+        register.assert_not_called()
+
+
 class TestLogExperiment:
     def test_calls_mlflow_correctly(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Mock mlflow and verify correct calls are made."""
@@ -746,46 +812,6 @@ class TestLogExperiment:
                 params={},
             )
             assert result.run_id == "abc123"
-
-    def test_local_does_not_register_model(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """When backend is local, model_name should be ignored (no UC registry)."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-
-        mock_run = MagicMock()
-        mock_run.info.run_id = "abc123"
-
-        model_file = tmp_path / "model.cbm"
-        model_file.write_text("fake model")
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_experiment"),
-            patch("mlflow.start_run") as m_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact"),
-            patch("mlflow.register_model") as m_register,
-            patch("mlflow.catboost.log_model"),
-            patch("mlflow.pyfunc.log_model"),
-        ):
-            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-            m_run.return_value.__exit__ = MagicMock(return_value=False)
-
-            from haute.modelling._mlflow_log import log_experiment
-
-            log_experiment(
-                experiment_name="/test/experiment",
-                run_name="test-run",
-                metrics={"rmse": 0.5},
-                params={},
-                model_path=str(model_file),
-                model_name="my-registered-model",
-            )
-
-            m_register.assert_not_called()
 
     def test_with_all_diagnostics_artifacts(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
