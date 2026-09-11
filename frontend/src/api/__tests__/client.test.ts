@@ -1663,6 +1663,27 @@ describe("streaming_chunk_size in request bodies", () => {
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
+  it("sends the exact scoped node-save body and parses the authoritative document", async () => {
+    const { saveNodeScoped } = await import("../client")
+    mockFetch.mockReturnValueOnce(jsonResponse(makePipelineEditorDocument()))
+    const document = await saveNodeScoped({
+      sourceFile: "main.py",
+      sourceRevision: "rev-1",
+      targetSourceFile: "main.py",
+      targetRecoveryId: "node@10",
+      config: { path: "data/quotes.parquet" },
+    })
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/node/save")
+    expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
+      source_file: "main.py",
+      source_revision: "rev-1",
+      target_source_file: "main.py",
+      target_recovery_id: "node@10",
+      config: { path: "data/quotes.parquet" },
+    })
+    expect(document.document_kind).toBe("haute.pipeline_editor_document")
+  })
+
   it("sends exact remove-repair request bodies and parses authoritative responses", async () => {
     const planHash = "a".repeat(64)
     const request = { sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "broken@10", deleteConfig: false }

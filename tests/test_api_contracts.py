@@ -623,6 +623,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/PreviewNodeResponse"},
         },
     },
+    "/api/pipeline/node/save": {
+        "POST": {
+            "request_ref": "#/components/schemas/PipelineNodeSaveRequest",
+            "success_schema": {"$ref": "#/components/schemas/PipelineEditorDocument"},
+        },
+    },
     "/api/pipeline/repair/contracts": {
         "GET": {
             "request_ref": None,

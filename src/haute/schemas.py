@@ -367,6 +367,9 @@ class RecoveryPipelineNode(BaseModel):
     source_span: RecoverySourceSpan | None = None
     diagnostic_ids: list[str] = Field(default_factory=list)
     blocking_path: list[str] = Field(default_factory=list)
+    # Server-derived: this loadable node's settings/code may be saved in
+    # isolation while the whole document remains fenced.
+    scoped_editable: bool = False
 
     @field_validator("display_position")
     @classmethod
@@ -613,6 +616,18 @@ class PipelineRepairRecoverRequest(BaseModel):
 
 class PipelineRepairRecoverApplyRequest(PipelineRepairRecoverRequest):
     plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class PipelineNodeSaveRequest(BaseModel):
+    """Node-scoped settings/code save for one `scoped_editable` node."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_file: str = Field(min_length=1)
+    source_revision: RevisionToken
+    target_source_file: str = Field(min_length=1)
+    target_recovery_id: str = Field(min_length=1)
+    config: dict[str, Any]
 
 
 class PipelineRepairChange(BaseModel):

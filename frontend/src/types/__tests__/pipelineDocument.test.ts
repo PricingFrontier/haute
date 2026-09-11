@@ -7,7 +7,7 @@ function document(): PipelineEditorDocument {
     document_kind: "haute.pipeline_editor_document", schema_version: 1, load_status: "degraded",
     pipeline_name: "Main", pipeline_description: null, preamble: null, preserved_blocks: [], source_file: "main.py",
     source_revision: "abc", source_text: "", sources: ["live"], active_source: "live", source_selection_trusted: true,
-    has_authored_content: true, nodes: [{ recovery_id: "node:a", authored_id: "a", label: "A", function_name: "A", default_input_name: "A", source_handle_input_names: {}, decorator_name: "source", node_type: "dataInput", description: "", availability: "ready", display_position: { x: 1, y: 2 }, config: { nested: [1] }, config_reference: null, source_file: null, source_span: null, diagnostic_ids: ["d1"], blocking_path: [] }],
+    has_authored_content: true, nodes: [{ recovery_id: "node:a", authored_id: "a", label: "A", function_name: "A", default_input_name: "A", source_handle_input_names: {}, decorator_name: "source", node_type: "dataInput", description: "", availability: "ready", display_position: { x: 1, y: 2 }, config: { nested: [1] }, config_reference: null, source_file: null, source_span: null, diagnostic_ids: ["d1"], blocking_path: [], scoped_editable: true }],
     edges: [], unresolved_connections: [], submodels: null,
     diagnostics: [{ diagnostic_id: "d1", code: "parse_error", severity: "warning", scope: "node", message: "warning", element_id: "node:a", source_file: null, source_span: null, remediation: null, incident_id: null }], diagnostics_omitted: 0,
     completeness: [{ element_id: "node:a", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." }], completeness_omitted: 0,

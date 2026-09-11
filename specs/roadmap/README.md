@@ -19,7 +19,7 @@ or maintenance issue; `P3` opportunistic work.
 |---|---|---|
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
-| [Node recovery](node-recovery.md) | One-click recover, incomplete-node editability, draft-apparatus removal | `REC-R01` |
+| [Node recovery](node-recovery.md) | One-click recover, incomplete-node editability, draft-apparatus removal | `REC-R02` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
 
 ## Working protocol

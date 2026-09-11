@@ -97,6 +97,7 @@ function recoveryNode(node: Node, index: number): RecoveryNode {
     blocking_path: Array.isArray(data._loadBlockingPath)
       ? data._loadBlockingPath.filter((item): item is string => typeof item === "string")
       : [],
+    scoped_editable: data._scopedEditable === true,
   }
 }
 

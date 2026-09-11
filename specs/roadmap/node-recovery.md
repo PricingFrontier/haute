@@ -33,118 +33,17 @@ document-wide mutation/save permissions.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| REC-R01 | Planned | P2 | Loadable partial configs, defaults for the current configuration branch, and safe per-node saves in degraded documents. |
 | REC-R02 | Planned | P2 | Direct recovery and completion in the normal editor; the persistent-draft apparatus is deleted. |
 
+`REC-R01` (loadable partial configs, branch-respecting engine recovery, the
+direct `recover` action, and node-scoped saves in degraded documents) was
+delivered on 11 September 2026 and is now covered by the
+[node recovery actions](../server-api/node-recovery-actions.md) specification
+and its regression tests (`test_incomplete_config_loadability.py`,
+`test_node_config_recovery.py`, `test_pipeline_repair_actions.py`,
+`test_node_scoped_save.py`).
+
 ## Planned improvements
-
-### REC-R01 — Direct recover repair action
-
-**Why:** Recovering a broken node must yield an editable node, not a perfect
-one. The draft flow refuses to write until every issue is resolved inside a
-modal editor that lacks upstream schema, so partial recovery — the feature's
-purpose — is unreachable.
-
-**Plan:** Add `recover` to the document repair actions beside remove, update,
-and reset, reusing the existing dry-run, plan-hash, and staged-write
-transaction. This requires changes to the loading, recovery, and save
-contracts as well as adding the action:
-
-1. **Separate loadability from completeness.** Extend the authoritative
-   configuration contracts with explicit representations for missing or
-   unpopulated required fields. Parsing, code generation, and save/reload
-   must accept these declared incomplete forms and preserve them without
-   invented values. Report field-level completeness diagnostics separately
-   from load failures, so they do not make an otherwise loadable node
-   unavailable or its document degraded. Malformed configured values,
-   unknown branches, and ambiguous source still fail clearly. Execution and
-   deployment continue to validate completeness before executing affected
-   nodes. Recovery and loading must not execute user code or probe external
-   data/services to establish completeness. Audit palette defaults against
-   this contract: Data Input and Data Output currently reject their own
-   empty-path defaults, so the palette is not evidence of loadability.
-2. **Respect configuration branches and preserve valid absence.** Audit
-   the engine against each supported type's provider, format, mode, and
-   other declared discriminants and coupled validation groups. Retain valid
-   authored fields and valid omissions; an absent optional field is not an
-   instruction to insert a palette value. Use a default only when the
-   current branch's contract declares it safe and valid. In particular, a
-   JSON file input with omitted mode must remain unchanged; it must never
-   acquire Parquet's `scan` default. Missing required values without a safe
-   default use the declared incomplete form. Unknown branches or coupled
-   failures without an unambiguous repair remain manual actions with
-   diagnostics; never switch provider/format or discard valid siblings to
-   make a palette fallback pass. Audit and correct the retained engine as
-   part of this package.
-3. **Generate and verify the direct repair.** Retain authored code bytes
-   for declared code slots and regenerate only recognised scaffolding.
-   Validate the temporary copy against the loadability contract and verify
-   target editability and conservation of unrelated source, node identities,
-   and connections. A target may still need configuration or be blocked by
-   an unresolved upstream node. Return the field-outcome report (retained,
-   defaulted, needs-input, removed), completeness diagnostics, and previous
-   configuration in both dry-run and apply responses. Keep source revisions,
-   exact plan hashes, and rollback for failed verification.
-4. **Support per-node editing while the document remains degraded.** Expose
-   server-derived edit/save eligibility for a known, loadable node with a
-   trustworthy identity, source span, and exclusively owned edited artifacts.
-   Eligibility is separate from document `can_mutate`/`can_save` and includes
-   structurally loadable nodes blocked by upstream failures. Keep whole-graph
-   mutation and save disabled while unresolved source remains. Provide a
-   node-scoped settings/code save through the existing source-edit and
-   staged-write transaction abstractions: accept the target identity, source
-   revision, and proposed settings/code; resolve spans and affected files on
-   the server; and revalidate under the shared mutation/file lock. Validate
-   the candidate as loadable, conserve unrelated artifacts and graph
-   structure, reject stale revisions, and return the authoritative document.
-   Use ordinary transient unsaved editor state and its normal save flow;
-   create no persistent draft and require no recovery review dialog for each
-   edit. Shared/ambiguous artifacts or edits requiring unresolved structural
-   bindings fail with actionable diagnostics instead of widening the write
-   scope. `source_only` documents remain ineligible.
-
-Update the owning server-api, pipeline-config, expression-parsing, and
-codegen specifications before changing code. Define the node-scoped save
-request/response and eligibility contract there; the existing whole-graph
-save request must not become a way to overwrite a degraded document.
-
-**Acceptance:**
-
-- Recovering a broken node with missing required fields succeeds in one
-  apply and produces a loadable node with field-level completeness
-  diagnostics. Data Input and Data Output with blank required paths survive
-  save/reload without becoming unavailable; execution/deployment reject
-  those missing settings until completed. Invalid populated values still
-  fail their contracts.
-- Valid authored settings and code survive byte-for-byte. Reconciliation
-  of a currently valid configuration is an identity operation, including
-  valid omissions. Cover the JSON input with no mode and representative
-  non-palette providers/formats, plus one coupled invalid group with valid
-  siblings. Defaults never come from an incompatible branch.
-- With two broken nodes, recover one, save edits to it, and reload while
-  the other remains unavailable. The second node's authored source span,
-  configuration bytes, and all unrelated connections remain unchanged;
-  whole-graph mutation/save stay disabled. Also cover editing a loadable
-  node blocked by an upstream
-  failure, and rejection of shared/ambiguous write ownership.
-- Stale revisions reject both repair and node-scoped saves; stale plan
-  hashes reject repair Apply. Failed staged writes or verification restore
-  original bytes. No draft record is created.
-
-**Dependencies:** The authoritative per-type configuration validators,
-parser/codegen/save loadability checks, configuration-recovery engine,
-document capability model, and existing staged-write repair transaction
-and shared mutation/file lock. These contract changes are part of REC-R01.
-
-**Evidence:** `src/haute/_pipeline_repair_actions.py`;
-`src/haute/_node_config_recovery.py`; `src/haute/_recovery_sources.py`;
-`src/haute/_pipeline_repair.py`; `src/haute/_config_validation.py`;
-`src/haute/_config_builder.py`; `src/haute/_polars_io_registry.py`;
-`src/haute/node_defaults.json`; `src/haute/_pipeline_recovery.py`;
-`src/haute/routes/_save_pipeline.py`; `src/haute/routes/pipeline.py`;
-`tests/test_pipeline_repair_actions.py`; `tests/test_node_config_recovery.py`;
-`tests/test_pipeline_recovery.py`; `tests/test_config_validation.py`;
-`tests/test_parser_roundtrip.py`.
 
 ### REC-R02 — Minimal recovery UI and draft-apparatus removal
 
@@ -203,7 +102,8 @@ selection retention (including submodel children), and stale-save failures;
 retain transaction and lock regression coverage for the surviving shared
 infrastructure. Backend and frontend suites pass.
 
-**Dependencies:** REC-R01.
+**Dependencies:** The delivered `REC-R01` contracts — the `recover` action,
+the document completeness channel, and the node-scoped save.
 
 **Evidence:** `frontend/src/components/RecoveryDraftDialog.tsx`;
 `frontend/src/components/PipelineRepairDialog.tsx`;

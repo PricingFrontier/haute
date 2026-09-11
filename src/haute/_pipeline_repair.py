@@ -186,6 +186,7 @@ def _find_target(
     *,
     target_source_file: str,
     target_recovery_id: str,
+    require_unavailable: bool = True,
 ) -> RecoveryPipelineNode:
     normalised_source = target_source_file.replace("\\", "/").casefold()
     matches = [
@@ -201,13 +202,13 @@ def _find_target(
             match_count=len(matches),
         )
     target = matches[0]
-    if target.availability != "unavailable":
+    if require_unavailable and target.availability != "unavailable":
         raise PipelineRepairError(
             "repair_target_not_unavailable",
             "Only an unavailable node can be changed through recovery repair.",
             availability=target.availability,
         )
-    if target.source_span is None:
+    if require_unavailable and target.source_span is None:
         raise PipelineRepairError(
             "repair_target_span_missing",
             "The unavailable node has no trustworthy source span; open the source manually.",

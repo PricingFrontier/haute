@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 from collections.abc import Sequence
+from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
@@ -39,6 +40,7 @@ from haute.errors import HauteError
 from haute.schemas import (
     PipelineEditorDocument,
     PipelineNodeCompleteness,
+    PipelineNodeSaveRequest,
     PipelineRepairChange,
     PipelineRepairFieldChange,
     PipelineRepairPlanResponse,
@@ -319,6 +321,7 @@ def _reset_node(
     replacement_config: dict[str, Any] | None = None,
     shared_config_confirmed: bool = False,
     recover: bool = False,
+    allow_blocked_sources: bool = False,
 ) -> tuple[list[RepairArtifactEdit], list[str]]:
     from haute._graph_utils import executable_input_name
     from haute.codegen import _node_to_code
@@ -373,11 +376,25 @@ def _reset_node(
     source_names: list[str] = []
     for edge in incoming:
         source = nodes[edge.source_recovery_id]
-        if source.availability != "ready":
+        if source.availability != "ready" and not allow_blocked_sources:
             raise _unsupported("Repair the upstream nodes before resetting this node.")
         if edge.input_name is not None:
             source_names.append(edge.input_name)
             continue
+        if allow_blocked_sources:
+            # A blocked or unavailable upstream still has authored identity;
+            # a scoped save must not depend on it being repaired first.
+            fallback = (
+                source.source_handle_input_names.get(edge.source_handle or "")
+                or source.default_input_name
+            )
+            if fallback:
+                source_names.append(fallback)
+                continue
+            if source.node_type is None:
+                raise _unsupported(
+                    "The upstream node's identity is unknown; repair it before saving this node."
+                )
         source_names.append(
             executable_input_name(
                 node_type=source.node_type,
@@ -671,6 +688,45 @@ def build_recovery_action_plan(
         )
     else:
         edits, warnings = _reset_node(root, root_path, path, target, document)
+    kind: Literal["update_node", "reset_node", "recover_node"] = (
+        "update_node"
+        if request.action == "update"
+        else "recover_node"
+        if request.action == "recover"
+        else "reset_node"
+    )
+    return _finalise_action_plan(
+        root=root,
+        root_path=root_path,
+        path=path,
+        target=target,
+        document=document,
+        source_revision=request.source_revision,
+        kind=kind,
+        edits=edits,
+        warnings=warnings,
+        field_changes=field_changes,
+        completeness=completeness,
+        previous_config=previous_config,
+    )
+
+
+def _finalise_action_plan(
+    *,
+    root: Path,
+    root_path: Path,
+    path: Path,
+    target: RecoveryPipelineNode,
+    document: PipelineEditorDocument,
+    source_revision: str,
+    kind: Literal["update_node", "reset_node", "recover_node"],
+    edits: list[RepairArtifactEdit],
+    warnings: list[str],
+    field_changes: list[PipelineRepairFieldChange] | None = None,
+    completeness: list[PipelineNodeCompleteness] | None = None,
+    previous_config: dict[str, Any] | None = None,
+) -> PipelineRepairPlan:
+    """Verify proposed edits in isolation and bind them to one confirmable plan."""
     edits = [edit for edit in edits if edit.before != edit.after]
     if not edits:
         raise _unsupported("No supported current-format change was found for this node.")
@@ -699,23 +755,16 @@ def build_recovery_action_plan(
     after_ids = {(node.source_file, node.authored_id) for node in _iter_recovery_nodes(preview)}
     if not before_ids <= after_ids:
         raise _unsupported("The proposed repair would lose an existing node identity.")
-    kind: Literal["update_node", "reset_node", "recover_node"] = (
-        "update_node"
-        if request.action == "update"
-        else "recover_node"
-        if request.action == "recover"
-        else "reset_node"
-    )
     response = PipelineRepairPlanResponse(
         repair_kind=kind,
         source_file=document.source_file,
-        source_revision=request.source_revision,
+        source_revision=source_revision,
         target_source_file=_wire_path(path, root),
         target_recovery_id=target.recovery_id,
         target_authored_id=target.authored_id,
         delete_config=False,
         plan_hash=_plan_hash(
-            source_revision=request.source_revision,
+            source_revision=source_revision,
             source_file=document.source_file,
             target_source_file=_wire_path(path, root),
             target_recovery_id=target.recovery_id,
@@ -735,8 +784,8 @@ def build_recovery_action_plan(
         ],
         warnings=warnings,
         predicted_load_status=preview.load_status,
-        field_changes=field_changes,
-        completeness=completeness,
+        field_changes=field_changes or [],
+        completeness=completeness or [],
         previous_config=previous_config,
     )
     return PipelineRepairPlan(
@@ -746,3 +795,67 @@ def build_recovery_action_plan(
         target_path=path,
         expected_structure=_recovery_structure(preview),
     )
+
+
+def apply_scoped_node_save(
+    *, project_root: Path, request: PipelineNodeSaveRequest
+) -> PipelineEditorDocument:
+    """Save one `scoped_editable` node's settings and code in isolation.
+
+    The whole-document mutation/save fences stay untouched: exactly this
+    node's function span and exclusively owned config are rewritten, every
+    other artifact byte is conserved, and the candidate only has to remain
+    loadable — completeness gaps are allowed.
+    """
+    from haute._config_validation import validate_node_config
+    from haute._pipeline_repair import _commit_repair_plan
+
+    root = project_root.resolve()
+    root_path = _resolve_project_file(root, request.source_file, suffix=".py")
+    document = load_pipeline_editor_document(root_path, project_root=root)
+    if document.source_revision != request.source_revision:
+        raise PipelineRepairError(
+            "repair_revision_conflict",
+            "The pipeline changed after this document loaded; reload before saving.",
+        )
+    path = _resolve_project_file(root, request.target_source_file, suffix=".py")
+    target = _find_target(
+        document,
+        target_source_file=_wire_path(path, root),
+        target_recovery_id=request.target_recovery_id,
+        require_unavailable=False,
+    )
+    if not target.scoped_editable or target.node_type is None:
+        raise _unsupported("This node cannot be saved in isolation; recover or repair it first.")
+    try:
+        config = validate_node_config(
+            target.node_type, deepcopy(request.config), require_complete=False
+        )
+    except ValueError as exc:
+        raise _unsupported(f"The proposed settings are not loadable: {exc}") from exc
+    edits, _warnings = _reset_node(
+        root,
+        root_path,
+        path,
+        target,
+        document,
+        replacement_config=config,
+        recover=True,
+        allow_blocked_sources=True,
+    )
+    if all(edit.before == edit.after for edit in edits):
+        return document
+    plan = _finalise_action_plan(
+        root=root,
+        root_path=root_path,
+        path=path,
+        target=target,
+        document=document,
+        source_revision=request.source_revision,
+        kind="recover_node",
+        edits=edits,
+        warnings=[],
+    )
+    return _commit_repair_plan(
+        project_root=root, plan=plan, plan_hash=plan.response.plan_hash
+    ).document

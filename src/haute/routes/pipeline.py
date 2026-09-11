@@ -53,6 +53,7 @@ from haute._pipeline_repair import (
     build_recover_unavailable_node_plan,
     build_remove_unavailable_node_plan,
 )
+from haute._pipeline_repair_actions import apply_scoped_node_save
 from haute._polars_io_registry import (
     PolarsIoConfigError,
     format_for_config,
@@ -142,6 +143,7 @@ from haute.schemas import (
     OutputDestinationRequest,
     OutputDestinationResponse,
     PipelineEditorDocument,
+    PipelineNodeSaveRequest,
     PipelineRepairApplyRequest,
     PipelineRepairApplyResponse,
     PipelineRepairDryRunRequest,
@@ -754,6 +756,33 @@ async def apply_remove_unavailable_node(
                 "code": "repair_artifact_unavailable",
                 "message": (
                     "A repair artifact could not be written; original artifacts were restored."
+                ),
+            },
+        )
+
+
+@router.post("/pipeline/node/save", response_model=PipelineEditorDocument)
+async def scoped_node_save(
+    body: PipelineNodeSaveRequest,
+) -> PipelineEditorDocument | JSONResponse:
+    """Save one scoped-editable node in isolation; the document fences stay."""
+    try:
+        async with save_lock:
+            return await run_in_threadpool(
+                apply_scoped_node_save,
+                project_root=Path.cwd().resolve(),
+                request=body,
+            )
+    except PipelineRepairError as exc:
+        return _pipeline_recovery_error_response(exc.status_code, exc.detail())
+    except OSError as exc:
+        logger.warning("pipeline_node_save_io_failed", error=str(exc))
+        return _pipeline_recovery_error_response(
+            409,
+            {
+                "code": "repair_artifact_unavailable",
+                "message": (
+                    "A save artifact could not be written; original artifacts were restored."
                 ),
             },
         )

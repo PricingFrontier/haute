@@ -63,6 +63,7 @@ export interface RecoveryNode {
   source_span: SourceSpan | null
   diagnostic_ids: string[]
   blocking_path: string[]
+  scoped_editable: boolean
 }
 
 export interface RecoveryEdge {
@@ -277,6 +278,7 @@ function parseRecoveryNode(value: unknown, field: string): RecoveryNode {
     "source_span",
     "diagnostic_ids",
     "blocking_path",
+    "scoped_editable",
   ])
   return {
     recovery_id: expectNonBlankString(PARSER, object.recovery_id, `${field}.recovery_id`),
@@ -305,6 +307,7 @@ function parseRecoveryNode(value: unknown, field: string): RecoveryNode {
     source_span: parseSpan(object.source_span, `${field}.source_span`),
     diagnostic_ids: stringArray(object.diagnostic_ids, `${field}.diagnostic_ids`),
     blocking_path: stringArray(object.blocking_path, `${field}.blocking_path`),
+    scoped_editable: expectBoolean(PARSER, object.scoped_editable, `${field}.scoped_editable`),
   }
 }
 

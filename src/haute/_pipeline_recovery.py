@@ -1843,6 +1843,44 @@ def _capabilities(
     )
 
 
+_SCOPED_EDITABLE_TYPES = {
+    kind.value for kind in NodeType if kind not in {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+}
+
+
+def _mark_scoped_editable(
+    nodes: list[RecoveryPipelineNode],
+    submodels: dict[str, RecoverySubmodelDefinition] | None,
+) -> None:
+    """Advisory per-node isolation-save eligibility; the endpoint re-derives it.
+
+    Eligible: a known ordinary type that loads (ready or blocked), with a
+    trustworthy source span, not a shared instance, and no config reference
+    shared with another node. Document-wide fences stay separate.
+    """
+    all_nodes: list[RecoveryPipelineNode] = []
+
+    def collect(
+        graph_nodes: list[RecoveryPipelineNode],
+        graph_submodels: dict[str, RecoverySubmodelDefinition] | None,
+    ) -> None:
+        all_nodes.extend(graph_nodes)
+        for definition in (graph_submodels or {}).values():
+            collect(definition.graph.nodes, definition.graph.submodels)
+
+    collect(nodes, submodels)
+    reference_counts = Counter(node.config_reference for node in all_nodes if node.config_reference)
+    for node in all_nodes:
+        node.scoped_editable = (
+            node.node_type in _SCOPED_EDITABLE_TYPES
+            and node.availability != "unavailable"
+            and node.source_file is not None
+            and node.source_span is not None
+            and not (node.config or {}).get("instanceOf")
+            and (node.config_reference is None or reference_counts[node.config_reference] == 1)
+        )
+
+
 def _node_completeness(
     nodes: list[RecoveryPipelineNode],
     submodels: dict[str, RecoverySubmodelDefinition] | None,
@@ -2184,6 +2222,7 @@ def _load_readable_pipeline_editor_document(
         known_bytes=captures.known_bytes(),
     )
     kept_diagnostics = diagnostics[:_MAX_DIAGNOSTICS]
+    _mark_scoped_editable(nodes, submodels)
     completeness = _node_completeness(nodes, submodels)
     kept_completeness = completeness[:_MAX_DIAGNOSTICS]
     return PipelineEditorDocument(
